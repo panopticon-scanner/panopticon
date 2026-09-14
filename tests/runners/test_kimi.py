@@ -1,3 +1,4 @@
+import atexit
 import contextlib
 import dataclasses
 import datetime
@@ -625,6 +626,31 @@ class TestHomeLocation(unittest.TestCase):
             r.teardown("error")
             self.assertEqual([], glob.glob(pattern),
                              "prepare orphaned a home holding credential links")
+
+    def test_runners_torn_down_in_arming_order_leave_the_baseline_handler(self):
+        # R3-3: the disarm used to restore its `previous` only when the CURRENT
+        # handler was its own wrapper. Two runners armed without a teardown in
+        # between, then torn down in arming order, left the first one's wrapper
+        # installed for good -- pinning a dead Runner (and its home path) from
+        # the process's SIGTERM handler. tests/runners/conftest.py guards the
+        # same invariant around every test; this is the case that trips it.
+        baseline = signal.getsignal(signal.SIGTERM)
+        callbacks = atexit._ncallbacks() if hasattr(atexit, "_ncallbacks") else None
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                first = kimi_runner.Runner("kimi")
+                first.prepare(os.path.join(d, "run-1"), review_root=d)
+                self.addCleanup(shutil.rmtree, first.kimi_home, True)
+                second = kimi_runner.Runner("kimi")
+                second.prepare(os.path.join(d, "run-2"), review_root=d)
+                self.addCleanup(shutil.rmtree, second.kimi_home, True)
+            self.assertIsNot(baseline, signal.getsignal(signal.SIGTERM))   # armed
+            first.teardown("complete")
+            second.teardown("complete")
+            self.assertIs(baseline, signal.getsignal(signal.SIGTERM),
+                          "a wrapper is still installed after both teardowns")
+            if callbacks is not None:
+                self.assertEqual(callbacks, atexit._ncallbacks(), "an atexit callback leaked")
 
     def test_teardown_refuses_a_path_that_is_not_a_temp_home(self):
         with tempfile.TemporaryDirectory() as d:

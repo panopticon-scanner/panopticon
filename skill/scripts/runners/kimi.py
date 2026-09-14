@@ -460,7 +460,7 @@ class Runner(base.HostRunner):
         self.run_home = None           # the seam's name for it (base.HostRunner)
         self.home_pointer = None
         self._crash_strip = None       # the atexit callback, while one is armed
-        self._signal_handlers = {}     # {signum: (ours, whatever was there before)}
+        self._signal_handlers = {}     # {signum: our wrapper}; it carries what was there
         self.review_root = None
         self.configured = None
         self.max_turns = 60
@@ -533,28 +533,37 @@ class Runner(base.HostRunner):
                 signal.signal(signum, handler)
             except (ValueError, OSError, RuntimeError):
                 continue          # not the main thread, or no such signal here
-            self._signal_handlers[signum] = (handler, previous)
+            self._signal_handlers[signum] = handler
 
     def _signal_stripper(self, previous):
         def handler(signum, frame):
             self._strip_on_exit()
+            previous = handler.previous       # R3-3: read live, a disarm may have relinked it
             if callable(previous):
                 previous(signum, frame)       # chained: the loop still sees it
             elif previous == signal.SIG_DFL:
                 signal.signal(signum, signal.SIG_DFL)
                 os.kill(os.getpid(), signum)  # die as we would have
+        handler.previous = previous
         return handler
 
     def _disarm_crash_strippers(self):
-        """The run is over: take ours back off, so a process that prepares more
-        than once does not stack wrappers on SIGTERM."""
+        """The run is over: take ours back off (and the atexit callback, so a
+        torn-down Runner does not pin itself). R3-3: ours may no longer be on
+        top -- a later `prepare` chains to it -- so it is unlinked from
+        whichever wrapper holds it rather than left installed for good."""
         if self._crash_strip is not None:
             atexit.unregister(self._crash_strip)
             self._crash_strip = None
-        for signum, (ours, previous) in list(self._signal_handlers.items()):
+        for signum, ours in list(self._signal_handlers.items()):
             try:
-                if signal.getsignal(signum) is ours:
-                    signal.signal(signum, previous)
+                node = signal.getsignal(signum)
+                if node is ours:
+                    signal.signal(signum, ours.previous)
+                while callable(node) and hasattr(node, "previous") and node is not ours:
+                    if node.previous is ours:
+                        node.previous = ours.previous
+                    node = node.previous
             except (ValueError, OSError, RuntimeError):
                 pass
         self._signal_handlers.clear()
