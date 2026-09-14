@@ -1,9 +1,14 @@
 # Family PR guardrails
 
-One document for every agent family (Codex, Kimi, and Claude when it touches
-its own host code) that authors its **first-class host** PR. It says
-what you are building, what you may not break, and how the PR proves itself.
-Everything else about *how* you work is yours to decide.
+One document for every agent family that makes its CLI a **first-class host**.
+It says what you are building, what you may not break, and how the PR proves
+itself. Everything else about *how* you work is yours to decide.
+
+Three families have landed under it -- Claude (#1618), Codex (#1619) and Kimi
+(#1620) -- and section 2 is the record of what each one proves. Their landing
+changed nothing in sections 3 and 5: those bind the next PR exactly as they
+bound theirs, whether that PR is a re-attempt for a retired row or a host with
+no row yet.
 
 If you were handed this file as your first instruction, the launch prompt at
 the bottom is what your operator ran. Read the whole document once before
@@ -20,7 +25,7 @@ part is a thin seam, and your PR fills in that seam for your family:
 | Probes for every capability you claim | `skill/scripts/probes/<host>.py` for the probe functions, with the probe id registered in `skill/scripts/host_probes.py` (`PROBE_IDS` **and** `PROBE_CAPABILITY`, plus the `probes=` mapping on your `HostSpec` row). A probe that spawns your CLI puts a module-level `DEFAULT_RUNNER` in that same module and adds it to `LAUNCH_SEAMS` in `tests/conftest.py` | `probes/common.py`'s `probe_registered_shell_tools`, `probes/claude.py`'s `probe_write_guard_armed` / `probe_read_guard_armed` |
 | A shell emitter branch | `skill/scripts/dispatch.py` `emit_host_agents` (one `elif` for your `shell_format`) | the claude / kimi / codex branches already there |
 | Your registry row, and only yours | `skill/scripts/hosts.py` `HOSTS[<host>]` | any existing row |
-| Read and write confinement for your host | your own primitive: tool omission, sandbox policy, `--add-dir`, `disallowedTools`, a hook, whatever your host actually enforces | `skill/scripts/read_guard_hook.py`, `skill/scripts/write_guard_hook.py` (Claude-only by construction; copy the *idea*, not the file) |
+| Read and write confinement for your host | your own primitive: tool omission, sandbox policy, `--add-dir`, `disallowedTools`, a hook, whatever your host actually enforces | three different primitives for the same guarantee: `skill/scripts/read_guard_hook.py` + `write_guard_hook.py` (Claude), `skill/scripts/kimi_guard_hook.py` (Kimi), `skill/scripts/codex_read_tools.py` behind a read-only sandbox (Codex). Copy the *idea*, not the file |
 | Tests and docs for all of the above | `tests/`, `docs/PANOPTICON.md`, `skill/SKILL.md` | the guards in `tests/test_skill_md.py` |
 
 The seam's contract, in `skill/scripts/runners/base.py`:
@@ -57,6 +62,19 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   a host whose usage evidence is not a launch envelope at all (Kimi reads a
   session wire file and maps `usage_ledger` to its own probe). What it will
   never do is read `proven` from an empty list (#1626).
+- `Runner.teardown(status)` releases whatever `prepare` acquired. The loop calls
+  it exactly once, from `orchestrate._finish`, on a terminal status and never
+  between iterations, and hands it that status so a runner can drop a scratch
+  area on `complete` and keep it for debugging otherwise. Kimi's per-run home is
+  what needed it; Claude and Codex release nothing and inherit the no-op.
+- `namespace` and `dispatch_request` are set by the loop **before** `prepare`
+  (`"setup"` under `--setup` and otherwise `None`; the absolute path the pending
+  entries came from), and `run_home` is read off the runner **after** it -- a
+  scratch directory outside the reviewed tree, so a probe can find this run's
+  children without opening a file the target is free to rewrite.
+- `HONOURS_MAX_TURNS = False` says your CLI has no turn cap for `--max-turns` to
+  reach. The loop sets `runner.max_turns` unconditionally, so declare it rather
+  than accepting the flag and ignoring it in silence; Codex does.
 - `default_concurrency` is yours to set. `driver loop --concurrency` overrides it.
 - `runner_for(host, mode)` finds you by module name. `headless_available(host)`
   is true once `skill/scripts/runners/<host>.py` exposes `Runner`; until then
@@ -91,12 +109,12 @@ Rules that follow from the registry:
 - `driver_selectable` flips **in the same PR** that proves the security
   capabilities (`tool_policy_enforced`, `read_scope_confined`), and never
   before: a row that is selectable while proving nothing is what #1344 exists
-  to end, and it is what cost Gemini its row (#1621). Today's shortfall is
-  pinned by name in `tests/test_generic_retirement_bar.py`
-  (`test_todays_shortfall_is_pinned_so_it_moves_consciously`), which reads
+  to end, and it is what cost Gemini its row (#1621). The shortfall is pinned
+  by name in `tests/test_generic_retirement_bar.py`
+  (`test_todays_shortfall_is_pinned_so_it_moves_consciously`), and it reads
   `{}` on this base because every host the bar examines -- claude, codex
-  (#1619) and kimi (#1620) -- clears both. Your PR flips your row into that
-  set and re-pins the assertion, alongside the `--host generic` paragraph in
+  (#1619) and kimi (#1620) -- clears both. A PR that flips a row re-pins that
+  assertion, alongside the `--host generic` paragraph in
   `docs/PANOPTICON.md`, in the same commit as the probes that earn it.
 - Never test a host by name in a phase (`host == "codex"`). Route every
   decision through `hosts.posture()` or `hosts.declares()`; an AST guard in
@@ -110,28 +128,79 @@ Rules that follow from the registry:
   evidence in the PR description; a probe that can only say `proven` is not a
   probe.
 
-Findings already recorded for your family, so you do not rediscover them:
+### The seam, as built
 
-- **Codex.** Parent-runtime permission overrides are reapplied to child
-  agents, so a read-only TOML profile is not evidence of the effective policy.
-  Your `tool_policy_enforced` probe must interrogate the effective surface. The
-  shipped `probe_registered_shell_tools` looks for a `tools:` line your emitted
-  shell does not have; it will refute you as written, so write your own probe.
-  Read confinement is `--add-dir` plus sandbox policy (issue #1086). Two of
-  your registered roles are told to `Write` while your shell is read-only
-  (the Codex half of #1520): resolve it by not claiming `artifact_write_guard`
-  and letting the `return_json` bridge carry those roles, unless you can prove
-  a real guard.
-- **Kimi.** A tool name in a shell that matches nothing in the installed CLI
-  is warned about and restricts nothing; your probe must verify the shells'
-  tool vocabulary against the installed CLI. Agent discovery lets a target's
-  `.agents/agents/panopticon-scout.md` shadow the registered shell; the
-  shadow-shell scan already refutes `tool_policy_enforced` when it sees one,
-  and your probe should agree with it.
-- **Gemini.** Retired 2026-09-13 after #1621 failed its gate review twice; the
-  row is registered but **not** driver-selectable, and Gemini operators run
-  `--host generic`. A future Gemini PR starts from the Kimi/Codex shape and
-  must clear §5 before the row flips back.
+Every family fills in the same shape. A `Runner` in
+`skill/scripts/runners/<host>.py` implements the contract in `runners/base.py`,
+which also owns the single `LaunchRefused` every launch site raises and catches
+-- one class, so two `except` clauses cannot disagree about what a refusal
+means. The probes live in `skill/scripts/probes/<host>.py` and are registered
+in `skill/scripts/host_probes.py`, which is the registry and not the probes.
+Every module that starts a host CLI exposes a module-level `DEFAULT_RUNNER` and
+is listed in `tests/conftest.py`'s `LAUNCH_SEAMS` -- six seams across three
+families today -- and `tests/test_host_launch_guard.py` walks the AST so a
+seventh cannot be added silently.
+
+### What each landed host proves
+
+**Claude (#1618)** claims all five. `tool_policy_enforced` is proven by the
+shared `registered-shell-tools` probe in `probes/common.py`; the other four by
+`read-guard-armed`, `write-guard-armed`, `entry-model-bound` and `usage-source`
+in `probes/claude.py`. `skill/scripts/runners/claude.py` sets `CLI = "claude"`,
+`ENVELOPE_FLAGS = ("-p", "--output-format")` and `default_concurrency = 8`; its
+`prepare` writes `host-settings.json` into the run folder and its `launch_env`
+pops `CLAUDECODE` so a nested session will start. Confinement is two PreToolUse
+hooks, `skill/scripts/read_guard_hook.py` and
+`skill/scripts/write_guard_hook.py`. Evidence: `driver loop . --host claude
+--reset --no-tools -d skill/scripts/runners` reached `status: complete` with 15
+of 15 launches ok, all five capabilities `proven`, and four natural read
+denials -- each a verifier's Grep over a directory, which the guard denies by
+design.
+
+**Codex (#1619)** claims the two security capabilities and nothing else, so
+every Codex role runs as `delivery: return_json` and the loop writes the file.
+`tool_policy_enforced` is proven by `codex-effective-tools` and
+`read_scope_confined` by `codex-read-scope`, both in `probes/codex.py`, and
+both interrogate the **effective** runtime surface through the localhost-only
+Responses fixture in `skill/scripts/codex_host.py`: a read-only TOML profile is
+not evidence, because parent-runtime permission overrides are reapplied to
+child agents. `skill/scripts/runners/codex.py` sets `CLI = "codex"`,
+`ENVELOPE_FLAGS = ("exec", "--json")`, `HONOURS_MAX_TURNS = False` and
+`default_concurrency = 4`. Confinement is a read-only sandbox plus the scoped
+MCP read broker `skill/scripts/codex_read_tools.py`, which the emit branch
+registers as `panopticon_scope` with `read_file` / `search` / `list_files` and
+no write tool at all. Evidence: `driver loop . --host codex --mode headless -d
+skill/scripts/runners --no-tools --allow-unenforced` reached `status:
+complete`, with both claimed capabilities `proven` and the three unclaimed ones
+`unknown`, each detail saying in as many words that the host does not claim it,
+so there is nothing to prove.
+
+**Kimi (#1620)** claims all five, proven by `kimi-shell-surface`,
+`kimi-read-guard-armed`, `kimi-write-guard-armed`, `kimi-model-alias-bound` and
+`kimi-usage-wire`, all in `probes/kimi.py`. `skill/scripts/runners/kimi.py`
+sets `CLI = "kimi"` and leaves `ENVELOPE_FLAGS` empty on purpose -- Kimi's
+usage evidence is a session wire file, not a launch envelope -- and its
+`prepare` mints a per-run Kimi home outside the reviewed tree, which
+`teardown(status)` removes; `launch_env` points `KIMI_CODE_HOME` at it.
+Confinement is `skill/scripts/kimi_guard_hook.py`, registered as two PreToolUse
+hooks in that home's `config.toml`, over a `tools.disabled` deny-list derived
+from the CLI's own vocabulary minus what the role templates grant. Evidence:
+run `kimi-standard-repo-20260913-88aaffdb` reached `status: complete` -- 284
+ledger rows, 37 launches, 23.2M tokens read off the wire files, all five
+capabilities `proven`. That run was measured before the branch's four
+gate-review fix rounds, and the PR records that a run on the corrected branch
+is still owed.
+
+**Gemini** is registered and **not** driver-selectable (#1621, retired
+2026-09-13 by #1625). The row stays, so the name still resolves everywhere and
+every surface answers for it honestly; it claims nothing, and `--host gemini`
+is refused with the remedy rather than a bare word list. A Gemini operator runs
+`--host generic`, the same path as any host whose family has not shipped a
+runner. A re-attempt starts from the Kimi or Codex shape -- a
+`skill/scripts/runners/gemini.py`, its own `probes/gemini.py`, an emit branch,
+both security capabilities probed and mutation-refuted -- clears section 5 in
+full, and attaches a real `driver loop . --host gemini` run. The row flips back
+in the same PR as the probes that earn it, never ahead of them.
 
 ## 3. What you may not do
 
@@ -152,8 +221,11 @@ Repository:
   directory.
 - Do not weaken a test or a doc guard to make it pass. Update an expectation
   only when its own comment says your PR is the one that moves it — the
-  retirement-bar pin, the host table in `docs/PANOPTICON.md`, and that
-  document's `gemini` sentence, and nothing else. If a guard blocks you for
+  retirement-bar pin, the host table in `docs/PANOPTICON.md`, that
+  document's `gemini` sentence, and this document's own §2/§6 guards in
+  `tests/test_family_guardrails_doc.py` (each names the PR that moves it:
+  yours, when you add your host's §2 paragraph) — and nothing else. If a
+  guard blocks you for
   another reason, that is a finding to report, not a line to delete.
 - Do not `git stash`, do not force-push a shared branch, do not rewrite
   history after a review has started.
@@ -188,8 +260,9 @@ Suite:
 
 Everything else. In particular, use every capability your default
 installation ships: parallel workers and sub-agents (Claude's workflows and
-subagents, Kimi's swarm, and whatever Codex and Gemini ship for the same job),
-skills, plugins, extensions, MCP servers, planning modes, background jobs. The
+subagents, Kimi's swarm, Codex's own, and whatever your CLI ships for the same
+job), skills, plugins, extensions, MCP servers, planning modes, background
+jobs. The
 guardrails above bind every worker you spawn exactly as they bind you; how you
 split the work, review it, and pace it is your call. The only process rule is
 the one in the next section: the PR proves itself.
@@ -209,9 +282,9 @@ python -m pytest tests/ -q
 python -m ruff check skill/scripts/ tests/
 ```
 
-CI runs the same two commands on Python 3.11, 3.12, 3.13, and 3.14. The
-local interpreter is newer than the CI floor, so run at least your own test
-files under 3.11 before pushing (`uv run --python 3.11 --with pytest --with
+CI runs the test command on Python 3.11, 3.12, 3.13 and 3.14, and the lint
+command once on 3.12. The local interpreter is newer than the CI floor, so run
+at least your own test files under 3.11 before pushing (`uv run --python 3.11 --with pytest --with
 pyyaml -q python -m pytest tests/runners tests/probes tests/test_host_probes.py
 -q` is enough). Argparse and `typing` differ across that range; the 3.11 leg is
 the one that finds it.
@@ -235,7 +308,10 @@ on green CI alone.
 
 ## 6. Launch prompt
 
-What the operator pastes into your CLI. `<host>` is `codex` or `kimi`.
+What the operator pastes into your CLI. `<host>` is the host this PR makes
+first-class: a re-attempt for a row that was retired, or a host with no
+registry row yet. Every family recorded in section 2 has already landed its
+own, so their PRs are worked examples to read, not work to repeat.
 
 ```
 You are the <host> family agent for Panopticon. Your deliverable is the
@@ -248,3 +324,24 @@ main with the evidence section 5 asks for, and stop there: the owner reviews
 and merges. If the guardrails and the code disagree, say so in the PR rather
 than picking silently.
 ```
+
+## 7. Open owner decision
+
+Spec 8.1 made deleting `--host generic` (F5) mechanical: it ships once every
+remaining driver-selectable host has `tool_policy_enforced` and
+`read_scope_confined` proven, with `artifact_write_guard` bridged by
+construction. On this base that criterion is **met** -- the pin in section 2
+reads `{}`.
+
+Met is not due. `--host generic` is the only path left for a Gemini operator
+and for any host whose family has not shipped a runner, so deleting it is an
+owner **policy** decision rather than a consequence of the bar clearing: the
+bar can say that no remaining selectable host falls short, but it cannot say
+there is anywhere else for those operators to go. The row is therefore still
+registered, still selectable, and prints a deprecation notice
+(`hosts.is_deprecated`, `host_disclosure.GENERIC_DEPRECATION`).
+
+The decision, its options and a recommendation are written up as section 8.3
+of the first-class-hosts design spec in the private docs repo (panopticon-docs
+#55). Nothing in this document changes until it is made; a family PR that lands
+before then still gets `--host generic` as the fallback it describes.
