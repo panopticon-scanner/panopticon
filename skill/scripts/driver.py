@@ -420,10 +420,13 @@ def _establish_host_posture(review_root, manifest, args):
         runio._write_json(path, fresh)
         return None
     was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)
-    if was != now:
-        return _posture_drift(was, now, manifest)
-    # States agree, so the posture did NOT move and the run continues. The
-    # REASON may still have moved -- a capability refuted for "no shell at X" on
+    gating_was, gating_now = _gating_states(was), _gating_states(now)
+    if gating_was != gating_now:
+        return _posture_drift(gating_was, gating_now, manifest)
+    # The GATING states agree, so the run continues. An operational
+    # capability may still have moved (#1626 I1) and the write below records
+    # it -- state and reason both -- which is exactly the point: disclosure
+    # stays current, the run does not stop. The REASON may also have moved -- a capability refuted for "no shell at X" on
     # invocation 1 and for "grants forbidden tool Bash" on invocation 5 is
     # refuted both times. F3b renders `detail` on three surfaces, so a stale
     # reason is now a wrong disclosure rather than a cosmetic one. Refresh the
@@ -448,6 +451,37 @@ def _establish_host_posture(review_root, manifest, args):
         # actually written.
         runio._write_json(path, fresh)
     return None
+
+
+def _gating_states(states):
+    """`states` minus the capabilities that are operational rather than
+    security (#1626 I1, `hosts.OPERATIONAL_CAPABILITIES`).
+
+    `_posture_drift` halts a run in flight, and the remedy it names discards
+    everything already dispatched. That is the right answer when the thing
+    that moved is enforcement -- the report would otherwise disagree with
+    itself about what was confined -- and the wrong answer for `usage_ledger`
+    and `model_binding`, which gate nothing.
+
+    `usage_ledger` is the case that made this structural rather than
+    theoretical. It is the only probe whose subject the run itself PRODUCES:
+    `probe_usage_source` reads back `runs/<tag>/dispatch-ledger.jsonl`, which
+    the loop appends to after every batch. Two failures followed. A `claude
+    --help` that does not answer inside CLI_HELP_TIMEOUT under a full
+    concurrency pool reads UNKNOWN for one invocation and aborted the loop.
+    And a CLI release whose envelope stops carrying `usage` completes batch 1,
+    refutes from invocation 2 on, and refuses EVERY re-invocation from then
+    on -- permanently, since the stored artifact still says proven -- leaving
+    `--reset` (throw the paid-for batches away) as the only exit. A token
+    counter going quiet must not cost a run.
+
+    Filtered rather than merely tolerated: `_posture_drift`'s message lists
+    what moved, and naming a capability that did not cause the refusal next
+    to a remedy about capabilities that did is a worse message, not a fuller
+    one.
+    """
+    return {name: state for name, state in states.items()
+            if name not in hosts.OPERATIONAL_CAPABILITIES}
 
 
 # The capabilities whose probes resolve off the SESSION root rather than the

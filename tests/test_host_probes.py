@@ -964,6 +964,73 @@ class TestUsageSourceProbe(unittest.TestCase):
         self.assertIn("ImportError", detail)
         self.assertIn("no usable headless runner", detail)
 
+    def test_a_runner_with_no_envelope_flags_is_told_that_and_not_sent_module_hunting(self):
+        # #1626 I3. `_headless_usage_source` requires three attributes off the
+        # runner, `HostRunner` declared none of them, and the ONE failure
+        # detail read "host %r has no usable headless runner naming a CLI, its
+        # envelope flags and a launcher" -- wrong and misleading for a family
+        # that shipped a perfectly good runner and simply has no
+        # ENVELOPE_FLAGS. The remedy line then sent them looking for a missing
+        # module. Now `HostRunner` declares `CLI = ""` and `ENVELOPE_FLAGS =
+        # ()`, so the attribute is always there and the probe has to decide on
+        # its VALUE -- a vacuous PROVEN (no flags means no flags missing from
+        # `--help`) is the fail-open this epic exists to remove.
+        import dataclasses
+        import scripts.runners.base as runners_base
+
+        class NoFlags(runners_base.HostRunner):
+            host = "ghost"
+            CLI = "claude"
+
+            def runner(self, *_args, **_kwargs):
+                raise AssertionError("a runner with no envelope flags is never launched")
+
+        ghost = dataclasses.replace(hosts.spec("claude"), name="ghost")
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir, \
+                mock.patch.dict(hosts.HOSTS, {"ghost": ghost}), \
+                mock.patch.object(runners_base, "runner_for", return_value=NoFlags()):
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}):
+                state, by, detail = host_probes.probe_usage_source(
+                    "ghost", project, settings_path=self._headless_settings(project))
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertEqual("usage-source", by)
+        self.assertIn("ENVELOPE_FLAGS", detail)
+        self.assertIn("claude", detail)                       # the CLI it DID name
+        self.assertNotIn("no usable headless runner", detail)  # the wrong sentence
+
+    def test_a_runner_that_names_no_cli_is_told_that_and_not_that_its_binary_is_missing(self):
+        # The third sentence. `CLI = ""` reached `shutil.which("")`, which
+        # answers None, and the probe REFUTED with "no `` on PATH" -- a
+        # measurement it never made, about a binary nobody named.
+        import dataclasses
+        import scripts.runners.base as runners_base
+
+        class NoCli(runners_base.HostRunner):
+            host = "ghost"
+            ENVELOPE_FLAGS = ("-p", "--output-format")
+
+            def runner(self, *_args, **_kwargs):
+                raise AssertionError("a runner that names no CLI is never launched")
+
+        ghost = dataclasses.replace(hosts.spec("claude"), name="ghost")
+        with tempfile.TemporaryDirectory() as project, \
+                mock.patch.dict(hosts.HOSTS, {"ghost": ghost}), \
+                mock.patch.object(runners_base, "runner_for", return_value=NoCli()):
+            state, by, detail = host_probes.probe_usage_source(
+                "ghost", project, settings_path=self._headless_settings(project))
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertEqual("usage-source", by)
+        self.assertIn("names no CLI", detail)
+        # Not the pre-fix sentence, which reported a measurement it never
+        # made about a binary nobody named. (The new one may still mention
+        # PATH -- "there is no binary to look for on PATH" is true and is the
+        # point -- so the empty backticks, not the word, are what it must not
+        # say.)
+        self.assertNotIn("no `` on PATH", detail)
+        self.assertNotIn("no usable headless runner", detail)
+
     def test_headless_refutes_when_the_run_folder_cannot_hold_the_ledger(self):
         import getpass
         if getpass.getuser() == "root":
@@ -984,6 +1051,75 @@ class TestUsageSourceProbe(unittest.TestCase):
             self.assertEqual("usage-source", by)
             self.assertIn("ledger", detail)
             self.assertIn("not writable", detail)
+
+    def test_a_launcher_that_raises_anything_at_all_is_unknown_not_a_traceback(self):
+        # #1626 I2. `launch` is a FAMILY-supplied callable (`Runner.runner`).
+        # The clause here caught (OSError, SubprocessError, ValueError) while
+        # the sibling block ten lines below deliberately catches bare
+        # `Exception` with "a probe reports, never raises" -- so a runner with
+        # a different signature (TypeError) or one that refuses with a plain
+        # RuntimeError escaped run_probes -> _establish_host_posture ->
+        # driver.run, which does not wrap it: a `driver run` printed a
+        # traceback instead of a status. The three family PRs are exactly the
+        # population that hits this.
+        import subprocess as _subprocess
+        import scripts.runners.claude as claude_runner
+        cases = [TypeError("runner() takes 2 positional arguments but 4 were given"),
+                 RuntimeError("this family's launcher refuses"),
+                 _subprocess.SubprocessError("still caught, as before")]
+        for exc in cases:
+            with self.subTest(exception=type(exc).__name__):
+                def raises(cmd, _exc=exc, **kwargs):
+                    raise _exc
+                with tempfile.TemporaryDirectory() as project, \
+                        tempfile.TemporaryDirectory() as bin_dir:
+                    self._cli_on_path(bin_dir)
+                    with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                            mock.patch.object(claude_runner, "DEFAULT_RUNNER", raises):
+                        state, by, detail = host_probes.probe_usage_source(
+                            "claude", project,
+                            settings_path=self._headless_settings(project))
+                self.assertEqual(hosts.UNKNOWN, state)
+                self.assertEqual("usage-source", by)
+                self.assertIn("could not run", detail)
+                # The detail names the exception TYPE as well as its text: a
+                # bare str(TypeError) reads like prose and tells a family
+                # nothing about where to look.
+                self.assertIn(type(exc).__name__, detail)
+
+    def test_the_interrogation_runs_under_the_runners_own_env_discipline(self):
+        # #1626 I2, the second half. `Runner.run_entry` pops CLAUDECODE
+        # because a nested `claude -p` refuses to start inside a Claude Code
+        # session; the probe launched the same binary with the caller's
+        # environment untouched, so it interrogated the CLI under an
+        # environment the runner never uses. It works today only because
+        # `--help` is handled at argparse level -- the day that refusal moves
+        # earlier in start-up, every self-scan run from inside a session
+        # refutes usage_ledger.
+        import subprocess as _subprocess
+        import scripts.runners.claude as claude_runner
+        seen = {}
+
+        def fake(cmd, **kwargs):
+            seen.update(kwargs)
+            return _subprocess.CompletedProcess(
+                cmd, 0, stdout="  -p, --print\n  --output-format <format>\n", stderr="")
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir, "CLAUDECODE": "1"}), \
+                    mock.patch.object(claude_runner, "DEFAULT_RUNNER", fake):
+                state, _by, _detail = host_probes.probe_usage_source(
+                    "claude", project, settings_path=self._headless_settings(project))
+        self.assertEqual(hosts.PROVEN, state)
+        env = seen.get("env")
+        self.assertIsInstance(env, dict)
+        self.assertNotIn("CLAUDECODE", env)
+        # ...and it is a whole ENVIRONMENT, not a filtered overlay: a child
+        # handed only the keys the runner cares about has no PATH and cannot
+        # start, which is the C1 defect run_entry already carries a comment
+        # about. One preparation, so the probe cannot regrow that bug.
+        self.assertEqual(bin_dir, env.get("PATH"))
 
     def test_headless_is_unknown_on_a_claiming_host_with_no_headless_runner(self):
         # A row that claims the ledger but ships no runners/<host>.py has no

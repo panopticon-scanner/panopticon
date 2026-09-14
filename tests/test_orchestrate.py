@@ -1,9 +1,11 @@
 """driver loop (spec 4.3): the engine driven by a process, with a fake runner."""
 import contextlib
+import dataclasses
 import io
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -826,3 +828,92 @@ class TestPerEntryFailureCap(LoopCase):
         self.assertIn("verify-app-SEC-primary", status["message"])
         self.assertIn("3 consecutive launches", status["message"])
         self.assertIn("last: always", status["message"])
+
+
+class TestTheRealUsageProbeAcrossLoopIterations(LoopCase):
+    """#1626 I1, the loop-level test the review asked for: no OTHER test in
+    this suite lets the real `probe_usage_source` see the run it is probing.
+
+    `usage-source` is the only probe whose subject the loop WRITES -- it reads
+    back `runs/<tag>/dispatch-ledger.jsonl` after every batch. Every other
+    probe measures something static (registration files, a sandbox round
+    trip, a directory's writability). This module patches `host_probes.
+    run_probes` out for every other test, so the interaction between "a probe
+    that reads the run's own output" and "any state change refuses the run"
+    was never exercised: a CLI release whose envelope stops reporting tokens
+    completes batch 1, refutes on invocation 2, and from then on refuses
+    every re-invocation, with `--reset` -- which discards the paid-for
+    batches -- as the only exit.
+    """
+
+    class LedgerGoesQuiet(FakeRunner):
+        """Successful launches that report NO usage, which is what the probe
+        reads back off the ledger the loop writes.
+
+        It also has to answer the probe's own `<cli> --help` interrogation,
+        so it carries the three attributes `_headless_usage_source` reads off
+        a runner: `CLI`, `ENVELOPE_FLAGS` and a `subprocess.run`-compatible
+        `runner`. The loop patches `runners.base.runner_for` to return this
+        object, and the probe resolves its runner through that same function,
+        so one fake answers both.
+        """
+
+        CLI = "claude"
+        ENVELOPE_FLAGS = ("-p", "--output-format")
+
+        def __init__(self, host="claude"):
+            super().__init__(host)
+            self.help_calls = []
+            self.runner = self._fake_help
+
+        def _fake_help(self, cmd, **kwargs):
+            self.help_calls.append(list(cmd))
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="usage: claude [options]\n  -p, --print\n"
+                               "  --output-format <format>\n", stderr="")
+
+        def run_entry(self, entry, env):
+            return dataclasses.replace(super().run_entry(entry, env), usage={})
+
+    def test_a_usage_ledger_that_goes_quiet_mid_run_does_not_abort_the_loop(self):
+        # The module-level `run_probes` patch is stopped for this test ALONE:
+        # the point is to run the real probe against the real ledger.
+        _patch.stop()
+        self.addCleanup(_patch.start)
+        d, floor = self._repo()
+        # _repo seeds an all-proven artifact for the tests that patch the
+        # probes out; here the real probes must establish the baseline
+        # themselves, or invocation 1 would refuse against that fixture.
+        os.remove(runio._pano(d, runio.HOST_CAPABILITIES))
+        bin_dir = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(bin_dir, ignore_errors=True))
+        cli = os.path.join(bin_dir, "claude")
+        with open(cli, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")     # found by shutil.which, never run
+        os.chmod(cli, 0o755)
+
+        runner = self.LedgerGoesQuiet()
+        args = self._args(d, "--allow-unenforced",
+                          "--session-dir", self._session_root(d))
+        # PREPENDED, not replacing: the loop shells out to `git` for the
+        # clean-tree baseline, and a PATH holding only `bin_dir` would fail
+        # that probe for a reason this test is not about. `shutil.which`
+        # searches in order, so the stub still wins -- and it is never
+        # executed anyway (every launch goes through the injected runner).
+        with mock.patch.dict(os.environ,
+                             {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}), \
+                mock.patch.object(orchestrate, "_after_first_run",
+                                  side_effect=lambda root: self._seed_coverage(root, floor)), \
+                mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+                contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+
+        self.assertEqual("complete", status["status"], status)
+        # The probe really ran, against the real CLI-interrogation path.
+        self.assertIn([cli, "--help"], runner.help_calls)
+        # ...and it really did change its mind: the ledger the loop wrote
+        # carries successful launches with no usage figure in them.
+        evidence = runio.host_evidence(d)
+        self.assertEqual(hosts.REFUTED, evidence[hosts.USAGE_LEDGER]["state"])
+        self.assertIn("not one envelope carried a usage figure",
+                      evidence[hosts.USAGE_LEDGER]["detail"])

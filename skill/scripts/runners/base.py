@@ -7,6 +7,7 @@ contract lives here rather than in __init__ (layout rule: docstring-only).
 import concurrent.futures
 import dataclasses
 import importlib
+import os
 
 import scripts.read_guard_hook as read_guard_hook
 
@@ -76,6 +77,27 @@ class HostRunner:
     host = ""
     mode = "headless"
     default_concurrency = 1
+    # The binary this runner launches, and the argv tokens that make ONE
+    # launch print the parseable envelope its usage figures are read from
+    # (claude: `-p --output-format`; codex: `exec --json`).
+    #
+    # Declared here because they are part of the seam, not a private detail:
+    # `host_probes._headless_usage_source` reads both off a claiming host's
+    # runner, asks the CLI it finds on PATH to advertise exactly these flags
+    # in its `--help`, and only then believes the ledger. Before #1626 I3
+    # they were requirements a family could learn about only from an
+    # `except Exception` whose detail then named the wrong problem.
+    #
+    # Empty is legal and honest, not a stub to fill in: a runner leaving
+    # either empty reads `unknown` for `usage_ledger`, with a detail saying
+    # which one is missing. A host whose usage evidence is not a launch
+    # envelope at all (kimi reads a session wire file, and maps
+    # `usage_ledger` to its own probe) leaves ENVELOPE_FLAGS empty on
+    # purpose. What must NOT happen is a vacuous `proven` -- no flags means
+    # no flags missing from `--help`, which is why the probe decides on the
+    # VALUE rather than merely on the attribute existing.
+    CLI = ""
+    ENVELOPE_FLAGS = ()
     # A scratch directory OUTSIDE the reviewed tree that this runner's children
     # write into, once `prepare` has made one; None for a host that needs none
     # (claude arms a settings file in the run folder and keeps nothing else).
@@ -117,6 +139,36 @@ class HostRunner:
         thing that needs it. Claude has nothing to release, so the default is
         nothing.
         """
+
+    def launch_env(self, overlay=None):
+        """The environment a child of THIS runner starts under.
+
+        ONE env preparation per runner (#1626 I2). `run_entry` used to build
+        its child environment inline, which meant `host_probes` -- which
+        launches the SAME binary to read its `--help` and decide whether the
+        usage ledger is real -- had no way to reuse it and passed no `env` at
+        all. The interrogation therefore ran under an environment the runner
+        never uses: it works today only because `--help` is answered at
+        argparse level, and the day a host's nested-session refusal moves
+        earlier in start-up, every self-scan run from inside a session
+        measures the wrong thing.
+
+        `overlay` is the loop's three-key BINDING OVERLAY (spec 4.4), or None
+        where there is no entry to bind -- a probe's `--help` has none. The
+        default is `os.environ` plus the overlay, and a family that needs
+        more overrides this ONE method: claude drops `CLAUDECODE` (a nested
+        `claude -p` refuses to start inside a Claude Code session), kimi
+        points `KIMI_CODE_HOME` at this run's home and drops its own
+        nested-session markers, codex needs nothing beyond the default and so
+        does not override it.
+
+        Always a fresh dict: callers hand the result straight to a subprocess
+        call and some of them mutate it, and returning `os.environ` itself
+        would leak one launch's preparation into this process.
+        """
+        env = dict(os.environ)
+        env.update(overlay or {})
+        return env
 
     def run_entry(self, entry, env):
         raise NotImplementedError("a host runner must implement run_entry")

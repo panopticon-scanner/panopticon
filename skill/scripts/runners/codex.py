@@ -148,8 +148,12 @@ class Runner(base.HostRunner):
         try:
             if self.run_dir is None or self.review_root is None:
                 raise ValueError("Codex runner was not prepared")
-            child_env = dict(os.environ)
-            child_env.update(env)
+            # #1626 I2: through the seam's ONE env preparation
+            # (`base.HostRunner.launch_env`), which for Codex IS exactly this
+            # -- os.environ plus the overlay -- so there is no override, only
+            # the shared call. A probe that needs the same environment now has
+            # somewhere to get it.
+            child_env = self.launch_env(env)
             if not entry_id or child_env.get(base.ENV_ENTRY_ID) != entry_id:
                 raise ValueError("missing or mismatched Codex entry binding")
             if entry.get("delivery") != "return_json":

@@ -274,20 +274,29 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
             args = self._args()
             driver._establish_host_posture(review_root, manifest, args)
             # Derived from the STORED artifact, not from a second live probe:
-            # a fresh `run_probes` with no session_root now defaults to cwd, so
-            # usage_ledger's state there depends on whether the machine running
-            # the suite happens to have a transcript directory for its own cwd.
-            # Flipping relative to what was actually stored is deterministic.
+            # a fresh `run_probes` reads this machine's registration directory
+            # and session root, so the state it lands on is not the test's to
+            # predict. Flipping relative to what was actually stored is
+            # deterministic.
+            #
+            # #1626 I1: the flipped capability is a SECURITY one. It used to
+            # be usage_ledger, which was the most convenient to flip and is
+            # now the one capability whose movement deliberately does NOT
+            # refuse -- see TestAnOperationalCapabilityDisclosesWithoutGating
+            # below, which pins both halves of that split. The rule this test
+            # exists for -- a posture that moved refuses and names what moved
+            # -- is unchanged and is now asserted on a capability it actually
+            # governs.
             drifted = copy.deepcopy(runio._load_json(
                 runio._pano(review_root, runio.HOST_CAPABILITIES)))
-            drifted["capabilities"][hosts.USAGE_LEDGER]["state"] = (
-                hosts.PROVEN if drifted["capabilities"][hosts.USAGE_LEDGER][
+            drifted["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"] = (
+                hosts.PROVEN if drifted["capabilities"][hosts.TOOL_POLICY_ENFORCED][
                     "state"] != hosts.PROVEN else hosts.REFUTED)
             with mock.patch.object(host_probes, "run_probes",
                                    return_value=drifted):
                 err = driver._establish_host_posture(review_root, manifest, args)
             self.assertIsNotNone(err)
-            self.assertIn(hosts.USAGE_LEDGER, err)
+            self.assertIn(hosts.TOOL_POLICY_ENFORCED, err)
             self.assertIn("--reset", err)
 
     def test_an_improving_posture_refuses_too(self):
@@ -987,6 +996,160 @@ class TestTheGuardProbesFollowTheRunnersMode(unittest.TestCase):
             driver._establish_host_posture(d, manifest, args)
         self.assertIsNone(rp.call_args.kwargs.get("settings_path"))
 
+
+class TestAnOperationalCapabilityDisclosesWithoutGating(unittest.TestCase):
+    """#1626 I1: the posture-drift refusal is a SECURITY gate, and two of the
+    five capabilities are not security.
+
+    `model_binding` and `usage_ledger` are what spec 8.1 excludes from the
+    retirement bar and what `docs/PANOPTICON.md` calls "gates nothing
+    directly". `usage_ledger` is also the first capability whose subject is
+    produced by the run being probed -- `probe_usage_source` reads back the
+    dispatch ledger the loop appends to after every batch -- so a CLI release
+    that quietly stops reporting tokens moved it PROVEN -> REFUTED on
+    invocation 2 and aborted the run permanently, pointing the operator at
+    `--reset`, which throws the completed, paid-for batches away. The state
+    and the reason are still recorded (the disclosure surfaces must stay
+    current); they simply do not refuse.
+    """
+
+    def _args(self, target):
+        return _Args(target=target, session_dir=None)
+
+    def _artifact(self, states, host="claude"):
+        """A run_probes()-shaped artifact: every capability PROVEN except the
+        ones `states` names."""
+        return {"schema_version": 1, "host": host,
+                "probed_at": "2026-09-11T00:00:00Z",
+                "capabilities": {
+                    name: {"state": states.get(name, hosts.PROVEN), "by": "fixture",
+                           "detail": "fixture: %s" % states.get(name, hosts.PROVEN)}
+                    for name in hosts.CAPABILITIES}}
+
+    def _established(self):
+        """(review_root, manifest) with an all-PROVEN posture already stored,
+        through a REAL first `_establish_host_posture` rather than a
+        hand-written file -- so the stored baseline is whatever this code
+        path actually writes."""
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        manifest = {"host": "claude", "run_id": "r1" * 4, "created": "2026-09-10",
+                    "security_mode": "standard", "session_dir": review_root}
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=self._artifact({})):
+            self.assertIsNone(driver._establish_host_posture(
+                review_root, manifest, self._args(review_root)))
+        return review_root, manifest
+
+    def _reprobe(self, review_root, manifest, states):
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=self._artifact(states)):
+            return driver._establish_host_posture(
+                review_root, manifest, self._args(review_root))
+
+    def test_an_operational_capability_that_moved_records_it_without_refusing(self):
+        # The two are NAMED here rather than read off
+        # hosts.OPERATIONAL_CAPABILITIES: looping over the constant this test
+        # exists to pin makes emptying it vacuously green (measured -- the
+        # mutation passed until this loop was written out), and a test that
+        # cannot fail under the mutation it is aimed at pins nothing.
+        for capability in (hosts.MODEL_BINDING, hosts.USAGE_LEDGER):
+            with self.subTest(capability=capability):
+                review_root, manifest = self._established()
+                err = self._reprobe(review_root, manifest,
+                                    {capability: hosts.REFUTED})
+                self.assertIsNone(err, err)
+                # Disclosure stays current: the artifact carries the FRESH
+                # state and the fresh reason, so every surface that renders
+                # it says what the last probe actually measured.
+                stored = runio.host_evidence(review_root)
+                self.assertEqual(hosts.REFUTED, stored[capability]["state"])
+                self.assertIn(hosts.REFUTED, stored[capability]["detail"])
+
+    def test_a_security_capability_that_moved_still_refuses_both_directions(self):
+        # The half that must NOT move, named for the same reason as above --
+        # and this is the test that has to stay GREEN when
+        # OPERATIONAL_CAPABILITIES is emptied. Derived from the constant it
+        # would go green-for-free in the other direction too (emptying the
+        # constant would merely add two capabilities to the loop), so the
+        # pair of tests would stop bracketing the change at all.
+        for capability in (hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED,
+                           hosts.ARTIFACT_WRITE_GUARD):
+            for state in (hosts.REFUTED, hosts.UNKNOWN):
+                with self.subTest(capability=capability, state=state):
+                    review_root, manifest = self._established()
+                    err = self._reprobe(review_root, manifest, {capability: state})
+                    self.assertIsNotNone(err)
+                    self.assertIn(capability, err)
+
+    def test_the_refusal_names_only_the_capabilities_that_gate(self):
+        # A run that refuses for a real reason must not ALSO tell the operator
+        # its token counter moved: the remedy it names (--reset) is about the
+        # security capability alone.
+        review_root, manifest = self._established()
+        err = self._reprobe(review_root, manifest,
+                            {hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED,
+                             hosts.USAGE_LEDGER: hosts.REFUTED})
+        self.assertIsNotNone(err)
+        self.assertIn(hosts.TOOL_POLICY_ENFORCED, err)
+        self.assertNotIn(hosts.USAGE_LEDGER, err)
+
+    def test_the_constant_names_exactly_the_two_capabilities_8_1_excludes(self):
+        self.assertEqual((hosts.MODEL_BINDING, hosts.USAGE_LEDGER),
+                         hosts.OPERATIONAL_CAPABILITIES)
+        for capability in hosts.OPERATIONAL_CAPABILITIES:
+            self.assertIn(capability, hosts.CAPABILITIES)
+
+class TestAProbeReportsRatherThanRaisingOutOfDriverRun(unittest.TestCase):
+    """#1626 I2: `driver run` (not `loop`) does not wrap `_establish_host_posture`.
+
+    Every exception a probe lets escape therefore reaches the operator as a
+    traceback instead of a status. `_cli_advertises` calls a FAMILY-supplied
+    callable (`Runner.runner`) and caught only three exception types; a
+    launcher with a different signature raises TypeError and a launcher that
+    refuses raises RuntimeError, and neither was one of them.
+    """
+
+    def test_a_runner_whose_launcher_raises_leaves_driver_run_returning_a_status(self):
+        import scripts.runners.base as runners_base
+
+        class WrongSignature(runners_base.HostRunner):
+            """A family runner whose launcher does not accept the probe's
+            call shape -- the single likeliest first-draft defect in a
+            first-class-host PR."""
+
+            host = "claude"
+            CLI = "claude"
+            ENVELOPE_FLAGS = ("-p", "--output-format")
+
+            def runner(self, *_args, **_kwargs):
+                raise TypeError("runner() takes 2 positional arguments but 4 were given")
+
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        bin_dir = tempfile.mkdtemp(prefix="fake-bin-")
+        self.addCleanup(shutil.rmtree, bin_dir, ignore_errors=True)
+        cli = os.path.join(bin_dir, "claude")
+        with open(cli, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")     # found by shutil.which, never run
+        os.chmod(cli, 0o755)
+        args = driver.build_parser().parse_args(["run", review_root, "--no-tools"])
+        args.mode = "headless"                   # so the probe takes the launch path
+
+        # PREPENDED: `driver run` shells out to git for its clean-tree
+        # baseline, and a PATH holding only the stub would fail that for a
+        # reason this test is not about.
+        with mock.patch.dict(os.environ,
+                             {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}), \
+                mock.patch.object(runners_base, "runner_for",
+                                  return_value=WrongSignature()):
+            status = driver.run(args)            # must not raise
+
+        self.assertIsInstance(status, dict)
+        self.assertIn("status", status)
+        evidence = runio.host_evidence(review_root)
+        self.assertEqual(hosts.UNKNOWN, evidence[hosts.USAGE_LEDGER]["state"])
+        self.assertIn("TypeError", evidence[hosts.USAGE_LEDGER]["detail"])
 
 if __name__ == "__main__":
     unittest.main()
