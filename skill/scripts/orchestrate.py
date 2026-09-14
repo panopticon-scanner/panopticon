@@ -354,6 +354,18 @@ def loop(args):
         # `session_root`, which does not change across a run.
         guards = Guards(mode, session_root=session_root)
     status = _first_run(args, namespace)
+    # The reset is CONSUMED by that first driver.run (it cleared the run
+    # folder and re-minted the manifest there). Leaving args.reset set for
+    # the loop's later driver.run calls re-runs the wipe+re-mint on EVERY
+    # iteration: the second call deletes the run folder the runner just
+    # prepared (the kimi run's kimi-home/config.toml -- every child then
+    # failed "Model ... is not configured"; claude's host-settings.json is
+    # the same file in the same path), re-mints a fresh tag each time, and
+    # the ledger, runner and guards keep writing to the first mint's
+    # folder while the manifest points at the last. `driver loop --reset`
+    # could never have worked headless; single `driver run --reset` calls
+    # never noticed because they invoke driver.run exactly once.
+    args.reset = False
     if status.get("status") != "checkpoint":
         return _finish(status, args, guards, ledger, namespace, mode)
     if mode == "session":

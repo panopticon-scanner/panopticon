@@ -208,6 +208,33 @@ class TestHeadlessLoop(LoopCase):
         # the target's own settings file was never created (D3)
         self.assertFalse(os.path.exists(os.path.join(d, ".claude", "settings.local.json")))
 
+    def test_reset_is_consumed_by_the_first_run_not_re_applied_each_iteration(self):
+        # 2026-09-13, found by the kimi family PR's first full `loop --reset`:
+        # the loop hands the SAME args to every driver.run call, and with
+        # args.reset left set each iteration re-ran the wipe+re-mint -- the
+        # second call deleted the run folder the runner had just prepared
+        # (kimi-home/config.toml there; claude's host-settings.json is the
+        # same shape in the same place), and the manifest re-minted a new
+        # tag every call while the ledger/runner/guards kept writing to the
+        # first. One reset per loop, consumed by the first driver.run.
+        d, floor = self._repo()
+        runner = FakeRunner()
+        minted = []
+
+        def seed_and_record(review_root):
+            minted.append(driver.run_manifest.load_manifest(review_root)["run_id"])
+            return self._seed_coverage(review_root, floor)
+
+        args = self._args(d, "--reset")
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=seed_and_record), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "complete", status)
+        final = driver.run_manifest.load_manifest(d)["run_id"]
+        self.assertEqual(minted[0], final)
+
     def test_every_launch_carries_the_three_bindings(self):
         d, floor = self._repo()
         runner = FakeRunner()
