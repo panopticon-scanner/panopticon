@@ -78,10 +78,18 @@ class LaunchRefused(RuntimeError):
     """The suite's structural guard refused a real `kimi` launch.
 
     Raised only by the fake tests/conftest.py installs over `DEFAULT_RUNNER`
-    (and over host_probes.KIMI_DEFAULT_RUNNER). It is deliberately NOT an
-    OSError: every `except OSError` on a launch path would otherwise swallow
-    it and report a probe state, hiding the fact that the suite reached for
-    the real binary. Nothing in production raises it.
+    (and over host_probes.DEFAULT_RUNNER). It is deliberately NOT an OSError:
+    every `except OSError` on a launch path would otherwise swallow it and
+    report a probe state, hiding the fact that the suite reached for the real
+    binary. Nothing in production raises it.
+
+    REBASE STEP (N1). #1619 ships the same class as
+    `scripts.codex_host.LaunchRefused`, and its guard test asserts one class
+    for the whole suite (`assertRaises(codex_host.LaunchRefused)` through
+    every seam). When that lands, this name becomes an alias of it -- one
+    class, two spellings -- or both move to `runners/base.py`; keep the
+    subclass-of-RuntimeError contract either way, since that is what keeps
+    `except OSError` on the launch paths from swallowing it.
     """
 
 

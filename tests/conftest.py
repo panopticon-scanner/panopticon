@@ -132,10 +132,14 @@ def _no_live_scanner_containers(request, monkeypatch):
 # for a refusal that names the argv it stopped.
 #
 # One fixture per family, no shared state: the codex and gemini family PRs add
-# `_no_live_codex_launches` / `_no_live_gemini_launches` beside this one,
-# patching their own module attributes. A test that needs a fake launcher
-# injects it exactly as before -- an explicitly passed `runner=` never reaches
-# these defaults.
+# `_no_live_codex_launches` / `_no_live_gemini_launches` beside this one. Each
+# seam MODULE carries exactly one `DEFAULT_RUNNER` (N1), which is the shape
+# #1619's AST-walking launch guard asserts, so the later families patch the
+# same attribute on their own modules -- and on the rebase this fixture folds
+# into that guard's shared `LAUNCH_SEAMS` tuple, which must then name
+# `host_probes` and `runners/kimi` too (its four-seam pin becomes six). A test
+# that needs a fake launcher injects it exactly as before -- an explicitly
+# passed `runner=` never reaches these defaults.
 import scripts.host_probes as _host_probes  # noqa: E402
 import scripts.runners.kimi as _kimi_runner  # noqa: E402
 
@@ -150,4 +154,4 @@ def _refuse_kimi_launch(cmd, *args, **kwargs):
 @pytest.fixture(autouse=True)
 def _no_live_kimi_launches(monkeypatch):
     monkeypatch.setattr(_kimi_runner, "DEFAULT_RUNNER", _refuse_kimi_launch)
-    monkeypatch.setattr(_host_probes, "KIMI_DEFAULT_RUNNER", _refuse_kimi_launch)
+    monkeypatch.setattr(_host_probes, "DEFAULT_RUNNER", _refuse_kimi_launch)

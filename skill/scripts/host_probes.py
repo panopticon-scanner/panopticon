@@ -532,15 +532,21 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
 # as the CLI invokes it), the model-alias binding, and the wire-file usage
 # channel.
 
-# I3 (gate review): every spawn of the REAL `kimi` binary in this module
-# resolves its launcher from this module attribute, inside the call, so
-# tests/conftest.py's autouse `_no_live_kimi_launches` can swap it for a
-# refusal. It is named per family rather than `DEFAULT_RUNNER` because one
-# module holds every family's probes and each needs its own patch target.
-# The guard-hook round-trip below is NOT routed through it: that subprocess
-# is `sys.executable`, the hook's own protocol, and refusing it would delete
-# the proof rather than protect it.
-KIMI_DEFAULT_RUNNER = subprocess.run
+# I3 (gate review): every spawn of a REAL host binary in this module resolves
+# its launcher from this ONE module attribute, inside the call, so
+# tests/conftest.py's autouse guard can swap it for a refusal.
+#
+# N1 (re-review): module-scoped, not family-scoped. #1619's launch guard finds
+# seams by AST walk and then asserts `hasattr(module, "DEFAULT_RUNNER")` and
+# refuses through it, so the name is per MODULE -- and this module holds every
+# family's probe spawns, which is still one module. A `DEFAULT_RUNNER`
+# would fail that guard twice on the rebase; the later families' probe spawns
+# read this same attribute rather than adding siblings.
+#
+# The guard-hook round-trip below is NOT routed through it: that subprocess is
+# `sys.executable`, the hook's own protocol, and refusing it would delete the
+# proof rather than protect it.
+DEFAULT_RUNNER = subprocess.run
 
 KIMI_SHELL_SURFACE = "kimi-shell-surface"
 KIMI_READ_GUARD = "kimi-read-guard-armed"
@@ -561,7 +567,7 @@ KIMI_USAGE_WIRE = "kimi-usage-wire"
 def _kimi_version(runner=None):
     """The installed CLI's major.minor ("0.42"), or None."""
     import scripts.runners.kimi as kimi_runner
-    runner = KIMI_DEFAULT_RUNNER if runner is None else runner
+    runner = DEFAULT_RUNNER if runner is None else runner
     try:
         proc = runner(["kimi", "--version"], capture_output=True, text=True, timeout=15)
     except kimi_runner.LaunchRefused:  # I3: the suite's guard propagates --
@@ -727,7 +733,7 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
     own (M1: a literal "(8 rows)" beside this function's own answer drifts the
     moment a row is added). Everything happens inside the caller's tempdir."""
     import scripts.kimi_guard_hook as kimi_guard_hook
-    # Plain `subprocess.run`, NOT KIMI_DEFAULT_RUNNER: what this spawns is
+    # Plain `subprocess.run`, NOT DEFAULT_RUNNER: what this spawns is
     # `sys.executable <the hook> <mode> <data>`, the hook protocol itself.
     runner = subprocess.run if runner is None else runner
     guard_path = guard_path or os.path.abspath(kimi_guard_hook.__file__)
@@ -837,7 +843,7 @@ def _kimi_hooks_are_armed(sandbox):
 def _kimi_home_arms_and_validates(runner=None):
     """(ok, detail): the generated per-run config arms both guards AND
     `kimi doctor` accepts it. `ok` None means nothing could be measured."""
-    runner = KIMI_DEFAULT_RUNNER if runner is None else runner
+    runner = DEFAULT_RUNNER if runner is None else runner
     try:
         with tempfile.TemporaryDirectory() as sandbox:
             ok, detail = _kimi_hooks_are_armed(sandbox)
@@ -867,7 +873,7 @@ def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
 
     `runner` drives the guard subprocess (plain python; tests use the real
     one). `doctor_runner` drives `kimi doctor` and is resolved separately,
-    from KIMI_DEFAULT_RUNNER, so the suite never launches the real host
+    from DEFAULT_RUNNER, so the suite never launches the real host
     binary (FAMILY-PR-GUARDRAILS, Suite rules; I3): the two spawns are
     different binaries and must not share one default.
     """

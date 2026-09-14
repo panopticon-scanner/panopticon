@@ -1709,7 +1709,7 @@ class TestKimiLaunchGuard(unittest.TestCase):
     STRUCTURAL rather than a property of today's call sites.
 
     Every kimi spawn resolves its runner from a module attribute
-    (`host_probes.KIMI_DEFAULT_RUNNER`, `runners.kimi.DEFAULT_RUNNER`), which
+    (one `DEFAULT_RUNNER` per seam module, N1), which
     tests/conftest.py's autouse `_no_live_kimi_launches` swaps for a refusal.
     The probes must let that refusal PROPAGATE: mapping it to UNKNOWN would
     turn "the suite tried to launch kimi" into a quiet probe state.
@@ -1729,6 +1729,18 @@ class TestKimiLaunchGuard(unittest.TestCase):
                 host_probes.run_probes("kimi", d, session_root=d,
                                        registration_dir=registration)
         self.assertIn("kimi", str(caught.exception))
+
+    def test_every_kimi_spawn_seam_carries_one_module_level_DEFAULT_RUNNER(self):
+        # N1: #1619's launch guard FINDS seams by AST walk and then asserts
+        # `hasattr(module, "DEFAULT_RUNNER")` on each -- one attribute per
+        # MODULE, not one per family. A module-scoped name is what survives
+        # the rebase; `KIMI_DEFAULT_RUNNER` would fail that test twice.
+        import scripts.runners.kimi as kimi_runner
+        for module in (host_probes, kimi_runner):
+            self.assertTrue(hasattr(module, "DEFAULT_RUNNER"),
+                            "%s has no module-level DEFAULT_RUNNER" % module.__name__)
+            with self.assertRaises(kimi_runner.LaunchRefused):
+                module.DEFAULT_RUNNER(["kimi", "--version"])
 
     def test_the_runner_resolves_its_launcher_from_the_module_attribute(self):
         import scripts.runners.kimi as kimi_runner
