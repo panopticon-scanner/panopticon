@@ -158,7 +158,19 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("read-guard-armed", caps)
         self.assertNotIn("`read_scope_confined` is `unknown` on every host today", caps)
         self.assertNotIn("fails the deletion on `read_scope_confined` everywhere", caps)
-        self.assertIn("on gemini", caps)
+        # #1621: this used to pin "today it fails the deletion **on gemini**
+        # alone". The section now says the opposite -- the bar is met -- and
+        # the old `assertIn("on gemini", caps)` went on passing on the
+        # past-tense clause that replaced it, guarding nothing. Pin the
+        # paragraph the retirement actually added, and pin the one thing in it
+        # that is easy to overclaim: the stale-manifest refusal is `driver
+        # loop`'s, and `driver run` still proceeds.
+        # (`caps` has already had its `**` stripped by the replace above.)
+        retired = _section(caps, "`gemini` is registered but not driver-selectable",
+                           "\n\n")
+        self.assertIn("`--host generic`", retired)
+        self.assertIn("driver loop", retired)
+        self.assertIn("driver run", retired)
 
     def test_documents_the_read_guard_on_scout_and_setup_scan_checkpoints(self):
         # I4: coverage._scout_entry and setup._setup_scan_entry also emit
