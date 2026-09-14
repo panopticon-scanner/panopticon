@@ -372,7 +372,7 @@ def _check_host_shells(host, runner, repo_root=None):
         fresh = host_probes.run_probes(resolved_host, repo_root)
     except codex_host.LaunchRefused:
         # N-M3: the suite's no-live-launch guard, re-raised exactly as
-        # host_probes._codex_measure re-raises it. Readiness DOES reach a live
+        # probes.codex._codex_measure re-raises it. Readiness DOES reach a live
         # Codex probe (it is why tests/test_setup_flow.py has to isolate
         # them), and swallowing the refusal into a benign row would put back
         # the hole I-5 exists to close: a test that reached a real `codex` and

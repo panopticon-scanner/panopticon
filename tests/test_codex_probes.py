@@ -6,6 +6,7 @@ import pytest
 
 from scripts import dispatch, host_probes, hosts
 import scripts.probes.claude as claude_probes
+import scripts.probes.codex as codex_probes
 import scripts.probes.common as probes_common
 
 
@@ -23,8 +24,8 @@ def surfaces():
 
 
 @pytest.mark.parametrize("probe,probe_id", [
-    (host_probes.probe_codex_tool_policy, host_probes.CODEX_EFFECTIVE_TOOLS),
-    (host_probes.probe_codex_read_scope, host_probes.CODEX_READ_SCOPE),
+    (codex_probes.probe_codex_tool_policy, codex_probes.CODEX_EFFECTIVE_TOOLS),
+    (codex_probes.probe_codex_read_scope, codex_probes.CODEX_READ_SCOPE),
 ])
 def test_every_claim_requires_measured_headless_surface(probe, probe_id, tmp_path):
     measure = mock.Mock(return_value=surfaces())
@@ -49,7 +50,7 @@ def test_every_claim_requires_measured_headless_surface(probe, probe_id, tmp_pat
 def test_native_tool_policy_mutation_refutes_both_security_claims(change, tmp_path):
     measured = surfaces()
     change(measured[-1][1])
-    for probe in (host_probes.probe_codex_tool_policy, host_probes.probe_codex_read_scope):
+    for probe in (codex_probes.probe_codex_tool_policy, codex_probes.probe_codex_read_scope):
         state, _by, detail = probe("codex", settings_path=str(tmp_path / "settings.json"),
                                   measure=lambda: measured)
         assert state == hosts.REFUTED
@@ -59,14 +60,14 @@ def test_native_tool_policy_mutation_refutes_both_security_claims(change, tmp_pa
 def test_widened_scope_mutation_refutes_actual_read_boundary(tmp_path):
     measured = surfaces()
     measured[0][1]["reads"][1] = {"isError": False, "content": [{"type": "text", "text": "outside read allowed"}]}
-    state, by, detail = host_probes.probe_codex_read_scope(
+    state, by, detail = codex_probes.probe_codex_read_scope(
         "codex", settings_path=str(tmp_path / "settings.json"), measure=lambda: measured)
     assert state == hosts.REFUTED
-    assert by == host_probes.CODEX_READ_SCOPE
+    assert by == codex_probes.CODEX_READ_SCOPE
     assert "deny failed" in detail
 
 
-@pytest.mark.parametrize("probe", [host_probes.probe_codex_tool_policy, host_probes.probe_codex_read_scope])
+@pytest.mark.parametrize("probe", [codex_probes.probe_codex_tool_policy, codex_probes.probe_codex_read_scope])
 def test_unavailable_runtime_is_unknown_with_reason(probe, tmp_path):
     state, _by, detail = probe("codex", settings_path=str(tmp_path / "settings.json"),
                                measure=mock.Mock(side_effect=FileNotFoundError("codex not installed")))
@@ -77,7 +78,7 @@ def test_unavailable_runtime_is_unknown_with_reason(probe, tmp_path):
 
 def test_missing_shell_is_refuted_without_invoking_runtime(tmp_path):
     with mock.patch("scripts.codex_host.inspect_surface", side_effect=AssertionError("no launch")) as inspector:
-        state, _by, detail = host_probes.probe_codex_tool_policy(
+        state, _by, detail = codex_probes.probe_codex_tool_policy(
             "codex", registration_dir=str(tmp_path), settings_path=str(tmp_path / "settings.json"))
     assert state == hosts.REFUTED
     assert "reviewer shell is missing" in detail
@@ -105,13 +106,13 @@ def test_probe_fixture_uses_real_emitter_but_injects_all_runtime_work(tmp_path):
         seen.append(entry["agent"])
         return surfaces()[0][1]
 
-    measured = host_probes._codex_surfaces(str(registered), inspector=inspect)
+    measured = codex_probes._codex_surfaces(str(registered), inspector=inspect)
     assert len(measured) == len(probes_common.DRIVER_ROLES) + 1
     assert len(set(seen)) == len(probes_common.DRIVER_ROLES) + 1
 
 
 def test_registry_dispatch_shares_measurement_only_within_one_invocation(tmp_path):
-    with mock.patch.object(host_probes, "_codex_surfaces", side_effect=lambda _registration: surfaces()) as measure:
+    with mock.patch.object(codex_probes, "_codex_surfaces", side_effect=lambda _registration: surfaces()) as measure:
         for _ in range(2):
             artifact = host_probes.run_probes("codex", str(tmp_path), registration_dir=str(tmp_path),
                                               settings_path=str(tmp_path / "settings.json"))
@@ -125,7 +126,7 @@ def test_the_probe_never_swallows_the_suites_launch_guard(tmp_path):
     # a live `codex` and failed would still read as a clean "unavailable".
     from scripts import codex_host
 
-    for probe in (host_probes.probe_codex_tool_policy, host_probes.probe_codex_read_scope):
+    for probe in (codex_probes.probe_codex_tool_policy, codex_probes.probe_codex_read_scope):
         with pytest.raises(codex_host.LaunchRefused):
             probe("codex", settings_path=str(tmp_path / "settings.json"),
                   measure=mock.Mock(side_effect=codex_host.LaunchRefused("refused")))
@@ -151,7 +152,7 @@ def test_the_bundled_catalog_is_dumped_once_per_probe_run(tmp_path):
         kwargs["catalog"]()          # what command() does on the real path
         return surfaces()[0][1]
 
-    measured = host_probes._codex_surfaces(str(registered), inspector=inspect, runner=runner)
+    measured = codex_probes._codex_surfaces(str(registered), inspector=inspect, runner=runner)
     assert len(measured) == len(probes_common.DRIVER_ROLES) + 1
     assert calls == [["codex", "debug", "models", "--bundled"]]
 
@@ -167,7 +168,7 @@ def test_the_role_inspections_run_concurrently(tmp_path):
         barrier.wait()               # sequential inspection cannot get here
         return surfaces()[0][1]
 
-    measured = host_probes._codex_surfaces(str(registered), inspector=inspect,
+    measured = codex_probes._codex_surfaces(str(registered), inspector=inspect,
                                            runner=mock.Mock())
     assert len(measured) == len(probes_common.DRIVER_ROLES) + 1
 

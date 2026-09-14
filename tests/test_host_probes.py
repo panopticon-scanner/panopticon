@@ -10,6 +10,7 @@ from unittest import mock
 
 from scripts import dispatch, host_probes, hosts, model_resolver, write_guard_hook
 import scripts.probes.claude as claude_probes
+import scripts.probes.codex as codex_probes
 import scripts.probes.common as probes_common
 
 
@@ -399,8 +400,8 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                                  claude_probes.READ_GUARD_ARMED,
                                  # #1344 codex family PR (#1619): the two
                                  # probes the codex row maps its claims to.
-                                 host_probes.CODEX_EFFECTIVE_TOOLS,
-                                 host_probes.CODEX_READ_SCOPE,
+                                 codex_probes.CODEX_EFFECTIVE_TOOLS,
+                                 codex_probes.CODEX_READ_SCOPE,
                                  # #1344 kimi family PR (#1620): the five
                                  # probes the kimi row maps its five claims to.
                                  host_probes.KIMI_SHELL_SURFACE,

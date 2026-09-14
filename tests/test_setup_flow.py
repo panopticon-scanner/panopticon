@@ -11,8 +11,9 @@ import scripts.grouping_engine as grouping_engine
 import scripts.host_disclosure as host_disclosure
 import scripts.host_probes as host_probes
 import scripts.hosts as hosts
-import scripts.setup_flow as setup_flow
+import scripts.probes.codex as codex_probes
 import scripts.probes.common as probes_common
+import scripts.setup_flow as setup_flow
 import shutil
 
 
@@ -23,7 +24,7 @@ def _isolate_codex_probes(test_case):
         ("probe_codex_read_scope", "codex-read-scope"),
     ):
         patcher = mock.patch.object(
-            host_probes, name,
+            codex_probes, name,
             return_value=(hosts.UNKNOWN, probe_id, "isolated test fixture"))
         patcher.start()
         test_case.addCleanup(patcher.stop)

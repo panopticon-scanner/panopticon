@@ -171,7 +171,7 @@ def _no_live_scanner_containers(request, monkeypatch):
 # The guardrails say the suite must never start a host binary, and until now
 # that was per-test discipline only: the launch seams defaulted to
 # subprocess.run bound as a DEFAULT ARGUMENT, unreachable by a patch, and
-# host_probes._codex_measure mapped any exception to UNKNOWN -- so a test that
+# probes.codex._codex_measure mapped any exception to UNKNOWN -- so a test that
 # did reach a live CLI and failed would still have passed. Discipline then
 # failed twice more: `setup_flow.readiness` probes `codex --version` through
 # the same unreachable default (N-M3), and `runners/claude.py` binds its
