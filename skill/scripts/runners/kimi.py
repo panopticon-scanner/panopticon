@@ -238,6 +238,13 @@ def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
     derived from the reviewed tree.
     """
     real_home = real_home or os.environ.get("KIMI_CODE_HOME") or os.path.expanduser("~/.kimi-code")
+    # I2: lstat BEFORE the chmod. `makedirs(exist_ok=True)` is happy with a
+    # symlink to a directory and `chmod` follows it, so a link planted at this
+    # name (on a resume, where the path is re-derived rather than freshly
+    # minted) would relax someone else's directory to 700 and then take the
+    # merged config -- api_key included -- through the link.
+    if os.path.islink(home):
+        raise OSError("refusing to build the kimi home through a symlink: %s" % home)
     os.makedirs(home, exist_ok=True)
     os.chmod(home, 0o700)
     for item in _CREDENTIAL_ITEMS:
@@ -254,7 +261,18 @@ def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
 
 
 def _write_text(path, text):
-    """Stage and rename, 0o600, refusing to write THROUGH a planted symlink."""
+    """Stage at `<path>.tmp` and rename, mode 0o600, never writing THROUGH a
+    symlink planted at the staging name (I2).
+
+    A private mirror of `write_guard_hook._atomic_write_json`'s flags rather
+    than a call into it: runners/claude.py routes its settings file through
+    that helper because it ALREADY imports the hook for `_hook_entry` ("one
+    hardened writer rather than a second open()/replace() pair here to keep in
+    step with it"), and this module imports no part of it -- kimi's guard is
+    kimi_guard_hook.py. The rule the two share is the flags: O_EXCL refuses a
+    stale leftover, O_NOFOLLOW refuses the link, and 0o600 is the mode the
+    merged config must land in whatever the umask says.
+    """
     tmp = path + ".tmp"
     if os.path.islink(tmp) or os.path.exists(tmp):
         os.unlink(tmp)

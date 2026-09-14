@@ -469,3 +469,56 @@ class TestHomeLocation(unittest.TestCase):
             self.addCleanup(r.teardown, "complete")
             self.assertNotEqual(os.path.realpath(hostile), os.path.realpath(r.kimi_home))
             self.assertFalse(os.path.isfile(os.path.join(hostile, "config.toml")))
+
+
+class TestHardenedWrites(unittest.TestCase):
+    """I2: `<run_dir>` is inside the scanned tree and the home is a path a
+    resume re-derives, so every file this runner writes goes out through a
+    staging writer that refuses to follow a planted symlink -- the same rule
+    runners/claude.py states for `host-settings.json`."""
+
+    def test_a_symlinked_home_is_refused_rather_than_chmodded_through(self):
+        with tempfile.TemporaryDirectory() as d:
+            elsewhere = os.path.join(d, "elsewhere")
+            os.makedirs(elsewhere)
+            os.chmod(elsewhere, 0o755)
+            home = os.path.join(d, "kimi-home")
+            os.symlink(elsewhere, home)
+            with self.assertRaises(OSError) as caught:
+                kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+                                            os.path.join(d, "a.json"),
+                                            real_home=_fixture_home(d))
+            self.assertIn(home, str(caught.exception))
+            self.assertEqual(0o755, os.stat(elsewhere).st_mode & 0o777)
+            self.assertFalse(os.path.exists(os.path.join(elsewhere, "config.toml")))
+
+    def test_a_symlink_planted_at_the_staging_name_is_not_written_through(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "kimi-home")
+            os.makedirs(home)
+            victim = os.path.join(d, "victim")
+            with open(victim, "w", encoding="utf-8") as fh:
+                fh.write("untouched")
+            os.symlink(victim, os.path.join(home, "config.toml.tmp"))
+            kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+                                        os.path.join(d, "a.json"),
+                                        real_home=_fixture_home(d))
+            with open(victim, encoding="utf-8") as fh:
+                self.assertEqual("untouched", fh.read())
+            self.assertEqual(0o600, os.stat(os.path.join(home, "config.toml")).st_mode & 0o777)
+
+    def test_the_pointer_file_is_written_through_the_same_writer(self):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = os.path.join(d, "run")
+            os.makedirs(run_dir)
+            victim = os.path.join(d, "victim")
+            with open(victim, "w", encoding="utf-8") as fh:
+                fh.write("untouched")
+            os.symlink(victim, os.path.join(run_dir, "kimi-home-path.tmp"))
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(run_dir, review_root=d)
+            self.addCleanup(r.teardown, "complete")
+            with open(victim, encoding="utf-8") as fh:
+                self.assertEqual("untouched", fh.read())
+            self.assertEqual(r.kimi_home, kimi_runner.read_home_pointer(run_dir))
