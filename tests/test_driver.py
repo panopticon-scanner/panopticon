@@ -4,6 +4,7 @@ skill/scripts/phases/ (WS-0 D5). This file carried a TECH DEBT note about being 
 unsplittable monolith from 5.0 until then.
 """
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -1450,6 +1451,73 @@ class TestHostChoicesComeFromTheRegistry(unittest.TestCase):
         for name in ("kimi", "codex"):
             with self.subTest(host=name):
                 self.assertNotIn(name, hosts.driver_hosts())
+
+
+class TestARegisteredButUnselectableHostGetsARemedy(unittest.TestCase):
+    """#1621: `choices` alone answers a real host name with a list.
+
+    Three hosts are now registered-but-unselectable -- kimi (#1620) and codex
+    (#1619) have never been selectable, and gemini stopped being so when its
+    family PR failed the gate. An operator who spells one of them has named a
+    host this repo genuinely knows and there IS something to do about it, so
+    the parser says what: `--host generic`, the deprecated-but-present path
+    for any host without a family runner. A name the registry has never heard
+    of is a typo, and argparse's own invalid-choice list is the right answer
+    for it -- so `choices` must still be the thing that rejects it.
+    """
+
+    def _stderr_of(self, argv):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as caught, \
+             contextlib.redirect_stderr(err):
+            driver.parse_cli(argv)
+        return caught.exception.code, err.getvalue()
+
+    def test_every_unselectable_registered_host_names_the_remedy(self):
+        # Read off the registry, not a literal list: a family PR that flips
+        # its own row simply drops out of this set.
+        unselectable = [h for h in hosts.known_hosts()
+                        if h not in hosts.driver_hosts()]
+        self.assertIn("gemini", unselectable)
+        self.assertIn("kimi", unselectable)
+        for host in unselectable:
+            for verb in ("run", "loop", "setup"):
+                with self.subTest(host=host, verb=verb):
+                    code, err = self._stderr_of([verb, ".", "--host", host])
+                    self.assertNotEqual(0, code)
+                    self.assertIn(
+                        "--host %s is registered but not driver-selectable "
+                        "(it proves no enforcement capability); use --host "
+                        "generic (session mode, unenforced, ack-gated)" % host,
+                        err)
+
+    def test_an_unknown_host_still_gets_the_ordinary_invalid_choice_error(self):
+        # The `type=` callable must let an unknown name through so `choices`
+        # rejects it: swallowing it here would trade a list of the real
+        # answers for a remedy that does not apply.
+        code, err = self._stderr_of(["run", ".", "--host", "nosuchhost"])
+        self.assertNotEqual(0, code)
+        self.assertIn("invalid choice", err)
+        self.assertNotIn("registered but not driver-selectable", err)
+
+    def test_a_selectable_host_still_parses(self):
+        for host in hosts.driver_hosts():
+            for verb in ("run", "loop", "setup"):
+                with self.subTest(host=host, verb=verb):
+                    self.assertEqual(host,
+                                     driver.parse_cli([verb, ".", "--host", host]).host)
+
+    def test_the_helper_decides_from_the_registry_not_a_host_name(self):
+        # The remedy must follow the table. Patch a fictional row in as
+        # selectable and the helper stops objecting to it; nothing about the
+        # decision is spelled against a host's name.
+        row = dataclasses.replace(hosts.spec("gemini"), name="ghost")
+        with mock.patch.dict(hosts.HOSTS, {"ghost": row}):
+            self._stderr_of(["run", ".", "--host", "ghost"])
+        with mock.patch.dict(hosts.HOSTS,
+                             {"ghost": dataclasses.replace(row, driver_selectable=True)}):
+            self.assertEqual("ghost",
+                             driver.parse_cli(["run", ".", "--host", "ghost"]).host)
 
 
 if __name__ == "__main__":

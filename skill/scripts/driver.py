@@ -148,6 +148,31 @@ def hosts_runner_modes():
     return ("headless", "session")
 
 
+def _host_choice(text):
+    """argparse `type` for every `--host`: a remedy instead of a word list.
+
+    argparse runs `type` BEFORE `choices`, so this sees the raw value first.
+    Three rows are registered-but-unselectable -- kimi (#1620), codex (#1619)
+    and, since its family PR failed the gate, gemini (#1621) -- and an
+    operator who spells one has named a host this repo genuinely knows, with
+    something to do about it. `choices` alone answers that with the list of
+    hosts that are NOT what was asked for.
+
+    A name the registry has never heard of is a typo, and argparse's own
+    invalid-choice list is the right answer for it, so this returns the value
+    untouched and lets `choices` do the rejecting. The decision reads
+    `known_hosts()`/`driver_hosts()` and never a host-name literal; `generic`
+    appears only inside the remedy PROSE, which is naming a command rather
+    than testing a name.
+    """
+    if text in hosts.known_hosts() and text not in hosts.driver_hosts():
+        raise argparse.ArgumentTypeError(
+            "--host %s is registered but not driver-selectable (it proves no "
+            "enforcement capability); use --host generic (session mode, "
+            "unenforced, ack-gated)" % text)
+    return text
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="driver")
     sub = parser.add_subparsers(dest="verb", required=True)
@@ -158,7 +183,8 @@ def build_parser():
     for verb in ("run", "loop"):
         p = sub.add_parser(verb)
         p.add_argument("target", nargs="?", default=".")
-        p.add_argument("--host", default=None, choices=list(hosts.driver_hosts()))
+        p.add_argument("--host", default=None, type=_host_choice,
+                       choices=list(hosts.driver_hosts()))
         p.add_argument("--security", default=None, choices=["standard", "redteam"])
         p.add_argument("--base", default=None)
         p.add_argument("--pr", type=int, default=None)
@@ -226,7 +252,8 @@ def build_parser():
                            help="run `driver setup`'s flow on rails instead of a review")
     sp = sub.add_parser("setup")
     sp.add_argument("target", nargs="?", default=".")
-    sp.add_argument("--host", default=None, choices=list(hosts.driver_hosts()))
+    sp.add_argument("--host", default=None, type=_host_choice,
+                    choices=list(hosts.driver_hosts()))
     sp.add_argument("--reset", action="store_true")
     # 5.2 size policy (spec §5.3): files per dispatch unit and the leaf
     # ceiling. Unset = .panopticon/config.json (max_per_group / max_groups),
