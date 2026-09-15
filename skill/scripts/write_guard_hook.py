@@ -27,6 +27,7 @@ tracked as #1344.
 The matcher and ``_WRITE_TOOLS`` are derived from one source below so they can
 never silently drift apart from each other.
 """
+import glob
 import json
 import os
 import shlex
@@ -48,6 +49,16 @@ ALLOWLIST_VERSION = 2
 # ``^[A-Za-z0-9._:-]+$``, so the brackets cannot collide with a real id, and
 # `adjudicate` refuses this key explicitly rather than resting on that.
 UNBOUND_ENTRY = "<unbound>"
+
+# --- BINDING: a VERBATIM COPY of read_guard_hook's, pinned AST-identical by
+# tests/test_write_guard_hook.py::TestBindingHelpersAreACopy. It is copied and
+# not imported for the reason every other shared piece in these hooks is (the
+# settings plumbing, R-P5-5; `hook_command`, #1633): a guard hook is invoked by
+# absolute path as its own process with no package on sys.path, so there is no
+# module for the two of them to share. Edit read_guard_hook's copy and this one
+# together; the parity test fails loudly if you do not.
+MARKER_PREFIX = "panopticon-entry: "
+ENV_ENTRY_ID = "PANOPTICON_ENTRY_ID"
 
 
 def allowlist_from_plan(plan):
@@ -164,6 +175,76 @@ def _deny_response(reason):
     })
 
 
+def marker_of(text):
+    """The entry id `text`'s FIRST line names, or None. Only the first line:
+    a marker anywhere else is content, not a binding."""
+    if not isinstance(text, str):
+        return None
+    first = text.split("\n", 1)[0].rstrip("\r")
+    if not first.startswith(MARKER_PREFIX):
+        return None
+    return first[len(MARKER_PREFIX):].strip() or None
+
+def subagent_transcript(transcript_path, agent_id):
+    """The calling subagent's own transcript, or None.
+
+    The payload's `transcript_path` is the PARENT session's file (spike,
+    design spec 3); the subagent's lives beside it, keyed by `agent_id`, in
+    one of two layouts. `agent_id` is used as a path segment, so anything
+    path-shaped is refused outright."""
+    if not isinstance(transcript_path, str) or not isinstance(agent_id, str):
+        return None
+    if not agent_id or "/" in agent_id or os.sep in agent_id or agent_id in (".", ".."):
+        return None
+    stem = transcript_path[:-len(".jsonl")] if transcript_path.endswith(".jsonl") else transcript_path
+    name = "agent-%s.jsonl" % agent_id
+    direct = os.path.join(stem, "subagents", name)
+    if os.path.isfile(direct):
+        return direct
+    found = sorted(glob.glob(os.path.join(glob.escape(stem), "subagents", "workflows", "*", name)))
+    return found[0] if found else None
+
+def _first_text(record):
+    msg = record.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for part in content:
+            if (isinstance(part, dict) and part.get("type") == "text"
+                    and isinstance(part.get("text"), str)):
+                return part["text"]
+    return ""
+
+def bind(agent_id, transcript_path):
+    """The entry id this subagent was dispatched for, or None (unbound).
+
+    Reads the transcript only up to its FIRST `type: user` record -- the
+    dispatch prompt -- and requires that record's `agentId` to be the caller.
+    A later user turn is a tool result and can never re-bind (design 4.4)."""
+    path = subagent_transcript(transcript_path, agent_id)
+    if path is None:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict) or record.get("type") != "user":
+                    continue
+                if record.get("agentId") != agent_id:
+                    return None
+                return marker_of(_first_text(record))
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+# --- end of the read_guard_hook copy ---
+
+
 def _parse_allowlist(loaded):
     """(mapping, error) for a parsed allowlist document. Version 2 only.
 
@@ -222,7 +303,26 @@ def _payload_path(tool_name, tool_input):
 def adjudicate(payload, allowlist_path, env=None):
     """(allow, reason) for one hook payload against the allowlist at
     `allowlist_path`. `env` defaults to os.environ; the probe and the tests
-    pass their own."""
+    pass their own.
+
+    #1571. Binding order is the read guard's (spec 5.3), for the same reasons
+    and with the same three outcomes:
+
+      * the environment's ENV_ENTRY_ID first -- a headless `claude -p` child IS
+        the reviewer (agent_type, no agent_id), so a transcript-only rule would
+        fail OPEN for every headless entry;
+      * else the subagent transcript's marker -- session mode, where the hook
+        is registered session-wide and the payload names the AGENT, never the
+        entry;
+      * an agent that could not be bound DENIES. It is a reviewer whose cell we
+        cannot name, and naming the cell is the whole control.
+
+    A BOUND agent is adjudicated against `entries[<its id>]` alone: its own
+    declared out_file, never the batch's union. Nothing bound (no id, no
+    agent_id, no agent_type) is the ORCHESTRATOR -- it runs the driver and
+    writes the run's own artifacts -- and keeps the union, exactly as the read
+    guard never confines it.
+    """
     if not isinstance(payload, dict):
         return True, ""
     tool_name = payload.get("tool_name", "")
@@ -232,7 +332,43 @@ def adjudicate(payload, allowlist_path, env=None):
     allowlist, error = _load_allowlist(allowlist_path)
     if allowlist is None:
         return False, error
-    return decide(tool_name, file_path, union_paths(allowlist))
+    env = os.environ if env is None else env
+    env_id = env.get(ENV_ENTRY_ID)
+    agent_id = payload.get("agent_id")
+    agent_type = payload.get("agent_type")
+    if isinstance(env_id, str) and env_id:
+        entry_id = env_id
+    elif agent_id:
+        entry_id = bind(agent_id, payload.get("transcript_path"))
+        if entry_id is None:
+            return False, (
+                "%s to %s is denied: this subagent is not bound to a dispatch "
+                "entry (its dispatch prompt did not begin with '%s<entry id>'), "
+                "and a reviewer may write only its own declared out_file"
+                % (tool_name, file_path, MARKER_PREFIX))
+    elif agent_type:
+        return False, ("%s is denied: this session runs as agent_type %r but "
+                       "nothing bound it to a panopticon entry (no %s in the "
+                       "environment, no subagent transcript)"
+                       % (tool_name, agent_type, ENV_ENTRY_ID))
+    else:
+        return decide(tool_name, file_path, union_paths(allowlist))
+    # UNBOUND_ENTRY holds the grants of plan entries that declared no id. They
+    # belong to the orchestrator; no bound agent may select that bucket, and
+    # refusing it here does not rest on the id grammar making it unreachable.
+    granted = None if entry_id == UNBOUND_ENTRY else allowlist.get(entry_id)
+    if granted is None:
+        return False, ("%s is denied: this agent is bound to entry %r, which the "
+                       "armed write allowlist does not name"
+                       % (tool_name, entry_id))
+    target, reason = _resolve_target(file_path)
+    if target is None:
+        return False, "%s (bound to entry %r)" % (reason, entry_id)
+    if target in set(granted):
+        return True, ""
+    return False, ("write to %s is denied: entry %r may write only its own "
+                   "declared out_file; a peer entry's artifact is not writable"
+                   % (file_path, entry_id))
 
 
 def _resolve_allowlist_path(argv_path=None):

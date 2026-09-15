@@ -1020,3 +1020,177 @@ class TestAllowlistFormatV2(unittest.TestCase):
                 {"tool_name": "Write", "tool_input": {"file_path": target}}, al, env={})
             self.assertFalse(allow)
             self.assertIn("99", reason)
+
+
+def _write_subagent_transcript(parent_transcript, agent_id, first_text):
+    """Lay out a subagent transcript where Claude Code writes it -- the same
+    fixture shape tests/test_read_guard_hook.py uses, because the write guard
+    now binds through the same records."""
+    stem = parent_transcript[:-len(".jsonl")]
+    d = os.path.join(stem, "subagents")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "agent-%s.jsonl" % agent_id)
+    records = [
+        {"type": "queue-operation", "operation": "enqueue"},
+        {"type": "user", "isSidechain": True, "agentId": agent_id,
+         "message": {"role": "user", "content": [{"type": "text", "text": first_text}]}},
+    ]
+    with open(path, "w", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+    return path
+
+
+class TestPerEntryWriteBinding(unittest.TestCase):
+    """#1571, and the run-13 reproduction ported.
+
+    Two entries in one batch, the guard bound to A: A may write its own
+    out_file and may NOT write B's. `security_repros.py` built exactly this
+    plan, serialised `allowlist_from_plan` over both entries and called the
+    real guard with `PANOPTICON_ENTRY_ID=review-A-ARC` and B's path; it
+    answered `allowed: true` with an empty reason.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        d = os.path.realpath(self.tmp.name)
+        pano = os.path.join(d, ".panopticon")
+        os.makedirs(pano)
+        self.a = os.path.join(pano, "findings-A-ARC.json")
+        self.b = os.path.join(pano, "findings-A-SEC.json")
+        self.plan = [{"id": "review-A-ARC", "out_file": self.a},
+                     {"id": "review-A-SEC", "out_file": self.b}]
+        self.allowlist_path = os.path.join(pano, "write-allowlist.json")
+        with open(self.allowlist_path, "w", encoding="utf-8") as fh:
+            json.dump(wg.allowlist_document(wg.allowlist_from_plan(self.plan)), fh)
+        self.parent = os.path.join(d, "session.jsonl")
+        open(self.parent, "w").close()
+
+    def _write(self, path, env=None, **payload):
+        body = {"tool_name": "Write", "tool_input": {"file_path": path}}
+        body.update(payload)
+        return wg.adjudicate(body, self.allowlist_path, env={} if env is None else env)
+
+    def test_a_bound_reviewer_may_write_its_own_out_file(self):
+        self.assertEqual(self._write(self.a, env={wg.ENV_ENTRY_ID: "review-A-ARC"}),
+                         (True, ""))
+
+    def test_a_bound_reviewer_may_not_write_a_peer_entrys_out_file(self):
+        allow, reason = self._write(self.b, env={wg.ENV_ENTRY_ID: "review-A-ARC"})
+        self.assertFalse(allow, "kimi_peer_artifact_write, on the Claude guard")
+        self.assertIn("review-A-ARC", reason)
+        self.assertIn("peer", reason)
+
+    def test_edit_and_notebookedit_are_bound_too(self):
+        for tool, key in (("Edit", "file_path"), ("NotebookEdit", "notebook_path")):
+            with self.subTest(tool=tool):
+                allow, _ = wg.adjudicate({"tool_name": tool, "tool_input": {key: self.b}},
+                                         self.allowlist_path,
+                                         env={wg.ENV_ENTRY_ID: "review-A-ARC"})
+                self.assertFalse(allow)
+
+    def test_the_transcript_marker_binds_when_no_env_id_is_set(self):
+        # Session mode: the child is a subagent, and its dispatch prompt's
+        # first line is the only thing that says which cell it is.
+        _write_subagent_transcript(self.parent, "ag1", "panopticon-entry: review-A-ARC\nbody")
+        self.assertEqual(
+            self._write(self.a, agent_id="ag1", agent_type="panopticon-domain-panel",
+                        transcript_path=self.parent),
+            (True, ""))
+        allow, reason = self._write(self.b, agent_id="ag1",
+                                    agent_type="panopticon-domain-panel",
+                                    transcript_path=self.parent)
+        self.assertFalse(allow)
+        self.assertIn("review-A-ARC", reason)
+
+    def test_an_agent_transcript_without_a_binding_is_denied(self):
+        _write_subagent_transcript(self.parent, "ag2", "no marker at all\nbody")
+        allow, reason = self._write(self.a, agent_id="ag2",
+                                    agent_type="panopticon-domain-panel",
+                                    transcript_path=self.parent)
+        self.assertFalse(allow)
+        self.assertIn("not bound", reason)
+
+    def test_a_headless_session_with_no_binding_at_all_is_denied(self):
+        # Plan 6's second identity: `agent_type` and no `agent_id` is a
+        # headless reviewer, never the orchestrator.
+        allow, reason = self._write(self.a, agent_type="panopticon-domain-panel")
+        self.assertFalse(allow)
+        self.assertIn("PANOPTICON_ENTRY_ID", reason)
+
+    def test_an_entry_the_armed_allowlist_does_not_name_is_denied(self):
+        allow, reason = self._write(self.a, env={wg.ENV_ENTRY_ID: "review-Z-COD"})
+        self.assertFalse(allow)
+        self.assertIn("review-Z-COD", reason)
+
+    def test_the_unbound_bucket_is_not_selectable_by_a_bound_agent(self):
+        with open(self.allowlist_path, "w", encoding="utf-8") as fh:
+            json.dump(wg.allowlist_document({wg.UNBOUND_ENTRY: [os.path.realpath(self.a)]}), fh)
+        allow, reason = self._write(self.a, env={wg.ENV_ENTRY_ID: wg.UNBOUND_ENTRY})
+        self.assertFalse(allow)
+        self.assertIn(wg.UNBOUND_ENTRY, reason)
+
+    def test_the_orchestrator_keeps_the_union(self):
+        # Nothing bound it: it is the driver, it writes the run's own
+        # artifacts, and it is trusted here exactly as it always was.
+        self.assertEqual(self._write(self.a), (True, ""))
+        self.assertEqual(self._write(self.b), (True, ""))
+        allow, _ = self._write(os.path.join(self.tmp.name, "src.py"))
+        self.assertFalse(allow)
+
+    def test_a_bound_reviewer_still_cannot_write_through_a_symlink(self):
+        link = os.path.join(os.path.dirname(self.a), "findings-A-ARC-link.json")
+        os.symlink(self.a, link)
+        with open(self.allowlist_path, "w", encoding="utf-8") as fh:
+            json.dump(wg.allowlist_document({"review-A-ARC": [link]}), fh)
+        allow, reason = self._write(link, env={wg.ENV_ENTRY_ID: "review-A-ARC"})
+        self.assertFalse(allow)
+        self.assertIn("symlink", reason)
+
+    def test_the_hook_binds_end_to_end_through_the_environment(self):
+        # main() -> adjudicate, with the allowlist baked into argv exactly as
+        # install() registers it, and the id in the environment exactly as
+        # orchestrate.Guards.env_for supplies it.
+        payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": self.b}})
+        proc = subprocess.run(
+            [sys.executable, os.path.abspath(wg.__file__), self.allowlist_path],
+            input=payload, capture_output=True, text=True, timeout=30,
+            env=dict(os.environ, PANOPTICON_ENTRY_ID="review-A-ARC"))
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(
+            json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
+class TestBindingHelpersAreACopy(unittest.TestCase):
+    """The binding resolution is DUPLICATED from read_guard_hook, not shared.
+
+    A guard hook is invoked by absolute path, as its own process, with no
+    package on sys.path -- the same constraint that already keeps the read
+    guard's settings plumbing (R-P5-5) and `hook_command` (#1633) copies
+    rather than imports. A copy that drifts is worse than either, so pin the
+    two against each other: same source, compared as ASTs.
+    """
+
+    NAMES = ("marker_of", "subagent_transcript", "_first_text", "bind")
+
+    def _functions(self, module):
+        import ast
+        with open(module.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), module.__file__)
+        return {n.name: ast.dump(n) for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name in self.NAMES}
+
+    def test_the_binding_helpers_are_ast_identical_in_both_guards(self):
+        import scripts.read_guard_hook as rg
+        mine, theirs = self._functions(wg), self._functions(rg)
+        self.assertEqual(sorted(theirs), sorted(self.NAMES))
+        for name in self.NAMES:
+            with self.subTest(name=name):
+                self.assertEqual(mine.get(name), theirs[name],
+                                 "%s has drifted from read_guard_hook's copy" % name)
+
+    def test_the_binding_constants_match_too(self):
+        import scripts.read_guard_hook as rg
+        self.assertEqual(wg.MARKER_PREFIX, rg.MARKER_PREFIX)
+        self.assertEqual(wg.ENV_ENTRY_ID, rg.ENV_ENTRY_ID)
