@@ -30,7 +30,8 @@ ws0-god-module-refactor-design.md section 6.3.
 5. Size ratchet: no package module exceeds LINE_CEILING lines. Raising the
    number here is a visible decision; drifting past it is not.
 6. Every package module imports on its own in a fresh interpreter. `phases/`
-   contains two mutual pairs (coverage<->requests, review<->verify); rule 1
+   contains three mutual pairs (coverage<->requests, review<->verify,
+   persist<->requests); rule 1
    is what makes them safe (a partially-initialized sibling is fine when it
    is only read at call time), and this proves it for whichever module the
    importer reaches first.

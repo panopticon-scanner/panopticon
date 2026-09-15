@@ -60,7 +60,14 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
                       # #1636: the batch seam has two shapes now, and headless
                       # calls `iter_batch` -- a family that overrode only
                       # `run_batch` would have its override silently ignored.
-                      "iter_batch", "run_batch"):
+                      "iter_batch", "run_batch",
+                      # D10 (#1636 P12): the seam's one optional class
+                      # attribute. A family that reads only this document
+                      # would otherwise ship a runner that ignores it -- and
+                      # the flag it names is fatal if passed to a CLI that
+                      # does not advertise it, so the gating is part of the
+                      # contract, not a detail.
+                      "OUTPUT_SCHEMA_FLAG"):
             self.assertIn(token, doc, token)
 
     def test_names_every_known_host_and_the_launch_prompt(self):
