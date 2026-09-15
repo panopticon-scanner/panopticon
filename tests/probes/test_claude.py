@@ -305,6 +305,50 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn(claude_dir, detail)
 
+    def test_the_round_trip_proves_the_per_entry_binding(self):
+        # #1571: the sandbox round-trip used to ask one question -- is a path
+        # in the flat allowlist -- which is the very question that let one
+        # reviewer write a sibling's findings file. It now drives the bound
+        # rows too, and requires the armed file to be version 2.
+        ok, detail = claude_probes._round_trip_denies_an_outside_write()
+        self.assertTrue(ok, detail)
+        self.assertIn("version-%d" % write_guard_hook.ALLOWLIST_VERSION, detail)
+
+    def test_a_guard_that_allows_a_peer_write_is_refuted(self):
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            with mock.patch.object(write_guard_hook, "adjudicate",
+                                   return_value=(True, "")):
+                state, _by, detail = claude_probes.probe_write_guard_armed(
+                    "claude", session_root=session_root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("PEER", detail)
+
+    def test_an_allowlist_that_is_not_v2_is_refuted(self):
+        # The probe READS the file install() wrote: a writer that regressed to
+        # a flat list refutes here rather than quietly proving a guard that can
+        # no longer tell two reviewers apart.
+        def v1(allowlist):
+            return sorted(write_guard_hook.union_paths(allowlist))
+        with mock.patch.object(write_guard_hook, "allowlist_document", v1):
+            ok, detail = claude_probes._round_trip_denies_an_outside_write()
+        self.assertFalse(ok)
+        self.assertIn("version", detail)
+
+    def test_a_guard_that_honours_a_stale_v1_file_is_refuted(self):
+        real = write_guard_hook.adjudicate
+
+        def lax(payload, allowlist_path, env=None):
+            with open(allowlist_path, encoding="utf-8") as fh:
+                if isinstance(json.load(fh), list):   # a v1 file, read anyway
+                    return True, ""
+            return real(payload, allowlist_path, env=env)
+
+        with mock.patch.object(write_guard_hook, "adjudicate", lax):
+            ok, detail = claude_probes._round_trip_denies_an_outside_write()
+        self.assertFalse(ok)
+        self.assertIn("version-1", detail)
+
     def test_a_host_that_claims_no_write_guard_is_unknown(self):
         for name in ("gemini", "generic"):
             with self.subTest(host=name):
