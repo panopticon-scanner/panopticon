@@ -82,3 +82,56 @@ class TestToolsPhase(unittest.TestCase):
         run_mock.assert_not_called()
         self.assertEqual(result.kind, "advanced")
         self.assertTrue(runio._load_json(runio._pano(self.root, "tools-ran.json"))["skipped"])
+
+
+class TestAnEnvironmentalSkipIsNotDone(unittest.TestCase):
+    """#1637 P08 ruling 4: `tools-ran.json parses` made an ENVIRONMENTAL skip
+    -- Docker down, or the image absent -- done for ever, so installing the
+    image mid-run never retried the scan. Run-13's 85 panels ran without
+    scanner evidence behind exactly that cached marker. A skip is now done only
+    when it was the operator's choice (`--no-tools`); the environmental one
+    costs one `docker image inspect` on the next invocation.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "flags": {}}
+
+    def _marker(self, **fields):
+        body = {"schema_version": 1, "ran": False, "skipped": False,
+                "crashed": False, "note": "", "returncode": 0, "run_id": "R"}
+        body.update(fields)
+        runio._write_json(runio._pano(self.root, "tools-ran.json"), body)
+        return tools_phase.tools_done(self.root, self.manifest)
+
+    def test_an_environmental_skip_is_not_done(self):
+        self.assertFalse(self._marker(
+            skipped=True, note="panopticon-tools image not available; skipping"))
+
+    def test_a_skip_with_no_note_at_all_is_not_done(self):
+        self.assertFalse(self._marker(skipped=True, note=""))
+
+    def test_a_produced_scan_is_done(self):
+        self.assertTrue(self._marker(ran=True))
+
+    def test_a_crashed_scan_is_done(self):
+        # Best-effort by design: a crash is disclosed and gated elsewhere
+        # (#1033), and re-running the same broken scanner every invocation
+        # would wedge the run rather than fix it.
+        self.assertTrue(self._marker(crashed=True, skipped=True, returncode=2))
+
+    def test_the_operators_own_no_tools_skip_is_done(self):
+        m = {"run_id": "R", "flags": {"tools": False}}
+        with mock.patch("subprocess.run") as run_mock:
+            tools_phase.tools_execute(self.root, m)
+        run_mock.assert_not_called()
+        self.assertTrue(tools_phase.tools_done(self.root, m))
+
+    def test_an_unparseable_marker_is_not_done(self):
+        with open(runio._pano(self.root, "tools-ran.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{ not json")
+        self.assertFalse(tools_phase.tools_done(self.root, self.manifest))

@@ -6,14 +6,44 @@ from . import engine
 from . import runio
 
 
+# The exact note `--no-tools` writes. Matched by equality, never by substring:
+# `tools_done` reads this back off a file a hostile target could pre-commit,
+# and a scanner's stderr that happened to quote the flag must not spell "the
+# operator chose this".
+NO_TOOLS_NOTE = "tools disabled (--no-tools)"
+
+
 def tools_done(review_root, manifest):
-    return runio._json_parses(runio._pano(review_root, "tools-ran.json"))
+    """The scan RAN, CRASHED, or was switched off on purpose -- never merely
+    "a marker parsed" (#1637 P08 ruling 4).
+
+    The old predicate made an ENVIRONMENTAL skip -- Docker down, or the image
+    absent -- done for ever. Run-13 skipped the scan on a missing image and
+    then dispatched 85 panels with no scanner evidence; installing the image
+    mid-run could not have retried it, because the marker already said done.
+    An environmental skip now re-evaluates on the next `driver run`, which
+    costs one `docker image inspect` and keeps every scout/review artifact
+    already on disk.
+
+    A CRASH still counts as done, deliberately: it is disclosed loudly and
+    gated by the adapter manifest (#1033), and re-running a broken scanner on
+    every invocation would wedge the run rather than fix it.
+
+    With `readiness` failing closed ahead of this phase, the environmental
+    branch is now only reachable when the environment changed MID-RUN -- the
+    daemon stopped, or the image was pruned, between readiness and here.
+    """
+    marker = runio._load_json(runio._pano(review_root, "tools-ran.json"))
+    if not isinstance(marker, dict):
+        return False
+    return bool(marker.get("ran") or marker.get("crashed")
+                or marker.get("note") == NO_TOOLS_NOTE)
 
 def tools_execute(review_root, manifest):
     if (manifest.get("flags") or {}).get("tools") is False:
         runio._write_json(runio._pano(review_root, "tools-ran.json"),
                     {"schema_version": 1, "ran": False, "skipped": True, "crashed": False,
-                     "note": "tools disabled (--no-tools)",
+                     "note": NO_TOOLS_NOTE,
                      "returncode": None, "run_id": manifest["run_id"]})
         return engine.PhaseResult(kind="advanced", message="tools: skipped (--no-tools)")
     out_dir = runio._pano(review_root, "tools")
