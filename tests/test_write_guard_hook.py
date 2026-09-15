@@ -1219,6 +1219,13 @@ class TestBindingHelpersAreACopy(unittest.TestCase):
                                  "%s has drifted from read_guard_hook's copy" % name)
 
     def test_the_binding_constants_match_too(self):
+        # The names the three hooks agree on by copy rather than by import:
+        # the marker prefix and env var the binding reads, and the reserved
+        # bucket both write guards must refuse (F2 -- one spelling, or one of
+        # them silently stops refusing it).
+        import scripts.kimi_guard_hook as kg
         import scripts.read_guard_hook as rg
         self.assertEqual(wg.MARKER_PREFIX, rg.MARKER_PREFIX)
         self.assertEqual(wg.ENV_ENTRY_ID, rg.ENV_ENTRY_ID)
+        self.assertEqual(wg.ENV_ENTRY_ID, kg.ENV_ENTRY_ID)
+        self.assertEqual(wg.UNBOUND_ENTRY, kg.UNBOUND_ENTRY)

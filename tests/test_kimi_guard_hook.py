@@ -186,6 +186,22 @@ class TestWrites(GuardCase):
         self.assertFalse(allow)
         self.assertIn("ghost", reason)
 
+    def test_the_unbound_bucket_is_not_selectable_by_a_bound_child(self):
+        # F2: the Claude guard refuses the reserved key by name and this one
+        # treated it as an ordinary id. Unreachable today -- Guards.env_for
+        # takes entry["id"] and driver ids cannot spell it -- but
+        # write_guard_hook says in as many words that the refusal must not
+        # rest on the id grammar, and two guards that fail differently are two
+        # guards to reason about.
+        _write(self.allowlist_path,
+               wg.allowlist_document({guard.UNBOUND_ENTRY: [self.inside]}))
+        allow, reason = guard.adjudicate(
+            {"tool_name": "Write", "tool_input": {"path": self.inside, "content": "{}"}},
+            "write", self.allowlist_path,
+            env={guard.ENV_ENTRY_ID: guard.UNBOUND_ENTRY})
+        self.assertFalse(allow)
+        self.assertIn(guard.UNBOUND_ENTRY, reason)
+
     def test_a_version_1_allowlist_fails_closed_and_names_the_version(self):
         # A stale flat list carries no attribution: honouring it would restore
         # exactly the batch-wide grant this issue is about.

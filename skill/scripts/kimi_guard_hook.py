@@ -82,6 +82,12 @@ ENV_ENTRY_ID = "PANOPTICON_ENTRY_ID"
 # stale v1 flat list records no per-entry grants, so honouring one would
 # restore the batch-wide write authority this version exists to end.
 ALLOWLIST_VERSION = 2
+# The bucket write_guard_hook.install puts a plan entry that declared no `id`
+# into. Those grants belong to the unbound orchestrator; no bound child may
+# select the key. Spelled here rather than imported for the reason everything
+# in this module is (a hook runs standing alone, with no package on sys.path),
+# and pinned equal to the write guard's in tests/test_write_guard_hook.py.
+UNBOUND_ENTRY = "<unbound>"
 ENV_READ_SCOPE = "PANOPTICON_READ_SCOPE"
 ENV_WRITE_ALLOWLIST = "PANOPTICON_WRITE_ALLOWLIST"
 
@@ -227,7 +233,11 @@ def _decide_write(tool_name, tool_input, allowlist, entry_id):
     entry's scope with it -- so a writer-capable reviewer could overwrite any
     peer's findings artifact, while the denial below promised the opposite.
     Unknown id denies by name, exactly as the read branch does."""
-    granted = allowlist.get(entry_id)
+    # Refused by NAME, before the lookup, exactly as write_guard_hook does:
+    # the driver's id grammar makes this unreachable today, and a guard whose
+    # refusal rests on that is one grammar change from being a hole. Two write
+    # guards, one failure mode.
+    granted = None if entry_id == UNBOUND_ENTRY else allowlist.get(entry_id)
     if granted is None:
         # `adjudicate` appends the bound entry to every denial, so name the
         # condition here and let it name the id -- saying it twice was how the
