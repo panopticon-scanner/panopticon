@@ -16,6 +16,7 @@ artifact producer is covered by construction rather than by remembering to
 extend a list here.
 """
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -225,23 +226,67 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
     capabilities, coverage, ids, paths, grades) come back byte-identical."""
 
     def _clean_report(self, d):
-        in_dir = os.path.join(d, "in")
+        """A real synthesize run wired up so the sections Ruling 2 names are
+        POPULATED, not empty. A string-free subtree is trivially inert under a
+        string redactor, so an all-null meta.cost / meta.integrity /
+        models_used would make the golden unable to detect a regression there.
+
+        Inputs in src/, run artifacts in run/, the report in out/. Never a
+        committed real report: those carry real (rotated) credentials.
+        """
+        src = os.path.join(d, "src")
+        run = os.path.join(d, "run")
         out_dir = os.path.join(d, "out")
-        os.makedirs(in_dir)
-        os.makedirs(out_dir)
-        fp = os.path.join(in_dir, "findings-app-security.json")
-        with open(fp, "w", encoding="utf-8") as fh:
+        for path in (src, run, out_dir):
+            os.makedirs(path)
+        sec = os.path.join(src, "findings-app-SEC.json")
+        with open(sec, "w", encoding="utf-8") as fh:
             json.dump({"findings": [
                 {"id": "SEC-1", "domain": "SEC", "code": "SEC-A1A",
                  "title": "authz bypass", "description": "no credential here",
                  "severity": "HIGH", "confidence": "LIKELY", "panel": "security",
-                 "category": "authz", "source": "agent:reviewer",
+                 "category": "authz",
                  "references": ["docs/PANOPTICON.md", "CVE-2021-44228"],
+                 # -> meta.models_used: a panel model, a version and the
+                 # advisor role derived from confirmed_by_model.
+                 "provenance": {"model": "claude-opus-4-1",
+                                "model_version": "20260101",
+                                "discovered_by": "agent:domain_panel",
+                                "confirmed_by_model": "claude-sonnet-4-5"},
                  "location": {"file": "app/x.py", "line_start": 4}}]}, fh)
+        # Ingested but NOT declared by the plan -> meta.integrity
+        # .unexpected_findings_files carries this real filename.
+        cod = os.path.join(src, "findings-app-COD.json")
+        with open(cod, "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        # Declared but absent -> meta.integrity.missing_planned_files carries
+        # that real filename. Both halves of the reconcile therefore have
+        # content for the walk to leave alone.
+        absent = os.path.join(src, "findings-app-DAT.json")
+        with open(os.path.join(run, "dispatch-plan-driver.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump([{"group": "app", "domain": "SEC", "out_file": sec},
+                       {"group": "app", "domain": "DAT", "out_file": absent}], fh)
+        # The fan-out content snapshot, keyed by realpath -> the #493 R4 check
+        # actually runs (content_hashes_checked stops being null).
+        with open(sec, "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        with open(os.path.join(run, "out-file-hashes.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({os.path.realpath(sec): digest}, fh)
+        # The host's token journal -> meta.cost.tokens is a populated dict
+        # (phase names, an ISO timestamp, a host name), not null.
+        with open(os.path.join(run, "usage.json"), "w", encoding="utf-8") as fh:
+            json.dump({"total": 21053000, "host": "claude",
+                       "collected_at": "2026-09-15T00:00:00Z",
+                       "by_phase": {"review": 10290000, "verify": 6300000,
+                                    "coverage": 4463000}}, fh)
+        with open(os.path.join(run, "groups.json"), "w", encoding="utf-8") as fh:
+            json.dump({"groups": [{"name": "app", "files": ["app/x.py"]}]}, fh)
         # A run artifact whose contents are structured, not prose: the posture
         # is copied into meta.host_capabilities VERBATIM, so it is the sharpest
         # test of "the walk changes nothing that is not a secret".
-        with open(os.path.join(d, "host-capabilities.json"), "w",
+        with open(os.path.join(run, "host-capabilities.json"), "w",
                   encoding="utf-8") as fh:
             json.dump({"host": "claude", "schema_version": 1,
                        "probed_at": "2026-09-15T00:00:00Z",
@@ -252,7 +297,7 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
                                "guid": "3f2504e0-4f89-11d3-9a0c-0305e82c3301"},
                            "read_scope_confined": {
                                "state": "unproven", "by": None,
-                               "detail": "sha256:" + "a" * 64}}}, fh)
+                               "detail": "sha256:" + digest}}}, fh)
         out = os.path.join(out_dir, "report.json")
         buf = io.StringIO()
         prev = os.getcwd()
@@ -260,7 +305,9 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
         try:
             with contextlib.redirect_stdout(buf), \
                     contextlib.redirect_stderr(io.StringIO()):
-                syn.main(["--target", "app", "--out", out, "--run-dir", d, fp])
+                syn.main(["--target", "app", "--out", out, "--run-dir", run,
+                          "--groups", os.path.join(run, "groups.json"),
+                          sec, cod])
         finally:
             os.chdir(prev)
         with open(out, encoding="utf-8") as fh:
@@ -272,12 +319,40 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
         before = json.dumps(report, indent=2, sort_keys=True)
         after = json.dumps(redact.redact_tree(report), indent=2, sort_keys=True)
         self.assertEqual(before, after)
-        # and the structured posture really did reach the report (so the
-        # comparison above is not vacuous)
-        caps = report["meta"]["host_capabilities"]["capabilities"]
+
+    def test_the_golden_actually_populates_the_sections_it_claims_to_cover(self):
+        """Guards the guard. A string-free subtree is inert under a string
+        redactor, so the golden above proves nothing about a section that came
+        back empty. Every section the whole-tree walk newly reaches is asserted
+        to carry real strings."""
+        with tempfile.TemporaryDirectory() as d:
+            report = self._clean_report(d)
+        meta = report["meta"]
+        # meta.host_capabilities: verbatim posture, a UUID under an identity
+        # key, a 64-hex digest, a ~/ settings path.
+        caps = meta["host_capabilities"]["capabilities"]
         self.assertEqual(caps["tool_policy_enforced"]["state"], "proven")
         self.assertEqual(caps["tool_policy_enforced"]["guid"],
                          "3f2504e0-4f89-11d3-9a0c-0305e82c3301")
+        self.assertTrue(caps["read_scope_confined"]["detail"].startswith("sha256:"))
+        # meta.models_used: model names + the advisor role.
+        self.assertEqual(sorted(m["model"] for m in meta["models_used"]),
+                         ["claude-opus-4-1", "claude-sonnet-4-5"])
+        # meta.cost.tokens: a populated dict, not the null slot.
+        self.assertIsInstance(meta["cost"]["tokens"], dict)
+        self.assertEqual(meta["cost"]["tokens"]["total"], 21053000)
+        self.assertIn("review", meta["cost"]["tokens"]["by_phase"])
+        # meta.integrity: real filenames on both halves of the reconcile, and
+        # the #493 R4 content check actually ran. (The sha256 digests live in
+        # the out-file-hashes.json artifact; the report carries the COUNT of
+        # files checked, not the hashes themselves.)
+        integ = meta["integrity"]
+        self.assertTrue(integ["unexpected_findings_files"][0]
+                        .endswith("findings-app-COD.json"), integ)
+        self.assertTrue(integ["missing_planned_files"][0]
+                        .endswith("findings-app-DAT.json"), integ)
+        self.assertEqual(integ["content_hashes_checked"], 1)
+        self.assertEqual(integ["content_mismatched_files"], [])
 
     def test_the_backstop_preserves_report_key_order(self):
         """write_report dumps insertion order and the key order is part of the
