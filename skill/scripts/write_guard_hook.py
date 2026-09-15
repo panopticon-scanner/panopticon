@@ -370,9 +370,20 @@ def adjudicate(payload, allowlist_path, env=None):
         return False, "%s (bound to entry %r)" % (reason, entry_id)
     if target in set(granted):
         return True, ""
-    return False, ("write to %s is denied: entry %r may write only its own "
-                   "declared out_file; a peer entry's artifact is not writable"
-                   % (file_path, entry_id))
+    if target in union_paths(allowlist):
+        return False, ("write to %s is denied: entry %r may write only its own "
+                       "declared out_file; a peer entry's artifact is not writable"
+                       % (file_path, entry_id))
+    # NOT a peer's artifact: the target is in nobody's grant. Saying "peer"
+    # here would accuse the reviewer of the one thing it did not do, when the
+    # likely cause is the guard armed on the wrong tree or over a previous
+    # round's grants -- the #calibration-4 / gotify shape, where 44 advisors
+    # lost finished work to an allowlist that was live but stale, and every
+    # denial pointed away from it.
+    return False, ("write to %s is denied: it is not in entry %r's grant -- a "
+                   "reviewer may write only its own declared out_file, and an "
+                   "armed allowlist that does not name this one may be stale or "
+                   "from another run" % (file_path, entry_id))
 
 
 def _resolve_allowlist_path(argv_path=None):

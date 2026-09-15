@@ -162,6 +162,22 @@ class TestWrites(GuardCase):
         self.assertIn("entry-1", reason)
         self.assertIn("peer", reason)
 
+    def test_a_stale_grant_is_not_reported_as_a_peer_write(self):
+        # F1, Kimi's half: bound, named in the allowlist, but the grant is
+        # some other run's path. Its own out_file is denied -- and the reason
+        # must say the allowlist looks stale, not that it reached for a peer's.
+        elsewhere = os.path.join(os.path.realpath(self.tmp.name), "other-run", "f.json")
+        _write(self.allowlist_path, wg.allowlist_document({"entry-1": [elsewhere]}))
+        allow, reason = self.write("Write", path=self.inside, content="{}")
+        self.assertFalse(allow)
+        self.assertNotIn("peer", reason)
+        self.assertIn("stale", reason)
+        self.assertIn("entry-1", reason)
+
+    def test_the_peer_wording_is_kept_for_an_actual_peer_write(self):
+        _allow, reason = self.write("Write", path=self.peer, content="{}")
+        self.assertIn("a peer entry's artifact is not writable", reason)
+
     def test_an_entry_the_allowlist_does_not_name_is_denied(self):
         # Mirrors the read branch, which already names the entry it cannot find.
         allow, reason = guard.adjudicate(

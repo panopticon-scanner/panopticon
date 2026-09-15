@@ -249,9 +249,17 @@ def _decide_write(tool_name, tool_input, allowlist, entry_id):
         return False, "%s is denied: unresolvable path %r" % (tool_name, raw)
     if target in set(granted):
         return True, ""
-    return False, ("%s to %s is denied: this reviewer may write only its own "
-                   "declared out_file; a peer entry's artifact is not writable"
-                   % (tool_name, raw))
+    if any(target in paths for paths in allowlist.values()):
+        return False, ("%s to %s is denied: this reviewer may write only its own "
+                       "declared out_file; a peer entry's artifact is not writable"
+                       % (tool_name, raw))
+    # In nobody's grant, so not a peer's artifact either: claim only what is
+    # true, and point at the likelier cause (a guard armed over another run's
+    # grants). `adjudicate` names the bound entry on the way out.
+    return False, ("%s to %s is denied: it is not in this entry's grant -- a "
+                   "reviewer may write only its own declared out_file, and an "
+                   "armed allowlist that does not name it may be stale or from "
+                   "another run" % (tool_name, raw))
 
 
 def adjudicate(payload, mode, data_path, env=None):

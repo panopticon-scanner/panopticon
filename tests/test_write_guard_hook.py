@@ -1131,6 +1131,26 @@ class TestPerEntryWriteBinding(unittest.TestCase):
         self.assertFalse(allow)
         self.assertIn(wg.UNBOUND_ENTRY, reason)
 
+    def test_a_stale_grant_is_not_reported_as_a_peer_write(self):
+        # F1. The #calibration-4 / gotify shape: the guard is armed, this
+        # entry IS named, but the grant is another tree's path -- so the
+        # reviewer's OWN out_file is denied. Claiming "a peer entry's
+        # artifact" there sends the operator after a misbehaving reviewer
+        # instead of after a stale allowlist, which is the one thing this
+        # module has spent three issues learning to say plainly.
+        elsewhere = os.path.join(self.tmp.name, "other-run", "findings-A-ARC.json")
+        with open(self.allowlist_path, "w", encoding="utf-8") as fh:
+            json.dump(wg.allowlist_document({"review-A-ARC": [elsewhere]}), fh)
+        allow, reason = self._write(self.a, env={wg.ENV_ENTRY_ID: "review-A-ARC"})
+        self.assertFalse(allow)
+        self.assertNotIn("peer", reason)
+        self.assertIn("stale", reason)
+        self.assertIn("review-A-ARC", reason)
+
+    def test_the_peer_wording_is_kept_for_an_actual_peer_write(self):
+        _allow, reason = self._write(self.b, env={wg.ENV_ENTRY_ID: "review-A-ARC"})
+        self.assertIn("a peer entry's artifact is not writable", reason)
+
     def test_a_present_but_unusable_entry_id_denies_rather_than_unioning(self):
         # The read guard's shape: an id that is THERE but not a usable string
         # is an agent we could not bind, never the orchestrator. Degrading it
