@@ -509,6 +509,40 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(len(runner.launched), len(lines))
         self.assertRegex(lines[0], r"^driver loop: review-app-SEC done \(\d+ ms, 1/1\)$")
 
+    def test_usage_json_is_written_atomically(self):
+        # F6: the only per-entry artifact write the loop makes that a reader
+        # can catch mid-flight. `persist.write_reply` already does this for the
+        # reply beside it; `write_usage` is the one caller that asks for it.
+        d, floor = self._repo()
+        runner = FakeRunner()
+        with mock.patch.object(orchestrate.runio, "_write_json",
+                               wraps=orchestrate.runio._write_json) as wj:
+            self._run(d, floor, runner)
+        usage_calls = [c for c in wj.call_args_list if c.args[0].endswith("usage.json")]
+        self.assertTrue(usage_calls)
+        for call in usage_calls:
+            self.assertTrue(call.kwargs.get("atomic"), call)
+        self.assertEqual([], [f for f in os.listdir(runner.run_dir) if f.endswith(".tmp")])
+
+    def test_the_ledger_row_takes_its_duration_from_the_timing_it_was_given(self):
+        # F5: `duration_ms` and `timing["duration_ms"]` were the same fact
+        # spelled twice at the only call site, so a future caller could make a
+        # row contradict itself. The parameter now defaults FROM the timing.
+        d, floor = self._repo()
+        ledger = orchestrate.Ledger(d)
+        result = base.RunResult(entry_id="e", ok=True, text="", usage={}, cost_usd=None,
+                                model=None, session_id=None, denials=[], error=None)
+        timing = {"started_at": "2026-01-01T00:00:00Z",
+                  "finished_at": "2026-01-01T00:00:02Z", "duration_ms": 2000}
+        ledger.record({"id": "e"}, "review", result, "headless", "claude", timing=timing)
+        ledger.record({"id": "e"}, "review", result, "headless", "claude", 7, timing=timing)
+        ledger.record({"id": "e"}, "review", result, "headless", "claude")
+        rows = ledger.lines()
+        self.assertEqual(2000, rows[0]["duration_ms"])      # defaulted from timing
+        self.assertEqual(7, rows[1]["duration_ms"])         # an explicit value still wins
+        self.assertIsNone(rows[2]["duration_ms"])           # neither given
+        self.assertIsNone(rows[2]["started_at"])
+
     def test_a_failed_usage_write_does_not_abandon_the_rest_of_the_batch(self):
         # F1: usage.json is a PROGRESS write -- `_finish` rewrites it from the
         # same ledger -- and it now runs once per ENTRY instead of once per

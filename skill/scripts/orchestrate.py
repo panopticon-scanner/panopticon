@@ -1,10 +1,10 @@
 """The orchestrator on rails (spec 4): `driver loop` and `driver persist`.
 
-`loop` calls driver.run in-process and, at every checkpoint, does the host
-duties itself: recompute the pending set from disk, arm both guards, run the
-batch through the host's runner, persist return-persist replies, ledger every
-launch, tear the guards down, and call driver.run again. The engine's done
-predicates are the only way forward (O2); a runner's claim advances nothing.
+`loop` calls driver.run in-process and, at every checkpoint, does the host duties
+itself: recompute the pending set from disk, arm both guards, run the batch through the
+host's runner -- persisting and ledgering each entry the moment it completes -- tear the
+guards down, and call driver.run again. The engine's done predicates are the only way
+forward (O2); a runner's claim advances nothing.
 """
 import contextlib
 import json
@@ -37,22 +37,21 @@ MAX_ENTRY_FAILURES = 3
 
 
 def _after_first_run(review_root):
-    """Test seam: called once, after the first driver.run of a loop. Returns
-    whether `loop` must re-derive `status` with another `driver.run` call
-    before entering the while loop.
+    """Test seam: called once, after the first driver.run of a loop. Returns whether `loop`
+    must re-derive `status` with another `driver.run` call before entering the while
+    loop.
 
     Production always returns False -- a no-op, never patched outside
-    tests/test_orchestrate.py. This is load-bearing, not decorative: a resume
-    whose very first `driver.run` already lands on the `review` checkpoint
-    (coverage was established by an earlier, now-dead process) would, with an
-    UNCONDITIONAL second call here, re-run `review_execute` a second time with
-    ZERO launches in between -- and `review_execute` bumps
-    `cell-attempts.json` on every call that finds a cell pending, launch or
-    no launch. That burns one third of a cell's `MAX_CELL_ATTEMPTS` retry
-    budget for nothing, on every single resume that happens to land on
-    `review`. Only the test seam, which mutates review_root BETWEEN the two
-    calls (seeding coverage so the checkpoint the test observes is `review`
-    rather than `scout`), has a reason to ask for the second derive."""
+    tests/test_orchestrate.py. This is load-bearing, not decorative: a resume whose very
+    first `driver.run` already lands on the `review` checkpoint (coverage was
+    established by an earlier, now-dead process) would, with an UNCONDITIONAL second
+    call here, re-run `review_execute` a second time with ZERO launches in between --
+    and `review_execute` bumps `cell-attempts.json` on every call that finds a cell
+    pending, launch or no launch. That burns one third of a cell's `MAX_CELL_ATTEMPTS`
+    retry budget for nothing, on every single resume that happens to land on `review`.
+    Only the test seam, which mutates review_root BETWEEN the two calls (seeding
+    coverage so the checkpoint the test observes is `review` rather than `scout`), has a
+    reason to ask for the second derive."""
     return False
 
 
@@ -114,24 +113,26 @@ class Ledger:
     def __init__(self, run_dir):
         self.path = os.path.join(run_dir, runners_base.LEDGER_FILE)
 
-    def record(self, entry, checkpoint, result, mode, host, duration_ms,
+    def record(self, entry, checkpoint, result, mode, host, duration_ms=None,
                refusal=None, timing=None):
         """One line per runner call.
 
-        `refusal` (fix round 2) overrides the LAUNCH's own verdict. A
-        return-persist reply that persist refused came back from a runner that
-        reported success -- `result.ok` is True -- but the entry did not
-        advance, so a row saying `ok: true` would both overstate the run and
-        disagree with the per-entry failure cap that is about to count it. The
-        usage and cost stay the real launch's: those tokens were spent whatever
-        the reply turned out to be (M2).
+        `refusal` (fix round 2) overrides the LAUNCH's own verdict. A return-persist
+        reply that persist refused came back from a runner that reported success --
+        `result.ok` is True -- but the entry did not advance, so a row saying `ok: true`
+        would both overstate the run and disagree with the per-entry failure cap that is
+        about to count it. The usage and cost stay the real launch's: those tokens were
+        spent whatever the reply turned out to be (M2).
 
-        `timing` (P07, #1636) is the runner's `{started_at, finished_at,
-        duration_ms}` for this entry, measured around `run_entry` itself. The
-        row GAINS two keys and loses none: every reader of the older shape --
-        `usage_document`'s `phase`/`usage`, `total_cost`'s `cost_usd` -- reads
-        exactly what it always did, and `ts` still means when the LINE was
-        written, which is now when the loop persisted that one entry."""
+        `timing` (P07, #1636) is the runner's `{started_at, finished_at, duration_ms}`
+        for this entry, measured around `run_entry` itself. The row GAINS two keys and
+        loses none: every reader of the older shape -- `usage_document`'s
+        `phase`/`usage`, `total_cost`'s `cost_usd` -- reads exactly what it always did,
+        and `ts` still means when the LINE was written, which is now when the loop
+        persisted that one entry. `duration_ms` defaults from it too, rather than being
+        spelled twice at the call site, where the two could drift apart (F5)."""
+        timing = timing or {}
+        duration_ms = timing.get("duration_ms") if duration_ms is None else duration_ms
         line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "entry_id": entry.get("id"), "checkpoint": checkpoint,
                 "phase": PHASE_OF_CHECKPOINT.get(checkpoint, "unattributed"),
@@ -139,8 +140,7 @@ class Ledger:
                 "ok": result.ok and refusal is None,
                 "usage": {k: int(result.usage.get(k, 0) or 0) for k in USAGE_FIELDS} if result.usage else {},
                 "cost_usd": result.cost_usd, "duration_ms": duration_ms,
-                "started_at": (timing or {}).get("started_at"),
-                "finished_at": (timing or {}).get("finished_at"),
+                "started_at": timing.get("started_at"), "finished_at": timing.get("finished_at"),
                 "session_id": result.session_id, "denials": result.denials,
                 "error": refusal if refusal is not None else result.error}
         # #1095, plan 6 review round 1: the ledger path is a `.panopticon`
@@ -195,7 +195,8 @@ def write_usage(review_root, ledger, namespace=None):
     invocation already agrees on: the flat `.panopticon/` for setup, the per-run tag
     folder for a review."""
     run_dir = os.path.dirname(probes_common.headless_settings_path(review_root, namespace))
-    runio._write_json(os.path.join(run_dir, "usage.json"), ledger.usage_document())
+    # atomic (F6): rewritten per ENTRY now, so a reader can catch it truncated.
+    runio._write_json(os.path.join(run_dir, "usage.json"), ledger.usage_document(), atomic=True)
 
 
 def _pending(entries):
@@ -275,11 +276,11 @@ def _resolve_host(args, review_root):
 def _resolve_mode(args, host):
     """(mode, stderr_note) -- spec 4.4 (I8).
 
-    `--mode` when the operator gave one. Otherwise headless when this host has
-    a runner and session when it does not: "A host with no headless runner
-    registered gets session mode with a stderr line saying so; `--mode
-    headless` on such a host is an error." That last case is left to
-    `runner_for`, which refuses with the sentence naming `--mode session`.
+    `--mode` when the operator gave one. Otherwise headless when this host has a runner
+    and session when it does not: "A host with no headless runner registered gets
+    session mode with a stderr line saying so; `--mode headless` on such a host is an
+    error." That last case is left to `runner_for`, which refuses with the sentence
+    naming `--mode session`.
     """
     mode = getattr(args, "mode", None)
     if mode:
@@ -520,8 +521,8 @@ def loop(args):
                     elif not result.ok:
                         print("driver loop: entry %s failed: %s" % (eid, result.error),
                               file=sys.stderr, flush=True)
-                    ledger.record(entry, req.get("checkpoint"), result, mode, runner.host,
-                                  timing.get("duration_ms"), refusal=refusal, timing=timing)
+                    ledger.record(entry, req.get("checkpoint"), result, mode,
+                                  runner.host, refusal=refusal, timing=timing)
                     if result.ok and refusal is None:
                         failures.pop(eid, None)           # clean launch: streak cleared
                     else:
@@ -573,8 +574,8 @@ def _first_run(args, namespace):
 
 
 def _dispatch_exit(review_root, req, pending, namespace):
-    """Session mode: the runner printed the batch; exit with a dispatch status
-    and leave the guards armed (spec 4.3).
+    """Session mode: the runner printed the batch; exit with a dispatch status and leave
+    the guards armed (spec 4.3).
 
     C2: `dispatch_request` comes from `requests.request_path` -- the one accessor that
     knows a review's request is per-run (`runs/<tag>/dispatch-request.json`) while setup
@@ -628,12 +629,11 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
             # fan-out the PREVIOUS invocation started and that is still running. An
             # invocation that armed nothing (an errored re-entry) disarms nothing.
             guards.disarm(guards.armed_entries)
-    # M9: the ledger-derived usage.json belongs to headless runs only. In
-    # session mode the loop launches nothing, so the ledger is empty and this
-    # document is all zeros -- while the run's REAL figures come from the
-    # host's own transcripts via collect_usage, which synthesize wires in and
-    # which deliberately never overwrites an existing usage.json. Writing here
-    # would replace the real counts with zeros.
+    # M9: the ledger-derived usage.json belongs to headless runs only. In session mode
+    # the loop launches nothing, so the ledger is empty and this document is all zeros
+    # -- while the run's REAL figures come from the host's own transcripts via
+    # collect_usage, which synthesize wires in and which deliberately never overwrites
+    # an existing usage.json. Writing here would replace the real counts with zeros.
     if mode == "headless" and status.get("status") in ("complete", "error") and ledger is not None:
         try:
             write_usage(_review_root(args), ledger, namespace)
@@ -664,14 +664,14 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
 
 
 def persist_cli(args):
-    """`driver persist ENTRY_ID [--file PATH] [--setup] [--pr N] [--base REF] [target]`
-    -> exit code.
+    """`driver persist ENTRY_ID [--file PATH] [--setup] [--pr N] [--base REF] [target]` ->
+    exit code.
 
-    I6: base/pr are threaded exactly as `driver run` threads them. A `--pr`
-    run's review root is the PR worktree, and resolving `target` alone read
-    the dispatch request from the operator's own checkout instead -- so every
-    persist against a `--pr` run refused with "no entry in the current
-    dispatch request", with nothing to say which run it had looked in.
+    I6: base/pr are threaded exactly as `driver run` threads them. A `--pr` run's review
+    root is the PR worktree, and resolving `target` alone read the dispatch request from
+    the operator's own checkout instead -- so every persist against a `--pr` run refused
+    with "no entry in the current dispatch request", with nothing to say which run it
+    had looked in.
     """
     review_root, _wt, _pr = runio.resolve_review_root(
         args.target, base=getattr(args, "base", None), pr=getattr(args, "pr", None))

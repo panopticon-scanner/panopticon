@@ -256,6 +256,56 @@ class TestArtifactWriteSymlinkSafety(unittest.TestCase):
             with open(p) as fh:
                 self.assertEqual(json.load(fh), {"n": 2})
 
+class TestAtomicArtifactWrite(unittest.TestCase):
+    """F6: `usage.json` is rewritten once per ENTRY now, while host children are
+    live inside the reviewed tree and the guide invites an operator to watch it
+    as a progress surface. The default in-place O_TRUNC write can be read back
+    empty or half-written; `atomic=True` gives that one file the tmp +
+    `os.replace` `persist.write_reply` already uses for the reply beside it."""
+
+    def test_an_atomic_write_that_fails_leaves_the_previous_file_intact(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "usage.json")
+            runio._write_json(p, {"total": 1})
+            with mock.patch.object(runio.json, "dump", side_effect=OSError("ENOSPC")), \
+                 self.assertRaises(OSError):
+                runio._write_json(p, {"total": 2}, atomic=True)
+            with open(p) as fh:
+                self.assertEqual(json.load(fh), {"total": 1})   # never truncated
+
+    def test_a_plain_write_that_fails_does_truncate_it(self):
+        # The contrast, so the flag is not decorative: this is what the reader
+        # of a per-entry usage.json was exposed to.
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "usage.json")
+            runio._write_json(p, {"total": 1})
+            with mock.patch.object(runio.json, "dump", side_effect=OSError("ENOSPC")), \
+                 self.assertRaises(OSError):
+                runio._write_json(p, {"total": 2})
+            with open(p) as fh:
+                self.assertEqual("", fh.read())
+
+    def test_an_atomic_write_lands_the_content_and_leaves_no_tmp_behind(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "usage.json")
+            self.assertEqual(p, runio._write_json(p, {"total": 3}, atomic=True))
+            with open(p) as fh:
+                self.assertEqual(json.load(fh), {"total": 3})
+            self.assertEqual(["usage.json"], os.listdir(d))
+
+    def test_an_atomic_write_still_refuses_to_follow_a_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            victim = os.path.join(d, "victim.txt")
+            with open(victim, "w") as fh:
+                fh.write("SECRET")
+            artifact = os.path.join(d, "usage.json")
+            os.symlink(victim, artifact)
+            runio._write_json(artifact, {"ok": True}, atomic=True)
+            with open(victim) as fh:
+                self.assertEqual(fh.read(), "SECRET")
+            self.assertFalse(os.path.islink(artifact))
+
+
 class TestArtifactAppendSymlinkSafety(unittest.TestCase):
     """#1095, plan 6 review round 1: the O_APPEND analogue of
     TestArtifactWriteSymlinkSafety above. Ledger.record must add a line to
