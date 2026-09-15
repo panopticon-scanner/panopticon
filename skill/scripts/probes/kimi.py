@@ -21,7 +21,7 @@ import sys
 import tempfile
 import tomllib
 
-from scripts import dispatch, hosts, model_resolver
+from scripts import dispatch, hosts, model_resolver, write_guard_hook
 
 from . import common
 
@@ -504,6 +504,13 @@ def probe_kimi_write_guard(host, runner=None):
     the write hook to be registered there. The allowlist is the file the loop
     arms per batch (orchestrate.Guards), so it is legitimately absent at probe
     time.
+
+    #1571: the allowlist is built by `write_guard_hook.allowlist_document` --
+    the writer a real arming uses -- and the rows now include the boundary the
+    run-13 finding crossed, a bound entry writing a PEER entry's out_file.
+    Two data-file refutations follow: a version-1 flat list and a v2 document
+    with no `entries`, both of which must deny rather than fall back to a
+    batch-wide grant.
     """
     if not hosts.declares(host, hosts.ARTIFACT_WRITE_GUARD):
         return (hosts.UNKNOWN, None,
@@ -514,9 +521,11 @@ def probe_kimi_write_guard(host, runner=None):
             other = os.path.realpath(os.path.join(sandbox, "not-declared.json"))
             with open(declared, "w", encoding="utf-8") as fh:
                 fh.write("{}")
+            peer = os.path.realpath(os.path.join(sandbox, "findings-peer.json"))
             allowlist_path = os.path.join(sandbox, "write-allowlist.json")
             with open(allowlist_path, "w", encoding="utf-8") as fh:
-                json.dump([declared], fh)
+                json.dump(write_guard_hook.allowlist_document(
+                    {"probe-cell": [declared], "peer-cell": [peer]}), fh)
             rows = (
                 ("Write to the declared out_file",
                  {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, "probe-cell", True),
@@ -524,6 +533,10 @@ def probe_kimi_write_guard(host, runner=None):
                  {"tool_name": "Write", "tool_input": {"path": other, "content": "{}"}}, "probe-cell", False),
                 ("Edit outside the allowlist",
                  {"tool_name": "Edit", "tool_input": {"path": other}}, "probe-cell", False),
+                ("Write to a PEER entry's declared out_file",
+                 {"tool_name": "Write", "tool_input": {"path": peer, "content": "{}"}}, "probe-cell", False),
+                ("Write bound to an entry the allowlist does not name",
+                 {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, "ghost-cell", False),
                 ("unbound session Write",
                  {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, None, False),
             )
@@ -531,17 +544,22 @@ def probe_kimi_write_guard(host, runner=None):
             if not ok:
                 return (hosts.REFUTED, KIMI_WRITE_GUARD, detail)
             round_trip_detail = detail
-            with open(allowlist_path, "w", encoding="utf-8") as fh:
-                fh.write("not json")
-            ok, detail = _guard_round_trip(
-                "write", allowlist_path,
-                (("malformed allowlist",
-                  {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, "probe-cell", False),),
-                runner=runner)
-            if not ok:
-                return (hosts.REFUTED, KIMI_WRITE_GUARD, detail)
-            round_trip_detail = "%s; and, with the data file corrupted, %s" % (
-                round_trip_detail, detail)
+            corrupt = (("malformed allowlist", "not json"),
+                       ("version-1 flat list", json.dumps([declared])),
+                       ("v2 document with no entries",
+                        json.dumps({"version": 2, "paths": [declared]})))
+            for name, body in corrupt:
+                with open(allowlist_path, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+                ok, detail = _guard_round_trip(
+                    "write", allowlist_path,
+                    ((name,
+                      {"tool_name": "Write", "tool_input": {"path": declared, "content": "{}"}}, "probe-cell", False),),
+                    runner=runner)
+                if not ok:
+                    return (hosts.REFUTED, KIMI_WRITE_GUARD, detail)
+                round_trip_detail = "%s; and, with a %s on disk, %s" % (
+                    round_trip_detail, name, detail)
             # C3: the ARMING half, in the same sandbox -- the write probe used
             # to build no home at all, so its detail ("the runner arms the hook
             # in the per-run home's config.toml") named a file it never opened.
