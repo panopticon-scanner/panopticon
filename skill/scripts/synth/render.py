@@ -242,22 +242,39 @@ def render_summary(report):
 
 def redact_report_secrets(report):
     """#run7 SEC-B2C: mask unambiguous secret formats (GitHub/OpenAI/AWS/Slack/
-    Google tokens, PEM private keys) in every finding and discarded-claim body
-    BEFORE the report reaches any shareable artifact -- report.json, the split
-    parts, report.json.html, and the X0X candidates all read from this one dict.
+    Google tokens, PEM private keys) in EVERY string in the report, at any
+    depth, BEFORE it reaches any shareable artifact -- report.json, the split
+    parts, the -discarded.json sibling, report.json.html, the X0X candidates
+    and the terminal summary all read from this one dict.
 
     Reviewers are instructed to write [REDACTED], but a credential one of them
     quoted-but-didn't-redact would otherwise flow verbatim into the pipeline's
     final, shareable output surface. Defense-in-depth backstop layered on the
     prompt-level instruction; single-sourced with the driver's tool-output
-    redaction via scripts.redact so the two can never drift. Mutates `report`
-    in place and returns it. The anchored patterns mask well-formed secrets, not
-    prose that merely mentions a token format, so finding text is preserved."""
-    report["findings"] = [redact.redact_tree(f)
-                          for f in report.get("findings") or []]
-    if report.get("discarded_claims"):
-        report["discarded_claims"] = [
-            redact.redact_tree(f) for f in report["discarded_claims"]]
+    redaction via scripts.redact so the two can never drift.
+
+    #1634: this used to rewrite `findings` and `discarded_claims` only, which
+    made it a list a producer had to be REMEMBERED for -- and build_report had
+    already copied finding titles into `summary.top_issues` and
+    `groups[].key_findings`, so a token in a title survived into the summary
+    and the HTML. Walking the whole tree makes the backstop total: `meta`,
+    `summary`, `groups`, `cross_panel`, `delta` and anything a future producer
+    adds are covered without being named here. Structured fields are safe by
+    construction -- the patterns are anchored to well-formed secret formats, so
+    ids, codes, grades, hashes, file paths and the verbatim
+    `meta.host_capabilities` posture come back byte-identical (pinned by
+    test_structured_sections_survive_the_walk).
+
+    This is the second layer: synthesize also redacts the findings BEFORE
+    build_report, so derived fields are computed from masked text rather than
+    masked afterwards. Redaction is idempotent, so both running is a no-op on
+    text the first pass already handled.
+
+    Mutates `report` in place (callers keep reading the same dict) and returns
+    it; key order is preserved, and it is part of the artifact."""
+    redacted = redact.redact_tree(report)
+    report.clear()
+    report.update(redacted)
     return report
 
 def write_report(report, out_path, max_bytes=800000):

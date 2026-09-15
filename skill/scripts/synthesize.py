@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.html_report as html_report
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
+import scripts.redact as redact
 import scripts.x0x_report as x0x_report
 import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
@@ -180,6 +181,32 @@ def main(argv=None):
     tool_findings, dispositions, tools_ran = plan_mod.ingest_tool_findings(args)
     tools = plan_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran)
     prepared = findings_mod.FindingSet.prepare(args, tool_findings, run.security_mode)
+    # #1634: redact the INPUT, not only the output -- and do it HERE, upstream
+    # of the --emit-verify-queue branch, so both passes of a run see identical
+    # text.
+    #
+    # Why the placement is load-bearing: evidence.finding_fingerprint keys an
+    # agent finding on its TITLE, and build_verify_queue uses that fingerprint
+    # as the queue_id -- the filename an advisor's verdict is stored under and
+    # the key match_verdict binds on. Redacting after the early return would
+    # queue the unredacted title in pass 1 and recompute from the redacted one
+    # in pass 2: every queue_id changes, the verdict stops binding, the finding
+    # silently drops to `unverified` and coverage_certified flips to False --
+    # on precisely the input this fix exists for. (Finding ids are unaffected
+    # either way: load_findings derives them before any redaction, in both
+    # passes and in the driver's own queue build.) It also masks
+    # verify-queue.json, which is fed verbatim into the advisor prompt.
+    #
+    # Redacting the input is what makes the DERIVED fields safe: build_report
+    # copies f["title"] into summary.top_issues and groups[].key_findings, so a
+    # credential a reviewer quoted-but-didn't-redact reached those copies (and
+    # the HTML, which reads top_issues) before the post-build backstop ever ran
+    # -- it rewrote the finding, never the copies. discarded_claims are
+    # partitioned out of this same list inside build_report, so one pass covers
+    # them too. The post-build call stays: redaction is idempotent, and it is
+    # still the backstop for text produced AFTER this point (an advisor's
+    # reasoning is merged into finding.evidence during build_report).
+    prepared = (redact.redact_tree(prepared[0]),) + tuple(prepared[1:])
     if args.emit_verify_queue and verdicts_mod.emit_verify_queue(
             prepared[0], run_dir, args.max_verify):
         return 0
@@ -207,7 +234,11 @@ def main(argv=None):
 
     report = report_mod.build_report(report_mod.ReportInputs(
         run=run, findings=fs, delta=delta, plan=plan, tools=tools, cost=cost))
-    render_mod.redact_report_secrets(report)   # #run7 SEC-B2C: before any shareable artifact
+    # #run7 SEC-B2C / #1634: the whole-tree backstop, before any shareable
+    # artifact. The inputs were already masked above; this catches text
+    # produced since (advisor reasoning merged into finding.evidence) and
+    # anything a future producer derives, at any depth in the report.
+    render_mod.redact_report_secrets(report)
     errors, warnings = report_mod.validate_report(report)
     report_mod.attach_schema_status(report, errors)
     for w in warnings:
