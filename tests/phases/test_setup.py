@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.setup as setup
 import scripts.phases.setup as setup_phase
@@ -641,3 +642,25 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         self.assertIn("readiness gaps: docker", msg)
         self.assertIn("limitations", msg)
         self.assertIn("enforced-shells", msg)
+
+
+class TestSetupConvertsAStalledEngine(unittest.TestCase):
+    """`driver run` turns the engine's progress guard into an `error` status
+    (#1637 P08 F1b); `driver setup` drives the same engine and still let it
+    escape as a traceback. One named class, two call sites, and only one of
+    them converting is how the next person learns the guarantee is per-caller
+    rather than per-engine."""
+
+    def test_a_stalled_setup_engine_is_an_error_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            os.makedirs(runio._pano(root), exist_ok=True)
+            stuck = engine.Phase(
+                name="scan", kind="deterministic", done=lambda r, m: False,
+                execute=lambda r, m: engine.PhaseResult(kind="advanced"))
+            args = mock.Mock(target=root, host="claude", reset=False,
+                             max_per_group=None, max_groups=None)
+            status = setup_phase.run_setup_flow(args, phases=(stuck,))
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("without satisfying its done() predicate",
+                      status["message"])

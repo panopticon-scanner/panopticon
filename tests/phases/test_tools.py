@@ -210,6 +210,22 @@ class TestTheRetryIsInvocationScopedNotStepScoped(unittest.TestCase):
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
         self.assertEqual(marker["attempt_invocation"], "inv-1")
 
+    def test_a_marker_with_no_token_is_never_done_even_with_no_token_to_match(self):
+        """Fail CLOSED on the None/None case.
+
+        `driver.run` always mints a token, so this is not reachable from the
+        CLI today -- but `None == None` is True, which means the moment any
+        future caller of `run_engine` forgets the key, an environmental skip is
+        done for ever and run-13's regression is back verbatim. The cost of
+        failing closed is one retry by the next minted invocation, which is
+        exactly what a pre-#1637 marker already gets."""
+        runio._write_json(runio._pano(self.root, "tools-ran.json"),
+                          {"schema_version": 1, "ran": False, "skipped": True,
+                           "crashed": False, "note": "", "returncode": 0,
+                           "run_id": "R"})
+        self.assertFalse(tools_phase.tools_done(self.root,
+                                                {"run_id": "R", "flags": {}}))
+
     def test_a_forged_marker_cannot_claim_this_invocations_token(self):
         # The token is a fresh uuid per invocation, so a .panopticon file a
         # hostile target pre-commits cannot name it; one that omits the field

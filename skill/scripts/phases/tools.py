@@ -54,7 +54,14 @@ def tools_done(review_root, manifest):
     # hostile target pre-commits cannot claim to have been written by this
     # invocation -- the token is a fresh uuid per `driver.run` call and is
     # never persisted in the manifest.
-    return marker.get("attempt_invocation") == manifest.get("invocation")
+    #
+    # Fail CLOSED on a marker with no token at all: `None == None` would make
+    # an environmental skip done for ever the moment a caller of `run_engine`
+    # forgot to mint one, which is run-13's regression verbatim. The cost of
+    # the strict form is one retry by the next minted invocation -- exactly
+    # what a pre-#1637 marker already gets.
+    attempt = marker.get("attempt_invocation")
+    return attempt is not None and attempt == manifest.get("invocation")
 
 def tools_execute(review_root, manifest):
     if (manifest.get("flags") or {}).get("tools") is False:

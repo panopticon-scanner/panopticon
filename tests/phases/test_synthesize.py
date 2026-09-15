@@ -11,6 +11,7 @@ from unittest import mock
 from scripts import hosts
 from conftest import write_host_evidence
 import scripts.phases.runio as runio
+import scripts.synthesize as syn
 import scripts.phases.synthesize as synthesize
 
 import scripts.driver as driver
@@ -315,3 +316,38 @@ class TestAMidRunToolsDowngradeReachesSynthesize(unittest.TestCase):
         cmd = self._cmd({"run_id": "R", "security_mode": "standard",
                          "flags": {"tools": False}})
         self.assertNotIn("--tools-disabled-mid-run", cmd)
+
+
+class TestTheMidRunFlagParitiesWithSynthesizesParser(unittest.TestCase):
+    """The driver-side pin above proves the flag is EMITTED; nothing proved
+    the child accepts it. `tests/synth/helpers._cli_args` sets the attribute
+    directly, bypassing argparse, so renaming or dropping the option in
+    `synthesize.py` alone left every test green while the real child would
+    exit 2 -- the #1602 no-parity-test class, reproduced.
+
+    So this asserts the two halves against each other: the exact argv token
+    the driver emits, parsed by synthesize's own parser."""
+
+    def test_the_driver_argv_token_is_a_flag_synthesize_accepts(self):
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": []}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            os.makedirs(runio._pano(root))
+            with mock.patch("subprocess.run", side_effect=fake_run):
+                synthesize.synthesize_execute(
+                    root, {"run_id": "R", "security_mode": "standard",
+                           "flags": {},
+                           "flag_changes": [{"flag": "tools", "from": None,
+                                             "to": False, "at": "2026-09-15T00:00:00Z"}]})
+        flags = [a for a in captured["cmd"] if a.startswith("--tools-disabled")]
+        self.assertEqual(len(flags), 1, captured["cmd"])
+        # The child's OWN parser, not a hand-built Namespace: an unknown
+        # option here is a SystemExit(2), which is what the real child does.
+        parsed = syn.build_parser().parse_args(flags)
+        self.assertIs(parsed.tools_disabled_mid_run, True)

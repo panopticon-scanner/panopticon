@@ -23,8 +23,15 @@ import scripts.synth.render as render_mod
 import scripts.synth.verdicts as verdicts_mod
 
 
-def main(argv=None):
-    """Main entry point: load findings, enrich citations, build and validate report."""
+def build_parser():
+    """The CLI, as a named function -- `driver.py` has had one since 5.0.
+
+    Extracted so a test can bind the driver's emitted argv to THIS parser
+    (#1637 P08 fix round 2): `tests/synth/helpers._cli_args` builds a Namespace
+    directly, which is right for the loaders it feeds and means no test had
+    ever put a driver-authored flag through argparse. Renaming an option here
+    alone therefore stayed green while the real child exited 2.
+    """
     ap = argparse.ArgumentParser(description="panopticon synthesizer")
     ap.add_argument("--target", default="unknown")
     ap.add_argument("--groups", metavar="PATH")
@@ -87,7 +94,12 @@ def main(argv=None):
     ap.add_argument("--gate-scope", choices=["on-diff", "all"], default="on-diff",
                     help="Scope the gate/grade to on-diff findings, or all (default on-diff)")
     ap.add_argument("files", nargs="*")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None):
+    """Main entry point: load findings, enrich citations, build and validate report."""
+    args = build_parser().parse_args(argv)
 
     if args.compare:
         a_path, b_path = args.compare
