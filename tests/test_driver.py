@@ -24,6 +24,7 @@ import scripts.phases.coverage as coverage
 import scripts.phases.review as review
 import scripts.phases.verify as verify
 import scripts.phases.synthesize as synthesize
+import scripts.phases.tools as tools_phase
 import scripts.phases.validate as validate_phase
 
 from conftest import docker_probe_runner, write_host_evidence
@@ -1901,3 +1902,42 @@ class TestDriverLoopCLI(unittest.TestCase):
             rc = driver.main(["loop", "x"])
         self.assertEqual(rc, 0)
         self.assertEqual(lp.call_args.args[0].verb, "loop")
+
+
+class TestAnEnvironmentMovingMidRunIsRecoverable(unittest.TestCase):
+    """#1637 P08 fix round 1 (F1b/F2/F3). Readiness fails closed BEFORE the
+    first paid dispatch, so the only way to reach the tools phase with a
+    scanner that produces nothing is for the environment to move after the
+    scouts have been paid for. Everything about that path has to leave the run
+    recoverable -- which, on the first cut, none of it did."""
+
+    def _repo(self):
+        return make_git_repo(
+            test_case=self,
+            files={"src/app.py": "def f():\n    return 1\n"},
+            groups_yml="groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n",
+            branch="main", user_email="t@t", user_name="t")
+
+    def _args(self, target, *extra):
+        return driver.build_parser().parse_args(["run", target, *extra])
+
+    def _inject_scouts(self, root):
+        for g, _ in coverage._discovered_groups(root):
+            p = runio._pano(root, "scout-%s.json" % g)
+            if not os.path.exists(p):
+                runio._write_json(p, {"group": g, "panels": ["code"]})
+
+    def test_an_engine_that_cannot_advance_is_an_error_status_not_a_traceback(self):
+        # F1b: run_engine's progress guard raises RuntimeError, which
+        # driver.run did not catch -- the operator got a traceback and no
+        # status JSON at all, which is the one thing the status protocol
+        # exists to prevent.
+        d = self._repo()
+        stuck = engine.Phase(name="discovery", kind="deterministic",
+                             done=lambda r, m: False,
+                             execute=lambda r, m: engine.PhaseResult(
+                                 kind="advanced", message="nope"))
+        status = driver.run(self._args(d, "--no-tools"), phases=(stuck,))
+        self.assertEqual(status["status"], "error")
+        self.assertIn("without satisfying its done() predicate",
+                      status["message"])

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.tools as tools_phase
 
@@ -98,11 +99,16 @@ class TestAnEnvironmentalSkipIsNotDone(unittest.TestCase):
         self.root = os.path.realpath(self._t.name)
         os.makedirs(runio._pano(self.root))
         self.addCleanup(self._t.cleanup)
-        self.manifest = {"run_id": "R", "flags": {}}
+        # F1: a real manifest carries this invocation's token -- driver.run
+        # mints one per call. The environmental-skip questions below are all
+        # asked from a LATER invocation (token "inv-2"), which is the cadence
+        # ruling 4 names: re-evaluated on the next `driver run`.
+        self.manifest = {"run_id": "R", "flags": {}, "invocation": "inv-2"}
 
     def _marker(self, **fields):
         body = {"schema_version": 1, "ran": False, "skipped": False,
-                "crashed": False, "note": "", "returncode": 0, "run_id": "R"}
+                "crashed": False, "note": "", "returncode": 0, "run_id": "R",
+                "attempt_invocation": "inv-1"}
         body.update(fields)
         runio._write_json(runio._pano(self.root, "tools-ran.json"), body)
         return tools_phase.tools_done(self.root, self.manifest)
@@ -135,3 +141,112 @@ class TestAnEnvironmentalSkipIsNotDone(unittest.TestCase):
                   encoding="utf-8") as fh:
             fh.write("{ not json")
         self.assertFalse(tools_phase.tools_done(self.root, self.manifest))
+
+
+class TestTheRetryIsInvocationScopedNotStepScoped(unittest.TestCase):
+    """F1: `tools_done` is recomputed on EVERY engine step, not once per run.
+
+    An environmental skip that is simply "not done" makes `run_engine`
+    re-select `tools` immediately, in the same invocation, until max_steps
+    (10 000) -- then an uncaught RuntimeError, no status JSON, and `review`
+    never reached. The trigger is the exact case ruling 4 exists for:
+    run_tools exits 0 having written nothing (image absent, or no applicable
+    adapter).
+
+    So the retry is scoped to the INVOCATION: `tools_execute` stamps the
+    marker with this invocation's token, and a skip carrying the current
+    token is done FOR THIS INVOCATION and not-done for the next `driver run`.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.children = []
+
+    def _manifest(self, token):
+        return {"run_id": "R", "flags": {}, "invocation": token}
+
+    def _silent_child(self, cmd, review_root, phase, timeout=None):
+        """run_tools' docker-absent path: exit 0, write nothing."""
+        self.children.append(phase)
+        return mock.Mock(
+            returncode=0, stdout="",
+            stderr="panopticon-tools image not available; skipping tool scan")
+
+    def _engine(self, token):
+        reached = {"review": False}
+
+        def review_execute(root, manifest):
+            reached["review"] = True
+            return engine.PhaseResult(kind="advanced", message="review")
+
+        phases = (
+            engine.Phase("tools", "deterministic",
+                         tools_phase.tools_done, tools_phase.tools_execute),
+            engine.Phase("review", "deterministic",
+                         lambda root, m: reached["review"], review_execute),
+        )
+        with mock.patch.object(tools_phase.runio, "_run_child",
+                               side_effect=self._silent_child):
+            result = engine.run_engine(self.root, self._manifest(token), phases,
+                                       max_steps=25)
+        return result, reached
+
+    def test_a_silent_tools_child_runs_once_and_the_run_proceeds(self):
+        result, reached = self._engine("inv-1")
+        self.assertEqual(self.children, ["tools"])
+        self.assertTrue(reached["review"])
+        self.assertEqual(result["status"], "complete")
+
+    def test_the_next_invocation_retries_it_exactly_once_more(self):
+        self._engine("inv-1")
+        self._engine("inv-2")
+        self.assertEqual(self.children, ["tools", "tools"])
+
+    def test_the_marker_carries_the_invocation_that_attempted_it(self):
+        self._engine("inv-1")
+        marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
+        self.assertEqual(marker["attempt_invocation"], "inv-1")
+
+    def test_a_forged_marker_cannot_claim_this_invocations_token(self):
+        # The token is a fresh uuid per invocation, so a .panopticon file a
+        # hostile target pre-commits cannot name it; one that omits the field
+        # reads as another invocation's and is retried.
+        runio._write_json(runio._pano(self.root, "tools-ran.json"),
+                          {"schema_version": 1, "ran": False, "skipped": True,
+                           "crashed": False, "note": "", "returncode": 0,
+                           "run_id": "R"})
+        self.assertFalse(tools_phase.tools_done(self.root,
+                                                self._manifest("inv-9")))
+
+
+class TestTheNoToolsMarkerIsFlagAware(unittest.TestCase):
+    """F5: `readiness_done` re-evaluates when the manifest's `tools` flag no
+    longer matches the artifact's; `tools_done`'s `--no-tools` branch did not,
+    so a `--no-tools` marker stayed done on a run that had since been switched
+    back to tools-enabled."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        runio._write_json(
+            runio._pano(self.root, "tools-ran.json"),
+            {"schema_version": 1, "ran": False, "skipped": True,
+             "crashed": False, "note": tools_phase.NO_TOOLS_NOTE,
+             "returncode": None, "run_id": "R", "attempt_invocation": "inv-1"})
+
+    def test_done_while_the_manifest_still_says_no_tools(self):
+        self.assertTrue(tools_phase.tools_done(
+            self.root, {"run_id": "R", "flags": {"tools": False},
+                        "invocation": "inv-2"}))
+
+    def test_not_done_once_the_manifest_says_tools_are_enabled(self):
+        for flag in (None, True):
+            with self.subTest(tools=flag):
+                self.assertFalse(tools_phase.tools_done(
+                    self.root, {"run_id": "R", "flags": {"tools": flag},
+                                "invocation": "inv-2"}))

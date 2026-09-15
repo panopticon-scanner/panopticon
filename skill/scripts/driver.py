@@ -642,9 +642,10 @@ def run(args, runner=subprocess.run, phases=PHASES):
             scope=scope, pr=args.pr, pr_base=pr_base)
         run_manifest.write_manifest(review_root, manifest)
     else:
+        cli_flags = _cli_flags(args)
         conflicts = run_manifest.conflicting_flags(
             manifest, host=args.host, security_mode=args.security,
-            base=base, flags=_cli_flags(args), scope=scope, pr=args.pr)
+            base=base, flags=cli_flags, scope=scope, pr=args.pr)
         if conflicts:
             return runio._error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
@@ -656,6 +657,16 @@ def run(args, runner=subprocess.run, phases=PHASES):
     # that needs it simply passes it again (#calibration-4).
     if getattr(args, "session_dir", None):
         manifest["session_dir"] = os.path.abspath(args.session_dir)
+    # #1637 P08 F1: ONE token per invocation, carried on the in-memory manifest
+    # -- which is the context object every phase already receives -- and
+    # deliberately never written to disk (run_manifest._EPHEMERAL_KEYS). It is
+    # what makes an environmental tool skip retried once per `driver run`
+    # rather than once per ENGINE STEP: `run_engine` recomputes the cursor
+    # every step, so a phase that is simply "not done" after executing is
+    # re-selected immediately and spins to max_steps. `driver loop` gets a
+    # fresh token per iteration by construction, since every iteration calls
+    # this function.
+    manifest["invocation"] = run_manifest.new_run_id()
     # #1: a bare re-invocation of an ALREADY-complete run matches every manifest
     # field (conflicting_flags treats a None incoming value as no-conflict), so it
     # would advance straight to "complete" and hand back a possibly-stale report as
@@ -688,6 +699,14 @@ def run(args, runner=subprocess.run, phases=PHASES):
     try:
         result = engine.run_engine(review_root, manifest, phases)
     except runio.DriverError as exc:
+        return runio._error_status(str(exc))
+    except engine.EngineStalled as exc:
+        # #1637 P08 F1b: the progress guard fired. Converted here rather than
+        # left to escape: `driver run` speaks a status protocol, and a
+        # traceback is not a status -- the host gets no JSON at all, after the
+        # spin has already burned the run's wall clock. The engine's own
+        # message is carried verbatim, so the phase that could not advance is
+        # still named.
         return runio._error_status(str(exc))
     if result.get("status") == "complete":
         validate._finalize_worktree(review_root, manifest)
