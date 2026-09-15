@@ -369,8 +369,9 @@ def _runs_this_script(command):
     Tokenizing is what keeps our own entry recognisable once the script path is
     quoted: a checkout path that needed escaping no longer appears verbatim in
     the command, and an entry uninstall cannot recognise is one it orphans,
-    leaving the guard armed. The substring test stays as the fallback for a
-    legacy entry; a command no shell can parse is someone else's hook, so it
+    leaving the guard armed. Both legacy spellings tokenize cleanly, so the
+    substring test is the fallback for a command no shell can parse: one that
+    still names this script is ours (and removable), one that does not
     answers False rather than raising."""
     mine = os.path.abspath(__file__)
     try:

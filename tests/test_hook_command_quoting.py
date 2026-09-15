@@ -197,3 +197,12 @@ class TestEntriesWhoseOwnPathNeededEscapingAreStillOurs(unittest.TestCase):
         for module in (wg, rg):
             self.assertFalse(module._is_our_entry(
                 _entry('echo "unterminated', module._MATCHER)))
+
+    def test_an_unparseable_entry_that_names_our_script_is_still_ours(self):
+        # The substring fallback's one distinctive input: a command shlex
+        # cannot tokenize but which names this script. It is ours, so
+        # uninstall can still remove it instead of orphaning an armed guard.
+        for module in (wg, rg):
+            mine = os.path.abspath(module.__file__)
+            self.assertTrue(module._is_our_entry(
+                _entry('echo "unterminated %s' % mine, module._MATCHER)))
