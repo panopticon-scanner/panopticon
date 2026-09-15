@@ -95,10 +95,14 @@ class RunConfig:
     # not. Counted by plan_mod.load_panel_tools_context off the driver's own
     # per-cell tally; {} only when a caller predates the field.
     panel_tools_context: dict = field(default_factory=dict)
+    # #1637 P08 F2: True when this run started with the tool scan enabled and
+    # had it switched off mid-flight. Distinct from `flags.tools is False`,
+    # which is equally true of a run that never had tools -- a weaker claim.
+    tools_disabled_mid_run: bool = False
 
     @classmethod
     def from_args(cls, args, groups_json, timestamp, host_capabilities=None,
-                  panel_tools_context=None):
+                  panel_tools_context=None, tools_disabled_mid_run=False):
         """The CLI flags resolved against the run's groups.json (WS-0 S3):
         an explicit --changes wins over a discovered mode (a groups.json mode
         must not flip an explicitly-requested changes review back to repo);
@@ -121,7 +125,8 @@ class RunConfig:
                    gate_unverified=args.gate_unverified, max_verify=args.max_verify,
                    gate_scope=args.gate_scope,
                    host_capabilities=host_capabilities or {},
-                   panel_tools_context=panel_tools_context or {})
+                   panel_tools_context=panel_tools_context or {},
+                   tools_disabled_mid_run=bool(tools_disabled_mid_run))
 
 
 @dataclass(frozen=True)
@@ -227,9 +232,14 @@ def assemble(run, resolved, reconciled, graded, cost):
             # each cell as its prompt was rendered. Zeroes on both sides mean
             # no panel was dispatched, which is a different fact from "none saw
             # evidence" and stays distinguishable because `without` is 0 too.
-            "tools": {"panels_with_scanner_context": {
-                "with": int((run.panel_tools_context or {}).get("with") or 0),
-                "without": int((run.panel_tools_context or {}).get("without") or 0)}},
+            "tools": {
+                "panels_with_scanner_context": {
+                    "with": int((run.panel_tools_context or {}).get("with") or 0),
+                    "without": int((run.panel_tools_context or {}).get("without") or 0)},
+                # F2: stated on EVERY report, `false` included -- the absence
+                # of a warning has to mean "measured and did not happen", the
+                # same rule surface 3 applies to the host posture.
+                "disabled_mid_run": bool(run.tools_disabled_mid_run)},
             "integrity": reconciled.integrity,
             "cost": cost,
             # 5.1 surface 2: the verified host posture, verbatim off the

@@ -649,6 +649,15 @@ def run(args, runner=subprocess.run, phases=PHASES):
         if conflicts:
             return runio._error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
+        # #1637 P08 F2: `--no-tools` on an in-flight run is the non-destructive
+        # rescue from a scanner environment that moved after the scouts were
+        # paid for -- the alternative was `--reset`, which throws that work
+        # away. Recorded in the manifest (flags + flag_changes), so readiness
+        # re-evaluates on its own (its done predicate keys on flags.tools), the
+        # tools phase rewrites its marker as the operator's own skip, and
+        # synthesis discloses it as meta.tools.disabled_mid_run.
+        if run_manifest.is_tools_downgrade(manifest, cli_flags):
+            manifest = run_manifest.record_tools_downgrade(review_root, manifest)
     # In-memory only, and deliberately NOT a manifest field: it names where the
     # HOST SESSION runs, which is a property of this invocation rather than of
     # the run, and it feeds nothing but the cost-ledger transcript lookup. Not

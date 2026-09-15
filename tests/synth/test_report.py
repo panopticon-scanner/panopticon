@@ -3997,3 +3997,30 @@ class TestPanelsWithScannerContext(unittest.TestCase):
             schema = json.load(fh)
         block = schema["properties"]["meta"]["properties"]["tools"]
         self.assertIn("panels_with_scanner_context", block["properties"])
+
+
+class TestAMidRunToolsDowngradeIsDisclosed(unittest.TestCase):
+    """#1637 P08 F2: `--no-tools` rescues a run whose scanner environment
+    moved, instead of `--reset` discarding every paid scout. It is a real
+    downgrade of what this run's reviewers were shown, so the report says so
+    rather than reading like a run that simply never had tools."""
+
+    def _meta(self, **kw):
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp=DEFAULT_TIMESTAMP, **kw),
+            findings=findings_mod.FindingSet(findings=[])))["meta"]
+
+    def test_the_flag_reaches_meta_tools(self):
+        self.assertIs(self._meta(tools_disabled_mid_run=True)
+                      ["tools"]["disabled_mid_run"], True)
+
+    def test_an_ordinary_run_says_so_explicitly(self):
+        self.assertIs(self._meta()["tools"]["disabled_mid_run"], False)
+
+    def test_the_schema_declares_it(self):
+        with open(os.path.join(SKILL_ROOT, "reference",
+                               "report-schema.json"), encoding="utf-8") as fh:
+            schema = json.load(fh)
+        block = schema["properties"]["meta"]["properties"]["tools"]
+        self.assertIn("disabled_mid_run", block["properties"])

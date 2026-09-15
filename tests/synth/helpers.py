@@ -85,6 +85,7 @@ def _cli_args(**kw):
               severity="all", changes=False, out=None, run_id=None, run_dir=None,
               html_out=None, compare=None, epss=False, tools_dir=None,
               tools_exclude=None, doc_paths=None, include_fixtures=False,
+              tools_disabled_mid_run=False,
               emit_verify_queue=False, verdicts_dir=None, gate_unverified=False,
               max_verify=None, diff_hunks=None, diff_context=5, gate_scope="on-diff",
               files=[])

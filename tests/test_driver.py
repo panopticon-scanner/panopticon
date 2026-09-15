@@ -1941,3 +1941,35 @@ class TestAnEnvironmentMovingMidRunIsRecoverable(unittest.TestCase):
         self.assertEqual(status["status"], "error")
         self.assertIn("without satisfying its done() predicate",
                       status["message"])
+
+    def test_no_tools_rescues_an_in_flight_run_without_discarding_it(self):
+        # F2: `--no-tools` was refused as flag drift on a run already in
+        # flight, so the only exit from a mid-run image loss was `--reset` --
+        # which discards every paid scout, the exact loss ruling 4 set out to
+        # prevent.
+        d = self._repo()
+        first = driver.run(self._args(d))
+        self.assertEqual(first["checkpoint"], "scout")
+        scout_file = runio._pano(d, "scout-Core.json")
+        self._inject_scouts(d)
+        rescue = driver.run(self._args(d, "--no-tools"))
+        self.assertNotEqual(rescue["status"], "error", rescue.get("message"))
+        # The paid work survives, the manifest records the downgrade, and the
+        # tools marker is rewritten as the operator's own choice.
+        self.assertTrue(os.path.isfile(scout_file))
+        manifest = run_manifest.load_manifest(d)
+        self.assertIs(manifest["flags"]["tools"], False)
+        change = manifest["flag_changes"][-1]
+        self.assertEqual((change["flag"], change["to"]), ("tools", False))
+        self.assertIsInstance(change["at"], str)
+        marker = runio._load_json(runio._pano(d, "tools-ran.json"))
+        self.assertEqual(marker["note"], tools_phase.NO_TOOLS_NOTE)
+
+    def test_turning_tools_back_on_mid_run_is_still_drift(self):
+        # The downgrade is one-way: panels already dispatched saw no scanner
+        # evidence, and no later flag can change what they were shown.
+        d = self._repo()
+        driver.run(self._args(d, "--no-tools"))
+        status = driver.run(self._args(d, "--tools"))
+        self.assertEqual(status["status"], "error")
+        self.assertIn("drift", status["message"])

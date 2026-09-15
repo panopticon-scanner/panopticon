@@ -1198,3 +1198,24 @@ class TestScannerContextLine(unittest.TestCase):
 
     def test_a_report_with_no_such_block_renders_no_line(self):
         self.assertNotIn("Scanner context:", hr.render(_minimal_report()))
+
+
+class TestAMidRunToolsDowngradeIsVisible(unittest.TestCase):
+    """#1637 P08 F2: a person reading the report must meet the downgrade
+    without opening JSON -- it changed what every panel after it was shown."""
+
+    def test_the_header_says_the_scan_was_disabled_mid_run(self):
+        report = _minimal_report()
+        report["meta"]["tools"] = {
+            "panels_with_scanner_context": {"with": 1, "without": 4},
+            "disabled_mid_run": True}
+        html_out = hr.render(report)
+        self.assertIn("disabled mid-run", html_out)
+        self.assertIn("1 of 5 panels", html_out)
+
+    def test_an_ordinary_run_says_nothing_about_it(self):
+        report = _minimal_report()
+        report["meta"]["tools"] = {
+            "panels_with_scanner_context": {"with": 1, "without": 4},
+            "disabled_mid_run": False}
+        self.assertNotIn("disabled mid-run", hr.render(report))

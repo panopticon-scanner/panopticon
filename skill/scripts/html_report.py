@@ -582,18 +582,26 @@ def _render_scanner_context(meta):
     measurement nobody made. A run that dispatched no panel is the same shape
     for the same reason.
     """
-    block = (meta.get("tools") or {}).get("panels_with_scanner_context")
-    if not isinstance(block, dict):
+    tools = meta.get("tools") or {}
+    block = tools.get("panels_with_scanner_context")
+    parts = []
+    if isinstance(block, dict):
+        try:
+            with_ctx = int(block.get("with") or 0)
+            without = int(block.get("without") or 0)
+        except (TypeError, ValueError):
+            with_ctx = without = 0
+        if with_ctx + without:
+            parts.append("%d of %d panels reviewed with tool findings on disk"
+                         % (with_ctx, with_ctx + without))
+    # F2: a mid-run downgrade is said out loud even on a run that dispatched no
+    # panel at all -- it is a fact about what this run could still have found.
+    if tools.get("disabled_mid_run") is True:
+        parts.append("the tool scan was disabled mid-run with --no-tools")
+    if not parts:
         return ""
-    try:
-        with_ctx, without = int(block.get("with") or 0), int(block.get("without") or 0)
-    except (TypeError, ValueError):
-        return ""
-    total = with_ctx + without
-    if not total:
-        return ""
-    return ("<div class='coverage'>Scanner context: %d of %d panels reviewed "
-            "with tool findings on disk</div>" % (with_ctx, total))
+    return ("<div class='coverage'>Scanner context: %s</div>"
+            % " &mdash; ".join(parts))
 
 
 def _render_compare_summary(label, report):

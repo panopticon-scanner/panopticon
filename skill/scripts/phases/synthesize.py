@@ -5,6 +5,7 @@ import os
 import sys
 
 from scripts import hosts
+import scripts.run_manifest as run_manifest
 from . import engine
 from . import runio
 from . import requests
@@ -136,6 +137,14 @@ def synthesize_execute(review_root, manifest):
         # but synthesize_execute never forwarded it.
         if verify._tools_include_fixtures(manifest):
             cmd += ["--include-fixtures"]
+    # #1637 P08 F2: the mid-run `--no-tools` rescue is a real downgrade of what
+    # this run's later panels were shown, so the report says so. Threaded from
+    # the manifest the driver is already holding rather than re-read from disk
+    # by the child: run-manifest.json is a TOP_LEVEL artifact, so it is not
+    # under the `--run-dir` every other run artifact resolves against, and a
+    # direct `synthesize.py` invocation legitimately has no driver to ask.
+    if run_manifest.tools_downgraded_mid_run(manifest):
+        cmd += ["--tools-disabled-mid-run"]
     for flag, key in (("--fail-on", "fail_on"), ("--severity", "severity"),
                       ("--gate-scope", "gate_scope")):
         if flags.get(key):

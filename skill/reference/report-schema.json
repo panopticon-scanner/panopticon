@@ -93,6 +93,10 @@
                   "type": "integer"
                 }
               }
+            },
+            "disabled_mid_run": {
+              "type": "boolean",
+              "description": "True when this run started with the tool scan enabled and had it switched off with --no-tools while in flight (#1637 P08) -- the non-destructive rescue from a scanner environment that moved after the scouts were paid for. Distinct from a run that never had tools at all, and stated on every report (false included) so its absence cannot be read as its not having been measured."
             }
           }
         },
