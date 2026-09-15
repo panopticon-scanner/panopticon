@@ -153,9 +153,20 @@ def decide(tool_name, file_path, allowlist):
     Entry-agnostic by design, and after #1571 it answers only the BATCH-WIDE
     question -- "may anything in this fan-out write here?" -- which is the
     right question for the orchestrator and the wrong one for a reviewer.
-    `adjudicate` is what binds a reviewer to its own entry."""
+    `adjudicate` is what binds a reviewer to its own entry.
+
+    Handed the per-entry MAPPING it raises, rather than testing the path
+    against that mapping's keys and denying in silence. `decide(tool, path,
+    allowlist_from_plan(plan))` was the pre-#1571 call shape -- the exact
+    expression this change had to rewrite at four call sites -- so the two
+    argument shapes are indistinguishable at any site holding "the allowlist".
+    That is the #1482 hazard again, where a wrong-shaped argument degraded
+    into an empty success nobody noticed, and it gets the same loud refusal.
+    """
     if tool_name not in _WRITE_TOOLS:
         return True, ""
+    if isinstance(allowlist, dict):
+        raise TypeError("decide takes the flat union; pass union_paths(allowlist)")
     target, reason = _resolve_target(file_path)
     if target is None:
         return False, reason

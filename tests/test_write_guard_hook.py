@@ -104,6 +104,36 @@ class TestDecide(unittest.TestCase):
             self.assertFalse(ok, empty)
 
 
+class TestDecideRefusesTheMapping(unittest.TestCase):
+    """F3: `decide` kept its name and signature while the module's natural
+    "allowlist" object changed shape (#1571), so the pre-PR call --
+    `decide(tool, path, allowlist_from_plan(plan))`, the exact expression this
+    change had to rewrite in four call sites -- now tests the path against the
+    mapping's KEYS and denies in silence.
+
+    Fail-closed, but the silence is the hazard: it is the same "two
+    indistinguishable shapes at one call site" that `allowlist_from_plan`
+    itself refuses loudly for #1482, where an empty allowlist shipped and
+    nobody noticed. Refuse it the same way."""
+
+    def test_a_mapping_is_refused_loudly_not_denied_silently(self):
+        with self.assertRaises(TypeError) as cm:
+            wg.decide("Write", ".panopticon/a.json",
+                      wg.allowlist_from_plan([{"id": "e", "out_file": ".panopticon/a.json"}]))
+        self.assertIn("union_paths", str(cm.exception))
+
+    def test_the_flat_union_is_what_it_takes(self):
+        plan = [{"id": "e", "out_file": ".panopticon/a.json"}]
+        ok, _ = wg.decide("Write", ".panopticon/a.json",
+                          wg.union_paths(wg.allowlist_from_plan(plan)))
+        self.assertTrue(ok)
+
+    def test_a_non_write_tool_short_circuits_before_the_check(self):
+        # The tool filter comes first, as it always did: a Read is not
+        # adjudicated at all, whatever shape the third argument has.
+        self.assertEqual(wg.decide("Read", "/etc/passwd", {}), (True, ""))
+
+
 class TestCwdIndependence(unittest.TestCase):
     """#935: with an ABSOLUTE out_file (phases.review._cell_entry emits these), the guard
     authorizes the reviewer's write regardless of the cwd the hook runs in.
