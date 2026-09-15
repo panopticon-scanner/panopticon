@@ -3,6 +3,7 @@
 grades and a CI gate verdict. Stdlib-only.
 """
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -12,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import scripts.html_report as html_report
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
+import scripts.redact as redact
 import scripts.x0x_report as x0x_report
 import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
@@ -187,6 +189,18 @@ def main(argv=None):
     fs = findings_mod.FindingSet.load(args, tool_findings, run.security_mode,
                                       verdict_run_id=(queue[0] or {}).get("run_id"),
                                       prepared=prepared)
+    # #1634: redact the INPUT, not only the output. build_report copies
+    # f["title"] into summary.top_issues and groups[].key_findings, so a
+    # credential a reviewer quoted-but-didn't-redact reached those derived
+    # fields (and the HTML, which reads top_issues) before the post-build
+    # backstop below ever ran -- it rewrote the finding, never the copies.
+    # Masking here means every derived field is computed from already-masked
+    # text, whatever derives it. discarded_claims are partitioned out of this
+    # same list inside build_report, so they are covered by the same pass.
+    # The post-build call stays: redaction is idempotent, and it remains the
+    # documented backstop for text produced AFTER this point (an advisor's
+    # reasoning is merged into finding.evidence during build_report).
+    fs = dataclasses.replace(fs, findings=redact.redact_tree(fs.findings))
     plan = plan_mod.PlanInputs.load(run_dir, args.files, args.verdicts_dir, groups_meta,
                                     plans, queue, fs.verdicts)
     # #1335: SPEND, not coverage -- a no-op scanner still cost a dispatch.
