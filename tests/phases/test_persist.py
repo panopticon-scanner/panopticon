@@ -315,3 +315,88 @@ class TestRoleSchema(unittest.TestCase):
                          "/r/.panopticon/runs/t/report.json"):
             with self.subTest(out_file=out_file):
                 self.assertIsNone(persist.role_schema(_entry(out_file)))
+
+
+class TestTheControllerOwnsTheStampOnAReturnedReply(unittest.TestCase):
+    """D10 ruling 4: for a RETURN-PERSIST reply the driver fills a missing
+    cell-identity key from the entry and says it did.
+
+    Run-13: 7 of 8 failed attempts were replies missing `_panopticon`. The
+    controller knows every one of those keys -- it is the side that wrote them
+    onto the entry -- and it is the side writing the file, so demanding the
+    agent echo them back is a shape tax on the one path where the identity was
+    never in doubt. A key that is PRESENT and CONTRADICTS the entry is a
+    different claim, and is still refused.
+    """
+
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.d, ignore_errors=True))
+        os.makedirs(os.path.join(self.d, ".panopticon", "runs", "t", "verdicts"))
+
+    def _out(self, *parts):
+        return os.path.join(self.d, ".panopticon", "runs", "t", *parts)
+
+    def _written(self, entry):
+        with open(entry["out_file"], encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_a_review_reply_with_no_stamp_is_accepted_and_stamped_by_the_controller(self):
+        e = _entry(self._out("findings-app-SEC.json"), id="review-app-SEC",
+                   run_id="RID", group="app", domain="SEC")
+        ok, reason = persist.write_reply(e, json.dumps({"findings": []}))
+        self.assertTrue(ok, reason)
+        self.assertEqual({"run_id": "RID", "group": "app", "domain": "SEC",
+                          "stamped_by": "controller"},
+                         self._written(e)["_panopticon"])
+
+    def test_a_partial_stamp_keeps_what_it_says_and_gains_what_it_omits(self):
+        e = _entry(self._out("findings-app-SEC.json"), id="review-app-SEC",
+                   run_id="RID", group="app", domain="SEC")
+        ok, reason = persist.write_reply(e, json.dumps(
+            {"findings": [], "_panopticon": {"run_id": "RID", "role": "domain_panel"}}))
+        self.assertTrue(ok, reason)
+        self.assertEqual({"run_id": "RID", "role": "domain_panel", "group": "app",
+                          "domain": "SEC", "stamped_by": "controller"},
+                         self._written(e)["_panopticon"])
+
+    def test_a_complete_stamp_is_left_exactly_as_the_agent_wrote_it(self):
+        e = _entry(self._out("findings-app-SEC.json"), id="review-app-SEC",
+                   run_id="RID", group="app", domain="SEC")
+        stamp = {"run_id": "RID", "role": "domain_panel", "group": "app", "domain": "SEC"}
+        ok, reason = persist.write_reply(e, json.dumps({"findings": [], "_panopticon": stamp}))
+        self.assertTrue(ok, reason)
+        self.assertEqual(stamp, self._written(e)["_panopticon"])
+        self.assertNotIn("stamped_by", self._written(e)["_panopticon"])
+
+    def test_a_contradicting_key_is_still_refused_with_todays_message(self):
+        e = _entry(self._out("findings-app-SEC.json"), id="review-app-SEC",
+                   run_id="RID", group="app", domain="SEC")
+        ok, reason = persist.write_reply(e, json.dumps(
+            {"findings": [], "_panopticon": {"group": "other"}}))
+        self.assertFalse(ok)
+        self.assertEqual("reply for 'review-app-SEC' rejected: _panopticon.group is "
+                         "'other', the entry is 'app'", reason)
+        self.assertFalse(os.path.exists(e["out_file"]))
+
+    def test_a_verdict_bundle_is_stamped_the_same_way(self):
+        e = _entry(self._out("verdicts", "verdicts-app-SEC.json"), id="verify-app-SEC-primary",
+                   run_id="RID", group="app", domain="SEC", stage="primary")
+        ok, reason = persist.write_reply(e, json.dumps({"verdicts": []}))
+        self.assertTrue(ok, reason)
+        self.assertEqual({"run_id": "RID", "group": "app", "domain": "SEC",
+                          "stage": "primary", "stamped_by": "controller"},
+                         self._written(e)["_panopticon"])
+
+    def test_the_done_predicates_are_untouched_so_a_self_write_still_needs_its_stamp(self):
+        # `accepts` is what the SELF-WRITE path asks (is_done -> group_runner /
+        # verify), and the agent wrote that file itself under the write guard:
+        # nobody checked its identity on the way in, so the stamp is the only
+        # thing that says which cell it belongs to. Only `write_reply` fills.
+        e = _entry(self._out("findings-app-SEC.json"), delivery=None, id="review-app-SEC",
+                   run_id="RID", group="app", domain="SEC")
+        runio._write_json(e["out_file"], {"findings": []})
+        ok, reason = persist.accepts(e, {"findings": []})
+        self.assertFalse(ok)
+        self.assertIn("_panopticon", reason)
+        self.assertFalse(persist.is_done(e))

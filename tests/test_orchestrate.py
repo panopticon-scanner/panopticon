@@ -1123,15 +1123,20 @@ class TestRefusedRepliesAreRetained(LoopCase):
     """D10 ruling 1, loop side: the reply the loop refuses is kept.
 
     Before this the refusal printed a reason to stderr and dropped the text on
-    the floor -- so the single most common real failure (run-13: 7 of 8 failed
-    attempts were replies missing `_panopticon`) left nothing to look at and
+    the floor -- so run-13's eight failed attempts left nothing to look at and
     nothing for the retry to quote.
+
+    The refusal used here is a CONTRADICTING stamp, deliberately: a reply that
+    merely OMITS `_panopticon` -- run-13's actual failure, 7 times out of 8 --
+    is no longer refused at all (ruling 4 fills it from the entry). What is
+    left to refuse is a reply making a different claim than the entry, and that
+    one is never overwritten.
     """
 
     class RefusingRunner(FakeRunner):
-        """A return-persist reviewer that returns a well-formed findings object
-        with NO `_panopticon` stamp -- run-13's failure, verbatim -- and leaks
-        a token-shaped literal while it is at it."""
+        """A return-persist reviewer that stamps its findings for a cell it was
+        not dispatched for, and leaks a token-shaped literal while it is at
+        it."""
 
         SECRET = "ghp_" + "B" * 36
 
@@ -1148,7 +1153,9 @@ class TestRefusedRepliesAreRetained(LoopCase):
             body = {"findings": [{"title": "issue at " + self.SECRET, "severity": "HIGH",
                                   "domain": entry["domain"], "code": entry["domain"] + "-A1A",
                                   "category": "authz",
-                                  "location": {"file": "src/app.py", "line_start": 1}}]}
+                                  "location": {"file": "src/app.py", "line_start": 1}}],
+                    "_panopticon": {"run_id": entry.get("run_id"), "role": "domain_panel",
+                                    "domain": entry["domain"], "group": "a-different-group"}}
             return base.RunResult(
                 entry_id=entry["id"], ok=True, text=json.dumps(body),
                 usage={"input_tokens": 5, "output_tokens": 1, "cache_read_input_tokens": 0,
@@ -1187,7 +1194,7 @@ class TestRefusedRepliesAreRetained(LoopCase):
                           for n in range(1, orchestrate.MAX_ENTRY_FAILURES + 1)])
         with open(os.path.join(rejected, "review-app-SEC-1.json"), encoding="utf-8") as fh:
             record = json.load(fh)
-        self.assertIn("_panopticon", record["reason"])
+        self.assertIn("_panopticon.group is 'a-different-group'", record["reason"])
         self.assertIn("[REDACTED_TOKEN]", record["reply"])
         self.assertNotIn(self.RefusingRunner.SECRET, record["reply"])
 
@@ -1201,7 +1208,7 @@ class TestRefusedRepliesAreRetained(LoopCase):
         self.assertEqual(3, len(runner.prompts))
         self.assertNotIn("refused", runner.prompts[0])
         self.assertIsNone(runner.priors[0])
-        self.assertIn("_panopticon", runner.prompts[1])
+        self.assertIn("_panopticon.group is 'a-different-group'", runner.prompts[1])
         self.assertIn("attempt 1", runner.prompts[1])
         self.assertEqual(1, runner.priors[1]["attempt"])
         self.assertEqual(2, runner.priors[2]["attempt"])

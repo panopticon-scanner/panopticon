@@ -828,3 +828,26 @@ class TestClaudeSessionModeWorkflowTemplate(unittest.TestCase):
         run_loop = _section(doc, "## Driver run-loop", "## Driver setup")
         self.assertIn("skill/workflows/dispatch.js", run_loop)
         self.assertIn("granted to the entry's read scope (`scope.reads`", run_loop)
+
+
+class TestTheStampContractIsWrittenDown(unittest.TestCase):
+    """D10 ruling 4: the role contract now differs between the two delivery
+    paths, and an operator reading the guide has to be able to tell which one
+    they are on."""
+
+    def setUp(self):
+        self.loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
+
+    def test_the_guide_says_who_owns_the_stamp_on_each_path(self):
+        for phrase in ("the `_panopticon` stamp is the DRIVER's to fill",
+                       'stamped_by: "controller"', "is never overwritten",
+                       "self-written"):
+            self.assertIn(phrase, self.loop, phrase)
+
+    def test_the_guide_says_where_a_refused_reply_goes(self):
+        # D10 ruling 1/2: an operator whose run refuses a reply has to be able
+        # to find the reply, the row that names it, and the retry that quotes
+        # it -- none of it is guessable from the stderr line alone.
+        for phrase in ("runs/<tag>/rejected/<entry-id>-<attempt>.json",
+                       "rejected_file", "prior_rejection"):
+            self.assertIn(phrase, self.loop, phrase)

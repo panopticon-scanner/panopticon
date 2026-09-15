@@ -152,7 +152,10 @@ class TestSessionMode(LoopCase):
             self._loop(d, "--session-dir", s, "--allow-unenforced")
         reply = os.path.join(d, "reply.txt")
         with open(reply, "w", encoding="utf-8") as fh:
-            fh.write('{"findings": [], "note": "ghp_%s"}' % ("C" * 36))
+            # a CONTRADICTING stamp: the one refusal ruling 4 leaves standing
+            # (an omitted stamp is now filled from the entry).
+            fh.write(json.dumps({"findings": [], "note": "ghp_" + "C" * 36,
+                                 "_panopticon": {"group": "a-different-group"}}))
         with contextlib.redirect_stdout(io.StringIO()):
             rc = driver.main(["persist", "review-app-SEC", "--file", reply, d])
         self.assertEqual(rc, 1)
@@ -161,7 +164,7 @@ class TestSessionMode(LoopCase):
                   encoding="utf-8") as fh:
             record = json.load(fh)
         self.assertEqual(record["attempt"], 1)
-        self.assertIn("_panopticon", record["reason"])
+        self.assertIn("_panopticon.group", record["reason"])
         self.assertIn("[REDACTED_TOKEN]", record["reply"])
 
     def _armed_write_paths(self, s):

@@ -226,6 +226,40 @@ def _stamp_matches(entry, data):
     return True, ""
 
 
+# D10 ruling 4: the roles whose RETURN-PERSIST reply the controller will stamp
+# for itself. Both are cells the driver named on the entry it dispatched; the
+# tool-advisor and the scout declare no cell identity to fill.
+_CONTROLLER_STAMP_ROLES = ("review-cell", "verify-cell")
+
+
+def _controller_stamp(entry, data):
+    """`data` with any cell-identity key the reply OMITTED filled in from the
+    entry, marked `stamped_by: "controller"` -- or `data` unchanged when the
+    reply already says everything the entry declares (D10 ruling 4).
+
+    Only ever called from `write_reply`, i.e. only for a reply the controller
+    itself is about to persist. The driver wrote those keys onto the entry, is
+    holding the entry, and is choosing the path: on this path the identity was
+    never in question, and demanding the agent echo it back is a shape tax that
+    cost run-13 seven of its eight failed attempts.
+
+    A key the reply DOES carry is never touched, so a stamp that contradicts
+    the entry still meets `_stamp_matches` and is still refused: the controller
+    fills a silence, it does not overrule a claim. A `_panopticon` that is
+    present but not an object is likewise left alone -- that is a malformed
+    claim, not an absent one.
+    """
+    meta = data.get("_panopticon")
+    if meta is not None and not isinstance(meta, dict):
+        return data
+    meta = dict(meta or {})
+    missing = {k: entry.get(k) for k in _STAMP_KEYS
+               if entry.get(k) is not None and k not in meta}
+    if not missing:
+        return data
+    return dict(data, _panopticon={**meta, **missing, "stamped_by": "controller"})
+
+
 def accepts(entry, data):
     """(ok, reason): would the phase's own done predicate accept this data at
     the entry's out_file? Mirrors coverage (scout shape), review (findings
@@ -393,6 +427,12 @@ def write_reply(entry, text):
     data = _parse_reply(text)
     if data is None:
         return False, "reply for %r does not parse as JSON (fence- and prose-wrapped both tried)" % entry.get("id")
+    # D10 ruling 4, BEFORE the acceptance: the stamp is the controller's to
+    # fill on the return-persist path only. `accepts` itself is untouched, so
+    # the self-write done predicates still require the agent's own stamp on a
+    # file nobody checked on the way in.
+    if isinstance(data, dict) and role_of(entry) in _CONTROLLER_STAMP_ROLES:
+        data = _controller_stamp(entry, data)
     ok, reason = accepts(entry, data)
     if not ok:
         return False, "reply for %r rejected: %s" % (entry.get("id"), reason)
