@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 
+import scripts._version as version
 import scripts.evidence as evidence
 import scripts.findings_contract as findings_contract
 import scripts.group_runner as group_runner
@@ -49,6 +50,27 @@ def run_dir(review_root, namespace=None):
     and the file the runner actually arms -- so the run folder is its dirname
     and never a second spelling of the same lookup."""
     return os.path.dirname(probes_common.headless_settings_path(review_root, namespace))
+
+
+# D10 ruling 3: the PUBLISHED schema each returning role's reply is accepted
+# against, for the CLIs that can constrain their output to one. scout and
+# setup-scan are absent on purpose: their shape lives in code
+# (coverage._scout_shape_errors, "a JSON object") and publishing a second
+# definition of it is how the two drift.
+ROLE_SCHEMAS = {"review-cell": "findings-envelope-schema.json",
+                "verify-cell": "verdict-bundle-schema.json",
+                "tool-advisor": "advisor-verdict-schema.json"}
+
+
+def role_schema(entry):
+    """Absolute path of this entry's published output schema, or None.
+
+    Stamped onto the entry by `requests._materialize_prompts` and read off it
+    by whichever runner's CLI takes one -- the runners package may not import
+    `phases`, and should not have to know what a role is anyway.
+    """
+    name = ROLE_SCHEMAS.get(role_of(entry))
+    return os.path.abspath(version.reference_path(name)) if name else None
 
 
 # D10 ruling 2: what the retry is told to return, one line per role. The

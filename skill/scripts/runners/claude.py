@@ -26,6 +26,9 @@ class Runner(base.HostRunner):
     # ledger; the rest of the argv (`--max-turns`, e.g.) is not in `--help`
     # and not the envelope's business.
     ENVELOPE_FLAGS = ("-p", "--output-format")
+    # D10 ruling 3: `claude -p --json-schema <file>` ("JSON Schema for
+    # structured output"). Appended only for an entry whose role publishes one.
+    OUTPUT_SCHEMA_FLAG = ("--json-schema",)
     mode = "headless"
     default_concurrency = 8
 
@@ -70,6 +73,7 @@ class Runner(base.HostRunner):
             cmd += ["--agent", entry["agent"]]
         elif entry.get("model"):
             cmd += ["--model", entry["model"]]
+        cmd += base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)
         cmd.append(entry["prompt"])
         return cmd
 
@@ -84,7 +88,17 @@ class Runner(base.HostRunner):
         model_usage = data.get("modelUsage") if isinstance(data.get("modelUsage"), dict) else {}
         model = next(iter(model_usage), None)
         denials = data.get("permission_denials") if isinstance(data.get("permission_denials"), list) else []
-        text = data.get("result") if isinstance(data.get("result"), str) else ""
+        # D10 ruling 3: under `--json-schema` the CLI may return the object in
+        # `structured_output` ALONGSIDE or INSTEAD OF the `result` text, and
+        # the loop has to persist the object either way. Serialised, because
+        # everything downstream of a runner takes the reply as text and
+        # `persist._parse_reply` parses it back -- the same round trip a fenced
+        # `result` makes, minus the fence. `result` stays the fallback: an
+        # entry with no schema, or a CLI build that ignores the flag, is
+        # exactly what it was.
+        structured = data.get("structured_output")
+        text = (json.dumps(structured) if structured
+                else (data.get("result") if isinstance(data.get("result"), str) else ""))
         error = None
         if returncode != 0:
             error = "claude -p exited %s: %s" % (returncode, text[:200])

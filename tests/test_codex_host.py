@@ -500,3 +500,26 @@ def test_a_refused_launch_leaves_no_runtime_directory_behind(tmp_path, catalog):
         codex_host.command(entry, env, root, run, runner=fake)
     assert list(run.iterdir()) == []
     assert not any(str(path).startswith(str(run)) for path in codex_host._COMMAND_DIRS)
+
+
+def test_an_output_schema_outside_the_published_reference_dir_is_refused(tmp_path):
+    # D10 ruling 3: the argv allowlist gains exactly two tokens, and the value
+    # half of that pair is a PATH. The entry it comes from travels through
+    # `.panopticon/dispatch-request.json` inside the reviewed tree, so the
+    # validator -- which exists to refuse a changed launch before any model
+    # request -- has to hold it to the schemas panopticon publishes.
+    import scripts._version as version
+    root, entry, env = _case(tmp_path)
+    published = os.path.abspath(version.reference_path("advisor-verdict-schema.json"))
+    argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                              schema_argv=["--output-schema", published])
+    assert argv[-3:] == ["--output-schema", published, "-"]
+    assert codex_host.validate_command(argv, env, root)
+    outsider = tmp_path / "mine.json"
+    outsider.write_text("{}", encoding="utf-8")
+    for path in (str(outsider), "/etc/passwd"):
+        forged = [*argv[:-3], "--output-schema", path, "-"]
+        with pytest.raises(ValueError, match="output schema"):
+            codex_host.validate_command(forged, env, root)
+    with pytest.raises(ValueError, match="output schema"):
+        codex_host.validate_command([*argv[:-3], "--output-schema"], env, root)

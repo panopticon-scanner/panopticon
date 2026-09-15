@@ -25,6 +25,10 @@ class Runner(base.HostRunner):
     # print_the_envelope binds these two constants to that argv.
     CLI = "codex"
     ENVELOPE_FLAGS = ("exec", "--json")
+    # D10 ruling 3: `codex exec --output-schema <FILE>` ("Path to a JSON Schema
+    # file describing the model's final response shape"). One owner for the
+    # token itself: `codex_host.SCHEMA_FLAG`, which is what builds the argv.
+    OUTPUT_SCHEMA_FLAG = (codex_host.SCHEMA_FLAG,)
     # `codex exec` has no turn cap; an entry is bounded by --entry-timeout.
     HONOURS_MAX_TURNS = False
 
@@ -159,7 +163,8 @@ class Runner(base.HostRunner):
             if entry.get("delivery") != "return_json":
                 raise ValueError("Codex requires delivery: return_json; it cannot self-write")
             command = codex_host.command(entry, child_env, self.review_root, self.run_dir,
-                                         runner=self.runner)
+                                         runner=self.runner,
+                                         schema_argv=base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry))
             codex_host.validate_command(command, child_env, self.review_root)
             proc = self.runner(command, input=entry["prompt"], text=True,
                              capture_output=True, cwd=self.review_root,

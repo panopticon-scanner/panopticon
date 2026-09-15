@@ -104,6 +104,16 @@ class TestCommand(unittest.TestCase):
         cmd = self.r.command(_entry(False, model=None), None)
         self.assertNotIn("-m", cmd)
 
+    def test_this_family_takes_no_output_schema(self):
+        # D10 ruling 3: the installed Kimi CLI advertises no constrained-output
+        # flag, so the family leaves the seam attribute empty -- and an entry
+        # that names a schema (every review cell does) must still reach the
+        # argv without one, rather than picking up another family's flag.
+        self.assertEqual((), kimi_runner.Runner.OUTPUT_SCHEMA_FLAG)
+        entry = dict(_entry(True), output_schema="/any/schema.json")
+        self.assertEqual(self.r.command(entry, "kimi-code/k3"),
+                         self.r.command(_entry(True), "kimi-code/k3"))
+
 
 class TestParseEnvelope(unittest.TestCase):
     def test_the_last_assistant_content_and_the_session_id_win(self):

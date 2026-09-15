@@ -297,3 +297,33 @@ class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
         self.assertIn('"findings"', persist.envelope_shape(self.entry))
         self.assertIn('"domains"', persist.envelope_shape(
             {"out_file": "/r/.panopticon/scout-app.json"}))
+
+
+class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
+    """D10 ruling 3: the entry names its role's published schema, so a runner
+    whose CLI takes one can constrain the reply without knowing what a role
+    is. Host-agnostic, exactly as `delivery` and `prompt_file` are."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(runio._pano(self.root))
+
+    def _written(self, entry):
+        path = requests.write_dispatch_request(self.root, "RID", "review", None, [entry])
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)["entries"][0]
+
+    def test_a_review_cell_entry_names_the_findings_envelope(self):
+        written = self._written({"id": "review-app-SEC", "prompt": "p",
+                                 "out_file": runio._pano(self.root, "findings-app-SEC.json")})
+        self.assertEqual(os.path.basename(written["output_schema"]),
+                         "findings-envelope-schema.json")
+        self.assertEqual(written["output_schema"],
+                         persist.role_schema({"out_file": "findings-app-SEC.json"}))
+
+    def test_a_scout_entry_names_no_schema_at_all(self):
+        written = self._written({"id": "scout-app", "prompt": "p",
+                                 "out_file": runio._pano(self.root, "scout-app.json")})
+        self.assertNotIn("output_schema", written)

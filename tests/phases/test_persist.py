@@ -286,3 +286,32 @@ class TestRetainRejected(unittest.TestCase):
         persist.retain_rejected(self.run_dir, self.entry, '{"findings": []}', "no")
         kept = os.path.join(self.run_dir, "rejected", "review-app-SEC-1.json")
         self.assertIsNone(persist.role_of(_entry(kept)))
+
+
+class TestRoleSchema(unittest.TestCase):
+    """D10 ruling 3: the published schema a role's reply is accepted against,
+    for the CLIs that can constrain their output to one."""
+
+    def test_each_returning_role_names_its_published_schema(self):
+        cases = {
+            "/r/.panopticon/runs/t/findings-app-SEC.json": "findings-envelope-schema.json",
+            "/r/.panopticon/runs/t/verdicts/verdicts-app-SEC.json": "verdict-bundle-schema.json",
+            "/r/.panopticon/runs/t/verdicts/q-0001.json": "advisor-verdict-schema.json",
+        }
+        for out_file, name in cases.items():
+            with self.subTest(out_file=out_file):
+                path = persist.role_schema(_entry(out_file))
+                self.assertEqual(os.path.basename(path), name)
+                self.assertEqual(path, os.path.abspath(path))
+                self.assertTrue(os.path.isfile(path), path)
+                self.assertEqual(os.path.basename(os.path.dirname(path)), "reference")
+
+    def test_a_role_with_no_published_schema_names_none(self):
+        # scout / setup-scan shapes live in code (coverage._scout_shape_errors,
+        # "a JSON object"); there is no file to point a CLI at, and inventing
+        # one would be a second definition of a shape the code already owns.
+        for out_file in ("/r/.panopticon/runs/t/scout-app.json",
+                         "/r/.panopticon/setup-proposal.json",
+                         "/r/.panopticon/runs/t/report.json"):
+            with self.subTest(out_file=out_file):
+                self.assertIsNone(persist.role_schema(_entry(out_file)))

@@ -152,6 +152,13 @@ def _materialize_prompts(review_root, entries, namespace=None):
         run_folder = None
     for entry in entries:
         entry = dict(entry)
+        # D10 ruling 3: the published schema this entry's reply is accepted
+        # against, for a host CLI that can constrain its output to one. Neutral
+        # like `delivery` and `prompt_file`: a family with no such flag ignores
+        # it, and a role with no published schema carries no key at all.
+        schema = persist.role_schema(entry)
+        if schema:
+            entry["output_schema"] = schema
         prompt = entry.get("prompt")
         eid = entry.get("id")
         if isinstance(prompt, str) and prompt and eid:

@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 import scripts.runners.base as base
+import scripts._version as version
 import scripts.runners.session as session_runner
 
 
@@ -266,3 +267,42 @@ class TestTheUsageProbesSeamAttributes(unittest.TestCase):
             host = "bare"
         self.assertEqual("", Bare().CLI)
         self.assertEqual((), Bare().ENVELOPE_FLAGS)
+
+
+def _published():
+    """One of the schemas panopticon publishes under skill/reference/."""
+    return os.path.abspath(version.reference_path("advisor-verdict-schema.json"))
+
+
+class TestTheOutputSchemaSeam(unittest.TestCase):
+    """D10 ruling 3: ONE optional class attribute (docs/FAMILY-PR-GUARDRAILS.md
+    section 3). A family whose CLI takes a constrained-output schema names its
+    flag; a family that leaves it empty is unaffected."""
+
+    def test_the_contract_declares_it_empty(self):
+        self.assertEqual((), base.HostRunner.OUTPUT_SCHEMA_FLAG)
+
+        class Bare(base.HostRunner):
+            host = "bare"
+        self.assertEqual((), Bare().OUTPUT_SCHEMA_FLAG)
+        self.assertEqual([], base.schema_argv(Bare().OUTPUT_SCHEMA_FLAG,
+                                              {"output_schema": _published()}))
+
+    def test_a_declared_flag_takes_the_entrys_published_schema(self):
+        self.assertEqual(["--x", _published()],
+                         base.schema_argv(("--x",), {"output_schema": _published()}))
+
+    def test_an_entry_naming_no_schema_gets_no_flag(self):
+        for entry in ({}, {"output_schema": None}, {"output_schema": ""}, None):
+            with self.subTest(entry=entry):
+                self.assertEqual([], base.schema_argv(("--x",), entry))
+
+    def test_a_path_outside_the_published_reference_dir_is_refused(self):
+        # The entry travels through `.panopticon/dispatch-request.json`, inside
+        # the reviewed tree. Nothing else on the argv is a path the target
+        # could have named, and this one must not become the exception: only
+        # the schemas panopticon publishes are ever passed to a host CLI.
+        for path in ("/etc/passwd", os.path.join(os.path.dirname(_published()), "nope.json"),
+                     os.path.join(os.path.dirname(_published()), os.pardir, "SKILL.md")):
+            with self.subTest(path=path):
+                self.assertEqual([], base.schema_argv(("--x",), {"output_schema": path}))

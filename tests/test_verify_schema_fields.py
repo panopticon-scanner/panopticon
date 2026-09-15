@@ -66,3 +66,36 @@ def test_report_ocrdb_coverage_has_override_counters():
              ["coverage"]["properties"]["ocrdb"]["properties"])
     assert set(ocrdb["overrides"]["properties"]) == {"count", "up", "down"}
     assert ocrdb["code_corrections"]["type"] == "integer"
+
+
+def test_verdict_bundle_inlines_the_advisor_verdict_verbatim():
+    # D10 ruling 3: the verify round returns `{"verdicts": [...]}`, and a CLI
+    # that takes a constrained-output schema needs ONE file describing that --
+    # $ref-free, because the CLIs resolve no external references. Inlined, so
+    # the two can drift; this is the test that says they may not. The rule is
+    # exact equality with the published advisor verdict minus its own
+    # `$schema` keyword (a subschema declares no dialect).
+    bundle = _load("verdict-bundle-schema.json")
+    advisor = _load("advisor-verdict-schema.json")
+    assert bundle["properties"]["verdicts"]["items"] == {
+        k: v for k, v in advisor.items() if k != "$schema"}
+    assert "$ref" not in json.dumps(bundle)
+
+
+def test_verdict_bundle_is_the_shape_persist_accepts():
+    bundle = _load("verdict-bundle-schema.json")
+    assert bundle["title"] == "PanopticonVerdictBundle"
+    assert sorted(bundle["required"]) == ["_panopticon", "verdicts"]
+    stamp = bundle["properties"]["_panopticon"]["properties"]
+    assert {"run_id", "group", "domain", "stage", "stamped_by"} <= set(stamp)
+    good = {"verdicts": [{"finding_id": "SEC-001", "verdict": "CONFIRMED",
+                          "confidence": "LIKELY", "reasoning": "r",
+                          "explored": ["a.py"], "references": ["a.py:1"],
+                          "citations": {"cwe": [], "owasp": [], "cve": []}}],
+            "_panopticon": {"run_id": "RID", "role": "domain_advisor",
+                            "group": "app", "domain": "SEC", "stage": "primary"}}
+    assert jsonschema.validate(good, bundle) is None
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"verdicts": []}, bundle)               # no stamp
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(dict(good, verdicts=[{"finding_id": "x"}]), bundle)

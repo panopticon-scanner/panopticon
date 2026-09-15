@@ -10,6 +10,7 @@ import importlib
 import os
 import time
 
+import scripts._version as version
 import scripts.read_guard_hook as read_guard_hook
 
 # An alias of a definition from OUTSIDE this package (read_guard_hook is a
@@ -106,6 +107,20 @@ class HostRunner:
     # VALUE rather than merely on the attribute existing.
     CLI = ""
     ENVELOPE_FLAGS = ()
+    # The argv flag that makes ONE launch constrain its final message to a
+    # JSON Schema file, as a tuple of tokens the schema path follows
+    # (`("--json-schema",)` for claude, `("--output-schema",)` for codex).
+    #
+    # D10 ruling 3, and the ONE optional attribute this seam gained for it
+    # (docs/FAMILY-PR-GUARDRAILS.md section 3). Empty is the default and needs
+    # no explanation: a CLI that advertises no such flag -- kimi today -- takes
+    # none, and its `command()` is unchanged. A family that DOES declare one
+    # appends `schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)` to its argv, which
+    # is empty unless the entry names a schema panopticon publishes; the
+    # entry's `output_schema` key is stamped by the driver
+    # (phases.persist.role_schema), because the runners package may not import
+    # phases and should not have to know what a role is.
+    OUTPUT_SCHEMA_FLAG = ()
     # A scratch directory OUTSIDE the reviewed tree that this runner's children
     # write into, once `prepare` has made one; None for a host that needs none
     # (claude arms a settings file in the run folder and keeps nothing else).
@@ -252,6 +267,37 @@ class HostRunner:
         for entry, result, _timing in self.iter_batch(entries, concurrency, env_for):
             results[slots[id(entry)].pop(0)] = result
         return results
+
+
+def published_schema(path):
+    """`path` resolved, when it is one of the JSON Schemas panopticon PUBLISHES
+    under `skill/reference/`; None for anything else.
+
+    The containment rule for the one argv value a target could otherwise
+    choose. An entry travels through `.panopticon/dispatch-request.json`, which
+    lives inside the reviewed tree, so `output_schema` is the only path on a
+    launch's argv that did not come from this process's own constants. Only a
+    published schema is ever handed to a host CLI: a file that does not exist,
+    or one outside that directory, reads as no schema at all rather than as an
+    argument. `codex_host.validate_command` re-applies this to the FINISHED
+    argv -- one rule, two places it has to hold.
+    """
+    if not isinstance(path, str) or not path:
+        return None
+    root = os.path.realpath(version.reference_path())
+    real = os.path.realpath(path)
+    if not real.startswith(root + os.sep) or not os.path.isfile(real):
+        return None
+    return real
+
+
+def schema_argv(flag, entry):
+    """The two argv tokens that constrain one launch's output, or [] (D10
+    ruling 3). Empty whenever the family declares no flag, the entry names no
+    schema, or the path it names is not published -- so a caller can append the
+    result unconditionally."""
+    schema = published_schema(entry.get("output_schema") if isinstance(entry, dict) else None)
+    return [*flag, schema] if (flag and schema) else []
 
 
 def _headless_module(host):
