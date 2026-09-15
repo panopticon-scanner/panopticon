@@ -56,7 +56,11 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
                       "PANOPTICON_READ_SCOPE", "driver loop", "--allow-unenforced",
                       "skill/scripts/probes/<host>.py", "host_probes.py",
                       "ENVELOPE_FLAGS", "launch_env", "LaunchRefused",
-                      "LAUNCH_SEAMS"):
+                      "LAUNCH_SEAMS",
+                      # #1636: the batch seam has two shapes now, and headless
+                      # calls `iter_batch` -- a family that overrode only
+                      # `run_batch` would have its override silently ignored.
+                      "iter_batch", "run_batch"):
             self.assertIn(token, doc, token)
 
     def test_names_every_known_host_and_the_launch_prompt(self):

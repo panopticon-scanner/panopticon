@@ -1,6 +1,8 @@
+import importlib
 import os
 import sys
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -48,22 +50,27 @@ class TestIterBatch(unittest.TestCase):
     was hard-coded None at the one call site)."""
 
     def _gated(self):
-        released = threading.Event()
+        """A runner whose "slow" entry blocks until `released` is set, and
+        which announces on `entered` that it is really inside `run_entry` --
+        the consumer needs that to time anything, because `iter_batch` is a
+        generator and its pool does not exist until the first `next()`."""
+        released, entered = threading.Event(), threading.Event()
 
         class Gated(base.HostRunner):
             host = "fake"; mode = "headless"; default_concurrency = 2
 
             def run_entry(self, entry, env):
                 if entry["id"] == "slow":
+                    entered.set()
                     released.wait(10)
                 return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
                                       cost_usd=None, model=None, session_id=None,
                                       denials=[], error=None)
 
-        return Gated(), released
+        return Gated(), released, entered
 
     def test_a_finished_entry_is_yielded_while_its_peer_is_still_running(self):
-        r, released = self._gated()
+        r, released, _entered = self._gated()
         entries = [{"id": "slow"}, {"id": "fast"}]
         stream = r.iter_batch(entries, 2, env_for=lambda e: {})
         self.addCleanup(released.set)
@@ -86,14 +93,25 @@ class TestIterBatch(unittest.TestCase):
         self.assertEqual(["slow"], [e["id"] for e, _r, _t in stream])
 
     def test_the_slow_entrys_timing_covers_the_time_it_blocked(self):
-        r, released = self._gated()
-        threading.Timer(0.05, released.set).start()
-        timings = {e["id"]: t for e, _r, t in
-                   r.iter_batch([{"id": "slow"}, {"id": "fast"}], 2, lambda e: {})}
+        # The 50 ms window opens only once the worker is provably inside
+        # `run_entry`: a bare `threading.Timer` starts counting before the
+        # generator has even built its pool, so any stall longer than the
+        # window (a loaded CI runner, a CPU-quota'd container) would release
+        # the entry before it blocked and collapse duration_ms to 0.
+        r, released, entered = self._gated()
+        stream = r.iter_batch([{"id": "slow"}, {"id": "fast"}], 2, lambda e: {})
+        self.addCleanup(released.set)
+        self.addCleanup(stream.close)
+        first = next(stream)                       # "fast"; the pool now exists
+        self.assertTrue(entered.wait(10), "the slow entry never entered run_entry")
+        time.sleep(0.05)
+        released.set()
+        timings = {e["id"]: t for e, _r, t in [first] + list(stream)}
         self.assertGreaterEqual(timings["slow"]["duration_ms"], 40)
+        self.assertLess(timings["fast"]["duration_ms"], timings["slow"]["duration_ms"])
 
     def test_run_batch_drains_iter_batch_and_keeps_entry_order(self):
-        r, released = self._gated()
+        r, released, _entered = self._gated()
         released.set()
         out = r.run_batch([{"id": "slow"}, {"id": "fast"}], 2, env_for=lambda e: {})
         self.assertEqual(["slow", "fast"], [x.entry_id for x in out])
@@ -101,12 +119,25 @@ class TestIterBatch(unittest.TestCase):
     def test_a_family_inherits_it_without_overriding_anything(self):
         # docs/FAMILY-PR-GUARDRAILS.md §3: `run_entry` is the only method a
         # family implements; the pool -- both shapes of it -- is inherited.
-        import scripts.runners.claude as claude_runner
-        import scripts.runners.codex as codex_runner
-        import scripts.runners.kimi as kimi_runner
-        for mod in (claude_runner, codex_runner, kimi_runner):
-            self.assertNotIn("iter_batch", vars(mod.Runner), mod.__name__)
-            self.assertNotIn("run_batch", vars(mod.Runner), mod.__name__)
+        # This is what made dropping the `results is None` branch safe, and it
+        # matters more now: headless calls `iter_batch`, so a family that
+        # overrode `run_batch` -- the documented seam until this PR -- would
+        # have its override silently ignored rather than failing loudly.
+        #
+        # Discovered from the package directory, the way
+        # tests/test_layout.py::_package_dirs does, so the NEXT family is
+        # enrolled by existing rather than by being listed here.
+        pkg_dir = os.path.dirname(os.path.abspath(base.__file__))
+        names = sorted(f[:-3] for f in os.listdir(pkg_dir)
+                       if f.endswith(".py") and f not in ("__init__.py", "base.py"))
+        self.assertIn("claude", names)                  # the directory really was read
+        for name in names:
+            mod = importlib.import_module("scripts.runners.%s" % name)
+            runner = getattr(mod, "Runner", None) or getattr(mod, "SessionRunner", None)
+            self.assertIsNotNone(runner, name)
+            self.assertNotIn("iter_batch", vars(runner), name)
+            if name != "session":       # the one documented override: it launches nothing
+                self.assertNotIn("run_batch", vars(runner), name)
 
 
 class TestRunnerFor(unittest.TestCase):
