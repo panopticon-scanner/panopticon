@@ -6,7 +6,9 @@ from conftest import SKILL_ROOT as ROOT   # #run7 TST-G1B: shared path anchor
 import scripts.hosts as hosts
 
 # #run7 QAL-D1C: the PANOPTICON.md guide was re-opened inline in 10 places.
-_DOC_PATH = os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md")
+# #1637 P01: it lives INSIDE the skill now (the repo-root path is a symlink
+# onto it), so this anchor is `skill/docs/` -- the one constant that moved.
+_DOC_PATH = hosts.guide_path()
 # #1344 plan 5 T5: shared anchor for the dispatched-role template files.
 AGENTS_DIR = os.path.join(ROOT, "agents")
 
@@ -889,3 +891,47 @@ class TestTheStampContractIsWrittenDown(unittest.TestCase):
         for phrase in ("runs/<tag>/rejected/<entry-id>-<attempt>.json",
                        "rejected_file", "prior_rejection"):
             self.assertIn(phrase, self.loop, phrase)
+
+
+class TestTheGuideResolvesInEveryInstallLayout(unittest.TestCase):
+    """#1637 P01: `skill/` is what gets symlinked into `~/.claude/skills/`,
+    `~/.kimi/skills/` and `~/.agents/skills/` (README), so SKILL.md's links are
+    resolved relative to SKILL.md's OWN directory in every installed layout --
+    and in the source checkout too. They pointed at `docs/PANOPTICON.md`, which
+    lived at the REPO ROOT and never at `skill/docs/`, so the first read the
+    skill instructs failed everywhere. The guide moved INTO the skill; the root
+    path stays as a symlink so every root-level reference (README, DEVELOPMENT,
+    docs/) keeps resolving to the same bytes.
+    """
+
+    ROOT_DOC = os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md")
+    SKILL_DOC = os.path.join(ROOT, "docs", "PANOPTICON.md")
+
+    def test_every_relative_link_in_skill_md_resolves_from_skill_mds_directory(self):
+        skill_md = _read_skill_md()
+        targets = sorted({
+            t for t in re.findall(r"\]\(([^)]+)\)", skill_md)
+            if not t.startswith(("http://", "https://", "#", "/"))})
+        self.assertIn("docs/PANOPTICON.md", targets)
+        missing = [t for t in targets
+                   if not os.path.exists(os.path.join(ROOT, t.split("#", 1)[0]))]
+        self.assertEqual(missing, [],
+                         "SKILL.md link(s) that do not resolve from %s -- the "
+                         "first read the skill instructs fails in every "
+                         "installed layout:\n%s" % (ROOT, "\n".join(missing)))
+
+    def test_the_guide_lives_inside_the_skill(self):
+        self.assertTrue(os.path.isfile(self.SKILL_DOC), self.SKILL_DOC)
+
+    def test_the_root_path_is_a_symlink_onto_the_very_same_file(self):
+        self.assertTrue(os.path.islink(self.ROOT_DOC),
+                        "%s must stay a symlink so README/DEVELOPMENT/docs "
+                        "references keep resolving" % self.ROOT_DOC)
+        self.assertTrue(os.path.samefile(self.ROOT_DOC, self.SKILL_DOC))
+        self.assertEqual(os.readlink(self.ROOT_DOC),
+                         os.path.join(os.pardir, "skill", "docs", "PANOPTICON.md"))
+
+    def test_hosts_guide_path_names_that_file(self):
+        self.assertEqual(os.path.realpath(hosts.guide_path()),
+                         os.path.realpath(self.SKILL_DOC))
+        self.assertTrue(os.path.isfile(hosts.guide_path()))

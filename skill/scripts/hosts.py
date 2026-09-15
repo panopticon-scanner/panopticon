@@ -90,6 +90,29 @@ CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
 CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
 
 
+# --- where the guide is (#1637 P01) ----------------------------------------
+# SKILL.md's links are relative to SKILL.md's own directory, and `skill/` is
+# what gets symlinked or copied into `~/.claude/skills/`, `~/.kimi/skills/`
+# and `~/.agents/skills/` -- so the guide has to live INSIDE the skill or the
+# first read the skill instructs fails in every installed layout. It does now
+# (`skill/docs/PANOPTICON.md`); the repo-root path is a symlink onto it, so
+# every root-level reference still resolves.
+#
+# Here rather than in a module of its own because this is the same KIND of
+# fact as the registration directories above -- a path this repo's layout
+# fixes, computed from `__file__` and never from cwd (the driver runs with cwd
+# at the TARGET repo). PURE, like everything else in this module: it computes
+# the path and does not stat it. `driver readiness` reports whether it exists,
+# which is the one caller that has an answer to give when it does not.
+GUIDE = "PANOPTICON.md"
+_SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def guide_path():
+    """The absolute path of the user guide inside THIS skill install."""
+    return os.path.join(_SKILL_DIR, "docs", GUIDE)
+
+
 @dataclass(frozen=True)
 class HostSpec:
     """One host's static facts.
