@@ -3,6 +3,7 @@ import io
 import json
 import os
 import re
+import shlex
 import tempfile
 import unittest
 from unittest import mock
@@ -610,7 +611,10 @@ class TestInstallUninstall(unittest.TestCase):
         self.assertEqual(rg._MATCHER, hooks[0]["matcher"])
         cmd = hooks[0]["hooks"][0]["command"]
         self.assertTrue(cmd.startswith(rg._HOOK_CMD))
-        self.assertIn('"%s"' % os.path.abspath(self.scope_path), cmd)
+        # #1633: the command is a shell string, so what it must carry is an
+        # ARGUMENT naming the scope file -- whatever quoting that takes.
+        self.assertEqual(["python3", os.path.abspath(rg.__file__),
+                          os.path.abspath(self.scope_path)], shlex.split(cmd))
         self.assertEqual((True, 1), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
 
     def test_install_is_idempotent(self):
@@ -768,9 +772,13 @@ class TestInstallUninstall(unittest.TestCase):
         wg.uninstall(settings_path=self.settings, allowlist_path=allowlist)
         self.assertNotIn("hooks", self._settings())
 
-    def test_hook_cmd_is_absolute_and_quoted(self):
-        self.assertTrue(rg._HOOK_CMD.startswith('python3 "/'))
-        self.assertIn(os.path.abspath(rg.__file__), rg._HOOK_CMD)
+    def test_hook_cmd_is_absolute_and_shell_quoted(self):
+        # #495: absolute, so the hook resolves under both layouts. #1633: the
+        # command is SHELL SOURCE, so the pin is what a shell makes of it --
+        # `startswith('python3 "/')` passed for a command that would have run
+        # anything a `$(...)` in the checkout path asked for.
+        self.assertEqual(["python3", os.path.abspath(rg.__file__)],
+                         shlex.split(rg._HOOK_CMD))
 
 
 class TestEntryIdsMatchTheSpecIdGrammar(unittest.TestCase):

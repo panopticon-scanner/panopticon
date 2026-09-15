@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -662,13 +663,14 @@ class TestLoadFailLoud(unittest.TestCase):
 
 
 class TestHookCmdSelfLocating(unittest.TestCase):
-    def test_hook_cmd_is_absolute_and_quoted(self):
+    def test_hook_cmd_is_absolute_and_shell_quoted(self):
         # #495: a literal repo-relative command only worked for the self-scan
         # layout; the registered command must locate the module absolutely and
-        # survive paths with spaces.
-        self.assertIn(os.path.abspath(wg.__file__), wg._HOOK_CMD)
-        self.assertTrue(wg._HOOK_CMD.startswith('python3 "'))
-        self.assertTrue(wg._HOOK_CMD.endswith('"'))
+        # survive paths with spaces. #1633: double quotes were how it survived
+        # them, and they survive NOTHING else -- so the pin is what a shell
+        # makes of the command, not which quote character it starts with.
+        self.assertEqual(["python3", os.path.abspath(wg.__file__)],
+                         shlex.split(wg._HOOK_CMD))
 
     def test_resolve_allowlist_path_finds_parent_dir(self):
         with tempfile.TemporaryDirectory() as d:

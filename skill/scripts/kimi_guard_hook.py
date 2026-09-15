@@ -17,9 +17,10 @@ read_guard_hook.install / write_guard_hook.install (orchestrate.Guards):
 ``read-scope.json`` is ``{entry id: {"files": [...], "dirs": [...],
 "reads": [...]}}`` and ``write-allowlist.json`` is a JSON list of paths. This
 script re-implements the small loaders rather than importing those modules:
-Kimi runs hooks as ``python3 "<abs path>" <mode> <abs data path>`` with no
-package on sys.path, the same constraint that keeps the Claude hooks
-stdlib-only and self-locating (R-P5-5).
+Kimi runs hooks as ``python3 <abs path> <mode> <abs data path>`` -- one SHELL
+STRING, which is why the command is built here, shell-quoted, by
+`hook_command` (#1633) -- with no package on sys.path, the same constraint that
+keeps the Claude hooks stdlib-only and self-locating (R-P5-5).
 
 BINDING. A headless child IS one dispatch entry (spec 5.3), so the entry id
 arrives in the environment as PANOPTICON_ENTRY_ID (orchestrate.Guards.env_for),
@@ -47,7 +48,25 @@ on top.
 """
 import json
 import os
+import shlex
 import sys
+
+
+def hook_command(*argv):
+    """One `[[hooks]] command` string, every element shell-quoted (#1633,
+    SEC-A1A).
+
+    Kimi runs a registered hook command through `sh -c`, so every element
+    interpolated into it is SHELL SOURCE, not an argument: the `"%s"` this
+    replaces stopped a space and nothing else, leaving a `"`, a backtick or a
+    `$(...)` in this run's scope/allowlist path (or in the checkout this script
+    sits in) to execute on every tool call. It lives beside the hook's OWN argv
+    contract rather than in runners/kimi.py, because the two halves -- what the
+    config writes and what `main` parses back -- are one protocol; the runner
+    calls it.
+    """
+    return " ".join(shlex.quote(a) for a in argv)
+
 
 # ReadMediaFile is a READ tool and belongs here (I1): a read tool the guard
 # does not adjudicate returns (True, "") and reads any file on the machine from
