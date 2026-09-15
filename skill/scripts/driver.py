@@ -649,7 +649,39 @@ def run(args, runner=subprocess.run, phases=PHASES):
         if conflicts:
             return runio._error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
-        # #1637 P08 F2: `--no-tools` on an in-flight run is the non-destructive
+        # #1: a bare re-invocation of an ALREADY-complete run matches every
+        # manifest field (conflicting_flags treats a None incoming value as
+        # no-conflict), so it would advance straight to "complete" and hand
+        # back a possibly-stale report as though it were a fresh scan -- the
+        # worst failure mode for a review tool. Refuse loudly and name --reset
+        # instead; the durable report stays on disk.
+        #
+        # #1637 P08 F3: decided on the TERMINAL phase's artifact, not on "every
+        # predicate says done". The two agreed until an environmental tool skip
+        # became legitimately not-done (F1): a finished run then re-entered,
+        # re-ran the scan, found every later phase done, and handed back the
+        # PREVIOUS report as though it were fresh -- with the new tool findings
+        # never ingested. A run whose last phase has its artifact is complete,
+        # whatever an earlier phase would like to retry.
+        #
+        # Fix round 2 N1: this now stands AHEAD of the downgrade below, and
+        # inside the branch that has a manifest at all. It used to follow it,
+        # so a `--no-tools` aimed at a FINISHED run flipped `flags.tools` and
+        # appended a `flag_changes` entry before refusing -- a durable record
+        # of a rescue that never happened, on a run with nothing left to
+        # rescue. Lose the terminal artifacts and resume, and the regenerated
+        # report says `disabled_mid_run: true` beside panels that all saw
+        # scanner evidence: the run record and the report contradicting each
+        # other on the very surface this work added. A --reset run never
+        # reaches here -- it has no manifest to load -- so the old
+        # `not args.reset` clause is now structural.
+        if phases and phases[-1].done(review_root, manifest):
+            report = runio._pano(review_root, "report.json")
+            loc = report if os.path.exists(report) else review_root
+            return runio._error_status(
+                "run already complete (report at %s) -- use `--reset` to start "
+                "a new run" % loc)
+        # #1637 P08 F2: `--no-tools` on an IN-FLIGHT run is the non-destructive
         # rescue from a scanner environment that moved after the scouts were
         # paid for -- the alternative was `--reset`, which throws that work
         # away. Recorded in the manifest (flags + flag_changes), so readiness
@@ -676,26 +708,6 @@ def run(args, runner=subprocess.run, phases=PHASES):
     # fresh token per iteration by construction, since every iteration calls
     # this function.
     manifest["invocation"] = run_manifest.new_run_id()
-    # #1: a bare re-invocation of an ALREADY-complete run matches every manifest
-    # field (conflicting_flags treats a None incoming value as no-conflict), so it
-    # would advance straight to "complete" and hand back a possibly-stale report as
-    # though it were a fresh scan -- the worst failure mode for a review tool.
-    # Refuse loudly and name --reset instead; the durable report stays on disk.
-    # (Guarded by `not args.reset`: a --reset run just cleared its derived
-    # artifacts, so it can never be already-complete at this point.)
-    # #1637 P08 F3: decided on the TERMINAL phase's artifact, not on "every
-    # predicate says done". The two agreed until an environmental tool skip
-    # became legitimately not-done (F1): a finished run then re-entered,
-    # re-ran the scan, found every later phase done, and handed back the
-    # PREVIOUS report as though it were fresh -- with the new tool findings
-    # never ingested. A run whose last phase has its artifact is complete,
-    # whatever an earlier phase would like to retry.
-    if not args.reset and phases and phases[-1].done(review_root, manifest):
-        report = runio._pano(review_root, "report.json")
-        loc = report if os.path.exists(report) else review_root
-        return runio._error_status(
-            "run already complete (report at %s) -- use `--reset` to start a new "
-            "run" % loc)
     # §5.1: point runs/latest at the active run folder now that the manifest (hence
     # the tag) is established — so the pointer exists throughout the run, not just
     # after synthesize writes the report.

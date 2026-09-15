@@ -1974,13 +1974,8 @@ class TestAnEnvironmentMovingMidRunIsRecoverable(unittest.TestCase):
         self.assertEqual(status["status"], "error")
         self.assertIn("drift", status["message"])
 
-    def test_a_completed_run_stays_complete_whatever_the_tools_marker_says(self):
-        # F3: the already-complete guard asked every phase predicate, so an
-        # environmental skip (never "done") let a finished run re-enter, re-run
-        # the scan, and hand back the OLD report as though it were fresh --
-        # which that guard's own comment calls the worst failure mode for a
-        # review tool.
-        d = self._repo()
+    def _complete_a_run(self, d):
+        """Drive a --no-tools run to `complete`, servicing every checkpoint."""
         args = self._args(d, "--no-tools")
         status = driver.run(args)
         for _ in range(30):
@@ -2001,7 +1996,18 @@ class TestAnEnvironmentMovingMidRunIsRecoverable(unittest.TestCase):
             status = driver.run(args)
             if status["status"] == "complete":
                 break
-        self.assertEqual(status["status"], "complete")
+        self.assertEqual(status["status"], "complete", status)
+        return status
+
+    def test_a_completed_run_stays_complete_whatever_the_tools_marker_says(self):
+        # F3: the already-complete guard asked every phase predicate, so an
+        # environmental skip (never "done") let a finished run re-enter, re-run
+        # the scan, and hand back the OLD report as though it were fresh --
+        # which that guard's own comment calls the worst failure mode for a
+        # review tool.
+        d = self._repo()
+        args = self._args(d, "--no-tools")
+        self._complete_a_run(d)
         # Now make the marker read like an environmental skip from an earlier
         # invocation -- exactly what a docker-absent scan leaves behind.
         runio._write_json(runio._pano(d, "tools-ran.json"),
@@ -2014,3 +2020,29 @@ class TestAnEnvironmentMovingMidRunIsRecoverable(unittest.TestCase):
         self.assertEqual(redo["status"], "error", redo)
         self.assertIn("already complete", redo["message"])
         self.assertIn("--reset", redo["message"])
+
+    def test_no_tools_aimed_at_a_finished_run_leaves_its_record_alone(self):
+        # N1: the downgrade was recorded BEFORE the already-complete guard
+        # refused, so `--no-tools` at a finished run rewrote its manifest --
+        # `flags.tools` flipped and a `flag_changes` entry appeared -- for a
+        # run that has nothing left to rescue. Harmless until the terminal
+        # artifacts are lost and the run resumes, at which point the
+        # regenerated report says `disabled_mid_run: true` beside panels that
+        # all saw scanner evidence: the run record and the report contradicting
+        # each other, on the very surface this work added.
+        d = self._repo()
+        self._complete_a_run(d)
+        # The run is driven with --no-tools so its tools phase spawns nothing;
+        # rewrite the finished manifest to the tools-ENABLED shape a real
+        # scanner run leaves behind, which is what makes the next --no-tools a
+        # downgrade rather than a no-op.
+        path = run_manifest.manifest_path(d)
+        finished = run_manifest.load_manifest(d)
+        finished["flags"]["tools"] = None
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(finished, fh, indent=2, sort_keys=True)
+        before = open(path, "rb").read()
+        status = driver.run(self._args(d, "--no-tools"))
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("already complete", status["message"])
+        self.assertEqual(open(path, "rb").read(), before)
