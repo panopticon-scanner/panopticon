@@ -27,6 +27,9 @@ file stays focused on the host-facing contract.
 
 - `superpowers:writing-plans` — before repo/PR/directory reviews with >15 files
   or >10 changes.
+  Save the review plan to `.panopticon/runs/<tag>/plan.md` (or
+  `.panopticon/scratch/<run>/` before a run exists) — never to
+  `docs/superpowers/`, which is not this review's artifact space.
 - `superpowers:subagent-driven-development` — for matrix-cell and advisor dispatch.
 - `superpowers:verification-before-completion` — before returning the report.
 

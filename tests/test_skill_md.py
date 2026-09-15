@@ -935,3 +935,30 @@ class TestTheGuideResolvesInEveryInstallLayout(unittest.TestCase):
         self.assertEqual(os.path.realpath(hosts.guide_path()),
                          os.path.realpath(self.SKILL_DOC))
         self.assertTrue(os.path.isfile(hosts.guide_path()))
+
+
+# #1637 P03: `superpowers:writing-plans` defaults to `docs/superpowers/plans/`,
+# which in THIS repo is a symlink to a sibling private checkout a reviewing
+# host cannot write. Run-13 improvised `.panopticon/scratch/`. The plan is a
+# review artifact, so it belongs in the review's artifact space, and the skill
+# has to say so in the same breath as it requires the sub-skill.
+PLAN_LOCATION = (
+    "Save the review plan to `.panopticon/runs/<tag>/plan.md` (or "
+    "`.panopticon/scratch/<run>/` before a run exists) — never to "
+    "`docs/superpowers/`, which is not this review's artifact space.")
+
+
+class TestThePlanHasAHome(unittest.TestCase):
+    """Whitespace-collapsed on both sides: SKILL.md wraps at 80 columns and the
+    guide does not, and a sentence guard that also pinned the line breaks would
+    fail on a re-wrap that changed nothing a reader sees."""
+
+    @staticmethod
+    def _flat(text):
+        return " ".join(text.split())
+
+    def test_skill_md_says_where_the_review_plan_goes(self):
+        self.assertIn(PLAN_LOCATION, self._flat(_read_skill_md()))
+
+    def test_the_guide_says_the_same_thing_in_the_same_words(self):
+        self.assertIn(PLAN_LOCATION, self._flat(_read_doc()))
