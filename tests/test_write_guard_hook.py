@@ -1131,6 +1131,14 @@ class TestPerEntryWriteBinding(unittest.TestCase):
         self.assertFalse(allow)
         self.assertIn(wg.UNBOUND_ENTRY, reason)
 
+    def test_a_present_but_unusable_entry_id_denies_rather_than_unioning(self):
+        # The read guard's shape: an id that is THERE but not a usable string
+        # is an agent we could not bind, never the orchestrator. Degrading it
+        # into the batch-wide union is the fail-open this change is about.
+        allow, reason = self._write(self.a, env={wg.ENV_ENTRY_ID: 7})
+        self.assertFalse(allow)
+        self.assertIn("not bound", reason)
+
     def test_the_orchestrator_keeps_the_union(self):
         # Nothing bound it: it is the driver, it writes the run's own
         # artifacts, and it is trusted here exactly as it always was.

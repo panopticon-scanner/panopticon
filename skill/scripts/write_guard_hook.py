@@ -336,16 +336,20 @@ def adjudicate(payload, allowlist_path, env=None):
     env_id = env.get(ENV_ENTRY_ID)
     agent_id = payload.get("agent_id")
     agent_type = payload.get("agent_type")
-    if isinstance(env_id, str) and env_id:
-        entry_id = env_id
-    elif agent_id:
-        entry_id = bind(agent_id, payload.get("transcript_path"))
+    if env_id or agent_id:
+        # Shaped exactly like the read guard's: an id that is present but not
+        # usable (a non-string) is an agent we could not bind, never the
+        # orchestrator -- degrading it into the union is the fail-OPEN this
+        # whole change is about.
+        entry_id = (env_id if isinstance(env_id, str) else None) if env_id \
+            else bind(agent_id, payload.get("transcript_path"))
         if entry_id is None:
             return False, (
-                "%s to %s is denied: this subagent is not bound to a dispatch "
-                "entry (its dispatch prompt did not begin with '%s<entry id>'), "
-                "and a reviewer may write only its own declared out_file"
-                % (tool_name, file_path, MARKER_PREFIX))
+                "%s to %s is denied: this reviewer is not bound to a dispatch "
+                "entry (no usable %s, and its dispatch prompt did not begin "
+                "with '%s<entry id>'), and a reviewer may write only its own "
+                "declared out_file"
+                % (tool_name, file_path, ENV_ENTRY_ID, MARKER_PREFIX))
     elif agent_type:
         return False, ("%s is denied: this session runs as agent_type %r but "
                        "nothing bound it to a panopticon entry (no %s in the "

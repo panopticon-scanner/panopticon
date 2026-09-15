@@ -229,8 +229,11 @@ def _decide_write(tool_name, tool_input, allowlist, entry_id):
     Unknown id denies by name, exactly as the read branch does."""
     granted = allowlist.get(entry_id)
     if granted is None:
-        return False, ("%s is denied: this agent is bound to entry %r, which the "
-                       "armed write allowlist does not name" % (tool_name, entry_id))
+        # `adjudicate` appends the bound entry to every denial, so name the
+        # condition here and let it name the id -- saying it twice was how the
+        # first draft of this read.
+        return False, ("%s is denied: the armed write allowlist names no grant "
+                       "for this entry" % tool_name)
     if not isinstance(tool_input, dict):
         return False, "%s is denied: malformed tool input" % tool_name
     raw = tool_input.get("path")
