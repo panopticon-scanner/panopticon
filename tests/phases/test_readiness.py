@@ -241,6 +241,62 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
                                  for m in imported),
                              "readiness imports %s" % banned)
 
+    def test_the_docker_runner_seam_is_none_in_production(self):
+        """F4: `DOCKER_RUNNER` is a test-only injection point. A non-None value
+        left behind in production code makes readiness answer off a fake --
+        "ok" without ever probing Docker -- and that is the check gating every
+        paid dispatch. Two halves: the shipped default, and nothing outside
+        tests/ ever assigning it."""
+        import ast
+        import subprocess
+        import sys
+        from conftest import REPO_ROOT, SKILL_ROOT
+        # Asserted in a FRESH interpreter: this process has patched the
+        # attribute a dozen times by now, so reading it here proves nothing.
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            [SKILL_ROOT, os.path.join(SKILL_ROOT, "scripts")]
+            + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        proc = subprocess.run(  # nosec B603
+            [sys.executable, "-c",
+             "import scripts.phases.readiness as r; print(repr(r.DOCKER_RUNNER))"],
+            capture_output=True, text=True, env=env, cwd=REPO_ROOT)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "None")
+
+        offenders = []
+        for base in (os.path.join(SKILL_ROOT, "scripts"),
+                     os.path.join(REPO_ROOT, "scripts")):
+            for dirpath, dirnames, filenames in os.walk(base):
+                dirnames[:] = [x for x in dirnames if x != "__pycache__"]
+                for filename in sorted(filenames):
+                    if not filename.endswith(".py"):
+                        continue
+                    path = os.path.join(dirpath, filename)
+                    with open(path, encoding="utf-8") as fh:
+                        tree = ast.parse(fh.read(), path)
+                    for node in ast.walk(tree):
+                        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                            continue
+                        targets = (node.targets if isinstance(node, ast.Assign)
+                                   else [node.target])
+                        for target in targets:
+                            name = (target.id if isinstance(target, ast.Name)
+                                    else target.attr
+                                    if isinstance(target, ast.Attribute) else None)
+                            if name != "DOCKER_RUNNER":
+                                continue
+                            ok = (os.path.basename(path) == "readiness.py"
+                                  and isinstance(node.value, ast.Constant)
+                                  and node.value.value is None)
+                            if not ok:
+                                offenders.append("%s:%d: %s" % (
+                                    os.path.relpath(path, REPO_ROOT),
+                                    node.lineno, ast.unparse(node)))
+        self.assertEqual(offenders, [],
+                         "DOCKER_RUNNER is a test-only seam; production code "
+                         "must leave it None:\n" + "\n".join(offenders))
+
     def test_the_launch_guard_still_finds_exactly_the_known_seams(self):
         from test_host_launch_guard import _seams
         self.assertNotIn(os.path.join("phases", "readiness.py"),

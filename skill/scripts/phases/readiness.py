@@ -27,6 +27,13 @@ evidence. That is a disclosed choice, not a silent one -- it is recorded in
 `tools-ran.json`, in the report's tool coverage, and in
 `meta.tools.panels_with_scanner_context`.
 
+`DOCKER_RUNNER` below is a TEST-ONLY injection point. Its production value is
+`None` -- meaning "use `setup_flow.DEFAULT_RUNNER`" -- and no module outside
+`tests/` may assign it: a non-`None` value left in shipped code makes this
+checkpoint answer "ok" off a fake without probing Docker at all, which is the
+one check gating every paid dispatch. See DEVELOPMENT.md, "Test-only injection
+seams"; `tests/phases/test_readiness.py` asserts both halves.
+
 NO host binary and NO paid dispatch runs here (ruling 2). The capability
 posture is already established by `driver._establish_host_posture` on every
 invocation, so `setup_flow._check_host_shells` -- which starts a host CLI -- is
@@ -71,13 +78,13 @@ IMAGE_REMEDY = (
 
 _NOT_APPLICABLE = "not applicable (--no-tools)"
 
-# The docker probe's launcher, as a module attribute so one patch can reach it.
-# `None` means "use setup_flow's", which is `subprocess.run` in production and
-# the suite's refusal under tests/conftest.py's autouse guard -- so a test that
-# wants a docker answer has to say so, and one that says nothing reaches
-# nothing. Same construction, and the same reason, as the host-CLI launch seams
-# in tests/test_host_launch_guard.py; this one is not a host CLI, so it is not
-# spelled DEFAULT_RUNNER and does not belong in LAUNCH_SEAMS.
+# TEST-ONLY injection point; production value is None (see the module
+# docstring). `None` means "use setup_flow's", which is `subprocess.run` in
+# production and the suite's refusal under tests/conftest.py's autouse guard --
+# so a test that wants a docker answer has to say so, and one that says nothing
+# reaches nothing. Same construction, and the same reason, as the host-CLI
+# launch seams in tests/test_host_launch_guard.py; this one is not a host CLI,
+# so it is not spelled DEFAULT_RUNNER and does not belong in LAUNCH_SEAMS.
 DOCKER_RUNNER = None
 
 

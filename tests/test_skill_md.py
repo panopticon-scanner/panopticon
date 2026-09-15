@@ -348,12 +348,24 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("disclosed opt-out", readiness)
         self.assertIn("meta.tools.panels_with_scanner_context", readiness)
         self.assertIn("first step is the readiness checkpoint", loop)
+        # F6: the sentence may not claim more than the code does --
+        # `_establish_host_posture` runs before the engine and, on a host whose
+        # probes interrogate its CLI, that is a real launch. Ruling 2's
+        # guarantee is that readiness dispatches nothing, which is what the
+        # doc now says.
+        self.assertIn("Before any paid dispatch", loop)
+        self.assertNotIn("arms a guard or launches anything", loop)
 
     def test_an_environmental_tool_skip_is_documented_as_retried(self):
         loop = _section(self.text, "## Driver run-loop", "## Driver setup")
         tools = _section(loop, "`tools`**", "`review`**")
         self.assertIn("environmental", tools.lower())
         self.assertIn("re-evaluated on the next `driver run`", tools)
+        # F1/F2: the cadence and the non-destructive exit are the two things
+        # an operator staring at a stalled run needs to find.
+        self.assertIn("scoped to the **invocation**", tools)
+        self.assertIn("non-destructive rescue", tools)
+        self.assertIn("meta.tools.disabled_mid_run", tools)
 
     def test_tools_dir_is_wired_into_synthesize_passes(self):
         # F-2: a scan that runs but is never ingested reads as clean. 5.0:
