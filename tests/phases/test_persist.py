@@ -292,6 +292,19 @@ class TestRetainRejected(unittest.TestCase):
         kept = os.path.join(self.run_dir, "rejected", "review-app-SEC-1.json")
         self.assertIsNone(persist.role_of(_entry(kept)))
 
+    def test_a_scout_record_is_not_a_scout_file(self):
+        # D10 F6: the claim above was vacuous for the one id that collides with
+        # a file family. A scout entry is `scout-app`, so its record is
+        # `rejected/scout-app-1.json` -- which `role_of`, keying on the NAME,
+        # read as a scout ARTIFACT: `scout-` prefix, `.json` suffix. The role
+        # decides the published output schema and the retry's envelope line, so
+        # a record that claims a role is a record that can be mistaken for the
+        # answer. The folder settles it before the name is ever consulted.
+        scout = _entry(os.path.join(self.run_dir, "scout-app.json"), id="scout-app")
+        kept = persist.retain_rejected(self.run_dir, scout, "{}", "no", kind=persist.REFUSAL)
+        self.assertEqual(os.path.basename(kept), "scout-app-1.json")
+        self.assertIsNone(persist.role_of(_entry(kept)))
+
 
 class TestRoleSchema(unittest.TestCase):
     """D10 ruling 3: the published schema a role's reply is accepted against,

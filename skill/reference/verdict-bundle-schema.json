@@ -107,10 +107,9 @@
     },
     "_panopticon": {
       "type": "object",
-      "description": "Cell-identity block: the run_id/group/domain/stage of the entry that asked for this bundle. REQUIRED -- persist refuses a bundle whose stamp contradicts the entry -- and filled in by the driver for a return-persist reply that omits it (`stamped_by: \"controller\"`); a self-written bundle must carry it.",
+      "description": "Cell-identity block: the run_id/group/domain/stage of the entry that asked for this bundle. REQUIRED -- persist refuses a bundle whose stamp contradicts the entry -- and filled in by the driver for a return-persist reply that omits it (`stamped_by: \"controller\"`); a self-written bundle must carry it. Only run_id is required: the driver stamps the identity keys it declared on the entry, and `role` -- the agent's own name for what it was -- is not one of them.",
       "required": [
-        "run_id",
-        "role"
+        "run_id"
       ],
       "properties": {
         "run_id": {

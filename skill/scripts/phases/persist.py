@@ -278,6 +278,11 @@ def role_of(entry):
         return None
     name = os.path.basename(out_file)
     parent = os.path.basename(os.path.dirname(out_file))
+    # D10 F6: the folder before the name. A retained record is named after the
+    # ENTRY (`rejected/scout-app-1.json`), which for a scout collides with the
+    # scout artifact family exactly; nothing under `rejected/` is a role.
+    if parent == REJECTED_DIR:
+        return None
     if name.startswith("scout-") and name.endswith(".json"):
         return "scout"
     if name == "setup-proposal.json":

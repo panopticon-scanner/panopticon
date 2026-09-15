@@ -156,16 +156,20 @@ class TestSessionMode(LoopCase):
             # (an omitted stamp is now filled from the entry).
             fh.write(json.dumps({"findings": [], "note": "ghp_" + "C" * 36,
                                  "_panopticon": {"group": "a-different-group"}}))
-        with contextlib.redirect_stdout(io.StringIO()):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             rc = driver.main(["persist", "review-app-SEC", "--file", reply, d])
         self.assertEqual(rc, 1)
         run_dir = os.path.dirname(probes_common.headless_settings_path(d))
-        with open(os.path.join(run_dir, "rejected", "review-app-SEC-1.json"),
-                  encoding="utf-8") as fh:
+        kept = os.path.join(run_dir, "rejected", "review-app-SEC-1.json")
+        with open(kept, encoding="utf-8") as fh:
             record = json.load(fh)
         self.assertEqual(record["attempt"], 1)
         self.assertIn("_panopticon.group", record["reason"])
         self.assertIn("[REDACTED_TOKEN]", record["reply"])
+        # D10 F10: keeping it silently is keeping it from the operator too --
+        # the refusal line is the only thing they see, so it says where.
+        self.assertIn("(reply kept at %s)" % kept, err.getvalue())
 
     def _armed_write_paths(self, s):
         _settings, allowlist_path, _ = write_guard_hook._resolve(None, None, s)

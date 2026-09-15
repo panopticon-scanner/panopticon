@@ -1,6 +1,8 @@
 import json, os
 import jsonschema
 import pytest
+
+import scripts.phases.persist as persist
 REF = os.path.join(os.path.dirname(__file__), os.pardir, "skill", "reference")
 
 def _load(name):
@@ -99,3 +101,51 @@ def test_verdict_bundle_is_the_shape_persist_accepts():
         jsonschema.validate({"verdicts": []}, bundle)               # no stamp
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(dict(good, verdicts=[{"finding_id": "x"}]), bundle)
+
+
+def _refs(node):
+    """Every `$ref` string anywhere in a loaded schema."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str):
+                yield value
+            else:
+                for ref in _refs(value):
+                    yield ref
+    elif isinstance(node, list):
+        for item in node:
+            for ref in _refs(item):
+                yield ref
+
+
+def test_every_published_output_schema_is_self_contained():
+    # D10 F9: these three files are handed to a host CLI as the schema its
+    # reply must satisfy (`persist.ROLE_SCHEMAS` -> `--json-schema`). The CLI
+    # resolves nothing on our behalf and fetches nothing, so a reference OUT of
+    # the document -- a sibling file, a URL -- reaches it broken, and the CLI's
+    # own answer to a schema it cannot resolve is not ours to predict.
+    # INTERNAL refs are allowed and used: the findings envelope's two finding
+    # shapes live under `#/definitions`, which every implementation resolves
+    # inside the document it was given.
+    for name in sorted(set(persist.ROLE_SCHEMAS.values())):
+        schema = _load(name)
+        for ref in _refs(schema):
+            assert ref.startswith("#/definitions/"), (name, ref)
+
+
+def test_no_published_schema_requires_a_stamp_key_the_driver_cannot_fill():
+    # D10 F7: `_controller_stamp` fills the identity keys the ENTRY declares --
+    # `persist._STAMP_KEYS`, which the driver wrote onto it -- and nothing
+    # else. `role` is the agent's own word for what it was; no entry carries
+    # one, so no controller-stamped reply can. A published schema that
+    # REQUIRED `role` would make the CLI refuse, at its structured-output gate,
+    # precisely the replies `persist.accepts` takes.
+    stamped = {"run_id": "RID", "group": "app", "domain": "SEC", "stage": "primary"}
+    assert sorted(stamped) == sorted(persist._STAMP_KEYS)       # the whole of what it fills
+    for name, body in (("findings-envelope-schema.json", {"findings": []}),
+                       ("verdict-bundle-schema.json", {"verdicts": []})):
+        schema = _load(name)
+        stamp = schema["properties"]["_panopticon"]
+        assert set(stamp["required"]) <= set(persist._STAMP_KEYS), (name, stamp["required"])
+        body["_panopticon"] = dict(stamped, stamped_by="controller")
+        assert jsonschema.validate(body, schema) is None, name

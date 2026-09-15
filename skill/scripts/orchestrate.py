@@ -683,12 +683,12 @@ def persist_cli(args):
         text = sys.stdin.read()
     ok, reason = persist.write_reply(entry, text)
     if not ok:
-        # D10 ruling 1, session half: the operator is holding the only copy of
-        # this reply, so the mode a human drives must keep it exactly as the
-        # loop does. Same folder, same shape, same attempt numbering.
-        persist.retain_rejected(persist.run_dir(review_root, "setup" if args.setup else None),
-                                entry, text, reason, kind=persist.REFUSAL)
-        print("driver persist: %s" % reason, file=sys.stderr)
+        # D10 ruling 1, session half: the operator is holding the only copy of this reply,
+        # so the mode a human drives keeps it exactly as the loop does -- same folder, shape
+        # and attempt numbering -- and (F10) says where, since the refusal line is all they see.
+        kept = persist.retain_rejected(persist.run_dir(review_root, "setup" if args.setup else None),
+                                       entry, text, reason, kind=persist.REFUSAL)
+        print("driver persist: %s%s" % (reason, " (reply kept at %s)" % kept if kept else ""), file=sys.stderr)
         return 1
     print(os.path.abspath(entry["out_file"]))
     return 0
