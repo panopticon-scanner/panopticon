@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -390,6 +391,131 @@ class TestHeadlessLoop(LoopCase):
         self.assertIn("interrupted", status["message"])
         settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
         self.assertFalse(write_guard_hook.is_armed(settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+
+    # ---- P07 (#1636): each entry lands the moment it finishes ----------------
+    #
+    # Codex's run-13 evidence: 42 minutes into an 85-panel batch, zero
+    # persisted outputs and a ledger holding only the 12 scouts, because the
+    # loop persisted and ledgered nothing until the WHOLE batch returned. An
+    # interruption there loses every completed reply and its usage, and the
+    # resume repeats paid work.
+
+    def _return_persist(self, d, floor, runner, *extra):
+        """`self._run` in the posture where review/verify replies come back as
+        JSON for the LOOP to persist (artifact_write_guard not proven, so
+        `requests.delivery` says return_json). A persisted out_file is then
+        evidence about the loop, not about the fake agent's own Write."""
+        with mock.patch("scripts.host_probes.run_probes",
+                        side_effect=_write_guard_not_proven):
+            return self._run(d, floor, runner, "--allow-unenforced", *extra)
+
+    def _peer_artifacts(self, runner, peer_id, timeout=10):
+        """What is on disk for `peer_id`, polled from INSIDE another entry's
+        run_entry -- so the answer describes what the loop had persisted while
+        this batch was still running, which is the whole of P07."""
+        req = orchestrate.requests.load_dispatch_request(runner.review_root) or {}
+        peer = next(e for e in req.get("entries") or [] if e.get("id") == peer_id)
+        usage_path = os.path.join(runner.run_dir, "usage.json")
+        seen = {"reply": False, "ledger": False, "usage": False}
+        deadline = time.monotonic() + timeout
+        while True:
+            seen["reply"] = os.path.exists(peer["out_file"])
+            seen["ledger"] = any(row.get("entry_id") == peer_id
+                                 for row in orchestrate.Ledger(runner.run_dir).lines())
+            seen["usage"] = bool((runio._load_json(usage_path) or {}).get("total"))
+            if all(seen.values()) or time.monotonic() >= deadline:
+                return seen
+            time.sleep(0.02)
+
+    def _gate_on_peer(self, runner, blocked_id, peer_id, then=None):
+        """Make `blocked_id` sit inside run_entry until `peer_id`'s reply,
+        ledger row and usage total exist; return what it saw."""
+        seen, inner = {}, runner.run_entry
+
+        def gated(entry, env):
+            if entry["id"] == blocked_id and not seen:
+                seen.update(self._peer_artifacts(runner, peer_id))
+                if then is not None:
+                    then()
+            return inner(entry, env)
+
+        runner.run_entry = gated
+        return seen
+
+    def test_a_finished_entry_is_persisted_and_ledgered_before_its_peer_returns(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        seen = self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC")
+        status = self._return_persist(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        # ...and usage.json is live during the batch, not only after it
+        self.assertEqual({"reply": True, "ledger": True, "usage": True}, seen)
+
+    def test_an_interrupt_keeps_every_entry_that_already_finished(self):
+        # One entry done, one still running when the Ctrl-C lands: what
+        # finished stays on disk and in the ledger, and the message says how
+        # much of the batch that was.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+
+        def interrupt():
+            raise KeyboardInterrupt
+
+        seen = self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC", then=interrupt)
+        status = self._return_persist(d, floor, runner)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("interrupted", status["message"])
+        self.assertIn("1 of 2", status["message"])
+        self.assertIn("re-run to resume from disk", status["message"])
+        self.assertEqual({"reply": True, "ledger": True, "usage": True}, seen)
+        self.assertEqual(["review-app-SEC"],
+                         [row["entry_id"] for row in orchestrate.Ledger(runner.run_dir).lines()])
+        settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
+        self.assertFalse(write_guard_hook.is_armed(
+            settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+
+    def test_the_ledger_row_records_when_the_entry_ran(self):
+        # `duration_ms` was passed as a literal None at the one call site, so
+        # every row in every run carried a null. The row GAINS three fields
+        # and loses none -- usage_document() reads `phase`/`usage` and
+        # total_cost() reads `cost_usd`, all still there.
+        d, floor = self._repo()
+        runner = FakeRunner()
+        self._run(d, floor, runner)
+        rows = orchestrate.Ledger(runner.run_dir).lines()
+        self.assertEqual(len(runner.launched), len(rows))
+        for row in rows:
+            self.assertEqual(
+                {"ts", "entry_id", "checkpoint", "phase", "mode", "host", "model", "ok",
+                 "usage", "cost_usd", "duration_ms", "session_id", "denials", "error",
+                 "started_at", "finished_at"}, set(row))
+            self.assertIsInstance(row["duration_ms"], int)
+            self.assertGreaterEqual(row["duration_ms"], 0)
+            self.assertLessEqual(row["started_at"], row["finished_at"])
+            self.assertLessEqual(row["started_at"], row["ts"])
+
+    def test_every_completed_entry_prints_one_progress_line(self):
+        # The ledger item's "progress visible without inspecting processes":
+        # the run-13 operator's only workaround was an external read-only
+        # process monitor.
+        d, floor = self._repo()
+        runner = FakeRunner()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._run(d, floor, runner)
+        lines = [x for x in err.getvalue().splitlines() if " done (" in x]
+        self.assertEqual(len(runner.launched), len(lines))
+        self.assertRegex(lines[0], r"^driver loop: review-app-SEC done \(\d+ ms, 1/1\)$")
+
+    def test_usage_is_rewritten_after_every_entry_not_once_per_batch(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        with mock.patch.object(orchestrate, "write_usage",
+                               wraps=orchestrate.write_usage) as wu:
+            status = self._run(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        # one per launch, plus _finish's terminal write
+        self.assertEqual(len(runner.launched) + 1, wu.call_count)
 
     def test_engine_refusals_surface_unchanged(self):
         d, floor = self._repo()

@@ -6,6 +6,7 @@ batch through the host's runner, persist return-persist replies, ledger every
 launch, tear the guards down, and call driver.run again. The engine's done
 predicates are the only way forward (O2); a runner's claim advances nothing.
 """
+import contextlib
 import json
 import os
 import sys
@@ -60,12 +61,11 @@ class Guards:
 
     def __init__(self, mode, run_dir=None, session_root=None):
         self.mode = mode
-        # I4: the union of entries THIS process armed, in arm() order. Session
-        # mode is the only mode whose grants outlive an invocation (a
-        # `dispatch` exit returns without disarming, by design), so an
-        # invocation that errors must drop exactly what it armed -- nothing,
-        # when it never got that far -- and leave the previous fan-out's
-        # grants standing. `complete` still disarms totally (spec 5.1).
+        # I4: the union of entries THIS process armed, in arm() order. Session mode is
+        # the only mode whose grants outlive an invocation (a `dispatch` exit returns
+        # without disarming, by design), so an invocation that errors must drop exactly
+        # what it armed -- nothing, when it never got that far -- and leave the previous
+        # fan-out's grants standing. `complete` still disarms totally (spec 5.1).
         self.armed_entries = []
         if mode == "headless":
             self.settings_path = os.path.join(run_dir, runners_base.SETTINGS_FILE)
@@ -114,7 +114,8 @@ class Ledger:
     def __init__(self, run_dir):
         self.path = os.path.join(run_dir, runners_base.LEDGER_FILE)
 
-    def record(self, entry, checkpoint, result, mode, host, duration_ms, refusal=None):
+    def record(self, entry, checkpoint, result, mode, host, duration_ms,
+               refusal=None, timing=None):
         """One line per runner call.
 
         `refusal` (fix round 2) overrides the LAUNCH's own verdict. A
@@ -123,7 +124,14 @@ class Ledger:
         advance, so a row saying `ok: true` would both overstate the run and
         disagree with the per-entry failure cap that is about to count it. The
         usage and cost stay the real launch's: those tokens were spent whatever
-        the reply turned out to be (M2)."""
+        the reply turned out to be (M2).
+
+        `timing` (P07, #1636) is the runner's `{started_at, finished_at,
+        duration_ms}` for this entry, measured around `run_entry` itself. The
+        row GAINS two keys and loses none: every reader of the older shape --
+        `usage_document`'s `phase`/`usage`, `total_cost`'s `cost_usd` -- reads
+        exactly what it always did, and `ts` still means when the LINE was
+        written, which is now when the loop persisted that one entry."""
         line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "entry_id": entry.get("id"), "checkpoint": checkpoint,
                 "phase": PHASE_OF_CHECKPOINT.get(checkpoint, "unattributed"),
@@ -131,6 +139,8 @@ class Ledger:
                 "ok": result.ok and refusal is None,
                 "usage": {k: int(result.usage.get(k, 0) or 0) for k in USAGE_FIELDS} if result.usage else {},
                 "cost_usd": result.cost_usd, "duration_ms": duration_ms,
+                "started_at": (timing or {}).get("started_at"),
+                "finished_at": (timing or {}).get("finished_at"),
                 "session_id": result.session_id, "denials": result.denials,
                 "error": refusal if refusal is not None else result.error}
         # #1095, plan 6 review round 1: the ledger path is a `.panopticon`
@@ -153,13 +163,12 @@ class Ledger:
         by_phase = {p: 0 for p in ("scout", "review", "verify", "unattributed")}
         by_field = {k: 0 for k in USAGE_FIELDS}
         for row in self.lines():
-            # M2: a FAILED launch counts too. `claude -p` reports usage on an
-            # is_error envelope exactly as it does on success, and those
-            # tokens were really spent -- a timed-out or errored entry is
-            # often the most expensive one in a run. Skipping them made
-            # usage.json (and meta.cost.tokens, which is read straight off it)
-            # under-report what the run cost, which is the one thing an honest
-            # ledger must never do.
+            # M2: a FAILED launch counts too. `claude -p` reports usage on an is_error
+            # envelope exactly as it does on success, and those tokens were really spent
+            # -- a timed-out or errored entry is often the most expensive one in a run.
+            # Skipping them made usage.json (and meta.cost.tokens, which is read
+            # straight off it) under-report what the run cost, which is the one thing an
+            # honest ledger must never do.
             usage = row.get("usage") or {}
             n = sum(int(usage.get(k, 0) or 0) for k in USAGE_FIELDS)
             by_phase[row.get("phase") or "unattributed"] = by_phase.get(row.get("phase") or "unattributed", 0) + n
@@ -295,14 +304,13 @@ def loop(args):
     budget = getattr(args, "max_budget_usd", None)
     namespace = "setup" if getattr(args, "setup", False) else None
     guards = ledger = None
-    # R-P6-6: review_root resolved ONCE, up front -- BEFORE `_first_run` below
-    # calls driver.run()/run_setup_flow(), which rewrites dispatch-request.json
-    # for whatever checkpoint this invocation lands on. A fresh run has no
-    # manifest/run folder yet, so load_dispatch_request (just below) reads
-    # back None -- "no previous entries", never an error (Task 6 ruling 3). A
-    # resolve failure (a bad --pr, e.g.) is reported the same way driver.run()
-    # itself reports it rather than raising out of loop(), which must never
-    # raise.
+    # R-P6-6: review_root resolved ONCE, up front -- BEFORE `_first_run` below calls
+    # driver.run()/run_setup_flow(), which rewrites dispatch-request.json for whatever
+    # checkpoint this invocation lands on. A fresh run has no manifest/run folder yet,
+    # so load_dispatch_request (just below) reads back None -- "no previous entries",
+    # never an error (Task 6 ruling 3). A resolve failure (a bad --pr, e.g.) is reported
+    # the same way driver.run() itself reports it rather than raising out of loop(),
+    # which must never raise.
     try:
         review_root = _review_root(args)
     except (RuntimeError, ValueError, OSError) as exc:
@@ -310,43 +318,39 @@ def loop(args):
     # I5 then I8: the mode fallback asks whether THIS host has a runner, so the
     # host has to be resolved first.
     host = _resolve_host(args, review_root)
-    # #1621: the resolved host can be one the driver no longer accepts -- a run
-    # started under a row a family PR has since lost (gemini) or never earned
-    # (kimi, codex) resumes off its own manifest, which `driver.run` treats as
-    # authoritative. `runner_for` builds a SessionRunner for ANY string, so
-    # nothing further down would have objected: the loop would have gone on
-    # dispatching for a host `--host` now refuses to name. Read off the
-    # registry, never a host-name literal, so a family PR that flips its row
-    # needs no edit here. The remedy is the parser's, plus `--reset`, because
-    # it is the MANIFEST that has to change.
-    # #1624: the sentence itself lives in the registry, because `driver.run`
-    # now refuses the same manifest on the same grounds and two copies of one
-    # paragraph drift.
+    # #1621: the resolved host can be one the driver no longer accepts -- a run started
+    # under a row a family PR has since lost (gemini) or never earned (kimi, codex)
+    # resumes off its own manifest, which `driver.run` treats as authoritative.
+    # `runner_for` builds a SessionRunner for ANY string, so nothing further down would
+    # have objected: the loop would have gone on dispatching for a host `--host` now
+    # refuses to name. Read off the registry, never a host-name literal, so a family PR
+    # that flips its row needs no edit here. The remedy is the parser's, plus `--reset`,
+    # because it is the MANIFEST that has to change.
+    # #1624: the sentence itself lives in the registry, because `driver.run` now refuses
+    # the same manifest on the same grounds and two copies of one paragraph drift.
     if host not in hosts.driver_hosts():
         return _status("error", hosts.unselectable_host_message(host, "loop"))
     mode, note = _resolve_mode(args, host)
     if note:
         print(note, file=sys.stderr, flush=True)
-    # I-3: the budget branch below reads the ledger's cumulative cost, and a
-    # host that reports no dollars leaves that at 0 for ever -- so the flag is
-    # accepted and then does nothing. Say so once, here, rather than letting an
-    # operator believe an unbounded run is bounded. Keyed on the CLAIM, not a
-    # host name: declaring no usage_ledger IS the statement that no cost comes
-    # back.
+    # I-3: the budget branch below reads the ledger's cumulative cost, and a host that
+    # reports no dollars leaves that at 0 for ever -- so the flag is accepted and then
+    # does nothing. Say so once, here, rather than letting an operator believe an
+    # unbounded run is bounded. Keyed on the CLAIM, not a host name: declaring no
+    # usage_ledger IS the statement that no cost comes back.
     if budget is not None and not hosts.declares(host, hosts.USAGE_LEDGER):
         print("driver loop: --max-budget-usd has no effect on host %r (no usage ledger); "
               "bound the run with --max-iterations and --entry-timeout" % host,
               file=sys.stderr, flush=True)
-    # Both are resolved BEFORE `_first_run`, and the resolved mode is written
-    # back onto `args`, deliberately. `driver._establish_host_posture` reads
-    # `args.mode` to decide WHICH settings file the guard probes measure (spec
-    # 5.4: the run folder's in headless mode, the session root's otherwise),
-    # and it runs on EVERY `driver.run` call. Leaving `args.mode` at None for
-    # the first call and resolving afterwards would probe the session root once
-    # and the run folder from then on -- and on any machine whose session root
-    # has no settings file (the #1493 case) those two disagree about
-    # artifact_write_guard, so the run would refuse ITSELF as mid-run posture
-    # drift on its second invocation. This is why host resolution reads the
+    # Both are resolved BEFORE `_first_run`, and the resolved mode is written back onto
+    # `args`, deliberately. `driver._establish_host_posture` reads `args.mode` to decide
+    # WHICH settings file the guard probes measure (spec 5.4: the run folder's in
+    # headless mode, the session root's otherwise), and it runs on EVERY `driver.run`
+    # call. Leaving `args.mode` at None for the first call and resolving afterwards
+    # would probe the session root once and the run folder from then on -- and on any
+    # machine whose session root has no settings file (the #1493 case) those two
+    # disagree about artifact_write_guard, so the run would refuse ITSELF as mid-run
+    # posture drift on its second invocation. This is why host resolution reads the
     # manifest here rather than after `_first_run`; `--reset` is handled in
     # `_resolve_host` so the outgoing manifest cannot steer a re-minted run.
     args.mode = mode
@@ -369,45 +373,41 @@ def loop(args):
     # silently resolve the OPERATOR's real session root in session mode.
     session_root = (os.path.abspath(args.session_dir) if getattr(args, "session_dir", None)
                     else os.getcwd())
-    # The OUTGOING dispatch request, read BEFORE `_first_run` rewrites it
-    # (R-P6-6): reading it afterwards would see the very request this same
-    # invocation just produced and disarm nothing. Read in every mode -- it is
-    # one JSON load -- so that the READ and the ACT can sit on opposite sides
-    # of `_first_run`, which I4 requires.
+    # The OUTGOING dispatch request, read BEFORE `_first_run` rewrites it (R-P6-6):
+    # reading it afterwards would see the very request this same invocation just
+    # produced and disarm nothing. Read in every mode -- it is one JSON load -- so that
+    # the READ and the ACT can sit on opposite sides of `_first_run`, which I4 requires.
     prev_req = requests.load_dispatch_request(review_root, namespace) or {}
     if mode == "session":
-        # Guards constructed HERE, before `_first_run`, and unconditionally --
-        # not only once this invocation reaches a fresh checkpoint. Session
-        # mode is the only mode whose guards can stay armed ACROSS
-        # invocations (a `dispatch` exit returns before ever disarming, by
-        # design -- the host has not run anything yet), so an invocation
-        # whose OWN `_first_run` lands directly on complete -- the run's last
-        # checkpoint having been finished externally, with no `while`
-        # iteration of THIS call to disarm it -- would otherwise leave the
-        # PREVIOUS invocation's grants armed forever: `_finish` can only
-        # disarm a `guards` it was handed, and building one only after a
-        # checkpoint survives skips exactly this case. `run_dir` is not
-        # needed here: `Guards` ignores it outside headless mode, and the
-        # settings/allowlist/scope paths it resolves depend only on
-        # `session_root`, which does not change across a run.
+        # Guards constructed HERE, before `_first_run`, and unconditionally -- not only
+        # once this invocation reaches a fresh checkpoint. Session mode is the only mode
+        # whose guards can stay armed ACROSS invocations (a `dispatch` exit returns
+        # before ever disarming, by design -- the host has not run anything yet), so an
+        # invocation whose OWN `_first_run` lands directly on complete -- the run's last
+        # checkpoint having been finished externally, with no `while` iteration of THIS
+        # call to disarm it -- would otherwise leave the PREVIOUS invocation's grants
+        # armed forever: `_finish` can only disarm a `guards` it was handed, and
+        # building one only after a checkpoint survives skips exactly this case.
+        # `run_dir` is not needed here: `Guards` ignores it outside headless mode, and
+        # the settings/allowlist/scope paths it resolves depend only on `session_root`,
+        # which does not change across a run.
         guards = Guards(mode, session_root=session_root)
     status = _first_run(args, namespace)
-    # `--reset` is CONSUMED by that call. `driver.run` reads `args.reset` on
-    # every invocation and the loop hands it the same `args` each iteration,
-    # so left set it cleared the run folder and re-minted the manifest on
-    # every `_run` below: the run restarted at its first checkpoint forever.
-    # Found twice, independently. By the Claude family PR's second real
-    # `driver loop --reset`, which re-launched the same three scouts ten times
-    # (30 identical ledger rows) before it was stopped; and by the kimi family
-    # PR, where the second call deleted the run folder the runner had just
-    # prepared (the kimi run's kimi-home/config.toml -- every child then
-    # failed "Model ... is not configured"; claude's host-settings.json is the
-    # same file in the same path), re-minted a fresh tag each time, and left
-    # the ledger, runner and guards writing to the first mint's folder while
-    # the manifest pointed at the last. `driver loop --reset` could never have
-    # worked headless; single `driver run --reset` calls never noticed because
-    # they invoke driver.run exactly once. From here on the loop resumes the
-    # run it just started, which is what every later iteration is for.
+    # `--reset` is CONSUMED by that call. `driver.run` reads `args.reset` on every
+    # invocation and the loop hands it the same `args` each iteration, so left set it
+    # cleared the run folder and re-minted the manifest on every `_run` below: the run
+    # restarted at its first checkpoint forever. Found twice, independently. By the
+    # Claude family PR's second real `driver loop --reset`, which re-launched the same
+    # three scouts ten times (30 identical ledger rows) before it was stopped; and by
+    # the kimi family PR, where the second call deleted the run folder the runner had
+    # just prepared (the kimi run's kimi-home/config.toml -- every child then failed
+    # "Model ... is not configured"; claude's host-settings.json is the same file in the
+    # same path), re-minted a fresh tag each time, and left the ledger, runner and
+    # guards writing to the first mint's folder while the manifest pointed at the last.
+    # `driver loop --reset` could never have worked headless; single `driver run
+    # --reset` calls never noticed because they invoke driver.run exactly once. From
+    # here on the loop resumes the run it just started, which is what every later
+    # iteration is for.
     args.reset = False
     if status.get("status") != "checkpoint":
         return _finish(status, args, guards, ledger, namespace, mode, runner)
@@ -421,54 +421,52 @@ def loop(args):
     if _after_first_run(review_root):
         status = _run(args, namespace)                # re-derive after the seam
     iterations = 0
-    # Consecutive failed launches per entry id, and that entry's last failure
-    # message (fix round 2). A launch the runner failed and a reply persist
-    # refused both count: neither advanced the entry, and neither gets likelier
-    # on the fortieth attempt. A clean, accepted launch clears the streak --
-    # this bounds an entry that is STUCK, not one that is merely flaky.
+    # Consecutive failed launches per entry id, and that entry's last failure message
+    # (fix round 2). A launch the runner failed and a reply persist refused both count:
+    # neither advanced the entry, and neither gets likelier on the fortieth attempt. A
+    # clean, accepted launch clears the streak -- this bounds an entry that is STUCK,
+    # not one that is merely flaky.
     #
-    # In memory, and per INVOCATION. In session mode that means a re-entry
-    # starts every entry at zero, deliberately: nothing there advances except a
-    # human persisting a reply that passes the phase's own done predicate, so
-    # the disk-evidence gate already bounds it -- there is no runaway to cap,
-    # and a streak that survived across invocations would refuse an operator
-    # their fourth honest attempt at a cell.
+    # In memory, and per INVOCATION. In session mode that means a re-entry starts every
+    # entry at zero, deliberately: nothing there advances except a human persisting a
+    # reply that passes the phase's own done predicate, so the disk-evidence gate
+    # already bounds it -- there is no runaway to cap, and a streak that survived across
+    # invocations would refuse an operator their fourth honest attempt at a cell.
     failures, last_error = {}, {}
+    done, total = 0, 0        # this batch's progress, read by the handlers below
     try:
-        # M8: the pre-loop setup lives INSIDE the try. `loop` never raises
-        # (review round 1, item 3), but every line of it touches the
-        # filesystem -- resolving the run folder, writing host-settings.json,
-        # resolving the guard paths -- and an OSError (a read-only run folder,
-        # an unwritable settings path) escaped as a traceback rather than the
-        # reported `error` status every other failure here produces.
+        # M8: the pre-loop setup lives INSIDE the try. `loop` never raises (review round
+        # 1, item 3), but every line of it touches the filesystem -- resolving the run
+        # folder, writing host-settings.json, resolving the guard paths -- and an
+        # OSError (a read-only run folder, an unwritable settings path) escaped as a
+        # traceback rather than the reported `error` status every other failure here
+        # produces.
         #
-        # Task 6 fix round 1, item 2: derived through probes.common.headless_settings_path
-        # (namespace-aware), never a bare `runio._pano(review_root, SETTINGS_FILE)`
-        # -- for namespace == "setup" that would follow whatever run-manifest.json
-        # a PRIOR review run left on review_root and route setup's own
-        # host-settings.json/dispatch-ledger.jsonl/usage.json into that run's
-        # runs/<tag>/ folder.
+        # Task 6 fix round 1, item 2: derived through
+        # probes.common.headless_settings_path (namespace-aware), never a bare
+        # `runio._pano(review_root, SETTINGS_FILE)` -- for namespace == "setup" that
+        # would follow whatever run-manifest.json a PRIOR review run left on review_root
+        # and route setup's own host-settings.json/dispatch-ledger.jsonl/usage.json into
+        # that run's runs/<tag>/ folder.
         run_dir = os.path.dirname(probes_common.headless_settings_path(review_root, namespace))
-        # C2/M4: the session runner prints the batch itself, so it needs the
-        # two facts only the loop holds -- which request file these entries
-        # came from, and whether this is the setup namespace (which every
-        # command it hints at must carry as `--setup`). Set unconditionally.
+        # C2/M4: the session runner prints the batch itself, so it needs the two facts
+        # only the loop holds -- which request file these entries came from, and whether
+        # this is the setup namespace (which every command it hints at must carry as
+        # `--setup`). Set unconditionally.
         #
-        # BEFORE prepare(), not after: a headless runner does read `namespace`
-        # there. The Codex runner's enforced-only preflight has to stand down
-        # for `--setup`, whose single entry is dispatched with no registered
-        # shell by design -- a fresh machine runs setup before it registers
-        # anything.
+        # BEFORE prepare(), not after: a headless runner does read `namespace` there.
+        # The Codex runner's enforced-only preflight has to stand down for `--setup`,
+        # whose single entry is dispatched with no registered shell by design -- a fresh
+        # machine runs setup before it registers anything.
         runner.dispatch_request = os.path.abspath(
             requests.request_path(review_root, namespace))
         runner.namespace = namespace
         runner.prepare(run_dir, review_root)
-        # N2: the runner's scratch home travels to the probes IN PROCESS, on
-        # `args`, because every later `driver.run` in this loop re-establishes
-        # posture and the effective-surface probes need to find this run's
-        # children. Host-agnostic: a runner with no scratch area leaves it
-        # None, and nothing reads a path out of the reviewed tree to get it.
-        # AFTER prepare(), which is what mints it.
+        # N2: the runner's scratch home travels to the probes IN PROCESS, on `args`,
+        # because every later `driver.run` in this loop re-establishes posture and the
+        # effective-surface probes need to find this run's children. Host-agnostic: a
+        # runner with no scratch area leaves it None, and nothing reads a path out of
+        # the reviewed tree to get it. AFTER prepare(), which is what mints it.
         args.run_home = getattr(runner, "run_home", None)
         for attr in ("max_turns", "entry_timeout"):
             if getattr(args, attr, None):
@@ -501,34 +499,56 @@ def loop(args):
                                        % (eid, failures[eid], last_error.get(eid))),
                                args, guards, ledger, namespace, mode, runner)
             guards.arm(pending)
-            results = runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
-            if results is None:                                 # session mode (Task 6)
+            if mode == "session":
+                # Branched on the MODE, not on a None the headless path can no
+                # longer return: the session runner prints the batch, launches
+                # nothing, and the loop exits `dispatch` still armed (spec 4.3).
+                runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
                 return _dispatch_exit(review_root, req, pending, namespace)
-            for entry, result in zip(pending, results):
-                eid = entry.get("id")
-                # The reply is persisted BEFORE the ledger row is written, so
-                # the row can record a refusal as the failed launch it is.
-                refusal = None
-                if result.ok and entry.get("delivery") == "return_json":
-                    ok, reason = persist.write_reply(entry, result.text)
-                    if not ok:
-                        refusal = "persist refused: %s" % (reason or "shape check failed")
-                        print("driver loop: %s" % reason, file=sys.stderr, flush=True)
-                elif not result.ok:
-                    print("driver loop: entry %s failed: %s" % (eid, result.error),
+            done, total = 0, len(pending)
+            # P07 (#1636): persisted, ledgered and counted into usage.json the
+            # moment EACH entry finishes, so an interrupt keeps everything
+            # already yielded and `done`/`total` say how much that was.
+            # `closing` because an exception here abandons the generator: it
+            # drains the pool now, before `_finish` tears the guards and the
+            # runner's scratch area down, rather than at GC's convenience.
+            with contextlib.closing(runner.iter_batch(
+                    pending, getattr(args, "concurrency", None), guards.env_for)) as batch:
+                for entry, result, timing in batch:
+                    eid = entry.get("id")
+                    # The reply is persisted BEFORE the ledger row is written, so
+                    # the row can record a refusal as the failed launch it is.
+                    refusal = None
+                    if result.ok and entry.get("delivery") == "return_json":
+                        ok, reason = persist.write_reply(entry, result.text)
+                        if not ok:
+                            refusal = "persist refused: %s" % (reason or "shape check failed")
+                            print("driver loop: %s" % reason, file=sys.stderr, flush=True)
+                    elif not result.ok:
+                        print("driver loop: entry %s failed: %s" % (eid, result.error),
+                              file=sys.stderr, flush=True)
+                    ledger.record(entry, req.get("checkpoint"), result, mode, runner.host,
+                                  timing.get("duration_ms"), refusal=refusal, timing=timing)
+                    if result.ok and refusal is None:
+                        failures.pop(eid, None)           # clean launch: streak cleared
+                    else:
+                        failures[eid] = failures.get(eid, 0) + 1
+                        last_error[eid] = refusal or result.error
+                    done += 1
+                    write_usage(review_root, ledger, namespace)
+                    # "progress visible without inspecting processes": one
+                    # line, stderr; stdout's status contract is untouched.
+                    print("driver loop: %s done (%s ms, %d/%d)"
+                          % (eid, timing.get("duration_ms"), done, total),
                           file=sys.stderr, flush=True)
-                ledger.record(entry, req.get("checkpoint"), result, mode, runner.host, None,
-                              refusal=refusal)
-                if result.ok and refusal is None:
-                    failures.pop(eid, None)           # clean launch: streak cleared
-                else:
-                    failures[eid] = failures.get(eid, 0) + 1
-                    last_error[eid] = refusal or result.error
-            write_usage(review_root, ledger, namespace)
-            guards.disarm(pending)
+            guards.disarm(pending)                    # armed per batch, dropped per batch
             status = _run(args, namespace)
     except KeyboardInterrupt:
-        status = _status("error", "interrupted (Ctrl-C); guards disarmed; re-run to resume from disk")
+        # Everything already yielded is on disk and in the ledger (P07); an
+        # entry still inside run_entry finished during the pool's drain and is
+        # NOT persisted, so the resume re-launches exactly those.
+        status = _status("error", "interrupted (Ctrl-C) after %d of %d entries persisted; "
+                         "guards disarmed; re-run to resume from disk" % (done, total))
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
     return _finish(status, args, guards, ledger, namespace, mode, runner)
@@ -602,11 +622,10 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
         if status.get("status") == "complete":
             guards.disarm()                          # total (spec 5.1)
         elif status.get("status") == "error" and guards.armed_entries:
-            # I4: exactly what THIS invocation armed, and nothing else. In
-            # session mode the grants outlive an invocation, so a total
-            # teardown here would revoke a fan-out the PREVIOUS invocation
-            # started and that is still running. An invocation that armed
-            # nothing (an errored re-entry) disarms nothing.
+            # I4: exactly what THIS invocation armed, and nothing else. In session mode
+            # the grants outlive an invocation, so a total teardown here would revoke a
+            # fan-out the PREVIOUS invocation started and that is still running. An
+            # invocation that armed nothing (an errored re-entry) disarms nothing.
             guards.disarm(guards.armed_entries)
     # M9: the ledger-derived usage.json belongs to headless runs only. In
     # session mode the loop launches nothing, so the ledger is empty and this
@@ -621,20 +640,17 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
             status["message"] = "%s; usage.json not written: %s: %s" % (
                 status.get("message"), type(exc).__name__, exc)
     if namespace == "setup" and status.get("status") == "complete":
-        # spec 4.6, R-P6-10: `driver loop --setup` names its own artifacts and
-        # the promotion command, superseding whatever message run_setup_flow's
-        # own `complete` branch composed (that wording is for `driver setup`
-        # run directly, not for `driver loop --setup`'s on-rails contract).
-        #
-        # Fix round 1, item 1: ONLY when a draft actually exists -- the
-        # vocab-absent fallback (phases/setup.py's _scan_fallback) seeds
-        # groups.yml directly and writes NEITHER setup-report.md NOR
-        # groups.yml.draft, so unconditionally naming them here would send
-        # the operator to files that were never written and a promotion `mv`
-        # that would fail. run_setup_flow's own `complete` branch already
-        # composed the right message for that path (readiness gaps and
-        # limitations included) -- leave `status["message"]` exactly as it
-        # is when there is no draft to promote.
+        # spec 4.6, R-P6-10: `driver loop --setup` names its own artifacts and the
+        # promotion command, superseding whatever message run_setup_flow's own
+        # `complete` branch composed (that wording is for `driver setup` run directly,
+        # not for `driver loop --setup`'s on-rails contract). Fix round 1, item 1: ONLY
+        # when a draft actually exists -- the vocab-absent fallback (phases/setup.py's
+        # _scan_fallback) seeds groups.yml directly and writes NEITHER setup-report.md
+        # NOR groups.yml.draft, so unconditionally naming them here would send the
+        # operator to files that were never written and a promotion `mv` that would
+        # fail. run_setup_flow's own `complete` branch already composed the right
+        # message for that path (readiness gaps and limitations included) -- leave
+        # `status["message"]` exactly as it is when there is no draft to promote.
         review_root = _review_root(args)
         draft = runio._pano(review_root, "groups.yml.draft")
         if os.path.isfile(draft):
