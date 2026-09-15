@@ -1035,10 +1035,22 @@ class TestTheReadinessVerbIsAdvertised(unittest.TestCase):
             with self.subTest(status=status):
                 self.assertIn("`%s`" % status, loop)
 
+    def test_the_guide_says_a_bare_invocation_still_resolves_a_host(self):
+        """Fix round 2: the docs said the `cli` row gates "only when `--host H`
+        was passed", which is now false -- a bare invocation resolves the same
+        host `driver loop` would and gates on it. That sentence is exactly what
+        an operator running it bare would have relied on."""
+        loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
+        self.assertIn("`selected_from`", loop)
+        self.assertIn("runio.resolve_host", loop)
+        self.assertNotIn("only when `--host H` was passed", loop)
+
     def test_the_guide_says_the_selected_hosts_cli_gates(self):
         """Fix round 1, F2. The guide previously said an absent host CLI never
         gates, which is now false for the host `--host` named -- and that is
         the sentence an operator would have trusted."""
         loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
         self.assertIn("--mode session", loop)
-        self.assertIn("resolves `--host", loop)
+        # Round 2 reworded this: the gate is on the RESOLVED host, with or
+        # without the flag, so the sentence no longer speaks of `--host` alone.
+        self.assertIn("resolves a host to headless", loop)

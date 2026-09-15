@@ -291,6 +291,16 @@ NO_GROUPS = ("no groups.yml — run `driver setup`; a whole-repo review needs it
 # on a box with no `claude` used to greenlight a loop that resolves to headless
 # and then has nothing to launch: the failure class P10 exists to remove.
 # Both ways out, and the session invocation is `orchestrate`'s real one.
+# How the resolved host was chosen, spelled for someone reading a table.
+# `runio.HOST_SOURCES` owns the tokens; this only says what each one MEANS.
+HOST_SOURCE_NOTES = {
+    "--host": "--host",
+    "manifest": "from this run's manifest, which is what a resumed "
+                "`driver loop` uses",
+    "default": "the driver's default; a bare `driver loop` would assume the "
+               "same here, so pass --host to check a different one",
+}
+
 SESSION_REMEDY = (
     "not on PATH — install `%(binary)s`, or drive this host in session mode: "
     "`driver loop --host %(host)s --mode session`. `driver loop` picks headless "
@@ -430,11 +440,15 @@ def _existing_run_row(review_root):
                       "on" % tag}
 
 
-def _cli_rows(host=None):
+def _cli_rows(host):
     """`shutil.which` and nothing else, for every host whose registry row names
     a headless CLI -- plus the SELECTED host always, even when it names none,
     because an operator who passed `--host generic` must not read three rows
     about hosts they did not ask about and none about the one they did.
+
+    `host` is the RESOLVED host, never the raw flag: fix round 2's whole point
+    is that a bare invocation still has one (`runio.resolve_host`), so there is
+    always a selected row and this check is never vacuous.
 
     `binary` and `on_path` are null for a host that launches no CLI of ours:
     there is nothing to look for, which is a different answer from "looked and
@@ -443,8 +457,14 @@ def _cli_rows(host=None):
     Only the selected row can gate (F2), and only when it names a binary that
     is absent -- see SESSION_REMEDY. The others are informational: `driver
     loop` will not pick them, so their absence costs this run nothing."""
+    names = set(hosts.driver_hosts())
+    if hosts.spec(host) is not None:
+        # A manifest may name a registered-but-unselectable host (`gemini`);
+        # `orchestrate.loop` refuses that separately, and a row saying nothing
+        # about the host this document is ABOUT would be worse than either.
+        names.add(host)
     rows = []
-    for name in sorted(hosts.driver_hosts()):
+    for name in sorted(names):
         binary = hosts.spec(name).cli_binary
         selected = name == host
         if not binary and not selected:
@@ -461,10 +481,15 @@ def _cli_rows(host=None):
 
 def _cli_gate(rows):
     """`False` when the selected host cannot be launched the way `driver loop`
-    would launch it, else `None` -- informational, which never moves the exit
-    code. Derived from the rows rather than stored beside them, so the JSON
-    contract stays the list the brief specified."""
-    return False if any(row["remedy"] for row in rows) else None
+    would launch it, else `True`.
+
+    Never `None` (fix round 2, item 2): this row CAN fail, so when it does not
+    it says `ok`, like every other gating row -- `--` is reserved for the three
+    rows nothing is checked against, and a passing check wearing the token for
+    "not checked" understates what was verified. Derived from the rows rather
+    than stored beside them, so the JSON contract stays the list the brief
+    specified."""
+    return not any(row["remedy"] for row in rows)
 
 
 def _tools_image_row():
@@ -506,8 +531,22 @@ def _capabilities_row(review_root, tag):
 
 
 def preflight(target=".", host=None):
-    """The whole document. Reads; never writes, never launches."""
+    """The whole document. Reads; never writes, never launches.
+
+    `host` is the raw `--host`, which is usually absent. The host this document
+    is ABOUT is `runio.resolve_host`'s answer -- the same function
+    `orchestrate.loop` asks, so the preflight cannot gate on a different host
+    from the one the loop would drive (fix round 2, item 1). Without it a bare
+    `driver readiness` had no selected row at all and passed a machine with no
+    host CLI on it, while the equally bare `driver loop` resolved a host
+    perfectly well and went looking for its binary.
+
+    `selected_from` records WHICH rule answered, because "readiness said this
+    machine was fine" is only useful if the operator can see which host it
+    meant.
+    """
     review_root = runio.resolve_review_root(target)[0]
+    host, selected_from = runio.resolve_host(host, review_root)
     guide = _guide_row()
     matrix = _matrix_row(review_root)
     existing = _existing_run_row(review_root)
@@ -523,6 +562,7 @@ def preflight(target=".", host=None):
             "target": os.path.abspath(target),
             "review_root": review_root,
             "host": host,
+            "selected_from": selected_from,
             "ready": not failed,
             "failed": failed,
             "guide": guide,
@@ -571,7 +611,10 @@ def _cli_cell(rows):
 def render(document):
     """One compact table: a header, one line per row, one verdict. No prose --
     a failing row's remedy IS its line."""
-    lines = ["panopticon readiness — %s" % document["review_root"]]
+    lines = ["panopticon readiness — %s · host %s (%s)"
+             % (document["review_root"], document["host"],
+                HOST_SOURCE_NOTES.get(document["selected_from"],
+                                      document["selected_from"]))]
     for label, ok, detail in _row_lines(document):
         state = "--" if ok is None else ("ok" if ok else "FAIL")
         # rstrip: a row with nothing to remedy ends at its verdict (F7), and a

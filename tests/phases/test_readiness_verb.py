@@ -234,15 +234,21 @@ class TestItLaunchesNothingAndWritesNothing(_VerbCase):
                 self.assertIs(True, row["on_path"])
                 self.assertEqual(os.path.join(bin_dir, host), row["path"])
 
-    def test_a_cli_that_is_absent_is_reported_and_is_not_gating(self):
+    def test_every_cli_is_reported_absent_and_only_the_selected_one_gates(self):
+        """An empty PATH. All three rows report `on_path: false`; only the
+        host this invocation resolved to carries a remedy, and only it moves
+        the exit code (fix round 2 -- a bare invocation resolves one, so this
+        case exits 1 now where round 1 exited 0)."""
         import tempfile
         d = self._repo(groups_yml=GROUPS_YML)
         with tempfile.TemporaryDirectory() as empty:
             with mock.patch.dict(os.environ, {"PATH": empty}):
                 code, body = self._json(d)
-        self.assertEqual(0, code)          # session mode needs no binary
+        self.assertEqual(1, code)
         self.assertEqual([False, False, False],
                          [r["on_path"] for r in body["cli"]])
+        self.assertEqual(["claude"],
+                         [r["host"] for r in body["cli"] if r["remedy"]])
 
     def test_it_writes_nothing_under_the_target(self):
         d = self._repo(groups_yml=GROUPS_YML)
@@ -486,3 +492,103 @@ class TestTheNoGroupsRemedyNamesTheWayOut(_VerbCase):
         for token in ("-f", "-d", "-g", "--pr"):
             with self.subTest(token=token):
                 self.assertIn(token, detail)
+
+
+class TestTheAssumedHost(_VerbCase):
+    """Fix round 2, item 1. A bare `driver readiness <target>` was the hole
+    round 1 left open: with no `--host` there was no selected row, so the `cli`
+    check was informational and the verb exited 0 on a machine with no host CLI
+    at all -- while `driver loop <target>`, equally bare, resolves a host
+    perfectly well (`--host`, else the run's manifest, else the driver's
+    default) and would go looking for its binary.
+
+    So the verb resolves the host through the SAME function the loop uses, and
+    the document says which host it assumed and why.
+    """
+
+    def _manifest(self, d, host):
+        with open(os.path.join(d, ".panopticon", "run-manifest.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"schema_version": 1, "run_id": "abcd1234",
+                       "host": host, "review_root": d,
+                       "created": "2026-09-15T00:00:00Z",
+                       "security_mode": "standard", "flags": {}}, fh)
+
+    def test_a_bare_invocation_gates_on_the_host_the_loop_would_pick(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({}):                       # nothing on PATH
+            code, body = self._json(d)
+        self.assertEqual(1, code)
+        self.assertIn("cli", body["failed"])
+        self.assertEqual("claude", body["host"])
+        self.assertEqual("default", body["selected_from"])
+        self.assertIs(True, body["cli"][0]["selected"])
+        self.assertEqual("claude", body["cli"][0]["host"])
+
+    def test_an_existing_runs_manifest_wins_over_the_static_default(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        self._manifest(d, "kimi")
+        with _which({"kimi": "/opt/bin/kimi"}):   # claude deliberately absent
+            code, body = self._json(d)
+        self.assertEqual(0, code)
+        self.assertEqual("kimi", body["host"])
+        self.assertEqual("manifest", body["selected_from"])
+        self.assertEqual("/opt/bin/kimi", body["cli"][0]["path"])
+
+    def test_an_explicit_host_beats_the_manifest(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        self._manifest(d, "kimi")
+        with _which({"codex": "/opt/bin/codex"}):
+            code, body = self._json(d, "--host", "codex")
+        self.assertEqual(0, code)
+        self.assertEqual("codex", body["host"])
+        self.assertEqual("--host", body["selected_from"])
+
+    def test_the_header_says_which_host_was_assumed_and_why(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({"claude": "/opt/bin/claude"}):
+            _code, text = self._run(d)
+        header = text.splitlines()[0]
+        self.assertIn("host claude", header)
+        self.assertIn("default", header)
+
+    def test_it_resolves_through_the_loops_own_function(self):
+        """One definition, not two. `orchestrate.loop` and this verb ask the
+        same `runio.resolve_host`, so no precedence can drift between the check
+        and the thing it is checking."""
+        import scripts.orchestrate as orchestrate
+        import scripts.phases.runio as runio
+        self.assertFalse(hasattr(orchestrate, "_resolve_host"),
+                         "orchestrate kept a second copy of the resolver")
+        self.assertTrue(callable(runio.resolve_host))
+
+
+class TestAHealthyCliRowReadsOk(_VerbCase):
+    """Fix round 2, item 2. `_cli_gate` never returned True, so a selected host
+    whose binary was right there rendered `--` -- the same token the rows that
+    are never checked use. A row that CAN fail and did not say `ok`, like every
+    other gating row."""
+
+    def test_the_row_reads_ok_when_the_binary_is_there(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({"claude": "/opt/bin/claude"}):
+            code, text = self._run(d, "--host", "claude")
+        self.assertEqual(0, code)
+        line = [ln for ln in text.splitlines() if ln.strip().startswith("cli")][0]
+        self.assertRegex(line, r"^  cli\s+ok\s+→ claude:")
+
+    def test_a_host_with_no_cli_of_ours_reads_ok_too(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({}):
+            code, text = self._run(d, "--host", "generic")
+        self.assertEqual(0, code)
+        line = [ln for ln in text.splitlines() if ln.strip().startswith("cli")][0]
+        self.assertRegex(line, r"^  cli\s+ok\s+→ generic:")
+
+    def test_only_the_informational_rows_still_read_dashes(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({"claude": "/opt/bin/claude"}):
+            _code, text = self._run(d, "--host", "claude")
+        dashed = sorted(ln.split()[0] for ln in text.splitlines()
+                        if ln.startswith("  ") and " -- " in ln + " ")
+        self.assertEqual(["capabilities", "existing-run", "sub-skills"], dashed)

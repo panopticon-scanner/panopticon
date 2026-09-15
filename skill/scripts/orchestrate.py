@@ -19,7 +19,6 @@ import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
-import scripts.run_manifest as run_manifest
 import scripts.runners.base as runners_base
 import scripts.write_guard_hook as write_guard_hook
 
@@ -235,42 +234,6 @@ def _disarm_previous(guards, prev_req):
         guards.disarm(entries)
 
 
-def _resolve_host(args, review_root):
-    """Which host this invocation dispatches for (I5).
-
-    `--host` when given; otherwise the RUN's own host, off its manifest. `driver.run` is
-    manifest-authoritative about this -- it refuses a `--host` that contradicts the
-    manifest as flag drift -- so a resume WITHOUT the flag is still a generic (or, for a
-    run that predates a retirement, gemini) run. Resolving off `runio._DEFAULTS["host"]`
-    instead dispatched claude agents into it, with no refusal anywhere on the path.
-
-    A `--reset` run re-mints the manifest from argv, so the OUTGOING manifest must not
-    steer this invocation: fall through to the default, which is what `driver.run` is
-    about to write.
-
-    The host it resolves may no longer be SELECTABLE: a run started before a family PR's
-    row was retired resumes off its own manifest. That is caught by the caller (`loop`),
-    not here, because this returns a name and the refusal is a status document.
-
-    A FOREIGN manifest is ignored on exactly the terms `driver.run` ignores it (#1093 /
-    #run8 AGT-C1A, `runio._foreign_manifest`): a target can force-commit its own
-    `.panopticon/run-manifest.json`, and driver.run discards such a file and rebuilds
-    from the real CLI args. Reading it here unconditionally handed the TARGET the choice
-    of which family's agents got dispatched at it -- a committed `"host": "gemini"`
-    steered this invocation's runner while the run itself proceeded as claude. Same
-    check, same call shape, so the two cannot drift on what "the run's host" means. """
-    if getattr(args, "host", None):
-        return args.host
-    if not getattr(args, "reset", False):
-        manifest = run_manifest.load_manifest(review_root)
-        if not runio._foreign_manifest(manifest, review_root,
-                                       run_manifest.manifest_path(review_root)):
-            host = (manifest or {}).get("host")
-            if host:
-                return host
-    return runio._DEFAULTS["host"]
-
-
 def _resolve_mode(args, host):
     """(mode, stderr_note) -- spec 4.4 (I8).
 
@@ -309,7 +272,9 @@ def loop(args):
         return _status("error", "driver loop: could not resolve review root: %s" % exc)
     # I5 then I8: the mode fallback asks whether THIS host has a runner, so the
     # host has to be resolved first.
-    host = _resolve_host(args, review_root)
+    host, _source = runio.resolve_host(
+        getattr(args, "host", None), review_root,
+        reset=getattr(args, "reset", False))
     # #1621: the resolved host can be one the driver no longer accepts -- a run started under a
     # row a family PR has since lost (gemini) or never earned (kimi, codex) resumes off its own
     # manifest, which `driver.run` treats as authoritative. `runner_for` builds a SessionRunner
