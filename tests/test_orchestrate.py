@@ -465,7 +465,9 @@ class TestHeadlessLoop(LoopCase):
         status = self._return_persist(d, floor, runner)
         self.assertEqual(status["status"], "error", status)
         self.assertIn("interrupted", status["message"])
-        self.assertIn("1 of 2", status["message"])
+        # "handled", not "persisted": a failed launch is counted too, and it is
+        # ledgered as the failure it was rather than persisted (F2).
+        self.assertIn("1 of 2 entries handled", status["message"])
         self.assertIn("re-run to resume from disk", status["message"])
         self.assertEqual({"reply": True, "ledger": True, "usage": True}, seen)
         self.assertEqual(["review-app-SEC"],

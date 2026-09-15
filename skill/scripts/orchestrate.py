@@ -182,19 +182,18 @@ class Ledger:
 
 
 def write_usage(review_root, ledger, namespace=None):
-    """R-P6-4: rewritten after every batch so synthesize (which runs inside the
-    engine, before `complete`) finds it; never estimated.
+    """R-P6-4: rewritten after every ENTRY (P07; it was every batch) so synthesize --
+    which runs inside the engine, before `complete` -- finds it; never estimated.
 
     `namespace` mirrors `probes.common.headless_settings_path`'s namespace-aware
-    resolution (Task 6 fix round 1, item 2): `runio._pano(review_root,
-    "usage.json")` alone follows whatever run-manifest.json happens to be on
-    review_root, and for `namespace == "setup"` that can be a STALE review
-    run's manifest, routing usage.json into that prior run's `runs/<tag>/`
-    folder and clobbering it. Deriving the directory from
-    `headless_settings_path` instead -- the SAME helper `loop`'s `run_dir`
-    and the guard probes consult -- keeps this write in the one folder
-    everything else for this invocation already agrees on: the flat
-    `.panopticon/` for setup, the per-run tag folder for a review."""
+    resolution (Task 6 fix round 1, item 2): `runio._pano(review_root, "usage.json")`
+    alone follows whatever run-manifest.json happens to be on review_root, and for
+    `namespace == "setup"` that can be a STALE review run's manifest, routing usage.json
+    into that prior run's `runs/<tag>/` folder and clobbering it. Deriving the directory
+    from `headless_settings_path` instead -- the SAME helper `loop`'s `run_dir` and the
+    guard probes consult -- keeps this write in the one folder everything else for this
+    invocation already agrees on: the flat `.panopticon/` for setup, the per-run tag
+    folder for a review."""
     run_dir = os.path.dirname(probes_common.headless_settings_path(review_root, namespace))
     runio._write_json(os.path.join(run_dir, "usage.json"), ledger.usage_document())
 
@@ -546,10 +545,11 @@ def loop(args):
             guards.disarm(pending)                    # armed per batch, dropped per batch
             status = _run(args, namespace)
     except KeyboardInterrupt:
-        # Everything already yielded is on disk and in the ledger (P07); an
-        # entry still inside run_entry finished during the pool's drain and is
-        # NOT persisted, so the resume re-launches exactly those.
-        status = _status("error", "interrupted (Ctrl-C) after %d of %d entries persisted; "
+        # Everything already yielded is on disk and in the ledger (P07). "handled", not
+        # "persisted": a counted entry always got its ledger row and, where there was a
+        # reply, its out_file -- a failed launch is ledgered as the failure it was. The
+        # REST of the batch is drained, kept nowhere and re-launched (iter_batch's docs).
+        status = _status("error", "interrupted (Ctrl-C) after %d of %d entries handled; "
                          "guards disarmed; re-run to resume from disk" % (done, total))
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))

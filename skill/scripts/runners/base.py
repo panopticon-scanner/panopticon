@@ -194,9 +194,17 @@ class HostRunner:
         host-specific, and no family overrides it (only the session runner
         overrides `run_batch`, below). P07 (#1636): the loop persists and
         ledgers each entry AS IT ARRIVES, so a batch that is interrupted keeps
-        everything already yielded. Entries still running when the interrupt
-        lands finish during the pool drain and are NOT persisted -- their
-        futures are never consumed; capturing them is out of scope.
+        everything already yielded.
+
+        What it does NOT keep is the rest of the batch, and the set is bigger
+        than the entries that were running: `shutdown(wait=True)` queues its
+        stop sentinel BEHIND every work item, so every entry the batch has
+        queued -- running or not yet started -- is still launched and allowed
+        to finish. None of them is persisted (their futures are never
+        consumed), so the resume re-launches all of them, and the interrupt
+        itself does not return until the last one does. Deliberate, not
+        incidental -- see the drain paragraph below -- and narrowing it to the
+        already-launched ones is a follow-up, not something to change here.
 
         The pool's `with` block still JOINS every future on exit: nothing is
         cancelled, whether this generator is exhausted, closed, or unwound by
