@@ -145,16 +145,23 @@ class HostSpec:
     cli_flag_facts: tuple = ()
     # The binary this host's HEADLESS runner launches (`HostRunner.CLI`), named
     # here so a consumer can ask "is it on PATH" without importing
-    # `scripts.runners` -- which `driver readiness` must not do: it is the one
-    # verb whose whole promise is that it starts nothing, and `phases/` is
-    # forbidden the runners package outright (tests/test_layout.py rule 3).
-    # `""` means the host launches no CLI of ours (session mode, `generic`),
-    # and then there is nothing to look for.
+    # `scripts.runners`. `""` means the host launches no CLI of ours (session
+    # mode, `generic`), and then there is nothing to look for.
     #
-    # A second name for a fact the runner owns, so it is PINNED to the runner
-    # by test (tests/test_hosts.py), exactly as `cli_flag_facts` is pinned to
-    # `OUTPUT_SCHEMA_FLAG`. Duplication a test forbids drifting is the price of
-    # keeping this registry importable from everywhere.
+    # `driver readiness` is that consumer, and the reason is not a layout rule:
+    # test_layout pins the REVERSE edge (`runners/* -> phases`), so a
+    # `phases -> runners` import would pass it today. The reason is what the
+    # runners package IS -- host launch machinery -- and what the verb promises:
+    # that it starts nothing. A preflight that imports the launcher to learn a
+    # binary's NAME has taken on the launcher's import graph, its module-level
+    # state and its seams to say one string. This registry is the single pure
+    # source of static host facts (it sits with the registration directories
+    # above for the same reason), so the fact lives here.
+    #
+    # It is still a second name for something the runner owns, so it is PINNED
+    # to the runner by test (tests/test_hosts.py), exactly as `cli_flag_facts`
+    # is pinned to `OUTPUT_SCHEMA_FLAG`. Duplication a test forbids drifting is
+    # the price of keeping this registry importable from everywhere.
     cli_binary: str = ""
 
 

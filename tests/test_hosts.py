@@ -496,12 +496,17 @@ class TestTheCliBinaryIsPinnedToTheRunner(unittest.TestCase):
     """#1637 P10: `HostSpec.cli_binary` is a SECOND name for `HostRunner.CLI`.
 
     It exists because `driver readiness` has to ask "is this host's binary on
-    PATH" and may not import `scripts.runners` -- `phases/` is forbidden that
-    package (tests/test_layout.py rule 3), and the verb's whole promise is
-    that it starts nothing. A registry row that drifts from its runner would
-    make the preflight report on a binary no family launches, which is worse
-    than reporting nothing, so the two are pinned to each other exactly as
-    `cli_flag_facts` is pinned to `OUTPUT_SCHEMA_FLAG`.
+    PATH" and must not import `scripts.runners` to find out. Not a layout rule:
+    test_layout pins the REVERSE edge (`runners/* -> phases`), so the import
+    would pass today. The reason is that the runners package is host LAUNCH
+    machinery and the verb's whole promise is that it starts nothing -- so the
+    registry, which is this repo's single pure source of static host facts,
+    carries the name instead.
+
+    A registry row that drifted from its runner would make the preflight report
+    on a binary no family launches, which is worse than reporting nothing, so
+    the two are pinned to each other exactly as `cli_flag_facts` is pinned to
+    `OUTPUT_SCHEMA_FLAG`.
     """
 
     def test_every_row_names_its_runner_s_cli_and_only_those_rows(self):

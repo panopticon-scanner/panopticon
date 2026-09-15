@@ -57,6 +57,12 @@ def _docker_runner(*, daemon=0, image=0):
     return runner
 
 
+def _which(found):
+    """Stub `shutil.which` -- LOOKUP only, so a test can state "this binary is
+    here" without a file on disk and without any possibility of a launch."""
+    return mock.patch("shutil.which", side_effect=lambda name, *a, **k: found.get(name))
+
+
 class _VerbCase(unittest.TestCase):
 
     def _repo(self, groups_yml=None):
@@ -147,6 +153,10 @@ class TestTheReadyMachine(_VerbCase):
         self.assertEqual(1, body["matrix"]["tests_files"])
         self.assertEqual(tag, body["existing_run"]["tag"])
         self.assertEqual(0, body["existing_run"]["pending"])
+        # F3: a run folder with nothing pending is `started`, never `none` --
+        # `none` means "no run in this tree", and a --json consumer keying on
+        # `status` alone must be able to tell the two apart.
+        self.assertEqual("started", body["existing_run"]["status"])
 
     def test_the_last_run_s_capabilities_are_read_back_not_re_probed(self):
         d = self._repo(groups_yml=GROUPS_YML)
@@ -355,7 +365,8 @@ class TestTheVerbIsWiredLikeRunAndLoop(_VerbCase):
 
     def test_the_selected_host_leads_the_cli_list(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        _code, body = self._json(d, "--host", "kimi")
+        with _which({"kimi": "/opt/bin/kimi"}):
+            _code, body = self._json(d, "--host", "kimi")
         self.assertEqual("kimi", body["host"])
         self.assertEqual("kimi", body["cli"][0]["host"])
         self.assertIs(True, body["cli"][0]["selected"])
@@ -363,3 +374,115 @@ class TestTheVerbIsWiredLikeRunAndLoop(_VerbCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheSelectedHostsBinaryIsGating(_VerbCase):
+    """Fix round 1, F2. `--host H` is a statement about how the run will be
+    driven, and `orchestrate._resolve_mode` resolves it to HEADLESS whenever
+    `runners/<H>.py` exists -- a fact about this repo, not about the machine.
+    So `driver readiness --host claude && driver loop --host claude` on a box
+    without `claude` used to greenlight a loop that resolves to headless and
+    then cannot launch: exactly the failure class P10 exists to remove.
+
+    The selected host's row therefore GATES, and says both ways out. Every
+    other host's row stays informational -- the operator did not ask about
+    them, and `driver loop` will not pick them.
+    """
+
+    def test_the_selected_hosts_missing_binary_takes_the_exit_code_to_1(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({}):                      # nothing on PATH at all
+            code, body = self._json(d, "--host", "claude")
+        self.assertEqual(1, code)
+        self.assertIn("cli", body["failed"])
+        row = body["cli"][0]
+        self.assertEqual("claude", row["host"])
+        self.assertIs(True, row["selected"])
+        self.assertIs(False, row["on_path"])
+
+    def test_the_remedy_names_the_binary_and_the_exact_session_invocation(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({}):
+            _code, text = self._run(d, "--host", "claude")
+        for token in ("claude", "--mode session", "headless"):
+            with self.subTest(token=token):
+                self.assertIn(token, text)
+        # The invocation has to be the one `orchestrate` really takes, not an
+        # invented spelling.
+        self.assertIn("driver loop --host claude --mode session", text)
+
+    def test_the_selected_row_is_marked_in_the_table(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({"claude": "/opt/bin/claude", "codex": "/opt/bin/codex",
+                     "kimi": "/opt/bin/kimi"}):
+            code, text = self._run(d, "--host", "claude")
+        self.assertEqual(0, code)
+        cli_line = [ln for ln in text.splitlines() if ln.strip().startswith("cli")][0]
+        self.assertIn("→ claude:", cli_line)
+        self.assertNotIn("→ codex", cli_line)
+
+    def test_a_present_binary_is_not_gating(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({"claude": "/opt/bin/claude"}):
+            code, body = self._json(d, "--host", "claude")
+        self.assertEqual(0, code)
+        self.assertEqual([], body["failed"])
+        self.assertEqual("/opt/bin/claude", body["cli"][0]["path"])
+
+    def test_an_unselected_hosts_missing_binary_is_still_informational(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({"claude": "/opt/bin/claude"}):   # codex and kimi absent
+            code, body = self._json(d, "--host", "claude")
+        self.assertEqual(0, code)
+        self.assertEqual([False, False],
+                         [r["on_path"] for r in body["cli"] if not r["selected"]])
+
+    def test_a_selected_host_with_no_cli_of_ours_still_gets_a_row(self):
+        """`--host generic` used to list three hosts the operator did not ask
+        about and say nothing about the one they did."""
+        d = self._repo(groups_yml=GROUPS_YML)
+        with _which({}):
+            code, body = self._json(d, "--host", "generic")
+        self.assertEqual(0, code)             # nothing to install; session only
+        row = body["cli"][0]
+        self.assertEqual("generic", row["host"])
+        self.assertIs(True, row["selected"])
+        self.assertIsNone(row["binary"])
+        self.assertIsNone(row["on_path"])
+
+
+class TestTheRowsThatSayNothingIsWrongSayItOnce(_VerbCase):
+    """Fix round 1, F7. A field called `remedy` holding the string "ok"
+    rendered as `tools-image   ok   ok`. There is no remedy when nothing is
+    wrong, and `null` is how a JSON contract says that."""
+
+    def test_a_healthy_tools_image_carries_no_remedy(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        _code, body = self._json(d)
+        self.assertIs(True, body["tools_image"]["ok"])
+        self.assertIsNone(body["tools_image"]["remedy"])
+
+    def test_and_the_table_cell_is_blank_rather_than_a_stutter(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        _code, text = self._run(d)
+        line = [ln for ln in text.splitlines()
+                if ln.strip().startswith("tools-image")][0]
+        self.assertEqual("tools-image   ok", line.strip())
+        self.assertEqual(line, line.rstrip())      # no trailing whitespace
+
+
+class TestTheNoGroupsRemedyNamesTheWayOut(_VerbCase):
+    """Fix round 1, F4. `-f`/`-d`/`-g`/`--pr` reviews run fine without a
+    committed matrix; only the whole-repo scope degrades to `._N` chunks. The
+    verb shares no scope flag, so it reports the whole-repo answer -- and the
+    remedy has to name the other way out, exactly as `tools_image`'s names
+    `--no-tools`."""
+
+    def test_it_names_the_scopes_that_need_no_matrix(self):
+        d = self._repo()
+        _code, body = self._json(d)
+        detail = body["matrix"]["detail"]
+        self.assertIn("run `driver setup`", detail)
+        for token in ("-f", "-d", "-g", "--pr"):
+            with self.subTest(token=token):
+                self.assertIn(token, detail)

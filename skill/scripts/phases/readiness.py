@@ -273,7 +273,30 @@ _SUB_SKILL_GLOBS = ("%s", "*/%s", "skills/%s", "*/skills/%s", "*/*/skills/%s",
                     "*/*/*/skills/%s", "*/*/*/*/skills/%s")
 
 NOT_MEASURED = "not measured — first `driver run` probes"
-NO_GROUPS = "no groups.yml — run `driver setup`"
+
+# Fix round 1, F4: `tools_image`'s remedy names `--no-tools`, and this one has
+# to name its own way out for the same reason. `-f`/`-d`/`-g`/`--pr` reviews run
+# fine with no committed matrix (`discovery._declares_groups`' adopt-all
+# fallback); only the whole-repo scope degrades to `._N` chunking. The verb
+# shares no scope flag -- deliberately -- so it reports the whole-repo answer
+# and says which scopes that answer does not apply to.
+NO_GROUPS = ("no groups.yml — run `driver setup`; a whole-repo review needs it, "
+             "the -f / -d / -g / --pr scopes do not (this verb takes no scope "
+             "flag, so it reports the whole-repo answer)")
+
+# Fix round 1, F2. `--host H` is a statement about how the run will be DRIVEN,
+# and `orchestrate._resolve_mode` resolves it to headless whenever
+# `skill/scripts/runners/<H>.py` exists -- a fact about this repo, never about
+# this machine. So `driver readiness --host claude && driver loop --host claude`
+# on a box with no `claude` used to greenlight a loop that resolves to headless
+# and then has nothing to launch: the failure class P10 exists to remove.
+# Both ways out, and the session invocation is `orchestrate`'s real one.
+SESSION_REMEDY = (
+    "not on PATH — install `%(binary)s`, or drive this host in session mode: "
+    "`driver loop --host %(host)s --mode session`. `driver loop` picks headless "
+    "whenever skill/scripts/runners/%(host)s.py exists, which is a fact about "
+    "this repo and not about this machine, so it would resolve to headless here "
+    "and find no binary")
 
 # Rendered width of the row label column, so the human form is a table and not
 # a ragged list.
@@ -359,10 +382,17 @@ def _entry_pending(entry):
 def _existing_run_row(review_root):
     """What a bare `driver loop` here would resume, from `runs/latest`.
 
-    `status` describes what the NEXT invocation would find, not the run's
-    history: `complete` (a durable report exists), `error` (the last run
-    stopped at the readiness checkpoint and recorded why), `checkpoint`
-    (entries still pending), `none` (nothing to resume).
+    `status` is the last state RECORDED for that run: `complete` (a durable
+    report exists), `error` (the run stopped at the readiness checkpoint, which
+    wrote its verdict), `checkpoint` (a dispatch request with entries still
+    pending), and `started` for a run folder that exists but has recorded none
+    of those yet.
+
+    `none` means exactly one thing -- there is no run in this tree -- and that
+    is fix round 1's F3: it used to cover both that and "a run in progress with
+    nothing pending", so a `--json` consumer keying on `status` alone could not
+    tell them apart while the row's own `detail` said which. A non-null `tag`
+    with `none` was the contradiction.
     """
     runs = os.path.join(review_root, ".panopticon", "runs")
     try:
@@ -395,25 +425,46 @@ def _existing_run_row(review_root):
         return {"tag": tag, "status": "checkpoint", "pending": pending,
                 "detail": "%s: %d entry(ies) pending -- `driver loop` resumes it"
                           % (tag, pending)}
-    return {"tag": tag, "status": "none", "pending": 0,
-            "detail": "%s: nothing pending -- `driver loop` carries it on" % tag}
+    return {"tag": tag, "status": "started", "pending": 0,
+            "detail": "%s: started, nothing pending -- `driver loop` carries it "
+                      "on" % tag}
 
 
 def _cli_rows(host=None):
     """`shutil.which` and nothing else, for every host whose registry row names
-    a headless CLI. NOT gating: session mode drives a host that has no binary
-    here at all, and refusing a preflight over it would invent a restriction
-    `driver loop` does not have."""
+    a headless CLI -- plus the SELECTED host always, even when it names none,
+    because an operator who passed `--host generic` must not read three rows
+    about hosts they did not ask about and none about the one they did.
+
+    `binary` and `on_path` are null for a host that launches no CLI of ours:
+    there is nothing to look for, which is a different answer from "looked and
+    did not find it".
+
+    Only the selected row can gate (F2), and only when it names a binary that
+    is absent -- see SESSION_REMEDY. The others are informational: `driver
+    loop` will not pick them, so their absence costs this run nothing."""
     rows = []
     for name in sorted(hosts.driver_hosts()):
         binary = hosts.spec(name).cli_binary
-        if not binary:
-            continue                  # session-only; there is nothing to find
-        found = shutil.which(binary)
-        rows.append({"host": name, "binary": binary, "on_path": bool(found),
-                     "path": found, "selected": name == host})
+        selected = name == host
+        if not binary and not selected:
+            continue                  # session-only, and not the one asked about
+        found = shutil.which(binary) if binary else None
+        rows.append({"host": name, "binary": binary or None,
+                     "on_path": bool(found) if binary else None,
+                     "path": found, "selected": selected,
+                     "remedy": (SESSION_REMEDY % {"binary": binary, "host": name}
+                                if selected and binary and not found else None)})
     rows.sort(key=lambda row: (not row["selected"], row["host"]))
     return rows
+
+
+def _cli_gate(rows):
+    """`False` when the selected host cannot be launched the way `driver loop`
+    would launch it, else `None` -- informational, which never moves the exit
+    code. Derived from the rows rather than stored beside them, so the JSON
+    contract stays the list the brief specified."""
+    return False if any(row["remedy"] for row in rows) else None
 
 
 def _tools_image_row():
@@ -426,8 +477,12 @@ def _tools_image_row():
         return {"docker": False, "image": False, "ok": False,
                 "remedy": docker_detail}
     image_ok, image_detail = rows.get("tools-image", (False, IMAGE_REMEDY))
+    # F7: `null`, not the string "ok". A field called `remedy` holding "ok"
+    # rendered as `tools-image   ok   ok`, and read as a contract it claimed
+    # there was a remedy to apply. The two booleans beside it already say what
+    # was probed, so there is nothing for the healthy case to add.
     return {"docker": True, "image": bool(image_ok), "ok": bool(image_ok),
-            "remedy": "ok" if image_ok else image_detail}
+            "remedy": None if image_ok else image_detail}
 
 
 def _capabilities_row(review_root, tag):
@@ -457,19 +512,24 @@ def preflight(target=".", host=None):
     matrix = _matrix_row(review_root)
     existing = _existing_run_row(review_root)
     tools_image = _tools_image_row()
+    cli = _cli_rows(host)
+    # Tri-state: True passes, False gates, None is INFORMATIONAL and passes.
+    # `all(...)` would have read None as a failure, which is why this is a
+    # `is False` filter and not a truthiness test.
     gating = (("guide", guide["ok"]), ("matrix", matrix["ok"]),
-              ("tools-image", tools_image["ok"]))
+              ("cli", _cli_gate(cli)), ("tools-image", tools_image["ok"]))
+    failed = [name for name, ok in gating if ok is False]
     return {"schema_version": PREFLIGHT_SCHEMA_VERSION,
             "target": os.path.abspath(target),
             "review_root": review_root,
             "host": host,
-            "ready": all(ok for _name, ok in gating),
-            "failed": [name for name, ok in gating if not ok],
+            "ready": not failed,
+            "failed": failed,
             "guide": guide,
             "sub_skills": _sub_skill_rows(),
             "matrix": matrix,
             "existing_run": existing,
-            "cli": _cli_rows(host),
+            "cli": cli,
             "tools_image": tools_image,
             "capabilities": _capabilities_row(review_root, existing["tag"])}
 
@@ -481,16 +541,31 @@ def _row_lines(document):
     sub_skills = "; ".join(
         "%s: %s" % (row["name"].split(":", 1)[-1], row["found_at"] or "not found")
         for row in document["sub_skills"])
-    cli = "; ".join("%s: %s" % (row["host"], row["path"] or "not on PATH")
-                    for row in document["cli"]) or "none -- session mode only"
     return (("guide", document["guide"]["ok"], document["guide"]["detail"]),
             ("sub-skills", None, sub_skills),
             ("matrix", document["matrix"]["ok"], document["matrix"]["detail"]),
             ("existing-run", None, document["existing_run"]["detail"]),
-            ("cli", None, cli),
+            ("cli", _cli_gate(document["cli"]), _cli_cell(document["cli"])),
             ("tools-image", document["tools_image"]["ok"],
-             document["tools_image"]["remedy"]),
+             document["tools_image"]["remedy"] or ""),
             ("capabilities", None, document["capabilities"]["detail"]))
+
+
+def _cli_cell(rows):
+    """`→ ` marks the host this invocation named (F2): without it the table was
+    a flat list and the operator could not see which row `driver loop` would
+    act on."""
+    parts = []
+    for row in rows:
+        if row["remedy"]:
+            what = row["remedy"]
+        elif row["binary"] is None:
+            what = "no CLI of ours — session mode only"
+        else:
+            what = row["path"] or "not on PATH"
+        parts.append("%s%s: %s" % ("→ " if row["selected"] else "",
+                                   row["host"], what))
+    return "; ".join(parts)
 
 
 def render(document):
@@ -499,7 +574,9 @@ def render(document):
     lines = ["panopticon readiness — %s" % document["review_root"]]
     for label, ok, detail in _row_lines(document):
         state = "--" if ok is None else ("ok" if ok else "FAIL")
-        lines.append("  %-*s %-4s %s" % (_LABEL, label, state, detail))
+        # rstrip: a row with nothing to remedy ends at its verdict (F7), and a
+        # line of trailing spaces is not a blank cell, it is invisible noise.
+        lines.append(("  %-*s %-4s %s" % (_LABEL, label, state, detail)).rstrip())
     lines.append("READY" if document["ready"] else
                  "NOT READY — %d gating check(s) failed: %s"
                  % (len(document["failed"]), ", ".join(document["failed"])))

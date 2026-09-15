@@ -1025,3 +1025,20 @@ class TestTheReadinessVerbIsAdvertised(unittest.TestCase):
         for phrase in ("writes nothing", "launches nothing"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, loop)
+
+    def test_the_guide_names_every_status_the_existing_run_row_can_report(self):
+        """Fix round 1, F3: `started` joined the set, and a doc that lists the
+        old four teaches a `--json` consumer to key on a value it will not
+        see."""
+        loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
+        for status in ("complete", "checkpoint", "error", "started", "none"):
+            with self.subTest(status=status):
+                self.assertIn("`%s`" % status, loop)
+
+    def test_the_guide_says_the_selected_hosts_cli_gates(self):
+        """Fix round 1, F2. The guide previously said an absent host CLI never
+        gates, which is now false for the host `--host` named -- and that is
+        the sentence an operator would have trusted."""
+        loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
+        self.assertIn("--mode session", loop)
+        self.assertIn("resolves `--host", loop)

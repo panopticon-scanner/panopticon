@@ -82,6 +82,8 @@ resolve against cwd; only the script path substitutes.
   on PATH, the Docker daemon and the `panopticon-tools` image, and the last run's measured
   host capabilities. Every failing row carries its remedy on its own line. Exit 0 when
   nothing gating fails and 1 otherwise, so a host can `driver readiness && driver loop`.
+  With `--host H` the selected host's row is marked `→` and GATES when its binary is off
+  PATH — `driver loop` would resolve that host to headless and have nothing to launch.
 - `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap; produces
   `.panopticon/groups.yml.draft` + `setup-report.md` (read the report first).
 - `driver loop [target] [driver run flags] [--mode {headless,session}] [--concurrency N]
