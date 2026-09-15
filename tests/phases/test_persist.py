@@ -438,6 +438,26 @@ class TestTheRecordIsSafeToKeepAndToQuote(unittest.TestCase):
                                "review-app-SEC-%d.json" % attempt), encoding="utf-8") as fh:
             return json.load(fh)
 
+    def test_a_multibyte_character_straddling_the_cap_still_says_truncated(self):
+        # N4: `truncated` was derived from `len(kept) == REJECTED_CAP`, an
+        # equality that a cut through a multibyte character misses -- `_cut`
+        # drops the partial character, the length lands one or two bytes
+        # short, and a record that IS truncated claims to be whole. An
+        # operator then reads a partial reply as the agent's entire answer.
+        body = "x" * (persist.REJECTED_CAP - 1) + "\u20ac" * 40      # 3 bytes each
+        persist.retain_rejected(self.run_dir, self.entry, body, "no", kind=persist.REFUSAL)
+        record = self._record()
+        self.assertLess(len(record["reply"].encode("utf-8")), persist.REJECTED_CAP)
+        self.assertTrue(record["truncated"])
+
+    def test_a_reply_that_exactly_fills_the_cap_claims_no_truncation(self):
+        # The other direction: nothing was removed, so nothing may be claimed.
+        body = "x" * persist.REJECTED_CAP
+        persist.retain_rejected(self.run_dir, self.entry, body, "no", kind=persist.REFUSAL)
+        record = self._record()
+        self.assertEqual(body, record["reply"])
+        self.assertNotIn("truncated", record)
+
     def test_a_pem_straddling_the_cap_is_masked_not_half_kept(self):
         # F2: the PEM rule needs its END delimiter, so capping FIRST removed
         # the terminator and left the key material in plaintext. Redacting

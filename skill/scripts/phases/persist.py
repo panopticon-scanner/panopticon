@@ -75,14 +75,22 @@ def _safe_reply(text):
     the only way an unmasked secret can reach the record is a block whose
     terminator lay beyond the horizon, and a header with nothing to close it is
     the signature of exactly that.
+
+    `truncated` compares what was KEPT against what there was to keep, at each
+    of the three steps (D10 N4). Deriving it from `len(kept) == REJECTED_CAP`
+    was wrong in both directions: a cut through a multibyte character leaves
+    `kept` a byte or two short of the cap -- `_cut` drops the partial
+    character -- so a truncated record claimed to be whole, and a reply that
+    exactly filled the cap claimed a truncation that never happened.
     """
     scanned = _cut(text, REDACT_CAP)
-    kept = _cut(redact.redact_tree(scanned), REJECTED_CAP)
+    redacted = redact.redact_tree(scanned)
+    kept = _cut(redacted, REJECTED_CAP)
     dangling = [m for m in _DANGLING_PEM.finditer(kept)
                 if "-----END" not in kept[m.end():]]
     if dangling:
         kept = kept[:dangling[0].start()]
-    return kept, bool(dangling) or scanned != text or len(kept.encode("utf-8")) == REJECTED_CAP
+    return kept, scanned != text or kept != redacted
 
 
 def run_dir(review_root, namespace=None):
