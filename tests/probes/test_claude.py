@@ -1160,61 +1160,37 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertEqual(hosts.PROVEN, state)
 
 
-class TestTheSameHelpReadAnswersTheOptionalFlags(TestUsageSourceProbe):
-    """D10 F1: the constrained-output flag is gated on the CLI advertising it,
-    and the answer comes from the `--help` read the usage probe ALREADY makes.
+class TestTheUsageProbeDoesNotAnswerForTheFlags(TestUsageSourceProbe):
+    """D10 N1: this probe measures the ENVELOPE flags, and nothing else.
 
-    A machine whose `claude` predates `--json-schema` exits non-zero on an
-    unknown option and prints no envelope, so every return-persist entry fails
-    its three launches and the run dies naming an entry rather than the flag.
-    One read, two answers: no second launch, no new launch site.
+    F1 answered the output-schema question from the same `--help` read, to
+    save a launch. The saving cost the fact its independence: only a host that
+    CLAIMS a usage ledger reaches this probe at all, so codex -- which claims
+    none and whose runner takes `--output-schema` -- could never be asked, for
+    the life of its registry row. `probes.common.probe_cli_flags` asks now,
+    off the row's own `cli_flag_facts`, at the cost of one extra `--help`.
     """
 
-    def _probe(self, help_text, cli_flags):
+    def test_it_takes_no_cli_flags_out_parameter(self):
+        with self.assertRaises(TypeError):
+            claude_probes.probe_usage_source("claude", ".", cli_flags={})
+
+    def test_the_fact_is_measured_for_a_host_that_claims_no_usage_ledger(self):
+        # The decoupling, stated as the registry states it: codex declares the
+        # fact and claims no usage ledger. tests/probes/test_common.py drives
+        # the probe itself.
+        self.assertIn(hosts.OUTPUT_SCHEMA, hosts.spec("codex").cli_flag_facts)
+        self.assertNotIn(hosts.USAGE_LEDGER, hosts.spec("codex").claims)
+
+    def test_a_usage_read_records_no_flags_of_its_own(self):
         with tempfile.TemporaryDirectory() as project, \
                 tempfile.TemporaryDirectory() as bin_dir:
             self._cli_on_path(bin_dir)
-            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help(help_text):
-                state = claude_probes.probe_usage_source(
-                    "claude", project, settings_path=self._headless_settings(project),
-                    cli_flags=cli_flags)
-        return state
-
-    def test_a_cli_that_advertises_it_is_recorded_advertised_from_one_read(self):
-        flags = {}
-        state, _by, _detail = self._probe(
-            "Usage: claude [options]\n  -p, --print\n  --output-format <format>\n"
-            "  --json-schema <schema>   JSON Schema for structured output\n", flags)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help(
+                    "Usage: claude [options]\n  -p, --print\n  --output-format <f>\n"
+                    "  --json-schema <schema>\n"):
+                state, _by, detail = claude_probes.probe_usage_source(
+                    "claude", project, settings_path=self._headless_settings(project))
         self.assertEqual(hosts.PROVEN, state)
-        self.assertEqual(1, len(self.help_calls))          # ONE --help, both answers
-        self.assertEqual({"flag": "--json-schema", "advertised": True},
-                         {k: v for k, v in flags[hosts.OUTPUT_SCHEMA].items()
-                          if k != "detail"})
-
-    def test_a_cli_without_the_flag_is_recorded_not_advertised(self):
-        flags = {}
-        state, _by, _detail = self._probe(
-            "Usage: claude [options]\n  -p, --print\n  --output-format <format>\n", flags)
-        self.assertEqual(hosts.PROVEN, state)              # the ENVELOPE flags are there
-        self.assertIs(False, flags[hosts.OUTPUT_SCHEMA]["advertised"])
-        self.assertIn("--json-schema", flags[hosts.OUTPUT_SCHEMA]["detail"])
-
-    def test_a_help_that_cannot_be_read_records_nothing_to_go_on(self):
-        # UNKNOWN, never guessed: the consumer treats an absent or null answer
-        # exactly as it treats False -- no schema on the argv.
-        import subprocess
-        import scripts.runners.claude as claude_runner
-
-        def hangs(cmd, **kwargs):
-            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-        flags = {}
-        with tempfile.TemporaryDirectory() as project, \
-                tempfile.TemporaryDirectory() as bin_dir:
-            self._cli_on_path(bin_dir)
-            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
-                    mock.patch.object(claude_runner, "DEFAULT_RUNNER", hangs):
-                state, _by, _detail = claude_probes.probe_usage_source(
-                    "claude", project, settings_path=self._headless_settings(project),
-                    cli_flags=flags)
-        self.assertEqual(hosts.UNKNOWN, state)
-        self.assertIsNone(flags.get(hosts.OUTPUT_SCHEMA, {}).get("advertised"))
+        self.assertEqual(1, len(self.help_calls))          # its own read, once
+        self.assertNotIn("--json-schema", detail)

@@ -399,6 +399,24 @@ class TestTheNoteIsNotACapability(unittest.TestCase):
         self.assertEqual([], host_disclosure.lines(envelope))
         self.assertEqual(1, len(host_disclosure.notes(envelope)))
 
+    def test_a_declared_fact_the_probe_did_not_answer_is_disclosed(self):
+        # N1: silence is right for a host whose runner declares no flag and
+        # for session mode, where nothing is interrogated at all and the block
+        # is absent. A block that EXISTS but is missing a fact the host's
+        # registry row declares is the third case: the probe did not answer
+        # for a host whose runner does take the flag, so the flag will not be
+        # passed and nothing else would say so.
+        body = {"schema_version": 1, "host": "codex", "probed_at": "T",
+                "capabilities": {c: {"state": hosts.PROVEN, "by": "fixture",
+                                     "detail": "fixture"}
+                                 for c in hosts.CAPABILITIES},
+                hosts.CLI_FLAGS: {"some_later_fact": {"advertised": True}}}
+        self.assertIn(hosts.OUTPUT_SCHEMA, hosts.spec("codex").cli_flag_facts)
+        note = host_disclosure.notes(body)
+        self.assertEqual(1, len(note), note)
+        self.assertIn("not interrogated", note[0])
+        self.assertIn("codex", note[0])
+
     def test_the_headline_count_equals_the_list_it_names(self):
         envelope = self._envelope({hosts.MODEL_BINDING: hosts.REFUTED}, self._LACKING)
         head = host_disclosure.headline(envelope)

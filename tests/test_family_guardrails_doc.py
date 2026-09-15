@@ -67,7 +67,13 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
                       # the flag it names is fatal if passed to a CLI that
                       # does not advertise it, so the gating is part of the
                       # contract, not a detail.
-                      "OUTPUT_SCHEMA_FLAG"):
+                      "OUTPUT_SCHEMA_FLAG",
+                      # D10 N1: the second attribute of that pair, and the
+                      # probe that reads it. A family that learned the gating
+                      # from this document was told the usage-source probe
+                      # made the measurement -- true for claude, impossible
+                      # for codex, whose row maps no such probe.
+                      "HELP_ARGV", "cli-flags"):
             self.assertIn(token, doc, token)
 
     def test_names_every_known_host_and_the_launch_prompt(self):

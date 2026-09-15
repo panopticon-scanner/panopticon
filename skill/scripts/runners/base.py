@@ -134,6 +134,21 @@ class HostRunner:
     # (phases.persist.role_schema), because the runners package may not import
     # phases and should not have to know what a role is.
     OUTPUT_SCHEMA_FLAG = ()
+    # The argv that makes this CLI print the help text listing the flags above
+    # -- everything before the family's own `--help`, i.e. the SUBCOMMAND the
+    # runner actually drives. `("--help",)` (claude, kimi) asks the binary
+    # itself; codex overrides it with `("exec", "--help")` because
+    # `--output-schema` belongs to `codex exec` and `codex --help` lists
+    # subcommands, not their options (D10 N1).
+    #
+    # The second optional attribute this seam gained for ruling 3
+    # (docs/FAMILY-PR-GUARDRAILS.md section 3), and it exists because the
+    # cli-flags probe must not re-spell any family's argv: a family that moves
+    # its flags behind a different subcommand moves this with them, and the
+    # probe follows. It is a HELP read and nothing else -- no prompt, no
+    # sandbox, no side effect -- and it goes through `Runner.runner`, the one
+    # launcher the suite refuses live launches at.
+    HELP_ARGV = ("--help",)
     # A scratch directory OUTSIDE the reviewed tree that this runner's children
     # write into, once `prepare` has made one; None for a host that needs none
     # (claude arms a settings file in the run folder and keeps nothing else).

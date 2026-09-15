@@ -76,10 +76,29 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   schemas published under `skill/reference/`, and `[]` otherwise, so you append
   it unconditionally. Leaving it empty is the right answer for a CLI that
   advertises no such flag (Kimi): nothing is stamped on your entries and your
-  `command()` is unchanged. Do **not** pass the flag on your own authority: it
-  is gated on the `--help` read the usage-source probe already makes, because a
+  `command()` is unchanged. Do **not** pass the flag on your own authority: a
   CLI that does not know the option exits non-zero on it and takes every entry
-  of every checkpoint down with it.
+  of every checkpoint down with it, so the driver stamps `output_schema` on an
+  entry only after the **cli-flags probe** (`probes/common.probe_cli_flags`)
+  has seen your CLI advertise it.
+- `HELP_ARGV` goes with it, and defaults to `("--help",)`. It is the argv that
+  makes your CLI print the help text listing that flag — the **subcommand your
+  runner actually drives**, not necessarily the bare binary: codex sets
+  `("exec", "--help")` because `--output-schema` belongs to `codex exec` and
+  `codex --help` lists subcommands, not their options. Set it whenever your
+  flags live behind a subcommand; a wrong answer here reads as "the CLI does
+  not advertise the flag", which is fail-safe (no schema is passed) and
+  silently costs you the feature.
+- The cli-flags probe runs on **every headless run** for every host whose
+  registry row declares the fact (`HostSpec.cli_flag_facts`, pinned by test to
+  the runners that declare `OUTPUT_SCHEMA_FLAG`), independent of what your host
+  claims. It is one `--help` read through `Runner.runner`, and its answer is
+  recorded in `host-capabilities.json` under `cli_flags`, **beside**
+  `capabilities` and never inside it: a CLI upgraded between two turns of a
+  resumable loop must not read as posture drift. `advertised` is a tri-state
+  (`true` / `false` / `null` when the read could not be made) and only `true`
+  passes the flag; `host_disclosure.notes` says so on all four surfaces when it
+  is anything else.
 - `Runner.teardown(status)` releases whatever `prepare` acquired. The loop calls
   it exactly once, from `orchestrate._finish`, on a terminal status and never
   between iterations, and hands it that status so a runner can drop a scratch

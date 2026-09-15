@@ -284,7 +284,11 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             self.assertIn("no implementation", result["detail"])
 
     def test_run_probes_hands_settings_path_to_both_guard_probes(self):
+        # The CLI-flags probe (D10 N1) reads `<cli> --help` on every headless
+        # run; it has its own tests, and this one must not depend on whether
+        # the machine running the suite happens to have a `claude` on PATH.
         with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(probes_common, "probe_cli_flags", return_value={}), \
              mock.patch.object(claude_probes, "probe_write_guard_armed",
                                return_value=(hosts.PROVEN, "write-guard-armed", "x")) as w, \
              mock.patch.object(claude_probes, "probe_read_guard_armed",
@@ -300,6 +304,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
         # headless run from a directory with no transcripts refuted
         # usage_ledger while its ledger was exact.
         with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(probes_common, "probe_cli_flags", return_value={}), \
              mock.patch.object(claude_probes, "probe_usage_source",
                                return_value=(hosts.PROVEN, "usage-source", "x")) as u:
             host_probes.run_probes("claude", d, session_root=d, settings_path="/run/host-settings.json",
@@ -426,3 +431,86 @@ class TestTheOperationalCliFlagsBlock(unittest.TestCase):
                                   "detail": "d"}}})
         self.assertEqual(host_probes.capabilities_of(before),
                          host_probes.capabilities_of(after))
+
+
+class TestTheCliFlagsProbeRunsOffTheRegistryRow(unittest.TestCase):
+    """D10 N1: every host whose runner declares an output-schema flag is
+    interrogated on every headless run, whatever it claims about usage.
+
+    F1 hung the measurement off the usage-source probe, so codex -- which maps
+    no such probe and claims no usage ledger -- was never asked, and its half
+    of ruling 3 was structurally unreachable rather than merely dormant.
+    """
+
+    def _codex_help(self, text):
+        import subprocess
+        import scripts.runners.codex as codex_runner
+        self.calls = []
+
+        def fake(cmd, **kwargs):
+            self.calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout=text, stderr="")
+        return mock.patch.object(codex_runner, "DEFAULT_RUNNER", fake)
+
+    def _cli(self, bin_dir, name):
+        path = os.path.join(bin_dir, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o755)
+
+    def _codex_artifact(self, help_text, headless=True):
+        import scripts.probes.codex as codex_probes
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli(bin_dir, "codex")
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    self._codex_help(help_text), \
+                    mock.patch.object(codex_probes, "_codex_surfaces",
+                                      side_effect=lambda _registration: []):
+                return host_probes.run_probes(
+                    "codex", target, registration_dir=target,
+                    settings_path=(os.path.join(target, "settings.json")
+                                   if headless else None))
+
+    def test_a_headless_codex_run_records_the_fact(self):
+        art = self._codex_artifact(
+            "Usage: codex exec [OPTIONS]\n  --json\n  --output-schema <FILE>\n")
+        self.assertEqual({"flag": "--output-schema", "advertised": True},
+                         {k: v for k, v in art[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA].items()
+                          if k != "detail"})
+        self.assertNotIn(hosts.OUTPUT_SCHEMA, art["capabilities"])
+
+    def test_a_codex_cli_without_the_flag_is_recorded_so_the_operator_is_told(self):
+        import scripts.host_disclosure as host_disclosure
+        art = self._codex_artifact("Usage: codex exec [OPTIONS]\n  --json\n")
+        self.assertIs(False, art[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA]["advertised"])
+        note = host_disclosure.notes(art)
+        self.assertEqual(1, len(note))
+        self.assertIn("--output-schema", note[0])
+
+    def test_session_mode_interrogates_nothing(self):
+        # No headless launch happens in session mode, so there is no CLI of
+        # ours to ask about and nothing to disclose.
+        import scripts.host_disclosure as host_disclosure
+        art = self._codex_artifact("Usage: codex exec\n", headless=False)
+        self.assertEqual({}, art[hosts.CLI_FLAGS])
+        self.assertEqual([], self.calls)
+        self.assertEqual([], host_disclosure.notes(art))
+
+    def test_a_host_whose_runner_declares_no_flag_records_nothing(self):
+        # kimi's own capability probes do launch its CLI, so they get a fake
+        # launcher like every other test here; the point is that the CLI-FLAGS
+        # probe adds no launch of its own and records no fact.
+        import subprocess
+        import scripts.probes.kimi as kimi_probes
+        import scripts.runners.kimi as kimi_runner
+
+        def fake(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as target, \
+                mock.patch.object(kimi_probes, "DEFAULT_RUNNER", fake), \
+                mock.patch.object(kimi_runner, "DEFAULT_RUNNER", fake):
+            art = host_probes.run_probes(
+                "kimi", target, registration_dir=target,
+                settings_path=os.path.join(target, "settings.json"))
+        self.assertEqual({}, art[hosts.CLI_FLAGS])

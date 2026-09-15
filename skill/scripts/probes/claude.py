@@ -517,7 +517,7 @@ def _ledger_carries_usage(ledger):
     return True, "%d of %d successful launches ledgered so far carried usage" % (with_usage, len(ok_rows))
 
 
-def _headless_usage_source(host, settings_path, cli_flags=None):
+def _headless_usage_source(host, settings_path):
     """The headless half of `probe_usage_source`: can the loop ledger what
     the runner's envelope reports?
 
@@ -543,15 +543,13 @@ def _headless_usage_source(host, settings_path, cli_flags=None):
     vacuous PROVEN is the fail-open this epic exists to remove, and a probe
     reports rather than raises.
 
-    `cli_flags` (D10 F1) is an out-parameter the caller owns: when given, the
-    runner's OPTIONAL `OUTPUT_SCHEMA_FLAG` is answered from the SAME `--help`
-    read this probe already makes and recorded there as an operational fact.
-    An out-parameter rather than a second return value because the probe
-    registry's contract is a `(state, by, detail)` triple for ONE capability,
-    and this is not a capability -- it gates nothing, it only says what this
-    CLI build can be asked to do. A second probe would mean a second launch of
-    the same binary to read the same text; `run_probes` owns the dict and
-    writes it beside `capabilities`, never inside."""
+    It measures the ENVELOPE flags and nothing else. D10 F1 also answered the
+    optional output-schema flag from this same read; N1 moved that to
+    `common.probe_cli_flags`, because hanging an operational fact off this
+    probe meant no host that fails to CLAIM a usage ledger could ever be asked
+    -- codex being exactly that host, and one of the two whose runner takes
+    the flag. The cost is one extra `--help` launch on claude; the fact no
+    longer depends on an unrelated claim."""
     import scripts.runners.base as runners_base
     writable, probe_dir = _headless_subject_dir(settings_path)
     ledger = os.path.join(os.path.dirname(os.path.abspath(settings_path)),
@@ -600,21 +598,9 @@ def _headless_usage_source(host, settings_path, cli_flags=None):
     # `--help` needs no tree -- so `cwd` falls back to the process's own; it
     # is read off the runner rather than hard-coded to None so a runner that
     # DOES have one is followed.
-    # D10 F1: the optional flag rides along on this one read.
-    optional = tuple(getattr(runner, "OUTPUT_SCHEMA_FLAG", ()) or ())
-    advertised, why, extra = common._cli_advertises(
+    advertised, why = common._cli_advertises(
         launch, found, flags, env=launch_env,
-        cwd=getattr(runner, "review_root", None), optional=optional)
-    if cli_flags is not None and optional:
-        # Recorded whatever the verdict: a CLI that fails the ENVELOPE check
-        # still answered (or failed to answer) this question, and `None` --
-        # the read could not be made -- is a distinct, honest third state that
-        # every consumer treats exactly as it treats False.
-        cli_flags[hosts.OUTPUT_SCHEMA] = {
-            "flag": optional[0], "advertised": extra.get(optional[0]),
-            "detail": (why if extra.get(optional[0]) is None
-                       else "`%s --help` %s advertise %s"
-                       % (found, "does" if extra[optional[0]] else "does not", optional[0]))}
+        cwd=getattr(runner, "review_root", None))
     if advertised is None:
         return (hosts.UNKNOWN, USAGE_SOURCE, why)
     if not advertised:
@@ -631,7 +617,7 @@ def _headless_usage_source(host, settings_path, cli_flags=None):
             % (cli, found, why, ledger))
 
 
-def probe_usage_source(host, session_dir, home=None, settings_path=None, cli_flags=None):
+def probe_usage_source(host, session_dir, home=None, settings_path=None):
     """Where this host's usage figures come from, and that the source is
     reachable. The probe follows the MODE, exactly as the two guard probes do
     (spec 5.4 applied to spec 5.5): `settings_path` names the file a headless
@@ -665,7 +651,7 @@ def probe_usage_source(host, session_dir, home=None, settings_path=None, cli_fla
     if not hosts.declares(host, hosts.USAGE_LEDGER):
         return (hosts.UNKNOWN, None, "host %r claims no usage ledger" % host)
     if settings_path is not None:
-        return _headless_usage_source(host, settings_path, cli_flags=cli_flags)
+        return _headless_usage_source(host, settings_path)
     root = home or os.path.expanduser("~")
     directory = os.path.join(root, ".claude", "projects",
                              collect_usage.project_slug(session_dir))

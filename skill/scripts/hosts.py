@@ -111,6 +111,15 @@ class HostSpec:
     detect_env: tuple = ()          # env vars that identify an active session
     driver_selectable: bool = False
     probes: dict = field(default_factory=dict)
+    # Which OPERATIONAL CLI facts (CLI_FLAGS, below) this host's headless
+    # runner takes, and therefore which ones the cli-flags probe interrogates
+    # on a headless run (D10 N1). Not capabilities and not claims: nothing
+    # here gates a dispatch, and a fact that goes unmeasured only means the
+    # driver passes the flag to nobody. The flag TOKEN stays the runner's
+    # (`OUTPUT_SCHEMA_FLAG`); this says only that the row expects an answer,
+    # so a disclosure surface can tell "no answer" from "no question" --
+    # tests/probes/test_common.py pins the two together.
+    cli_flag_facts: tuple = ()
 
 
 HOSTS = {
@@ -127,7 +136,8 @@ HOSTS = {
                 ARTIFACT_WRITE_GUARD: "write-guard-armed",
                 MODEL_BINDING: "entry-model-bound",
                 USAGE_LEDGER: "usage-source",
-                READ_SCOPE_CONFINED: "read-guard-armed"}),
+                READ_SCOPE_CONFINED: "read-guard-armed"},
+        cli_flag_facts=(OUTPUT_SCHEMA,)),
     "kimi": HostSpec(
         name="kimi",
         claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
@@ -152,7 +162,8 @@ HOSTS = {
         detect_env=("CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"),
         driver_selectable=True,
         probes={TOOL_POLICY_ENFORCED: "codex-effective-tools",
-                READ_SCOPE_CONFINED: "codex-read-scope"}),
+                READ_SCOPE_CONFINED: "codex-read-scope"},
+        cli_flag_facts=(OUTPUT_SCHEMA,)),
     # Registered, not selectable: its family PR did not clear the gate (#1621,
     # retired 2026-09-13). The row STAYS so the registry still knows the name
     # -- `known_hosts()` lists it, `spec("gemini")` resolves, it still claims

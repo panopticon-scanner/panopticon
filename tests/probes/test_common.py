@@ -406,3 +406,112 @@ class TestHeadlessSettingsPathIsNamespaceAware(unittest.TestCase):
             self.assertEqual(
                 probes_common.headless_settings_path("/repo", "setup"),
                 os.path.abspath(os.path.join("/repo", ".panopticon", "host-settings.json")))
+
+
+class TestTheCliFlagsProbe(unittest.TestCase):
+    """D10 N1: what a host's CLI can be ASKED to do, measured by a probe of
+    its own.
+
+    F1 answered this from the `--help` read the USAGE-SOURCE probe already
+    made, which tied an operational fact to an unrelated capability claim:
+    codex's row maps no usage-source probe and codex claims no usage ledger,
+    so on codex -- the one host besides claude whose runner declares an
+    output-schema flag -- the question was never asked, for the life of the
+    registry row. Not "until the CLI is upgraded": never. This probe runs off
+    the registry row's own `cli_flag_facts`, so every host whose runner
+    declares the flag is interrogated on every headless run.
+    """
+
+    def _launcher(self, runner_module, text, returncode=0):
+        import subprocess
+        self.calls = []
+
+        def fake(cmd, **kwargs):
+            self.calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, returncode, stdout=text, stderr="")
+        return mock.patch.object(runner_module, "DEFAULT_RUNNER", fake)
+
+    def _on_path(self, bin_dir, name):
+        os.makedirs(bin_dir, exist_ok=True)
+        path = os.path.join(bin_dir, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def _probe(self, host, runner_module, text, name, returncode=0):
+        with tempfile.TemporaryDirectory() as bin_dir:
+            found = self._on_path(bin_dir, name)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    self._launcher(runner_module, text, returncode):
+                return probes_common.probe_cli_flags(host), found
+
+    def test_codex_is_interrogated_at_the_subcommand_that_owns_the_flag(self):
+        # `--output-schema` is a flag of `codex exec`, not of `codex`; the
+        # top-level help lists subcommands. The argv comes off the runner
+        # (`HELP_ARGV`), never re-spelled here.
+        import scripts.runners.codex as codex_runner
+        facts, found = self._probe(
+            "codex", codex_runner,
+            "Usage: codex exec [OPTIONS] [PROMPT]\n"
+            "  --json\n  --output-schema <FILE>  Path to a JSON Schema file\n", "codex")
+        self.assertEqual([[found, "exec", "--help"]], self.calls)
+        self.assertEqual({"flag": "--output-schema", "advertised": True},
+                         {k: v for k, v in facts[hosts.OUTPUT_SCHEMA].items()
+                          if k != "detail"})
+
+    def test_a_codex_cli_without_the_flag_is_recorded_not_advertised(self):
+        import scripts.runners.codex as codex_runner
+        facts, _found = self._probe(
+            "codex", codex_runner,
+            "Usage: codex exec [OPTIONS] [PROMPT]\n  --json\n", "codex")
+        self.assertIs(False, facts[hosts.OUTPUT_SCHEMA]["advertised"])
+        self.assertIn("--output-schema", facts[hosts.OUTPUT_SCHEMA]["detail"])
+
+    def test_claude_is_interrogated_at_the_top_level(self):
+        import scripts.runners.claude as claude_runner
+        facts, found = self._probe(
+            "claude", claude_runner,
+            "Usage: claude [options]\n  -p, --print\n  --json-schema <schema>\n", "claude")
+        self.assertEqual([[found, "--help"]], self.calls)
+        self.assertIs(True, facts[hosts.OUTPUT_SCHEMA]["advertised"])
+
+    def test_a_host_whose_runner_declares_no_flag_is_not_interrogated(self):
+        import scripts.runners.kimi as kimi_runner
+        facts, _found = self._probe("kimi", kimi_runner, "Usage: kimi\n", "kimi")
+        self.assertEqual({}, facts)
+        self.assertEqual([], self.calls)          # not one launch
+
+    def test_a_help_that_cannot_be_read_records_an_unknown_not_a_guess(self):
+        import subprocess
+        import scripts.runners.codex as codex_runner
+
+        def hangs(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        with tempfile.TemporaryDirectory() as bin_dir:
+            self._on_path(bin_dir, "codex")
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    mock.patch.object(codex_runner, "DEFAULT_RUNNER", hangs):
+                facts = probes_common.probe_cli_flags("codex")
+        self.assertIsNone(facts[hosts.OUTPUT_SCHEMA]["advertised"])
+
+    def test_a_cli_that_is_not_on_path_is_recorded_as_unmeasured(self):
+        with tempfile.TemporaryDirectory() as empty:
+            with mock.patch.dict(os.environ, {"PATH": empty}):
+                facts = probes_common.probe_cli_flags("codex")
+        self.assertIsNone(facts[hosts.OUTPUT_SCHEMA]["advertised"])
+        self.assertIn("PATH", facts[hosts.OUTPUT_SCHEMA]["detail"])
+
+    def test_every_declared_fact_has_a_runner_that_declares_the_flag(self):
+        # The registry row says WHICH facts to interrogate; the runner owns the
+        # token. A row that drifts from its runner either interrogates nothing
+        # (F1's defect) or names a flag no family passes.
+        import scripts.runners.base as runners_base
+        for host in hosts.known_hosts():
+            declared = hosts.OUTPUT_SCHEMA in (hosts.spec(host).cli_flag_facts or ())
+            try:
+                flag = tuple(runners_base.runner_for(host, "headless").OUTPUT_SCHEMA_FLAG or ())
+            except Exception:                     # no headless runner at all
+                flag = ()
+            with self.subTest(host=host):
+                self.assertEqual(bool(flag), declared)

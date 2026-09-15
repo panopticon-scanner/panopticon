@@ -29,6 +29,11 @@ class Runner(base.HostRunner):
     # file describing the model's final response shape"). One owner for the
     # token itself: `codex_host.SCHEMA_FLAG`, which is what builds the argv.
     OUTPUT_SCHEMA_FLAG = (codex_host.SCHEMA_FLAG,)
+    # Where that flag is DOCUMENTED: `codex exec --help`. The top-level
+    # `codex --help` lists subcommands, so a probe reading it would record
+    # "not advertised" for a CLI that takes the flag perfectly well (D10 N1).
+    # The subcommand is ENVELOPE_FLAGS' own first token, spelled once.
+    HELP_ARGV = (ENVELOPE_FLAGS[0], "--help")
     # `codex exec` has no turn cap; an entry is bounded by --entry-timeout.
     HONOURS_MAX_TURNS = False
 
