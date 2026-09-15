@@ -25,6 +25,10 @@ import scripts.runners.base as runners_base
 
 
 ENV_KEYS = ("PANOPTICON_ENTRY_ID", "PANOPTICON_WRITE_ALLOWLIST", "PANOPTICON_READ_SCOPE")
+# The constrained-output flag this module puts on the argv; the runner
+# declares the same token as its `OUTPUT_SCHEMA_FLAG` seam attribute and a
+# test binds the two, exactly as ENVELOPE_FLAGS is bound to `exec --json`.
+SCHEMA_FLAG = "--output-schema"
 # Same reason as runners/codex.DEFAULT_RUNNER: a module attribute the suite can
 # swap for a refusal, where a default argument could not be reached.
 DEFAULT_RUNNER = subprocess.run
@@ -224,8 +228,13 @@ def _catalog(model, directory, runner, env, models=None):
 
 
 def command(entry, env, review_root, run_dir, runner=None, registration_dir=None,
-            catalog=None):
-    """Build one stdin-prompt launch from its registered, effective policy."""
+            catalog=None, schema_argv=()):
+    """Build one stdin-prompt launch from its registered, effective policy.
+
+    `schema_argv` is `runners.base.schema_argv`'s output -- `["--output-schema",
+    <published schema>]` or nothing (D10 ruling 3). It is placed BEFORE the
+    trailing `-`, which is not a flag but the stdin marker, and `validate_command`
+    re-checks the path it carries."""
     runner = DEFAULT_RUNNER if runner is None else runner
     config = _shell(entry, registration_dir)
     model = entry.get("model")
@@ -275,7 +284,8 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
         _COMMAND_DIRS[cwd] = (str(directory), str(run_path))
     return ["codex", "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
             "--strict-config", "--sandbox", "read-only", "--skip-git-repo-check",
-            "--cd", cwd, *(["--model", model] if model else []), "--json", *overrides, "-"]
+            "--cd", cwd, *(["--model", model] if model else []), "--json", *overrides,
+            *schema_argv, "-"]
 
 
 def cleanup_command(argv):
@@ -317,6 +327,17 @@ def validate_command(argv, env, review_root):
     the finished argv, not a second read of a registration file that could
     change between validation and command construction.
     """
+    # D10 ruling 3: the argv allowlist gains exactly two tokens, and the second
+    # is a PATH -- the only value on this argv that reaches it from the entry,
+    # which travels through `.panopticon/dispatch-request.json` inside the
+    # reviewed tree. Held to the schemas panopticon publishes, by the same rule
+    # the runner applied when it built the pair, because this validator's whole
+    # job is to re-check the FINISHED argv rather than trust how it was made.
+    if SCHEMA_FLAG in argv:
+        index = argv.index(SCHEMA_FLAG) + 1
+        if index >= len(argv) or not runners_base.published_schema(argv[index]):
+            raise ValueError("Codex command names an output schema that is not one "
+                             "panopticon publishes under skill/reference/")
     overrides = [argv[i + 1] for i, value in enumerate(argv[:-1]) if value == "-c"]
     config = tomllib.loads("\n".join(overrides))
     expected = safety_config()

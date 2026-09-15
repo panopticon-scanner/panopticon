@@ -25,6 +25,12 @@ try:
 except ImportError:
     import hosts
 
+# The probe that records the operational CLI facts (D10 F1/N1); named here
+# because `_output_schema_line` must say WHICH measurement it is reporting and
+# this module may not import the probes package (it is I/O-free by design, and
+# imports only the registry).
+CLI_FLAGS_PROBE = "cli-flags"
+
 ALL_PROVEN = ("all measured and PROVEN -- "
               "every control this run relies on was verified, not assumed")
 NO_EVIDENCE = ("NO EVIDENCE -- nobody looked. Nothing this "
@@ -151,6 +157,63 @@ def lines(envelope):
                    % (capability, posture[capability], host, probe_clause,
                       detail, remedy(capability, host)))
     return out
+
+
+def notes(envelope):
+    """The OPERATIONAL lines: measured facts that gate nothing (D10 N2).
+
+    Separate from `lines()` because three consumers read that list as "the
+    capabilities this run does not verify" -- `headline` counts it,
+    `setup_flow._readiness` passes only when the headline is ALL_PROVEN, and
+    both report renderers print it under "Host capabilities". A fact appended
+    there made a fully proven host announce "1 of 5 NOT PROVEN on host
+    'claude' ()", naming an empty set in the same sentence, and downgraded
+    setup readiness from PASS to WARN over a flag nothing depends on.
+
+    Said in this module, and by every surface, for the reason the module
+    exists: it is a measured fact about this host on this machine, and one
+    voice is the only way four renderings keep agreeing.
+    """
+    host = host_of(envelope)
+    if host is None:
+        return []
+    return _output_schema_line(envelope, host)
+
+
+def _output_schema_line(envelope, host):
+    """The one line that says a reply will NOT be schema-constrained (D10 F1).
+
+    Not a capability line: this gates nothing and refuses nothing, so it
+    carries no state and no remedy in `remedy()`'s sense -- the run is correct
+    either way, because the driver validates every returned reply itself.
+
+    Silent when the flag IS advertised. Silent, too, when the whole `cli_flags`
+    block is absent: nothing was interrogated at all, which is session mode
+    (the loop launches no CLI) or an artifact written before this probe
+    shipped, and inventing a line about a binary nobody interrogated is the
+    "mood" 5.1 rules out. A block that exists but is MISSING a fact this host's
+    registry row says should be in it is the third case, and it gets a line of
+    its own (D10 N1): that combination means the probe did not answer for a
+    host whose runner declares the flag, and the flag will not be passed.
+    """
+    fact = (envelope.get(hosts.CLI_FLAGS) if isinstance(envelope, dict) else None) or {}
+    if not isinstance(fact, dict) or not fact:
+        return []
+    row = fact.get(hosts.OUTPUT_SCHEMA)
+    if not isinstance(row, dict):
+        if hosts.OUTPUT_SCHEMA not in (getattr(hosts.spec(host), "cli_flag_facts", ()) or ()):
+            return []
+        return ["the output schema was not interrogated on host %r -- probe %s recorded "
+                "nothing, so the flag will not be passed. fix: re-run so the probe can "
+                "read `<cli> --help`; the driver validates every reply either way"
+                % (host, CLI_FLAGS_PROBE)]
+    if row.get("advertised") is True:
+        return []
+    return ["replies are not schema-constrained this run on host %r -- probe %s: %s. "
+            "fix: upgrade the CLI if you want %s enforced output; the driver validates "
+            "every reply either way"
+            % (host, CLI_FLAGS_PROBE, row.get("detail") or "no detail recorded",
+               row.get("flag") or "its")]
 
 
 def headline(envelope):

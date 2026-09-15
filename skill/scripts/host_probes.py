@@ -147,6 +147,12 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     the target (N2). `None` until the loop's `prepare` has run.
     """
     findings = {}          # capability -> list of (state, by, detail)
+    # D10 F1/N1: operational CLI facts, measured by `probes.common` and
+    # written BESIDE `capabilities` (see hosts.CLI_FLAGS): inside it, a CLI
+    # upgraded between two turns of a resumable loop would read as posture
+    # drift and discard everything already dispatched. Filled below, after the
+    # capability probes, and only on a headless run.
+    cli_flags = {}
     session_root = session_root or os.getcwd()
 
     def record(capability, result):
@@ -219,6 +225,15 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     record(hosts.TOOL_POLICY_ENFORCED,
            shadow if shadow is not None
            else probes_common.probe_shadow_shells(host, review_root))
+    # Also not in any row's `probes`, and for a stronger reason than the
+    # shadow scan's: it measures no capability at all, so there is no
+    # capability to map it to and PROBE_CAPABILITY would have to lie. It runs
+    # for every host whose row declares an operational CLI fact
+    # (`HostSpec.cli_flag_facts`), on a HEADLESS run only -- session mode
+    # launches none of our CLIs, so there is nothing to interrogate and
+    # nothing to disclose (D10 N1).
+    if settings_path is not None:
+        cli_flags.update(probes_common.probe_cli_flags(host))
 
     capabilities = {}
     for capability in hosts.CAPABILITIES:
@@ -245,7 +260,8 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         capabilities[capability] = _row(
             state, agreeing[0][1], "; ".join(r[2] for r in agreeing))
     return {"schema_version": SCHEMA_VERSION, "host": host,
-            "probed_at": run_manifest._now_iso(), "capabilities": capabilities}
+            "probed_at": run_manifest._now_iso(), "capabilities": capabilities,
+            hosts.CLI_FLAGS: cli_flags}
 
 
 def capabilities_of(artifact):

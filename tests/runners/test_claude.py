@@ -7,6 +7,7 @@ from unittest import mock
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
 import scripts.runners.claude as claude_runner
+import scripts._version as version
 import scripts.write_guard_hook as write_guard_hook
 
 ENVELOPE = {"type": "result", "subtype": "success", "is_error": False,
@@ -236,3 +237,66 @@ class TestTheSuiteNeverLaunchesTheRealCli(unittest.TestCase):
         def fake(cmd, **kw):
             raise AssertionError("unreachable")
         self.assertIs(fake, claude_runner.Runner("claude", runner=fake).runner)
+
+
+class TestOutputSchema(unittest.TestCase):
+    """D10 ruling 3: `claude -p --json-schema <file>` constrains the reply to
+    the role's published envelope."""
+
+    def setUp(self):
+        self.r = claude_runner.Runner("claude")
+        self.schema = os.path.abspath(version.reference_path("findings-envelope-schema.json"))
+
+    def test_the_flag_the_family_declares_is_the_one_on_the_argv(self):
+        self.assertEqual(("--json-schema",), claude_runner.Runner.OUTPUT_SCHEMA_FLAG)
+        entry = dict(_entry(True), output_schema=self.schema)
+        cmd = self.r.command(entry, "/s.json", max_turns=40)
+        self.assertEqual(cmd[-3:], ["--json-schema", self.schema, entry["prompt"]])
+
+    def test_an_entry_with_no_schema_carries_no_flag(self):
+        cmd = self.r.command(_entry(True), "/s.json", max_turns=40)
+        self.assertNotIn("--json-schema", cmd)
+
+    def test_a_schema_outside_the_published_reference_dir_never_reaches_the_cli(self):
+        entry = dict(_entry(True), output_schema="/tmp/mine.json")
+        self.assertNotIn("--json-schema", self.r.command(entry, "/s.json", max_turns=40))
+
+    def test_structured_output_is_preferred_over_result_when_present(self):
+        # With --json-schema the CLI may return the object in
+        # `structured_output` alongside (or instead of) the `result` text.
+        # Whichever it does, the loop has to persist the OBJECT.
+        body = {"findings": [], "_panopticon": {"run_id": "RID", "role": "domain_panel"}}
+        envelope = dict(ENVELOPE, structured_output=body, result="here you go")
+        res = self.r.parse_envelope("e1", json.dumps(envelope), 0)
+        self.assertEqual(json.loads(res.text), body)
+
+    def test_an_absent_or_empty_structured_output_falls_back_to_result(self):
+        for envelope in (ENVELOPE, dict(ENVELOPE, structured_output=None),
+                         dict(ENVELOPE, structured_output={})):
+            with self.subTest(envelope=sorted(envelope)):
+                res = self.r.parse_envelope("e1", json.dumps(envelope), 0)
+                self.assertEqual(res.text, ENVELOPE["result"])
+
+
+class TestATimedOutLaunchKeepsWhatItPrinted(unittest.TestCase):
+    """D10 ruling 5: a timed-out entry is often the most expensive one in the
+    run, and everything it produced used to be discarded inside the `except`."""
+
+    def test_the_partial_stdout_survives_as_the_results_text(self):
+        import subprocess
+        partial = '{"type": "result", "result": "```json\\n{\\"findings\\": ['
+
+        def slow(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"), output=partial.encode())
+
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=slow)
+            r.prepare(d, review_root=d)
+            res = r.run_entry(_entry(True), {})
+        self.assertFalse(res.ok)
+        self.assertIn("timed out after", res.error)
+        self.assertEqual(partial, res.text)
+        # ...and no usage: claude -p prints its envelope only at the end, so a
+        # killed launch's stdout carries no figure to read. Recorded as the
+        # empty truth rather than a fabricated zero-cost success.
+        self.assertEqual({}, res.usage)

@@ -25,6 +25,15 @@ class Runner(base.HostRunner):
     # print_the_envelope binds these two constants to that argv.
     CLI = "codex"
     ENVELOPE_FLAGS = ("exec", "--json")
+    # D10 ruling 3: `codex exec --output-schema <FILE>` ("Path to a JSON Schema
+    # file describing the model's final response shape"). One owner for the
+    # token itself: `codex_host.SCHEMA_FLAG`, which is what builds the argv.
+    OUTPUT_SCHEMA_FLAG = (codex_host.SCHEMA_FLAG,)
+    # Where that flag is DOCUMENTED: `codex exec --help`. The top-level
+    # `codex --help` lists subcommands, so a probe reading it would record
+    # "not advertised" for a CLI that takes the flag perfectly well (D10 N1).
+    # The subcommand is ENVELOPE_FLAGS' own first token, spelled once.
+    HELP_ARGV = (ENVELOPE_FLAGS[0], "--help")
     # `codex exec` has no turn cap; an entry is bounded by --entry-timeout.
     HONOURS_MAX_TURNS = False
 
@@ -159,14 +168,23 @@ class Runner(base.HostRunner):
             if entry.get("delivery") != "return_json":
                 raise ValueError("Codex requires delivery: return_json; it cannot self-write")
             command = codex_host.command(entry, child_env, self.review_root, self.run_dir,
-                                         runner=self.runner)
+                                         runner=self.runner,
+                                         schema_argv=base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry))
             codex_host.validate_command(command, child_env, self.review_root)
             proc = self.runner(command, input=entry["prompt"], text=True,
                              capture_output=True, cwd=self.review_root,
                              env=child_env, timeout=self.entry_timeout)
             return self.parse_envelope(entry_id, proc.stdout, proc.returncode)
-        except subprocess.TimeoutExpired:
-            return base.RunResult.failed(entry_id, "codex timed out after %ss" % self.entry_timeout)
+        except subprocess.TimeoutExpired as exc:
+            # D10 ruling 5: exec's envelope is a line per event, so a killed
+            # launch's stdout still holds every `turn.completed` usage line it
+            # printed. Summed by the ordinary parser (one owner for that
+            # arithmetic, cached-input subtraction included) and recorded: those
+            # tokens were spent, and `Ledger.usage_document` counts failed rows.
+            partial = base.partial_output(exc)
+            return base.RunResult.failed(entry_id, "codex timed out after %ss" % self.entry_timeout,
+                                          usage=self.parse_envelope(entry_id, partial, 0).usage,
+                                          text=partial)
         except Exception as exc:
             return base.RunResult.failed(entry_id, "%s: %s" % (type(exc).__name__, exc))
         finally:

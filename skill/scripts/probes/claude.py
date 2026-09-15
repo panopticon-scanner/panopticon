@@ -541,7 +541,15 @@ def _headless_usage_source(host, settings_path):
     it unusable (no module, a module that fails to import, a Runner without
     the three attributes): nothing here can name a CLI to look for, a
     vacuous PROVEN is the fail-open this epic exists to remove, and a probe
-    reports rather than raises."""
+    reports rather than raises.
+
+    It measures the ENVELOPE flags and nothing else. D10 F1 also answered the
+    optional output-schema flag from this same read; N1 moved that to
+    `common.probe_cli_flags`, because hanging an operational fact off this
+    probe meant no host that fails to CLAIM a usage ledger could ever be asked
+    -- codex being exactly that host, and one of the two whose runner takes
+    the flag. The cost is one extra `--help` launch on claude; the fact no
+    longer depends on an unrelated claim."""
     import scripts.runners.base as runners_base
     writable, probe_dir = _headless_subject_dir(settings_path)
     ledger = os.path.join(os.path.dirname(os.path.abspath(settings_path)),

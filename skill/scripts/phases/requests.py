@@ -11,8 +11,12 @@ import scripts.synth.plan as plan_mod
 from scripts import hosts
 from scripts import model_resolver
 from scripts import read_guard_hook
-from . import runio
 from . import coverage
+# D10 ruling 2: the retry prompt carries the last refusal, and `persist` owns
+# both the records and the run-folder resolver. A mutual pair like
+# coverage<->requests: read by module attribute, at call time only.
+from . import persist
+from . import runio
 
 
 _PROMPT_FILE_SAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -138,11 +142,50 @@ def _materialize_prompts(review_root, entries, namespace=None):
     `skill/workflows/dispatch.js`, does require it, because it deliberately
     never carries the inline prompt into the session's context."""
     out = []
+    # D10 ruling 2: the ONE chokepoint both modes pass through, so a refusal
+    # reaches the next attempt whoever dispatches it. Resolved once, and
+    # best-effort: a run folder that cannot be resolved costs the retry note,
+    # never the dispatch.
+    try:
+        run_folder = persist.run_dir(review_root, namespace)
+    except (OSError, ValueError):
+        run_folder = None
+    # D10 F1: does THIS machine's CLI take a constrained-output schema? Read
+    # from the run's own evidence artifact, once, and only `True` counts --
+    # absent (nobody asked: session mode, a host whose row maps no usage
+    # probe) and `False` (asked, not advertised) are the same answer, and it
+    # is the answer that leaves a launch exactly as it was before ruling 3.
+    # Fail-safe, because the alternative is fatal: a CLI that does not know
+    # the flag exits non-zero on it, prints no envelope, and every entry of
+    # every checkpoint burns its three launches.
+    advertised = runio.host_cli_flags(review_root).get(
+        hosts.OUTPUT_SCHEMA, {}).get("advertised") is True
     for entry in entries:
         entry = dict(entry)
+        # D10 ruling 3: the published schema this entry's reply is accepted
+        # against, for a host CLI that can constrain its output to one. Neutral
+        # like `delivery` and `prompt_file`: a family with no such flag ignores
+        # it, and a role with no published schema carries no key at all.
+        #
+        # RETURN-PERSIST only, because that is what the schema describes: the
+        # object the CONTROLLER will persist. A self-writing reviewer put its
+        # findings in its own out_file under the write guard and returns a
+        # one-line confirmation, so constraining its final message to the
+        # findings envelope would demand back the very object the self-write
+        # path exists to keep out of the loop.
+        schema = (persist.role_schema(entry)
+                  if advertised and entry.get("delivery") == "return_json" else None)
+        if schema:
+            entry["output_schema"] = schema
         prompt = entry.get("prompt")
         eid = entry.get("id")
         if isinstance(prompt, str) and prompt and eid:
+            # BEFORE the file is written, so `prompt` and `prompt_file` agree:
+            # a host that dispatches from either one hears about the refusal.
+            block, prior = persist.retry_block(run_folder, entry)
+            if block:
+                prompt = entry["prompt"] = prompt + block
+                entry["prior_rejection"] = prior
             path = _prompt_file_path(review_root, eid, namespace)
             try:
                 runio._confine_artifact_path(path)

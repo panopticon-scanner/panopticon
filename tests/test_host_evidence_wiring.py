@@ -240,6 +240,68 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
                              "a changed probed_at alone must not rewrite the artifact")
             self.assertEqual("2026-01-01T00:00:00Z", after["probed_at"])
 
+    def _with_flags(self, advertised, **kw):
+        """The mixed artifact, plus the operational `cli_flags` block."""
+        artifact = self._artifact(hosts.PROVEN, **kw)
+        artifact[hosts.CLI_FLAGS] = {
+            hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": advertised,
+                                  "detail": "advertised=%s" % advertised}}
+        return artifact
+
+    def _establish(self, review_root, manifest, artifact):
+        with mock.patch.object(host_probes, "run_probes", return_value=artifact):
+            return driver._establish_host_posture(review_root, manifest, self._args())
+
+    def test_a_moved_cli_flag_is_written_back_and_stops_being_stamped(self):
+        # D10 S1, and it is F1's failure class again: the rewrite was gated on
+        # `capabilities` alone, so an operational fact that MOVED was measured,
+        # disclosed ("replies are not schema-constrained this run") -- and then
+        # thrown away. The next dispatch read the stale `advertised: true` off
+        # disk and put `--json-schema` on the argv of a CLI that had just been
+        # measured not to take it, which exits non-zero and burns every entry's
+        # launch budget. The drift COMPARISON stays on `capabilities` only: a
+        # flag that appears or disappears must never refuse a resume.
+        import json
+        import scripts.phases.requests as requests
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        manifest = self._manifest(session_dir=review_root)
+        self.assertIsNone(self._establish(review_root, manifest, self._with_flags(True)))
+
+        self.assertIsNone(self._establish(review_root, manifest, self._with_flags(False)),
+                          "a flag that disappeared must not refuse the run")
+
+        stored = runio._load_json(runio._pano(review_root, runio.HOST_CAPABILITIES))
+        self.assertIs(False, stored[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA]["advertised"])
+        # the consequence, at the surface that reads it
+        path = requests.write_dispatch_request(
+            review_root, "RID", "review", None,
+            [{"id": "review-app-SEC", "prompt": "p", "delivery": "return_json",
+              "out_file": runio._pano(review_root, "findings-app-SEC.json")}])
+        with open(path, encoding="utf-8") as fh:
+            self.assertNotIn("output_schema", json.load(fh)["entries"][0])
+
+    def test_an_unchanged_posture_and_flag_rewrites_nothing(self):
+        # The other half of the trigger: adding `cli_flags` to it must not
+        # degenerate into "always write". The artifact the mid-run refusal
+        # reads is rewritten only when something an operator cares about moved.
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        manifest = self._manifest(session_dir=review_root)
+        path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+        self.assertIsNone(self._establish(review_root, manifest, self._with_flags(True)))
+        before, before_stat = runio._load_json(path), os.stat(path)
+        os.utime(path, (before_stat.st_atime - 60, before_stat.st_mtime - 60))
+        marked = os.stat(path).st_mtime
+
+        self.assertIsNone(self._establish(
+            review_root, manifest,
+            self._with_flags(True, detail="fixture")))
+
+        self.assertEqual(before, runio._load_json(path))
+        self.assertEqual(marked, os.stat(path).st_mtime,
+                         "an unchanged posture and an unchanged flag must not rewrite")
+
     def test_the_first_invocation_writes_the_artifact(self):
         with tempfile.TemporaryDirectory() as review_root:
             manifest = self._manifest(session_dir=review_root)

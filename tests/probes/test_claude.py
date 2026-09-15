@@ -1158,3 +1158,39 @@ class TestReadGuardArmedProbe(unittest.TestCase):
                 state, _by, _d = claude_probes.probe_read_guard_armed(
                     "claude", settings_path=os.path.join(run_dir, "host-settings.json"))
             self.assertEqual(hosts.PROVEN, state)
+
+
+class TestTheUsageProbeDoesNotAnswerForTheFlags(TestUsageSourceProbe):
+    """D10 N1: this probe measures the ENVELOPE flags, and nothing else.
+
+    F1 answered the output-schema question from the same `--help` read, to
+    save a launch. The saving cost the fact its independence: only a host that
+    CLAIMS a usage ledger reaches this probe at all, so codex -- which claims
+    none and whose runner takes `--output-schema` -- could never be asked, for
+    the life of its registry row. `probes.common.probe_cli_flags` asks now,
+    off the row's own `cli_flag_facts`, at the cost of one extra `--help`.
+    """
+
+    def test_it_takes_no_cli_flags_out_parameter(self):
+        with self.assertRaises(TypeError):
+            claude_probes.probe_usage_source("claude", ".", cli_flags={})
+
+    def test_the_fact_is_measured_for_a_host_that_claims_no_usage_ledger(self):
+        # The decoupling, stated as the registry states it: codex declares the
+        # fact and claims no usage ledger. tests/probes/test_common.py drives
+        # the probe itself.
+        self.assertIn(hosts.OUTPUT_SCHEMA, hosts.spec("codex").cli_flag_facts)
+        self.assertNotIn(hosts.USAGE_LEDGER, hosts.spec("codex").claims)
+
+    def test_a_usage_read_records_no_flags_of_its_own(self):
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help(
+                    "Usage: claude [options]\n  -p, --print\n  --output-format <f>\n"
+                    "  --json-schema <schema>\n"):
+                state, _by, detail = claude_probes.probe_usage_source(
+                    "claude", project, settings_path=self._headless_settings(project))
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(1, len(self.help_calls))          # its own read, once
+        self.assertNotIn("--json-schema", detail)

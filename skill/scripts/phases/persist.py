@@ -9,11 +9,16 @@ never writes a findings file by hand. Refusals write nothing.
 import json
 import os
 import re
+import sys
 import tempfile
+import time
 
+import scripts._version as version
 import scripts.evidence as evidence
 import scripts.findings_contract as findings_contract
 import scripts.group_runner as group_runner
+import scripts.probes.common as probes_common
+import scripts.redact as redact
 import scripts.run_manifest as run_manifest
 from . import coverage
 from . import requests
@@ -23,6 +28,253 @@ from . import verify
 
 ROLES = ("scout", "setup-scan", "review-cell", "verify-cell", "tool-advisor")
 _STAMP_KEYS = ("run_id", "group", "domain", "stage")
+# D10 ruling 1: refused replies are kept HERE, beside the run's other
+# artifacts -- one folder, one shape, never read by a done predicate.
+REJECTED_DIR = "rejected"
+# What a record is a record OF (D10 F4). The two are kept apart because only
+# one of them is a statement about a REPLY: a refusal means the agent returned
+# something and the controller would not take it, which is the only case the
+# retry note can honestly quote. A launch failure -- a timeout, a non-zero exit
+# -- produced no reply at all, and telling its next attempt to "return the same
+# findings, fix only the format" is false in every clause and, on a
+# self-writing entry, actively harmful.
+REFUSAL = "refusal"
+LAUNCH_FAILURE = "launch_failure"
+# 256 KiB of reply, after which the record says `truncated`. A refused reply
+# is evidence, not an artifact: enough to see what shape came back and to
+# quote the reason at the retry, bounded so one runaway agent cannot fill the
+# run folder with the same megabyte three times.
+REJECTED_CAP = 256 * 1024
+# How much of an oversized reply the REDACTOR is allowed to scan before the
+# cap applies (D10 F2). Redaction has to come first -- two of redact's rules
+# (PEM and JWT) are delimiter-terminated, so a cut inside such a block removes
+# the terminator, the pattern stops matching, and the surviving prefix stays in
+# plaintext; measured, a PEM straddling the 256 KiB cut left 1531 characters of
+# key material in the record. This bound is what keeps "redact first" from
+# meaning "run a DOTALL `.*?` over an unbounded reply".
+REDACT_CAP = 4 * 1024 * 1024
+# The one rule whose opening delimiter can survive the final cut with its
+# closing one beyond the REDACT_CAP horizon, i.e. unmasked. Nothing after a
+# dangling header is kept.
+_DANGLING_PEM = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
+_ATTEMPT = re.compile(r"-(\d+)\.json$")
+
+
+def _cut(text, limit):
+    """`text` clipped to `limit` BYTES of UTF-8, never splitting a character."""
+    return text.encode("utf-8")[:limit].decode("utf-8", "ignore")
+
+
+def _safe_reply(text):
+    """(kept, truncated): the reply as it may be stored (D10 F2).
+
+    Redacted BEFORE the cap, so the cap only ever cuts text that has already
+    been through every pattern; pre-cut at REDACT_CAP first, so the redactor's
+    DOTALL rules are never handed an unbounded body. Whatever survives the
+    final cut is then swept for a private-key HEADER left without its `END`:
+    the only way an unmasked secret can reach the record is a block whose
+    terminator lay beyond the horizon, and a header with nothing to close it is
+    the signature of exactly that.
+
+    `truncated` compares what was KEPT against what there was to keep, at each
+    of the three steps (D10 N4). Deriving it from `len(kept) == REJECTED_CAP`
+    was wrong in both directions: a cut through a multibyte character leaves
+    `kept` a byte or two short of the cap -- `_cut` drops the partial
+    character -- so a truncated record claimed to be whole, and a reply that
+    exactly filled the cap claimed a truncation that never happened.
+    """
+    scanned = _cut(text, REDACT_CAP)
+    redacted = redact.redact_tree(scanned)
+    kept = _cut(redacted, REJECTED_CAP)
+    dangling = [m for m in _DANGLING_PEM.finditer(kept)
+                if "-----END" not in kept[m.end():]]
+    if dangling:
+        kept = kept[:dangling[0].start()]
+    return kept, scanned != text or kept != redacted
+
+
+def run_dir(review_root, namespace=None):
+    """The folder this invocation's run artifacts live in -- `runs/<tag>/` for
+    a review, the flat `.panopticon/` for `--setup`.
+
+    ONE resolver, shared by `orchestrate.loop` (which needs it for the ledger
+    and the guard files), `persist_cli` and `requests._materialize_prompts`
+    (D10 ruling 2, which has to find the rejected records the loop wrote).
+    `probes.common.headless_settings_path` is that resolver -- namespace-aware,
+    and the file the runner actually arms -- so the run folder is its dirname
+    and never a second spelling of the same lookup."""
+    return os.path.dirname(probes_common.headless_settings_path(review_root, namespace))
+
+
+# D10 ruling 3: the PUBLISHED schema each returning role's reply is accepted
+# against, for the CLIs that can constrain their output to one. scout and
+# setup-scan are absent on purpose: their shape lives in code
+# (coverage._scout_shape_errors, "a JSON object") and publishing a second
+# definition of it is how the two drift.
+ROLE_SCHEMAS = {"review-cell": "findings-envelope-schema.json",
+                "verify-cell": "verdict-bundle-schema.json",
+                "tool-advisor": "advisor-verdict-schema.json"}
+
+
+def role_schema(entry):
+    """Absolute path of this entry's published output schema, or None.
+
+    Stamped onto the entry by `requests._materialize_prompts` and read off it
+    by whichever runner's CLI takes one -- the runners package may not import
+    `phases`, and should not have to know what a role is anyway.
+    """
+    name = ROLE_SCHEMAS.get(role_of(entry))
+    return os.path.abspath(version.reference_path(name)) if name else None
+
+
+# D10 ruling 2: what the retry is told to return, one line per role. The
+# refusal reason says what was wrong; this says what right looks like, in the
+# shape the role's own acceptance checks -- `accepts` below is the authority
+# on each of these, and they are written to match it, not the templates.
+ENVELOPE_SHAPES = {
+    "scout": '{"domains": [...], "files": [...], "tools": [...]}',
+    "setup-scan": "a single JSON object (the setup proposal)",
+    "review-cell": '{"findings": [ ... ], "_panopticon": {"run_id": "...", "group": "...", "domain": "..."}}',
+    "verify-cell": '{"verdicts": [ ... ], "_panopticon": {"run_id": "...", "group": "...", "domain": "...", "stage": "..."}}',
+    "tool-advisor": '{"finding_id": "...", "verdict": "CONFIRMED|REJECTED|NEEDS_MORE_INFO", "confidence": "...", "reasoning": "...", "explored": [...], "references": [...], "citations": {...}}',
+}
+# Fixed text, not a per-role paragraph: the agent is being asked to repeat
+# itself in a different wrapper, and the one thing that varies is the reason.
+RETRY_PROMPT_BLOCK = (
+    "\n\n## Your previous reply was refused -- return the same answer, correctly wrapped\n\n"
+    "Your previous attempt %(attempt)s was refused: %(reason)s\n"
+    "Return the SAME findings/verdicts you returned then; fix only the FORMAT.\n"
+    "The required envelope is exactly: %(shape)s\n")
+
+
+# How much of a refusal reason the retry prompt may quote (D10 F3).
+REASON_CAP = 200
+
+
+def envelope_shape(entry):
+    """The one-line envelope this entry's role is accepted against."""
+    return ENVELOPE_SHAPES.get(role_of(entry)) or "a single JSON object"
+
+
+def last_rejection(run_folder, entry_id):
+    """The most recent `rejected/` record for this entry, or None."""
+    if not run_folder or not entry_id:
+        return None
+    safe_id = requests._PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
+    directory = os.path.join(run_folder, REJECTED_DIR)
+    attempt = _next_attempt(directory, safe_id) - 1
+    if attempt < 1:
+        return None
+    record = runio._load_json(os.path.join(directory, "%s-%d.json" % (safe_id, attempt)))
+    return record if isinstance(record, dict) else None
+
+
+def retry_block(run_folder, entry):
+    """(prompt_block, prior_rejection) for an entry whose last reply was
+    refused; (None, None) for one with no record -- D10 ruling 2.
+
+    The retry is otherwise the SAME prompt, regenerated: `driver.run` rebuilds
+    the dispatch request from disk and nothing in it knows an attempt ever
+    happened. Run-13 spent three launches of one cell that way, each one
+    making the identical mistake, because nobody ever told the agent what the
+    controller had objected to.
+
+    The LATEST record only: a reply refused twice gets told about the second
+    refusal, which is the one its next attempt has to clear.
+
+    Two gates, both from D10 F4. The record must be a REFUSAL: a timed-out
+    launch returned nothing, so there is no "same findings" to return and no
+    format to fix. And the entry must be return-persist: this whole block is
+    about the envelope the CONTROLLER will persist, and a self-writing reviewer
+    that obeyed it would return its findings as a message instead of writing
+    its out_file -- the done predicate would never fire and the cell would burn
+    its remaining attempts. A record with no `kind` (an older build's) reads as
+    neither, which is the fail-safe answer.
+    """
+    if not isinstance(entry, dict) or entry.get("delivery") != "return_json":
+        return None, None
+    record = last_rejection(run_folder, entry.get("id"))
+    if record is None or record.get("kind") != REFUSAL:
+        return None, None
+    # D10 F3: capped again on the way OUT. The record's reason is already
+    # bounded and masked, but this string is about to be appended to a prompt
+    # and written to `prompt_file`, and a record written by an older build --
+    # or by a path that bounds nothing, a runner's own error string -- must not
+    # be able to grow the launch argv. Belt and braces, one line.
+    prior = {"attempt": record.get("attempt"),
+             "reason": str(record.get("reason") or "")[:REASON_CAP]}
+    return RETRY_PROMPT_BLOCK % {"attempt": prior["attempt"], "reason": prior["reason"],
+                                 "shape": envelope_shape(entry)}, prior
+
+
+def _next_attempt(directory, safe_id):
+    """1 + the highest attempt already recorded for this entry. Keyed on the
+    numbers on disk rather than on a count, so a record an operator deleted
+    cannot make the next one collide with a surviving sibling."""
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 1
+    seen = [0]
+    for name in names:
+        match = _ATTEMPT.search(name)
+        if match and name[:match.start()] == safe_id:
+            seen.append(int(match.group(1)))
+    return 1 + max(seen)
+
+
+def retain_rejected(run_folder, entry, text, reason, *, kind):
+    """Keep a refused reply as `<run_dir>/rejected/<entry-id>-<attempt>.json`;
+    return the path, or None when there is nothing to keep (D10 ruling 1).
+
+    `write_reply` refuses and writes NOTHING -- correct for the artifact, and
+    it used to mean the reply itself was gone. Run-13: 7 of 8 failed attempts
+    were replies missing `_panopticon`, each rerun from scratch, with no way to
+    see what the agent had actually returned or to tell it what was wrong.
+
+    The record is redacted (`redact.redact_tree`, the same masking the report
+    goes through -- a reply can quote a secret it found) and capped, and it
+    goes through the confined/nofollow writer every other run-folder artifact
+    uses, so a planted `rejected` symlink cannot carry the write outside.
+    The entry id is flattened into ONE filename component first: an id embeds
+    an operator-supplied group name.
+
+    Best-effort by construction: this is evidence about a failure, so a
+    failure to record it must not become a second, louder failure. Nothing
+    under `rejected/` is ever read by a done predicate -- `role_of` gives the
+    path no role, so no reply can advance an entry by landing here.
+
+    `kind` is keyword-only and has no default (D10 F4): every caller must say
+    whether this is a REFUSAL -- a reply the controller would not take -- or a
+    LAUNCH_FAILURE, which produced no reply at all. `retry_block` quotes only
+    the first, and a default would let a new call site pick the wrong one by
+    saying nothing.
+    """
+    entry_id = entry.get("id") if isinstance(entry, dict) else None
+    body = str(text or "")
+    if not run_folder or not entry_id or not body:
+        return None
+    safe_id = requests._PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
+    directory = os.path.join(run_folder, REJECTED_DIR)
+    kept, truncated = _safe_reply(body)
+    attempt = _next_attempt(directory, safe_id)
+    record = {"schema_version": 1, "entry_id": entry_id, "attempt": attempt, "kind": kind,
+              # D10 F3: the reason is built by interpolating REPLY content, so
+              # it gets the same masking the reply does. Bounded at the source
+              # (`%.200r`), not here, so every consumer sees the same string.
+              "reason": redact.redact(reason),
+              # the stamp format the ledger's own rows carry, so the two sort
+              # against each other as plain strings.
+              "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+              "reply": kept}
+    if truncated:
+        record["truncated"] = True
+    try:
+        return runio._write_json(os.path.join(directory, "%s-%d.json" % (safe_id, attempt)), record)
+    except (OSError, ValueError) as exc:
+        print("driver: could not retain the refused reply for %s (%s)" % (entry_id, exc),
+              file=sys.stderr, flush=True)
+        return None
 
 
 def role_of(entry):
@@ -34,6 +286,11 @@ def role_of(entry):
         return None
     name = os.path.basename(out_file)
     parent = os.path.basename(os.path.dirname(out_file))
+    # D10 F6: the folder before the name. A retained record is named after the
+    # ENTRY (`rejected/scout-app-1.json`), which for a scout collides with the
+    # scout artifact family exactly; nothing under `rejected/` is a role.
+    if parent == REJECTED_DIR:
+        return None
     if name.startswith("scout-") and name.endswith(".json"):
         return "scout"
     if name == "setup-proposal.json":
@@ -54,8 +311,49 @@ def _stamp_matches(entry, data):
         return False, "reply carries no _panopticon stamp; the entry declares %s" % sorted(declared)
     for k, v in declared.items():
         if meta.get(k, "primary" if k == "stage" else None) != v:
-            return False, "_panopticon.%s is %r, the entry is %r" % (k, meta.get(k), v)
+            # %.200r, not %r (D10 F3): `meta` is the PARSED REPLY, so this
+            # string carries content an agent -- possibly a prompt-injected one
+            # reviewing a hostile target -- chose. It is stored in the rejected
+            # record and quoted into the next attempt's prompt, so it is bounded
+            # where it is built rather than at each of those two consumers. `%r`
+            # honours a precision and keeps escaping newlines, which is what
+            # stops a reason from forging lines of its own.
+            return False, "_panopticon.%s is %.200r, the entry is %r" % (k, meta.get(k), v)
     return True, ""
+
+
+# D10 ruling 4: the roles whose RETURN-PERSIST reply the controller will stamp
+# for itself. Both are cells the driver named on the entry it dispatched; the
+# tool-advisor and the scout declare no cell identity to fill.
+_CONTROLLER_STAMP_ROLES = ("review-cell", "verify-cell")
+
+
+def _controller_stamp(entry, data):
+    """`data` with any cell-identity key the reply OMITTED filled in from the
+    entry, marked `stamped_by: "controller"` -- or `data` unchanged when the
+    reply already says everything the entry declares (D10 ruling 4).
+
+    Only ever called from `write_reply`, i.e. only for a reply the controller
+    itself is about to persist. The driver wrote those keys onto the entry, is
+    holding the entry, and is choosing the path: on this path the identity was
+    never in question, and demanding the agent echo it back is a shape tax that
+    cost run-13 seven of its eight failed attempts.
+
+    A key the reply DOES carry is never touched, so a stamp that contradicts
+    the entry still meets `_stamp_matches` and is still refused: the controller
+    fills a silence, it does not overrule a claim. A `_panopticon` that is
+    present but not an object is likewise left alone -- that is a malformed
+    claim, not an absent one.
+    """
+    meta = data.get("_panopticon")
+    if meta is not None and not isinstance(meta, dict):
+        return data
+    meta = dict(meta or {})
+    missing = {k: entry.get(k) for k in _STAMP_KEYS
+               if entry.get(k) is not None and k not in meta}
+    if not missing:
+        return data
+    return dict(data, _panopticon={**meta, **missing, "stamped_by": "controller"})
 
 
 def accepts(entry, data):
@@ -81,7 +379,7 @@ def accepts(entry, data):
         return _verify_accepts(entry, data)
     verdict = str(data.get("verdict", "")).upper() if isinstance(data, dict) else ""
     if verdict not in evidence.VERDICT_VALUES:
-        return False, "verdict %r is not one of %s" % (verdict, sorted(evidence.VERDICT_VALUES))
+        return False, "verdict %.200r is not one of %s" % (verdict, sorted(evidence.VERDICT_VALUES))
     return True, ""
 
 
@@ -225,6 +523,12 @@ def write_reply(entry, text):
     data = _parse_reply(text)
     if data is None:
         return False, "reply for %r does not parse as JSON (fence- and prose-wrapped both tried)" % entry.get("id")
+    # D10 ruling 4, BEFORE the acceptance: the stamp is the controller's to
+    # fill on the return-persist path only. `accepts` itself is untouched, so
+    # the self-write done predicates still require the agent's own stamp on a
+    # file nobody checked on the way in.
+    if isinstance(data, dict) and role_of(entry) in _CONTROLLER_STAMP_ROLES:
+        data = _controller_stamp(entry, data)
     ok, reason = accepts(entry, data)
     if not ok:
         return False, "reply for %r rejected: %s" % (entry.get("id"), reason)

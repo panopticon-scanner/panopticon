@@ -480,7 +480,9 @@ class TestHeadlessLoop(LoopCase):
         # `duration_ms` was passed as a literal None at the one call site, so
         # every row in every run carried a null. The row GAINS three fields
         # and loses none -- usage_document() reads `phase`/`usage` and
-        # total_cost() reads `cost_usd`, all still there.
+        # total_cost() reads `cost_usd`, all still there. D10 ruling 1 adds a
+        # fourth, `rejected_file`: null on a row whose reply the loop could
+        # use, and the path to the kept reply on one it could not.
         d, floor = self._repo()
         runner = FakeRunner()
         self._run(d, floor, runner)
@@ -490,7 +492,8 @@ class TestHeadlessLoop(LoopCase):
             self.assertEqual(
                 {"ts", "entry_id", "checkpoint", "phase", "mode", "host", "model", "ok",
                  "usage", "cost_usd", "duration_ms", "session_id", "denials", "error",
-                 "started_at", "finished_at"}, set(row))
+                 "started_at", "finished_at", "rejected_file"}, set(row))
+            self.assertIsNone(row["rejected_file"])       # a clean run keeps nothing
             self.assertIsInstance(row["duration_ms"], int)
             self.assertGreaterEqual(row["duration_ms"], 0)
             self.assertLessEqual(row["started_at"], row["finished_at"])
@@ -1114,3 +1117,204 @@ class TestTheRealUsageProbeAcrossLoopIterations(LoopCase):
         self.assertEqual(hosts.REFUTED, evidence[hosts.USAGE_LEDGER]["state"])
         self.assertIn("not one envelope carried a usage figure",
                       evidence[hosts.USAGE_LEDGER]["detail"])
+
+
+class TestRefusedRepliesAreRetained(LoopCase):
+    """D10 ruling 1, loop side: the reply the loop refuses is kept.
+
+    Before this the refusal printed a reason to stderr and dropped the text on
+    the floor -- so run-13's eight failed attempts left nothing to look at and
+    nothing for the retry to quote.
+
+    The refusal used here is a CONTRADICTING stamp, deliberately: a reply that
+    merely OMITS `_panopticon` -- run-13's actual failure, 7 times out of 8 --
+    is no longer refused at all (ruling 4 fills it from the entry). What is
+    left to refuse is a reply making a different claim than the entry, and that
+    one is never overwritten.
+    """
+
+    class RefusingRunner(FakeRunner):
+        """A return-persist reviewer that stamps its findings for a cell it was
+        not dispatched for, and leaks a token-shaped literal while it is at
+        it."""
+
+        SECRET = "ghp_" + "B" * 36
+
+        def __init__(self, host="claude"):
+            super().__init__(host)
+            self.prompts, self.priors = [], []
+
+        def run_entry(self, entry, env):
+            if not entry["id"].startswith("review-"):
+                return super().run_entry(entry, env)
+            self.launched.append(entry["id"])
+            self.prompts.append(entry["prompt"])
+            self.priors.append(entry.get("prior_rejection"))
+            body = {"findings": [{"title": "issue at " + self.SECRET, "severity": "HIGH",
+                                  "domain": entry["domain"], "code": entry["domain"] + "-A1A",
+                                  "category": "authz",
+                                  "location": {"file": "src/app.py", "line_start": 1}}],
+                    "_panopticon": {"run_id": entry.get("run_id"), "role": "domain_panel",
+                                    "domain": entry["domain"], "group": "a-different-group"}}
+            return base.RunResult(
+                entry_id=entry["id"], ok=True, text=json.dumps(body),
+                usage={"input_tokens": 5, "output_tokens": 1, "cache_read_input_tokens": 0,
+                       "cache_creation_input_tokens": 0},
+                cost_usd=0.001, model="claude-sonnet-5", session_id="s", denials=[], error=None)
+
+    def _run_loop(self, d, floor, runner):
+        args = self._args(d, "--allow-unenforced")
+        with mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven), \
+             mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            return orchestrate.loop(args)
+
+    def test_every_refusal_writes_its_own_record_and_the_ledger_row_names_it(self):
+        d, floor = self._repo()
+        runner = self.RefusingRunner()
+        # `complete`, not `error`: the REVIEW phase's own per-cell attempt
+        # budget gives up on the cell before the loop's per-entry cap sees it
+        # pending a fourth time (TestPerEntryFailureCap covers the cap itself,
+        # on the verify round, where the phase has no such budget). Either way
+        # the reply was refused three times, and this is about what survives.
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(runner.launched, ["review-app-SEC"] * 3)
+        rejected = os.path.join(runner.run_dir, "rejected")
+        self.assertEqual(sorted(os.listdir(rejected)),
+                         ["review-app-SEC-%d.json" % n
+                          for n in range(1, orchestrate.MAX_ENTRY_FAILURES + 1)])
+        rows = [r for r in orchestrate.Ledger(runner.run_dir).lines()
+                if r["entry_id"] == "review-app-SEC"]
+        self.assertEqual([r["rejected_file"] for r in rows],
+                         [os.path.join(rejected, "review-app-SEC-%d.json" % n)
+                          for n in range(1, orchestrate.MAX_ENTRY_FAILURES + 1)])
+        with open(os.path.join(rejected, "review-app-SEC-1.json"), encoding="utf-8") as fh:
+            record = json.load(fh)
+        self.assertIn("_panopticon.group is 'a-different-group'", record["reason"])
+        self.assertIn("[REDACTED_TOKEN]", record["reply"])
+        self.assertNotIn(self.RefusingRunner.SECRET, record["reply"])
+
+    def test_the_next_launch_of_a_refused_entry_is_told_why(self):
+        # D10 ruling 2, end to end: the retry goes out through the ordinary
+        # `driver.run` -> `write_dispatch_request` path, so the only way the
+        # agent hears about the refusal is the prompt the loop hands it.
+        d, floor = self._repo()
+        runner = self.RefusingRunner()
+        self._run_loop(d, floor, runner)
+        self.assertEqual(3, len(runner.prompts))
+        self.assertNotIn("refused", runner.prompts[0])
+        self.assertIsNone(runner.priors[0])
+        self.assertIn("_panopticon.group is 'a-different-group'", runner.prompts[1])
+        self.assertIn("attempt 1", runner.prompts[1])
+        self.assertEqual(1, runner.priors[1]["attempt"])
+        self.assertEqual(2, runner.priors[2]["attempt"])
+
+    def test_a_clean_run_writes_no_records_at_all(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertFalse(os.path.exists(os.path.join(runner.run_dir, "rejected")))
+
+
+
+class TestATimedOutEntryKeepsItsEvidence(LoopCase):
+    """D10 ruling 5, loop side: a failed launch that printed something keeps
+    it, and the ledger row names both the tokens and the file."""
+
+    PARTIAL = '{"findings": [{"title": "half a finding, key ghp_' + "D" * 36 + '"'
+
+    class TimesOutOnce(FakeRunner):
+        def __init__(self, host="claude"):
+            super().__init__(host)
+            self.priors = []
+
+        def run_entry(self, entry, env):
+            if entry["id"] in self.fail_once:
+                self.fail_once.discard(entry["id"])
+                self.launched.append(entry["id"])
+                return base.RunResult.failed(
+                    entry["id"], "claude -p timed out after 1800s",
+                    usage={"input_tokens": 7000, "output_tokens": 0,
+                           "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+                    text=TestATimedOutEntryKeepsItsEvidence.PARTIAL)
+            return super().run_entry(entry, env)
+
+    def test_the_partial_output_is_retained_and_the_tokens_are_counted(self):
+        d, floor = self._repo()
+        runner = self.TimesOutOnce()
+        runner.fail_once.add("review-app-SEC")
+        args = self._args(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "complete", status)
+        kept = os.path.join(runner.run_dir, "rejected", "review-app-SEC-1.json")
+        with open(kept, encoding="utf-8") as fh:
+            record = json.load(fh)
+        self.assertIn("timed out after", record["reason"])
+        self.assertIn("[REDACTED_TOKEN]", record["reply"])
+        self.assertTrue(record["reply"].startswith('{"findings"'), record["reply"])
+        row = next(r for r in orchestrate.Ledger(runner.run_dir).lines()
+                   if r["entry_id"] == "review-app-SEC" and not r["ok"])
+        self.assertEqual(kept, row["rejected_file"])
+        self.assertEqual(7000, sum(row["usage"].values()))
+        usage = runio._load_json(os.path.join(runner.run_dir, "usage.json"))
+        self.assertGreaterEqual(usage["by_phase"]["review"], 7000)
+
+    def test_a_self_writing_entry_is_not_told_its_reply_was_refused(self):
+        # D10 F4: this cell SELF-WRITES (the write guard is proven here), so a
+        # timeout is not a format refusal and there is no reply to "return
+        # again". The partial output is still kept; the prompt must not gain a
+        # word.
+        d, floor = self._repo()
+        runner = self.TimesOutOnce()
+        runner.fail_once.add("review-app-SEC")
+        prompts = []
+
+        class Recording(self.TimesOutOnce):
+            def run_entry(self, entry, env):
+                prompts.append(entry["prompt"])
+                self.priors.append(entry.get("prior_rejection"))
+                return super().run_entry(entry, env)
+
+        runner = Recording()
+        runner.fail_once.add("review-app-SEC")
+        args = self._args(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "complete", status)
+        review = [p for p in prompts if "SEC` domain reviewer" in p]
+        self.assertEqual(2, len(review))                   # timed out, then ran
+        self.assertEqual(review[0], review[1])             # byte-identical
+        self.assertNotIn("refused", review[1])
+        self.assertEqual([None, None], runner.priors[:2])
+        # ...and the partial output was still kept (ruling 5 is untouched)
+        self.assertTrue(os.path.exists(os.path.join(
+            runner.run_dir, "rejected", "review-app-SEC-1.json")))
+
+    def test_a_failure_that_printed_nothing_keeps_nothing(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        runner.drop_once.add("review-app-SEC")          # RunResult.failed, no text
+        args = self._args(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            orchestrate.loop(args)
+        self.assertFalse(os.path.exists(os.path.join(runner.run_dir, "rejected")))
+        row = next(r for r in orchestrate.Ledger(runner.run_dir).lines() if not r["ok"])
+        self.assertIsNone(row["rejected_file"])

@@ -306,7 +306,7 @@ def _emit_posture_disclosure(envelope):
     rather than raising, so this function does not re-validate it.
     """
     sys.stderr.write("driver: host capabilities: %s\n" % host_disclosure.headline(envelope))
-    for line in host_disclosure.lines(envelope):
+    for line in host_disclosure.lines(envelope) + host_disclosure.notes(envelope):
         sys.stderr.write("driver:   %s\n" % line)
 
 
@@ -446,7 +446,20 @@ def _establish_host_posture(review_root, manifest, args):
     # per-capability state/by/detail triples and excludes probed_at/
     # schema_version/host, which is exactly the "did anything an operator
     # cares about change" question.
-    if stored.get("capabilities") != fresh.get("capabilities"):
+    #
+    # `cli_flags` is on the REWRITE trigger and deliberately NOT on the drift
+    # comparison above (D10 S1). The two ask different questions: drift asks
+    # "may this run continue", and a CLI upgraded between two turns of a
+    # resumable loop must never refuse a resume over a flag that gates
+    # nothing; the rewrite asks "is the record still true", and a fact that
+    # moved and was not written back is a stale fact the NEXT dispatch reads.
+    # That was F1's failure class exactly: invocation 2 measured
+    # `advertised: false`, disclosed it on stderr, and then
+    # `requests._materialize_prompts` stamped `output_schema` off the stored
+    # `true` -- putting the flag on the argv of a CLI just measured not to take
+    # it, which exits non-zero and takes every entry's launch budget with it.
+    if (stored.get("capabilities") != fresh.get("capabilities")
+            or stored.get(hosts.CLI_FLAGS) != fresh.get(hosts.CLI_FLAGS)):
         # Write the FULL fresh payload (not just the capabilities key) so
         # `probed_at` on disk stays honest about when the record was last
         # actually written.

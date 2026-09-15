@@ -1,0 +1,149 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PanopticonVerdictBundle",
+  "description": "One verify-cell reply: every verdict the advisor was handed, plus the cell-identity stamp. The advisor verdict is INLINED rather than referenced -- a host CLI given this as a constrained-output schema resolves no external reference -- and tests/test_verify_schema_fields.py pins the inlined copy to skill/reference/advisor-verdict-schema.json.",
+  "type": "object",
+  "required": [
+    "verdicts",
+    "_panopticon"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "title": "PanopticonAdvisorVerdict",
+        "type": "object",
+        "required": [
+          "finding_id",
+          "verdict",
+          "confidence",
+          "reasoning",
+          "explored",
+          "references",
+          "citations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional (#1054): the tool-advisor path echoes no run_id (the driver writes no verify-queue.json for it and match_verdict binds on finding_id alone), and the advisor prompt example omits it. Allowed if a host stamps it, never required."
+          },
+          "finding_id": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "CONFIRMED",
+              "REJECTED",
+              "NEEDS_MORE_INFO"
+            ]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "CERTAIN",
+              "LIKELY",
+              "POSSIBLE"
+            ]
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "explored": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "citations": {
+            "type": "object",
+            "properties": {
+              "cwe": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "owasp": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "cve": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "backup"
+            ],
+            "default": "primary"
+          },
+          "schema_version": {
+            "type": "integer",
+            "description": "Format/schema version of the advisor verdict."
+          }
+        }
+      }
+    },
+    "_panopticon": {
+      "type": "object",
+      "description": "Cell-identity block: the run_id/group/domain/stage of the entry that asked for this bundle. REQUIRED -- persist refuses a bundle whose stamp contradicts the entry -- and filled in by the driver for a return-persist reply that omits it (`stamped_by: \"controller\"`); a self-written bundle must carry it. Only run_id is required: the driver stamps the identity keys it declared on the entry, and `role` -- the agent's own name for what it was -- is not one of them.",
+      "required": [
+        "run_id"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "primary",
+            "backup"
+          ],
+          "default": "primary"
+        },
+        "stamped_by": {
+          "type": "string",
+          "enum": [
+            "controller"
+          ],
+          "description": "Present when the DRIVER filled a missing key of this stamp (D10 ruling 4); never written by the agent."
+        }
+      }
+    },
+    "schema_version": {
+      "type": "integer",
+      "description": "Format/schema version of the verdict bundle."
+    }
+  }
+}

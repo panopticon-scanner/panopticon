@@ -14,6 +14,7 @@ probe ids to those functions stays in `host_probes.py`.
 """
 import os
 import re
+import shutil
 import stat
 
 from scripts import dispatch, hosts
@@ -146,27 +147,28 @@ def _flag_advertised(flag, text):
     return re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(flag), text) is not None
 
 
-def _cli_advertises(launch, found, flags, env=None, cwd=None):
-    """(verdict, why): does `<found> --help`, run through the RUNNER's own
-    launcher and under the RUNNER's own environment, exit 0 and advertise
-    every flag in `flags`? None means it could not be run at all -- a probe
-    that cannot measure says UNKNOWN, never guesses. Going through the
-    runner's launcher rather than subprocess.run is deliberate: it is the one
-    seam the suite refuses real launches at (tests/conftest.py), so a test
-    that reaches this without a fake fails loudly instead of running the real
-    binary.
+def _cli_help(launch, found, env=None, cwd=None, help_argv=("--help",)):
+    """(text, verdict, why): what `<found> <help_argv>` printed.
 
-    `env` and `cwd` come from the runner too (#1626 I2). `env` is
-    `HostRunner.launch_env()`, the same preparation `run_entry` uses for a
-    real launch -- claude's pops CLAUDECODE because a nested `claude -p`
-    refuses to start inside a Claude Code session, and interrogating the CLI
-    under an environment the runner never uses measures the wrong thing. It
-    works today only because `--help` is answered at argparse level; the day
-    that refusal moves earlier in start-up, every self-scan run from inside a
-    session would refute usage_ledger."""
+    `text` is None when the read could not be made at all, and `verdict` then
+    carries the answer a probe must give for that failure -- None when nothing
+    ran (unmeasurable) and False when the CLI ran and refused (measured, and
+    not a CLI the headless runner can drive). The two are different answers
+    and this is the one place that decides which is which.
+
+    `help_argv` is the runner's own (`HostRunner.HELP_ARGV`): codex documents
+    `--output-schema` under `codex exec --help`, and a top-level read would
+    record "not advertised" for a CLI that takes the flag (D10 N1).
+
+    Going through the runner's launcher rather than subprocess.run is
+    deliberate: it is the one seam the suite refuses real launches at
+    (tests/conftest.py), so a test that reaches this without a fake fails
+    loudly instead of running the real binary.
+    """
     import scripts.runners.base as runners_base
+    argv = [found] + list(help_argv)
     try:
-        proc = launch([found, "--help"], capture_output=True, text=True,
+        proc = launch(argv, capture_output=True, text=True,
                       env=env, cwd=cwd, timeout=CLI_HELP_TIMEOUT)
     except runners_base.LaunchRefused:
         # The suite's structural guard, and the ONE exception that must not
@@ -186,17 +188,104 @@ def _cli_advertises(launch, found, flags, env=None, cwd=None):
         # does not wrap it, so `driver run` printed a traceback instead of a
         # status. The sibling block in _headless_usage_source has caught bare
         # Exception for exactly this reason since it was written.
-        return None, ("`%s --help` could not run: %s: %s"
-                      % (found, type(exc).__name__, exc))
+        return None, None, ("`%s` could not run: %s: %s"
+                            % (" ".join(argv), type(exc).__name__, exc))
     if proc.returncode != 0:
-        return False, ("`%s --help` exited %s: not a CLI the headless runner can drive"
-                       % (found, proc.returncode))
-    text = "%s\n%s" % (proc.stdout or "", proc.stderr or "")
+        return None, False, ("`%s` exited %s: not a CLI the headless runner can drive"
+                             % (" ".join(argv), proc.returncode))
+    return "%s\n%s" % (proc.stdout or "", proc.stderr or ""), True, ""
+
+
+def _cli_advertises(launch, found, flags, env=None, cwd=None):
+    """(verdict, why): does `<found> --help`, run through the RUNNER's own
+    launcher and under the RUNNER's own environment, exit 0 and advertise
+    every flag in `flags`? None means it could not be run at all -- a probe
+    that cannot measure says UNKNOWN, never guesses.
+
+    `env` and `cwd` come from the runner too (#1626 I2). `env` is
+    `HostRunner.launch_env()`, the same preparation `run_entry` uses for a
+    real launch -- claude's pops CLAUDECODE because a nested `claude -p`
+    refuses to start inside a Claude Code session, and interrogating the CLI
+    under an environment the runner never uses measures the wrong thing. It
+    works today only because `--help` is answered at argparse level; the day
+    that refusal moves earlier in start-up, every self-scan run from inside a
+    session would refute usage_ledger."""
+    text, verdict, why = _cli_help(launch, found, env=env, cwd=cwd)
+    if text is None:
+        return verdict, why
     missing = [f for f in flags if not _flag_advertised(f, text)]
     if missing:
         return False, ("`%s --help` does not advertise %s, so a launch would print no "
                        "JSON envelope to read usage from" % (found, ", ".join(missing)))
     return True, "`%s --help` advertises %s" % (found, ", ".join(flags))
+
+
+CLI_FLAGS_PROBE = "cli-flags"
+
+
+def probe_cli_flags(host):
+    """What this host's headless CLI can be ASKED to do: `{fact: row}` for
+    every operational fact its registry row declares (D10 N1).
+
+    NOT a capability probe, and deliberately not in `PROBE_IDS`: it returns no
+    `(state, by, detail)` triple, maps to no capability, and gates nothing.
+    `run_probes` writes what it returns BESIDE `capabilities`, so a CLI
+    upgraded between two turns of a resumable loop is not posture drift.
+
+    F1 answered this question inside the usage-source probe, from the `--help`
+    read that probe already made. That tied an operational fact to an
+    unrelated CLAIM: codex's row maps no usage-source probe and codex declares
+    no usage ledger, so on codex -- the other host whose runner takes an
+    output-schema flag -- the question could never be asked at all, and ruling
+    3's codex half was unreachable for the life of the row rather than dormant
+    until a CLI upgrade. It runs off `HostSpec.cli_flag_facts` now, which is
+    pinned to the runners' own `OUTPUT_SCHEMA_FLAG` by test.
+
+    One `--help` launch per declaring host, and only on a HEADLESS run (the
+    caller decides): session mode launches no CLI of ours, so there is nothing
+    to ask about. `advertised` is a tri-state -- True, False, and None for
+    "the read could not be made" -- and every consumer treats None exactly as
+    it treats False: no schema on the argv.
+    """
+    row = hosts.spec(host)
+    facts = tuple(getattr(row, "cli_flag_facts", ()) or ()) if row else ()
+    if hosts.OUTPUT_SCHEMA not in facts:
+        return {}
+    import scripts.runners.base as runners_base
+    try:
+        runner = runners_base.runner_for(host, "headless")
+        cli, flag = runner.CLI, tuple(runner.OUTPUT_SCHEMA_FLAG or ())
+        launch, help_argv = runner.runner, tuple(runner.HELP_ARGV or ("--help",))
+        launch_env = runner.launch_env()
+    except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
+        return {hosts.OUTPUT_SCHEMA: {
+            "flag": None, "advertised": None,
+            "detail": "host %r has no usable headless runner to interrogate: %s: %s"
+                      % (host, type(exc).__name__, exc)}}
+    if not cli or not flag:
+        # The registry row and the runner disagree; the pin test exists to
+        # stop that reaching a release, and the fail-safe answer is "unknown".
+        return {hosts.OUTPUT_SCHEMA: {
+            "flag": flag[0] if flag else None, "advertised": None,
+            "detail": "host %r declares the fact but its runner names no CLI or no flag"
+                      % host}}
+    found = shutil.which(cli)
+    if not found:
+        return {hosts.OUTPUT_SCHEMA: {
+            "flag": flag[0], "advertised": None,
+            "detail": "no `%s` on PATH: nothing to interrogate, so no reply will be "
+                      "schema-constrained" % cli}}
+    text, _verdict, why = _cli_help(
+        launch, found, env=launch_env,
+        cwd=getattr(runner, "review_root", None), help_argv=help_argv)
+    if text is None:
+        return {hosts.OUTPUT_SCHEMA: {"flag": flag[0], "advertised": None, "detail": why}}
+    advertised = _flag_advertised(flag[0], text)
+    return {hosts.OUTPUT_SCHEMA: {
+        "flag": flag[0], "advertised": advertised,
+        "detail": "`%s %s` %s advertise %s"
+                  % (found, " ".join(help_argv), "does" if advertised else "does not",
+                     flag[0])}}
 
 
 SHADOW_SHELL_SCAN = "shadow-shell-scan"

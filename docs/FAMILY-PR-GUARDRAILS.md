@@ -67,6 +67,38 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   a host whose usage evidence is not a launch envelope at all (Kimi reads a
   session wire file and maps `usage_ledger` to its own probe). What it will
   never do is read `proven` from an empty list (#1626).
+- `OUTPUT_SCHEMA_FLAG` is optional and empty by default. Set it to the argv
+  token(s) that make ONE launch constrain its final message to a JSON Schema
+  **file** (claude: `("--json-schema",)`; codex: `("--output-schema",)`), and
+  append `base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)` to the argv your
+  `command()` builds — that helper returns the flag plus the entry's
+  `output_schema` only when the entry names one AND the path is one of the
+  schemas published under `skill/reference/`, and `[]` otherwise, so you append
+  it unconditionally. Leaving it empty is the right answer for a CLI that
+  advertises no such flag (Kimi): nothing is stamped on your entries and your
+  `command()` is unchanged. Do **not** pass the flag on your own authority: a
+  CLI that does not know the option exits non-zero on it and takes every entry
+  of every checkpoint down with it, so the driver stamps `output_schema` on an
+  entry only after the **cli-flags probe** (`probes/common.probe_cli_flags`)
+  has seen your CLI advertise it.
+- `HELP_ARGV` goes with it, and defaults to `("--help",)`. It is the argv that
+  makes your CLI print the help text listing that flag — the **subcommand your
+  runner actually drives**, not necessarily the bare binary: codex sets
+  `("exec", "--help")` because `--output-schema` belongs to `codex exec` and
+  `codex --help` lists subcommands, not their options. Set it whenever your
+  flags live behind a subcommand; a wrong answer here reads as "the CLI does
+  not advertise the flag", which is fail-safe (no schema is passed) and
+  silently costs you the feature.
+- The cli-flags probe runs on **every headless run** for every host whose
+  registry row declares the fact (`HostSpec.cli_flag_facts`, pinned by test to
+  the runners that declare `OUTPUT_SCHEMA_FLAG`), independent of what your host
+  claims. It is one `--help` read through `Runner.runner`, and its answer is
+  recorded in `host-capabilities.json` under `cli_flags`, **beside**
+  `capabilities` and never inside it: a CLI upgraded between two turns of a
+  resumable loop must not read as posture drift. `advertised` is a tri-state
+  (`true` / `false` / `null` when the read could not be made) and only `true`
+  passes the flag; `host_disclosure.notes` says so on all four surfaces when it
+  is anything else.
 - `Runner.teardown(status)` releases whatever `prepare` acquired. The loop calls
   it exactly once, from `orchestrate._finish`, on a terminal status and never
   between iterations, and hands it that status so a runner can drop a scratch
@@ -89,7 +121,12 @@ The loop (`driver loop`, in `skill/scripts/orchestrate.py`) owns everything
 else: arming and disarming guards around every batch, persisting
 `delivery: return_json` replies through `phases/persist.py`, the dispatch
 ledger, `usage.json`, retries, the per-entry cap of three consecutive failed
-launches, and the session-mode `dispatch` exit. Do not reimplement any of it in
+launches, and the session-mode `dispatch` exit. It also owns what happens to a
+reply it could not use: a refused reply, and the partial output a timed-out
+launch printed, are kept redacted under `runs/<tag>/rejected/` and named by the
+ledger row — your runner returns the evidence on the `RunResult`
+(`RunResult.failed(entry_id, error, usage=..., text=...)`, both optional) and
+writes nothing itself, because `runners/` may not import `phases/`. Do not reimplement any of it in
 your runner, and do not import `driver`, `orchestrate`, `synthesize`, or
 `phases` from `runners/` (the layout test forbids it). Your runner's whole
 input is `entry`, `env`, and the paths in `env`; its whole output is

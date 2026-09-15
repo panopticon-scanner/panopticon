@@ -104,6 +104,16 @@ class TestCommand(unittest.TestCase):
         cmd = self.r.command(_entry(False, model=None), None)
         self.assertNotIn("-m", cmd)
 
+    def test_this_family_takes_no_output_schema(self):
+        # D10 ruling 3: the installed Kimi CLI advertises no constrained-output
+        # flag, so the family leaves the seam attribute empty -- and an entry
+        # that names a schema (every review cell does) must still reach the
+        # argv without one, rather than picking up another family's flag.
+        self.assertEqual((), kimi_runner.Runner.OUTPUT_SCHEMA_FLAG)
+        entry = dict(_entry(True), output_schema="/any/schema.json")
+        self.assertEqual(self.r.command(entry, "kimi-code/k3"),
+                         self.r.command(_entry(True), "kimi-code/k3"))
+
 
 class TestParseEnvelope(unittest.TestCase):
     def test_the_last_assistant_content_and_the_session_id_win(self):
@@ -377,6 +387,26 @@ class TestRunEntry(unittest.TestCase):
             res = r.run_entry(_entry(False, model="bogus-tier"), self._env())
         self.assertFalse(res.ok)
         self.assertIn("does not resolve", res.error)
+
+    def test_a_timed_out_launch_keeps_the_stream_it_had_printed(self):
+        # D10 ruling 5. Kimi's usage comes from the session wire file, not from
+        # stdout, so a killed launch has no usage to recover -- but the
+        # stream-json it did print is what the loop retains as evidence.
+        partial = STREAM.split("\n")[0]
+
+        def slow(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"), output=partial.encode())
+
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+            r = kimi_runner.Runner("kimi", runner=slow)
+            r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
+            res = r.run_entry(_entry(False), {})
+        self.assertFalse(res.ok)
+        self.assertIn("timed out after", res.error)
+        self.assertEqual(partial, res.text)
+        self.assertEqual({}, res.usage)
 
     def test_a_timeout_or_launch_failure_is_a_failed_result(self):
         def boom(cmd, **kw):

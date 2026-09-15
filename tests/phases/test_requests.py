@@ -10,6 +10,7 @@ from unittest import mock
 from scripts import hosts
 from conftest import write_host_evidence
 import scripts.phases.runio as runio
+import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review
@@ -236,3 +237,137 @@ class TestEntryMarkerAndScope(unittest.TestCase):
         from scripts import read_guard_hook
         self.assertEqual({"files": ["/a"], "dirs": [], "reads": []}, requests.scope(files=["/a"]))
         self.assertEqual(set(read_guard_hook.SCOPE_KEYS), set(requests.scope()))
+
+
+class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
+    """D10 ruling 2: the next attempt is told why the last one was refused.
+
+    The retry used to be the same prompt, verbatim: `driver.run` regenerates
+    the dispatch request and `_materialize_prompts` writes it out, and nothing
+    anywhere told the agent that its previous reply had been thrown away or
+    what was wrong with it. Run-13 spent three launches of one cell that way.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(runio._pano(self.root))
+        self.out_file = runio._pano(self.root, "findings-app-SEC.json")
+        # return-persist: D10 F4 gates the retry note on the delivery mode,
+        # because the block's whole text is about the envelope the controller
+        # will persist.
+        self.entry = {"id": "review-app-SEC", "prompt": "review the app cell",
+                      "delivery": "return_json",
+                      "out_file": self.out_file, "run_id": "RID",
+                      "group": "app", "domain": "SEC"}
+
+    def _write(self, entry):
+        path = requests.write_dispatch_request(self.root, "RID", "review", None, [entry])
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)["entries"][0]
+
+    def _refuse(self, reason):
+        return persist.retain_rejected(persist.run_dir(self.root), self.entry,
+                                       '{"findings": []}', reason, kind=persist.REFUSAL)
+
+    def test_an_entry_with_no_record_is_what_it_has_always_been(self):
+        written = self._write(self.entry)
+        self.assertEqual(written["prompt"], "review the app cell")
+        self.assertNotIn("prior_rejection", written)
+
+    def test_the_reason_reaches_both_the_prompt_and_the_prompt_file(self):
+        self._refuse("reply carries no _panopticon stamp")
+        written = self._write(self.entry)
+        self.assertIn("reply carries no _panopticon stamp", written["prompt"])
+        self.assertIn("attempt 1", written["prompt"])
+        self.assertIn('"findings"', written["prompt"].split("review the app cell")[1])
+        self.assertEqual({"attempt": 1, "reason": "reply carries no _panopticon stamp"},
+                         written["prior_rejection"])
+        with open(written["prompt_file"], encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), written["prompt"])
+
+    def test_the_block_names_the_latest_refusal_only(self):
+        self._refuse("first reason")
+        self._refuse("second reason")
+        written = self._write(self.entry)
+        self.assertEqual(2, written["prior_rejection"]["attempt"])
+        self.assertIn("second reason", written["prompt"])
+        self.assertNotIn("first reason", written["prompt"])
+
+    def test_the_envelope_shape_is_the_one_the_role_is_refused_against(self):
+        self.assertIn('"verdicts"', persist.envelope_shape(
+            {"out_file": "/r/.panopticon/verdicts/verdicts-app-SEC.json"}))
+        self.assertIn('"findings"', persist.envelope_shape(self.entry))
+        self.assertIn('"domains"', persist.envelope_shape(
+            {"out_file": "/r/.panopticon/scout-app.json"}))
+
+
+class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
+    """D10 ruling 3: the entry names its role's published schema, so a runner
+    whose CLI takes one can constrain the reply without knowing what a role
+    is. Host-agnostic, exactly as `delivery` and `prompt_file` are."""
+
+    ADVERTISED = {hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": True,
+                                        "detail": "fixture"}}
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(runio._pano(self.root))
+        write_host_evidence(self.root, {}, cli_flags=self.ADVERTISED)
+
+    def _written(self, entry):
+        path = requests.write_dispatch_request(self.root, "RID", "review", None, [entry])
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)["entries"][0]
+
+    def test_a_review_cell_entry_names_the_findings_envelope(self):
+        written = self._written({"id": "review-app-SEC", "prompt": "p",
+                                 "delivery": "return_json",
+                                 "out_file": runio._pano(self.root, "findings-app-SEC.json")})
+        self.assertEqual(os.path.basename(written["output_schema"]),
+                         "findings-envelope-schema.json")
+        self.assertEqual(written["output_schema"],
+                         persist.role_schema({"out_file": "findings-app-SEC.json"}))
+
+    def test_a_self_writing_entry_names_no_schema(self):
+        # The schema describes what the CONTROLLER will persist from the reply.
+        # A self-writing reviewer's final message is a one-line confirmation --
+        # the findings went to its out_file under the write guard -- so
+        # constraining that message to the findings envelope would demand the
+        # agent return the very object the whole self-write path exists to
+        # avoid moving through the loop.
+        written = self._written({"id": "review-app-SEC", "prompt": "p",
+                                 "out_file": runio._pano(self.root, "findings-app-SEC.json")})
+        self.assertNotIn("output_schema", written)
+        returned = self._written({"id": "review-app-SEC", "prompt": "p",
+                                  "delivery": "return_json",
+                                  "out_file": runio._pano(self.root, "findings-app-SEC.json")})
+        self.assertIn("output_schema", returned)
+
+    def test_nothing_is_stamped_until_the_cli_says_it_takes_one(self):
+        # D10 F1, the fail-safe: a machine whose `claude` predates
+        # `--json-schema` exits non-zero on the unknown option and prints no
+        # envelope, so EVERY return-persist entry would fail its three
+        # launches and the run would die naming an entry, not the flag.
+        # Absent evidence and a refuted flag are the same answer -- omit --
+        # which is byte-identical to the behaviour before ruling 3.
+        cell = {"id": "review-app-SEC", "prompt": "p", "delivery": "return_json",
+                "out_file": runio._pano(self.root, "findings-app-SEC.json")}
+        for flags in ({}, {hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": False,
+                                                 "detail": "fixture"}},
+                      {hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": None,
+                                             "detail": "fixture"}}):
+            with self.subTest(flags=flags):
+                write_host_evidence(self.root, {}, cli_flags=flags)
+                self.assertNotIn("output_schema", self._written(cell))
+        write_host_evidence(self.root, {}, cli_flags=self.ADVERTISED)
+        self.assertIn("output_schema", self._written(cell))
+
+    def test_a_scout_entry_names_no_schema_at_all(self):
+        written = self._written({"id": "scout-app", "prompt": "p",
+                                 "delivery": "return_json",
+                                 "out_file": runio._pano(self.root, "scout-app.json")})
+        self.assertNotIn("output_schema", written)

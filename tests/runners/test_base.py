@@ -1,5 +1,6 @@
 import importlib
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -7,6 +8,7 @@ import unittest
 from unittest import mock
 
 import scripts.runners.base as base
+import scripts._version as version
 import scripts.runners.session as session_runner
 
 
@@ -266,3 +268,70 @@ class TestTheUsageProbesSeamAttributes(unittest.TestCase):
             host = "bare"
         self.assertEqual("", Bare().CLI)
         self.assertEqual((), Bare().ENVELOPE_FLAGS)
+
+
+def _published():
+    """One of the schemas panopticon publishes under skill/reference/."""
+    return os.path.abspath(version.reference_path("advisor-verdict-schema.json"))
+
+
+class TestTheOutputSchemaSeam(unittest.TestCase):
+    """D10 ruling 3: ONE optional class attribute (docs/FAMILY-PR-GUARDRAILS.md
+    section 3). A family whose CLI takes a constrained-output schema names its
+    flag; a family that leaves it empty is unaffected."""
+
+    def test_the_contract_declares_it_empty(self):
+        self.assertEqual((), base.HostRunner.OUTPUT_SCHEMA_FLAG)
+
+        class Bare(base.HostRunner):
+            host = "bare"
+        self.assertEqual((), Bare().OUTPUT_SCHEMA_FLAG)
+        self.assertEqual([], base.schema_argv(Bare().OUTPUT_SCHEMA_FLAG,
+                                              {"output_schema": _published()}))
+
+    def test_a_declared_flag_takes_the_entrys_published_schema(self):
+        self.assertEqual(["--x", _published()],
+                         base.schema_argv(("--x",), {"output_schema": _published()}))
+
+    def test_an_entry_naming_no_schema_gets_no_flag(self):
+        for entry in ({}, {"output_schema": None}, {"output_schema": ""}, None):
+            with self.subTest(entry=entry):
+                self.assertEqual([], base.schema_argv(("--x",), entry))
+
+    def test_a_path_outside_the_published_reference_dir_is_refused(self):
+        # The entry travels through `.panopticon/dispatch-request.json`, inside
+        # the reviewed tree. Nothing else on the argv is a path the target
+        # could have named, and this one must not become the exception: only
+        # the schemas panopticon publishes are ever passed to a host CLI.
+        for path in ("/etc/passwd", os.path.join(os.path.dirname(_published()), "nope.json"),
+                     os.path.join(os.path.dirname(_published()), os.pardir, "SKILL.md")):
+            with self.subTest(path=path):
+                self.assertEqual([], base.schema_argv(("--x",), {"output_schema": path}))
+
+
+class TestAFailedResultKeepsWhatTheLaunchProduced(unittest.TestCase):
+    """D10 ruling 5: a timed-out entry is the most expensive kind of failure,
+    and it used to be the one that kept nothing -- `usage={}` and the partial
+    stdout discarded inside the `except`."""
+
+    def test_failed_defaults_to_no_usage_and_no_text(self):
+        res = base.RunResult.failed("e1", "boom")
+        self.assertEqual(({}, "", False), (res.usage, res.text, res.ok))
+
+    def test_failed_carries_the_usage_and_partial_output_it_is_given(self):
+        res = base.RunResult.failed("e1", "timed out after 5s",
+                                    usage={"input_tokens": 9}, text="partial")
+        self.assertEqual({"input_tokens": 9}, res.usage)
+        self.assertEqual("partial", res.text)
+        self.assertFalse(res.ok)
+
+    def test_partial_output_reads_a_killed_childs_stdout_however_it_arrives(self):
+        # TimeoutExpired carries stdout UNDECODED even from a text-mode launch
+        # (CPython translates newlines only after communicate() returns, and
+        # the timeout raises before that), so bytes is the normal case.
+        cases = {b"half a line": "half a line", "half a line": "half a line",
+                 None: "", b"": "", b"\xff bad": "� bad"}
+        for stdout, expected in cases.items():
+            with self.subTest(stdout=stdout):
+                exc = subprocess.TimeoutExpired(["x"], 1, output=stdout)
+                self.assertEqual(expected, base.partial_output(exc))

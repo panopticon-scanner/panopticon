@@ -112,7 +112,11 @@ def test_probe_fixture_uses_real_emitter_but_injects_all_runtime_work(tmp_path):
 
 
 def test_registry_dispatch_shares_measurement_only_within_one_invocation(tmp_path):
-    with mock.patch.object(codex_probes, "_codex_surfaces", side_effect=lambda _registration: surfaces()) as measure:
+    # `probe_cli_flags` reads `codex exec --help` on every headless run (D10
+    # N1) and is tested in tests/probes/test_common.py; stubbed here so this
+    # test measures the registry's sharing rule rather than the machine's PATH.
+    with mock.patch.object(probes_common, "probe_cli_flags", return_value={}), \
+            mock.patch.object(codex_probes, "_codex_surfaces", side_effect=lambda _registration: surfaces()) as measure:
         for _ in range(2):
             artifact = host_probes.run_probes("codex", str(tmp_path), registration_dir=str(tmp_path),
                                               settings_path=str(tmp_path / "settings.json"))

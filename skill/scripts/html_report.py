@@ -8,9 +8,11 @@ import re
 try:
     import scripts.evidence as evidence
     import scripts.host_disclosure as host_disclosure
+    import scripts.hosts as hosts
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     import evidence
     import host_disclosure
+    import hosts
 
 _CSS = """
 :root {
@@ -472,10 +474,13 @@ def _render_host_capabilities(meta):
     """
     hc = meta.get("host_capabilities")
     hc = hc if isinstance(hc, dict) else {}
-    envelope = {"host": hc.get("host"), "capabilities": hc.get("capabilities")}
+    # D10 N3: carry `cli_flags` too -- see synth/render.py's note. Rebuilding
+    # the envelope from two keys silently dropped the operational facts.
+    envelope = {"host": hc.get("host"), "capabilities": hc.get("capabilities"),
+                hosts.CLI_FLAGS: hc.get(hosts.CLI_FLAGS)}
     parts = ["<div class='host-caps'><b>Host capabilities:</b> %s"
              % _escape(host_disclosure.headline(envelope))]
-    gaps = host_disclosure.lines(envelope)
+    gaps = host_disclosure.lines(envelope) + host_disclosure.notes(envelope)
     if gaps:
         parts.append("<ul>%s</ul>"
                      % "".join("<li>%s</li>" % _escape(gap) for gap in gaps))

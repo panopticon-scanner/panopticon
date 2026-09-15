@@ -10,6 +10,7 @@ import importlib
 import os
 import time
 
+import scripts._version as version
 import scripts.read_guard_hook as read_guard_hook
 
 # An alias of a definition from OUTSIDE this package (read_guard_hook is a
@@ -67,7 +68,9 @@ class LaunchRefused(RuntimeError):
 class RunResult:
     entry_id: str
     ok: bool                 # the runner got a final text back
-    text: str                # the agent's final message (empty when not ok)
+    text: str                # the agent's final message; on a FAILED result, whatever partial
+                             # output the launch had printed (D10 ruling 5) -- never persisted
+                             # as an artifact, retained by the loop as evidence
     usage: dict              # {"input_tokens", "output_tokens", "cache_read_input_tokens", ...} or {}
     cost_usd: object         # float | None
     model: object            # str | None
@@ -76,8 +79,19 @@ class RunResult:
     error: object            # str | None: launch failure, non-zero exit, budget stop, timeout
 
     @classmethod
-    def failed(cls, entry_id, error):
-        return cls(entry_id=entry_id, ok=False, text="", usage={}, cost_usd=None,
+    def failed(cls, entry_id, error, usage=None, text=""):
+        """A failed entry, with whatever evidence the launch did produce.
+
+        D10 ruling 5: a timed-out entry is often the most expensive one in a
+        run, and this used to hard-code `usage={}` and drop the partial output
+        -- so `Ledger.usage_document`, which counts failed rows precisely
+        because those tokens were really spent, had nothing to count, and the
+        one artefact that said what the entry had been doing was gone. A family
+        passes what its envelope actually allows it to recover and nothing
+        more: both default to empty, which is the honest answer for a host that
+        prints its figures only at the end.
+        """
+        return cls(entry_id=entry_id, ok=False, text=text, usage=usage or {}, cost_usd=None,
                     model=None, session_id=None, denials=[], error=str(error))
 
 
@@ -106,6 +120,35 @@ class HostRunner:
     # VALUE rather than merely on the attribute existing.
     CLI = ""
     ENVELOPE_FLAGS = ()
+    # The argv flag that makes ONE launch constrain its final message to a
+    # JSON Schema file, as a tuple of tokens the schema path follows
+    # (`("--json-schema",)` for claude, `("--output-schema",)` for codex).
+    #
+    # D10 ruling 3, and the ONE optional attribute this seam gained for it
+    # (docs/FAMILY-PR-GUARDRAILS.md section 3). Empty is the default and needs
+    # no explanation: a CLI that advertises no such flag -- kimi today -- takes
+    # none, and its `command()` is unchanged. A family that DOES declare one
+    # appends `schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)` to its argv, which
+    # is empty unless the entry names a schema panopticon publishes; the
+    # entry's `output_schema` key is stamped by the driver
+    # (phases.persist.role_schema), because the runners package may not import
+    # phases and should not have to know what a role is.
+    OUTPUT_SCHEMA_FLAG = ()
+    # The argv that makes this CLI print the help text listing the flags above
+    # -- everything before the family's own `--help`, i.e. the SUBCOMMAND the
+    # runner actually drives. `("--help",)` (claude, kimi) asks the binary
+    # itself; codex overrides it with `("exec", "--help")` because
+    # `--output-schema` belongs to `codex exec` and `codex --help` lists
+    # subcommands, not their options (D10 N1).
+    #
+    # The second optional attribute this seam gained for ruling 3
+    # (docs/FAMILY-PR-GUARDRAILS.md section 3), and it exists because the
+    # cli-flags probe must not re-spell any family's argv: a family that moves
+    # its flags behind a different subcommand moves this with them, and the
+    # probe follows. It is a HELP read and nothing else -- no prompt, no
+    # sandbox, no side effect -- and it goes through `Runner.runner`, the one
+    # launcher the suite refuses live launches at.
+    HELP_ARGV = ("--help",)
     # A scratch directory OUTSIDE the reviewed tree that this runner's children
     # write into, once `prepare` has made one; None for a host that needs none
     # (claude arms a settings file in the run folder and keeps nothing else).
@@ -252,6 +295,53 @@ class HostRunner:
         for entry, result, _timing in self.iter_batch(entries, concurrency, env_for):
             results[slots[id(entry)].pop(0)] = result
         return results
+
+
+def partial_output(exc):
+    """Whatever a killed child had printed, as text (D10 ruling 5).
+
+    `subprocess.TimeoutExpired` carries it UNDECODED even from a text-mode
+    launch -- `communicate()` translates newlines only after it returns, and
+    the timeout raises before that -- so bytes is the normal case and `errors
+    ="replace"` keeps a truncated multi-byte character at the cut from
+    throwing away the whole transcript. Empty for a launch that printed
+    nothing, which is the same "no evidence" every other failure has.
+    """
+    out = getattr(exc, "stdout", None)
+    if isinstance(out, bytes):
+        return out.decode("utf-8", "replace")
+    return out if isinstance(out, str) else ""
+
+
+def published_schema(path):
+    """`path` resolved, when it is one of the JSON Schemas panopticon PUBLISHES
+    under `skill/reference/`; None for anything else.
+
+    The containment rule for the one argv value a target could otherwise
+    choose. An entry travels through `.panopticon/dispatch-request.json`, which
+    lives inside the reviewed tree, so `output_schema` is the only path on a
+    launch's argv that did not come from this process's own constants. Only a
+    published schema is ever handed to a host CLI: a file that does not exist,
+    or one outside that directory, reads as no schema at all rather than as an
+    argument. `codex_host.validate_command` re-applies this to the FINISHED
+    argv -- one rule, two places it has to hold.
+    """
+    if not isinstance(path, str) or not path:
+        return None
+    root = os.path.realpath(version.reference_path())
+    real = os.path.realpath(path)
+    if not real.startswith(root + os.sep) or not os.path.isfile(real):
+        return None
+    return real
+
+
+def schema_argv(flag, entry):
+    """The two argv tokens that constrain one launch's output, or [] (D10
+    ruling 3). Empty whenever the family declares no flag, the entry names no
+    schema, or the path it names is not published -- so a caller can append the
+    result unconditionally."""
+    schema = published_schema(entry.get("output_schema") if isinstance(entry, dict) else None)
+    return [*flag, schema] if (flag and schema) else []
 
 
 def _headless_module(host):

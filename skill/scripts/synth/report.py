@@ -7,6 +7,7 @@ except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.p
     from _version import __version__
 import scripts.evidence as evidence_mod
 import scripts.host_disclosure as host_disclosure
+import scripts.hosts as hosts
 import scripts.ocrdb as ocrdb
 from . import findings as findings_mod
 from . import delta as delta_mod
@@ -163,6 +164,19 @@ def _host_capabilities_verbatim(host_capabilities):
     return caps if isinstance(caps, dict) else {}
 
 
+def _host_capabilities_block(host_capabilities, key):
+    """One MAPPING field off the artifact, or {} when it is not readable.
+
+    `{}` rather than None, for `capabilities`' reason: the "nothing measured"
+    case stays diffable and no consumer has to branch on None before reading
+    it. Fail-closed on every other shape.
+    """
+    if not isinstance(host_capabilities, dict):
+        return {}
+    block = host_capabilities.get(key)
+    return block if isinstance(block, dict) else {}
+
+
 def _host_capabilities_field(host_capabilities, key):
     """One scalar field off the artifact, or None when it is not readable.
 
@@ -224,6 +238,12 @@ def assemble(run, resolved, reconciled, graded, cost):
                 "probed_at": _host_capabilities_field(
                     run.host_capabilities, "probed_at"),
                 "capabilities": _host_capabilities_verbatim(run.host_capabilities),
+                # D10 N3: the operational CLI facts ride BESIDE `capabilities`,
+                # never inside it, exactly as they do in the artifact -- a
+                # consumer diffing two runs' postures must not see a flag that
+                # gates nothing as a capability that moved.
+                hosts.CLI_FLAGS: _host_capabilities_block(
+                    run.host_capabilities, hosts.CLI_FLAGS),
             },
         },
         "summary": graded.summary,

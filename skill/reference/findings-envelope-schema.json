@@ -16,8 +16,8 @@
     },
     "_panopticon": {
       "type": "object",
-      "description": "Cell-identity block (run_id/role/domain/group) written by the matrix reviewer; REQUIRED by the driver, so the envelope must permit it under additionalProperties:false (#5.0-05).",
-      "required": ["run_id", "role"],
+      "description": "Cell-identity block (run_id/role/domain/group) written by the matrix reviewer; REQUIRED by the driver, so the envelope must permit it under additionalProperties:false (#5.0-05). Only run_id is required: the driver stamps the identity keys it declared on the entry (run_id/group/domain/stage) onto a return-persist reply that omits them, and `role` -- the agent's own name for what it was -- is not one of them.",
+      "required": ["run_id"],
       "properties": {
         "run_id": {"type": "string"},
         "role": {"type": "string"},

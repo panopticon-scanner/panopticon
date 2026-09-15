@@ -318,3 +318,108 @@ class TestTheFourSurfacesSayTheSameThing(unittest.TestCase):
         for name, text in self._surfaces(MIXED).items():
             with self.subTest(surface=name):
                 self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, text)
+
+    def test_every_surface_carries_the_operational_note_too(self):
+        # N3: `cli_flags` is not a capability, but it IS a measured fact about
+        # this host on this machine, and this module's whole premise is that
+        # such a fact is said once and reaches every surface. The fixture
+        # never carried the block, so nothing noticed that `meta` dropped it
+        # and both report renderers rebuilt an envelope without it.
+        envelope_with_fact = dict(MIXED)
+        envelope_with_fact[hosts.CLI_FLAGS] = {
+            hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": False,
+                                  "detail": "`/usr/bin/claude --help` does not "
+                                            "advertise --json-schema"}}
+        for name, text in self._surfaces(envelope_with_fact).items():
+            if name == "readiness":
+                continue        # readiness lists capability checks, not notes
+            with self.subTest(surface=name):
+                self.assertIn("not schema-constrained", text)
+                self.assertIn("--json-schema", text)
+
+
+class TestTheConstrainedOutputDisclosure(unittest.TestCase):
+    """D10 F1: when the driver omits the output schema, it says so once, on
+    the surface that already speaks about this host's measured facts."""
+
+    def _envelope(self, fact):
+        body = {"schema_version": 1, "host": "claude", "probed_at": "t",
+                "capabilities": {c: {"state": hosts.PROVEN, "by": "fixture",
+                                     "detail": "fixture"}
+                                 for c in hosts.CAPABILITIES}}
+        if fact is not None:
+            body[hosts.CLI_FLAGS] = {hosts.OUTPUT_SCHEMA: fact}
+        return body
+
+    def test_a_cli_without_the_flag_gets_one_line_naming_it(self):
+        lines = host_disclosure.notes(self._envelope(
+            {"flag": "--json-schema", "advertised": False,
+             "detail": "`/usr/bin/claude --help` does not advertise --json-schema"}))
+        self.assertEqual(1, len(lines))
+        self.assertIn("--json-schema", lines[0])
+        self.assertIn("not schema-constrained", lines[0])
+
+    def test_an_unanswered_read_says_so_rather_than_claiming_a_refusal(self):
+        lines = host_disclosure.notes(self._envelope(
+            {"flag": "--json-schema", "advertised": None, "detail": "`--help` timed out"}))
+        self.assertEqual(1, len(lines))
+        self.assertIn("not schema-constrained", lines[0])
+        self.assertIn("timed out", lines[0])
+
+    def test_an_advertised_flag_and_an_unasked_host_say_nothing(self):
+        for fact in ({"flag": "--json-schema", "advertised": True, "detail": "d"}, None):
+            with self.subTest(fact=fact):
+                self.assertEqual([], host_disclosure.notes(self._envelope(fact)))
+
+
+class TestTheNoteIsNotACapability(unittest.TestCase):
+    """N2: `lines()` is read by three consumers as THE list of unproven
+    capabilities -- `headline` counts it, `setup_flow._readiness` treats a
+    non-ALL_PROVEN headline as a warning, and both report renderers list it
+    under "Host capabilities". An operational fact appended to it makes a
+    fully-proven host read as "1 of 5 NOT PROVEN () -- see the lines below",
+    which names an empty set in the same sentence, and downgrades setup
+    readiness from PASS to WARN. The fact gets its own accessor.
+    """
+
+    def _envelope(self, states, fact):
+        body = {"schema_version": 1, "host": "claude", "probed_at": "T",
+                "capabilities": {c: {"state": states.get(c, hosts.PROVEN),
+                                     "by": "fixture", "detail": "fixture"}
+                                 for c in hosts.CAPABILITIES}}
+        body[hosts.CLI_FLAGS] = {hosts.OUTPUT_SCHEMA: fact}
+        return body
+
+    _LACKING = {"flag": "--json-schema", "advertised": False,
+                "detail": "`/usr/bin/claude --help` does not advertise --json-schema"}
+
+    def test_an_all_proven_host_whose_cli_lacks_the_flag_is_still_all_proven(self):
+        envelope = self._envelope({}, self._LACKING)
+        self.assertEqual(host_disclosure.ALL_PROVEN, host_disclosure.headline(envelope))
+        self.assertEqual([], host_disclosure.lines(envelope))
+        self.assertEqual(1, len(host_disclosure.notes(envelope)))
+
+    def test_a_declared_fact_the_probe_did_not_answer_is_disclosed(self):
+        # N1: silence is right for a host whose runner declares no flag and
+        # for session mode, where nothing is interrogated at all and the block
+        # is absent. A block that EXISTS but is missing a fact the host's
+        # registry row declares is the third case: the probe did not answer
+        # for a host whose runner does take the flag, so the flag will not be
+        # passed and nothing else would say so.
+        body = {"schema_version": 1, "host": "codex", "probed_at": "T",
+                "capabilities": {c: {"state": hosts.PROVEN, "by": "fixture",
+                                     "detail": "fixture"}
+                                 for c in hosts.CAPABILITIES},
+                hosts.CLI_FLAGS: {"some_later_fact": {"advertised": True}}}
+        self.assertIn(hosts.OUTPUT_SCHEMA, hosts.spec("codex").cli_flag_facts)
+        note = host_disclosure.notes(body)
+        self.assertEqual(1, len(note), note)
+        self.assertIn("not interrogated", note[0])
+        self.assertIn("codex", note[0])
+
+    def test_the_headline_count_equals_the_list_it_names(self):
+        envelope = self._envelope({hosts.MODEL_BINDING: hosts.REFUTED}, self._LACKING)
+        head = host_disclosure.headline(envelope)
+        self.assertIn("1 of %d NOT PROVEN" % len(hosts.CAPABILITIES), head)
+        self.assertIn("(model_binding)", head)
+        self.assertEqual(1, len(host_disclosure.lines(envelope)))
