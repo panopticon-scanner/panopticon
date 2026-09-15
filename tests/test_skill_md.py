@@ -1006,3 +1006,22 @@ class TestTheDependenciesSection(unittest.TestCase):
                        "Disclose"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.section)
+
+
+class TestTheReadinessVerbIsAdvertised(unittest.TestCase):
+    """#1637 P10: a preflight nobody is told about is a preflight nobody runs."""
+
+    def test_the_quick_reference_leads_with_it_and_shows_the_exit_code_idiom(self):
+        skill = _read_skill_md()
+        quick = skill.split("## Quick reference", 1)[1]
+        self.assertIn("`driver readiness [target] [--host NAME] [--json]`", quick)
+        self.assertIn("driver readiness && driver loop", quick)
+        # It has to come before the verbs it gates.
+        self.assertLess(quick.index("driver readiness"), quick.index("driver setup"))
+
+    def test_the_guide_says_what_it_reads_and_what_it_never_does(self):
+        loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
+        self.assertIn("driver readiness", loop)
+        for phrase in ("writes nothing", "launches nothing"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, loop)

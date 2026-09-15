@@ -271,6 +271,19 @@ def build_parser():
     # else the defaults (48; max(4, 2 x ceil(code_files / cap))).
     sp.add_argument("--max-per-group", type=_positive_int, default=None)
     sp.add_argument("--max-groups", type=_positive_int, default=None)
+    # #1637 P10: the read-only preflight. It shares `run`/`loop`'s `target` and
+    # `--host` and NOTHING else on purpose -- it is not a run, so a flag that
+    # configures one (`--no-tools`, `--pr`, `--reset`, ...) would either have
+    # to be ignored or have to mean something new here, and both are worse than
+    # refusing it. The rendering lives in `phases/readiness.py` beside the
+    # checkpoint whose checks and remedy text it reuses; driver.py stays the
+    # argparse wiring and one dispatch line.
+    rp = sub.add_parser("readiness")
+    rp.add_argument("target", nargs="?", default=".")
+    rp.add_argument("--host", default=None, type=_host_choice,
+                    choices=list(hosts.driver_hosts()))
+    rp.add_argument("--json", action="store_true",
+                    help="the document as JSON instead of the human table")
     pp = sub.add_parser("persist")
     pp.add_argument("entry_id")
     pp.add_argument("target", nargs="?", default=".")
@@ -764,6 +777,12 @@ def parse_cli(argv=None):
 
 def main(argv=None):
     args = parse_cli(argv)
+    if args.verb == "readiness":
+        # Its own exit code, not `emit_status`': the verb speaks no status
+        # protocol, and `driver readiness && driver loop` is the reason it
+        # exists (#1637 P10).
+        return readiness.emit_preflight(args.target, host=args.host,
+                                        as_json=args.json)
     if args.verb == "setup":
         return engine.emit_status(setup.run_setup_flow(args))
     if args.verb in ("loop", "persist"):

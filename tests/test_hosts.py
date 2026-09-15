@@ -492,5 +492,28 @@ class TestTheUnselectableRefusalIsOneSentence(unittest.TestCase):
                                  "asking the registry for it" % module.__name__)
 
 
+class TestTheCliBinaryIsPinnedToTheRunner(unittest.TestCase):
+    """#1637 P10: `HostSpec.cli_binary` is a SECOND name for `HostRunner.CLI`.
+
+    It exists because `driver readiness` has to ask "is this host's binary on
+    PATH" and may not import `scripts.runners` -- `phases/` is forbidden that
+    package (tests/test_layout.py rule 3), and the verb's whole promise is
+    that it starts nothing. A registry row that drifts from its runner would
+    make the preflight report on a binary no family launches, which is worse
+    than reporting nothing, so the two are pinned to each other exactly as
+    `cli_flag_facts` is pinned to `OUTPUT_SCHEMA_FLAG`.
+    """
+
+    def test_every_row_names_its_runner_s_cli_and_only_those_rows(self):
+        import scripts.runners.base as runners_base
+        for host in hosts.known_hosts():
+            try:
+                cli = runners_base.runner_for(host, "headless").CLI
+            except Exception:                     # no headless runner at all
+                cli = ""
+            with self.subTest(host=host):
+                self.assertEqual(cli, hosts.spec(host).cli_binary)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

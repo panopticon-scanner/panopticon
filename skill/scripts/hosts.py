@@ -143,6 +143,19 @@ class HostSpec:
     # so a disclosure surface can tell "no answer" from "no question" --
     # tests/probes/test_common.py pins the two together.
     cli_flag_facts: tuple = ()
+    # The binary this host's HEADLESS runner launches (`HostRunner.CLI`), named
+    # here so a consumer can ask "is it on PATH" without importing
+    # `scripts.runners` -- which `driver readiness` must not do: it is the one
+    # verb whose whole promise is that it starts nothing, and `phases/` is
+    # forbidden the runners package outright (tests/test_layout.py rule 3).
+    # `""` means the host launches no CLI of ours (session mode, `generic`),
+    # and then there is nothing to look for.
+    #
+    # A second name for a fact the runner owns, so it is PINNED to the runner
+    # by test (tests/test_hosts.py), exactly as `cli_flag_facts` is pinned to
+    # `OUTPUT_SCHEMA_FLAG`. Duplication a test forbids drifting is the price of
+    # keeping this registry importable from everywhere.
+    cli_binary: str = ""
 
 
 HOSTS = {
@@ -160,7 +173,8 @@ HOSTS = {
                 MODEL_BINDING: "entry-model-bound",
                 USAGE_LEDGER: "usage-source",
                 READ_SCOPE_CONFINED: "read-guard-armed"},
-        cli_flag_facts=(OUTPUT_SCHEMA,)),
+        cli_flag_facts=(OUTPUT_SCHEMA,),
+        cli_binary="claude"),
     "kimi": HostSpec(
         name="kimi",
         claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
@@ -175,7 +189,8 @@ HOSTS = {
                 READ_SCOPE_CONFINED: "kimi-read-guard-armed",
                 ARTIFACT_WRITE_GUARD: "kimi-write-guard-armed",
                 MODEL_BINDING: "kimi-model-alias-bound",
-                USAGE_LEDGER: "kimi-usage-wire"}),
+                USAGE_LEDGER: "kimi-usage-wire"},
+        cli_binary="kimi"),
     "codex": HostSpec(
         name="codex",
         claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED}),
@@ -186,7 +201,8 @@ HOSTS = {
         driver_selectable=True,
         probes={TOOL_POLICY_ENFORCED: "codex-effective-tools",
                 READ_SCOPE_CONFINED: "codex-read-scope"},
-        cli_flag_facts=(OUTPUT_SCHEMA,)),
+        cli_flag_facts=(OUTPUT_SCHEMA,),
+        cli_binary="codex"),
     # Registered, not selectable: its family PR did not clear the gate (#1621,
     # retired 2026-09-13). The row STAYS so the registry still knows the name
     # -- `known_hosts()` lists it, `spec("gemini")` resolves, it still claims

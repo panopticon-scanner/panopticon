@@ -74,6 +74,14 @@ resolve against cwd; only the script path substitutes.
 
 ## Quick reference
 
+- `driver readiness [target] [--host NAME] [--json]` — run this FIRST. The preflight, and
+  the only verb that writes nothing under the target and launches nothing (host CLIs are
+  looked up with `which`, never started): one compact table — or `--json` for the object —
+  covering the guide's path, which required sub-skills are installed and where, the
+  committed matrix's group/code/test counts, any run left to resume, which host CLIs are
+  on PATH, the Docker daemon and the `panopticon-tools` image, and the last run's measured
+  host capabilities. Every failing row carries its remedy on its own line. Exit 0 when
+  nothing gating fails and 1 otherwise, so a host can `driver readiness && driver loop`.
 - `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap; produces
   `.panopticon/groups.yml.draft` + `setup-report.md` (read the report first).
 - `driver loop [target] [driver run flags] [--mode {headless,session}] [--concurrency N]
