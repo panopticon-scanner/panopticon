@@ -31,6 +31,15 @@ _STAMP_KEYS = ("run_id", "group", "domain", "stage")
 # D10 ruling 1: refused replies are kept HERE, beside the run's other
 # artifacts -- one folder, one shape, never read by a done predicate.
 REJECTED_DIR = "rejected"
+# What a record is a record OF (D10 F4). The two are kept apart because only
+# one of them is a statement about a REPLY: a refusal means the agent returned
+# something and the controller would not take it, which is the only case the
+# retry note can honestly quote. A launch failure -- a timeout, a non-zero exit
+# -- produced no reply at all, and telling its next attempt to "return the same
+# findings, fix only the format" is false in every clause and, on a
+# self-writing entry, actively harmful.
+REFUSAL = "refusal"
+LAUNCH_FAILURE = "launch_failure"
 # 256 KiB of reply, after which the record says `truncated`. A refused reply
 # is evidence, not an artifact: enough to see what shape came back and to
 # quote the reason at the retry, bounded so one runaway agent cannot fill the
@@ -164,9 +173,20 @@ def retry_block(run_folder, entry):
 
     The LATEST record only: a reply refused twice gets told about the second
     refusal, which is the one its next attempt has to clear.
+
+    Two gates, both from D10 F4. The record must be a REFUSAL: a timed-out
+    launch returned nothing, so there is no "same findings" to return and no
+    format to fix. And the entry must be return-persist: this whole block is
+    about the envelope the CONTROLLER will persist, and a self-writing reviewer
+    that obeyed it would return its findings as a message instead of writing
+    its out_file -- the done predicate would never fire and the cell would burn
+    its remaining attempts. A record with no `kind` (an older build's) reads as
+    neither, which is the fail-safe answer.
     """
-    record = last_rejection(run_folder, entry.get("id") if isinstance(entry, dict) else None)
-    if record is None:
+    if not isinstance(entry, dict) or entry.get("delivery") != "return_json":
+        return None, None
+    record = last_rejection(run_folder, entry.get("id"))
+    if record is None or record.get("kind") != REFUSAL:
         return None, None
     # D10 F3: capped again on the way OUT. The record's reason is already
     # bounded and masked, but this string is about to be appended to a prompt
@@ -195,7 +215,7 @@ def _next_attempt(directory, safe_id):
     return 1 + max(seen)
 
 
-def retain_rejected(run_folder, entry, text, reason):
+def retain_rejected(run_folder, entry, text, reason, *, kind):
     """Keep a refused reply as `<run_dir>/rejected/<entry-id>-<attempt>.json`;
     return the path, or None when there is nothing to keep (D10 ruling 1).
 
@@ -215,6 +235,12 @@ def retain_rejected(run_folder, entry, text, reason):
     failure to record it must not become a second, louder failure. Nothing
     under `rejected/` is ever read by a done predicate -- `role_of` gives the
     path no role, so no reply can advance an entry by landing here.
+
+    `kind` is keyword-only and has no default (D10 F4): every caller must say
+    whether this is a REFUSAL -- a reply the controller would not take -- or a
+    LAUNCH_FAILURE, which produced no reply at all. `retry_block` quotes only
+    the first, and a default would let a new call site pick the wrong one by
+    saying nothing.
     """
     entry_id = entry.get("id") if isinstance(entry, dict) else None
     body = str(text or "")
@@ -224,7 +250,7 @@ def retain_rejected(run_folder, entry, text, reason):
     directory = os.path.join(run_folder, REJECTED_DIR)
     kept, truncated = _safe_reply(body)
     attempt = _next_attempt(directory, safe_id)
-    record = {"schema_version": 1, "entry_id": entry_id, "attempt": attempt,
+    record = {"schema_version": 1, "entry_id": entry_id, "attempt": attempt, "kind": kind,
               # D10 F3: the reason is built by interpolating REPLY content, so
               # it gets the same masking the reply does. Bounded at the source
               # (`%.200r`), not here, so every consumer sees the same string.

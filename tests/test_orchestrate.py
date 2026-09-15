@@ -1229,6 +1229,10 @@ class TestATimedOutEntryKeepsItsEvidence(LoopCase):
     PARTIAL = '{"findings": [{"title": "half a finding, key ghp_' + "D" * 36 + '"'
 
     class TimesOutOnce(FakeRunner):
+        def __init__(self, host="claude"):
+            super().__init__(host)
+            self.priors = []
+
         def run_entry(self, entry, env):
             if entry["id"] in self.fail_once:
                 self.fail_once.discard(entry["id"])
@@ -1264,6 +1268,41 @@ class TestATimedOutEntryKeepsItsEvidence(LoopCase):
         self.assertEqual(7000, sum(row["usage"].values()))
         usage = runio._load_json(os.path.join(runner.run_dir, "usage.json"))
         self.assertGreaterEqual(usage["by_phase"]["review"], 7000)
+
+    def test_a_self_writing_entry_is_not_told_its_reply_was_refused(self):
+        # D10 F4: this cell SELF-WRITES (the write guard is proven here), so a
+        # timeout is not a format refusal and there is no reply to "return
+        # again". The partial output is still kept; the prompt must not gain a
+        # word.
+        d, floor = self._repo()
+        runner = self.TimesOutOnce()
+        runner.fail_once.add("review-app-SEC")
+        prompts = []
+
+        class Recording(self.TimesOutOnce):
+            def run_entry(self, entry, env):
+                prompts.append(entry["prompt"])
+                self.priors.append(entry.get("prior_rejection"))
+                return super().run_entry(entry, env)
+
+        runner = Recording()
+        runner.fail_once.add("review-app-SEC")
+        args = self._args(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "complete", status)
+        review = [p for p in prompts if "SEC` domain reviewer" in p]
+        self.assertEqual(2, len(review))                   # timed out, then ran
+        self.assertEqual(review[0], review[1])             # byte-identical
+        self.assertNotIn("refused", review[1])
+        self.assertEqual([None, None], runner.priors[:2])
+        # ...and the partial output was still kept (ruling 5 is untouched)
+        self.assertTrue(os.path.exists(os.path.join(
+            runner.run_dir, "rejected", "review-app-SEC-1.json")))
 
     def test_a_failure_that_printed_nothing_keeps_nothing(self):
         d, floor = self._repo()

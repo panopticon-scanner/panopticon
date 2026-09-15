@@ -28,10 +28,9 @@ PHASE_OF_CHECKPOINT = {"scout": "scout", "review": "review", "verify": "verify",
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
 DEFAULT_MAX_ITERATIONS = 50
-# Consecutive failed launches of ONE entry before the loop gives up on the run
-# (fix round 2). Not a CLI flag: it is a safety rail, not a tuning knob --
-# an operator who wants a fourth attempt re-runs, which resumes from disk and
-# starts every streak at zero.
+# Consecutive failed launches of ONE entry before the loop gives up on the run (fix round 2). Not
+# a CLI flag: it is a safety rail, not a tuning knob -- an operator who wants a fourth attempt
+# re-runs, which resumes from disk and starts every streak at zero.
 MAX_ENTRY_FAILURES = 3
 
 
@@ -300,10 +299,10 @@ def loop(args):
     guards = ledger = None
     # R-P6-6: review_root resolved ONCE, up front -- BEFORE `_first_run` below calls
     # driver.run()/run_setup_flow(), which rewrites dispatch-request.json for whatever checkpoint
-    # this invocation lands on. A fresh run has no manifest/run folder yet, so
-    # load_dispatch_request (just below) reads back None -- "no previous entries", never an error
-    # (Task 6 ruling 3). A resolve failure (a bad --pr, e.g.) is reported the same way
-    # driver.run() itself reports it rather than raising out of loop(), which must never raise.
+    # this invocation lands on. A fresh run has no manifest/run folder yet, so load_dispatch_request
+    # (just below) reads back None -- "no previous entries", never an error (Task 6 ruling 3). A
+    # resolve failure (a bad --pr, e.g.) is reported the same way driver.run() itself reports it
+    # rather than raising out of loop(), which must never raise.
     try:
         review_root = _review_root(args)
     except (RuntimeError, ValueError, OSError) as exc:
@@ -507,7 +506,8 @@ def loop(args):
                             # D10 ruling 1: the reply is kept, redacted, instead of
                             # being dropped on the floor -- `_materialize_prompts`
                             # reads it back into the retry prompt (ruling 2).
-                            rejected = persist.retain_rejected(run_dir, entry, result.text, reason)
+                            rejected = persist.retain_rejected(run_dir, entry, result.text, reason,
+                                                              kind=persist.REFUSAL)
                             print("driver loop: %s" % reason, file=sys.stderr, flush=True)
                     elif not result.ok:
                         # D10 ruling 5: a failed launch that PRINTED something keeps it
@@ -515,7 +515,8 @@ def loop(args):
                         # is the entry that was most expensive to lose. `retain_rejected`
                         # writes nothing for a failure with no output, so an ordinary
                         # launch failure is exactly what it was.
-                        rejected = persist.retain_rejected(run_dir, entry, result.text, result.error)
+                        rejected = persist.retain_rejected(run_dir, entry, result.text, result.error,
+                                                          kind=persist.LAUNCH_FAILURE)
                         print("driver loop: entry %s failed: %s" % (eid, result.error),
                               file=sys.stderr, flush=True)
                     ledger.record(entry, req.get("checkpoint"), result, mode, runner.host,
@@ -596,19 +597,18 @@ def _dispatch_exit(review_root, req, pending, namespace):
 
 
 def _finish(status, args, guards, ledger, namespace, mode="headless", runner=None):
-    """The terminal teardown, executed for every non-checkpoint status. Disarm
-    first, then attempt a final write_usage on BOTH `complete` and `error`
-    (review round 2): the `except Exception` catch-all (round 1, item 3) can
-    land here after a batch already recorded a ledger line but before that
-    iteration's own in-loop write_usage ran, and a `complete`-only write would
-    leave usage.json stale against the ledger. Wrapped so a failure here can
-    never mask the real status -- it is appended to the message instead."""
-    # C1 (kimi family PR review): the runner's own terminal hook, on EVERY terminal status, before
-    # the guards are touched -- a host whose runner holds a scratch area outside the tree (kimi's
-    # per-run KIMI_CODE_HOME, which carries the operator's credential surface and the children's
-    # verbatim wire files) has nowhere else to release it, and `loop` has exactly one terminal
-    # path. Wrapped: a teardown failure must not mask the run's real status, exactly as the final
-    # write_usage below is wrapped.
+    """The terminal teardown, executed for every non-checkpoint status. Disarm first, then attempt
+    a final write_usage on BOTH `complete` and `error` (review round 2): the `except Exception`
+    catch-all (round 1, item 3) can land here after a batch already recorded a ledger line but
+    before that iteration's own in-loop write_usage ran, and a `complete`-only write would leave
+    usage.json stale against the ledger. Wrapped so a failure here can never mask the real status
+    -- it is appended to the message instead."""
+    # C1 (kimi family PR review): the runner's own terminal hook, on EVERY terminal status, before the
+    # guards are touched -- a host whose runner holds a scratch area outside the tree (kimi's per-run
+    # KIMI_CODE_HOME, which carries the operator's credential surface and the children's verbatim wire
+    # files) has nowhere else to release it, and `loop` has exactly one terminal path. Wrapped: a
+    # teardown failure must not mask the run's real status, exactly as the final write_usage below is
+    # wrapped.
     if runner is not None:
         try:
             runner.teardown(status.get("status"))
@@ -687,7 +687,7 @@ def persist_cli(args):
         # this reply, so the mode a human drives must keep it exactly as the
         # loop does. Same folder, same shape, same attempt numbering.
         persist.retain_rejected(persist.run_dir(review_root, "setup" if args.setup else None),
-                                entry, text, reason)
+                                entry, text, reason, kind=persist.REFUSAL)
         print("driver persist: %s" % reason, file=sys.stderr)
         return 1
     print(os.path.abspath(entry["out_file"]))

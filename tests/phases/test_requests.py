@@ -254,7 +254,11 @@ class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
         self.addCleanup(self._t.cleanup)
         os.makedirs(runio._pano(self.root))
         self.out_file = runio._pano(self.root, "findings-app-SEC.json")
+        # return-persist: D10 F4 gates the retry note on the delivery mode,
+        # because the block's whole text is about the envelope the controller
+        # will persist.
         self.entry = {"id": "review-app-SEC", "prompt": "review the app cell",
+                      "delivery": "return_json",
                       "out_file": self.out_file, "run_id": "RID",
                       "group": "app", "domain": "SEC"}
 
@@ -265,7 +269,7 @@ class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
 
     def _refuse(self, reason):
         return persist.retain_rejected(persist.run_dir(self.root), self.entry,
-                                       '{"findings": []}', reason)
+                                       '{"findings": []}', reason, kind=persist.REFUSAL)
 
     def test_an_entry_with_no_record_is_what_it_has_always_been(self):
         written = self._write(self.entry)

@@ -245,7 +245,8 @@ class TestRetainRejected(unittest.TestCase):
         secret = "ghp_" + "A" * 36
         path = persist.retain_rejected(self.run_dir, self.entry,
                                        '{"findings": [], "token": "%s"}' % secret,
-                                       "reply carries no _panopticon stamp")
+                                       "reply carries no _panopticon stamp",
+                                       kind=persist.REFUSAL)
         self.assertEqual(path, os.path.join(self.run_dir, "rejected", "review-app-SEC-1.json"))
         rec = self._record(1)
         self.assertEqual(rec["schema_version"], 1)
@@ -258,32 +259,36 @@ class TestRetainRejected(unittest.TestCase):
         self.assertNotIn("truncated", rec)
 
     def test_the_second_refusal_of_one_entry_is_a_second_record(self):
-        persist.retain_rejected(self.run_dir, self.entry, "first", "no")
-        persist.retain_rejected(self.run_dir, self.entry, "second", "still no")
+        persist.retain_rejected(self.run_dir, self.entry, "first", "no", kind=persist.REFUSAL)
+        persist.retain_rejected(self.run_dir, self.entry, "second", "still no",
+                                kind=persist.REFUSAL)
         self.assertEqual(1, self._record(1)["attempt"])
         self.assertEqual("second", self._record(2)["reply"])
         self.assertEqual(2, self._record(2)["attempt"])
 
     def test_an_oversized_reply_is_capped_and_says_so(self):
-        persist.retain_rejected(self.run_dir, self.entry, "x" * (400 * 1024), "too big")
+        persist.retain_rejected(self.run_dir, self.entry, "x" * (400 * 1024), "too big",
+                                kind=persist.REFUSAL)
         rec = self._record(1)
         self.assertTrue(rec["truncated"])
         self.assertEqual(len(rec["reply"].encode("utf-8")), persist.REJECTED_CAP)
 
     def test_a_reply_with_nothing_in_it_is_not_a_record(self):
-        self.assertIsNone(persist.retain_rejected(self.run_dir, self.entry, "", "empty"))
+        self.assertIsNone(persist.retain_rejected(self.run_dir, self.entry, "", "empty",
+                                                  kind=persist.REFUSAL))
         self.assertFalse(os.path.exists(os.path.join(self.run_dir, "rejected")))
 
     def test_an_entry_id_can_never_steer_the_write_out_of_the_folder(self):
         entry = _entry(self.entry["out_file"], id="../../escape")
-        path = persist.retain_rejected(self.run_dir, entry, "text", "no")
+        path = persist.retain_rejected(self.run_dir, entry, "text", "no", kind=persist.REFUSAL)
         self.assertEqual(os.path.dirname(path), os.path.join(self.run_dir, "rejected"))
 
     def test_nothing_under_rejected_is_a_persist_role(self):
         # "Nothing under `rejected/` is ever read by a done predicate": the
         # records sit in the run folder beside the artifacts, so the role map
         # -- which keys on the out_file NAME -- must not claim one.
-        persist.retain_rejected(self.run_dir, self.entry, '{"findings": []}', "no")
+        persist.retain_rejected(self.run_dir, self.entry, '{"findings": []}', "no",
+                                kind=persist.REFUSAL)
         kept = os.path.join(self.run_dir, "rejected", "review-app-SEC-1.json")
         self.assertIsNone(persist.role_of(_entry(kept)))
 
@@ -428,7 +433,7 @@ class TestTheRecordIsSafeToKeepAndToQuote(unittest.TestCase):
         key = "-----BEGIN RSA PRIVATE KEY-----\n" + "MIIEowIBAAKCAQEA" * 200 + \
               "\n-----END RSA PRIVATE KEY-----"
         body = "x" * (persist.REJECTED_CAP - 64) + key
-        persist.retain_rejected(self.run_dir, self.entry, body, "no")
+        persist.retain_rejected(self.run_dir, self.entry, body, "no", kind=persist.REFUSAL)
         reply = self._record()["reply"]
         self.assertNotIn("MIIEowIBAAKCAQEA", reply)
         self.assertIn("[REDACTED_PRIVATE_KEY]", reply)
@@ -438,7 +443,7 @@ class TestTheRecordIsSafeToKeepAndToQuote(unittest.TestCase):
         # redactor is allowed to scan cannot be masked, so the final cut must
         # not leave its header -- and everything after it -- lying there.
         body = "y" * persist.REDACT_CAP + "\n-----BEGIN PRIVATE KEY-----\nAAAA"
-        persist.retain_rejected(self.run_dir, self.entry, body, "no")
+        persist.retain_rejected(self.run_dir, self.entry, body, "no", kind=persist.REFUSAL)
         record = self._record()
         self.assertNotIn("BEGIN PRIVATE KEY", record["reply"])
         self.assertTrue(record["truncated"])
@@ -454,7 +459,7 @@ class TestTheRecordIsSafeToKeepAndToQuote(unittest.TestCase):
             {"findings": [], "_panopticon": {"group": hostile}}))
         self.assertFalse(ok)
         self.assertLess(len(reason), 400, "the refusal reason is bounded at the source")
-        persist.retain_rejected(self.run_dir, self.entry, "{}", reason)
+        persist.retain_rejected(self.run_dir, self.entry, "{}", reason, kind=persist.REFUSAL)
         record = self._record()
         self.assertLess(len(record["reason"]), 400)
         self.assertNotIn(secret, record["reason"])
@@ -463,7 +468,8 @@ class TestTheRecordIsSafeToKeepAndToQuote(unittest.TestCase):
     def test_a_hostile_reason_reaches_the_retry_prompt_neither_whole_nor_unmasked(self):
         secret = "ghp_" + "F" * 36
         persist.retain_rejected(self.run_dir, self.entry, "{}",
-                                "_panopticon.group is '%s%s'" % (secret, "!" * 200000))
+                                "_panopticon.group is '%s%s'" % (secret, "!" * 200000),
+                                kind=persist.REFUSAL)
         block, prior = persist.retry_block(self.run_dir, self.entry)
         for text in (block, prior["reason"]):
             self.assertLess(len(text), 600)
@@ -476,3 +482,56 @@ class TestTheRecordIsSafeToKeepAndToQuote(unittest.TestCase):
         ok, reason = persist.write_reply(e, json.dumps({"verdict": "Z" * 100000}))
         self.assertFalse(ok)
         self.assertLess(len(reason), 400)
+
+
+class TestOnlyARefusedReturnedReplyEarnsARetryNote(unittest.TestCase):
+    """D10 F4: ruling 5 retains a failed LAUNCH's partial output, and ruling 2
+    quotes the latest record at the next attempt. Together, unqualified, they
+    told a self-writing reviewer that "your previous reply was refused; return
+    the same findings, fix only the format" -- after a timeout, to an agent
+    that returns a one-line confirmation and writes its findings itself. Every
+    sentence false, and the instruction is the exact contract the self-write
+    path exists to avoid.
+    """
+
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.d, ignore_errors=True))
+        self.run_dir = os.path.join(self.d, ".panopticon", "runs", "t")
+        os.makedirs(self.run_dir)
+        self.entry = _entry(os.path.join(self.run_dir, "findings-app-SEC.json"),
+                            id="review-app-SEC", run_id="RID", group="app", domain="SEC")
+
+    def _kept(self, kind, entry=None):
+        return persist.retain_rejected(self.run_dir, entry or self.entry,
+                                       "partial output", "timed out after 1800s", kind=kind)
+
+    def test_the_record_says_which_kind_of_failure_it_is(self):
+        for kind in (persist.REFUSAL, persist.LAUNCH_FAILURE):
+            with self.subTest(kind=kind):
+                path = self._kept(kind)
+                with open(path, encoding="utf-8") as fh:
+                    self.assertEqual(kind, json.load(fh)["kind"])
+
+    def test_a_launch_failure_is_kept_but_never_quoted_at_the_retry(self):
+        self._kept(persist.LAUNCH_FAILURE)
+        self.assertEqual((None, None), persist.retry_block(self.run_dir, self.entry))
+
+    def test_a_self_writing_entry_is_never_told_to_return_an_envelope(self):
+        selfwrite = _entry(self.entry["out_file"], delivery=None, id="review-app-SEC",
+                           run_id="RID", group="app", domain="SEC")
+        self._kept(persist.REFUSAL, entry=selfwrite)
+        self.assertEqual((None, None), persist.retry_block(self.run_dir, selfwrite))
+
+    def test_a_refused_returned_reply_still_gets_its_note(self):
+        self._kept(persist.REFUSAL)
+        block, prior = persist.retry_block(self.run_dir, self.entry)
+        self.assertIn("refused", block)
+        self.assertEqual(1, prior["attempt"])
+
+    def test_a_record_from_an_older_build_that_names_no_kind_is_not_quoted(self):
+        runio._write_json(os.path.join(self.run_dir, persist.REJECTED_DIR,
+                                       "review-app-SEC-1.json"),
+                          {"schema_version": 1, "entry_id": "review-app-SEC",
+                           "attempt": 1, "reason": "no", "reply": "{}"})
+        self.assertEqual((None, None), persist.retry_block(self.run_dir, self.entry))
