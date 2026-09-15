@@ -11,9 +11,10 @@ and a backstop that walks the WHOLE report tree (so a producer that copies text
 after it cannot reintroduce one).
 
 The scan is deliberately a directory walk rather than a list of known
-filenames: every file a run drops in the output directory is checked, so a new
-artifact producer is covered by construction rather than by remembering to
-extend a list here.
+filenames: every file a run drops in the report directory OR the run directory
+is checked -- `verify-queue.json` lands in the latter -- so a new artifact
+producer is covered by construction rather than by remembering to extend a
+list here.
 """
 import contextlib
 import hashlib
@@ -73,11 +74,14 @@ def _findings_doc():
     ]}
 
 
-def _verdicts_doc(confirmed_id, rejected_id):
+def _verdicts_doc(confirmed_id, rejected_id, run_id):
     """An advisor bundle keyed by finding id. Its `reasoning` carries its own
     marker: that text is merged into `finding.evidence.reasoning` INSIDE
-    build_report, i.e. after the input redaction, so only the whole-tree
-    backstop can mask it.
+    build_report, i.e. after the input pass -- so it is not covered by the
+    input pass, and the post-build pass is what masks it. (It lands inside the
+    finding object, so the old two-key backstop reached it too; the marker is
+    here to pin that the post-build pass is still load-bearing, not to claim
+    the whole-tree walk is what saves it.)
 
     The ids are the ones `load_findings` derives (a content hash), not the ones
     the file declares, so they are read back from the loader rather than
@@ -88,33 +92,38 @@ def _verdicts_doc(confirmed_id, rejected_id):
          "reasoning": "advisor quoted it too: %s" % MARKERS["reasoning"]},
         {"finding_id": rejected_id, "verdict": "REJECTED",
          "reasoning": "not reachable"},
-    ], "_panopticon": {"run_id": "R", "role": "domain_advisor",
+    ], "_panopticon": {"run_id": run_id, "role": "domain_advisor",
                        "domain": "SEC", "group": "app", "stage": "primary"}}
 
 
 def _run(tmpdir, max_bytes=None):
-    """Run a real `synthesize.main()` over the marked findings.
+    """Run BOTH real synthesize passes over the marked findings.
 
-    Inputs live in `<tmpdir>/in` and artifacts in `<tmpdir>/out`, so the
-    artifact scan never re-reads the (legitimately marked) input files.
-    Returns (out_dir, report_path, stdout).
+    Pass 1 is the orchestrator's `--emit-verify-queue` run, which writes
+    `verify-queue.json` into the RUN dir; pass 2 is the report run, which
+    writes into the OUT dir. Three directories, deliberately: inputs in `src/`
+    and the advisor's verdicts in `verdicts/` legitimately carry the markers
+    and must never be scanned, while `run/` and `out/` are both scanned --
+    `run/` is where synthesize's one non-report artifact lands, and scanning
+    only `out/` would leave it structurally invisible to this guard.
+
+    Returns (scan_dirs, report_path, stdout).
     """
-    in_dir = os.path.join(tmpdir, "in")
-    v_dir = os.path.join(in_dir, "verdicts")
+    src_dir = os.path.join(tmpdir, "src")
+    run_dir = os.path.join(tmpdir, "run")
     out_dir = os.path.join(tmpdir, "out")
-    os.makedirs(v_dir)
-    os.makedirs(out_dir)
-    fp = os.path.join(in_dir, "findings-app-security.json")
+    v_dir = os.path.join(tmpdir, "verdicts")
+    for path in (src_dir, run_dir, out_dir, v_dir):
+        os.makedirs(path)
+    fp = os.path.join(src_dir, "findings-app-security.json")
     with open(fp, "w", encoding="utf-8") as fh:
         json.dump(_findings_doc(), fh)
-    with open(os.path.join(in_dir, "groups.json"), "w", encoding="utf-8") as fh:
+    groups = os.path.join(src_dir, "groups.json")
+    with open(groups, "w", encoding="utf-8") as fh:
         json.dump({"groups": [{"name": "app",
                                "files": ["app/x.py", "app/y.py"]}]}, fh)
     with contextlib.redirect_stderr(io.StringIO()):
         loaded = findings_mod.load_findings([fp])
-    with open(os.path.join(v_dir, "verdicts-app-SEC.json"), "w",
-              encoding="utf-8") as fh:
-        json.dump(_verdicts_doc(loaded[0]["id"], loaded[1]["id"]), fh)
     out = os.path.join(out_dir, "report.json")
 
     real_write = render_mod.write_report
@@ -126,22 +135,44 @@ def _run(tmpdir, max_bytes=None):
     prev = os.getcwd()
     os.chdir(tmpdir)
     try:
+        with contextlib.redirect_stdout(buf), \
+                contextlib.redirect_stderr(io.StringIO()):
+            syn.main(["--target", "app", "--run-dir", run_dir,
+                      "--groups", groups, "--emit-verify-queue", fp])
+        # The advisor answers this run's queue, so the bundle carries the
+        # queue's run_id -- match_verdict_by_id rejects a cross-run verdict.
+        with open(os.path.join(run_dir, "verify-queue.json"),
+                  encoding="utf-8") as fh:
+            queue_run_id = json.load(fh)["run_id"]
+        with open(os.path.join(v_dir, "verdicts-app-SEC.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(_verdicts_doc(loaded[0]["id"], loaded[1]["id"],
+                                    queue_run_id), fh)
         if max_bytes is not None:
             render_mod.write_report = _small_write
         with contextlib.redirect_stdout(buf), \
                 contextlib.redirect_stderr(io.StringIO()):
-            syn.main(["--target", "app", "--out", out,
-                      "--groups", os.path.join(in_dir, "groups.json"),
-                      "--verdicts-dir", v_dir, fp])
+            syn.main(["--target", "app", "--out", out, "--run-dir", run_dir,
+                      "--groups", groups, "--verdicts-dir", v_dir, fp])
     finally:
         render_mod.write_report = real_write
         os.chdir(prev)
-    return out_dir, out, buf.getvalue()
+    return [out_dir, run_dir], out, buf.getvalue()
 
 
 def _emit_strain(report_path):
-    """The strain report is a separate entry script that reads the written
-    report, so produce it here and let the same scan cover it."""
+    """`scripts/strain_report.py` is a LIBRARY with no production caller --
+    no main(), no argparse, and nothing outside tests/ imports it -- so no
+    synthesize run emits a strain report today. Produce one here from the
+    written report (the only input shape a future caller should use: it copies
+    `title` into signal.summary and `provenance.confirmation_reasoning` into
+    signal.rationale verbatim, so it must be fed REPORT findings, never raw
+    findings-*.json) and let the same scan cover it.
+
+    Corollary for the directory walk: "covered by construction" holds for
+    producers driven by `syn.main()`. This one is hand-produced, so it is the
+    walk -- not the run -- that brings it into scope.
+    """
     with open(report_path, encoding="utf-8") as fh:
         report = json.load(fh)
     strain = strain_report.build_report(report.get("findings") or [],
@@ -149,20 +180,22 @@ def _emit_strain(report_path):
     return strain_report.write_report(strain, report_path)
 
 
-def scan_artifacts(out_dir, extra_text=()):
-    """Every marker found in any file under `out_dir` (plus any extra text
+def scan_artifacts(dirs, extra_text=()):
+    """Every marker found in any file under any of `dirs` (plus any extra text
     blobs, e.g. the terminal summary), as {marker_name: [where, ...]}.
 
-    Walks the directory instead of naming files: report.json, the `_partN.json`
-    splits, the `-discarded.json` sibling, `.json.html`, `-x0x.json` and
-    `-strain.json` are all covered, and so is whatever a future producer
-    writes beside them."""
+    Walks the directories instead of naming files: report.json, the
+    `_partN.json` splits, the `-discarded.json` sibling, `.json.html`,
+    `-x0x.json`, `-strain.json` and the run dir's `verify-queue.json` are all
+    covered, and so is whatever a future producer writes beside them."""
     blobs = []
-    for root, _dirs, files in os.walk(out_dir):
-        for name in sorted(files):
-            path = os.path.join(root, name)
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                blobs.append((os.path.relpath(path, out_dir), fh.read()))
+    for d in dirs:
+        base = os.path.dirname(os.path.normpath(d))
+        for root, _dirs, files in os.walk(d):
+            for name in sorted(files):
+                path = os.path.join(root, name)
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    blobs.append((os.path.relpath(path, base), fh.read()))
     blobs.extend(extra_text)
     hits = {}
     for name, marker in MARKERS.items():
@@ -175,15 +208,17 @@ def scan_artifacts(out_dir, extra_text=()):
 class TestNoMarkerSurvivesAnyArtifact(unittest.TestCase):
     def test_single_file_report(self):
         with tempfile.TemporaryDirectory() as d:
-            out_dir, report_path, stdout = _run(d)
+            scan_dirs, report_path, stdout = _run(d)
             _emit_strain(report_path)
-            written = sorted(os.listdir(out_dir))
+            written = sorted(os.listdir(scan_dirs[0]))
             # The run really did write the artifacts this guard claims to cover.
             self.assertIn("report.json", written)
             self.assertIn("report.json.html", written)
             self.assertIn("report-x0x.json", written)
             self.assertIn("report-strain.json", written)
-            hits = scan_artifacts(out_dir, [("terminal summary", stdout)])
+            # ... and the one artifact that lands OUTSIDE the report directory.
+            self.assertIn("verify-queue.json", sorted(os.listdir(scan_dirs[1])))
+            hits = scan_artifacts(scan_dirs, [("terminal summary", stdout)])
             self.assertEqual(hits, {}, "unredacted markers survived: %s" % hits)
 
     def test_the_derived_fields_are_populated_and_masked(self):
@@ -191,7 +226,7 @@ class TestNoMarkerSurvivesAnyArtifact(unittest.TestCase):
         finding's text (so the assertion above is not passing on an empty
         summary) and that text must be masked."""
         with tempfile.TemporaryDirectory() as d:
-            _out_dir, report_path, _stdout = _run(d)
+            _dirs, report_path, _stdout = _run(d)
             with open(report_path, encoding="utf-8") as fh:
                 report = json.load(fh)
             top = report["summary"]["top_issues"]
@@ -211,12 +246,12 @@ class TestNoMarkerSurvivesAnyArtifact(unittest.TestCase):
         """The same guard over the split write: `_partN.json` files plus the
         `-discarded.json` sibling, which only exist above max_bytes."""
         with tempfile.TemporaryDirectory() as d:
-            out_dir, report_path, stdout = _run(d, max_bytes=1200)
+            scan_dirs, report_path, stdout = _run(d, max_bytes=1200)
             _emit_strain(report_path)
-            written = sorted(os.listdir(out_dir))
+            written = sorted(os.listdir(scan_dirs[0]))
             self.assertIn("report-discarded.json", written)
             self.assertTrue([w for w in written if "_part" in w], written)
-            hits = scan_artifacts(out_dir, [("terminal summary", stdout)])
+            hits = scan_artifacts(scan_dirs, [("terminal summary", stdout)])
             self.assertEqual(hits, {}, "unredacted markers survived: %s" % hits)
 
 

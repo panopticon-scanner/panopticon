@@ -233,7 +233,13 @@ class TestSkillMd(unittest.TestCase):
         for token in ["redact.redact_tree", "before", "build_report",
                       "summary.top_issues", "groups[].key_findings",
                       "render.redact_report_secrets", "whole report tree",
-                      "any depth", "cross_panel", "meta.host_capabilities"]:
+                      "any depth", "cross_panel", "meta.host_capabilities",
+                      # F1: the verify-queue branch is why the placement of the
+                      # input pass is load-bearing, not merely tidy.
+                      "--emit-verify-queue", "verify-queue.json", "queue id",
+                      # F3: the guarantee holds for structured data, not for
+                      # prose that happens to contain a token-shaped substring.
+                      "come back identical", "token-shaped substring", "#1572"]:
             self.assertIn(token, section, token)
 
     def test_description_is_trigger_only_and_host_neutral(self):
