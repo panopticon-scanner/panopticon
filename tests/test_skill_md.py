@@ -962,3 +962,47 @@ class TestThePlanHasAHome(unittest.TestCase):
 
     def test_the_guide_says_the_same_thing_in_the_same_words(self):
         self.assertIn(PLAN_LOCATION, self._flat(_read_doc()))
+
+
+# #1637 P02: SKILL.md required three `superpowers:*` sub-skills and said
+# nothing about where a host finds them or what to do when it cannot. Run-13's
+# controller searched another host's plugin cache to answer both questions and
+# then invented its own fallbacks. The roots below are where hosts TYPICALLY
+# look -- read-only, never written, and `driver readiness` reports which ones
+# it found (tests/phases/test_readiness_verb.py pins the code to this list).
+SKILL_ROOTS = ("~/.claude/plugins/…/superpowers/", "~/.codex/skills/",
+               "~/.agents/skills/", "~/.kimi/skills/")
+
+
+class TestTheDependenciesSection(unittest.TestCase):
+
+    def setUp(self):
+        self.section = _section(_read_skill_md(), "## Dependencies",
+                                "## Installed-flow substitution")
+
+    def test_it_names_all_three_required_sub_skills(self):
+        for name in ("superpowers:writing-plans",
+                     "superpowers:subagent-driven-development",
+                     "superpowers:verification-before-completion"):
+            with self.subTest(name=name):
+                self.assertIn(name, self.section)
+
+    def test_it_names_the_roots_hosts_typically_look_in(self):
+        for root in SKILL_ROOTS:
+            with self.subTest(root=root):
+                self.assertIn(root, self.section)
+
+    def test_it_says_the_roots_are_read_only(self):
+        self.assertIn("read-only", self.section.lower())
+
+    def test_a_missing_sub_skill_is_a_documented_default_not_a_stop(self):
+        """The whole point: an absent sub-skill must not send a host hunting
+        through plugin trees, and must not silently change what the review
+        did. Each of the three has a built-in answer, and the report says the
+        sub-skill was unavailable."""
+        for phrase in (".panopticon/runs/<tag>/plan.md",
+                       "skill/workflows/dispatch.js",
+                       "`validate` phase",
+                       "Disclose"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.section)

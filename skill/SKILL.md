@@ -33,6 +33,37 @@ file stays focused on the host-facing contract.
 - `superpowers:subagent-driven-development` — for matrix-cell and advisor dispatch.
 - `superpowers:verification-before-completion` — before returning the report.
 
+## Dependencies
+
+The three `superpowers:*` sub-skills above are the only external things this
+skill asks for. Panopticon does not ship them and does not install them. The
+lookup is read-only: `driver readiness` reports which of the three it found
+and where, and nothing in this skill ever writes to the roots below.
+
+Where hosts typically look:
+
+| Host | Root |
+| --- | --- |
+| Claude Code | `~/.claude/plugins/…/superpowers/` |
+| Codex | `~/.codex/skills/` |
+| Kimi | `~/.kimi/skills/` |
+| Other agents | `~/.agents/skills/` |
+
+**A missing sub-skill is not a stop, and not a reason to go hunting through a
+host's plugin tree.** Proceed with the built-in default, which is what the
+driver does anyway:
+
+- `superpowers:writing-plans` → write the plan yourself to
+  `.panopticon/runs/<tag>/plan.md`.
+- `superpowers:subagent-driven-development` → dispatch per cell through the
+  driver: `driver loop` in headless mode, or the printed `dispatch` batch
+  through `skill/workflows/dispatch.js` in session mode.
+- `superpowers:verification-before-completion` → the `validate` phase IS the
+  verification; never return a report from a run whose `validate` did not pass.
+
+Disclose in the report which sub-skill was unavailable — the review is still
+valid, but a reader has to know which of these paths it took.
+
 ## Installed-flow substitution
 
 `skill/` in every command means **this skill's install directory** — literally
