@@ -140,6 +140,30 @@ class TestSessionMode(LoopCase):
         self.assertIn("verify-app-SEC-primary", s2["pending"])
         self.assertIn("verify-app-SEC-primary", self._armed_read_ids(s))
 
+    def test_a_refused_persist_keeps_the_reply_the_operator_piped_in(self):
+        # D10 ruling 1, session half: `driver persist` refuses exactly as the
+        # loop does, so it has to keep the text exactly as the loop does --
+        # otherwise the one mode where a human is holding the reply is the one
+        # mode that throws it away.
+        d, floor = self._repo(); s = self._session_root(d)
+        with mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven), \
+             mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            self._loop(d, "--session-dir", s, "--allow-unenforced")
+        reply = os.path.join(d, "reply.txt")
+        with open(reply, "w", encoding="utf-8") as fh:
+            fh.write('{"findings": [], "note": "ghp_%s"}' % ("C" * 36))
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = driver.main(["persist", "review-app-SEC", "--file", reply, d])
+        self.assertEqual(rc, 1)
+        run_dir = os.path.dirname(probes_common.headless_settings_path(d))
+        with open(os.path.join(run_dir, "rejected", "review-app-SEC-1.json"),
+                  encoding="utf-8") as fh:
+            record = json.load(fh)
+        self.assertEqual(record["attempt"], 1)
+        self.assertIn("_panopticon", record["reason"])
+        self.assertIn("[REDACTED_TOKEN]", record["reply"])
+
     def _armed_write_paths(self, s):
         _settings, allowlist_path, _ = write_guard_hook._resolve(None, None, s)
         return set(write_guard_hook._read_allowlist(allowlist_path))

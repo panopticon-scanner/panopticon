@@ -9,11 +9,15 @@ never writes a findings file by hand. Refusals write nothing.
 import json
 import os
 import re
+import sys
 import tempfile
+import time
 
 import scripts.evidence as evidence
 import scripts.findings_contract as findings_contract
 import scripts.group_runner as group_runner
+import scripts.probes.common as probes_common
+import scripts.redact as redact
 import scripts.run_manifest as run_manifest
 from . import coverage
 from . import requests
@@ -23,6 +27,89 @@ from . import verify
 
 ROLES = ("scout", "setup-scan", "review-cell", "verify-cell", "tool-advisor")
 _STAMP_KEYS = ("run_id", "group", "domain", "stage")
+# D10 ruling 1: refused replies are kept HERE, beside the run's other
+# artifacts -- one folder, one shape, never read by a done predicate.
+REJECTED_DIR = "rejected"
+# 256 KiB of reply, after which the record says `truncated`. A refused reply
+# is evidence, not an artifact: enough to see what shape came back and to
+# quote the reason at the retry, bounded so one runaway agent cannot fill the
+# run folder with the same megabyte three times.
+REJECTED_CAP = 256 * 1024
+_ATTEMPT = re.compile(r"-(\d+)\.json$")
+
+
+def run_dir(review_root, namespace=None):
+    """The folder this invocation's run artifacts live in -- `runs/<tag>/` for
+    a review, the flat `.panopticon/` for `--setup`.
+
+    ONE resolver, shared by `orchestrate.loop` (which needs it for the ledger
+    and the guard files), `persist_cli` and `requests._materialize_prompts`
+    (D10 ruling 2, which has to find the rejected records the loop wrote).
+    `probes.common.headless_settings_path` is that resolver -- namespace-aware,
+    and the file the runner actually arms -- so the run folder is its dirname
+    and never a second spelling of the same lookup."""
+    return os.path.dirname(probes_common.headless_settings_path(review_root, namespace))
+
+
+def _next_attempt(directory, safe_id):
+    """1 + the highest attempt already recorded for this entry. Keyed on the
+    numbers on disk rather than on a count, so a record an operator deleted
+    cannot make the next one collide with a surviving sibling."""
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 1
+    seen = [0]
+    for name in names:
+        match = _ATTEMPT.search(name)
+        if match and name[:match.start()] == safe_id:
+            seen.append(int(match.group(1)))
+    return 1 + max(seen)
+
+
+def retain_rejected(run_folder, entry, text, reason):
+    """Keep a refused reply as `<run_dir>/rejected/<entry-id>-<attempt>.json`;
+    return the path, or None when there is nothing to keep (D10 ruling 1).
+
+    `write_reply` refuses and writes NOTHING -- correct for the artifact, and
+    it used to mean the reply itself was gone. Run-13: 7 of 8 failed attempts
+    were replies missing `_panopticon`, each rerun from scratch, with no way to
+    see what the agent had actually returned or to tell it what was wrong.
+
+    The record is redacted (`redact.redact_tree`, the same masking the report
+    goes through -- a reply can quote a secret it found) and capped, and it
+    goes through the confined/nofollow writer every other run-folder artifact
+    uses, so a planted `rejected` symlink cannot carry the write outside.
+    The entry id is flattened into ONE filename component first: an id embeds
+    an operator-supplied group name.
+
+    Best-effort by construction: this is evidence about a failure, so a
+    failure to record it must not become a second, louder failure. Nothing
+    under `rejected/` is ever read by a done predicate -- `role_of` gives the
+    path no role, so no reply can advance an entry by landing here.
+    """
+    entry_id = entry.get("id") if isinstance(entry, dict) else None
+    body = str(text or "")
+    if not run_folder or not entry_id or not body:
+        return None
+    safe_id = requests._PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
+    directory = os.path.join(run_folder, REJECTED_DIR)
+    kept = body.encode("utf-8")[:REJECTED_CAP].decode("utf-8", "ignore")
+    attempt = _next_attempt(directory, safe_id)
+    record = {"schema_version": 1, "entry_id": entry_id, "attempt": attempt,
+              "reason": reason,
+              # the stamp format the ledger's own rows carry, so the two sort
+              # against each other as plain strings.
+              "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+              "reply": redact.redact_tree(kept)}
+    if kept != body:
+        record["truncated"] = True
+    try:
+        return runio._write_json(os.path.join(directory, "%s-%d.json" % (safe_id, attempt)), record)
+    except (OSError, ValueError) as exc:
+        print("driver: could not retain the refused reply for %s (%s)" % (entry_id, exc),
+              file=sys.stderr, flush=True)
+        return None
 
 
 def role_of(entry):

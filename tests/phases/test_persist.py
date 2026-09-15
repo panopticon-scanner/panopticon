@@ -216,3 +216,73 @@ class TestVerifyCellCompleteness(unittest.TestCase):
                            "_panopticon": {"run_id": "RID", "group": "app",
                                            "domain": "SEC", "stage": "primary"}})
         self.assertFalse(persist.is_done(entry))
+
+
+class TestRetainRejected(unittest.TestCase):
+    """D10 ruling 1: a refused reply is EVIDENCE, not litter.
+
+    Run-13: 7 of 8 failed attempts were replies missing `_panopticon`, and
+    `write_reply` refused each one writing nothing at all -- so the reply text
+    was gone, every rerun started from scratch, and nobody could see what the
+    agent had actually returned. The record under `runs/<tag>/rejected/` keeps
+    it, redacted, with the reason; ruling 2 reads it back into the retry.
+    """
+
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.d, ignore_errors=True))
+        self.run_dir = os.path.join(self.d, ".panopticon", "runs", "t")
+        os.makedirs(self.run_dir)
+        self.entry = _entry(os.path.join(self.run_dir, "findings-app-SEC.json"),
+                            id="review-app-SEC", run_id="RID", group="app", domain="SEC")
+
+    def _record(self, attempt):
+        with open(os.path.join(self.run_dir, "rejected",
+                               "review-app-SEC-%d.json" % attempt), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_a_refused_reply_is_kept_redacted_with_its_reason(self):
+        secret = "ghp_" + "A" * 36
+        path = persist.retain_rejected(self.run_dir, self.entry,
+                                       '{"findings": [], "token": "%s"}' % secret,
+                                       "reply carries no _panopticon stamp")
+        self.assertEqual(path, os.path.join(self.run_dir, "rejected", "review-app-SEC-1.json"))
+        rec = self._record(1)
+        self.assertEqual(rec["schema_version"], 1)
+        self.assertEqual(rec["entry_id"], "review-app-SEC")
+        self.assertEqual(rec["attempt"], 1)
+        self.assertIn("_panopticon", rec["reason"])
+        self.assertTrue(rec["recorded_at"].endswith("Z"), rec["recorded_at"])
+        self.assertNotIn(secret, rec["reply"])
+        self.assertIn("[REDACTED_TOKEN]", rec["reply"])
+        self.assertNotIn("truncated", rec)
+
+    def test_the_second_refusal_of_one_entry_is_a_second_record(self):
+        persist.retain_rejected(self.run_dir, self.entry, "first", "no")
+        persist.retain_rejected(self.run_dir, self.entry, "second", "still no")
+        self.assertEqual(1, self._record(1)["attempt"])
+        self.assertEqual("second", self._record(2)["reply"])
+        self.assertEqual(2, self._record(2)["attempt"])
+
+    def test_an_oversized_reply_is_capped_and_says_so(self):
+        persist.retain_rejected(self.run_dir, self.entry, "x" * (400 * 1024), "too big")
+        rec = self._record(1)
+        self.assertTrue(rec["truncated"])
+        self.assertEqual(len(rec["reply"].encode("utf-8")), persist.REJECTED_CAP)
+
+    def test_a_reply_with_nothing_in_it_is_not_a_record(self):
+        self.assertIsNone(persist.retain_rejected(self.run_dir, self.entry, "", "empty"))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "rejected")))
+
+    def test_an_entry_id_can_never_steer_the_write_out_of_the_folder(self):
+        entry = _entry(self.entry["out_file"], id="../../escape")
+        path = persist.retain_rejected(self.run_dir, entry, "text", "no")
+        self.assertEqual(os.path.dirname(path), os.path.join(self.run_dir, "rejected"))
+
+    def test_nothing_under_rejected_is_a_persist_role(self):
+        # "Nothing under `rejected/` is ever read by a done predicate": the
+        # records sit in the run folder beside the artifacts, so the role map
+        # -- which keys on the out_file NAME -- must not claim one.
+        persist.retain_rejected(self.run_dir, self.entry, '{"findings": []}', "no")
+        kept = os.path.join(self.run_dir, "rejected", "review-app-SEC-1.json")
+        self.assertIsNone(persist.role_of(_entry(kept)))

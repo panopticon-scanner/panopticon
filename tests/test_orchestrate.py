@@ -480,7 +480,9 @@ class TestHeadlessLoop(LoopCase):
         # `duration_ms` was passed as a literal None at the one call site, so
         # every row in every run carried a null. The row GAINS three fields
         # and loses none -- usage_document() reads `phase`/`usage` and
-        # total_cost() reads `cost_usd`, all still there.
+        # total_cost() reads `cost_usd`, all still there. D10 ruling 1 adds a
+        # fourth, `rejected_file`: null on a row whose reply the loop could
+        # use, and the path to the kept reply on one it could not.
         d, floor = self._repo()
         runner = FakeRunner()
         self._run(d, floor, runner)
@@ -490,7 +492,8 @@ class TestHeadlessLoop(LoopCase):
             self.assertEqual(
                 {"ts", "entry_id", "checkpoint", "phase", "mode", "host", "model", "ok",
                  "usage", "cost_usd", "duration_ms", "session_id", "denials", "error",
-                 "started_at", "finished_at"}, set(row))
+                 "started_at", "finished_at", "rejected_file"}, set(row))
+            self.assertIsNone(row["rejected_file"])       # a clean run keeps nothing
             self.assertIsInstance(row["duration_ms"], int)
             self.assertGreaterEqual(row["duration_ms"], 0)
             self.assertLessEqual(row["started_at"], row["finished_at"])
@@ -1114,3 +1117,78 @@ class TestTheRealUsageProbeAcrossLoopIterations(LoopCase):
         self.assertEqual(hosts.REFUTED, evidence[hosts.USAGE_LEDGER]["state"])
         self.assertIn("not one envelope carried a usage figure",
                       evidence[hosts.USAGE_LEDGER]["detail"])
+
+
+class TestRefusedRepliesAreRetained(LoopCase):
+    """D10 ruling 1, loop side: the reply the loop refuses is kept.
+
+    Before this the refusal printed a reason to stderr and dropped the text on
+    the floor -- so the single most common real failure (run-13: 7 of 8 failed
+    attempts were replies missing `_panopticon`) left nothing to look at and
+    nothing for the retry to quote.
+    """
+
+    class RefusingRunner(FakeRunner):
+        """A return-persist reviewer that returns a well-formed findings object
+        with NO `_panopticon` stamp -- run-13's failure, verbatim -- and leaks
+        a token-shaped literal while it is at it."""
+
+        SECRET = "ghp_" + "B" * 36
+
+        def run_entry(self, entry, env):
+            if not entry["id"].startswith("review-"):
+                return super().run_entry(entry, env)
+            self.launched.append(entry["id"])
+            body = {"findings": [{"title": "issue at " + self.SECRET, "severity": "HIGH",
+                                  "domain": entry["domain"], "code": entry["domain"] + "-A1A",
+                                  "category": "authz",
+                                  "location": {"file": "src/app.py", "line_start": 1}}]}
+            return base.RunResult(
+                entry_id=entry["id"], ok=True, text=json.dumps(body),
+                usage={"input_tokens": 5, "output_tokens": 1, "cache_read_input_tokens": 0,
+                       "cache_creation_input_tokens": 0},
+                cost_usd=0.001, model="claude-sonnet-5", session_id="s", denials=[], error=None)
+
+    def _run_loop(self, d, floor, runner):
+        args = self._args(d, "--allow-unenforced")
+        with mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven), \
+             mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            return orchestrate.loop(args)
+
+    def test_every_refusal_writes_its_own_record_and_the_ledger_row_names_it(self):
+        d, floor = self._repo()
+        runner = self.RefusingRunner()
+        # `complete`, not `error`: the REVIEW phase's own per-cell attempt
+        # budget gives up on the cell before the loop's per-entry cap sees it
+        # pending a fourth time (TestPerEntryFailureCap covers the cap itself,
+        # on the verify round, where the phase has no such budget). Either way
+        # the reply was refused three times, and this is about what survives.
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(runner.launched, ["review-app-SEC"] * 3)
+        rejected = os.path.join(runner.run_dir, "rejected")
+        self.assertEqual(sorted(os.listdir(rejected)),
+                         ["review-app-SEC-%d.json" % n
+                          for n in range(1, orchestrate.MAX_ENTRY_FAILURES + 1)])
+        rows = [r for r in orchestrate.Ledger(runner.run_dir).lines()
+                if r["entry_id"] == "review-app-SEC"]
+        self.assertEqual([r["rejected_file"] for r in rows],
+                         [os.path.join(rejected, "review-app-SEC-%d.json" % n)
+                          for n in range(1, orchestrate.MAX_ENTRY_FAILURES + 1)])
+        with open(os.path.join(rejected, "review-app-SEC-1.json"), encoding="utf-8") as fh:
+            record = json.load(fh)
+        self.assertIn("_panopticon", record["reason"])
+        self.assertIn("[REDACTED_TOKEN]", record["reply"])
+        self.assertNotIn(self.RefusingRunner.SECRET, record["reply"])
+
+    def test_a_clean_run_writes_no_records_at_all(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertFalse(os.path.exists(os.path.join(runner.run_dir, "rejected")))
+
