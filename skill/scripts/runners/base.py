@@ -8,6 +8,7 @@ import concurrent.futures
 import dataclasses
 import importlib
 import os
+import time
 
 import scripts.read_guard_hook as read_guard_hook
 
@@ -33,6 +34,13 @@ SCOPE_FILE = "read-scope.json"
 # must not spell it differently.
 LEDGER_FILE = "dispatch-ledger.jsonl"
 MODES = ("headless", "session")
+
+
+def _utc(epoch):
+    """The one UTC stamp format the run's evidence is written in -- the same
+    one `orchestrate.Ledger` writes its `ts` in, so a row's three stamps sort
+    against each other as plain strings."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
 class LaunchRefused(RuntimeError):
@@ -173,26 +181,68 @@ class HostRunner:
     def run_entry(self, entry, env):
         raise NotImplementedError("a host runner must implement run_entry")
 
-    def run_batch(self, entries, concurrency, env_for):
-        """Run every entry through run_entry on a thread pool; results in entry
-        order; an exception becomes RunResult.failed. The session runner
-        overrides this to return None."""
+    def iter_batch(self, entries, concurrency, env_for):
+        """Run every entry through run_entry on a thread pool, yielding
+        `(entry, result, timing)` in COMPLETION order; an exception becomes
+        RunResult.failed. `timing` is
+        `{"started_at", "finished_at", "duration_ms"}`, measured around
+        run_entry INSIDE the worker -- the only place that knows when this
+        entry really ran -- and `duration_ms` is what the loop's ledger row
+        records.
+
+        A family implements `run_entry` and inherits this; nothing here is
+        host-specific, and no family overrides it (only the session runner
+        overrides `run_batch`, below). P07 (#1636): the loop persists and
+        ledgers each entry AS IT ARRIVES, so a batch that is interrupted keeps
+        everything already yielded. Entries still running when the interrupt
+        lands finish during the pool drain and are NOT persisted -- their
+        futures are never consumed; capturing them is out of scope.
+
+        The pool's `with` block still JOINS every future on exit: nothing is
+        cancelled, whether this generator is exhausted, closed, or unwound by
+        an exception raised at the yield. Deliberate, and depended upon --
+        children already launched are registered under guard files the loop
+        tears down afterwards, so a runner that stripped its scratch config
+        before the drain would leave every remaining child running fail-open
+        (tests/runners/test_kimi.py). Callers that may abandon the generator
+        mid-batch should close it deterministically (`contextlib.closing`)
+        rather than leave the drain to garbage collection.
+        """
         entries = list(entries)
         if not entries:
-            return []
+            return
         width = max(1, int(concurrency or self.default_concurrency))
-        results = [None] * len(entries)
 
-        def one(i, entry):
+        def one(entry):
+            started, clock = time.time(), time.monotonic()
             try:
-                results[i] = self.run_entry(entry, env_for(entry))
+                result = self.run_entry(entry, env_for(entry))
             except Exception as exc:          # a runner crash is a failed entry, never a crashed loop
-                results[i] = RunResult.failed(entry.get("id"), exc)
+                result = RunResult.failed(entry.get("id"), exc)
+            # elapsed off the MONOTONIC clock, the stamps off it too (a wall
+            # clock that steps mid-entry must not print a finish before its
+            # own start, nor a negative duration into the ledger).
+            elapsed = time.monotonic() - clock
+            return entry, result, {"started_at": _utc(started),
+                                   "finished_at": _utc(started + elapsed),
+                                   "duration_ms": int(elapsed * 1000)}
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=width) as pool:
-            futures = [pool.submit(one, i, e) for i, e in enumerate(entries)]
-            for f in futures:
-                f.result()
+            futures = [pool.submit(one, e) for e in entries]
+            for f in concurrent.futures.as_completed(futures):
+                yield f.result()
+
+    def run_batch(self, entries, concurrency, env_for):
+        """Drain iter_batch; results in ENTRY order, one per entry. The session
+        runner overrides this to print the batch and return None; every other
+        caller that wants progress uses iter_batch instead."""
+        entries = list(entries)
+        slots = {}
+        for i, entry in enumerate(entries):
+            slots.setdefault(id(entry), []).append(i)   # by identity: entries are dicts
+        results = [None] * len(entries)
+        for entry, result, _timing in self.iter_batch(entries, concurrency, env_for):
+            results[slots[id(entry)].pop(0)] = result
         return results
 
 

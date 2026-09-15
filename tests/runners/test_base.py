@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -34,6 +35,78 @@ class TestRunBatch(unittest.TestCase):
     def test_run_entry_is_abstract(self):
         with self.assertRaises(NotImplementedError):
             base.HostRunner().run_entry({"id": "x"}, {})
+
+
+class TestIterBatch(unittest.TestCase):
+    """P07 (#1636): the loop has to be handed each entry the MOMENT it
+    finishes, not when its slowest peer does. `run_batch` joined every future
+    before returning anything, so a 42-minute 85-panel batch persisted and
+    ledgered nothing until the last entry came back -- and an interruption
+    before that lost every completed reply and its usage. `iter_batch` is that
+    seam: completion order, with the timing measured around `run_entry`
+    itself, which is also where the ledger's duration_ms now comes from (it
+    was hard-coded None at the one call site)."""
+
+    def _gated(self):
+        released = threading.Event()
+
+        class Gated(base.HostRunner):
+            host = "fake"; mode = "headless"; default_concurrency = 2
+
+            def run_entry(self, entry, env):
+                if entry["id"] == "slow":
+                    released.wait(10)
+                return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                      cost_usd=None, model=None, session_id=None,
+                                      denials=[], error=None)
+
+        return Gated(), released
+
+    def test_a_finished_entry_is_yielded_while_its_peer_is_still_running(self):
+        r, released = self._gated()
+        entries = [{"id": "slow"}, {"id": "fast"}]
+        stream = r.iter_batch(entries, 2, env_for=lambda e: {})
+        self.addCleanup(released.set)
+        self.addCleanup(stream.close)
+        entry, result, timing = next(stream)
+        # entry order says "slow" first; completion order says otherwise, and
+        # completion order is the one the loop persists in.
+        self.assertEqual("fast", entry["id"])
+        self.assertEqual("fast", result.entry_id)
+        self.assertFalse(released.is_set(), "the slow entry is still inside run_entry")
+        self.assertEqual({"started_at", "finished_at", "duration_ms"}, set(timing))
+        self.assertIsInstance(timing["duration_ms"], int)
+        self.assertGreaterEqual(timing["duration_ms"], 0)
+        # same fixed-width UTC format the ledger's own `ts` uses, so the two
+        # sort together and finished never precedes started
+        for stamp in (timing["started_at"], timing["finished_at"]):
+            self.assertRegex(stamp, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertLessEqual(timing["started_at"], timing["finished_at"])
+        released.set()
+        self.assertEqual(["slow"], [e["id"] for e, _r, _t in stream])
+
+    def test_the_slow_entrys_timing_covers_the_time_it_blocked(self):
+        r, released = self._gated()
+        threading.Timer(0.05, released.set).start()
+        timings = {e["id"]: t for e, _r, t in
+                   r.iter_batch([{"id": "slow"}, {"id": "fast"}], 2, lambda e: {})}
+        self.assertGreaterEqual(timings["slow"]["duration_ms"], 40)
+
+    def test_run_batch_drains_iter_batch_and_keeps_entry_order(self):
+        r, released = self._gated()
+        released.set()
+        out = r.run_batch([{"id": "slow"}, {"id": "fast"}], 2, env_for=lambda e: {})
+        self.assertEqual(["slow", "fast"], [x.entry_id for x in out])
+
+    def test_a_family_inherits_it_without_overriding_anything(self):
+        # docs/FAMILY-PR-GUARDRAILS.md §3: `run_entry` is the only method a
+        # family implements; the pool -- both shapes of it -- is inherited.
+        import scripts.runners.claude as claude_runner
+        import scripts.runners.codex as codex_runner
+        import scripts.runners.kimi as kimi_runner
+        for mod in (claude_runner, codex_runner, kimi_runner):
+            self.assertNotIn("iter_batch", vars(mod.Runner), mod.__name__)
+            self.assertNotIn("run_batch", vars(mod.Runner), mod.__name__)
 
 
 class TestRunnerFor(unittest.TestCase):

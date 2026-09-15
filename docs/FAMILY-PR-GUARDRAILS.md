@@ -37,7 +37,12 @@ The seam's contract, in `skill/scripts/runners/base.py`:
 - `Runner.run_entry(entry, env) -> RunResult` launches one entry as a child
   process and returns `RunResult(entry_id, ok, text, usage, cost_usd, model,
   session_id, denials, error)`. It never raises: a crash is
-  `RunResult.failed(entry_id, error)`. `run_batch` (a thread pool) is inherited.
+  `RunResult.failed(entry_id, error)`. The pool is inherited, in both its
+  shapes: `iter_batch` yields `(entry, result, timing)` as each entry
+  completes — the loop persists and ledgers it there and then (#1636) — and
+  `run_batch` drains that and returns results in entry order. Your family
+  overrides neither; only the session runner does, to print the batch
+  instead of launching it.
 - `env` is an **overlay**: `PANOPTICON_ENTRY_ID`, `PANOPTICON_WRITE_ALLOWLIST`,
   `PANOPTICON_READ_SCOPE`. The child must get `os.environ` **plus** these three;
   a child that gets only these three has no `PATH` and cannot start.
