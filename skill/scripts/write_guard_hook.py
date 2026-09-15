@@ -29,6 +29,7 @@ never silently drift apart from each other.
 """
 import json
 import os
+import shlex
 import sys
 
 _WRITE_TOOLS_LIST = ["Write", "Edit", "NotebookEdit"]
@@ -184,14 +185,35 @@ def main(argv=None):
     return 0
 
 
+def hook_command(*argv):
+    """One hook `command` string, every element shell-quoted (#1633, SEC-A1A).
+
+    A registered PreToolUse command is SHELL SOURCE: the host runs it through
+    `sh -c`, so an element interpolated into it is not an argument. The
+    `"%s"` this replaces stopped a space and nothing else, which left a `"`,
+    a backtick or a `$(...)` in an install path -- the allowlist path, the
+    scope path, the checkout the script itself sits in -- executing on every
+    tool call. Copied into each guard hook rather than imported, for the same
+    reason the settings plumbing is a copy (R-P5-5): a hook runs standing
+    alone, with no package on sys.path.
+    """
+    return " ".join(shlex.quote(a) for a in argv)
+
+
 # #495: self-locate. The old literal "skill/scripts/..." only resolved when
 # the skill lived INSIDE the target repo (the self-scan layout); installed
 # under a skills dir the hook silently never ran. The module's own absolute
-# path works under both layouts (quoted: install paths may contain spaces).
-_HOOK_CMD = 'python3 "%s"' % os.path.abspath(__file__)
-# Ordering is fixed to the original string so install()/uninstall() dict-equality
-# never produces a duplicate or stale entry when upgrading from a
-# settings.local.json written by an earlier version.
+# path works under both layouts (shell-quoted: install paths may contain
+# spaces -- or worse, #1633).
+_HOOK_ARGV = ("python3", os.path.abspath(__file__))
+_HOOK_CMD = hook_command(*_HOOK_ARGV)
+# Ordering is fixed to the original string so install()/uninstall() never
+# produce a duplicate or stale entry when upgrading from a settings.local.json
+# written by an earlier version. #1633 changed the command's QUOTING, so that
+# promise no longer rests on dict equality across versions -- `_is_our_entry`,
+# which matches on the script path rather than on the text, is what carries it
+# (measured in tests/test_hook_command_quoting.py). The entry's shape is
+# unchanged.
 _HOOK_ENTRY = {"matcher": _MATCHER,
                "hooks": [{"type": "command", "command": _HOOK_CMD}]}
 
@@ -201,12 +223,32 @@ def _hook_entry(allowlist_path=None):
 
     With `allowlist_path`, the absolute allowlist is baked into the command so
     the hook never has to infer it from its CWD (see _resolve_allowlist_path).
-    Without one, this is the legacy bare entry -- kept identical so a
-    settings.local.json written by an earlier version still compares equal."""
+    Without one, this is the legacy bare entry -- the same entry an earlier
+    version wrote, now shell-quoted (#1633), so it is recognised as ours by
+    `_is_our_entry` rather than by comparing equal to the older text."""
     if not allowlist_path:
         return _HOOK_ENTRY
-    cmd = '%s "%s"' % (_HOOK_CMD, os.path.abspath(allowlist_path))
+    cmd = hook_command(*_HOOK_ARGV, os.path.abspath(allowlist_path))
     return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": cmd}]}
+
+
+def _runs_this_script(command):
+    """True when `command` invokes THIS module -- quoted (#1633) or in the bare
+    form an earlier version wrote.
+
+    Tokenizing is what keeps our own entry recognisable once the script path is
+    quoted: a checkout path that needed escaping no longer appears verbatim in
+    the command, and an unrecognised entry is one uninstall would orphan,
+    leaving the guard armed and every later write denied. Both legacy
+    spellings tokenize cleanly, so the substring test is the fallback for a
+    command no shell can parse: one that still names this script is ours (and
+    removable), one that does not answers False rather than raising."""
+    mine = os.path.abspath(__file__)
+    try:
+        tokens = shlex.split(command)
+    except ValueError:                  # unbalanced quotes in a foreign entry
+        tokens = []
+    return mine in tokens or mine in command
 
 
 def _is_our_entry(entry):
@@ -217,7 +259,7 @@ def _is_our_entry(entry):
     if not isinstance(entry, dict):
         return False
     for h in entry.get("hooks", []) or []:
-        if isinstance(h, dict) and os.path.abspath(__file__) in str(h.get("command", "")):
+        if isinstance(h, dict) and _runs_this_script(str(h.get("command", ""))):
             return True
     return False
 
@@ -458,9 +500,11 @@ def is_armed(settings_path=None, allowlist_path=None, *, session_root=None):
     except (OSError, ValueError):
         return False, 0
     hooks = (settings.get("hooks") or {}).get("PreToolUse") or []
-    armed = any(_HOOK_CMD in (h.get("command") or "")
-                for entry in hooks if isinstance(entry, dict)
-                for h in (entry.get("hooks") or []) if isinstance(h, dict))
+    # #1633: the same predicate uninstall removes by. A literal `_HOOK_CMD`
+    # comparison read an entry written by ANY other version -- including every
+    # pre-quoting one -- as disarmed, so a guard that was in fact armed
+    # reported clear.
+    armed = any(_is_our_entry(entry) for entry in hooks)
     if not armed:
         return False, 0
     try:

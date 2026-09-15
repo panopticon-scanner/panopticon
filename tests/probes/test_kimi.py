@@ -3,6 +3,7 @@ tests/test_host_probes.py; the tests themselves are unchanged)."""
 import inspect
 import json
 import os
+import shlex
 import shutil
 import tempfile
 import unittest
@@ -318,14 +319,19 @@ class TestKimiLaunchGuard(unittest.TestCase):
 
 def _kimi_armed_config_without(mode):
     """A `build_merged_config` that arms every hook EXCEPT `mode`'s -- the
-    mutation the guardrails demand of a probe whose id says "armed"."""
+    mutation the guardrails demand of a probe whose id says "armed".
+
+    The mode is read out of the command's ARGV, not out of its text: since
+    #1633 the command is shell-quoted, so `" read "` (quote, mode, quote) --
+    which relied on the old `"%s" read "%s"` spelling -- matched nothing, and
+    this mutation silently dropped no hook at all."""
     import scripts.runners.kimi as kimi_runner
     real = kimi_runner.build_merged_config
 
     def mutated(source, scope_path, allowlist_path, *args, **kwargs):
         merged = real(source, scope_path, allowlist_path, *args, **kwargs)
         merged["hooks"] = [h for h in merged["hooks"]
-                           if '" %s "' % mode not in (h.get("command") or "")]
+                           if mode not in shlex.split(h.get("command") or "")]
         return merged
     return mutated
 

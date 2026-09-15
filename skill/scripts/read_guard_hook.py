@@ -33,13 +33,15 @@ silent allow.
 
 CLAUDE-ONLY BY CONSTRUCTION, like the write guard. Other families confine
 reads their own way (spec 7.2). Stdlib-only and self-locating: Claude Code
-runs this as ``python3 "<abs path>" "<abs scope path>"`` with no package on
-sys.path, which is why the settings plumbing below is a copy of
-write_guard_hook's rather than an import (plan 5, R-P5-5).
+runs this as ``python3 <abs path> <abs scope path>`` -- one SHELL STRING, every
+element shell-quoted (#1633) -- with no package on sys.path, which is why the
+settings plumbing below is a copy of write_guard_hook's rather than an import
+(plan 5, R-P5-5).
 """
 import glob
 import json
 import os
+import shlex
 import sys
 
 _READ_TOOLS_LIST = ["Read", "Grep", "Glob"]
@@ -327,8 +329,23 @@ def _deny_response(reason):
     })
 
 
-# #495: self-locate, quoted -- the install path may contain spaces.
-_HOOK_CMD = 'python3 "%s"' % os.path.abspath(__file__)
+def hook_command(*argv):
+    """One hook `command` string, every element shell-quoted (#1633, SEC-A1A).
+
+    A registered PreToolUse command is SHELL SOURCE: Claude Code runs it
+    through `sh -c`, so an element interpolated into it is not an argument. The
+    `"%s"` this replaces stopped a space and nothing else, which left a `"`, a
+    backtick or a `$(...)` in the scope path -- or in the checkout this script
+    sits in -- executing on every tool call. Copied into each guard hook rather
+    than imported, for the same reason the settings plumbing is (R-P5-5).
+    """
+    return " ".join(shlex.quote(a) for a in argv)
+
+
+# #495: self-locate, shell-quoted -- the install path may contain spaces, or
+# worse (#1633).
+_HOOK_ARGV = ("python3", os.path.abspath(__file__))
+_HOOK_CMD = hook_command(*_HOOK_ARGV)
 _HOOK_ENTRY = {"matcher": _MATCHER,
                "hooks": [{"type": "command", "command": _HOOK_CMD}]}
 
@@ -341,8 +358,27 @@ def _hook_entry(scope_path=None):
     file is baked into the command so the hook never infers it from CWD."""
     if not scope_path:
         return _HOOK_ENTRY
-    cmd = '%s "%s"' % (_HOOK_CMD, os.path.abspath(scope_path))
+    cmd = hook_command(*_HOOK_ARGV, os.path.abspath(scope_path))
     return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": cmd}]}
+
+
+def _runs_this_script(command):
+    """True when `command` invokes THIS module -- quoted (#1633) or in the bare
+    form an earlier version wrote.
+
+    Tokenizing is what keeps our own entry recognisable once the script path is
+    quoted: a checkout path that needed escaping no longer appears verbatim in
+    the command, and an entry uninstall cannot recognise is one it orphans,
+    leaving the guard armed. Both legacy spellings tokenize cleanly, so the
+    substring test is the fallback for a command no shell can parse: one that
+    still names this script is ours (and removable), one that does not
+    answers False rather than raising."""
+    mine = os.path.abspath(__file__)
+    try:
+        tokens = shlex.split(command)
+    except ValueError:                  # unbalanced quotes in a foreign entry
+        tokens = []
+    return mine in tokens or mine in command
 
 
 def _is_our_entry(entry):
@@ -352,7 +388,7 @@ def _is_our_entry(entry):
     if not isinstance(entry, dict):
         return False
     for h in entry.get("hooks", []) or []:
-        if isinstance(h, dict) and os.path.abspath(__file__) in str(h.get("command", "")):
+        if isinstance(h, dict) and _runs_this_script(str(h.get("command", ""))):
             return True
     return False
 

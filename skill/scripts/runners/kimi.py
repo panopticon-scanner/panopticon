@@ -156,8 +156,10 @@ _NESTED_MARKERS = ("KIMI_SESSION_ID", "KIMI_CODE_VERSION")
 
 
 def _hook_entry(matcher, mode, data_path):
+    # #1633: a SHELL STRING Kimi runs through `sh -c` -- quote every element.
     return {"event": "PreToolUse", "matcher": matcher,
-            "command": 'python3 "%s" %s "%s"' % (_GUARD, mode, os.path.abspath(data_path)),
+            "command": kimi_guard_hook.hook_command(
+                "python3", _GUARD, mode, os.path.abspath(data_path)),
             "timeout": 30}
 
 
