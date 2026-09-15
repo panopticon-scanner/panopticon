@@ -1973,3 +1973,44 @@ class TestAnEnvironmentMovingMidRunIsRecoverable(unittest.TestCase):
         status = driver.run(self._args(d, "--tools"))
         self.assertEqual(status["status"], "error")
         self.assertIn("drift", status["message"])
+
+    def test_a_completed_run_stays_complete_whatever_the_tools_marker_says(self):
+        # F3: the already-complete guard asked every phase predicate, so an
+        # environmental skip (never "done") let a finished run re-enter, re-run
+        # the scan, and hand back the OLD report as though it were fresh --
+        # which that guard's own comment calls the worst failure mode for a
+        # review tool.
+        d = self._repo()
+        args = self._args(d, "--no-tools")
+        status = driver.run(args)
+        for _ in range(30):
+            if status["status"] == "checkpoint":
+                self._inject_scouts(d)
+                req = runio._load_json(runio._pano(d, "dispatch-request.json"))
+                if isinstance(req, dict) and req.get("checkpoint") == "review":
+                    run_id = run_manifest.load_manifest(d)["run_id"]
+                    for e in req["entries"]:
+                        stem = os.path.basename(
+                            e["out_file"])[len("findings-"):-len(".json")]
+                        group, domain = stem.rsplit("-", 1)
+                        runio._write_json(e["out_file"], {
+                            "findings": [],
+                            "_panopticon": {"run_id": run_id,
+                                            "role": "domain_panel",
+                                            "domain": domain, "group": group}})
+            status = driver.run(args)
+            if status["status"] == "complete":
+                break
+        self.assertEqual(status["status"], "complete")
+        # Now make the marker read like an environmental skip from an earlier
+        # invocation -- exactly what a docker-absent scan leaves behind.
+        runio._write_json(runio._pano(d, "tools-ran.json"),
+                          {"schema_version": 1, "ran": False, "skipped": True,
+                           "crashed": False, "note": "no tool output produced",
+                           "returncode": 0,
+                           "run_id": run_manifest.load_manifest(d)["run_id"],
+                           "attempt_invocation": "an-earlier-invocation"})
+        redo = driver.run(args)
+        self.assertEqual(redo["status"], "error", redo)
+        self.assertIn("already complete", redo["message"])
+        self.assertIn("--reset", redo["message"])

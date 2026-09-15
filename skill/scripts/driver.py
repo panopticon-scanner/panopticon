@@ -683,7 +683,14 @@ def run(args, runner=subprocess.run, phases=PHASES):
     # Refuse loudly and name --reset instead; the durable report stays on disk.
     # (Guarded by `not args.reset`: a --reset run just cleared its derived
     # artifacts, so it can never be already-complete at this point.)
-    if not args.reset and engine._first_not_done(phases, review_root, manifest) is None:
+    # #1637 P08 F3: decided on the TERMINAL phase's artifact, not on "every
+    # predicate says done". The two agreed until an environmental tool skip
+    # became legitimately not-done (F1): a finished run then re-entered,
+    # re-ran the scan, found every later phase done, and handed back the
+    # PREVIOUS report as though it were fresh -- with the new tool findings
+    # never ingested. A run whose last phase has its artifact is complete,
+    # whatever an earlier phase would like to retry.
+    if not args.reset and phases and phases[-1].done(review_root, manifest):
         report = runio._pano(review_root, "report.json")
         loc = report if os.path.exists(report) else review_root
         return runio._error_status(
