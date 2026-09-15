@@ -384,6 +384,10 @@ class TestSkillMd(unittest.TestCase):
         # "any out_file in the batch" is how the gap survived two self-scans.
         self.assertIn("bound to the entry", loop)
         self.assertIn("a peer entry's artifact is not writable", loop)
+        # P07 (#1636): an operator has to be able to read that a completed
+        # entry is already safe on disk -- the run-13 batch persisted nothing
+        # for 42 minutes and an interruption lost all of it.
+        self.assertIn("as each entry completes", loop)
 
     def test_driver_run_loop_documents_scout_return_persist(self):
         # The scout checkpoint is read-only + return-persist (the scout agent

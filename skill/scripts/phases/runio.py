@@ -222,11 +222,27 @@ def _open_a_nofollow(path):
             raise
     return os.fdopen(fd, "a", encoding="utf-8")
 
-def _write_json(path, data):
+def _write_json(path, data, atomic=False):
+    """Write `data` as the artifact at `path`.
+
+    `atomic` (F6) writes `<path>.tmp` and `os.replace`s it into place -- the
+    same tmp-then-rename `persist.write_reply` uses -- for a file a reader can
+    catch mid-write. The default stays the in-place O_TRUNC write: a
+    once-per-run artifact nobody is watching does not need a second inode, and
+    the symlink defence is identical either way (the tmp goes through the same
+    `_open_w_nofollow`, and `os.replace` onto a symlinked destination replaces
+    the LINK, never the file it points at). `usage.json` is the caller that
+    asks for it: the loop rewrites it once per ENTRY now, while host children
+    are live in the reviewed tree and the guide invites an operator to read it
+    as a progress surface. A failed atomic write can leave the `.tmp` behind;
+    the artifact it would have replaced is untouched, which is the point."""
     _confine_artifact_path(path)              # SEC-X0X: before makedirs, which would
     os.makedirs(os.path.dirname(path), exist_ok=True)   # otherwise follow a symlinked dir
-    with _open_w_nofollow(path) as fh:
+    target = path + ".tmp" if atomic else path
+    with _open_w_nofollow(target) as fh:
         json.dump(data, fh, indent=2, sort_keys=True)
+    if atomic:
+        os.replace(target, path)
     return path
 
 def session_dir(manifest):
