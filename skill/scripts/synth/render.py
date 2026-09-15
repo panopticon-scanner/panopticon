@@ -5,6 +5,7 @@ import sys
 import uuid
 
 import scripts.host_disclosure as host_disclosure
+import scripts.hosts as hosts
 import scripts.redact as redact
 from . import findings as findings_mod
 from . import grading as grading_mod
@@ -165,9 +166,14 @@ def render_summary(report):
     # itself then fails closed on a non-str host / non-dict capabilities.
     hc = report["meta"].get("host_capabilities")
     hc = hc if isinstance(hc, dict) else {}
-    envelope = {"host": hc.get("host"), "capabilities": hc.get("capabilities")}
+    # D10 N3: `cli_flags` travels with the rest of the envelope. Rebuilding it
+    # from two keys dropped every operational fact before this surface could
+    # say it, so the one line an operator needed -- "replies are not
+    # schema-constrained this run" -- reached stderr and nothing else.
+    envelope = {"host": hc.get("host"), "capabilities": hc.get("capabilities"),
+                hosts.CLI_FLAGS: hc.get(hosts.CLI_FLAGS)}
     lines.insert(3, "**Host capabilities:** %s" % host_disclosure.headline(envelope))
-    for gap in reversed(host_disclosure.lines(envelope)):
+    for gap in reversed(host_disclosure.lines(envelope) + host_disclosure.notes(envelope)):
         lines.insert(4, "  - %s" % gap)
     xdom = integ.get("cross_domain_findings") or []
     if xdom:

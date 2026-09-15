@@ -306,7 +306,7 @@ def _emit_posture_disclosure(envelope):
     rather than raising, so this function does not re-validate it.
     """
     sys.stderr.write("driver: host capabilities: %s\n" % host_disclosure.headline(envelope))
-    for line in host_disclosure.lines(envelope):
+    for line in host_disclosure.lines(envelope) + host_disclosure.notes(envelope):
         sys.stderr.write("driver:   %s\n" % line)
 
 

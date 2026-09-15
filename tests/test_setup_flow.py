@@ -1157,6 +1157,24 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
         self.assertIs(True, row[1])
         self.assertEqual(host_disclosure.ALL_PROVEN, row[2])
 
+    def test_an_operational_note_does_not_downgrade_an_all_proven_row(self):
+        # N2: readiness reads `head == ALL_PROVEN` as its PASS. An operational
+        # fact appended to the capability lines made `head` something else on
+        # every headless run whose CLI lacks --json-schema, so a fully proven
+        # host reported WARN for a flag that gates nothing.
+        artifact = dict(_all_proven_artifact("claude"))
+        artifact[hosts.CLI_FLAGS] = {
+            hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": False,
+                                  "detail": "`claude --help` does not advertise it"}}
+        claiming = dataclasses.replace(hosts.HOSTS["claude"],
+                                       claims=frozenset(hosts.CAPABILITIES))
+        with mock.patch.dict(hosts.HOSTS, {"claude": claiming}), \
+                mock.patch.object(host_probes, "run_probes", return_value=artifact):
+            checks = setup_flow._check_host_shells("claude", _runner_ok)
+        row = {c[0]: c for c in checks}["host-capabilities"]
+        self.assertIs(True, row[1])
+        self.assertEqual(host_disclosure.ALL_PROVEN, row[2])
+
     def test_a_probe_failure_does_not_crash_readiness(self):
         # Readiness must survive a probe that raises; a setup command that
         # tracebacks tells the operator nothing about what to fix.
