@@ -20,6 +20,7 @@ import scripts.probes.common as probes_common
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
+from conftest import docker_probe_runner
 from scripts import hosts
 import scripts.write_guard_hook as write_guard_hook
 from test_orchestrate import (FakeRunner, LoopCase, _all_proven_artifact,
@@ -27,14 +28,21 @@ from test_orchestrate import (FakeRunner, LoopCase, _all_proven_artifact,
 
 
 def setUpModule():
-    global _patch
+    global _patch, _readiness_docker_patch
     _patch = mock.patch("scripts.host_probes.run_probes",
                         side_effect=lambda host, target, **kw: _all_proven_artifact(host))
     _patch.start()
+    # #1637 P08, same reason as tests/test_orchestrate.py: readiness leads the
+    # phase table now, and a session loop that stops there never reaches the
+    # dispatch status these tests read.
+    _readiness_docker_patch = mock.patch(
+        "scripts.phases.readiness.DOCKER_RUNNER", docker_probe_runner())
+    _readiness_docker_patch.start()
 
 
 def tearDownModule():
     _patch.stop()
+    _readiness_docker_patch.stop()
 
 
 class TestSessionMode(LoopCase):

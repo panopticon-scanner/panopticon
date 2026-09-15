@@ -26,7 +26,7 @@ import scripts.phases.verify as verify
 import scripts.phases.synthesize as synthesize
 import scripts.phases.validate as validate_phase
 
-from conftest import write_host_evidence
+from conftest import docker_probe_runner, write_host_evidence
 import scripts.driver as driver
 import scripts.diff_map as diff_map
 import scripts.groups_schema as groups_schema
@@ -51,6 +51,7 @@ def _all_proven_artifact(host="claude"):
 
 
 _run_probes_patch = None
+_readiness_docker_patch = None
 
 
 def setUpModule():
@@ -70,10 +71,21 @@ def setUpModule():
         "scripts.host_probes.run_probes",
         side_effect=lambda host, target, **kw: _all_proven_artifact(host))
     _run_probes_patch.start()
+    # #1637 P08: `readiness` now leads PHASES and fails closed on a missing
+    # tools image, so every lifecycle test here would stop at the first phase
+    # instead of reaching the one it is about. State the environment (daemon
+    # up, image present) once, with a fake runner -- the suite must still
+    # never touch a real docker. A test that means to exercise the REFUSAL
+    # patches this attribute itself (tests/phases/test_readiness.py).
+    global _readiness_docker_patch
+    _readiness_docker_patch = mock.patch(
+        "scripts.phases.readiness.DOCKER_RUNNER", docker_probe_runner())
+    _readiness_docker_patch.start()
 
 
 def tearDownModule():
     _run_probes_patch.stop()
+    _readiness_docker_patch.stop()
 
 
 class TestDriverCLIAndEndToEnd(unittest.TestCase):

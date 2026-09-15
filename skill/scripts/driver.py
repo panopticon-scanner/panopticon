@@ -34,6 +34,7 @@ import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 import scripts.phases.discovery as discovery
+import scripts.phases.readiness as readiness
 import scripts.phases.tools as tools
 import scripts.phases.review as review
 import scripts.phases.verify as verify
@@ -52,12 +53,20 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 # --reset run re-declares cells from fresh coverage.
                 "diff-hunks.json", "out-file-hashes.json",
                 "dispatch-plan-driver.json",
+                # #1637 P08: the readiness verdict is a run-scoped fact -- a
+                # --reset must not resume on the previous run's answer to it.
+                "readiness.json",
                 # #1513: the per-cell retry budget is run-scoped -- a --reset
                 # must not start with a cell already exhausted.
                 "cell-attempts.json")
 
 
+# #1637 P08 (owner ruling D7): `readiness` leads. `coverage` is the first
+# checkpoint that SPENDS anything, and everything before it is deterministic
+# and cheap -- so the one place a scanner-environment verdict can be both
+# authoritative and free is at the head of this table, ahead of `discovery`.
 PHASES = (
+    engine.Phase("readiness", "deterministic", readiness.readiness_done, readiness.readiness_execute),
     engine.Phase("discovery", "deterministic", discovery.discovery_done, discovery.discovery_execute),
     engine.Phase("coverage", "mixed", coverage.coverage_done, coverage.coverage_execute),
     engine.Phase("tools", "deterministic", tools.tools_done, tools.tools_execute),
