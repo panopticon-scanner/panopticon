@@ -156,7 +156,14 @@ def _materialize_prompts(review_root, entries, namespace=None):
         # against, for a host CLI that can constrain its output to one. Neutral
         # like `delivery` and `prompt_file`: a family with no such flag ignores
         # it, and a role with no published schema carries no key at all.
-        schema = persist.role_schema(entry)
+        #
+        # RETURN-PERSIST only, because that is what the schema describes: the
+        # object the CONTROLLER will persist. A self-writing reviewer put its
+        # findings in its own out_file under the write guard and returns a
+        # one-line confirmation, so constraining its final message to the
+        # findings envelope would demand back the very object the self-write
+        # path exists to keep out of the loop.
+        schema = persist.role_schema(entry) if entry.get("delivery") == "return_json" else None
         if schema:
             entry["output_schema"] = schema
         prompt = entry.get("prompt")

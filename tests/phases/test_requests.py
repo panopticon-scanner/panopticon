@@ -317,13 +317,30 @@ class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
 
     def test_a_review_cell_entry_names_the_findings_envelope(self):
         written = self._written({"id": "review-app-SEC", "prompt": "p",
+                                 "delivery": "return_json",
                                  "out_file": runio._pano(self.root, "findings-app-SEC.json")})
         self.assertEqual(os.path.basename(written["output_schema"]),
                          "findings-envelope-schema.json")
         self.assertEqual(written["output_schema"],
                          persist.role_schema({"out_file": "findings-app-SEC.json"}))
 
+    def test_a_self_writing_entry_names_no_schema(self):
+        # The schema describes what the CONTROLLER will persist from the reply.
+        # A self-writing reviewer's final message is a one-line confirmation --
+        # the findings went to its out_file under the write guard -- so
+        # constraining that message to the findings envelope would demand the
+        # agent return the very object the whole self-write path exists to
+        # avoid moving through the loop.
+        written = self._written({"id": "review-app-SEC", "prompt": "p",
+                                 "out_file": runio._pano(self.root, "findings-app-SEC.json")})
+        self.assertNotIn("output_schema", written)
+        returned = self._written({"id": "review-app-SEC", "prompt": "p",
+                                  "delivery": "return_json",
+                                  "out_file": runio._pano(self.root, "findings-app-SEC.json")})
+        self.assertIn("output_schema", returned)
+
     def test_a_scout_entry_names_no_schema_at_all(self):
         written = self._written({"id": "scout-app", "prompt": "p",
+                                 "delivery": "return_json",
                                  "out_file": runio._pano(self.root, "scout-app.json")})
         self.assertNotIn("output_schema", written)

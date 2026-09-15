@@ -391,7 +391,11 @@ class TestTheEntryVariesWithTheHostOnlyWhereF4SaysItDoes(unittest.TestCase):
     gemini first.
     """
 
-    _HOST_FIELDS = {"agent", "enforced", "model", "delivery"}
+    # D10 ruling 3 adds `output_schema`, and it belongs here rather than in the
+    # host-agnostic cell: it is stamped only on a RETURN-PERSIST entry, because
+    # it describes the object the controller will persist from the reply --
+    # so it follows `delivery`, which is already a host field.
+    _HOST_FIELDS = {"agent", "enforced", "model", "delivery", "output_schema"}
 
     def setUp(self):
         # ONE review root shared by both hosts -- §9.6's "one fixture, two
@@ -460,6 +464,8 @@ class TestTheEntryVariesWithTheHostOnlyWhereF4SaysItDoes(unittest.TestCase):
                 self.assertIsNone(g["model"])
                 self.assertNotIn("delivery", c)
                 self.assertEqual("return_json", g["delivery"])
+                self.assertNotIn("output_schema", c)          # self-writes: no constrained reply
+                self.assertTrue(g["output_schema"].endswith("findings-envelope-schema.json"))
                 # and the prompt BODY is identical once gemini's preamble is stripped
                 prefix = requests.RETURN_PERSIST_PREAMBLE % {"out_file": g["out_file"]}
                 marker = requests.entry_marker(c["id"])
