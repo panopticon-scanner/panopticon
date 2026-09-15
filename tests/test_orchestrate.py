@@ -507,6 +507,34 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(len(runner.launched), len(lines))
         self.assertRegex(lines[0], r"^driver loop: review-app-SEC done \(\d+ ms, 1/1\)$")
 
+    def test_a_failed_usage_write_does_not_abandon_the_rest_of_the_batch(self):
+        # F1: usage.json is a PROGRESS write -- `_finish` rewrites it from the
+        # same ledger -- and it now runs once per ENTRY instead of once per
+        # batch. Unguarded, one transient failure aborted everything after it:
+        # the entries still in flight were drained (launched, paid for) and
+        # then discarded with no reply and no ledger row, which is precisely
+        # the loss P07 exists to stop. `_finish`'s own call has always been
+        # wrapped for the same reason.
+        d, floor = self._repo(floor=("SEC", "ACC", "ARC", "TST"))
+        runner = FakeRunner()
+        calls, real = [], orchestrate.write_usage
+
+        def flaky(review_root, ledger, namespace=None):
+            calls.append(1)
+            if len(calls) == 2:                       # mid-batch, entries still running
+                raise OSError(28, "No space left on device")
+            return real(review_root, ledger, namespace)
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), \
+             mock.patch.object(orchestrate, "write_usage", side_effect=flaky):
+            status = self._run(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        rows = [row["entry_id"] for row in orchestrate.Ledger(runner.run_dir).lines()]
+        # nothing was launched and then thrown away
+        self.assertEqual(sorted(runner.launched), sorted(rows))
+        self.assertIn("usage.json not updated", err.getvalue())
+
     def test_usage_is_rewritten_after_every_entry_not_once_per_batch(self):
         d, floor = self._repo(floor=("SEC", "ACC"))
         runner = FakeRunner()
@@ -544,9 +572,14 @@ class TestHeadlessLoop(LoopCase):
         # still land the run in a reported error with both guards torn down --
         # never a traceback with the guards left armed over the rest of the
         # session (review round 1, item 3).
+        #
+        # The injected fault used to be `write_usage`, which is now
+        # best-effort in-batch (F1) and no longer ends a run; `ledger.record`
+        # is the same blast radius -- inside the per-entry body, after the
+        # launch -- and is still fatal, which is what this test is about.
         d, floor = self._repo()
         runner = FakeRunner()
-        with mock.patch.object(orchestrate, "write_usage", side_effect=RuntimeError("boom")):
+        with mock.patch.object(orchestrate.Ledger, "record", side_effect=RuntimeError("boom")):
             status = self._run(d, floor, runner)
         self.assertEqual(status["status"], "error")
         self.assertIn("RuntimeError", status["message"])
@@ -636,18 +669,20 @@ class TestHeadlessLoop(LoopCase):
         # attempt write_usage on EVERY terminal status (complete AND error),
         # not just complete, so the ledger line that already landed is always
         # reflected.
+        #
+        # F1 made the in-batch `write_usage` best-effort, so it can no longer
+        # be the fault that ends the run. The row-then-raise below is the
+        # docstring's case exactly: the ledger line has landed and the
+        # exception fires before this batch's own usage write.
         d, floor = self._repo()
         runner = FakeRunner()
-        calls = {"n": 0}
-        orig_write_usage = orchestrate.write_usage
+        real_record = orchestrate.Ledger.record
 
-        def _fail_first_call(review_root, ledger, namespace=None):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise RuntimeError("boom")
-            return orig_write_usage(review_root, ledger, namespace)
+        def _record_then_boom(self, *args, **kwargs):
+            real_record(self, *args, **kwargs)
+            raise RuntimeError("boom")
 
-        with mock.patch.object(orchestrate, "write_usage", side_effect=_fail_first_call):
+        with mock.patch.object(orchestrate.Ledger, "record", _record_then_boom):
             status = self._run(d, floor, runner)
         self.assertEqual(status["status"], "error")
         self.assertIn("RuntimeError", status["message"])

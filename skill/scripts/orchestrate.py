@@ -240,32 +240,27 @@ def _disarm_previous(guards, prev_req):
 def _resolve_host(args, review_root):
     """Which host this invocation dispatches for (I5).
 
-    `--host` when given; otherwise the RUN's own host, off its manifest.
-    `driver.run` is manifest-authoritative about this -- it refuses a `--host`
-    that contradicts the manifest as flag drift -- so a resume WITHOUT the flag
-    is still a generic (or, for a run that predates a retirement, gemini) run.
-    Resolving off
-    `runio._DEFAULTS["host"]` instead dispatched claude agents into it, with
-    no refusal anywhere on the path.
+    `--host` when given; otherwise the RUN's own host, off its manifest. `driver.run` is
+    manifest-authoritative about this -- it refuses a `--host` that contradicts the
+    manifest as flag drift -- so a resume WITHOUT the flag is still a generic (or, for a
+    run that predates a retirement, gemini) run. Resolving off `runio._DEFAULTS["host"]`
+    instead dispatched claude agents into it, with no refusal anywhere on the path.
 
-    A `--reset` run re-mints the manifest from argv, so the OUTGOING manifest
-    must not steer this invocation: fall through to the default, which is what
-    `driver.run` is about to write.
+    A `--reset` run re-mints the manifest from argv, so the OUTGOING manifest must not
+    steer this invocation: fall through to the default, which is what `driver.run` is
+    about to write.
 
-    The host it resolves may no longer be SELECTABLE: a run started before a
-    family PR's row was retired resumes off its own manifest. That is caught
-    by the caller (`loop`), not here, because this returns a name and the
-    refusal is a status document.
+    The host it resolves may no longer be SELECTABLE: a run started before a family PR's
+    row was retired resumes off its own manifest. That is caught by the caller (`loop`),
+    not here, because this returns a name and the refusal is a status document.
 
-    A FOREIGN manifest is ignored on exactly the terms `driver.run` ignores it
-    (#1093 / #run8 AGT-C1A, `runio._foreign_manifest`): a target can
-    force-commit its own `.panopticon/run-manifest.json`, and driver.run
-    discards such a file and rebuilds from the real CLI args. Reading it here
-    unconditionally handed the TARGET the choice of which family's agents got
-    dispatched at it -- a committed `"host": "gemini"` steered this
-    invocation's runner while the run itself proceeded as claude. Same check,
-    same call shape, so the two cannot drift on what "the run's host" means.
-    """
+    A FOREIGN manifest is ignored on exactly the terms `driver.run` ignores it (#1093 /
+    #run8 AGT-C1A, `runio._foreign_manifest`): a target can force-commit its own
+    `.panopticon/run-manifest.json`, and driver.run discards such a file and rebuilds
+    from the real CLI args. Reading it here unconditionally handed the TARGET the choice
+    of which family's agents got dispatched at it -- a committed `"host": "gemini"`
+    steered this invocation's runner while the run itself proceeded as claude. Same
+    check, same call shape, so the two cannot drift on what "the run's host" means. """
     if getattr(args, "host", None):
         return args.host
     if not getattr(args, "reset", False):
@@ -358,9 +353,8 @@ def loop(args):
         runner = runners_base.runner_for(host, mode)
     except ValueError as exc:
         return _status("error", str(exc))
-    # M-9: the attribute is set on the runner below whether or not the runner
-    # reads it. Say so once here rather than leaving the operator to find out
-    # from the guide.
+    # M-9: the attribute is set on the runner below whether or not the runner reads it.
+    # Say so once here rather than leaving the operator to find out from the guide.
     if getattr(args, "max_turns", None) and not getattr(runner, "HONOURS_MAX_TURNS", True):
         print("driver loop: --max-turns has no effect on host %r (its runner has no native "
               "turn limit); bound each entry with --entry-timeout" % host,
@@ -535,7 +529,15 @@ def loop(args):
                         failures[eid] = failures.get(eid, 0) + 1
                         last_error[eid] = refusal or result.error
                     done += 1
-                    write_usage(review_root, ledger, namespace)
+                    # Best-effort, exactly as `_finish`'s own call is (F1): derived
+                    # from a ledger already on disk, and `_finish` rewrites it. Fatal
+                    # here, it discarded every entry still in flight -- drained, paid
+                    # for, never persisted -- the very loss P07 exists to stop.
+                    try:
+                        write_usage(review_root, ledger, namespace)
+                    except Exception as exc:   # noqa: BLE001 -- progress, not evidence
+                        print("driver loop: usage.json not updated: %s: %s"
+                              % (type(exc).__name__, exc), file=sys.stderr, flush=True)
                     # "progress visible without inspecting processes": one
                     # line, stderr; stdout's status contract is untouched.
                     print("driver loop: %s done (%s ms, %d/%d)"
@@ -574,17 +576,16 @@ def _dispatch_exit(review_root, req, pending, namespace):
     """Session mode: the runner printed the batch; exit with a dispatch status
     and leave the guards armed (spec 4.3).
 
-    C2: `dispatch_request` comes from `requests.request_path` -- the one
-    accessor that knows a review's request is per-run
-    (`runs/<tag>/dispatch-request.json`) while setup keeps its own top-level
-    file (#1507). It used to be read off the request DOCUMENT, which carries
-    no such key (schema_version, run_id, checkpoint, group, entries), so the
-    field was None on every dispatch and the host had no path to
-    cross-reference the printed entries against.
+    C2: `dispatch_request` comes from `requests.request_path` -- the one accessor that
+    knows a review's request is per-run (`runs/<tag>/dispatch-request.json`) while setup
+    keeps its own top-level file (#1507). It used to be read off the request DOCUMENT,
+    which carries no such key (schema_version, run_id, checkpoint, group, entries), so
+    the field was None on every dispatch and the host had no path to cross-reference the
+    printed entries against.
 
-    M4: the hints carry `--setup` in the setup namespace. Without it both
-    `driver persist <id>` and the follow-up `driver loop` resolve the REVIEW
-    namespace, where the entry does not exist.
+    M4: the hints carry `--setup` in the setup namespace. Without it both `driver
+    persist <id>` and the follow-up `driver loop` resolve the REVIEW namespace, where
+    the entry does not exist.
     """
     setup = " --setup" if namespace == "setup" else ""
     return _status("dispatch", "session mode: run the printed entries, persist each "
