@@ -10,6 +10,7 @@ from unittest import mock
 from scripts import hosts
 from conftest import write_host_evidence
 import scripts.phases.runio as runio
+import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review
@@ -236,3 +237,63 @@ class TestEntryMarkerAndScope(unittest.TestCase):
         from scripts import read_guard_hook
         self.assertEqual({"files": ["/a"], "dirs": [], "reads": []}, requests.scope(files=["/a"]))
         self.assertEqual(set(read_guard_hook.SCOPE_KEYS), set(requests.scope()))
+
+
+class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
+    """D10 ruling 2: the next attempt is told why the last one was refused.
+
+    The retry used to be the same prompt, verbatim: `driver.run` regenerates
+    the dispatch request and `_materialize_prompts` writes it out, and nothing
+    anywhere told the agent that its previous reply had been thrown away or
+    what was wrong with it. Run-13 spent three launches of one cell that way.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(runio._pano(self.root))
+        self.out_file = runio._pano(self.root, "findings-app-SEC.json")
+        self.entry = {"id": "review-app-SEC", "prompt": "review the app cell",
+                      "out_file": self.out_file, "run_id": "RID",
+                      "group": "app", "domain": "SEC"}
+
+    def _write(self, entry):
+        path = requests.write_dispatch_request(self.root, "RID", "review", None, [entry])
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)["entries"][0]
+
+    def _refuse(self, reason):
+        return persist.retain_rejected(persist.run_dir(self.root), self.entry,
+                                       '{"findings": []}', reason)
+
+    def test_an_entry_with_no_record_is_what_it_has_always_been(self):
+        written = self._write(self.entry)
+        self.assertEqual(written["prompt"], "review the app cell")
+        self.assertNotIn("prior_rejection", written)
+
+    def test_the_reason_reaches_both_the_prompt_and_the_prompt_file(self):
+        self._refuse("reply carries no _panopticon stamp")
+        written = self._write(self.entry)
+        self.assertIn("reply carries no _panopticon stamp", written["prompt"])
+        self.assertIn("attempt 1", written["prompt"])
+        self.assertIn('"findings"', written["prompt"].split("review the app cell")[1])
+        self.assertEqual({"attempt": 1, "reason": "reply carries no _panopticon stamp"},
+                         written["prior_rejection"])
+        with open(written["prompt_file"], encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), written["prompt"])
+
+    def test_the_block_names_the_latest_refusal_only(self):
+        self._refuse("first reason")
+        self._refuse("second reason")
+        written = self._write(self.entry)
+        self.assertEqual(2, written["prior_rejection"]["attempt"])
+        self.assertIn("second reason", written["prompt"])
+        self.assertNotIn("first reason", written["prompt"])
+
+    def test_the_envelope_shape_is_the_one_the_role_is_refused_against(self):
+        self.assertIn('"verdicts"', persist.envelope_shape(
+            {"out_file": "/r/.panopticon/verdicts/verdicts-app-SEC.json"}))
+        self.assertIn('"findings"', persist.envelope_shape(self.entry))
+        self.assertIn('"domains"', persist.envelope_shape(
+            {"out_file": "/r/.panopticon/scout-app.json"}))

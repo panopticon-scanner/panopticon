@@ -1135,10 +1135,16 @@ class TestRefusedRepliesAreRetained(LoopCase):
 
         SECRET = "ghp_" + "B" * 36
 
+        def __init__(self, host="claude"):
+            super().__init__(host)
+            self.prompts, self.priors = [], []
+
         def run_entry(self, entry, env):
             if not entry["id"].startswith("review-"):
                 return super().run_entry(entry, env)
             self.launched.append(entry["id"])
+            self.prompts.append(entry["prompt"])
+            self.priors.append(entry.get("prior_rejection"))
             body = {"findings": [{"title": "issue at " + self.SECRET, "severity": "HIGH",
                                   "domain": entry["domain"], "code": entry["domain"] + "-A1A",
                                   "category": "authz",
@@ -1184,6 +1190,21 @@ class TestRefusedRepliesAreRetained(LoopCase):
         self.assertIn("_panopticon", record["reason"])
         self.assertIn("[REDACTED_TOKEN]", record["reply"])
         self.assertNotIn(self.RefusingRunner.SECRET, record["reply"])
+
+    def test_the_next_launch_of_a_refused_entry_is_told_why(self):
+        # D10 ruling 2, end to end: the retry goes out through the ordinary
+        # `driver.run` -> `write_dispatch_request` path, so the only way the
+        # agent hears about the refusal is the prompt the loop hands it.
+        d, floor = self._repo()
+        runner = self.RefusingRunner()
+        self._run_loop(d, floor, runner)
+        self.assertEqual(3, len(runner.prompts))
+        self.assertNotIn("refused", runner.prompts[0])
+        self.assertIsNone(runner.priors[0])
+        self.assertIn("_panopticon", runner.prompts[1])
+        self.assertIn("attempt 1", runner.prompts[1])
+        self.assertEqual(1, runner.priors[1]["attempt"])
+        self.assertEqual(2, runner.priors[2]["attempt"])
 
     def test_a_clean_run_writes_no_records_at_all(self):
         d, floor = self._repo()

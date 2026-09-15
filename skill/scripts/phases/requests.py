@@ -11,8 +11,12 @@ import scripts.synth.plan as plan_mod
 from scripts import hosts
 from scripts import model_resolver
 from scripts import read_guard_hook
-from . import runio
 from . import coverage
+# D10 ruling 2: the retry prompt carries the last refusal, and `persist` owns
+# both the records and the run-folder resolver. A mutual pair like
+# coverage<->requests: read by module attribute, at call time only.
+from . import persist
+from . import runio
 
 
 _PROMPT_FILE_SAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -138,11 +142,25 @@ def _materialize_prompts(review_root, entries, namespace=None):
     `skill/workflows/dispatch.js`, does require it, because it deliberately
     never carries the inline prompt into the session's context."""
     out = []
+    # D10 ruling 2: the ONE chokepoint both modes pass through, so a refusal
+    # reaches the next attempt whoever dispatches it. Resolved once, and
+    # best-effort: a run folder that cannot be resolved costs the retry note,
+    # never the dispatch.
+    try:
+        run_folder = persist.run_dir(review_root, namespace)
+    except (OSError, ValueError):
+        run_folder = None
     for entry in entries:
         entry = dict(entry)
         prompt = entry.get("prompt")
         eid = entry.get("id")
         if isinstance(prompt, str) and prompt and eid:
+            # BEFORE the file is written, so `prompt` and `prompt_file` agree:
+            # a host that dispatches from either one hears about the refusal.
+            block, prior = persist.retry_block(run_folder, entry)
+            if block:
+                prompt = entry["prompt"] = prompt + block
+                entry["prior_rejection"] = prior
             path = _prompt_file_path(review_root, eid, namespace)
             try:
                 runio._confine_artifact_path(path)

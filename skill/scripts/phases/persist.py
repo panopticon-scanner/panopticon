@@ -51,6 +51,65 @@ def run_dir(review_root, namespace=None):
     return os.path.dirname(probes_common.headless_settings_path(review_root, namespace))
 
 
+# D10 ruling 2: what the retry is told to return, one line per role. The
+# refusal reason says what was wrong; this says what right looks like, in the
+# shape the role's own acceptance checks -- `accepts` below is the authority
+# on each of these, and they are written to match it, not the templates.
+ENVELOPE_SHAPES = {
+    "scout": '{"domains": [...], "files": [...], "tools": [...]}',
+    "setup-scan": "a single JSON object (the setup proposal)",
+    "review-cell": '{"findings": [ ... ], "_panopticon": {"run_id": "...", "group": "...", "domain": "..."}}',
+    "verify-cell": '{"verdicts": [ ... ], "_panopticon": {"run_id": "...", "group": "...", "domain": "...", "stage": "..."}}',
+    "tool-advisor": '{"finding_id": "...", "verdict": "CONFIRMED|REJECTED|NEEDS_MORE_INFO", "confidence": "...", "reasoning": "...", "explored": [...], "references": [...], "citations": {...}}',
+}
+# Fixed text, not a per-role paragraph: the agent is being asked to repeat
+# itself in a different wrapper, and the one thing that varies is the reason.
+RETRY_PROMPT_BLOCK = (
+    "\n\n## Your previous reply was refused -- return the same answer, correctly wrapped\n\n"
+    "Your previous attempt %(attempt)s was refused: %(reason)s\n"
+    "Return the SAME findings/verdicts you returned then; fix only the FORMAT.\n"
+    "The required envelope is exactly: %(shape)s\n")
+
+
+def envelope_shape(entry):
+    """The one-line envelope this entry's role is accepted against."""
+    return ENVELOPE_SHAPES.get(role_of(entry)) or "a single JSON object"
+
+
+def last_rejection(run_folder, entry_id):
+    """The most recent `rejected/` record for this entry, or None."""
+    if not run_folder or not entry_id:
+        return None
+    safe_id = requests._PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
+    directory = os.path.join(run_folder, REJECTED_DIR)
+    attempt = _next_attempt(directory, safe_id) - 1
+    if attempt < 1:
+        return None
+    record = runio._load_json(os.path.join(directory, "%s-%d.json" % (safe_id, attempt)))
+    return record if isinstance(record, dict) else None
+
+
+def retry_block(run_folder, entry):
+    """(prompt_block, prior_rejection) for an entry whose last reply was
+    refused; (None, None) for one with no record -- D10 ruling 2.
+
+    The retry is otherwise the SAME prompt, regenerated: `driver.run` rebuilds
+    the dispatch request from disk and nothing in it knows an attempt ever
+    happened. Run-13 spent three launches of one cell that way, each one
+    making the identical mistake, because nobody ever told the agent what the
+    controller had objected to.
+
+    The LATEST record only: a reply refused twice gets told about the second
+    refusal, which is the one its next attempt has to clear.
+    """
+    record = last_rejection(run_folder, entry.get("id") if isinstance(entry, dict) else None)
+    if record is None:
+        return None, None
+    prior = {"attempt": record.get("attempt"), "reason": record.get("reason")}
+    return RETRY_PROMPT_BLOCK % {"attempt": prior["attempt"], "reason": prior["reason"],
+                                 "shape": envelope_shape(entry)}, prior
+
+
 def _next_attempt(directory, safe_id):
     """1 + the highest attempt already recorded for this entry. Keyed on the
     numbers on disk rather than on a count, so a record an operator deleted
