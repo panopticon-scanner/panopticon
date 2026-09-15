@@ -147,6 +147,11 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     the target (N2). `None` until the loop's `prepare` has run.
     """
     findings = {}          # capability -> list of (state, by, detail)
+    # D10 F1: operational CLI facts, filled by the probe that already reads
+    # `<cli> --help` and written BESIDE `capabilities` (see hosts.CLI_FLAGS):
+    # inside it, a CLI upgraded between two turns of a resumable loop would
+    # read as posture drift and discard everything already dispatched.
+    cli_flags = {}
     session_root = session_root or os.getcwd()
 
     def record(capability, result):
@@ -173,7 +178,8 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
                 host, session_root=session_root, settings_path=settings_path),
         claude_probes.USAGE_SOURCE:
             lambda: claude_probes.probe_usage_source(
-                host, session_root, home=home, settings_path=settings_path),
+                host, session_root, home=home, settings_path=settings_path,
+                cli_flags=cli_flags),
         claude_probes.ENTRY_MODEL_BOUND:
             lambda: claude_probes.probe_entry_model_bound(host, registration_dir),
         claude_probes.READ_GUARD_ARMED:
@@ -245,7 +251,8 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         capabilities[capability] = _row(
             state, agreeing[0][1], "; ".join(r[2] for r in agreeing))
     return {"schema_version": SCHEMA_VERSION, "host": host,
-            "probed_at": run_manifest._now_iso(), "capabilities": capabilities}
+            "probed_at": run_manifest._now_iso(), "capabilities": capabilities,
+            hosts.CLI_FLAGS: cli_flags}
 
 
 def capabilities_of(artifact):

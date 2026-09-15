@@ -318,3 +318,37 @@ class TestTheFourSurfacesSayTheSameThing(unittest.TestCase):
         for name, text in self._surfaces(MIXED).items():
             with self.subTest(surface=name):
                 self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, text)
+
+
+class TestTheConstrainedOutputDisclosure(unittest.TestCase):
+    """D10 F1: when the driver omits the output schema, it says so once, on
+    the surface that already speaks about this host's measured facts."""
+
+    def _envelope(self, fact):
+        body = {"schema_version": 1, "host": "claude", "probed_at": "t",
+                "capabilities": {c: {"state": hosts.PROVEN, "by": "fixture",
+                                     "detail": "fixture"}
+                                 for c in hosts.CAPABILITIES}}
+        if fact is not None:
+            body[hosts.CLI_FLAGS] = {hosts.OUTPUT_SCHEMA: fact}
+        return body
+
+    def test_a_cli_without_the_flag_gets_one_line_naming_it(self):
+        lines = host_disclosure.lines(self._envelope(
+            {"flag": "--json-schema", "advertised": False,
+             "detail": "`/usr/bin/claude --help` does not advertise --json-schema"}))
+        self.assertEqual(1, len(lines))
+        self.assertIn("--json-schema", lines[0])
+        self.assertIn("not schema-constrained", lines[0])
+
+    def test_an_unanswered_read_says_so_rather_than_claiming_a_refusal(self):
+        lines = host_disclosure.lines(self._envelope(
+            {"flag": "--json-schema", "advertised": None, "detail": "`--help` timed out"}))
+        self.assertEqual(1, len(lines))
+        self.assertIn("not schema-constrained", lines[0])
+        self.assertIn("timed out", lines[0])
+
+    def test_an_advertised_flag_and_an_unasked_host_say_nothing(self):
+        for fact in ({"flag": "--json-schema", "advertised": True, "detail": "d"}, None):
+            with self.subTest(fact=fact):
+                self.assertEqual([], host_disclosure.lines(self._envelope(fact)))

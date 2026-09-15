@@ -101,19 +101,24 @@ from scripts.phases import runio as _runio  # noqa: E402
 # reports UNKNOWN and every one of those sites goes the other way. This is the
 # one place that writes it, so every phase test states the same fixture the
 # same way rather than five near-identical inline JSON blobs.
-def write_host_evidence(review_root, states, host="claude"):
+def write_host_evidence(review_root, states, host="claude", cli_flags=None):
     """A host-capabilities.json proving exactly `states` (a
     {capability: state} mapping); every other capability is UNKNOWN. Lands
     wherever `runio.host_evidence(review_root)` will look for it -- the
     per-run folder once a manifest is on disk, the flat top-level path
-    otherwise -- so a test needs no manifest just to prove a capability."""
+    otherwise -- so a test needs no manifest just to prove a capability.
+
+    `cli_flags` (D10 F1) seeds the OPERATIONAL block beside `capabilities` --
+    e.g. `{hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": True}}`.
+    Omitted by default, which is the fail-safe "nobody asked the CLI" state
+    every entry builder must read as "do not pass a schema"."""
     capabilities = {name: {"state": states.get(name, _hosts.UNKNOWN),
                            "by": "fixture", "detail": "fixture"}
                     for name in _hosts.CAPABILITIES}
     return _runio._write_json(
         _runio._pano(review_root, _runio.HOST_CAPABILITIES),
         {"schema_version": 1, "host": host, "probed_at": "2026-09-10T00:00:00Z",
-         "capabilities": capabilities})
+         "capabilities": capabilities, _hosts.CLI_FLAGS: cli_flags or {}})
 
 REAL_DOCKER_AVAILABLE = _run_tools.docker_available
 

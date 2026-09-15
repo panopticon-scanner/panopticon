@@ -1158,3 +1158,63 @@ class TestReadGuardArmedProbe(unittest.TestCase):
                 state, _by, _d = claude_probes.probe_read_guard_armed(
                     "claude", settings_path=os.path.join(run_dir, "host-settings.json"))
             self.assertEqual(hosts.PROVEN, state)
+
+
+class TestTheSameHelpReadAnswersTheOptionalFlags(TestUsageSourceProbe):
+    """D10 F1: the constrained-output flag is gated on the CLI advertising it,
+    and the answer comes from the `--help` read the usage probe ALREADY makes.
+
+    A machine whose `claude` predates `--json-schema` exits non-zero on an
+    unknown option and prints no envelope, so every return-persist entry fails
+    its three launches and the run dies naming an entry rather than the flag.
+    One read, two answers: no second launch, no new launch site.
+    """
+
+    def _probe(self, help_text, cli_flags):
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), self._help(help_text):
+                state = claude_probes.probe_usage_source(
+                    "claude", project, settings_path=self._headless_settings(project),
+                    cli_flags=cli_flags)
+        return state
+
+    def test_a_cli_that_advertises_it_is_recorded_advertised_from_one_read(self):
+        flags = {}
+        state, _by, _detail = self._probe(
+            "Usage: claude [options]\n  -p, --print\n  --output-format <format>\n"
+            "  --json-schema <schema>   JSON Schema for structured output\n", flags)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertEqual(1, len(self.help_calls))          # ONE --help, both answers
+        self.assertEqual({"flag": "--json-schema", "advertised": True},
+                         {k: v for k, v in flags[hosts.OUTPUT_SCHEMA].items()
+                          if k != "detail"})
+
+    def test_a_cli_without_the_flag_is_recorded_not_advertised(self):
+        flags = {}
+        state, _by, _detail = self._probe(
+            "Usage: claude [options]\n  -p, --print\n  --output-format <format>\n", flags)
+        self.assertEqual(hosts.PROVEN, state)              # the ENVELOPE flags are there
+        self.assertIs(False, flags[hosts.OUTPUT_SCHEMA]["advertised"])
+        self.assertIn("--json-schema", flags[hosts.OUTPUT_SCHEMA]["detail"])
+
+    def test_a_help_that_cannot_be_read_records_nothing_to_go_on(self):
+        # UNKNOWN, never guessed: the consumer treats an absent or null answer
+        # exactly as it treats False -- no schema on the argv.
+        import subprocess
+        import scripts.runners.claude as claude_runner
+
+        def hangs(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        flags = {}
+        with tempfile.TemporaryDirectory() as project, \
+                tempfile.TemporaryDirectory() as bin_dir:
+            self._cli_on_path(bin_dir)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    mock.patch.object(claude_runner, "DEFAULT_RUNNER", hangs):
+                state, _by, _detail = claude_probes.probe_usage_source(
+                    "claude", project, settings_path=self._headless_settings(project),
+                    cli_flags=flags)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIsNone(flags.get(hosts.OUTPUT_SCHEMA, {}).get("advertised"))

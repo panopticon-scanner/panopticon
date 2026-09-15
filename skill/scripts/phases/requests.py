@@ -150,6 +150,16 @@ def _materialize_prompts(review_root, entries, namespace=None):
         run_folder = persist.run_dir(review_root, namespace)
     except (OSError, ValueError):
         run_folder = None
+    # D10 F1: does THIS machine's CLI take a constrained-output schema? Read
+    # from the run's own evidence artifact, once, and only `True` counts --
+    # absent (nobody asked: session mode, a host whose row maps no usage
+    # probe) and `False` (asked, not advertised) are the same answer, and it
+    # is the answer that leaves a launch exactly as it was before ruling 3.
+    # Fail-safe, because the alternative is fatal: a CLI that does not know
+    # the flag exits non-zero on it, prints no envelope, and every entry of
+    # every checkpoint burns its three launches.
+    advertised = runio.host_cli_flags(review_root).get(
+        hosts.OUTPUT_SCHEMA, {}).get("advertised") is True
     for entry in entries:
         entry = dict(entry)
         # D10 ruling 3: the published schema this entry's reply is accepted
@@ -163,7 +173,8 @@ def _materialize_prompts(review_root, entries, namespace=None):
         # one-line confirmation, so constraining its final message to the
         # findings envelope would demand back the very object the self-write
         # path exists to keep out of the loop.
-        schema = persist.role_schema(entry) if entry.get("delivery") == "return_json" else None
+        schema = (persist.role_schema(entry)
+                  if advertised and entry.get("delivery") == "return_json" else None)
         if schema:
             entry["output_schema"] = schema
         prompt = entry.get("prompt")

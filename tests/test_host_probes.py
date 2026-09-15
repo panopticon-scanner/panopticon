@@ -396,3 +396,33 @@ class TestTheEvidenceLoader(unittest.TestCase):
                     self.assertEqual(
                         {hosts.UNKNOWN},
                         set(hosts.posture("claude", evidence).values()))
+
+
+class TestTheOperationalCliFlagsBlock(unittest.TestCase):
+    """D10 F1: the constrained-output answer is an OPERATIONAL fact, recorded
+    beside `capabilities` rather than inside it.
+
+    Inside, it would be drift-compared: a CLI upgraded between two invocations
+    of a resumable loop would refuse the resume and discard everything already
+    dispatched, for a flag that gates nothing about enforcement.
+    """
+
+    def test_the_artifact_carries_the_block_outside_capabilities(self):
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration:
+            art = host_probes.run_probes("claude", target, registration_dir=registration)
+        self.assertIn(hosts.CLI_FLAGS, art)
+        self.assertIsInstance(art[hosts.CLI_FLAGS], dict)
+        self.assertNotIn(hosts.CLI_FLAGS, art["capabilities"])
+        self.assertNotIn(hosts.OUTPUT_SCHEMA, art["capabilities"])
+
+    def test_a_flag_that_appears_or_disappears_is_not_posture_drift(self):
+        before = {"schema_version": 1, "host": "claude", "probed_at": "t",
+                  "capabilities": {}, hosts.CLI_FLAGS: {
+                      hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": False,
+                                            "detail": "d"}}}
+        after = dict(before, **{hosts.CLI_FLAGS: {
+            hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": True,
+                                  "detail": "d"}}})
+        self.assertEqual(host_probes.capabilities_of(before),
+                         host_probes.capabilities_of(after))

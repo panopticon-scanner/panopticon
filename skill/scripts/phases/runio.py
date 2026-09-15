@@ -10,6 +10,7 @@ import yaml
 import scripts.diff_map as diff_map
 import scripts.evidence as evidence
 import scripts.groups_schema as groups_schema
+import scripts.hosts as hosts
 import scripts.ocrdb as ocrdb
 import scripts.redact as redact
 import scripts.run_manifest as run_manifest
@@ -286,6 +287,19 @@ def host_evidence(review_root):
     body = _load_json(_pano(review_root, HOST_CAPABILITIES))
     caps = body.get("capabilities") if isinstance(body, dict) else None
     return caps if isinstance(caps, dict) else {}
+
+def host_cli_flags(review_root):
+    """This run's OPERATIONAL CLI facts (hosts.CLI_FLAGS), or {} (D10 F1).
+
+    The sibling of `host_evidence`, reading the other block of the same
+    artifact and failing closed the same way: {} means nobody asked the CLI,
+    and every consumer reads that as "do not use the flag". Separate from the
+    capabilities block on purpose -- these facts gate nothing, and
+    `driver._establish_host_posture` must not refuse a resume because the
+    operator upgraded their CLI mid-run."""
+    body = _load_json(_pano(review_root, HOST_CAPABILITIES))
+    flags = body.get(hosts.CLI_FLAGS) if isinstance(body, dict) else None
+    return flags if isinstance(flags, dict) else {}
 
 def _json_parses(path):
     return _load_json(path) is not None

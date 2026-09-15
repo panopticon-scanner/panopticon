@@ -146,8 +146,8 @@ def _flag_advertised(flag, text):
     return re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(flag), text) is not None
 
 
-def _cli_advertises(launch, found, flags, env=None, cwd=None):
-    """(verdict, why): does `<found> --help`, run through the RUNNER's own
+def _cli_advertises(launch, found, flags, env=None, cwd=None, optional=()):
+    """(verdict, why, optional_flags): does `<found> --help`, run through the RUNNER's own
     launcher and under the RUNNER's own environment, exit 0 and advertise
     every flag in `flags`? None means it could not be run at all -- a probe
     that cannot measure says UNKNOWN, never guesses. Going through the
@@ -163,7 +163,16 @@ def _cli_advertises(launch, found, flags, env=None, cwd=None):
     under an environment the runner never uses measures the wrong thing. It
     works today only because `--help` is answered at argparse level; the day
     that refusal moves earlier in start-up, every self-scan run from inside a
-    session would refute usage_ledger."""
+    session would refute usage_ledger.
+
+    `optional` (D10 F1) is answered from the SAME read: `optional_flags` maps
+    each of those flags to True/False, and the verdict is unaffected by them.
+    A separate argument rather than more `flags` because the two mean
+    different things -- a missing REQUIRED flag refutes the capability, while
+    a missing optional one is an operational fact about what this CLI build
+    can be asked to do. `{}` whenever the read could not be made at all: a
+    probe that cannot measure says nothing, and every consumer reads silence
+    as "do not use it"."""
     import scripts.runners.base as runners_base
     try:
         proc = launch([found, "--help"], capture_output=True, text=True,
@@ -187,16 +196,17 @@ def _cli_advertises(launch, found, flags, env=None, cwd=None):
         # status. The sibling block in _headless_usage_source has caught bare
         # Exception for exactly this reason since it was written.
         return None, ("`%s --help` could not run: %s: %s"
-                      % (found, type(exc).__name__, exc))
+                      % (found, type(exc).__name__, exc)), {}
     if proc.returncode != 0:
         return False, ("`%s --help` exited %s: not a CLI the headless runner can drive"
-                       % (found, proc.returncode))
+                       % (found, proc.returncode)), {}
     text = "%s\n%s" % (proc.stdout or "", proc.stderr or "")
+    extra = {f: _flag_advertised(f, text) for f in optional}
     missing = [f for f in flags if not _flag_advertised(f, text)]
     if missing:
         return False, ("`%s --help` does not advertise %s, so a launch would print no "
-                       "JSON envelope to read usage from" % (found, ", ".join(missing)))
-    return True, "`%s --help` advertises %s" % (found, ", ".join(flags))
+                       "JSON envelope to read usage from" % (found, ", ".join(missing))), extra
+    return True, "`%s --help` advertises %s" % (found, ", ".join(flags)), extra
 
 
 SHADOW_SHELL_SCAN = "shadow-shell-scan"

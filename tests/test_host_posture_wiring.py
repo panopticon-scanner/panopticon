@@ -432,7 +432,12 @@ class TestTheEntryVariesWithTheHostOnlyWhereF4SaysItDoes(unittest.TestCase):
         # first line regardless of this flag.
         manifest = {"run_id": "R", "security_mode": "standard", "host": host,
                     "flags": {"allow_unenforced": True}}
-        write_host_evidence(root, states, host=host)
+        # D10 F1: the constrained-output stamp is gated on the CLI having been
+        # asked, so the fixture answers that question too -- this test is about
+        # the SHAPE of the entry, not about what a `--help` read returned.
+        write_host_evidence(root, states, host=host, cli_flags={
+            hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": True,
+                                  "detail": "fixture"}})
         menu_stub = mock.patch(
             "scripts.ocrdb.domain_menu",
             return_value=[{"code": "SEC-A1A", "name": "x", "severity": "HIGH", "cwe": []}])

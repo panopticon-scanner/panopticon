@@ -57,6 +57,23 @@ CAPABILITIES = (TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
 # surfaces. What they do not do is halt a run in flight.
 OPERATIONAL_CAPABILITIES = (MODEL_BINDING, USAGE_LEDGER)
 
+# --- operational CLI facts (D10 F1) ----------------------------------------
+# Not capabilities: these are things the host's CLI turned out to accept, not
+# controls the run relies on. They live in their OWN block of the evidence
+# artifact, beside `capabilities` rather than inside it, for one reason --
+# `driver._establish_host_posture` refuses a run whose capabilities moved, and
+# a CLI upgraded between two turns of a resumable loop must not discard
+# everything already dispatched over a flag that gates nothing.
+#
+# Named here, in the registry, because four modules in three processes read
+# the same two strings: the probe that records the fact, the entry builder
+# that consumes it, the artifact accessor, and the disclosure surface.
+CLI_FLAGS = "cli_flags"
+# The fact itself: {"flag": "--json-schema", "advertised": True|False|None,
+# "detail": "<what the --help read saw>"}. `advertised` is a tri-state and
+# only True means yes -- absent, null and False are all "do not pass one".
+OUTPUT_SCHEMA = "output_schema"
+
 # --- capability states (F3 consumes these; defined here so one module owns
 # the vocabulary) ----------------------------------------------------------
 PROVEN, REFUTED, UNKNOWN = "proven", "refuted", "unknown"

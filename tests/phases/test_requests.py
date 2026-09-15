@@ -304,11 +304,15 @@ class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
     whose CLI takes one can constrain the reply without knowing what a role
     is. Host-agnostic, exactly as `delivery` and `prompt_file` are."""
 
+    ADVERTISED = {hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": True,
+                                        "detail": "fixture"}}
+
     def setUp(self):
         self._t = tempfile.TemporaryDirectory()
         self.root = os.path.realpath(self._t.name)
         self.addCleanup(self._t.cleanup)
         os.makedirs(runio._pano(self.root))
+        write_host_evidence(self.root, {}, cli_flags=self.ADVERTISED)
 
     def _written(self, entry):
         path = requests.write_dispatch_request(self.root, "RID", "review", None, [entry])
@@ -338,6 +342,25 @@ class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
                                   "delivery": "return_json",
                                   "out_file": runio._pano(self.root, "findings-app-SEC.json")})
         self.assertIn("output_schema", returned)
+
+    def test_nothing_is_stamped_until_the_cli_says_it_takes_one(self):
+        # D10 F1, the fail-safe: a machine whose `claude` predates
+        # `--json-schema` exits non-zero on the unknown option and prints no
+        # envelope, so EVERY return-persist entry would fail its three
+        # launches and the run would die naming an entry, not the flag.
+        # Absent evidence and a refuted flag are the same answer -- omit --
+        # which is byte-identical to the behaviour before ruling 3.
+        cell = {"id": "review-app-SEC", "prompt": "p", "delivery": "return_json",
+                "out_file": runio._pano(self.root, "findings-app-SEC.json")}
+        for flags in ({}, {hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": False,
+                                                 "detail": "fixture"}},
+                      {hosts.OUTPUT_SCHEMA: {"flag": "--json-schema", "advertised": None,
+                                             "detail": "fixture"}}):
+            with self.subTest(flags=flags):
+                write_host_evidence(self.root, {}, cli_flags=flags)
+                self.assertNotIn("output_schema", self._written(cell))
+        write_host_evidence(self.root, {}, cli_flags=self.ADVERTISED)
+        self.assertIn("output_schema", self._written(cell))
 
     def test_a_scout_entry_names_no_schema_at_all(self):
         written = self._written({"id": "scout-app", "prompt": "p",

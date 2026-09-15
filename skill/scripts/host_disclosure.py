@@ -25,6 +25,12 @@ try:
 except ImportError:
     import hosts
 
+# The probe that records the operational CLI facts (D10 F1); named here
+# because `_output_schema_line` must say WHICH measurement it is reporting and
+# this module may not import the probes package (it is I/O-free by design, and
+# imports only the registry).
+USAGE_SOURCE_PROBE = "usage-source"
+
 ALL_PROVEN = ("all measured and PROVEN -- "
               "every control this run relies on was verified, not assumed")
 NO_EVIDENCE = ("NO EVIDENCE -- nobody looked. Nothing this "
@@ -150,7 +156,33 @@ def lines(envelope):
         out.append("%s is %s on host %r -- %s: %s. fix: %s"
                    % (capability, posture[capability], host, probe_clause,
                       detail, remedy(capability, host)))
+    out += _output_schema_line(envelope, host)
     return out
+
+
+def _output_schema_line(envelope, host):
+    """The one line that says a reply will NOT be schema-constrained (D10 F1).
+
+    Not a capability line: this gates nothing and refuses nothing, so it
+    carries no state and no remedy in `remedy()`'s sense -- the run is correct
+    either way, because the driver validates every returned reply itself. It is
+    here because it is a MEASURED fact about this host on this machine, and
+    spec 5.1's rule ("name the capability, the host, the probe, and the
+    remedy") is the reason all such facts are said in one voice.
+
+    Silent when the flag IS advertised, and silent when nothing asked: a host
+    whose row maps no `--help` read has no measurement to report, and inventing
+    a line about a binary nobody interrogated is the "mood" 5.1 rules out.
+    """
+    fact = (envelope.get(hosts.CLI_FLAGS) if isinstance(envelope, dict) else None) or {}
+    row = fact.get(hosts.OUTPUT_SCHEMA) if isinstance(fact, dict) else None
+    if not isinstance(row, dict) or row.get("advertised") is True:
+        return []
+    return ["replies are not schema-constrained this run on host %r -- probe %s: %s. "
+            "fix: upgrade the CLI if you want %s enforced output; the driver validates "
+            "every reply either way"
+            % (host, USAGE_SOURCE_PROBE, row.get("detail") or "no detail recorded",
+               row.get("flag") or "its")]
 
 
 def headline(envelope):
