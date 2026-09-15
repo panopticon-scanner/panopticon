@@ -160,12 +160,31 @@ def _headless_subject_ok(settings_path):
     return True, ""
 
 
+def _write_row(allowlist_path, path, entry_id):
+    """One Write payload through the real `adjudicate`, bound as `entry_id`
+    (None = the orchestrator, which nothing binds)."""
+    env = {write_guard_hook.ENV_ENTRY_ID: entry_id} if entry_id else {}
+    allowed, _why = write_guard_hook.adjudicate(
+        {"tool_name": "Write", "tool_input": {"file_path": path}},
+        allowlist_path, env=env)
+    return allowed
+
+
 def _round_trip_denies_an_outside_write():
     """Arm the guard in a throwaway sandbox and confirm it actually denies.
 
     Never touches the session's real settings or allowlist: install/uninstall
     run entirely against paths inside a TemporaryDirectory. Returns
     (ok, detail).
+
+    #1571: the plan has TWO entries and the rows are driven through
+    `adjudicate` (the function the hook itself calls), because the capability
+    being claimed is "confine a reviewer's Write to the declared out_file" --
+    singular -- and a one-entry flat-membership round-trip cannot tell that
+    apart from "confine it to the batch". The armed file is read and required
+    to be version 2, and a version-1 flat list dropped in its place must be
+    REFUSED: proving a guard that still honours one would prove the batch-wide
+    grant this issue is about.
     """
     # Minor 6: the `try` opens BEFORE TemporaryDirectory(), not inside it. This
     # runs inside driver.run() on EVERY invocation now, and an OSError from the
@@ -178,28 +197,52 @@ def _round_trip_denies_an_outside_write():
             settings = os.path.join(sandbox, "settings.json")
             allowlist = os.path.join(sandbox, "allowlist.json")
             declared = os.path.join(sandbox, "findings-probe.json")
-            with open(declared, "w", encoding="utf-8") as fh:
-                fh.write("{}")
-            write_guard_hook.install([{"out_file": declared}],
+            peer = os.path.join(sandbox, "findings-peer.json")
+            for path in (declared, peer):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("{}")
+            write_guard_hook.install([{"id": "probe-cell", "out_file": declared},
+                                      {"id": "peer-cell", "out_file": peer}],
                                      settings_path=settings,
                                      allowlist_path=allowlist)
             state = write_guard_hook.guard_state(settings_path=settings,
                                                  allowlist_path=allowlist)
             if not state["armed"]:
                 return False, "install() did not register the PreToolUse hook"
-            granted = write_guard_hook._read_allowlist(allowlist)
-            allowed, _why = write_guard_hook.decide("Write", declared, granted)
-            denied, _why = write_guard_hook.decide(
-                "Write", os.path.join(sandbox, "not-declared.json"), granted)
-            if not allowed:
-                return False, "the guard denied a write to a DECLARED out_file"
-            if denied:
-                return False, "the guard ALLOWED a write outside the allowlist"
+            with open(allowlist, encoding="utf-8") as fh:
+                document = json.load(fh)
+            if (not isinstance(document, dict)
+                    or document.get("version") != write_guard_hook.ALLOWLIST_VERSION
+                    or not isinstance(document.get("entries"), dict)):
+                return False, ("the armed allowlist is not a version-%d document "
+                               "(per-entry grants), so nothing records whose grant "
+                               "a path is"
+                               % write_guard_hook.ALLOWLIST_VERSION)
+            rows = (
+                ("Write to its own declared out_file", declared, "probe-cell", True),
+                ("Write to a PEER entry's declared out_file", peer, "probe-cell", False),
+                ("Write outside the allowlist",
+                 os.path.join(sandbox, "not-declared.json"), "probe-cell", False),
+                ("Write bound to an entry the allowlist does not name",
+                 declared, "ghost-cell", False),
+                ("the orchestrator's own write", declared, None, True),
+            )
+            for name, path, entry_id, want in rows:
+                if _write_row(allowlist, path, entry_id) != want:
+                    return False, ("the guard %s: %s"
+                                   % ("DENIED" if want else "ALLOWED", name))
+            with open(allowlist, "w", encoding="utf-8") as fh:
+                json.dump(sorted(document["paths"]), fh)
+            if _write_row(allowlist, declared, "probe-cell"):
+                return False, ("the guard ALLOWED a write against a version-1 flat "
+                               "allowlist: a stale file must deny, never widen")
             write_guard_hook.uninstall(settings_path=settings,
                                        allowlist_path=allowlist)
     except OSError as exc:
         return False, "sandbox round-trip could not run: %s" % exc
-    return True, "arm/deny round-trip ok"
+    return True, ("arm/deny round-trip ok: %d payloads adjudicated per entry "
+                  "against a version-%d allowlist, and a version-1 flat list "
+                  "refused" % (len(rows), write_guard_hook.ALLOWLIST_VERSION))
 
 
 def probe_write_guard_armed(host, session_root=None, settings_path=None):

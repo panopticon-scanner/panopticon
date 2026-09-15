@@ -359,6 +359,12 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("write-guard", loop)
         self.assertIn("self-write", loop)
         self.assertNotIn("write_mode", loop)
+        # #1571: the confinement is PER ENTRY on both write guards, and the
+        # guide used to describe the union as if it were per-agent. An
+        # operator reading "its declared out_file" while the code enforced
+        # "any out_file in the batch" is how the gap survived two self-scans.
+        self.assertIn("bound to the entry", loop)
+        self.assertIn("a peer entry's artifact is not writable", loop)
 
     def test_driver_run_loop_documents_scout_return_persist(self):
         # The scout checkpoint is read-only + return-persist (the scout agent

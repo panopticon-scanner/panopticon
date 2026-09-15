@@ -15,7 +15,9 @@ twice::
 The scope and allowlist DATA files are the ones the loop already arms through
 read_guard_hook.install / write_guard_hook.install (orchestrate.Guards):
 ``read-scope.json`` is ``{entry id: {"files": [...], "dirs": [...],
-"reads": [...]}}`` and ``write-allowlist.json`` is a JSON list of paths. This
+"reads": [...]}}`` and ``write-allowlist.json`` is the v2 document
+``{"version": 2, "entries": {entry id: [path, ...]}, "paths": [...]}`` (#1571;
+version 1 was a flat list and is refused, not read). This
 script re-implements the small loaders rather than importing those modules:
 Kimi runs hooks as ``python3 <abs path> <mode> <abs data path>`` -- one SHELL
 STRING, which is why the command is built here, shell-quoted, by
@@ -76,6 +78,16 @@ _READ_TOOLS = frozenset({"Read", "ReadMediaFile", "Grep", "Glob"})
 _WRITE_TOOLS = frozenset({"Write", "Edit"})
 
 ENV_ENTRY_ID = "PANOPTICON_ENTRY_ID"
+# #1571: the write allowlist's format version. Checked, never sniffed -- a
+# stale v1 flat list records no per-entry grants, so honouring one would
+# restore the batch-wide write authority this version exists to end.
+ALLOWLIST_VERSION = 2
+# The bucket write_guard_hook.install puts a plan entry that declared no `id`
+# into. Those grants belong to the unbound orchestrator; no bound child may
+# select the key. Spelled here rather than imported for the reason everything
+# in this module is (a hook runs standing alone, with no package on sys.path),
+# and pinned equal to the write guard's in tests/test_write_guard_hook.py.
+UNBOUND_ENTRY = "<unbound>"
 ENV_READ_SCOPE = "PANOPTICON_READ_SCOPE"
 ENV_WRITE_ALLOWLIST = "PANOPTICON_WRITE_ALLOWLIST"
 
@@ -134,15 +146,37 @@ def _load_scope(scope_path):
 
 
 def _load_allowlist(allowlist_path):
-    """(paths, error): the armed set of writable paths, or (None, why)."""
+    """(mapping, error): the armed {entry id: [path]} grants, or (None, why).
+
+    Mirrors write_guard_hook._parse_allowlist -- a copy for the same reason
+    the rest of this module is one (the hook runs standing alone, with no
+    package on sys.path). The version is part of the contract: a v1 flat list
+    is refused by NAME rather than read as a set of paths nobody owns."""
     try:
         with open(allowlist_path, encoding="utf-8") as fh:
             loaded = json.load(fh)
     except (OSError, ValueError) as exc:
         return None, "write guard allowlist is unavailable: %s" % exc
-    if not isinstance(loaded, list):
+    if isinstance(loaded, list):
+        return None, ("write guard allowlist is a version-1 flat list, not version "
+                      "%d: it records no per-entry grants, so the guard cannot tell "
+                      "whose out_file a path is and denies every write until the "
+                      "loop re-arms it" % ALLOWLIST_VERSION)
+    if not isinstance(loaded, dict):
         return None, "write guard allowlist is malformed"
-    return {p for p in loaded if isinstance(p, str)}, ""
+    if loaded.get("version") != ALLOWLIST_VERSION:
+        return None, ("write guard allowlist is version %r, not version %d "
+                      "(per-entry grants); re-arm the guard"
+                      % (loaded.get("version"), ALLOWLIST_VERSION))
+    entries = loaded.get("entries")
+    if not isinstance(entries, dict):
+        return None, "write guard allowlist is malformed"
+    out = {}
+    for eid, paths in entries.items():
+        if not isinstance(eid, str) or not isinstance(paths, list):
+            return None, "write guard allowlist is malformed"
+        out[eid] = [p for p in paths if isinstance(p, str)]
+    return out, ""
 
 
 def _readable(target, scope):
@@ -190,8 +224,26 @@ def _decide_read(tool_name, tool_input, scope, cwd):
                    "your prompt")
 
 
-def _decide_write(tool_name, tool_input, allowlist):
-    """(allow, reason) for Write/Edit against the armed allowlist."""
+def _decide_write(tool_name, tool_input, allowlist, entry_id):
+    """(allow, reason) for Write/Edit against THIS entry's grants.
+
+    #1571 (run-13 AGT-2297383423): this used to take the flat union of every
+    in-flight out_file and ask only whether the target was in it. The id was
+    already here -- `adjudicate` requires it, and the READ branch selects an
+    entry's scope with it -- so a writer-capable reviewer could overwrite any
+    peer's findings artifact, while the denial below promised the opposite.
+    Unknown id denies by name, exactly as the read branch does."""
+    # Refused by NAME, before the lookup, exactly as write_guard_hook does:
+    # the driver's id grammar makes this unreachable today, and a guard whose
+    # refusal rests on that is one grammar change from being a hole. Two write
+    # guards, one failure mode.
+    granted = None if entry_id == UNBOUND_ENTRY else allowlist.get(entry_id)
+    if granted is None:
+        # `adjudicate` appends the bound entry to every denial, so name the
+        # condition here and let it name the id -- saying it twice was how the
+        # first draft of this read.
+        return False, ("%s is denied: the armed write allowlist names no grant "
+                       "for this entry" % tool_name)
     if not isinstance(tool_input, dict):
         return False, "%s is denied: malformed tool input" % tool_name
     raw = tool_input.get("path")
@@ -205,10 +257,19 @@ def _decide_write(tool_name, tool_input, allowlist):
         target = os.path.realpath(absolute)
     except (ValueError, OSError, TypeError):
         return False, "%s is denied: unresolvable path %r" % (tool_name, raw)
-    if target in allowlist:
+    if target in set(granted):
         return True, ""
-    return False, ("%s to %s is denied: this reviewer may write only its own "
-                   "declared out_file" % (tool_name, raw))
+    if any(target in paths for paths in allowlist.values()):
+        return False, ("%s to %s is denied: this reviewer may write only its own "
+                       "declared out_file; a peer entry's artifact is not writable"
+                       % (tool_name, raw))
+    # In nobody's grant, so not a peer's artifact either: claim only what is
+    # true, and point at the likelier cause (a guard armed over another run's
+    # grants). `adjudicate` names the bound entry on the way out.
+    return False, ("%s to %s is denied: it is not in this entry's grant -- a "
+                   "reviewer may write only its own declared out_file, and an "
+                   "armed allowlist that does not name it may be stale or from "
+                   "another run" % (tool_name, raw))
 
 
 def adjudicate(payload, mode, data_path, env=None):
@@ -244,7 +305,8 @@ def adjudicate(payload, mode, data_path, env=None):
         allowlist, error = _load_allowlist(data_path)
         if allowlist is None:
             return False, error
-        allow, reason = _decide_write(tool_name, payload.get("tool_input"), allowlist)
+        allow, reason = _decide_write(tool_name, payload.get("tool_input"),
+                                      allowlist, entry_id)
     if not allow and reason:
         reason = "%s (bound to entry %r)" % (reason, entry_id)
     return allow, reason

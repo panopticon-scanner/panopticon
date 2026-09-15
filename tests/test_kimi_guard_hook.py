@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 import scripts.kimi_guard_hook as guard
+import scripts.write_guard_hook as wg
 
 
 def _write(path, body):
@@ -27,7 +28,10 @@ class GuardCase(unittest.TestCase):
                 fh.write("")
         self.scope_path = _write(os.path.join(root, "read-scope.json"),
                                  {"entry-1": {"files": [self.inside], "dirs": [], "reads": []}})
-        self.allowlist_path = _write(os.path.join(root, "write-allowlist.json"), [self.inside])
+        self.peer = os.path.join(root, "cell", "findings-peer.json")
+        self.allowlist_path = _write(
+            os.path.join(root, "write-allowlist.json"),
+            wg.allowlist_document({"entry-1": [self.inside], "entry-2": [self.peer]}))
         self.env = {guard.ENV_ENTRY_ID: "entry-1"}
 
     def read(self, tool, **tool_input):
@@ -146,6 +150,72 @@ class TestWrites(GuardCase):
     def test_a_non_string_path_is_denied(self):
         allow, _ = self.write("Write", path=42)
         self.assertFalse(allow)
+
+    def test_a_write_to_a_peer_entrys_out_file_is_denied(self):
+        # #1571, run-13 AGT-2297383423, reproduced against the real code:
+        # `adjudicate(..., env={PANOPTICON_ENTRY_ID: "review-A-ARC"})` with a
+        # peer's path answered `allowed: true` and an empty reason. This guard
+        # already RECEIVES the id -- its read branch selects an entry's scope
+        # with it -- and the write branch checked only that it was present.
+        allow, reason = self.write("Write", path=self.peer, content="{}")
+        self.assertFalse(allow)
+        self.assertIn("entry-1", reason)
+        self.assertIn("peer", reason)
+
+    def test_a_stale_grant_is_not_reported_as_a_peer_write(self):
+        # F1, Kimi's half: bound, named in the allowlist, but the grant is
+        # some other run's path. Its own out_file is denied -- and the reason
+        # must say the allowlist looks stale, not that it reached for a peer's.
+        elsewhere = os.path.join(os.path.realpath(self.tmp.name), "other-run", "f.json")
+        _write(self.allowlist_path, wg.allowlist_document({"entry-1": [elsewhere]}))
+        allow, reason = self.write("Write", path=self.inside, content="{}")
+        self.assertFalse(allow)
+        self.assertNotIn("peer", reason)
+        self.assertIn("stale", reason)
+        self.assertIn("entry-1", reason)
+
+    def test_the_peer_wording_is_kept_for_an_actual_peer_write(self):
+        _allow, reason = self.write("Write", path=self.peer, content="{}")
+        self.assertIn("a peer entry's artifact is not writable", reason)
+
+    def test_an_entry_the_allowlist_does_not_name_is_denied(self):
+        # Mirrors the read branch, which already names the entry it cannot find.
+        allow, reason = guard.adjudicate(
+            {"tool_name": "Write", "tool_input": {"path": self.inside, "content": "{}"}},
+            "write", self.allowlist_path, env={guard.ENV_ENTRY_ID: "ghost"})
+        self.assertFalse(allow)
+        self.assertIn("ghost", reason)
+
+    def test_the_unbound_bucket_is_not_selectable_by_a_bound_child(self):
+        # F2: the Claude guard refuses the reserved key by name and this one
+        # treated it as an ordinary id. Unreachable today -- Guards.env_for
+        # takes entry["id"] and driver ids cannot spell it -- but
+        # write_guard_hook says in as many words that the refusal must not
+        # rest on the id grammar, and two guards that fail differently are two
+        # guards to reason about.
+        _write(self.allowlist_path,
+               wg.allowlist_document({guard.UNBOUND_ENTRY: [self.inside]}))
+        allow, reason = guard.adjudicate(
+            {"tool_name": "Write", "tool_input": {"path": self.inside, "content": "{}"}},
+            "write", self.allowlist_path,
+            env={guard.ENV_ENTRY_ID: guard.UNBOUND_ENTRY})
+        self.assertFalse(allow)
+        self.assertIn(guard.UNBOUND_ENTRY, reason)
+
+    def test_a_version_1_allowlist_fails_closed_and_names_the_version(self):
+        # A stale flat list carries no attribution: honouring it would restore
+        # exactly the batch-wide grant this issue is about.
+        _write(self.allowlist_path, [self.inside])
+        allow, reason = self.write("Write", path=self.inside, content="{}")
+        self.assertFalse(allow)
+        self.assertIn("version", reason)
+        self.assertIn("1", reason)
+
+    def test_an_allowlist_without_entries_fails_closed(self):
+        _write(self.allowlist_path, {"version": 2, "paths": [self.inside]})
+        allow, reason = self.write("Write", path=self.inside, content="{}")
+        self.assertFalse(allow)
+        self.assertIn("malformed", reason)
 
 
 class TestMain(unittest.TestCase):

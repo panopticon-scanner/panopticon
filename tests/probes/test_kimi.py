@@ -162,6 +162,15 @@ class TestKimiWriteGuardProbe(unittest.TestCase):
         self.assertEqual(hosts.PROVEN, state)
         self.assertEqual(kimi_probes.KIMI_WRITE_GUARD, by)
         self.assertIn("round-trip", detail)
+        # F4: the data-file refutations are a stated requirement of this probe
+        # (#1571) and nothing asserted they ran -- deleting the whole `corrupt`
+        # loop left every test green. The detail is composed from what each
+        # leg reported, so naming the legs here is what makes their absence a
+        # failure rather than a shorter string nobody reads.
+        for leg in ("malformed allowlist", "version-1 flat list",
+                    "v2 document with no entries"):
+            with self.subTest(leg=leg):
+                self.assertIn(leg, detail)
 
     def test_a_guard_failure_is_refuted_with_the_row_named(self):
         with mock.patch.object(kimi_probes, "_guard_round_trip",

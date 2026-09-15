@@ -27,6 +27,7 @@ tracked as #1344.
 The matcher and ``_WRITE_TOOLS`` are derived from one source below so they can
 never silently drift apart from each other.
 """
+import glob
 import json
 import os
 import shlex
@@ -36,9 +37,41 @@ _WRITE_TOOLS_LIST = ["Write", "Edit", "NotebookEdit"]
 _WRITE_TOOLS = set(_WRITE_TOOLS_LIST)
 _MATCHER = "|".join(_WRITE_TOOLS_LIST)
 
+# #1571. Version 1 was a flat JSON list of writable paths, with nothing in it
+# saying whose grant each path was; version 2 is
+# ``{"version": 2, "entries": {<entry id>: [path, ...]}, "paths": [...]}``.
+# The version is CHECKED, not sniffed: a stale v1 file left in a run folder
+# must deny rather than quietly restore the batch-wide grant.
+ALLOWLIST_VERSION = 2
+# The bucket for a plan entry that declares no `id` (the probes' sandbox plans
+# and much of the suite). Its paths stay writable by the unbound orchestrator
+# and are reachable by NO bound agent: the driver's entry ids match
+# ``^[A-Za-z0-9._:-]+$``, so the brackets cannot collide with a real id, and
+# `adjudicate` refuses this key explicitly rather than resting on that.
+UNBOUND_ENTRY = "<unbound>"
+
+# --- BINDING: a VERBATIM COPY of read_guard_hook's, pinned AST-identical by
+# tests/test_write_guard_hook.py::TestBindingHelpersAreACopy. It is copied and
+# not imported for the reason every other shared piece in these hooks is (the
+# settings plumbing, R-P5-5; `hook_command`, #1633): a guard hook is invoked by
+# absolute path as its own process with no package on sys.path, so there is no
+# module for the two of them to share. Edit read_guard_hook's copy and this one
+# together; the parity test fails loudly if you do not.
+MARKER_PREFIX = "panopticon-entry: "
+ENV_ENTRY_ID = "PANOPTICON_ENTRY_ID"
+
 
 def allowlist_from_plan(plan):
-    """Realpath-normalized set of every out_file the plan declares.
+    """{entry id: [realpath, ...]} -- every out_file the plan declares, keyed
+    by the entry that declared it.
+
+    #1571: this used to return a FLAT SET of every out_file in the fan-out,
+    which is the whole defect. `install` wrote that set as the one allowlist
+    and `decide` asked only "is this path in it", so every in-flight reviewer
+    was authorized against every OTHER cell's findings file -- a subverted
+    reviewer could blank or forge a sibling domain's findings before the run
+    consumed them. Keeping the paths attributed to their entry is what lets a
+    bound agent be adjudicated against its own grant alone (`adjudicate`).
 
     `plan` is a SEQUENCE OF ENTRIES (``[{"out_file": ...}, ...]``), never the
     dispatch-request object that wraps them. #1482: handed the wrapper, this
@@ -54,7 +87,7 @@ def allowlist_from_plan(plan):
             "plan must be a sequence of dispatch entries, not %s -- pass the "
             "dispatch request's `entries` list, not the request object itself"
             % type(plan).__name__)
-    out = set()
+    out = {}
     for entry in plan:
         path = entry.get("out_file") if isinstance(entry, dict) else None
         if not isinstance(path, str) or not path:
@@ -62,25 +95,81 @@ def allowlist_from_plan(plan):
         artifact_dir = os.path.dirname(os.path.abspath(path))
         if os.path.basename(artifact_dir) == ".panopticon" and os.path.islink(artifact_dir):
             raise ValueError("findings output cannot use a symlinked .panopticon directory")
-        out.add(os.path.realpath(path))
+        eid = entry.get("id")
+        if not isinstance(eid, str) or not eid:
+            eid = UNBOUND_ENTRY
+        out.setdefault(eid, set()).add(os.path.realpath(path))
+    return {eid: sorted(paths) for eid, paths in out.items()}
+
+
+def union_paths(allowlist):
+    """Every granted path in an entry mapping, flat -- the batch-wide set.
+
+    What the ORCHESTRATOR is adjudicated against (it is bound to no entry and
+    writes the run's own artifacts), what `is_armed` counts, and what the
+    `.panopticon`-confinement arithmetic anchors on."""
+    out = set()
+    for paths in (allowlist or {}).values():
+        out.update(p for p in paths if isinstance(p, str))
     return out
 
 
-def decide(tool_name, file_path, allowlist):
-    """(allow, reason). Non-write tools always allowed; writes only to allowlist."""
-    if tool_name not in _WRITE_TOOLS:
-        return True, ""
+def allowlist_document(allowlist):
+    """The v2 file `install` writes: the per-entry mapping plus its union.
+
+    `paths` is redundant with `entries` by construction and kept deliberately:
+    every reader that legitimately wants the batch-wide set (`is_armed`'s
+    count, the probes, the orchestrator branch) gets it without re-deriving
+    it, and a reader that opens the file by hand sees the same two answers the
+    guard does."""
+    return {"version": ALLOWLIST_VERSION,
+            "entries": {eid: sorted(paths) for eid, paths in allowlist.items()},
+            "paths": sorted(union_paths(allowlist))}
+
+
+def _resolve_target(file_path):
+    """(realpath, denial reason) -- exactly one of the two is None.
+
+    Shared by `decide` (the batch-wide question) and `adjudicate`'s bound
+    branch (the per-entry one) so the symlink and unresolvable-path refusals
+    have one definition and cannot drift between them."""
     try:
         raw = os.path.abspath(file_path or "")
         if os.path.islink(raw):
-            return False, (
+            return None, (
                 "write to %s is denied: findings targets must not be symlinks" % file_path)
-        target = os.path.realpath(raw)
+        return os.path.realpath(raw), None
     except (ValueError, OSError, TypeError):
         # TypeError: a non-string file_path (int/list/dict) — os.path.* rejects
         # it. A write payload whose path isn't a string is malformed/suspicious;
         # fail closed (deny) rather than crash the hook (#768).
-        return False, ("write to %r is denied: unresolvable path" % file_path)
+        return None, ("write to %r is denied: unresolvable path" % file_path)
+
+
+def decide(tool_name, file_path, allowlist):
+    """(allow, reason) against a flat SET of paths. Non-write tools always
+    allowed; writes only to the set.
+
+    Entry-agnostic by design, and after #1571 it answers only the BATCH-WIDE
+    question -- "may anything in this fan-out write here?" -- which is the
+    right question for the orchestrator and the wrong one for a reviewer.
+    `adjudicate` is what binds a reviewer to its own entry.
+
+    Handed the per-entry MAPPING it raises, rather than testing the path
+    against that mapping's keys and denying in silence. `decide(tool, path,
+    allowlist_from_plan(plan))` was the pre-#1571 call shape -- the exact
+    expression this change had to rewrite at four call sites -- so the two
+    argument shapes are indistinguishable at any site holding "the allowlist".
+    That is the #1482 hazard again, where a wrong-shaped argument degraded
+    into an empty success nobody noticed, and it gets the same loud refusal.
+    """
+    if tool_name not in _WRITE_TOOLS:
+        return True, ""
+    if isinstance(allowlist, dict):
+        raise TypeError("decide takes the flat union; pass union_paths(allowlist)")
+    target, reason = _resolve_target(file_path)
+    if target is None:
+        return False, reason
     if target in allowlist:
         return True, ""
     return False, ("write to %s is outside the fan-out allowlist; reviewers may "
@@ -95,6 +184,217 @@ def _deny_response(reason):
             "permissionDecisionReason": reason,
         }
     })
+
+
+def marker_of(text):
+    """The entry id `text`'s FIRST line names, or None. Only the first line:
+    a marker anywhere else is content, not a binding."""
+    if not isinstance(text, str):
+        return None
+    first = text.split("\n", 1)[0].rstrip("\r")
+    if not first.startswith(MARKER_PREFIX):
+        return None
+    return first[len(MARKER_PREFIX):].strip() or None
+
+def subagent_transcript(transcript_path, agent_id):
+    """The calling subagent's own transcript, or None.
+
+    The payload's `transcript_path` is the PARENT session's file (spike,
+    design spec 3); the subagent's lives beside it, keyed by `agent_id`, in
+    one of two layouts. `agent_id` is used as a path segment, so anything
+    path-shaped is refused outright."""
+    if not isinstance(transcript_path, str) or not isinstance(agent_id, str):
+        return None
+    if not agent_id or "/" in agent_id or os.sep in agent_id or agent_id in (".", ".."):
+        return None
+    stem = transcript_path[:-len(".jsonl")] if transcript_path.endswith(".jsonl") else transcript_path
+    name = "agent-%s.jsonl" % agent_id
+    direct = os.path.join(stem, "subagents", name)
+    if os.path.isfile(direct):
+        return direct
+    found = sorted(glob.glob(os.path.join(glob.escape(stem), "subagents", "workflows", "*", name)))
+    return found[0] if found else None
+
+def _first_text(record):
+    msg = record.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for part in content:
+            if (isinstance(part, dict) and part.get("type") == "text"
+                    and isinstance(part.get("text"), str)):
+                return part["text"]
+    return ""
+
+def bind(agent_id, transcript_path):
+    """The entry id this subagent was dispatched for, or None (unbound).
+
+    Reads the transcript only up to its FIRST `type: user` record -- the
+    dispatch prompt -- and requires that record's `agentId` to be the caller.
+    A later user turn is a tool result and can never re-bind (design 4.4)."""
+    path = subagent_transcript(transcript_path, agent_id)
+    if path is None:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict) or record.get("type") != "user":
+                    continue
+                if record.get("agentId") != agent_id:
+                    return None
+                return marker_of(_first_text(record))
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+# --- end of the read_guard_hook copy ---
+
+
+def _parse_allowlist(loaded):
+    """(mapping, error) for a parsed allowlist document. Version 2 only.
+
+    #1571: a version-1 file is a flat list with no attribution, so honouring
+    one would silently restore the batch-wide grant this format exists to
+    end. A stale file must never widen a guard -- name the version and deny.
+    """
+    if isinstance(loaded, list):
+        return None, ("write guard allowlist is a version-1 flat list, not version "
+                      "%d: it records no per-entry grants, so the guard cannot tell "
+                      "whose out_file a path is and denies every write until the "
+                      "loop re-arms it" % ALLOWLIST_VERSION)
+    if not isinstance(loaded, dict):
+        return None, "write guard allowlist is malformed"
+    version = loaded.get("version")
+    if version != ALLOWLIST_VERSION:
+        return None, ("write guard allowlist is version %r, not version %d "
+                      "(per-entry grants); re-arm the guard"
+                      % (version, ALLOWLIST_VERSION))
+    entries = loaded.get("entries")
+    if not isinstance(entries, dict):
+        return None, "write guard allowlist is malformed"
+    out = {}
+    for eid, paths in entries.items():
+        if not isinstance(eid, str) or not isinstance(paths, list):
+            return None, "write guard allowlist is malformed"
+        out[eid] = [p for p in paths if isinstance(p, str)]
+    return out, ""
+
+
+def _load_allowlist(allowlist_path):
+    """(mapping, error): the armed {entry id: [path]} map, or (None, why)."""
+    try:
+        with open(allowlist_path, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, "write guard allowlist is unavailable: %s" % exc
+    return _parse_allowlist(loaded)
+
+
+def _payload_path(tool_name, tool_input):
+    """The path THIS tool writes to.
+
+    #run7 ARC-F2C: NotebookEdit keys its target as `notebook_path`, NOT
+    `file_path`. Reading file_path uniformly checked NotebookEdit against the
+    wrong (empty) path -- benign fail-closed for an ordinary notebook edit, but
+    a decoy payload {file_path: <allowlisted>, notebook_path: <outside>} would be
+    ALLOWED while the write lands outside the fence. Extract the tool's own key
+    and do NOT fall back to file_path for NotebookEdit."""
+    if not isinstance(tool_input, dict):
+        return ""
+    return tool_input.get(
+        "notebook_path" if tool_name == "NotebookEdit" else "file_path", "")
+
+
+def adjudicate(payload, allowlist_path, env=None):
+    """(allow, reason) for one hook payload against the allowlist at
+    `allowlist_path`. `env` defaults to os.environ; the probe and the tests
+    pass their own.
+
+    #1571. Binding order is the read guard's (spec 5.3), for the same reasons
+    and with the same three outcomes:
+
+      * the environment's ENV_ENTRY_ID first -- a headless `claude -p` child IS
+        the reviewer (agent_type, no agent_id), so a transcript-only rule would
+        fail OPEN for every headless entry;
+      * else the subagent transcript's marker -- session mode, where the hook
+        is registered session-wide and the payload names the AGENT, never the
+        entry;
+      * an agent that could not be bound DENIES. It is a reviewer whose cell we
+        cannot name, and naming the cell is the whole control.
+
+    A BOUND agent is adjudicated against `entries[<its id>]` alone: its own
+    declared out_file, never the batch's union. Nothing bound (no id, no
+    agent_id, no agent_type) is the ORCHESTRATOR -- it runs the driver and
+    writes the run's own artifacts -- and keeps the union, exactly as the read
+    guard never confines it.
+    """
+    if not isinstance(payload, dict):
+        return True, ""
+    tool_name = payload.get("tool_name", "")
+    if tool_name not in _WRITE_TOOLS:
+        return True, ""
+    file_path = _payload_path(tool_name, payload.get("tool_input"))
+    allowlist, error = _load_allowlist(allowlist_path)
+    if allowlist is None:
+        return False, error
+    env = os.environ if env is None else env
+    env_id = env.get(ENV_ENTRY_ID)
+    agent_id = payload.get("agent_id")
+    agent_type = payload.get("agent_type")
+    if env_id or agent_id:
+        # Shaped exactly like the read guard's: an id that is present but not
+        # usable (a non-string) is an agent we could not bind, never the
+        # orchestrator -- degrading it into the union is the fail-OPEN this
+        # whole change is about.
+        entry_id = (env_id if isinstance(env_id, str) else None) if env_id \
+            else bind(agent_id, payload.get("transcript_path"))
+        if entry_id is None:
+            return False, (
+                "%s to %s is denied: this reviewer is not bound to a dispatch "
+                "entry (no usable %s, and its dispatch prompt did not begin "
+                "with '%s<entry id>'), and a reviewer may write only its own "
+                "declared out_file"
+                % (tool_name, file_path, ENV_ENTRY_ID, MARKER_PREFIX))
+    elif agent_type:
+        return False, ("%s is denied: this session runs as agent_type %r but "
+                       "nothing bound it to a panopticon entry (no %s in the "
+                       "environment, no subagent transcript)"
+                       % (tool_name, agent_type, ENV_ENTRY_ID))
+    else:
+        return decide(tool_name, file_path, union_paths(allowlist))
+    # UNBOUND_ENTRY holds the grants of plan entries that declared no id. They
+    # belong to the orchestrator; no bound agent may select that bucket, and
+    # refusing it here does not rest on the id grammar making it unreachable.
+    granted = None if entry_id == UNBOUND_ENTRY else allowlist.get(entry_id)
+    if granted is None:
+        return False, ("%s is denied: this agent is bound to entry %r, which the "
+                       "armed write allowlist does not name"
+                       % (tool_name, entry_id))
+    target, reason = _resolve_target(file_path)
+    if target is None:
+        return False, "%s (bound to entry %r)" % (reason, entry_id)
+    if target in set(granted):
+        return True, ""
+    if target in union_paths(allowlist):
+        return False, ("write to %s is denied: entry %r may write only its own "
+                       "declared out_file; a peer entry's artifact is not writable"
+                       % (file_path, entry_id))
+    # NOT a peer's artifact: the target is in nobody's grant. Saying "peer"
+    # here would accuse the reviewer of the one thing it did not do, when the
+    # likely cause is the guard armed on the wrong tree or over a previous
+    # round's grants -- the #calibration-4 / gotify shape, where 44 advisors
+    # lost finished work to an allowlist that was live but stale, and every
+    # denial pointed away from it.
+    return False, ("write to %s is denied: it is not in entry %r's grant -- a "
+                   "reviewer may write only its own declared out_file, and an "
+                   "armed allowlist that does not name this one may be stale or "
+                   "from another run" % (file_path, entry_id))
 
 
 def _resolve_allowlist_path(argv_path=None):
@@ -150,35 +450,10 @@ def main(argv=None):
         return 0  # tolerant: a malformed hook payload never blocks legitimate work
     if not isinstance(payload, dict):
         return 0  # tolerant: a well-formed-but-unexpected-shape payload never blocks
-    tool_name = payload.get("tool_name", "")
-    tool_input = payload.get("tool_input")
-    # #run7 ARC-F2C: NotebookEdit keys its target as `notebook_path`, NOT
-    # `file_path`. Reading file_path uniformly checked NotebookEdit against the
-    # wrong (empty) path -- benign fail-closed for an ordinary notebook edit, but
-    # a decoy payload {file_path: <allowlisted>, notebook_path: <outside>} would be
-    # ALLOWED while the write lands outside the fence. Extract the tool's own key
-    # and do NOT fall back to file_path for NotebookEdit.
-    if isinstance(tool_input, dict):
-        path_key = "notebook_path" if tool_name == "NotebookEdit" else "file_path"
-        file_path = tool_input.get(path_key, "")
-    else:
-        file_path = ""
-    if tool_name not in _WRITE_TOOLS:
+    if payload.get("tool_name", "") not in _WRITE_TOOLS:
         return 0
     argv_path = args[0] if args else None
-    try:
-        with open(_resolve_allowlist_path(argv_path), encoding="utf-8") as fh:
-            loaded = json.load(fh)
-    except (OSError, ValueError) as exc:
-        loaded = None
-        load_error = "write guard allowlist is unavailable: %s" % exc
-    else:
-        load_error = "write guard allowlist is malformed"
-    if not isinstance(loaded, list) or not all(isinstance(p, str) for p in loaded):
-        print(_deny_response(load_error))
-        return 0
-    allowlist = set(loaded)
-    allow, reason = decide(tool_name, file_path, allowlist)
+    allow, reason = adjudicate(payload, _resolve_allowlist_path(argv_path))
     if allow:
         return 0
     print(_deny_response(reason))
@@ -281,17 +556,14 @@ def _load(settings_path):
 
 
 def _read_allowlist(allowlist_path):
-    """The current on-disk allowlist as a set of paths; empty when absent or
-    malformed. (The hook itself fails closed on a malformed file, so treating it
-    as empty HERE only affects the union arithmetic, never enforcement.)"""
-    try:
-        with open(allowlist_path, encoding="utf-8") as fh:
-            loaded = json.load(fh)
-    except (OSError, ValueError):
-        return set()
-    if not isinstance(loaded, list):
-        return set()
-    return {p for p in loaded if isinstance(p, str)}
+    """The current on-disk {entry id: [path]} mapping; empty when absent,
+    malformed, or written in a version this code does not carry forward.
+
+    (The hook itself fails closed on any of those, so treating them as empty
+    HERE only affects the merge arithmetic, never enforcement. A v1 file
+    reading as empty is the wanted behaviour on both sides: its paths carry no
+    attribution, so they may not be carried into a v2 grant either.)"""
+    return _load_allowlist(allowlist_path)[0] or {}
 
 
 def _artifact_roots(paths):
@@ -306,7 +578,8 @@ def _artifact_roots(paths):
 
 
 def _confined_to_artifact_roots(existing, added):
-    """`existing` entries that sit under the same `.panopticon` tree as `added`.
+    """The `existing` mapping's grants that sit under the same `.panopticon`
+    tree as `added`'s, still keyed by the entry that holds them.
 
     An in-flight grant from a concurrent fan-out is always a findings out_file in
     that tree, so it survives (the #11 property). A pre-planted entry pointing
@@ -314,11 +587,25 @@ def _confined_to_artifact_roots(existing, added):
     longer buy write access off the back of our install. With no anchor (a plan
     whose out_files carry no `.panopticon` segment) nothing is carried forward:
     fail closed rather than trust an unanchored file."""
-    roots = _artifact_roots(added)
+    roots = _artifact_roots(union_paths(added))
     if not roots:
-        return set()
-    return {p for p in existing
-            if any(str(p) == r or str(p).startswith(r + os.sep) for r in roots)}
+        return {}
+    out = {}
+    for eid, paths in existing.items():
+        kept = [p for p in paths
+                if any(str(p) == r or str(p).startswith(r + os.sep) for r in roots)]
+        if kept:
+            out[eid] = kept
+    return out
+
+
+def _merge_grants(*mappings):
+    """One {entry id: [path]} mapping from several, unioning per entry id."""
+    out = {}
+    for mapping in mappings:
+        for eid, paths in mapping.items():
+            out[eid] = sorted(set(out.get(eid, ())) | set(paths))
+    return out
 
 
 def _atomic_write_json(path, data, indent=None):
@@ -449,7 +736,7 @@ def install(plan, settings_path=None, allowlist_path=None, *, session_root=None)
             "refusing to install a write-guard that grants nothing: the plan "
             "declared no out_file. This would clear %d existing grant(s) and "
             "deny every in-flight write. Use uninstall() to tear the guard "
-            "down." % len(_read_allowlist(allowlist_path)))
+            "down." % len(union_paths(_read_allowlist(allowlist_path))))
     # #run10 SEC-C1D: the union above trusted whatever was already on disk. A
     # target repo can ship its own `.panopticon/write-allowlist.json` (the path is
     # inside the scanned tree), so a planted entry -- `~/.ssh/authorized_keys`, a
@@ -459,7 +746,11 @@ def install(plan, settings_path=None, allowlist_path=None, *, session_root=None)
     # the SAME `.panopticon` tree as the paths we are adding. Anything outside it
     # was not written by a trusted install and is dropped.
     carried = _confined_to_artifact_roots(_read_allowlist(allowlist_path), added)
-    _atomic_write_json(allowlist_path, sorted(carried | added))
+    # #1571: the union is merged PER ENTRY ID, so a concurrent fan-out's grant
+    # survives (the #11 property) without becoming writable by this batch's
+    # reviewers -- which is exactly what a flat union made it.
+    _atomic_write_json(allowlist_path,
+                       allowlist_document(_merge_grants(carried, added)))
     _write_hook_entry(settings_path, allowlist_path)
     return added
 
@@ -508,7 +799,7 @@ def is_armed(settings_path=None, allowlist_path=None, *, session_root=None):
     if not armed:
         return False, 0
     try:
-        return True, len(_read_allowlist(allowlist_path))
+        return True, len(union_paths(_read_allowlist(allowlist_path)))
     except Exception:              # noqa: BLE001 - unreadable == armed over nothing
         return True, 0
 
@@ -522,9 +813,18 @@ def uninstall(settings_path=None, allowlist_path=None, *, plan=None,
     settings_path, allowlist_path, _ = _resolve(
         settings_path, allowlist_path, session_root)
     if plan is not None:
-        remaining = _read_allowlist(allowlist_path) - allowlist_from_plan(plan)
+        # #1571: subtract PER ENTRY ID. out_files are unique per cell, so this
+        # drops the same paths the flat subtraction did -- but a path granted
+        # to a still-running entry can no longer be dropped by another entry's
+        # teardown, whatever a future plan's shape.
+        drop = allowlist_from_plan(plan)
+        remaining = {}
+        for eid, paths in _read_allowlist(allowlist_path).items():
+            kept = sorted(set(paths) - set(drop.get(eid, ())))
+            if kept:
+                remaining[eid] = kept
         if remaining:
-            _atomic_write_json(allowlist_path, sorted(remaining))
+            _atomic_write_json(allowlist_path, allowlist_document(remaining))
             return   # other fan-outs still armed -> keep the hook entry + file
     _remove_hook_entry(settings_path)
     try:
