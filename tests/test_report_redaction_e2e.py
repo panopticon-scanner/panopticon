@@ -292,3 +292,100 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTwoPassFingerprintStability(unittest.TestCase):
+    """#1634 F1: both synthesize passes must fingerprint the SAME text.
+
+    `evidence.finding_fingerprint` keys an agent finding on its TITLE, and that
+    fingerprint is the `queue_id` pass 1 writes into verify-queue.json -- the
+    filename an advisor's verdict is stored under and the key `match_verdict`
+    binds on. So redaction has to happen on the same side of the
+    `--emit-verify-queue` early return in BOTH passes. Applied after it, pass 1
+    queues the unredacted title and pass 2 recomputes from the redacted one:
+    every queue_id changes, the advisor's verdict no longer binds, the finding
+    drops to `unverified` and `coverage_certified` flips to False -- silently,
+    reading exactly like an advisor that never answered, and triggered by
+    precisely the input #1634 exists for (a credential quoted in a title).
+    """
+
+    MARKER = MARKERS["title"]
+
+    def _finding(self):
+        return {"findings": [
+            {"id": "SEC-1", "domain": "SEC", "code": "SEC-A1A",
+             "title": "hardcoded token %s" % self.MARKER,
+             "description": "a credential is checked in",
+             "severity": "HIGH", "confidence": "LIKELY", "panel": "security",
+             "category": "secrets",
+             "location": {"file": "app/x.py", "line_start": 4}}]}
+
+    def test_queue_id_survives_redaction_across_both_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "src")
+            run = os.path.join(d, "run")
+            out_dir = os.path.join(d, "out")
+            v_dir = os.path.join(d, "verdicts")
+            for p in (src, run, out_dir, v_dir):
+                os.makedirs(p)
+            fp = os.path.join(src, "findings-app-security.json")
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump(self._finding(), fh)
+
+            prev = os.getcwd()
+            os.chdir(d)
+            try:
+                # Pass 1: the orchestrator's --emit-verify-queue run.
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    syn.main(["--target", "app", "--run-dir", run,
+                              "--emit-verify-queue", fp])
+                with open(os.path.join(run, "verify-queue.json"),
+                          encoding="utf-8") as fh:
+                    queue = json.load(fh)
+                entry = queue["entries"][0]
+                queue_id, fid = entry["queue_id"], entry["finding"]["id"]
+
+                # The advisor answers, addressed by that queue_id.
+                with open(os.path.join(v_dir, "%s.json" % queue_id), "w",
+                          encoding="utf-8") as fh:
+                    json.dump({"finding_id": fid, "verdict": "CONFIRMED",
+                               "run_id": queue["run_id"],
+                               "reasoning": "reachable from the request path"}, fh)
+
+                # Pass 2: the report run, same inputs.
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    syn.main(["--target", "app", "--run-dir", run,
+                              "--out", os.path.join(out_dir, "report.json"),
+                              "--verdicts-dir", v_dir, fp])
+            finally:
+                os.chdir(prev)
+            with open(os.path.join(out_dir, "report.json"), encoding="utf-8") as fh:
+                report = json.load(fh)
+
+            finding = report["findings"][0]
+            stats = report["meta"]["coverage"]["verdicts"]
+            # One assertion over every symptom: a divergence shows the queue_id
+            # mismatch AND what it costs downstream, rather than stopping at
+            # the first of five.
+            self.assertEqual({
+                "pass2_fingerprint": finding["fingerprint"],
+                "evidence_status": finding["evidence"]["status"],
+                "verdicts_matched": stats["matched"],
+                "verdicts_unanswered": stats["unanswered"],
+                "coverage_certified": report["summary"]["coverage_certified"],
+            }, {
+                "pass2_fingerprint": queue_id,
+                "evidence_status": "advisor_confirmed",
+                "verdicts_matched": 1,
+                "verdicts_unanswered": 0,
+                "coverage_certified": True,
+            }, "pass 2 fingerprinted different text than pass 1")
+            # and the whole point: the title is still masked everywhere
+            self.assertNotIn(self.MARKER, json.dumps(report))
+            # verify-queue.json is handed verbatim to the advisor, so it is a
+            # shareable artifact too -- redacting at the input masks it, which
+            # is only possible because the redaction now runs upstream of the
+            # --emit-verify-queue branch.
+            self.assertNotIn(self.MARKER, json.dumps(queue))

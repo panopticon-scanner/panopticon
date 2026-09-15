@@ -3,7 +3,6 @@
 grades and a CI gate verdict. Stdlib-only.
 """
 import argparse
-import dataclasses
 import json
 import os
 import sys
@@ -182,6 +181,32 @@ def main(argv=None):
     tool_findings, dispositions, tools_ran = plan_mod.ingest_tool_findings(args)
     tools = plan_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran)
     prepared = findings_mod.FindingSet.prepare(args, tool_findings, run.security_mode)
+    # #1634: redact the INPUT, not only the output -- and do it HERE, upstream
+    # of the --emit-verify-queue branch, so both passes of a run see identical
+    # text.
+    #
+    # Why the placement is load-bearing: evidence.finding_fingerprint keys an
+    # agent finding on its TITLE, and build_verify_queue uses that fingerprint
+    # as the queue_id -- the filename an advisor's verdict is stored under and
+    # the key match_verdict binds on. Redacting after the early return would
+    # queue the unredacted title in pass 1 and recompute from the redacted one
+    # in pass 2: every queue_id changes, the verdict stops binding, the finding
+    # silently drops to `unverified` and coverage_certified flips to False --
+    # on precisely the input this fix exists for. (Finding ids are unaffected
+    # either way: load_findings derives them before any redaction, in both
+    # passes and in the driver's own queue build.) It also masks
+    # verify-queue.json, which is fed verbatim into the advisor prompt.
+    #
+    # Redacting the input is what makes the DERIVED fields safe: build_report
+    # copies f["title"] into summary.top_issues and groups[].key_findings, so a
+    # credential a reviewer quoted-but-didn't-redact reached those copies (and
+    # the HTML, which reads top_issues) before the post-build backstop ever ran
+    # -- it rewrote the finding, never the copies. discarded_claims are
+    # partitioned out of this same list inside build_report, so one pass covers
+    # them too. The post-build call stays: redaction is idempotent, and it is
+    # still the backstop for text produced AFTER this point (an advisor's
+    # reasoning is merged into finding.evidence during build_report).
+    prepared = (redact.redact_tree(prepared[0]),) + tuple(prepared[1:])
     if args.emit_verify_queue and verdicts_mod.emit_verify_queue(
             prepared[0], run_dir, args.max_verify):
         return 0
@@ -189,18 +214,6 @@ def main(argv=None):
     fs = findings_mod.FindingSet.load(args, tool_findings, run.security_mode,
                                       verdict_run_id=(queue[0] or {}).get("run_id"),
                                       prepared=prepared)
-    # #1634: redact the INPUT, not only the output. build_report copies
-    # f["title"] into summary.top_issues and groups[].key_findings, so a
-    # credential a reviewer quoted-but-didn't-redact reached those derived
-    # fields (and the HTML, which reads top_issues) before the post-build
-    # backstop below ever ran -- it rewrote the finding, never the copies.
-    # Masking here means every derived field is computed from already-masked
-    # text, whatever derives it. discarded_claims are partitioned out of this
-    # same list inside build_report, so they are covered by the same pass.
-    # The post-build call stays: redaction is idempotent, and it remains the
-    # documented backstop for text produced AFTER this point (an advisor's
-    # reasoning is merged into finding.evidence during build_report).
-    fs = dataclasses.replace(fs, findings=redact.redact_tree(fs.findings))
     plan = plan_mod.PlanInputs.load(run_dir, args.files, args.verdicts_dir, groups_meta,
                                     plans, queue, fs.verdicts)
     # #1335: SPEND, not coverage -- a no-op scanner still cost a dispatch.
