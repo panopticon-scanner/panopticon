@@ -103,8 +103,8 @@ def _codex_measure(probe_id, settings_path, registration_dir, measure):
         # real `codex` would read as "runtime unavailable" and stay green.
         raise
     except Exception as exc:
-        return None, (hosts.UNKNOWN, probe_id,
-                      "effective Codex inspection could not run: %s: %s" % (type(exc).__name__, exc))
+        return None, (hosts.UNKNOWN, probe_id, common.failure_detail(
+            exc, "effective Codex inspection could not run"))
 
 
 def _codex_surface_problem(surface):

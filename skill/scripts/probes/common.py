@@ -12,6 +12,7 @@ by module attribute (`from . import common`; `common.DRIVER_ROLES`) so a name
 still has exactly one definition and one patch target. The registry that maps
 probe ids to those functions stays in `host_probes.py`.
 """
+import errno
 import os
 import re
 import shutil
@@ -30,6 +31,39 @@ from scripts import dispatch, hosts
 DRIVER_ROLES = tuple(sorted(dispatch.ROLE_FILES))
 
 REGISTERED_SHELL_TOOLS = "registered-shell-tools"
+
+
+def failure_detail(exc, operation):
+    """What a probe says when it could not measure at all (#1637 P05).
+
+    Run-13's Codex probes reported `unknown` with a bare
+    `PermissionError: [Errno 1] Operation not permitted`. That string is the
+    ENTIRE answer an operator gets -- it is what lands in
+    `host-capabilities.json`, on all four disclosure surfaces and in the
+    report -- and it names neither what was attempted nor what the OS refused.
+    EPERM on a `fork` inside a seatbelt sandbox, EPERM opening a settings file,
+    and EPERM on a socket are the same sentence and three different remedies.
+
+    So an `OSError` carries the errno NAME (`EPERM`, not the bare `1` -- the
+    number is the thing an operator has to go look up), the OS's own
+    `strerror`, the `filename` when the exception has one, and the operation
+    the probe was attempting. Anything else carries its type, its message and
+    the operation; the shape is the same so a reader does not have to learn
+    two.
+
+    This changes the DETAIL only. The verdict stays whatever the caller
+    decided -- a probe that could not measure still answers `unknown`, never a
+    guess, and `LaunchRefused` still escapes every one of these handlers
+    untouched.
+    """
+    name = type(exc).__name__
+    if isinstance(exc, OSError):
+        code = (errno.errorcode.get(exc.errno) if exc.errno is not None
+                else None) or "no errno"
+        where = " (%s)" % exc.filename if exc.filename else ""
+        return "%s [%s] %s%s: %s" % (name, code, exc.strerror or exc, where,
+                                     operation)
+    return "%s: %s: %s" % (name, exc, operation)
 
 
 def _frontmatter_tools(path):
@@ -188,8 +222,8 @@ def _cli_help(launch, found, env=None, cwd=None, help_argv=("--help",)):
         # does not wrap it, so `driver run` printed a traceback instead of a
         # status. The sibling block in _headless_usage_source has caught bare
         # Exception for exactly this reason since it was written.
-        return None, None, ("`%s` could not run: %s: %s"
-                            % (" ".join(argv), type(exc).__name__, exc))
+        return None, None, failure_detail(
+            exc, "`%s` could not run" % " ".join(argv))
     if proc.returncode != 0:
         return None, False, ("`%s` exited %s: not a CLI the headless runner can drive"
                              % (" ".join(argv), proc.returncode))
@@ -260,8 +294,8 @@ def probe_cli_flags(host):
     except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
         return {hosts.OUTPUT_SCHEMA: {
             "flag": None, "advertised": None,
-            "detail": "host %r has no usable headless runner to interrogate: %s: %s"
-                      % (host, type(exc).__name__, exc)}}
+            "detail": failure_detail(
+                exc, "host %r has no usable headless runner to interrogate" % host)}}
     if not cli or not flag:
         # The registry row and the runner disagree; the pin test exists to
         # stop that reaching a release, and the fail-safe answer is "unknown".

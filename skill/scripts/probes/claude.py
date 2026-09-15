@@ -239,7 +239,8 @@ def _round_trip_denies_an_outside_write():
             write_guard_hook.uninstall(settings_path=settings,
                                        allowlist_path=allowlist)
     except OSError as exc:
-        return False, "sandbox round-trip could not run: %s" % exc
+        return False, common.failure_detail(
+            exc, "the write-guard sandbox round-trip could not run")
     return True, ("arm/deny round-trip ok: %d payloads adjudicated per entry "
                   "against a version-%d allowlist, and a version-1 flat list "
                   "refused" % (len(rows), write_guard_hook.ALLOWLIST_VERSION))
@@ -415,7 +416,8 @@ def _round_trip_confines_reads():
                         "ALLOWED" if got else "DENIED", name)
             read_guard_hook.uninstall(settings_path=settings, scope_path=scope_file)
     except OSError as exc:
-        return False, "sandbox round-trip could not run: %s" % exc
+        return False, common.failure_detail(
+            exc, "the read-guard sandbox round-trip could not run")
     return True, "arm/bind/deny round-trip ok (%d rows)" % (len(rows) + len(env_rows))
 
 
@@ -569,10 +571,10 @@ def _headless_usage_source(host, settings_path):
         launch_env = runner.launch_env()
     except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
         return (hosts.UNKNOWN, USAGE_SOURCE,
-                "host %r has no usable headless runner: %s: %s. Ship "
-                "skill/scripts/runners/%s.py exposing a Runner, so nothing here "
-                "proves a launch envelope will carry usage"
-                % (host, type(exc).__name__, exc, host))
+                "%s. Ship skill/scripts/runners/%s.py exposing a Runner, so "
+                "nothing here proves a launch envelope will carry usage"
+                % (common.failure_detail(
+                    exc, "host %r has no usable headless runner" % host), host))
     if not cli:
         return (hosts.UNKNOWN, USAGE_SOURCE,
                 "host %r ships a headless runner that names no CLI (its `CLI` is empty, "

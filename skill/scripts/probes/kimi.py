@@ -257,7 +257,8 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
                           input=json.dumps(payload), capture_output=True,
                           text=True, timeout=30, env=env)
         except Exception as exc:  # noqa: BLE001 -- report, never raise
-            return False, "guard subprocess could not run: %s" % exc
+            return False, common.failure_detail(
+                exc, "the guard-hook subprocess could not run")
         out = (proc.stdout or "").strip()
         denied = '"permissionDecision": "deny"' in out
         if denied == want_allow:
@@ -311,8 +312,8 @@ def _kimi_generated_disabled():
     except tomllib.TOMLDecodeError as exc:
         return None, "the generated config.toml is not valid TOML (%s)" % exc
     except (OSError, ValueError, TypeError) as exc:
-        return None, ("the per-run config could not be generated (%s: %s)"
-                      % (type(exc).__name__, exc))
+        return None, common.failure_detail(
+            exc, "the per-run config could not be generated")
     tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
     names = {t for t in (tools.get("disabled") or []) if isinstance(t, str)}
     return names, "the config.toml the runner generates"
@@ -351,7 +352,8 @@ def _kimi_hooks_are_armed(sandbox, mode):
         with open(os.path.join(home, "config.toml"), "rb") as fh:
             config = tomllib.load(fh)
     except OSError as exc:
-        return None, "the per-run home could not be built: %s" % exc
+        return None, common.failure_detail(
+            exc, "the per-run home could not be built")
     except tomllib.TOMLDecodeError as exc:
         return False, ("the config.toml the runner generates is not valid TOML "
                        "(%s), so the run would start with its guard hooks "
@@ -410,7 +412,8 @@ def _kimi_home_arms_and_validates(runner=None):
             proc = runner(["kimi", "doctor"], capture_output=True, text=True,
                           timeout=60, env=env)
     except OSError as exc:
-        return None, "kimi doctor could not run: %s" % exc
+        return None, common.failure_detail(
+            exc, "`kimi doctor` could not run over the per-run home")
     if proc.returncode != 0 or "OK config.toml" not in (proc.stdout or ""):
         return False, ("kimi doctor rejected the generated per-run config: %s%s"
                        % (proc.stdout or "", proc.stderr or ""))[:300]
@@ -480,8 +483,8 @@ def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
             round_trip_detail = "%s; and, with the data file corrupted, %s" % (
                 round_trip_detail, detail)
     except OSError as exc:
-        return (hosts.UNKNOWN, KIMI_READ_GUARD,
-                "sandbox round-trip could not run: %s" % exc)
+        return (hosts.UNKNOWN, KIMI_READ_GUARD, common.failure_detail(
+            exc, "the read-guard sandbox round-trip could not run"))
     armed, armed_detail = _kimi_home_arms_and_validates(doctor_runner)
     if armed is None:
         return (hosts.UNKNOWN, KIMI_READ_GUARD,
@@ -565,8 +568,8 @@ def probe_kimi_write_guard(host, runner=None):
             # in the per-run home's config.toml") named a file it never opened.
             armed, armed_detail = _kimi_hooks_are_armed(sandbox, "write")
     except OSError as exc:
-        return (hosts.UNKNOWN, KIMI_WRITE_GUARD,
-                "sandbox round-trip could not run: %s" % exc)
+        return (hosts.UNKNOWN, KIMI_WRITE_GUARD, common.failure_detail(
+            exc, "the write-guard sandbox round-trip could not run"))
     if armed is None:
         return (hosts.UNKNOWN, KIMI_WRITE_GUARD,
                 "%s, but %s" % (round_trip_detail, armed_detail))
@@ -654,8 +657,8 @@ def probe_kimi_usage_wire(host):
             resolved = kimi_runner.wire_path(run_home, session_id)
             usage, model = kimi_runner.parse_wire(resolved) if resolved else ({}, None)
     except OSError as exc:
-        return (hosts.UNKNOWN, KIMI_USAGE_WIRE,
-                "the per-run wire round-trip could not run: %s" % exc)
+        return (hosts.UNKNOWN, KIMI_USAGE_WIRE, common.failure_detail(
+            exc, "the per-run wire round-trip could not run"))
     if resolved is None:
         return (hosts.REFUTED, KIMI_USAGE_WIRE,
                 "a child's wire.jsonl written at the per-run home's own layout "
