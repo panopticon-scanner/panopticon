@@ -32,6 +32,13 @@ from . import verify
 MAX_CELL_ATTEMPTS = 3
 _ATTEMPTS_FILE = "cell-attempts.json"
 
+# #1637 P08 ruling 5: the per-cell record of whether tool output was on disk
+# when this cell's prompt was rendered. Durable and merged rather than
+# rewritten, because a run dispatches its cells in several batches (retries,
+# resumes, a `tools` phase that only succeeded on the second invocation) and
+# the report has to count every panel the run dispatched, not the last batch.
+_TOOLS_CONTEXT_FILE = "panel-tools-context.json"
+
 
 def _cell_key(group, domain):
     return "%s/%s" % (group, domain)
@@ -52,6 +59,31 @@ def _record_attempts(review_root, keys):
         except (TypeError, ValueError):
             data[key] = 1
     runio._write_json(runio._pano(review_root, _ATTEMPTS_FILE), data)
+
+
+def _tools_context(review_root):
+    """Did this run's tool scan produce output that a reviewer could be shown?
+
+    `tools-ran.json`'s `ran`, which is the same fact `synthesize_execute` gates
+    `--tools-dir` on -- one expression, so "the panel saw scanner evidence" and
+    "synthesis ingested scanner evidence" cannot answer differently about the
+    same run. False for every skip, crash and absent marker: none of them puts
+    a finding in front of a reviewer.
+    """
+    marker = runio._load_json(runio._pano(review_root, "tools-ran.json"))
+    return bool(isinstance(marker, dict) and marker.get("ran"))
+
+
+def _record_tools_context(review_root, entries):
+    """Merge this batch's `tools_context` into the run's durable tally."""
+    path = runio._pano(review_root, _TOOLS_CONTEXT_FILE)
+    body = runio._load_json(path)
+    prior = body.get("cells") if isinstance(body, dict) else None
+    cells = dict(prior) if isinstance(prior, dict) else {}
+    for entry in entries:
+        cells[_cell_key(entry["group"], entry["domain"])] = bool(
+            entry.get("tools_context"))
+    runio._write_json(path, {"schema_version": 1, "cells": cells})
 
 
 def _cell_exhausted(review_root, group, domain):
@@ -218,7 +250,8 @@ def _tool_hits_for_cell(review_root, manifest, domain, files):
                              (h.get("location") or {}).get("line_start") or 0))
     return _format_tool_hits(hits)
 
-def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle):
+def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle,
+                tools_context=False):
     file_list = runio._abs_file_list(review_root, files)
     test_list = "\n".join("- " + t for t in tests) or "- (no tests)"
     out_file = os.path.abspath(runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))
@@ -251,6 +284,11 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
             "out_file": out_file, "run_id": manifest["run_id"],
             "group": group, "domain": domain,
             "files": abs_files,
+            # #1637 P08 ruling 5: stamped as the prompt is rendered, because
+            # that is the moment the claim is about -- whether THIS reviewer
+            # was shown scanner evidence. Read back off the persisted tally at
+            # synthesis as meta.tools.panels_with_scanner_context.
+            "tools_context": bool(tools_context),
             "scope": requests.scope(files=abs_files, reads=_cell_reads(domain))}
     if mode:
         entry["delivery"] = mode
@@ -325,6 +363,7 @@ def review_execute(review_root, manifest):
     # from the full entry set, so the fail-closed allowlist still covers every cell
     # (_write_driver_plan above already declared them all for reconcile).
     all_entries, ngroups = [], 0
+    tools_context = _tools_context(review_root)
     for group, files in coverage._discovered_groups(review_root):
         domains = coverage._effective_domains(review_root, group)
         pending = [d for d in domains
@@ -335,12 +374,14 @@ def review_execute(review_root, manifest):
         ngroups += 1
         tests = sorted((matrix.get(group) or {}).get("tests") or [])
         all_entries.extend(
-            _cell_entry(review_root, manifest, group, d, files, tests, host, bundle)
+            _cell_entry(review_root, manifest, group, d, files, tests, host, bundle,
+                        tools_context=tools_context)
             for d in pending)
     if all_entries:
         _record_attempts(review_root, [_cell_key(e["group"], e["domain"])
                                        for e in all_entries
                                        if e.get("group") and e.get("domain")])
+        _record_tools_context(review_root, all_entries)
         req = requests.write_dispatch_request(review_root, manifest["run_id"], "review",
                                      None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="review", group=None,

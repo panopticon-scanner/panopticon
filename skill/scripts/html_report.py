@@ -565,7 +565,35 @@ def _render_header(report):
         "<div class='coverage'>Coverage: %s &mdash; gate: %s</div>"
         % (" &middot; ".join(coverage_parts), policy)
     )
+    parts.append(_render_scanner_context(meta))
     return "\n".join(parts)
+
+
+def _render_scanner_context(meta):
+    """#1637 P08 ruling 5: how many panels reviewed with scanner evidence.
+
+    Next to the coverage line because it answers the same question from the
+    reviewer's side -- meta.coverage says which adapters produced output, and
+    this says how many reviewers were actually shown any. Run-13's report
+    looked complete while 85 of its panels had seen none.
+
+    Silent on a report with no such block: a pre-#1637 report, or one fed to
+    --compare, did not measure this, and rendering "0 of 0" would state a
+    measurement nobody made. A run that dispatched no panel is the same shape
+    for the same reason.
+    """
+    block = (meta.get("tools") or {}).get("panels_with_scanner_context")
+    if not isinstance(block, dict):
+        return ""
+    try:
+        with_ctx, without = int(block.get("with") or 0), int(block.get("without") or 0)
+    except (TypeError, ValueError):
+        return ""
+    total = with_ctx + without
+    if not total:
+        return ""
+    return ("<div class='coverage'>Scanner context: %d of %d panels reviewed "
+            "with tool findings on disk</div>" % (with_ctx, total))
 
 
 def _render_compare_summary(label, report):

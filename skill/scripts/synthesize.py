@@ -176,7 +176,13 @@ def main(argv=None):
     if not isinstance(host_capabilities, dict):
         host_capabilities = {}
 
-    run = report_mod.RunConfig.from_args(args, gj, ts, host_capabilities=host_capabilities)
+    # #1637 P08 ruling 5: resolved under `run_dir` like every other run
+    # artifact, and fail-closed to two zeroes when it is absent -- a direct
+    # `synthesize.py` invocation over hand-collected findings files never had
+    # a driver to write it.
+    run = report_mod.RunConfig.from_args(
+        args, gj, ts, host_capabilities=host_capabilities,
+        panel_tools_context=plan_mod.load_panel_tools_context(run_dir))
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
     tool_findings, dispositions, tools_ran = plan_mod.ingest_tool_findings(args)
     tools = plan_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran)

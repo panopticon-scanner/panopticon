@@ -78,6 +78,24 @@
             }
           }
         },
+        "tools": {
+          "type": "object",
+          "description": "What the scanner layer meant for this run's REVIEWERS (#1637 P08) -- distinct from meta.coverage, which accounts for what the adapters produced.",
+          "properties": {
+            "panels_with_scanner_context": {
+              "type": "object",
+              "description": "How many review panels were dispatched with tool output already on disk (`with`) and how many were not (`without`). Recorded per cell at the moment its prompt was rendered, so a run whose tool scan skipped cannot read like one that scanned. Both zero means no panel was dispatched at all.",
+              "properties": {
+                "with": {
+                  "type": "integer"
+                },
+                "without": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
         "coverage": {
           "type": "object",
           "description": "What this run actually did: which adapters produced usable output, which tools ran, verify-phase accounting, and the tool-policy posture.",

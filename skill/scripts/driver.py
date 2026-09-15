@@ -53,9 +53,10 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 # --reset run re-declares cells from fresh coverage.
                 "diff-hunks.json", "out-file-hashes.json",
                 "dispatch-plan-driver.json",
-                # #1637 P08: the readiness verdict is a run-scoped fact -- a
-                # --reset must not resume on the previous run's answer to it.
-                "readiness.json",
+                # #1637 P08: the readiness verdict and the per-cell
+                # scanner-context tally are both run-scoped facts -- a --reset
+                # must not resume on the previous run's answer to either.
+                "readiness.json", "panel-tools-context.json",
                 # #1513: the per-cell retry budget is run-scoped -- a --reset
                 # must not start with a cell already exhausted.
                 "cell-attempts.json")

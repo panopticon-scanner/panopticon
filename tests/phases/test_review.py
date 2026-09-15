@@ -179,3 +179,65 @@ class TestCellFanOut(unittest.TestCase):
                 self.assertEqual(expected, e["files"])
                 for f in e["files"]:
                     self.assertTrue(f.startswith(os.path.abspath(self.root) + os.sep))
+
+
+class TestPanelsRecordWhetherTheySawScannerEvidence(unittest.TestCase):
+    """#1637 P08 ruling 5: a panel that reviewed with no tool output on disk
+    is a materially weaker review, and until now the report said nothing about
+    it. Each dispatch entry records the fact as it renders the prompt, and the
+    run keeps a durable per-cell tally so a resume cannot lose the batches it
+    already dispatched."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Auth:\n    match: ['a.py']\n")
+        runio._write_json(runio._pano(self.root, "coverage-Auth.json"),
+                          {"group": "Auth", "effective": ["SEC"], "run_id": "R"})
+
+    def _dispatch(self):
+        with mock.patch("scripts.ocrdb.domain_menu", return_value=[]), \
+             mock.patch("scripts.dispatch.render_prompt", return_value="BODY"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-panel"), \
+             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
+            review.review_execute(self.root, self.manifest)
+        return runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+
+    def _marker(self, ran):
+        runio._write_json(runio._pano(self.root, "tools-ran.json"),
+                          {"schema_version": 1, "ran": ran, "skipped": not ran,
+                           "crashed": False, "note": "", "returncode": 0,
+                           "run_id": "R"})
+
+    def test_an_entry_records_that_no_tool_output_existed(self):
+        req = self._dispatch()
+        self.assertEqual([e["tools_context"] for e in req["entries"]], [False])
+
+    def test_an_entry_records_tool_output_that_did_exist(self):
+        self._marker(True)
+        req = self._dispatch()
+        self.assertEqual([e["tools_context"] for e in req["entries"]], [True])
+
+    def test_a_skipped_scan_is_not_scanner_context(self):
+        self._marker(False)
+        req = self._dispatch()
+        self.assertEqual([e["tools_context"] for e in req["entries"]], [False])
+
+    def test_the_tally_is_durable_across_batches(self):
+        self._dispatch()                       # dispatched without evidence
+        self._marker(True)
+        runio._write_json(runio._pano(self.root, "coverage-Auth.json"),
+                          {"group": "Auth", "effective": ["SEC", "DAT"],
+                           "run_id": "R"})
+        self._dispatch()                       # second cell, with evidence
+        cells = runio._load_json(
+            runio._pano(self.root, "panel-tools-context.json"))["cells"]
+        self.assertEqual(cells, {"Auth/SEC": True, "Auth/DAT": True})
