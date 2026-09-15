@@ -36,7 +36,44 @@ REJECTED_DIR = "rejected"
 # quote the reason at the retry, bounded so one runaway agent cannot fill the
 # run folder with the same megabyte three times.
 REJECTED_CAP = 256 * 1024
+# How much of an oversized reply the REDACTOR is allowed to scan before the
+# cap applies (D10 F2). Redaction has to come first -- two of redact's rules
+# (PEM and JWT) are delimiter-terminated, so a cut inside such a block removes
+# the terminator, the pattern stops matching, and the surviving prefix stays in
+# plaintext; measured, a PEM straddling the 256 KiB cut left 1531 characters of
+# key material in the record. This bound is what keeps "redact first" from
+# meaning "run a DOTALL `.*?` over an unbounded reply".
+REDACT_CAP = 4 * 1024 * 1024
+# The one rule whose opening delimiter can survive the final cut with its
+# closing one beyond the REDACT_CAP horizon, i.e. unmasked. Nothing after a
+# dangling header is kept.
+_DANGLING_PEM = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
 _ATTEMPT = re.compile(r"-(\d+)\.json$")
+
+
+def _cut(text, limit):
+    """`text` clipped to `limit` BYTES of UTF-8, never splitting a character."""
+    return text.encode("utf-8")[:limit].decode("utf-8", "ignore")
+
+
+def _safe_reply(text):
+    """(kept, truncated): the reply as it may be stored (D10 F2).
+
+    Redacted BEFORE the cap, so the cap only ever cuts text that has already
+    been through every pattern; pre-cut at REDACT_CAP first, so the redactor's
+    DOTALL rules are never handed an unbounded body. Whatever survives the
+    final cut is then swept for a private-key HEADER left without its `END`:
+    the only way an unmasked secret can reach the record is a block whose
+    terminator lay beyond the horizon, and a header with nothing to close it is
+    the signature of exactly that.
+    """
+    scanned = _cut(text, REDACT_CAP)
+    kept = _cut(redact.redact_tree(scanned), REJECTED_CAP)
+    dangling = [m for m in _DANGLING_PEM.finditer(kept)
+                if "-----END" not in kept[m.end():]]
+    if dangling:
+        kept = kept[:dangling[0].start()]
+    return kept, bool(dangling) or scanned != text or len(kept.encode("utf-8")) == REJECTED_CAP
 
 
 def run_dir(review_root, namespace=None):
@@ -93,6 +130,10 @@ RETRY_PROMPT_BLOCK = (
     "The required envelope is exactly: %(shape)s\n")
 
 
+# How much of a refusal reason the retry prompt may quote (D10 F3).
+REASON_CAP = 200
+
+
 def envelope_shape(entry):
     """The one-line envelope this entry's role is accepted against."""
     return ENVELOPE_SHAPES.get(role_of(entry)) or "a single JSON object"
@@ -127,7 +168,13 @@ def retry_block(run_folder, entry):
     record = last_rejection(run_folder, entry.get("id") if isinstance(entry, dict) else None)
     if record is None:
         return None, None
-    prior = {"attempt": record.get("attempt"), "reason": record.get("reason")}
+    # D10 F3: capped again on the way OUT. The record's reason is already
+    # bounded and masked, but this string is about to be appended to a prompt
+    # and written to `prompt_file`, and a record written by an older build --
+    # or by a path that bounds nothing, a runner's own error string -- must not
+    # be able to grow the launch argv. Belt and braces, one line.
+    prior = {"attempt": record.get("attempt"),
+             "reason": str(record.get("reason") or "")[:REASON_CAP]}
     return RETRY_PROMPT_BLOCK % {"attempt": prior["attempt"], "reason": prior["reason"],
                                  "shape": envelope_shape(entry)}, prior
 
@@ -175,15 +222,18 @@ def retain_rejected(run_folder, entry, text, reason):
         return None
     safe_id = requests._PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
     directory = os.path.join(run_folder, REJECTED_DIR)
-    kept = body.encode("utf-8")[:REJECTED_CAP].decode("utf-8", "ignore")
+    kept, truncated = _safe_reply(body)
     attempt = _next_attempt(directory, safe_id)
     record = {"schema_version": 1, "entry_id": entry_id, "attempt": attempt,
-              "reason": reason,
+              # D10 F3: the reason is built by interpolating REPLY content, so
+              # it gets the same masking the reply does. Bounded at the source
+              # (`%.200r`), not here, so every consumer sees the same string.
+              "reason": redact.redact(reason),
               # the stamp format the ledger's own rows carry, so the two sort
               # against each other as plain strings.
               "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-              "reply": redact.redact_tree(kept)}
-    if kept != body:
+              "reply": kept}
+    if truncated:
         record["truncated"] = True
     try:
         return runio._write_json(os.path.join(directory, "%s-%d.json" % (safe_id, attempt)), record)
@@ -222,7 +272,14 @@ def _stamp_matches(entry, data):
         return False, "reply carries no _panopticon stamp; the entry declares %s" % sorted(declared)
     for k, v in declared.items():
         if meta.get(k, "primary" if k == "stage" else None) != v:
-            return False, "_panopticon.%s is %r, the entry is %r" % (k, meta.get(k), v)
+            # %.200r, not %r (D10 F3): `meta` is the PARSED REPLY, so this
+            # string carries content an agent -- possibly a prompt-injected one
+            # reviewing a hostile target -- chose. It is stored in the rejected
+            # record and quoted into the next attempt's prompt, so it is bounded
+            # where it is built rather than at each of those two consumers. `%r`
+            # honours a precision and keeps escaping newlines, which is what
+            # stops a reason from forging lines of its own.
+            return False, "_panopticon.%s is %.200r, the entry is %r" % (k, meta.get(k), v)
     return True, ""
 
 
@@ -283,7 +340,7 @@ def accepts(entry, data):
         return _verify_accepts(entry, data)
     verdict = str(data.get("verdict", "")).upper() if isinstance(data, dict) else ""
     if verdict not in evidence.VERDICT_VALUES:
-        return False, "verdict %r is not one of %s" % (verdict, sorted(evidence.VERDICT_VALUES))
+        return False, "verdict %.200r is not one of %s" % (verdict, sorted(evidence.VERDICT_VALUES))
     return True, ""
 
 
