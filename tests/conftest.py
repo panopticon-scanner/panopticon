@@ -172,6 +172,34 @@ def _no_live_scanner_containers(request, monkeypatch):
     monkeypatch.setattr(_setup_flow, "_check_docker", _refuse_setup_docker)
 
 
+# --- #1637 P08: the readiness phase's docker probe ---------------------------
+# The readiness phase reuses `setup_flow._check_docker`, so the autouse fixture
+# above already refuses it for every test that says nothing -- which is the
+# right default and the wrong answer for the dozens of lifecycle tests that
+# need the engine to get PAST readiness and on to the phase they are about.
+# Those state the environment they mean with this fake runner, which answers
+# the two probe argvs and touches no daemon. Handed to `readiness.DOCKER_RUNNER`
+# (a module attribute, so one patch reaches it), never to PATH: a `docker` shim
+# proof over the whole suite must stay at zero lines.
+class _DockerProbe:
+    def __init__(self, returncode):
+        self.returncode, self.stdout, self.stderr = returncode, "", ""
+
+
+def docker_probe_runner(daemon=0, image=0):
+    """A fake `subprocess.run` answering readiness's two docker probes.
+
+    Defaults to "daemon up, image present". Pass a non-zero `image` for the
+    run-13 environment (Docker fine, `panopticon-tools` absent) and a non-zero
+    `daemon` for no Docker at all.
+    """
+    def runner(cmd, **_kwargs):
+        if list(cmd[:3]) == ["docker", "image", "inspect"]:
+            return _DockerProbe(image)
+        return _DockerProbe(daemon)
+    return runner
+
+
 # --- #1344: no live host-CLI launches from the unit suite --------------------
 # The guardrails say the suite must never start a host binary, and until now
 # that was per-test discipline only: the launch seams defaulted to

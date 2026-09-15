@@ -566,6 +566,39 @@ def load_verify_queue(run_dir):
     return None, "verify queue has no entries list"
 
 
+PANEL_TOOLS_CONTEXT = "panel-tools-context.json"
+
+
+def load_panel_tools_context(run_dir):
+    """`{"with": n, "without": m}` over <run_dir>/panel-tools-context.json.
+
+    #1637 P08 ruling 5. The driver's review phase stamps every dispatch entry
+    with whether tool output was on disk as its prompt was rendered, and
+    merges the per-cell answers into that file as each batch goes out. This
+    counts them, so the report can say how many panels actually saw scanner
+    evidence -- run-13's 85 panels reviewed with none, and the report had no
+    field in which to say so.
+
+    Fail-closed to two zeroes on anything unreadable, and on the file being
+    absent: this lives under `.panopticon`, which a hostile target can
+    pre-commit, and "nothing measured" must read as a measurable zero rather
+    than as a traceback or an invented figure. A run that dispatched no panel
+    at all reports the same two zeroes, correctly.
+    """
+    counts = {"with": 0, "without": 0}
+    try:
+        with open(os.path.join(run_dir, PANEL_TOOLS_CONTEXT), encoding="utf-8") as fh:
+            body = json.load(fh)
+    except (OSError, ValueError):
+        return counts
+    cells = body.get("cells") if isinstance(body, dict) else None
+    if not isinstance(cells, dict):
+        return counts
+    for saw_tools in cells.values():
+        counts["with" if saw_tools is True else "without"] += 1
+    return counts
+
+
 def load_scout_requests(run_dir):
     """(tools requested, profiles seen) across <run_dir>/scout-*.json. #471: a
     scout can return tools:[] -- a silent decline of the tool layer -- so the

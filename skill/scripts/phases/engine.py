@@ -13,6 +13,18 @@ class Phase:
 
 _PHASE_RESULT_KINDS = ("advanced", "checkpoint")
 
+
+class EngineStalled(RuntimeError):
+    """A phase returned "advanced" without ever satisfying its done predicate.
+
+    A RuntimeError subclass, so every existing `assertRaises(RuntimeError)`
+    still binds, but NAMED -- `driver.run` converts exactly this into an
+    `error` status (#1637 P08 F1b) rather than catching RuntimeError at large
+    and turning an unrelated bug in a phase into a tidy-looking status line.
+    The progress guard exists to stop a spin; letting it escape as a traceback
+    meant the operator got no status JSON at all from the one failure mode
+    that has already burned the whole run's wall clock."""
+
 # Emitted with the terminal "complete" status: the call that disarms the
 # write-guard once the run needs it no longer. Safe to run unconditionally --
 # `uninstall` is a no-op when nothing is installed -- and it must run from the
@@ -81,7 +93,7 @@ def run_engine(review_root, manifest, phases, max_steps=None):
                     "message": result.message or ("%s checkpoint" % result.checkpoint)}
         if phase.name not in advanced:
             advanced.append(phase.name)
-    raise RuntimeError(
+    raise EngineStalled(
         "driver engine exceeded %d steps without completing — a phase returned "
         "'advanced' without satisfying its done() predicate" % max_steps)
 

@@ -1182,3 +1182,40 @@ class TestComparePostureIsPerReport(unittest.TestCase):
                             {"host": "claude", "capabilities": caps}))
         self.assertNotIn("<script>alert(1)</script>", raw)
         self.assertIn("&lt;script&gt;", raw)
+
+
+class TestScannerContextLine(unittest.TestCase):
+    """#1637 P08 ruling 5: the same fact the JSON carries, next to the tool
+    coverage line, so a person meets it without opening the report."""
+
+    def test_the_header_names_how_many_panels_saw_scanner_evidence(self):
+        report = _minimal_report()
+        report["meta"]["tools"] = {
+            "panels_with_scanner_context": {"with": 3, "without": 82}}
+        html_out = hr.render(report)
+        self.assertIn("Scanner context:", html_out)
+        self.assertIn("3 of 85 panels", html_out)
+
+    def test_a_report_with_no_such_block_renders_no_line(self):
+        self.assertNotIn("Scanner context:", hr.render(_minimal_report()))
+
+
+class TestAMidRunToolsDowngradeIsVisible(unittest.TestCase):
+    """#1637 P08 F2: a person reading the report must meet the downgrade
+    without opening JSON -- it changed what every panel after it was shown."""
+
+    def test_the_header_says_the_scan_was_disabled_mid_run(self):
+        report = _minimal_report()
+        report["meta"]["tools"] = {
+            "panels_with_scanner_context": {"with": 1, "without": 4},
+            "disabled_mid_run": True}
+        html_out = hr.render(report)
+        self.assertIn("disabled mid-run", html_out)
+        self.assertIn("1 of 5 panels", html_out)
+
+    def test_an_ordinary_run_says_nothing_about_it(self):
+        report = _minimal_report()
+        report["meta"]["tools"] = {
+            "panels_with_scanner_context": {"with": 1, "without": 4},
+            "disabled_mid_run": False}
+        self.assertNotIn("disabled mid-run", hr.render(report))

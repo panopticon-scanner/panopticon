@@ -34,6 +34,7 @@ import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 import scripts.phases.discovery as discovery
+import scripts.phases.readiness as readiness
 import scripts.phases.tools as tools
 import scripts.phases.review as review
 import scripts.phases.verify as verify
@@ -52,12 +53,21 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 # --reset run re-declares cells from fresh coverage.
                 "diff-hunks.json", "out-file-hashes.json",
                 "dispatch-plan-driver.json",
+                # #1637 P08: the readiness verdict and the per-cell
+                # scanner-context tally are both run-scoped facts -- a --reset
+                # must not resume on the previous run's answer to either.
+                "readiness.json", "panel-tools-context.json",
                 # #1513: the per-cell retry budget is run-scoped -- a --reset
                 # must not start with a cell already exhausted.
                 "cell-attempts.json")
 
 
+# #1637 P08 (owner ruling D7): `readiness` leads. `coverage` is the first
+# checkpoint that SPENDS anything, and everything before it is deterministic
+# and cheap -- so the one place a scanner-environment verdict can be both
+# authoritative and free is at the head of this table, ahead of `discovery`.
 PHASES = (
+    engine.Phase("readiness", "deterministic", readiness.readiness_done, readiness.readiness_execute),
     engine.Phase("discovery", "deterministic", discovery.discovery_done, discovery.discovery_execute),
     engine.Phase("coverage", "mixed", coverage.coverage_done, coverage.coverage_execute),
     engine.Phase("tools", "deterministic", tools.tools_done, tools.tools_execute),
@@ -632,12 +642,54 @@ def run(args, runner=subprocess.run, phases=PHASES):
             scope=scope, pr=args.pr, pr_base=pr_base)
         run_manifest.write_manifest(review_root, manifest)
     else:
+        cli_flags = _cli_flags(args)
         conflicts = run_manifest.conflicting_flags(
             manifest, host=args.host, security_mode=args.security,
-            base=base, flags=_cli_flags(args), scope=scope, pr=args.pr)
+            base=base, flags=cli_flags, scope=scope, pr=args.pr)
         if conflicts:
             return runio._error_status("flag drift (use --reset to start over): "
                                  + "; ".join(conflicts))
+        # #1: a bare re-invocation of an ALREADY-complete run matches every
+        # manifest field (conflicting_flags treats a None incoming value as
+        # no-conflict), so it would advance straight to "complete" and hand
+        # back a possibly-stale report as though it were a fresh scan -- the
+        # worst failure mode for a review tool. Refuse loudly and name --reset
+        # instead; the durable report stays on disk.
+        #
+        # #1637 P08 F3: decided on the TERMINAL phase's artifact, not on "every
+        # predicate says done". The two agreed until an environmental tool skip
+        # became legitimately not-done (F1): a finished run then re-entered,
+        # re-ran the scan, found every later phase done, and handed back the
+        # PREVIOUS report as though it were fresh -- with the new tool findings
+        # never ingested. A run whose last phase has its artifact is complete,
+        # whatever an earlier phase would like to retry.
+        #
+        # Fix round 2 N1: this now stands AHEAD of the downgrade below, and
+        # inside the branch that has a manifest at all. It used to follow it,
+        # so a `--no-tools` aimed at a FINISHED run flipped `flags.tools` and
+        # appended a `flag_changes` entry before refusing -- a durable record
+        # of a rescue that never happened, on a run with nothing left to
+        # rescue. Lose the terminal artifacts and resume, and the regenerated
+        # report says `disabled_mid_run: true` beside panels that all saw
+        # scanner evidence: the run record and the report contradicting each
+        # other on the very surface this work added. A --reset run never
+        # reaches here -- it has no manifest to load -- so the old
+        # `not args.reset` clause is now structural.
+        if phases and phases[-1].done(review_root, manifest):
+            report = runio._pano(review_root, "report.json")
+            loc = report if os.path.exists(report) else review_root
+            return runio._error_status(
+                "run already complete (report at %s) -- use `--reset` to start "
+                "a new run" % loc)
+        # #1637 P08 F2: `--no-tools` on an IN-FLIGHT run is the non-destructive
+        # rescue from a scanner environment that moved after the scouts were
+        # paid for -- the alternative was `--reset`, which throws that work
+        # away. Recorded in the manifest (flags + flag_changes), so readiness
+        # re-evaluates on its own (its done predicate keys on flags.tools), the
+        # tools phase rewrites its marker as the operator's own skip, and
+        # synthesis discloses it as meta.tools.disabled_mid_run.
+        if run_manifest.is_tools_downgrade(manifest, cli_flags):
+            manifest = run_manifest.record_tools_downgrade(review_root, manifest)
     # In-memory only, and deliberately NOT a manifest field: it names where the
     # HOST SESSION runs, which is a property of this invocation rather than of
     # the run, and it feeds nothing but the cost-ledger transcript lookup. Not
@@ -646,19 +698,16 @@ def run(args, runner=subprocess.run, phases=PHASES):
     # that needs it simply passes it again (#calibration-4).
     if getattr(args, "session_dir", None):
         manifest["session_dir"] = os.path.abspath(args.session_dir)
-    # #1: a bare re-invocation of an ALREADY-complete run matches every manifest
-    # field (conflicting_flags treats a None incoming value as no-conflict), so it
-    # would advance straight to "complete" and hand back a possibly-stale report as
-    # though it were a fresh scan -- the worst failure mode for a review tool.
-    # Refuse loudly and name --reset instead; the durable report stays on disk.
-    # (Guarded by `not args.reset`: a --reset run just cleared its derived
-    # artifacts, so it can never be already-complete at this point.)
-    if not args.reset and engine._first_not_done(phases, review_root, manifest) is None:
-        report = runio._pano(review_root, "report.json")
-        loc = report if os.path.exists(report) else review_root
-        return runio._error_status(
-            "run already complete (report at %s) -- use `--reset` to start a new "
-            "run" % loc)
+    # #1637 P08 F1: ONE token per invocation, carried on the in-memory manifest
+    # -- which is the context object every phase already receives -- and
+    # deliberately never written to disk (run_manifest._EPHEMERAL_KEYS). It is
+    # what makes an environmental tool skip retried once per `driver run`
+    # rather than once per ENGINE STEP: `run_engine` recomputes the cursor
+    # every step, so a phase that is simply "not done" after executing is
+    # re-selected immediately and spins to max_steps. `driver loop` gets a
+    # fresh token per iteration by construction, since every iteration calls
+    # this function.
+    manifest["invocation"] = run_manifest.new_run_id()
     # §5.1: point runs/latest at the active run folder now that the manifest (hence
     # the tag) is established — so the pointer exists throughout the run, not just
     # after synthesize writes the report.
@@ -678,6 +727,14 @@ def run(args, runner=subprocess.run, phases=PHASES):
     try:
         result = engine.run_engine(review_root, manifest, phases)
     except runio.DriverError as exc:
+        return runio._error_status(str(exc))
+    except engine.EngineStalled as exc:
+        # #1637 P08 F1b: the progress guard fired. Converted here rather than
+        # left to escape: `driver run` speaks a status protocol, and a
+        # traceback is not a status -- the host gets no JSON at all, after the
+        # spin has already burned the run's wall clock. The engine's own
+        # message is carried verbatim, so the phase that could not advance is
+        # still named.
         return runio._error_status(str(exc))
     if result.get("status") == "complete":
         validate._finalize_worktree(review_root, manifest)

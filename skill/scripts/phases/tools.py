@@ -6,15 +6,70 @@ from . import engine
 from . import runio
 
 
+# The exact note `--no-tools` writes. Matched by equality, never by substring:
+# `tools_done` reads this back off a file a hostile target could pre-commit,
+# and a scanner's stderr that happened to quote the flag must not spell "the
+# operator chose this".
+NO_TOOLS_NOTE = "tools disabled (--no-tools)"
+
+
 def tools_done(review_root, manifest):
-    return runio._json_parses(runio._pano(review_root, "tools-ran.json"))
+    """The scan RAN, CRASHED, or was switched off on purpose -- never merely
+    "a marker parsed" (#1637 P08 ruling 4).
+
+    The old predicate made an ENVIRONMENTAL skip -- Docker down, or the image
+    absent -- done for ever. Run-13 skipped the scan on a missing image and
+    then dispatched 85 panels with no scanner evidence; installing the image
+    mid-run could not have retried it, because the marker already said done.
+    An environmental skip now re-evaluates on the next `driver run`, which
+    costs one `docker image inspect` and keeps every scout/review artifact
+    already on disk.
+
+    A CRASH still counts as done, deliberately: it is disclosed loudly and
+    gated by the adapter manifest (#1033), and re-running a broken scanner on
+    every invocation would wedge the run rather than fix it.
+
+    With `readiness` failing closed ahead of this phase, the environmental
+    branch is now only reachable when the environment changed MID-RUN -- the
+    daemon stopped, or the image was pruned, between readiness and here.
+    """
+    marker = runio._load_json(runio._pano(review_root, "tools-ran.json"))
+    if not isinstance(marker, dict):
+        return False
+    if marker.get("ran") or marker.get("crashed"):
+        return True
+    if marker.get("note") == NO_TOOLS_NOTE:
+        # F5: flag-aware, exactly as `readiness_done` is. A marker that records
+        # the operator's own `--no-tools` is done only while the manifest still
+        # says so; a run switched back to tools-enabled must re-run the scan
+        # rather than inherit the decision it just reversed.
+        return (manifest.get("flags") or {}).get("tools") is False
+    # The environmental skip. Done FOR THIS INVOCATION once this invocation has
+    # already attempted it, and not-done for the next `driver run` -- which is
+    # the cadence ruling 4 names. A bare "not done" was step-scoped, not
+    # invocation-scoped: `run_engine` recomputes the cursor on every step, so
+    # it re-selected `tools` immediately and spun until max_steps.
+    #
+    # Equality against the CURRENT invocation's token, so a `tools-ran.json` a
+    # hostile target pre-commits cannot claim to have been written by this
+    # invocation -- the token is a fresh uuid per `driver.run` call and is
+    # never persisted in the manifest.
+    #
+    # Fail CLOSED on a marker with no token at all: `None == None` would make
+    # an environmental skip done for ever the moment a caller of `run_engine`
+    # forgot to mint one, which is run-13's regression verbatim. The cost of
+    # the strict form is one retry by the next minted invocation -- exactly
+    # what a pre-#1637 marker already gets.
+    attempt = marker.get("attempt_invocation")
+    return attempt is not None and attempt == manifest.get("invocation")
 
 def tools_execute(review_root, manifest):
     if (manifest.get("flags") or {}).get("tools") is False:
         runio._write_json(runio._pano(review_root, "tools-ran.json"),
                     {"schema_version": 1, "ran": False, "skipped": True, "crashed": False,
-                     "note": "tools disabled (--no-tools)",
-                     "returncode": None, "run_id": manifest["run_id"]})
+                     "note": NO_TOOLS_NOTE,
+                     "returncode": None, "run_id": manifest["run_id"],
+                     "attempt_invocation": manifest.get("invocation")})
         return engine.PhaseResult(kind="advanced", message="tools: skipped (--no-tools)")
     out_dir = runio._pano(review_root, "tools")
     # #1031: --manifest records the deterministic adapter set (selected/produced/
@@ -40,7 +95,11 @@ def tools_execute(review_root, manifest):
     runio._write_json(runio._pano(review_root, "tools-ran.json"),
                 {"schema_version": 1, "ran": produced, "skipped": not produced, "crashed": crashed,
                  "note": note, "returncode": proc.returncode,
-                 "run_id": manifest["run_id"]})
+                 "run_id": manifest["run_id"],
+                 # F1: which INVOCATION attempted this scan. `tools_done` reads
+                 # it back to decide whether an environmental skip has already
+                 # been retried on this pass.
+                 "attempt_invocation": manifest.get("invocation")})
     if crashed:
         sys.stderr.write("driver: tool scan CRASHED (rc=%s) — %s\n"
                          % (proc.returncode, note))

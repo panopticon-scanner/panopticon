@@ -329,6 +329,44 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("--no-tools", tools)
         self.assertTrue("LOUD" in tools or "loudly" in tools.lower())
 
+    def test_readiness_is_documented_as_the_loops_first_step(self):
+        # #1637 P08: the guide is where an operator meets a refusal they have
+        # not yet hit. Three things have to be findable: that it runs FIRST,
+        # that it fails closed, and the exact command that clears it.
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        self.assertIn("`readiness` → `discovery`", loop)
+        readiness = _section(loop, "`readiness`**", "`discovery`**")
+        self.assertIn("fails closed", readiness)
+        self.assertIn("docker pull ghcr.io/panopticon-scanner/"
+                      "panopticon-tools:latest", readiness)
+        self.assertIn("docker build -t panopticon-tools", readiness)
+        self.assertIn("readiness.json", readiness)
+        # The opt-out is DISCLOSED, which is the whole argument for letting it
+        # exist: a doc that names the flag without naming where the choice
+        # shows up teaches operators to reach for it as a silencer.
+        self.assertIn("--no-tools", readiness)
+        self.assertIn("disclosed opt-out", readiness)
+        self.assertIn("meta.tools.panels_with_scanner_context", readiness)
+        self.assertIn("first step is the readiness checkpoint", loop)
+        # F6: the sentence may not claim more than the code does --
+        # `_establish_host_posture` runs before the engine and, on a host whose
+        # probes interrogate its CLI, that is a real launch. Ruling 2's
+        # guarantee is that readiness dispatches nothing, which is what the
+        # doc now says.
+        self.assertIn("Before any paid dispatch", loop)
+        self.assertNotIn("arms a guard or launches anything", loop)
+
+    def test_an_environmental_tool_skip_is_documented_as_retried(self):
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        tools = _section(loop, "`tools`**", "`review`**")
+        self.assertIn("environmental", tools.lower())
+        self.assertIn("re-evaluated on the next `driver run`", tools)
+        # F1/F2: the cadence and the non-destructive exit are the two things
+        # an operator staring at a stalled run needs to find.
+        self.assertIn("scoped to the **invocation**", tools)
+        self.assertIn("non-destructive rescue", tools)
+        self.assertIn("meta.tools.disabled_mid_run", tools)
+
     def test_tools_dir_is_wired_into_synthesize_passes(self):
         # F-2: a scan that runs but is never ingested reads as clean. 5.0:
         # the tool scan is a driver PHASE now, wired into the driver's own

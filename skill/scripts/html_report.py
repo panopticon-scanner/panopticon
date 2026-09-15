@@ -565,7 +565,43 @@ def _render_header(report):
         "<div class='coverage'>Coverage: %s &mdash; gate: %s</div>"
         % (" &middot; ".join(coverage_parts), policy)
     )
+    parts.append(_render_scanner_context(meta))
     return "\n".join(parts)
+
+
+def _render_scanner_context(meta):
+    """#1637 P08 ruling 5: how many panels reviewed with scanner evidence.
+
+    Next to the coverage line because it answers the same question from the
+    reviewer's side -- meta.coverage says which adapters produced output, and
+    this says how many reviewers were actually shown any. Run-13's report
+    looked complete while 85 of its panels had seen none.
+
+    Silent on a report with no such block: a pre-#1637 report, or one fed to
+    --compare, did not measure this, and rendering "0 of 0" would state a
+    measurement nobody made. A run that dispatched no panel is the same shape
+    for the same reason.
+    """
+    tools = meta.get("tools") or {}
+    block = tools.get("panels_with_scanner_context")
+    parts = []
+    if isinstance(block, dict):
+        try:
+            with_ctx = int(block.get("with") or 0)
+            without = int(block.get("without") or 0)
+        except (TypeError, ValueError):
+            with_ctx = without = 0
+        if with_ctx + without:
+            parts.append("%d of %d panels reviewed with tool findings on disk"
+                         % (with_ctx, with_ctx + without))
+    # F2: a mid-run downgrade is said out loud even on a run that dispatched no
+    # panel at all -- it is a fact about what this run could still have found.
+    if tools.get("disabled_mid_run") is True:
+        parts.append("the tool scan was disabled mid-run with --no-tools")
+    if not parts:
+        return ""
+    return ("<div class='coverage'>Scanner context: %s</div>"
+            % " &mdash; ".join(parts))
 
 
 def _render_compare_summary(label, report):

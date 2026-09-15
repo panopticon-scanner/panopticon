@@ -232,7 +232,14 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
         print(host_disclosure.GENERIC_DEPRECATION, file=sys.stderr)
     try:
         result = engine.run_engine(review_root, manifest, phases)
-    except runio.DriverError as exc:
+    except (runio.DriverError, engine.EngineStalled) as exc:
+        # #1637 P08 fix round 2: `driver run` converts the engine's progress
+        # guard into an `error` status; this drives the SAME engine and was
+        # still letting it escape as a traceback. One named class with two call
+        # sites, only one of them converting, teaches the next reader that the
+        # guarantee is per-caller rather than per-engine -- and `driver setup`
+        # speaks the same status protocol, so a traceback is no more a status
+        # here than it is there.
         return runio._error_status(str(exc))
     if result.get("status") == "complete":
         if os.path.isfile(runio._pano(review_root, "groups.yml.draft")):

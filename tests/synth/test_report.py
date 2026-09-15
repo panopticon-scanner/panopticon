@@ -3946,3 +3946,81 @@ class RunConfigLoaderTest(unittest.TestCase):
         run = report_mod.RunConfig.from_args(_cli_args(), {}, DEFAULT_TIMESTAMP,
                                              host_capabilities=env)
         self.assertEqual(run.host_capabilities, env)
+
+
+class TestPanelsWithScannerContext(unittest.TestCase):
+    """#1637 P08 ruling 5: run-13 dispatched 85 panels after the tool scan had
+    silently skipped, and the report never said so. `meta.tools
+    .panels_with_scanner_context` is that fact, counted off the per-cell tally
+    the review phase persists as it renders each prompt."""
+
+    def _report(self, tally):
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp=DEFAULT_TIMESTAMP,
+                                     panel_tools_context=tally),
+            findings=findings_mod.FindingSet(findings=[])))
+
+    def test_meta_tools_reports_the_split(self):
+        meta = self._report({"with": 3, "without": 82})["meta"]
+        self.assertEqual(meta["tools"]["panels_with_scanner_context"],
+                         {"with": 3, "without": 82})
+
+    def test_a_run_that_dispatched_no_panel_reports_zeroes(self):
+        meta = self._report({})["meta"]
+        self.assertEqual(meta["tools"]["panels_with_scanner_context"],
+                         {"with": 0, "without": 0})
+
+    def test_the_tally_is_loaded_from_the_run_folder(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panel-tools-context.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"schema_version": 1,
+                           "cells": {"A/SEC": True, "A/DAT": False,
+                                     "B/SEC": False}}, fh)
+            self.assertEqual(plan_mod.load_panel_tools_context(d),
+                             {"with": 1, "without": 2})
+
+    def test_an_absent_or_corrupt_tally_reads_as_nothing_measured(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(plan_mod.load_panel_tools_context(d),
+                             {"with": 0, "without": 0})
+            with open(os.path.join(d, "panel-tools-context.json"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("{ not json")
+            self.assertEqual(plan_mod.load_panel_tools_context(d),
+                             {"with": 0, "without": 0})
+
+    def test_the_schema_declares_the_field(self):
+        with open(os.path.join(SKILL_ROOT, "reference",
+                               "report-schema.json"), encoding="utf-8") as fh:
+            schema = json.load(fh)
+        block = schema["properties"]["meta"]["properties"]["tools"]
+        self.assertIn("panels_with_scanner_context", block["properties"])
+
+
+class TestAMidRunToolsDowngradeIsDisclosed(unittest.TestCase):
+    """#1637 P08 F2: `--no-tools` rescues a run whose scanner environment
+    moved, instead of `--reset` discarding every paid scout. It is a real
+    downgrade of what this run's reviewers were shown, so the report says so
+    rather than reading like a run that simply never had tools."""
+
+    def _meta(self, **kw):
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp=DEFAULT_TIMESTAMP, **kw),
+            findings=findings_mod.FindingSet(findings=[])))["meta"]
+
+    def test_the_flag_reaches_meta_tools(self):
+        self.assertIs(self._meta(tools_disabled_mid_run=True)
+                      ["tools"]["disabled_mid_run"], True)
+
+    def test_an_ordinary_run_says_so_explicitly(self):
+        self.assertIs(self._meta()["tools"]["disabled_mid_run"], False)
+
+    def test_the_schema_declares_it(self):
+        with open(os.path.join(SKILL_ROOT, "reference",
+                               "report-schema.json"), encoding="utf-8") as fh:
+            schema = json.load(fh)
+        block = schema["properties"]["meta"]["properties"]["tools"]
+        self.assertIn("disabled_mid_run", block["properties"])

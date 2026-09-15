@@ -18,7 +18,7 @@ import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
 import scripts.write_guard_hook as write_guard_hook
-from conftest import write_host_evidence
+from conftest import docker_probe_runner, write_host_evidence
 from scripts import hosts
 
 _ALL_PROVEN = {c: hosts.PROVEN for c in hosts.CAPABILITIES}
@@ -47,14 +47,21 @@ def _write_guard_not_proven(host, target, **kw):
 
 
 def setUpModule():
-    global _patch
+    global _patch, _readiness_docker_patch
     _patch = mock.patch("scripts.host_probes.run_probes",
                         side_effect=lambda host, target, **kw: _all_proven_artifact(host))
     _patch.start()
+    # #1637 P08: the `readiness` phase leads PHASES and fails closed on a
+    # missing tools image, so every loop below would stop there instead of at
+    # the checkpoint it is about. A fake runner, never a real daemon.
+    _readiness_docker_patch = mock.patch(
+        "scripts.phases.readiness.DOCKER_RUNNER", docker_probe_runner())
+    _readiness_docker_patch.start()
 
 
 def tearDownModule():
     _patch.stop()
+    _readiness_docker_patch.stop()
 
 
 class FakeRunner(base.HostRunner):

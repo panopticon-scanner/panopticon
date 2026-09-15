@@ -23,8 +23,15 @@ import scripts.synth.render as render_mod
 import scripts.synth.verdicts as verdicts_mod
 
 
-def main(argv=None):
-    """Main entry point: load findings, enrich citations, build and validate report."""
+def build_parser():
+    """The CLI, as a named function -- `driver.py` has had one since 5.0.
+
+    Extracted so a test can bind the driver's emitted argv to THIS parser
+    (#1637 P08 fix round 2): `tests/synth/helpers._cli_args` builds a Namespace
+    directly, which is right for the loaders it feeds and means no test had
+    ever put a driver-authored flag through argparse. Renaming an option here
+    alone therefore stayed green while the real child exited 2.
+    """
     ap = argparse.ArgumentParser(description="panopticon synthesizer")
     ap.add_argument("--target", default="unknown")
     ap.add_argument("--groups", metavar="PATH")
@@ -64,6 +71,10 @@ def main(argv=None):
                          "(testdata/, __fixtures__/, tests/fixtures/). Default "
                          "prunes them for parity with the standard-mode agentic "
                          "review prune (#434); pass this for redteam self-scans.")
+    ap.add_argument("--tools-disabled-mid-run", action="store_true",
+                    help="this run started with the tool scan enabled and had "
+                         "it switched off with --no-tools while in flight "
+                         "(#1637 P08); disclosed as meta.tools.disabled_mid_run")
     ap.add_argument("--emit-verify-queue", action="store_true",
                     help="Pass 1: write .panopticon/verify-queue.json and skip the "
                          "report when agentic findings need verification")
@@ -83,7 +94,12 @@ def main(argv=None):
     ap.add_argument("--gate-scope", choices=["on-diff", "all"], default="on-diff",
                     help="Scope the gate/grade to on-diff findings, or all (default on-diff)")
     ap.add_argument("files", nargs="*")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None):
+    """Main entry point: load findings, enrich citations, build and validate report."""
+    args = build_parser().parse_args(argv)
 
     if args.compare:
         a_path, b_path = args.compare
@@ -176,7 +192,14 @@ def main(argv=None):
     if not isinstance(host_capabilities, dict):
         host_capabilities = {}
 
-    run = report_mod.RunConfig.from_args(args, gj, ts, host_capabilities=host_capabilities)
+    # #1637 P08 ruling 5: resolved under `run_dir` like every other run
+    # artifact, and fail-closed to two zeroes when it is absent -- a direct
+    # `synthesize.py` invocation over hand-collected findings files never had
+    # a driver to write it.
+    run = report_mod.RunConfig.from_args(
+        args, gj, ts, host_capabilities=host_capabilities,
+        panel_tools_context=plan_mod.load_panel_tools_context(run_dir),
+        tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False))
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
     tool_findings, dispositions, tools_ran = plan_mod.ingest_tool_findings(args)
     tools = plan_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran)

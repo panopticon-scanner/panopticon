@@ -4,7 +4,14 @@ Params live here (target, review_root, host, security_mode, base, flags, run_id,
 scope, pr);
 PROGRESS never does — the driver re-derives the phase cursor from artifact
 presence. The manifest is written once by the first `driver run`; a conflicting
-flag on re-invocation is refused. See
+flag on re-invocation is refused.
+
+ONE deliberate exception (#1637 P08 F2): `flags.tools` may be relaxed to False
+on a run already in flight — `record_tools_downgrade` — because the alternative
+was `--reset`, i.e. discarding every paid scout, as the only exit from a
+scanner environment that moved mid-run. It is recorded, not silent: the
+previous value and a timestamp land in `flag_changes`, and the report discloses
+it. The reverse (False -> True) is still refused as drift. See
 docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md §3.
 """
 import datetime
@@ -212,8 +219,78 @@ def conflicting_flags(manifest, *, host=None, security_mode=None, base=None,
     existing_flags = manifest.get("flags") or {}
     incoming_flags = flags or {}
     for k in _FLAG_KEYS:
+        if k == "tools" and is_tools_downgrade(manifest, flags):
+            # #1637 P08 F2: `--no-tools` on an IN-FLIGHT run is an allowed
+            # DOWNGRADE, not drift. Anti-drift exists so a resumed run cannot
+            # quietly change what the entries already dispatched were built
+            # under; switching tools OFF only ever removes an input from the
+            # entries still to come, and the choice is disclosed in
+            # tools-ran.json, meta.tools.disabled_mid_run and the report body.
+            # Refusing it left `--reset` -- discard every paid scout -- as the
+            # only exit from an environment that moved mid-run, which is the
+            # loss the readiness checkpoint exists to prevent.
+            #
+            # ONE WAY ONLY. False -> True stays drift: panels already
+            # dispatched saw no scanner evidence, and no later flag can change
+            # what they were shown.
+            continue
         check(f"flags.{k}", existing_flags.get(k), incoming_flags.get(k))
     return conflicts
+
+
+def is_tools_downgrade(manifest, flags):
+    """True when `flags` switches an in-flight run's tools OFF (#1637 P08 F2).
+
+    `None` incoming means the operator passed neither `--tools` nor
+    `--no-tools`, which is not a request to change anything.
+    """
+    return ((flags or {}).get("tools") is False
+            and (manifest.get("flags") or {}).get("tools") is not False)
+
+
+# Keys `driver.run` attaches to the IN-MEMORY manifest that must never reach
+# disk: they describe this invocation, not the run. `session_dir` names where
+# the host session runs (I2); `invocation` is the per-call token `tools_done`
+# reads back off the tools marker (#1637 P08 F1). Persisting either would make
+# a resume inherit a fact about a process that has exited.
+_EPHEMERAL_KEYS = ("session_dir", "invocation")
+
+
+def record_tools_downgrade(review_root, manifest):
+    """Persist `--no-tools` on an in-flight run, and say when it happened.
+
+    The manifest is otherwise write-once, and stays so for every anti-drift
+    key: this is the single deliberate exception, and it is recorded rather
+    than silent -- `flag_changes` keeps the previous value and the timestamp,
+    so a reader of the run record can see that this run did not start the way
+    it finished. `meta.tools.disabled_mid_run` is derived from it.
+
+    Rewritten through a temp file + os.replace so an interrupt cannot leave a
+    truncated manifest, which is the one artifact that anchors the run tag.
+    """
+    previous = (manifest.get("flags") or {}).get("tools")
+    manifest.setdefault("flags", {})["tools"] = False
+    manifest["flag_changes"] = list(manifest.get("flag_changes") or []) + [
+        {"flag": "tools", "from": previous, "to": False, "at": _now_iso()}]
+    body = {k: v for k, v in manifest.items() if k not in _EPHEMERAL_KEYS}
+    path = manifest_path(review_root)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(body, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+    return manifest
+
+
+def tools_downgraded_mid_run(manifest):
+    """Did this run have its tool scan switched off after it started?
+
+    Read off the manifest's own `flag_changes` record rather than inferred
+    from `flags.tools` being False, which is equally true of a run that was
+    `--no-tools` from its first invocation -- a different, weaker statement.
+    """
+    return any(isinstance(change, dict) and change.get("flag") == "tools"
+               and change.get("to") is False
+               for change in (manifest or {}).get("flag_changes") or [])
 
 
 def reset_run(review_root):
