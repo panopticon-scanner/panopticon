@@ -78,20 +78,18 @@ DEFAULT_RUNNER = subprocess.run
 # because layout rule 4 bans a package module re-exporting a SIBLING's name.
 
 
-# C1 (gate review): the per-run home is built under the OPERATOR's temp root,
-# never under `<run_dir>` inside the reviewed tree. What lands in it is the
-# operator's credential surface -- the OAuth stores symlinked in and a
-# config.toml carrying whatever the source config holds, `api_key` included --
-# and a run folder inside the target is readable by the always-unenforced
-# setup-scan reviewer (its scope is the whole review root), embedded by any
-# `zip -r` of the run folder, and reachable by the target's own tooling.
-# chmod 700 does not help there: every one of those readers is the same uid.
-# The run folder keeps only POINTER_FILE, INFORMATIONAL ONLY (N2): an operator
-# debugging an errored run needs to know where the home is, but nothing here or
-# in the probes reads it back. It sits in the reviewed tree, so reading it
-# would make an untrusted file an input to where this run's credential surface
-# is written and to what the probes call evidence. Every `prepare` mints a
-# fresh home; nothing is reused.
+# C1 (gate review): the per-run home is built under the OPERATOR's temp root, never
+# under `<run_dir>` inside the reviewed tree. What lands in it is the operator's
+# credential surface -- the OAuth stores symlinked in and a config.toml carrying
+# whatever the source config holds, `api_key` included -- and a run folder inside the
+# target is readable by the always-unenforced setup-scan reviewer (its scope is the
+# whole review root), embedded by any `zip -r` of the run folder, and reachable by the
+# target's own tooling. chmod 700 does not help there: every one of those readers is the
+# same uid. The run folder keeps only POINTER_FILE, INFORMATIONAL ONLY (N2): an operator
+# debugging an errored run needs to know where the home is, but nothing here or in the
+# probes reads it back. It sits in the reviewed tree, so reading it would make an
+# untrusted file an input to where this run's credential surface is written and to what
+# the probes call evidence. Every `prepare` mints a fresh home; nothing is reused.
 HOME_PREFIX = "panopticon-kimi-"
 POINTER_FILE = "kimi-home-path"
 _GUARD = os.path.abspath(kimi_guard_hook.__file__)
@@ -677,8 +675,11 @@ class Runner(base.HostRunner):
                             text=True, timeout=self.entry_timeout)
         except base.LaunchRefused:        # I3: the suite's guard, never a run state
             raise                         # (first, so no later clause can absorb it)
-        except subprocess.TimeoutExpired:
-            return base.RunResult.failed(entry_id, "kimi -p timed out after %ss" % self.entry_timeout)
+        except subprocess.TimeoutExpired as exc:
+            # D10 ruling 5: the stream it printed is kept; usage is not, because
+            # this family reads it from the session wire file, not from stdout.
+            return base.RunResult.failed(entry_id, "kimi -p timed out after %ss" % self.entry_timeout,
+                                          text=base.partial_output(exc))
         except OSError as exc:
             return base.RunResult.failed(entry_id, "could not launch %s: %s" % (self.CLI, exc))
         except Exception as exc:          # run_entry never raises (spec 4.4)

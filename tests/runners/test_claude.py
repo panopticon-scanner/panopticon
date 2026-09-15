@@ -276,3 +276,27 @@ class TestOutputSchema(unittest.TestCase):
             with self.subTest(envelope=sorted(envelope)):
                 res = self.r.parse_envelope("e1", json.dumps(envelope), 0)
                 self.assertEqual(res.text, ENVELOPE["result"])
+
+
+class TestATimedOutLaunchKeepsWhatItPrinted(unittest.TestCase):
+    """D10 ruling 5: a timed-out entry is often the most expensive one in the
+    run, and everything it produced used to be discarded inside the `except`."""
+
+    def test_the_partial_stdout_survives_as_the_results_text(self):
+        import subprocess
+        partial = '{"type": "result", "result": "```json\\n{\\"findings\\": ['
+
+        def slow(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"), output=partial.encode())
+
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=slow)
+            r.prepare(d, review_root=d)
+            res = r.run_entry(_entry(True), {})
+        self.assertFalse(res.ok)
+        self.assertIn("timed out after", res.error)
+        self.assertEqual(partial, res.text)
+        # ...and no usage: claude -p prints its envelope only at the end, so a
+        # killed launch's stdout carries no figure to read. Recorded as the
+        # empty truth rather than a fabricated zero-cost success.
+        self.assertEqual({}, res.usage)

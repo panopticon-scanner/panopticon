@@ -59,11 +59,11 @@ class Guards:
 
     def __init__(self, mode, run_dir=None, session_root=None):
         self.mode = mode
-        # I4: the union of entries THIS process armed, in arm() order. Session mode is
-        # the only mode whose grants outlive an invocation (a `dispatch` exit returns
-        # without disarming, by design), so an invocation that errors must drop exactly
-        # what it armed -- nothing, when it never got that far -- and leave the previous
-        # fan-out's grants standing. `complete` still disarms totally (spec 5.1).
+        # I4: the union of entries THIS process armed, in arm() order. Session mode is the only
+        # mode whose grants outlive an invocation (a `dispatch` exit returns without disarming, by
+        # design), so an invocation that errors must drop exactly what it armed -- nothing, when
+        # it never got that far -- and leave the previous fan-out's grants standing. `complete`
+        # still disarms totally (spec 5.1).
         self.armed_entries = []
         if mode == "headless":
             self.settings_path = os.path.join(run_dir, runners_base.SETTINGS_FILE)
@@ -163,12 +163,11 @@ class Ledger:
         by_phase = {p: 0 for p in ("scout", "review", "verify", "unattributed")}
         by_field = {k: 0 for k in USAGE_FIELDS}
         for row in self.lines():
-            # M2: a FAILED launch counts too. `claude -p` reports usage on an is_error
-            # envelope exactly as it does on success, and those tokens were really spent
-            # -- a timed-out or errored entry is often the most expensive one in a run.
-            # Skipping them made usage.json (and meta.cost.tokens, which is read
-            # straight off it) under-report what the run cost, which is the one thing an
-            # honest ledger must never do.
+            # M2: a FAILED launch counts too. `claude -p` reports usage on an is_error envelope
+            # exactly as it does on success, and those tokens were really spent -- a timed-out or
+            # errored entry is often the most expensive one in a run. Skipping them made
+            # usage.json (and meta.cost.tokens, which is read straight off it) under-report what
+            # the run cost, which is the one thing an honest ledger must never do.
             usage = row.get("usage") or {}
             n = sum(int(usage.get(k, 0) or 0) for k in USAGE_FIELDS)
             by_phase[row.get("phase") or "unattributed"] = by_phase.get(row.get("phase") or "unattributed", 0) + n
@@ -300,12 +299,11 @@ def loop(args):
     namespace = "setup" if getattr(args, "setup", False) else None
     guards = ledger = None
     # R-P6-6: review_root resolved ONCE, up front -- BEFORE `_first_run` below calls
-    # driver.run()/run_setup_flow(), which rewrites dispatch-request.json for whatever
-    # checkpoint this invocation lands on. A fresh run has no manifest/run folder yet,
-    # so load_dispatch_request (just below) reads back None -- "no previous entries",
-    # never an error (Task 6 ruling 3). A resolve failure (a bad --pr, e.g.) is reported
-    # the same way driver.run() itself reports it rather than raising out of loop(),
-    # which must never raise.
+    # driver.run()/run_setup_flow(), which rewrites dispatch-request.json for whatever checkpoint
+    # this invocation lands on. A fresh run has no manifest/run folder yet, so
+    # load_dispatch_request (just below) reads back None -- "no previous entries", never an error
+    # (Task 6 ruling 3). A resolve failure (a bad --pr, e.g.) is reported the same way
+    # driver.run() itself reports it rather than raising out of loop(), which must never raise.
     try:
         review_root = _review_root(args)
     except (RuntimeError, ValueError, OSError) as exc:
@@ -357,12 +355,11 @@ def loop(args):
         print("driver loop: --max-turns has no effect on host %r (its runner has no native "
               "turn limit); bound each entry with --entry-timeout" % host,
               file=sys.stderr, flush=True)
-    # R-P6 Task 5 ruling 1: the SAME rule driver.run() applies to
-    # manifest["session_dir"] -- never read off the on-disk manifest, which
-    # never persists it (driver.run() sets it in memory, post write-manifest,
-    # precisely so a resume that omits --session-dir legitimately falls back
-    # to cwd). Re-deriving it from run_manifest.load_manifest(...) here would
-    # silently resolve the OPERATOR's real session root in session mode.
+    # R-P6 Task 5 ruling 1: the SAME rule driver.run() applies to manifest["session_dir"] -- never
+    # read off the on-disk manifest, which never persists it (driver.run() sets it in memory, post
+    # write-manifest, precisely so a resume that omits --session-dir legitimately falls back to
+    # cwd). Re-deriving it from run_manifest.load_manifest(...) here would silently resolve the
+    # OPERATOR's real session root in session mode.
     session_root = (os.path.abspath(args.session_dir) if getattr(args, "session_dir", None)
                     else os.getcwd())
     # The OUTGOING dispatch request, read BEFORE `_first_run` rewrites it (R-P6-6):
@@ -401,11 +398,10 @@ def loop(args):
     if status.get("status") != "checkpoint":
         return _finish(status, args, guards, ledger, namespace, mode, runner)
     if mode == "session":
-        # I4: only now. This invocation has a live checkpoint of its own, so
-        # its pending set is the authority on what is still running. An entry
-        # now done falls away here; one still pending is re-armed below by
-        # this iteration's own `guards.arm(pending)`, computed from the FRESH
-        # request `_first_run` just wrote (Task 6 ruling 3).
+        # I4: only now. This invocation has a live checkpoint of its own, so its pending set is
+        # the authority on what is still running. An entry now done falls away here; one still
+        # pending is re-armed below by this iteration's own `guards.arm(pending)`, computed from
+        # the FRESH request `_first_run` just wrote (Task 6 ruling 3).
         _disarm_previous(guards, prev_req)
     if _after_first_run(review_root):
         status = _run(args, namespace)                # re-derive after the seam
@@ -492,12 +488,11 @@ def loop(args):
                 runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
                 return _dispatch_exit(review_root, req, pending, namespace)
             done, total = 0, len(pending)
-            # P07 (#1636): persisted, ledgered and counted into usage.json the
-            # moment EACH entry finishes, so an interrupt keeps everything
-            # already yielded and `done`/`total` say how much that was.
-            # `closing` because an exception here abandons the generator: it
-            # drains the pool now, before `_finish` tears the guards and the
-            # runner's scratch area down, rather than at GC's convenience.
+            # P07 (#1636): persisted, ledgered and counted into usage.json the moment EACH entry
+            # finishes, so an interrupt keeps everything already yielded and `done`/`total` say
+            # how much that was. `closing` because an exception here abandons the generator: it
+            # drains the pool now, before `_finish` tears the guards and the runner's scratch area
+            # down, rather than at GC's convenience.
             with contextlib.closing(runner.iter_batch(
                     pending, getattr(args, "concurrency", None), guards.env_for)) as batch:
                 for entry, result, timing in batch:
@@ -515,6 +510,12 @@ def loop(args):
                             rejected = persist.retain_rejected(run_dir, entry, result.text, reason)
                             print("driver loop: %s" % reason, file=sys.stderr, flush=True)
                     elif not result.ok:
+                        # D10 ruling 5: a failed launch that PRINTED something keeps it
+                        # -- the timeout path is the one that has partial output, and it
+                        # is the entry that was most expensive to lose. `retain_rejected`
+                        # writes nothing for a failure with no output, so an ordinary
+                        # launch failure is exactly what it was.
+                        rejected = persist.retain_rejected(run_dir, entry, result.text, result.error)
                         print("driver loop: entry %s failed: %s" % (eid, result.error),
                               file=sys.stderr, flush=True)
                     ledger.record(entry, req.get("checkpoint"), result, mode, runner.host,
@@ -602,13 +603,12 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
     iteration's own in-loop write_usage ran, and a `complete`-only write would
     leave usage.json stale against the ledger. Wrapped so a failure here can
     never mask the real status -- it is appended to the message instead."""
-    # C1 (kimi family PR review): the runner's own terminal hook, on EVERY
-    # terminal status, before the guards are touched -- a host whose runner
-    # holds a scratch area outside the tree (kimi's per-run KIMI_CODE_HOME,
-    # which carries the operator's credential surface and the children's
-    # verbatim wire files) has nowhere else to release it, and `loop` has
-    # exactly one terminal path. Wrapped: a teardown failure must not mask the
-    # run's real status, exactly as the final write_usage below is wrapped.
+    # C1 (kimi family PR review): the runner's own terminal hook, on EVERY terminal status, before
+    # the guards are touched -- a host whose runner holds a scratch area outside the tree (kimi's
+    # per-run KIMI_CODE_HOME, which carries the operator's credential surface and the children's
+    # verbatim wire files) has nowhere else to release it, and `loop` has exactly one terminal
+    # path. Wrapped: a teardown failure must not mask the run's real status, exactly as the final
+    # write_usage below is wrapped.
     if runner is not None:
         try:
             runner.teardown(status.get("status"))

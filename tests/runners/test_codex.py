@@ -375,3 +375,27 @@ def test_a_review_cell_launch_hands_the_published_schema_to_the_argv_builder(tmp
         runner.prepare(str(tmp_path), str(tmp_path))
         runner.run_entry(cell, overlay)
     assert command.call_args.kwargs["schema_argv"] == ["--output-schema", schema]
+
+
+def test_a_timed_out_launch_keeps_its_partial_jsonl_and_the_usage_in_it(tmp_path):
+    # D10 ruling 5: exec prints a line per event, so a killed launch's stdout
+    # still carries every usage line it emitted. Those tokens were spent --
+    # `Ledger.usage_document` counts failed rows for exactly this reason -- and
+    # the partial output is the only evidence of what the entry was doing.
+    partial = envelope(START, REPLY, DONE) + '\n{"type": "item.completed", "item"'
+
+    def slow(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"), output=partial.encode())
+
+    overlay = {base.ENV_ENTRY_ID: entry()["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
+               base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
+    with mock.patch.object(codex.codex_host, "command", return_value=["codex", "exec", "-"]), \
+            mock.patch.object(codex.codex_host, "validate_command"):
+        runner = codex.Runner(runner=slow)
+        runner.prepare(str(tmp_path), str(tmp_path))
+        result = runner.run_entry(entry(), overlay)
+    assert not result.ok
+    assert "timed out after" in result.error
+    assert result.text == partial
+    assert result.usage == {"input_tokens": 40, "output_tokens": 20,
+                            "cache_read_input_tokens": 60, "cache_creation_input_tokens": 0}

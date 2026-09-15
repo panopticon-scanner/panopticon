@@ -1220,3 +1220,62 @@ class TestRefusedRepliesAreRetained(LoopCase):
         self.assertEqual(status["status"], "complete", status)
         self.assertFalse(os.path.exists(os.path.join(runner.run_dir, "rejected")))
 
+
+
+class TestATimedOutEntryKeepsItsEvidence(LoopCase):
+    """D10 ruling 5, loop side: a failed launch that printed something keeps
+    it, and the ledger row names both the tokens and the file."""
+
+    PARTIAL = '{"findings": [{"title": "half a finding, key ghp_' + "D" * 36 + '"'
+
+    class TimesOutOnce(FakeRunner):
+        def run_entry(self, entry, env):
+            if entry["id"] in self.fail_once:
+                self.fail_once.discard(entry["id"])
+                self.launched.append(entry["id"])
+                return base.RunResult.failed(
+                    entry["id"], "claude -p timed out after 1800s",
+                    usage={"input_tokens": 7000, "output_tokens": 0,
+                           "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+                    text=TestATimedOutEntryKeepsItsEvidence.PARTIAL)
+            return super().run_entry(entry, env)
+
+    def test_the_partial_output_is_retained_and_the_tokens_are_counted(self):
+        d, floor = self._repo()
+        runner = self.TimesOutOnce()
+        runner.fail_once.add("review-app-SEC")
+        args = self._args(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "complete", status)
+        kept = os.path.join(runner.run_dir, "rejected", "review-app-SEC-1.json")
+        with open(kept, encoding="utf-8") as fh:
+            record = json.load(fh)
+        self.assertIn("timed out after", record["reason"])
+        self.assertIn("[REDACTED_TOKEN]", record["reply"])
+        self.assertTrue(record["reply"].startswith('{"findings"'), record["reply"])
+        row = next(r for r in orchestrate.Ledger(runner.run_dir).lines()
+                   if r["entry_id"] == "review-app-SEC" and not r["ok"])
+        self.assertEqual(kept, row["rejected_file"])
+        self.assertEqual(7000, sum(row["usage"].values()))
+        usage = runio._load_json(os.path.join(runner.run_dir, "usage.json"))
+        self.assertGreaterEqual(usage["by_phase"]["review"], 7000)
+
+    def test_a_failure_that_printed_nothing_keeps_nothing(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        runner.drop_once.add("review-app-SEC")          # RunResult.failed, no text
+        args = self._args(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            orchestrate.loop(args)
+        self.assertFalse(os.path.exists(os.path.join(runner.run_dir, "rejected")))
+        row = next(r for r in orchestrate.Ledger(runner.run_dir).lines() if not r["ok"])
+        self.assertIsNone(row["rejected_file"])

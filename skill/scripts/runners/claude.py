@@ -139,8 +139,13 @@ class Runner(base.HostRunner):
         try:
             proc = self.runner(cmd, cwd=self.review_root, env=run_env, capture_output=True,
                                 text=True, timeout=self.entry_timeout)
-        except subprocess.TimeoutExpired:
-            return base.RunResult.failed(entry.get("id"), "claude -p timed out after %ss" % self.entry_timeout)
+        except subprocess.TimeoutExpired as exc:
+            # D10 ruling 5: keep what the killed child printed. No usage with
+            # it: `claude -p` prints its envelope once, at the end, so a
+            # partial stdout carries no figure to read -- recorded as the empty
+            # truth rather than a fabricated zero.
+            return base.RunResult.failed(entry.get("id"), "claude -p timed out after %ss" % self.entry_timeout,
+                                          text=base.partial_output(exc))
         except OSError as exc:
             return base.RunResult.failed(entry.get("id"), "could not launch %s: %s" % (self.CLI, exc))
         except Exception as exc:          # run_entry never raises (spec 4.4): anything else is a failed entry

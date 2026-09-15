@@ -1,5 +1,6 @@
 import importlib
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -306,3 +307,31 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                      os.path.join(os.path.dirname(_published()), os.pardir, "SKILL.md")):
             with self.subTest(path=path):
                 self.assertEqual([], base.schema_argv(("--x",), {"output_schema": path}))
+
+
+class TestAFailedResultKeepsWhatTheLaunchProduced(unittest.TestCase):
+    """D10 ruling 5: a timed-out entry is the most expensive kind of failure,
+    and it used to be the one that kept nothing -- `usage={}` and the partial
+    stdout discarded inside the `except`."""
+
+    def test_failed_defaults_to_no_usage_and_no_text(self):
+        res = base.RunResult.failed("e1", "boom")
+        self.assertEqual(({}, "", False), (res.usage, res.text, res.ok))
+
+    def test_failed_carries_the_usage_and_partial_output_it_is_given(self):
+        res = base.RunResult.failed("e1", "timed out after 5s",
+                                    usage={"input_tokens": 9}, text="partial")
+        self.assertEqual({"input_tokens": 9}, res.usage)
+        self.assertEqual("partial", res.text)
+        self.assertFalse(res.ok)
+
+    def test_partial_output_reads_a_killed_childs_stdout_however_it_arrives(self):
+        # TimeoutExpired carries stdout UNDECODED even from a text-mode launch
+        # (CPython translates newlines only after communicate() returns, and
+        # the timeout raises before that), so bytes is the normal case.
+        cases = {b"half a line": "half a line", "half a line": "half a line",
+                 None: "", b"": "", b"\xff bad": "� bad"}
+        for stdout, expected in cases.items():
+            with self.subTest(stdout=stdout):
+                exc = subprocess.TimeoutExpired(["x"], 1, output=stdout)
+                self.assertEqual(expected, base.partial_output(exc))

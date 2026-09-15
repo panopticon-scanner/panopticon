@@ -388,6 +388,26 @@ class TestRunEntry(unittest.TestCase):
         self.assertFalse(res.ok)
         self.assertIn("does not resolve", res.error)
 
+    def test_a_timed_out_launch_keeps_the_stream_it_had_printed(self):
+        # D10 ruling 5. Kimi's usage comes from the session wire file, not from
+        # stdout, so a killed launch has no usage to recover -- but the
+        # stream-json it did print is what the loop retains as evidence.
+        partial = STREAM.split("\n")[0]
+
+        def slow(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"), output=partial.encode())
+
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+            r = kimi_runner.Runner("kimi", runner=slow)
+            r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
+            res = r.run_entry(_entry(False), {})
+        self.assertFalse(res.ok)
+        self.assertIn("timed out after", res.error)
+        self.assertEqual(partial, res.text)
+        self.assertEqual({}, res.usage)
+
     def test_a_timeout_or_launch_failure_is_a_failed_result(self):
         def boom(cmd, **kw):
             raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))

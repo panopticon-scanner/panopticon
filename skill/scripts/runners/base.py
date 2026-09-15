@@ -68,7 +68,9 @@ class LaunchRefused(RuntimeError):
 class RunResult:
     entry_id: str
     ok: bool                 # the runner got a final text back
-    text: str                # the agent's final message (empty when not ok)
+    text: str                # the agent's final message; on a FAILED result, whatever partial
+                             # output the launch had printed (D10 ruling 5) -- never persisted
+                             # as an artifact, retained by the loop as evidence
     usage: dict              # {"input_tokens", "output_tokens", "cache_read_input_tokens", ...} or {}
     cost_usd: object         # float | None
     model: object            # str | None
@@ -77,8 +79,19 @@ class RunResult:
     error: object            # str | None: launch failure, non-zero exit, budget stop, timeout
 
     @classmethod
-    def failed(cls, entry_id, error):
-        return cls(entry_id=entry_id, ok=False, text="", usage={}, cost_usd=None,
+    def failed(cls, entry_id, error, usage=None, text=""):
+        """A failed entry, with whatever evidence the launch did produce.
+
+        D10 ruling 5: a timed-out entry is often the most expensive one in a
+        run, and this used to hard-code `usage={}` and drop the partial output
+        -- so `Ledger.usage_document`, which counts failed rows precisely
+        because those tokens were really spent, had nothing to count, and the
+        one artefact that said what the entry had been doing was gone. A family
+        passes what its envelope actually allows it to recover and nothing
+        more: both default to empty, which is the honest answer for a host that
+        prints its figures only at the end.
+        """
+        return cls(entry_id=entry_id, ok=False, text=text, usage=usage or {}, cost_usd=None,
                     model=None, session_id=None, denials=[], error=str(error))
 
 
@@ -267,6 +280,22 @@ class HostRunner:
         for entry, result, _timing in self.iter_batch(entries, concurrency, env_for):
             results[slots[id(entry)].pop(0)] = result
         return results
+
+
+def partial_output(exc):
+    """Whatever a killed child had printed, as text (D10 ruling 5).
+
+    `subprocess.TimeoutExpired` carries it UNDECODED even from a text-mode
+    launch -- `communicate()` translates newlines only after it returns, and
+    the timeout raises before that -- so bytes is the normal case and `errors
+    ="replace"` keeps a truncated multi-byte character at the cut from
+    throwing away the whole transcript. Empty for a launch that printed
+    nothing, which is the same "no evidence" every other failure has.
+    """
+    out = getattr(exc, "stdout", None)
+    if isinstance(out, bytes):
+        return out.decode("utf-8", "replace")
+    return out if isinstance(out, str) else ""
 
 
 def published_schema(path):

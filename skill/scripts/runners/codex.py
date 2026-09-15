@@ -170,8 +170,16 @@ class Runner(base.HostRunner):
                              capture_output=True, cwd=self.review_root,
                              env=child_env, timeout=self.entry_timeout)
             return self.parse_envelope(entry_id, proc.stdout, proc.returncode)
-        except subprocess.TimeoutExpired:
-            return base.RunResult.failed(entry_id, "codex timed out after %ss" % self.entry_timeout)
+        except subprocess.TimeoutExpired as exc:
+            # D10 ruling 5: exec's envelope is a line per event, so a killed
+            # launch's stdout still holds every `turn.completed` usage line it
+            # printed. Summed by the ordinary parser (one owner for that
+            # arithmetic, cached-input subtraction included) and recorded: those
+            # tokens were spent, and `Ledger.usage_document` counts failed rows.
+            partial = base.partial_output(exc)
+            return base.RunResult.failed(entry_id, "codex timed out after %ss" % self.entry_timeout,
+                                          usage=self.parse_envelope(entry_id, partial, 0).usage,
+                                          text=partial)
         except Exception as exc:
             return base.RunResult.failed(entry_id, "%s: %s" % (type(exc).__name__, exc))
         finally:
