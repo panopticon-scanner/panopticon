@@ -187,7 +187,8 @@ def _round_trip_denies_an_outside_write():
                                                  allowlist_path=allowlist)
             if not state["armed"]:
                 return False, "install() did not register the PreToolUse hook"
-            granted = write_guard_hook._read_allowlist(allowlist)
+            granted = write_guard_hook.union_paths(
+                write_guard_hook._read_allowlist(allowlist))
             allowed, _why = write_guard_hook.decide("Write", declared, granted)
             denied, _why = write_guard_hook.decide(
                 "Write", os.path.join(sandbox, "not-declared.json"), granted)

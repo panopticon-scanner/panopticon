@@ -42,7 +42,7 @@ class TestFanOutIntegration(unittest.TestCase):
     def test_out_of_scope_write_is_blocked(self):
         with tempfile.TemporaryDirectory() as d:
             plan = _plan(d)
-            allow = wg.allowlist_from_plan(plan)
+            allow = wg.union_paths(wg.allowlist_from_plan(plan))
             ok_self, _ = wg.decide("Write", plan[0]["out_file"], allow)
             ok_repo, reason = wg.decide("Write", "skill/scripts/synthesize.py", allow)
             self.assertTrue(ok_self)
