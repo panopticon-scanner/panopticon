@@ -221,7 +221,11 @@ def main(argv=None):
 
     report = report_mod.build_report(report_mod.ReportInputs(
         run=run, findings=fs, delta=delta, plan=plan, tools=tools, cost=cost))
-    render_mod.redact_report_secrets(report)   # #run7 SEC-B2C: before any shareable artifact
+    # #run7 SEC-B2C / #1634: the whole-tree backstop, before any shareable
+    # artifact. The inputs were already masked above; this catches text
+    # produced since (advisor reasoning merged into finding.evidence) and
+    # anything a future producer derives, at any depth in the report.
+    render_mod.redact_report_secrets(report)
     errors, warnings = report_mod.validate_report(report)
     report_mod.attach_schema_status(report, errors)
     for w in warnings:

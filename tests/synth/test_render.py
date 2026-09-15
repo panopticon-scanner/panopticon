@@ -1,6 +1,7 @@
 """Tests for scripts.synth.render: report writing, redaction, summary and compare rendering.
 """
 import contextlib
+import copy
 import io
 import os
 import json
@@ -275,6 +276,74 @@ class TestReportSecretRedaction(unittest.TestCase):
         r = {"findings": []}
         render_mod.redact_report_secrets(r)
         self.assertEqual(r["findings"], [])
+
+    def test_redacts_every_section_not_just_findings(self):
+        """#1634: the backstop walks the WHOLE report. Two keys was a list a
+        producer had to be remembered for -- summary.top_issues and
+        groups[].key_findings were derived from finding titles and never
+        revisited, and meta/cross_panel/delta were never covered at all."""
+        secret = "ghp_" + "Z" * 36
+        report = {
+            "meta": {"coverage": {"adapters": {
+                "gitleaks": {"status": "ok", "reason": "found %s" % secret}}}},
+            "summary": {"top_issues": ["leak %s" % secret], "gate": "FAIL"},
+            "groups": [{"name": "app", "key_findings": ["leak %s" % secret]}],
+            "findings": [],
+            "cross_panel": {"integration_findings": [
+                {"severity": "HIGH", "note": "quoted %s" % secret}]},
+            "delta": {"note": "on-diff %s" % secret},
+        }
+        render_mod.redact_report_secrets(report)
+        self.assertNotIn(secret, json.dumps(report))
+        self.assertEqual(report["summary"]["top_issues"],
+                         ["leak [REDACTED_TOKEN]"])
+        self.assertEqual(report["groups"][0]["key_findings"],
+                         ["leak [REDACTED_TOKEN]"])
+        self.assertIn("[REDACTED_TOKEN]",
+                      report["meta"]["coverage"]["adapters"]["gitleaks"]["reason"])
+        self.assertIn("[REDACTED_TOKEN]",
+                      report["cross_panel"]["integration_findings"][0]["note"])
+        self.assertIn("[REDACTED_TOKEN]", report["delta"]["note"])
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+
+    def test_structured_sections_survive_the_walk(self):
+        """The patterns mask well-formed secrets only, so walking meta changes
+        nothing that is not one -- host_capabilities (copied verbatim off the
+        probe artifact), integrity hashes and file paths come back identical."""
+        report = {
+            "schema_version": 1,
+            "meta": {
+                "target": "src", "timestamp": "2026-09-15T00:00:00Z",
+                "integrity": {"out_file_hashes": {"findings-app-SEC.json":
+                                                  "sha256:" + "a" * 64}},
+                "host_capabilities": {
+                    "host": "claude", "schema_version": 1,
+                    "probed_at": "2026-09-15T00:00:00Z",
+                    "capabilities": {"tool_policy_enforced": {
+                        "state": "proven", "by": "probe:settings",
+                        "detail": "deny rule at ~/.claude/settings.json",
+                        "guid": "3f2504e0-4f89-11d3-9a0c-0305e82c3301"}}},
+            },
+            "groups": [{"name": "app", "files": ["app/x.py"]}],
+            "findings": [],
+        }
+        before = copy.deepcopy(report)
+        render_mod.redact_report_secrets(report)
+        self.assertEqual(report, before)
+
+    def test_mutates_in_place_and_keeps_key_order(self):
+        """Callers read the SAME dict afterwards (write_report, the X0X and
+        HTML producers, render_summary), and write_report dumps insertion
+        order -- key order is part of the artifact."""
+        report = {"schema_version": 1, "meta": {"target": "src"},
+                  "summary": {"gate": "PASS"}, "groups": [], "findings": [],
+                  "cross_panel": {}, "discarded_claims": []}
+        original = report
+        returned = render_mod.redact_report_secrets(report)
+        self.assertIs(returned, original)
+        self.assertEqual(list(report), ["schema_version", "meta", "summary",
+                                        "groups", "findings", "cross_panel",
+                                        "discarded_claims"])
 
 class TestWriteReportDiscardedSplit(unittest.TestCase):
     """#15: a large discarded_claims set (unbounded in the REJECTED count, which

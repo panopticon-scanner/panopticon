@@ -223,6 +223,19 @@ class TestSkillMd(unittest.TestCase):
         # #979: un-loadable verdicts are not just surfaced — they dent the gate.
         self.assertIn("meta.coverage.verdicts.unloadable", self.text)
 
+    def test_documents_redaction_at_the_inputs_and_over_the_whole_tree(self):
+        # #1634: the doc used to imply redaction was a post-build pass over the
+        # findings. It is two passes — the inputs, then the WHOLE report tree —
+        # and the derived fields are why. A doc that names only one of them is
+        # how the next producer gets written against the wrong contract.
+        section = _section(self.text, "**Secret redaction",
+                           "## Host capabilities (5.2)")
+        for token in ["redact.redact_tree", "before", "build_report",
+                      "summary.top_issues", "groups[].key_findings",
+                      "render.redact_report_secrets", "whole report tree",
+                      "any depth", "cross_panel", "meta.host_capabilities"]:
+            self.assertIn(token, section, token)
+
     def test_description_is_trigger_only_and_host_neutral(self):
         m = re.search(r"(?m)^description:\s*(.+)$", self.skill_md)
         self.assertIsNotNone(m)
