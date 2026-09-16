@@ -951,7 +951,6 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     validate_output_dir(target, out_dir)
     os.makedirs(out_dir, exist_ok=True)
     tools = filter_online(tools, online)
-    written = []
     docker_bin = shutil.which("docker") or "docker"
     # #1317: NullProgress by default, so the five call sites below need no
     # `if progress:` guard and the runner's behaviour is byte-identical unless
@@ -967,15 +966,22 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     with egress.session(docker_bin, tools, runner, run_id=run_id,
                         max_seconds=TOOL_TIMEOUT * total
                         + egress.SIDECAR_SLACK) as online_egress:
-        _run_selected(target, tools, out_dir, image, runner, progress, total,
-                      venv_dirs, written, docker_bin, online_egress)
+        written = _run_selected(target, tools, out_dir, image, runner,
+                                progress, total, venv_dirs, docker_bin,
+                                online_egress)
     progress.footer(len(written), total)
     return written
 
 
 def _run_selected(target, tools, out_dir, image, runner, progress, total,
-                  venv_dirs, written, docker_bin, online_egress):
-    """The dispatch loop, one docker invocation per selected tool."""
+                  venv_dirs, docker_bin, online_egress):
+    """The dispatch loop, one docker invocation per selected tool.
+
+    Split out of `run_tools` only so the `egress.session` context (#1645) does
+    not re-indent sixty lines of unchanged dispatch; it returns the paths it
+    wrote, exactly as the loop did inline.
+    """
+    written = []
     for index, tool in enumerate(tools, 1):
         # #1645 ruling 2: an online adapter whose egress could not be
         # established does NOT fall back to Docker's default bridge. It is
@@ -1054,6 +1060,7 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
         # not a new control.
         progress.note("[%d/%d] %s skipped: no runner registered"
                       % (index, total, tool))
+    return written
 
 
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
