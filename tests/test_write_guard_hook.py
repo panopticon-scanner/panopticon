@@ -358,6 +358,49 @@ class TestNestedSymlinkComponents(unittest.TestCase):
         self.assertEqual({"A-SEC": [out_file]},
                          wg.allowlist_from_plan([{"id": "A-SEC", "out_file": out_file}]))
 
+    def test_a_parent_component_cannot_strip_the_anchor(self):
+        # #1640 fix round 1. `_components` normalises with `abspath`, which
+        # collapses `..` LEXICALLY before the `.panopticon` test -- so a
+        # declared out_file of `<root>/.panopticon/runs/r1/../../../src/x.json`
+        # became `<root>/src/x.json`, carried no segment, and got neither the
+        # walk nor the anchor: a grant on a SOURCE FILE. Unreachable today only
+        # because `groups_schema._invalid_name` rejects `..` in a group name,
+        # and a guard may not rest on an upstream regex.
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        os.makedirs(os.path.join(root, ".panopticon", "runs", "r1"))
+        os.makedirs(os.path.join(root, "src"))
+        escape = os.path.join(root, ".panopticon", "runs", "r1",
+                              "..", "..", "..", "src", "x.json")
+        with self.assertRaises(ValueError) as caught:
+            wg.allowlist_from_plan([{"id": "A-SEC", "out_file": escape}])
+        self.assertEqual("findings output cannot contain '..'", str(caught.exception))
+        target, reason = wg._resolve_target(escape)
+        self.assertIsNone(target)
+        self.assertIn("findings output cannot contain '..'", reason)
+
+    def test_a_parent_component_that_stays_inside_is_refused_too(self):
+        # The rule is the COMPONENT, not where it lands: `runs/r1/../r2/f.json`
+        # resolves inside the tree and is still refused. A guard that decided
+        # from the destination would have to re-decide at every enforcement,
+        # and the declared path has no business carrying one.
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        inside = os.path.join(root, ".panopticon", "runs", "r1", "..", "r2", "f.json")
+        with self.assertRaises(ValueError) as caught:
+            wg.allowlist_from_plan([{"out_file": inside}])
+        self.assertEqual("findings output cannot contain '..'", str(caught.exception))
+
+    def test_a_dotted_name_that_is_not_a_component_is_fine(self):
+        # `..` as part of a NAME is not a parent component. Refusing it would
+        # be a string match pretending to be a path rule.
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        out_file = os.path.join(root, ".panopticon", "runs", "r1", "findings..A-SEC.json")
+        os.makedirs(os.path.dirname(out_file))
+        self.assertEqual({"<unbound>": [out_file]},
+                         wg.allowlist_from_plan([{"out_file": out_file}]))
+
     def test_a_path_with_no_panopticon_segment_is_left_alone(self):
         # The probes' sandbox plans declare out_files with no artifact tree at
         # all. There is no `.panopticon` to anchor on, so there is no walk --
@@ -1389,6 +1432,7 @@ class TestBindingHelpersAreACopy(unittest.TestCase):
         self.assertEqual(wg.SYMLINKED_COMPONENT, kg.SYMLINKED_COMPONENT)
         self.assertEqual(wg.UNMEASURABLE_COMPONENT, kg.UNMEASURABLE_COMPONENT)
         self.assertEqual(wg.ESCAPED_ARTIFACT_TREE, kg.ESCAPED_ARTIFACT_TREE)
+        self.assertEqual(wg.PARENT_COMPONENT, kg.PARENT_COMPONENT)
 
     def test_the_binding_constants_match_too(self):
         # The names the three hooks agree on by copy rather than by import:

@@ -203,6 +203,18 @@ UNMEASURABLE_COMPONENT = ("findings output cannot pass through a directory the g
                           "could not measure: %s (%s)")
 ESCAPED_ARTIFACT_TREE = ("findings output resolves outside the review artifact tree: "
                          "%s is not a %s path under %s")
+# Refused on the DECLARED path, before anything normalises it. `abspath`
+# collapses `..` lexically, so `<root>/.panopticon/runs/r1/../../../src/x.json`
+# arrives at `_components` as `<root>/src/x.json` -- no `.panopticon` segment,
+# therefore no walk and no anchor, therefore a grant on a source file. Today
+# that path cannot be built (`groups_schema._invalid_name` rejects `..` in a
+# group name and out_files are `findings-<group>-<domain>.json`), and a guard
+# whose correctness rests on an upstream regex is one edit from being a hole.
+# The rule is the COMPONENT, not where it lands: a `..` that stays inside the
+# tree is refused too, because a declared findings path has no business
+# carrying one and deciding from the destination would have to be re-decided
+# at every enforcement.
+PARENT_COMPONENT = "findings output cannot contain '..'"
 
 
 def _components(path):
@@ -261,6 +273,8 @@ def _escaped_component(path):
     path must still carry a `.panopticon` segment and still lie under the
     resolved review root the declared path named.
     """
+    if os.pardir in str(path).split(os.sep):
+        return PARENT_COMPONENT
     root, components = _components(path)
     if root is None:
         return ""
@@ -423,7 +437,9 @@ def _decide_write(tool_name, tool_input, allowlist, entry_id):
         if os.path.islink(absolute):
             return False, ("%s to %s is denied: findings targets must not be "
                            "symlinks" % (tool_name, raw))
-        fault = _escaped_component(absolute)      # #1640, and the walk is the copy above
+        # `raw`, not `absolute`: `abspath` has already collapsed any `..`, and
+        # that collapse is part of what the walk refuses (#1640 fix round 1).
+        fault = _escaped_component(raw)           # #1640, and the walk is the copy above
         if fault:
             return False, "%s to %s is denied: %s" % (tool_name, raw, fault)
         target = os.path.realpath(absolute)

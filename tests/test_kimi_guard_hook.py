@@ -231,6 +231,21 @@ class TestWrites(GuardCase):
         self.assertIn("symlinked directory", reason)
         self.assertIn(link, reason)
 
+    def test_a_write_through_a_parent_component_is_denied(self):
+        # #1640 fix round 1, the Kimi copy: the grant is what the pre-fix
+        # `allowlist_from_plan` would have stored for this declared path -- the
+        # normalised escape -- so on the base both ends agreed on a source file.
+        root = os.path.realpath(self.tmp.name)
+        os.makedirs(os.path.join(root, ".panopticon", "runs", "r1"))
+        os.makedirs(os.path.join(root, "src"), exist_ok=True)
+        escape = os.path.join(root, ".panopticon", "runs", "r1",
+                              "..", "..", "..", "src", "x.json")
+        _write(self.allowlist_path,
+               wg.allowlist_document({"entry-1": [os.path.realpath(escape)]}))
+        allow, reason = self.write("Write", path=escape, content="{}")
+        self.assertFalse(allow)
+        self.assertIn("findings output cannot contain '..'", reason)
+
     def test_an_ordinary_run_folder_write_is_still_allowed(self):
         root = os.path.realpath(self.tmp.name)
         run = os.path.join(root, ".panopticon", "runs", "r1")
