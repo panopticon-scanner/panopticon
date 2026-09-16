@@ -49,6 +49,29 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
         for path in (inside, outside):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("Panopticon synthetic confinement fixture\n")
+        # #1642: the refutation fixture. A hard link INSIDE the cell naming the
+        # inode OUTSIDE it -- the one case where "this name is under the grant"
+        # and "this content is in scope" come apart. Lexical authorization
+        # admits the name; the broker has to refuse the inode. Planted once, so
+        # every role drives the same three reads.
+        #
+        # A filesystem with no links to plant does NOT raise (fix round 1, F3).
+        # This measurement is shared by both codex probes, so raising also
+        # un-proved `codex-effective-tools` -- a claim about the effective V8
+        # surface that has nothing to do with hard links, gating as REFUTED
+        # (hosts.py) on somebody's tmp mount -- and, because the caller caches
+        # only a successful measurement, ran the whole inspection twice. The
+        # reason rides ALONG with each surface instead, and only
+        # `probe_codex_read_scope` treats it as UNKNOWN. No fixture, no probe
+        # paths: a two-read measurement must not stand in for the three-read one.
+        linked = os.path.join(cell, "linked.txt")
+        fixture_error = None
+        try:
+            os.link(outside, linked)
+        except OSError as exc:
+            fixture_error = ("the hard-link refutation fixture could not be planted at %s: %s"
+                             % (linked, exc))
+        probe_paths = None if fixture_error else (inside, outside, linked)
         jobs = []
         for role in (*common.DRIVER_ROLES, "setup-scan"):
             setup = role == "setup-scan"
@@ -78,8 +101,11 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
 
         def measure(job):
             shell, entry, env, review_root = job
-            return shell, inspector(entry, env, review_root, root, registration_dir=directory,
-                                    probe_paths=(inside, outside), catalog=catalog)
+            surface = inspector(entry, env, review_root, root, registration_dir=directory,
+                                probe_paths=probe_paths, catalog=catalog)
+            if fixture_error and isinstance(surface, dict):
+                surface = dict(surface, hard_link_fixture=fixture_error)
+            return shell, surface
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(jobs)) as pool:
             return list(pool.map(measure, jobs))
@@ -141,20 +167,36 @@ def probe_codex_tool_policy(host, registration_dir=None, settings_path=None, mea
 
 
 def probe_codex_read_scope(host, registration_dir=None, settings_path=None, measure=None):
-    """Exercise the actual MCP read path; disallow every alternate I/O tool."""
+    """Exercise the actual MCP read path; disallow every alternate I/O tool.
+
+    Three reads per role (#1642). The third is the planted hard link: a name
+    inside the directory grant for an inode outside it, which every role must
+    refuse -- and which the one DIRECTORY-granted role (setup-scan; every other
+    role holds exact file grants, where the link is out of scope by name) must
+    refuse BY the hard-link rule. A build where that rule is gone still denies
+    the link for every file-granted role, so counting denials alone would read
+    as proven; the wording is what says the boundary is live.
+    """
     surfaces, failure = _codex_measure(CODEX_READ_SCOPE, settings_path, registration_dir, measure)
     if failure:
         return failure
-    paths = []
+    paths, by_the_rule = [], []
     for path, surface in surfaces:
         paths.append(path)
         problem = _codex_surface_problem(surface)
         if problem:
             return hosts.REFUTED, CODEX_READ_SCOPE, "%s: %s" % (path, problem)
+        fixture_error = surface.get("hard_link_fixture")
+        if fixture_error:
+            # F3: this row's fixture, and only this row's verdict. N3: reported
+            # WITHOUT a role prefix -- the plant is attempted once per
+            # inspection and fails machine-wide, so naming whichever shell this
+            # loop reached first reads as "that role is broken".
+            return hosts.UNKNOWN, CODEX_READ_SCOPE, fixture_error
         reads = surface.get("reads")
-        if not isinstance(reads, list) or len(reads) != 2:
-            return (hosts.UNKNOWN, CODEX_READ_SCOPE, "%s: runtime returned no two-read measurement" % path)
-        inside, outside = reads
+        if not isinstance(reads, list) or len(reads) != 3:
+            return (hosts.UNKNOWN, CODEX_READ_SCOPE, "%s: runtime returned no three-read measurement" % path)
+        inside, outside, linked = reads
         if (not isinstance(inside, dict) or not isinstance(outside, dict)
                 or inside.get("isError") is not False or outside.get("isError") is not True
                 or "outside" not in json.dumps(outside).lower()
@@ -162,9 +204,21 @@ def probe_codex_read_scope(host, registration_dir=None, settings_path=None, meas
             return (hosts.REFUTED, CODEX_READ_SCOPE,
                     "%s: actual MCP in-scope allow / out-of-scope deny failed: %s"
                     % (path, json.dumps(reads, sort_keys=True)))
+        if not isinstance(linked, dict) or linked.get("isError") is not True:
+            return (hosts.REFUTED, CODEX_READ_SCOPE,
+                    "%s: a hard link planted inside the directory grant, naming a file outside "
+                    "it, was READ through the grant: %s" % (path, json.dumps(linked, sort_keys=True)))
+        if "hard-linked" in json.dumps(linked).lower():
+            by_the_rule.append(path)
     if len(paths) != len(common.DRIVER_ROLES) + 1:
         return (hosts.UNKNOWN, CODEX_READ_SCOPE, "not every registered role was inspected")
+    if not by_the_rule:
+        return (hosts.REFUTED, CODEX_READ_SCOPE,
+                "no inspected role refused the planted hard link by the hard-link rule; the "
+                "directory-granted role denied it only as an out-of-scope path, which a broker "
+                "without the rule does too -- the directory-grant boundary is unproven")
     return (hosts.PROVEN, CODEX_READ_SCOPE,
-            "actual Codex MCP read_file allowed the exact entry file and denied its outside-scope "
-            "sibling; PANOPTICON_ENTRY_ID / PANOPTICON_READ_SCOPE bound to temporary grants; "
-            "shells: %s" % ", ".join(paths))
+            "actual Codex MCP read_file allowed the exact entry file, denied its outside-scope "
+            "sibling, and refused a hard link planted inside the directory grant as hard-linked "
+            "(%s); PANOPTICON_ENTRY_ID / PANOPTICON_READ_SCOPE bound to temporary grants; "
+            "shells: %s" % (", ".join(by_the_rule), ", ".join(paths)))

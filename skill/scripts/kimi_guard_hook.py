@@ -51,6 +51,7 @@ on top.
 import json
 import os
 import shlex
+import stat
 import sys
 
 
@@ -184,6 +185,73 @@ def _readable(target, scope):
             or any(_under(target, d) for d in scope["dirs"]))
 
 
+# #1642: one wording for one rule, across three read brokers.
+# `codex_read_tools.HARD_LINK_DENIAL` is the original, and
+# tests/test_codex_read_tools.py::test_the_hard_link_denial_is_one_wording pins
+# the copies equal. Copied rather than imported for the reason everything in
+# this module is: the hook runs standing alone, with no package on sys.path.
+HARD_LINK_DENIAL = "read scope denies a hard-linked file inside a directory grant (st_nlink=%d)"
+
+
+def _hard_link_reason(tool_name, raw, target, scope):
+    """The denial for a multiply-linked REGULAR file that only a DIRECTORY grant
+    admits, or "" (#1642).
+
+    realpath resolves SYMlinks; nothing resolves a hard link, because the link
+    IS the file -- and a directory grant is matched by NAME, so a target that
+    plants one inside the granted subtree, naming a file outside it, read as
+    in-scope. An EXACT grant (`files`/`reads`) is the file the orchestrator
+    chose and is unaffected whatever its link count, including when a directory
+    grant covers it too (the normal cell shape).
+
+    Directories are not the subject: a directory's st_nlink is its subdirectory
+    count, and the rule is about reading content. A path that cannot be stat'ed
+    DENIES (fix round 1, F4): a guard may not answer "allowed" about something
+    it could not measure. A path with NO INODE (ENOENT/ENOTDIR, a dangling
+    symlink included) is the exception and passes through (fix round 2, N2):
+    that is a successful measurement of nothing to confine, not a failure to
+    measure, and the tool's own not-found is what the caller should see.
+
+    WHAT THIS DOES NOT COVER (#1683). The rule reaches reads whose argument is a
+    FILE path. A `Grep` or `Glob` whose argument is a granted DIRECTORY is
+    adjudicated by path and then traversed by the HOST's own tool, which opens
+    the files itself -- so a hard link inside that subtree still reaches the
+    agent through Grep output. A PreToolUse hook can allow or deny a call, not
+    rewrite it, and walking the target repository on every Grep is not a thing
+    to do inside a synchronous hook; closing it means re-shaping the setup-scan
+    grant (the only directory grant the driver issues), which is #1683. The
+    Codex broker has no such gap: it reads the files itself.
+
+    Unlike that broker, which reads the count off the descriptor it then reads
+    FROM, a PreToolUse hook adjudicates a NAME the host reopens: this is exactly
+    as path-based as the realpath check beside it, and carries the same race.
+    """
+    if target in scope["files"] or target in scope["reads"]:
+        return ""
+    try:
+        info = os.stat(target)
+    except (FileNotFoundError, NotADirectoryError):
+        # Fix round 2 (N2): ENOENT/ENOTDIR -- including a dangling symlink --
+        # are not "could not measure". They are a successful measurement that
+        # there is NO INODE at that name, so there is nothing for a read fence
+        # to confine and nothing an attacker gains by inducing one. The tool's
+        # own not-found is the honest answer; a denial here reads as a fence to
+        # the scout probing an unknown tree for absent marker files, and nudges
+        # it toward the directory Grep that is #1683.
+        return ""
+    except OSError as exc:
+        # Fix round 1 (F4): a guard that cannot measure DENIES -- every other
+        # errno (EACCES, ELOOP, ENAMETOOLONG, EIO). This used to answer "" --
+        # allow -- reasoning that the host's own read of an unstattable name
+        # fails the same way; that is a guess about another process's syscall,
+        # made by the one component whose job is to be sure.
+        return ("%s of %s is denied: the read guard could not stat it to apply "
+                "the hard-link rule: %s" % (tool_name, raw, exc))
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink <= 1:
+        return ""
+    return "%s of %s is denied: %s" % (tool_name, raw, HARD_LINK_DENIAL % info.st_nlink)
+
+
 def _decide_read(tool_name, tool_input, scope, cwd):
     """(allow, reason) for a bound entry's Read/Grep/Glob. Mirrors
     read_guard_hook.decide's rules with Kimi's `path` field."""
@@ -212,12 +280,14 @@ def _decide_read(tool_name, tool_input, scope, cwd):
                        "in your prompt")
     if tool_name in ("Read", "ReadMediaFile"):
         if _readable(target, scope):
-            return True, ""
+            denial = _hard_link_reason(tool_name, raw, target, scope)
+            return (False, denial) if denial else (True, "")
         return False, ("%s of %s is outside your cell's scope; the files you may "
                        "read are listed in your prompt" % (tool_name, raw))
     if tool_name == "Grep":
         if _readable(target, scope):
-            return True, ""
+            denial = _hard_link_reason(tool_name, raw, target, scope)
+            return (False, denial) if denial else (True, "")
         return False, ("Grep of %s is outside your cell's scope; the files you may "
                        "search are listed in your prompt" % raw)
     return False, ("Glob is not available in a confined cell: your file list is in "

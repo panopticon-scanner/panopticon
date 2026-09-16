@@ -742,12 +742,34 @@ class TestCodexHostDocs(unittest.TestCase):
         self.assertIn("generic", skill)
 
 
-    def test_the_read_confinement_limit_is_recorded(self):
-        # M-3: O_NOFOLLOW stops symlinks, not HARD links. A target that ships
-        # a hard link to a file outside a directory grant is readable through
-        # it. Inherent to path-based confinement (Claude's read guard has the
-        # same property), so it is recorded rather than fixed -- but recorded.
-        self.assertIn("hard link", _read_doc())
+    def test_the_hard_link_rule_for_directory_grants_is_stated(self):
+        # M-3 recorded this as an inherent limit: a hard link to a file outside
+        # a directory grant "reads as a file in the grant, because it is one".
+        # #1642 closed it, so the guide states the RULE instead -- including
+        # which grant kind refuses what, and what it costs, because the
+        # reviewer whose hard-linked build output stopped being readable is the
+        # one who comes here to find out why.
+        doc = _read_doc()
+        self.assertIn("hard link", doc)
+        self.assertIn("st_nlink", doc)
+        self.assertIn("Exact grants are not narrowed this way", doc)
+        self.assertNotIn("inherent to path-based confinement", doc)
+        # Fix round 1 (F1): and the residual the rule does NOT cover, because
+        # an operator deciding whether `--host claude` is safe against a
+        # prepared tree reads this paragraph. The sentence it replaced claimed
+        # parity with a broker that has no such gap.
+        self.assertIn("#1683", doc)
+        # Fix round 3 (N6): and what the skip line actually promises -- at most
+        # eight named, inside a bounded block, the rest counted.
+        self.assertIn("at most eight are named", doc)
+        self.assertNotIn("apply the same rule to their own directory grants", doc)
+        # Fix round 2 (N4): anchored on the phrase that STATES the limit, not
+        # on the first line mentioning the issue -- a second #1683 reference
+        # added above this one would silently move the checks to that paragraph.
+        sentence = next(line for line in doc.splitlines()
+                        if "traversed by the host's own tool" in line)
+        for phrase in ("#1683", "Grep", "Glob", "Codex has no such gap"):
+            self.assertIn(phrase, sentence)
 
     def test_the_headless_runner_sentence_has_its_antecedent(self):
         # M-8: "...session when it does not (Claude and Codex have headless

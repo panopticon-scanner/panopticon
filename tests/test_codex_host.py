@@ -347,14 +347,17 @@ def test_missing_effective_observation_is_not_inferred_from_config(requests):
         codex_host._surface_result(requests)
 
 
-def test_probe_script_quotes_paths_as_data_and_rejects_unpaired_paths():
-    paths = ['inside"; text("not code")', "outside\\path\nline"]
+def test_probe_script_quotes_paths_as_data_and_rejects_an_incomplete_set():
+    paths = ['inside"; text("not code")', "outside\\path\nline", "hard-link"]
     script = codex_host._probe_script(paths)
     assert json.dumps(paths) in script
     assert "ALL_TOOLS.map" in script
     assert "tools.mcp__panopticon_scope__read_file" in script
-    with pytest.raises(ValueError, match="pair"):
-        codex_host._probe_script(["only-one"])
+    # #1642: the third path is the planted hard link, and a measurement missing
+    # it would leave the probe's refutation row unmeasured.
+    for incomplete in (["only-one"], paths[:2]):
+        with pytest.raises(ValueError, match="triple"):
+            codex_host._probe_script(incomplete)
 
 
 def test_inspection_uses_same_command_and_injected_transport_without_network(tmp_path, monkeypatch):
@@ -367,12 +370,12 @@ def test_inspection_uses_same_command_and_injected_transport_without_network(tmp
 
     monkeypatch.setattr(codex_host, "_capture_requests", fake_transport)
     result = codex_host.inspect_surface(entry, env, root, root / "run", runner=_fake_catalog,
-                                         probe_paths=("inside", "outside"))
+                                         probe_paths=("inside", "outside", "linked"))
     assert result["model"] == "gpt-test"
     assert captured["runner"] is _fake_catalog
     assert captured["env"] == env
     assert _config(captured["argv"])["features"]["shell_tool"] is False
-    assert '["inside", "outside"]' in captured["script"]
+    assert '["inside", "outside", "linked"]' in captured["script"]
 
 
 def test_transport_is_local_only_and_closes_on_failure(monkeypatch):

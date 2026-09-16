@@ -21,6 +21,19 @@ MAX_DIRECTORIES = 512
 MAX_ENTRIES = 20000
 MAX_SEARCH_BYTES = 8 * MAX_FILE_BYTES
 SCOPE_KEYS = ("files", "dirs", "reads")
+# How a path was authorized, threaded from `_require` into `_open` (#1642).
+# A DIRECTORY grant names a SUBTREE, and `_under` matches it by name, so a link
+# planted inside it can name an inode outside it; an EXACT grant names the file
+# the orchestrator chose. `_open` needs that distinction and must not re-derive
+# it, so the authorizer hands it over. DIR_GRANT is the default everywhere
+# below: a caller that forgets to say gets the strict rule, not the loose one.
+DIR_GRANT = "dirs"
+EXACT_GRANT = "files"
+# One wording for one rule, across three brokers. read_guard_hook and
+# kimi_guard_hook are stdlib-only and standing alone (no package on sys.path),
+# so each spells its own copy; tests/test_codex_read_tools.py::
+# test_the_hard_link_denial_is_one_wording pins the three equal.
+HARD_LINK_DENIAL = "read scope denies a hard-linked file inside a directory grant (st_nlink=%d)"
 # Directory NAMES and basename GLOBS the walk skips at every depth. A directory
 # grant is the whole repository for the setup scan, and a checkout's VCS store
 # and dependency trees hold far more entries than its source does -- walking
@@ -50,6 +63,33 @@ EXCLUDED_DIRECTORY_GLOBS = ("*.egg-info",)
 # shown", paired the PATTERN-FILTERED count with the ENUMERATED count --
 # "1 of 5" over a thirteen-file tree -- which is two different questions.
 TRUNCATION_NOTE = "[truncated: enumeration stopped at %d files; pass path= to narrow]"
+# Fix round 1 (F2): what a directory-wide search did NOT read, and why. One
+# planted hard link must not refuse the whole call -- a read fence's job is to
+# make that content unreachable, which a skip does as well as an abort, while
+# an abort also destroys the in-scope answer and hands a target an evasion
+# lever costing one `ln`. Same idiom as the truncation notes above: a partial
+# answer with a named reason. An EXPLICIT `search path=<the link>` is still a
+# refusal -- there the reviewer named that file and nothing else is an answer.
+SKIPPED_NOTE = "[skipped %s: %s]"
+# Fix round 2 (N1): and a BOUND on that block. Unbounded, the disclosure became
+# the payload -- the notes lead the body and `_result` truncates the tail, so a
+# few hundred planted links filled the answer with notes and pushed every real
+# match out of it, which is F2's evasion again at a few hundred `ln`s instead of
+# one. Eight names are enough to act on; the rest are a count. Constant-size, so
+# it can neither be truncated away nor crowd out what the reviewer asked for.
+MAX_SKIP_NOTES = 8
+SKIPPED_MORE_NOTE = "[skipped %d more hard-linked files inside this directory grant]"
+# Fix round 3 (N5): and a bound in BYTES, because eight notes are not eight
+# bounded notes. `_open` walks component-by-component with dir_fd and `_files`
+# joins without a length check, so the broker reaches -- and NAMES -- paths far
+# past PATH_MAX: one link at the bottom of a 300-deep tree of 200-char names is
+# a single ~60 KB note that eats the whole output budget on its own, which is
+# N1's crowding-out again for one `ln` plus a mkdir loop. So each note's path is
+# elided from the MIDDLE (both ends identify the file; the middle is the part a
+# target pads), and the block as a whole is capped -- anything over either bound
+# folds into the count, which is itself one constant-size line.
+MAX_SKIP_NOTE_BYTES = 2048
+SKIP_PATH_WINDOW = 48
 
 
 def _tool(name, description, properties, required=()):
@@ -88,18 +128,37 @@ def _under(path, directory):
     return path == directory or path.startswith(directory.rstrip(os.sep) + os.sep)
 
 
+class HardLinkDenied(ValueError):
+    """A multiply-linked file refused inside a directory grant (#1642).
+
+    A ValueError like every other refusal here, so `call` reports it the same
+    way -- but its OWN type, because search classifies file-vs-directory by
+    catching ValueError out of `_open` and falling back to a walk. A denial read
+    as "that path must be a directory" would answer a refused read with a
+    listing of the grant instead of the refusal.
+    """
+
+
 @contextmanager
-def _open(path, *, directory=False):
+def _open(path, *, directory=False, grant=DIR_GRANT):
     """Open a regular file/directory without any symlink traversal, even races.
 
-    M-3, recorded limit: O_NOFOLLOW stops SYMlinks, not HARD links. A target
-    repository that ships a hard link inside a directory grant to a file
-    outside it stays readable through that grant, because the link is the
-    file. This is inherent to path-based confinement -- Claude's read guard
-    has the same property -- and closing it would mean refusing st_nlink > 1
-    inside a directory grant, which also refuses ordinary hard-linked build
-    output. Not fixed here; documented in docs/PANOPTICON.md's Codex section
-    so it is a known boundary rather than an assumed one.
+    M-3/#1642: O_NOFOLLOW stops SYMlinks, not HARD links, and `_under`
+    authorizes a directory grant by NAME -- so a target repository that plants a
+    link inside the granted subtree naming a same-filesystem inode outside it
+    used to read through that grant, because the link IS the file. A regular
+    file a DIRECTORY grant admits is therefore refused when it carries more than
+    one link; a file an EXACT grant names (`scope.files`/`scope.reads`) is what
+    the orchestrator chose on purpose and stays readable whatever its link
+    count. The cost is deliberate: ordinary hard-linked build output under a
+    directory grant is unreadable, and shows in the transcript as this denial
+    (docs/PANOPTICON.md's Codex section says so).
+
+    The link count is read off the OPEN DESCRIPTOR, after the same walk that
+    refuses symlinks, so no rename or relink between the check and the read can
+    widen it. Directories are not the subject -- a directory's link count is its
+    subdirectory count, and `list_files` enumerates NAMES, which is not reading
+    the content a grant confines.
     """
     if (os.name != "posix" or not hasattr(os, "O_NOFOLLOW")
             or os.open not in os.supports_dir_fd or os.scandir not in os.supports_fd):
@@ -113,16 +172,18 @@ def _open(path, *, directory=False):
             child = os.open(part, flags | (os.O_DIRECTORY if want_dir else 0), dir_fd=fd)
             os.close(fd)
             fd = child
-        mode = os.fstat(fd).st_mode
-        if not (stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)):
+        info = os.fstat(fd)
+        if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
             raise ValueError("read scope permits regular files only")
+        if not directory and grant == DIR_GRANT and info.st_nlink > 1:
+            raise HardLinkDenied(HARD_LINK_DENIAL % info.st_nlink)
         yield fd
     finally:
         os.close(fd)
 
 
-def _read(path):
-    with _open(path) as fd:
+def _read(path, *, grant=DIR_GRANT):
+    with _open(path, grant=grant) as fd:
         chunks, remaining = [], MAX_FILE_BYTES + 1
         while remaining:
             chunk = os.read(fd, min(remaining, 65536))
@@ -132,6 +193,33 @@ def _read(path):
             remaining -= len(chunk)
     data = b"".join(chunks)
     return data[:MAX_FILE_BYTES].decode("utf-8", errors="replace"), len(data) > MAX_FILE_BYTES
+
+
+def _elided(path, window=SKIP_PATH_WINDOW):
+    """`path` with its middle replaced by an ellipsis, to a fixed width.
+
+    Both ends are kept: the head says which grant it sits under and the tail
+    names the file, which is what a reviewer with `list_files` needs to find it.
+    Only the middle -- the segment a hostile tree pads -- is dropped.
+    """
+    if len(path) <= 2 * window + 1:
+        return path
+    return path[:window] + "\u2026" + path[-window:]
+
+
+def _body(matches, skipped, more=0, tail=None):
+    """One search body: the disclosure lines FIRST, then matches, then `tail`.
+
+    Notes lead because `_result` truncates the TAIL of an over-long body, and a
+    disclosure that can be cut off is not one. The truncation tail survives its
+    own removal -- `_result` says the output was truncated -- but "this file was
+    skipped, and why" exists nowhere else. `skipped` is capped by the caller at
+    MAX_SKIP_NOTES notes AND MAX_SKIP_NOTE_BYTES bytes, with `more` carrying
+    whatever either cap dropped, so the block that leads is bounded no matter
+    how many links a target plants (N1) or how deep it buries them (N5).
+    """
+    notes = list(skipped) + ([SKIPPED_MORE_NOTE % more] if more else [])
+    return "\n".join(notes + list(matches) + ([tail] if tail else []))
 
 
 def _result(text, error=False):
@@ -154,14 +242,26 @@ class Reader:
             self.scope[key] = frozenset(_path(value, self.cwd) for value in values)
 
     def _allowed(self, path):
-        return (path in self.scope["files"] or path in self.scope["reads"]
-                or any(_under(path, directory) for directory in self.scope["dirs"]))
+        """Which grant kind authorizes `path` (EXACT_GRANT/DIR_GRANT), or None.
+
+        EXACT wins wherever both do: a cell's granted files usually sit inside
+        some directory grant, and a file the orchestrator named must not be
+        narrowed by the subtree it happens to live in (#1642).
+        """
+        if path in self.scope["files"] or path in self.scope["reads"]:
+            return EXACT_GRANT
+        if any(_under(path, directory) for directory in self.scope["dirs"]):
+            return DIR_GRANT
+        return None
 
     def _require(self, path, *, directory=False):
-        allowed = (any(_under(path, d) for d in self.scope["dirs"])
-                   if directory else self._allowed(path))
-        if not allowed:
+        """Authorize `path` and return HOW -- the fact `_open` needs and may not
+        re-derive. `directory=True` asks only about directory grants."""
+        grant = ((DIR_GRANT if any(_under(path, d) for d in self.scope["dirs"]) else None)
+                 if directory else self._allowed(path))
+        if grant is None:
             raise ValueError("Denied: %s is outside this entry's read scope" % path)
+        return grant
 
     def _files(self, directories):
         """Bounded descriptor-based enumeration; never walk linked directories.
@@ -239,12 +339,12 @@ class Reader:
                 raise ValueError("invalid read tool arguments")
             if name == "read_file":
                 path = _path(arguments["path"], self.cwd)
-                self._require(path)
+                grant = self._require(path)
                 offset, limit = arguments.get("offset", 1), arguments.get("limit", 200)
                 if (type(offset) is not int or type(limit) is not int
                         or not 1 <= offset <= 100000 or not 1 <= limit <= 1000):
                     raise ValueError("offset/limit outside bounded read range")
-                data, truncated = _read(path)
+                data, truncated = _read(path, grant=grant)
                 lines = data.splitlines()
                 text = "\n".join("%s:%d:%s" % (path, n + 1, lines[n])
                                  for n in range(offset - 1, min(len(lines), offset - 1 + limit)))
@@ -265,34 +365,51 @@ class Reader:
             walk_truncated = False
             if "path" in arguments:
                 path = _path(arguments["path"], self.cwd)
-                self._require(path)
+                grant = self._require(path)
                 # Directory classification also refuses symlinks and nonregular files.
                 try:
-                    with _open(path):
+                    with _open(path, grant=grant):
                         pass
                     files = [path]
+                except HardLinkDenied:
+                    raise            # a refusal of THIS path, never "it is a directory"
                 except (IsADirectoryError, ValueError):
                     files, walk_truncated = self._files(self._roots(arguments))
             else:
                 if not self.scope["dirs"]:
                     raise ValueError("search outside directory scope denied; supply an explicit granted file")
                 files, walk_truncated = self._files(self._roots(arguments))
-            matches, total = [], 0
+            matches, skipped, more, total = [], [], 0, 0
+            note_bytes = 0
             for path in files:
-                self._require(path)
-                data, truncated = _read(path)
+                try:
+                    data, truncated = _read(path, grant=self._require(path))
+                except HardLinkDenied as exc:
+                    # F2: skip THIS file, disclose it, keep the rest of the
+                    # answer. N1: name the first MAX_SKIP_NOTES, count the rest.
+                    # N5: and stop at MAX_SKIP_NOTE_BYTES, whichever comes first,
+                    # over paths elided to a fixed width. Both bounds are applied
+                    # HERE, before the body is assembled, so whatever the notes
+                    # do not spend is left to the matches.
+                    note = SKIPPED_NOTE % (_elided(path), exc)
+                    size = len(note.encode("utf-8")) + 1
+                    if len(skipped) < MAX_SKIP_NOTES and note_bytes + size <= MAX_SKIP_NOTE_BYTES:
+                        skipped.append(note)
+                        note_bytes += size
+                    else:
+                        more += 1
+                    continue
                 total += len(data.encode("utf-8"))
                 for number, line in enumerate(data.splitlines(), 1):
                     if pattern in line:
                         matches.append("%s:%d:%s" % (path, number, line))
                         if len(matches) >= 200 or sum(map(len, matches)) >= MAX_OUTPUT_CHARS:
-                            return _result("\n".join(matches) + "\n[search truncated]")
+                            return _result(_body(matches, skipped, more, "[search truncated]"))
                 if truncated or total >= MAX_SEARCH_BYTES:
-                    return _result("\n".join(matches) + "\n[search truncated; pass path= to narrow]")
-            text = "\n".join(matches)
-            if walk_truncated:
-                text += ("\n" if text else "") + TRUNCATION_NOTE % len(files)
-            return _result(text)
+                    return _result(_body(matches, skipped, more,
+                                         "[search truncated; pass path= to narrow]"))
+            return _result(_body(matches, skipped, more,
+                                 TRUNCATION_NOTE % len(files) if walk_truncated else None))
         except (OSError, ValueError, TypeError) as exc:
             return _result("Read tool refused: " + str(exc), error=True)
 
@@ -303,7 +420,9 @@ def load_reader(env=None, cwd=None):
     if (not isinstance(entry_id, str) or not entry_id or not isinstance(scope_path, str)
             or not scope_path or not os.path.isabs(scope_path)):
         raise ValueError("missing read scope entry/path binding")
-    data, truncated = _read(scope_path)
+    # EXACT: the scope file is the env BINDING, not something a grant admits --
+    # it is named by PANOPTICON_READ_SCOPE, which the launcher sets (#1642).
+    data, truncated = _read(scope_path, grant=EXACT_GRANT)
     if truncated:
         raise ValueError("armed read scope is too large")
     scopes = json.loads(data)

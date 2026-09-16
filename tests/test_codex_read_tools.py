@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from _test_helpers import hard_link_or_skip
 from scripts import codex_read_tools as read_tools
 
 
@@ -127,6 +128,155 @@ def test_symlink_leaf_and_directory_are_never_followed(tree):
         assert result["isError"] is True and "private outside content" not in body(result)
     listed = body(reader.call("list_files", {}))
     assert "linked-directory" not in listed and "first.py" not in listed
+
+
+def test_a_hard_link_inside_a_directory_grant_is_denied_by_both_readers(tree):
+    # #1642: O_NOFOLLOW stops symlinks, not HARD links, and `_under` authorizes
+    # by NAME. A target that plants a link inside the granted subtree naming a
+    # same-filesystem inode outside it was read through the grant, because the
+    # link IS the file. Both read_file and search route through `_read`.
+    root, source, first, _, outside = tree
+    planted = hard_link_or_skip(outside, source / "innocent.txt")
+    reader = reader_for(tree, directories=True)
+    for arguments in ({"path": planted}, {"path": "source/innocent.txt"}):
+        result = reader.call("read_file", arguments)
+        assert result["isError"] is True, body(result)
+        assert "hard-linked" in body(result) and "st_nlink=2" in body(result)
+        assert "private outside content" not in body(result)
+    # An EXPLICIT search of the link is a refusal, exactly like read_file: the
+    # reviewer named that file, and there is nothing else the answer could be.
+    result = reader.call("search", {"pattern": "private", "path": planted})
+    assert result["isError"] is True, body(result)
+    assert "hard-linked" in body(result)
+    assert "private outside content" not in body(result)
+    # The singly-linked files of the same grant are untouched.
+    assert reader.call("read_file", {"path": str(first)})["isError"] is False
+
+
+def test_a_directory_search_skips_the_hard_link_and_keeps_every_other_match(tree):
+    # Fix round 1 (F2): the per-file read used to let HardLinkDenied escape, so
+    # ONE planted link anywhere under the grant refused the whole call and threw
+    # away the matches already found -- an evasion lever costing an attacker one
+    # `ln`. A read fence's job is to make the content unreachable, which a skip
+    # does as well as an abort; the module already answers partially with a
+    # named reason ([search truncated...]), so this one does too.
+    root, source, first, second, outside = tree
+    # 'first.py' < 'middle.txt' < 'second.txt': matches on both sides of it.
+    planted = hard_link_or_skip(outside, source / "middle.txt")
+    result = reader_for(tree, directories=True).call("search", {"pattern": "beta"})
+    assert result["isError"] is False, body(result)
+    text = body(result)
+    assert "first.py:2:beta" in text and "second.txt:1:beta second" in text
+    assert "private outside content" not in text
+    note = next(line for line in text.splitlines() if line.startswith("[skipped "))
+    # The path is elided from the middle when it is long (N5), so the note is
+    # pinned on what survives: the file's own name and the reason.
+    assert os.path.basename(planted) in note
+    assert "hard-linked" in note and "st_nlink=2" in note
+
+
+def test_a_flood_of_planted_links_cannot_crowd_the_matches_out_of_the_answer(tree):
+    # Fix round 2 (N1): F2's skip note is a disclosure, not a payload. Left
+    # unbounded it restored F2's own evasion at ~236 `ln`s -- the notes lead the
+    # body, `_result` truncates the tail, so a few hundred planted links filled
+    # the answer with notes and pushed every real match out of it. The block is
+    # bounded now: the first MAX_SKIP_NOTES named, the rest counted in one line,
+    # so the disclosure is constant-size and the matches keep the budget.
+    root, source, _, _, outside = tree
+    (source / "needle.py").write_text("found the needle\n", encoding="utf-8")
+    for n in range(500):
+        hard_link_or_skip(outside, source / ("link-%03d.txt" % n))
+    result = reader_for(tree, directories=True).call("search", {"pattern": "needle"})
+    assert result["isError"] is False, body(result)
+    lines = body(result).splitlines()
+    assert any(line.endswith("needle.py:1:found the needle") for line in lines), lines[:3]
+    assert "private outside content" not in body(result)
+    named = [line for line in lines if line.startswith("[skipped ") and " more " not in line]
+    assert len(named) == read_tools.MAX_SKIP_NOTES == 8
+    assert ("[skipped %d more hard-linked files inside this directory grant]"
+            % (500 - read_tools.MAX_SKIP_NOTES)) in lines
+    assert "[output truncated]" not in body(result)
+
+
+def _deep_directory(root, depth, name):
+    """`depth` nested directories under `root`, returning an open fd on the
+    bottom one. Built with dir_fd: the whole path is far past PATH_MAX, so no
+    absolute-path call could create -- or later reach -- it."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for _ in range(depth):
+            os.mkdir(name, dir_fd=fd)
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
+def test_one_link_down_a_deep_path_cannot_eat_the_answer_either(tree):
+    # Fix round 3 (N5): N1 bounded the note block in COUNT, not in BYTES. The
+    # broker walks component-by-component with dir_fd, so it reaches and NAMES
+    # paths far past PATH_MAX -- one link at the bottom of a 300 x 200-char tree
+    # is a single ~60 KB note, which leads the body and eats the whole 48 KiB
+    # budget. Same evasion as F2/N1 for one `ln` plus a mkdir loop.
+    root, source, first, second, outside = tree
+    reader = reader_for(tree, directories=True)
+    # The answer this search gives at base, byte for byte: no notes, no extras.
+    assert body(reader.call("search", {"pattern": "beta"})) == (
+        "%s:2:beta\n%s:1:beta second" % (first, second))
+    bottom = _deep_directory(str(source), 300, "d" * 200)
+    try:
+        try:
+            os.link(str(outside), "planted.txt", dst_dir_fd=bottom)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip("this filesystem refuses deep hard links: %s" % exc)
+    finally:
+        os.close(bottom)
+    text = body(reader.call("search", {"pattern": "beta"}))
+    assert "%s:2:beta" % first in text and "%s:1:beta second" % second in text
+    assert "private outside content" not in text
+    assert "[output truncated]" not in text
+    notes = [line for line in text.splitlines() if line.startswith("[skipped ")]
+    assert len(notes) == 1 and "st_nlink=2" in notes[0]
+    assert "…" in notes[0] and "d" * 200 not in notes[0]
+    assert sum(len(line.encode("utf-8")) + 1 for line in notes) <= read_tools.MAX_SKIP_NOTE_BYTES == 2048
+
+
+def test_an_exact_file_grant_still_reads_a_hard_linked_file(tree):
+    # The other half of the rule: a path the ORCHESTRATOR named is readable
+    # whatever its link count -- `files`/`reads` are exact grants, so there is
+    # no lexical subtree for a planted name to hide in.
+    root, source, _, _, outside = tree
+    planted = hard_link_or_skip(outside, source / "innocent.txt")
+    for key in ("files", "reads"):
+        reader = read_tools.Reader({key: [planted]}, str(root))
+        result = reader.call("read_file", {"path": planted})
+        assert result["isError"] is False, body(result)
+        assert "private outside content" in body(result)
+
+
+def test_a_file_named_by_both_grants_is_read_as_the_exact_one(tree):
+    # A cell whose files sit inside a directory grant is the normal shape, and
+    # an exact grant must not be narrowed by the directory it happens to be in.
+    root, source, _, _, outside = tree
+    planted = hard_link_or_skip(outside, source / "innocent.txt")
+    reader = read_tools.Reader({"files": [planted], "dirs": [str(source)]}, str(root))
+    assert reader.call("read_file", {"path": planted})["isError"] is False
+
+
+def test_the_hard_link_denial_is_one_wording(tree):
+    # Three brokers refuse the same thing; a divergent sentence is how one of
+    # them silently stops being checked. read_guard_hook/kimi_guard_hook are
+    # stdlib-only and cannot import this constant, so the copies are pinned.
+    import scripts.kimi_guard_hook as kimi_guard_hook
+    import scripts.read_guard_hook as read_guard_hook
+
+    assert (read_tools.HARD_LINK_DENIAL == read_guard_hook.HARD_LINK_DENIAL
+            == kimi_guard_hook.HARD_LINK_DENIAL)
+    assert read_tools.HARD_LINK_DENIAL % 2 == (
+        "read scope denies a hard-linked file inside a directory grant (st_nlink=2)")
 
 
 def test_symlink_swap_between_scope_check_and_open_is_denied(tree, monkeypatch):

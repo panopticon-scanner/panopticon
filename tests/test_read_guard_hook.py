@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _test_helpers import hard_link_or_skip
 from conftest import write_host_evidence
 from scripts import hosts
 import scripts.probes.claude as claude_probes
@@ -146,6 +147,90 @@ class TestDecide(unittest.TestCase):
         # /root must not admit /root-other.
         self.assertFalse(rg.decide("Read", {"file_path": self.root_other}, self.scan)[0])
         self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": os.path.dirname(self.root_other)}, self.scan)[0])
+
+    def test_a_hard_link_inside_a_directory_grant_is_denied(self):
+        # #1642: realpath resolves SYMlinks, not HARD links, and a directory
+        # grant is matched by name -- so a link planted inside the granted
+        # subtree, naming a file outside it, read as in-scope. It IS the file.
+        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
+        for tool, arguments in (("Read", {"file_path": planted}),
+                                ("Grep", {"pattern": "x", "path": planted})):
+            with self.subTest(tool=tool):
+                ok, reason = rg.decide(tool, arguments, self.scan)
+                self.assertFalse(ok, reason)
+                self.assertIn("hard-linked", reason)
+                self.assertIn("st_nlink=2", reason)
+
+    def test_an_exact_grant_reads_a_hard_linked_file_whatever_its_link_count(self):
+        # The other half of the rule: `files`/`reads` name a file the
+        # orchestrator chose, and an exact grant has no subtree to hide in --
+        # including when a directory grant also covers it (the normal cell
+        # shape, a granted file inside the repository the scan is scoped to).
+        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
+        for scope in (_scope(files=[planted]), _scope(reads=[planted]),
+                      _scope(files=[planted], dirs=[self.root])):
+            with self.subTest(scope=scope):
+                self.assertEqual((True, ""), rg.decide("Read", {"file_path": planted}, scope))
+
+    def test_a_path_with_no_inode_passes_through_to_the_tool(self):
+        # Fix round 2 (N2): ENOENT/ENOTDIR are not "could not measure" -- they
+        # are a successful measurement that there is NO INODE at that name, so
+        # there is nothing for a read fence to confine. The scout profiles an
+        # unknown tree by probing for absent marker files (go.mod, Cargo.toml),
+        # and the setup scan is the only directory grant there is: denying those
+        # probes reads as a fence and nudges it toward the #1683 Grep path. The
+        # tool reports not-found, as it did before #1642.
+        missing = os.path.join(self.root, "go.mod")
+        self.assertEqual((True, ""), rg.decide("Read", {"file_path": missing}, self.scan))
+        self.assertEqual((True, ""), rg.decide(
+            "Grep", {"pattern": "x", "path": missing}, self.scan))
+        # ENOTDIR: a path component that is a file, not a directory.
+        through_file = os.path.join(self.root_file, "inner.py")
+        self.assertEqual((True, ""), rg.decide("Read", {"file_path": through_file}, self.scan))
+        # A dangling symlink resolves to a name with no inode: same answer.
+        dangling = os.path.join(self.root, "dangling.py")
+        os.symlink(os.path.join(self.root, "nowhere.py"), dangling)
+        self.assertEqual((True, ""), rg.decide("Read", {"file_path": dangling}, self.scan))
+
+    def test_a_target_the_rule_cannot_stat_is_denied_not_allowed(self):
+        # Fix round 1 (F4): the rule used to answer "" -- allow -- when os.stat
+        # raised, which is a guard answering "yes" about something it could not
+        # measure. It denies now, with the error in the reason, and only inside
+        # a directory grant: an exact grant never reaches the stat. Everything
+        # except the no-inode errnos above: EACCES, ELOOP, EIO, ENAMETOOLONG.
+        with mock.patch.object(os, "stat", side_effect=PermissionError("no stat here")):
+            ok, reason = rg.decide("Read", {"file_path": self.root_file}, self.scan)
+            self.assertFalse(ok, reason)
+            self.assertIn("no stat here", reason)
+            self.assertEqual((True, ""), rg.decide(
+                "Read", {"file_path": self.root_file}, _scope(files=[self.root_file])))
+
+    def test_a_directory_grants_ordinary_files_and_directories_are_unchanged(self):
+        # A directory's st_nlink is its subdirectory count, so the rule is for
+        # REGULAR files only: Grep and Glob over the granted root stay allowed.
+        # That last part is not "safe", it is the KNOWN GAP -- see
+        # test_a_directory_argument_grep_is_allowed_over_a_planted_link (#1683).
+        self.assertEqual((True, ""), rg.decide("Read", {"file_path": self.root_file}, self.scan))
+        self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": self.root_file}, self.scan))
+        self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": self.root}, self.scan))
+        self.assertEqual((True, ""), rg.decide("Glob", {"pattern": "*.py", "path": self.root}, self.scan))
+
+    def test_a_directory_argument_grep_is_allowed_over_a_planted_link(self):
+        # KNOWN GAP #1683, pinned on purpose so it is visible in the suite
+        # instead of silent. The hook adjudicates the PATH ARGUMENT: with a
+        # granted DIRECTORY as that argument, the host's own Grep/Glob does the
+        # traversal and can surface the very file the rule refuses by name. A
+        # PreToolUse hook can allow or deny a call, not rewrite it, and walking
+        # the target repository on every Grep is not a thing to do inside a
+        # synchronous hook -- so the closure is re-shaping the setup-scan grant
+        # (the only directory grant the driver issues), which is #1683's job.
+        # This test asserts today's behaviour; #1683 is what changes it.
+        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
+        self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": self.root}, self.scan))
+        self.assertEqual((True, ""), rg.decide("Glob", {"pattern": "*.py", "path": self.root}, self.scan))
+        # The half that IS closed: the same file, named directly.
+        self.assertFalse(rg.decide("Read", {"file_path": planted}, self.scan)[0])
+        self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": planted}, self.scan)[0])
 
     def test_symlink_out_of_scope_is_denied_by_realpath(self):
         link = os.path.join(os.path.dirname(self.inside), "link.py")
@@ -303,6 +388,14 @@ class TestAdjudicate(unittest.TestCase):
 
     def test_unbound_subagent_is_denied(self):
         self.assertFalse(rg.adjudicate(self._payload("Read", "unknown-agent", file_path=self.inside), self.scope_path)[0])
+
+    def test_a_hard_link_planted_in_a_directory_grant_is_denied_and_names_the_entry(self):
+        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
+        allow, reason = rg.adjudicate(self._payload("Read", "scan-agent", file_path=planted),
+                                      self.scope_path)
+        self.assertFalse(allow, reason)
+        self.assertIn("hard-linked", reason)
+        self.assertIn("setup-scan", reason)
 
     def test_bound_to_an_id_the_scope_does_not_name_is_denied_and_says_so(self):
         ok, reason = rg.adjudicate(self._payload("Read", "stray-agent", file_path=self.inside), self.scope_path)
