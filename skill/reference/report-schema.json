@@ -948,15 +948,6 @@
               "type": "string"
             }
           },
-          "citation_quality": {
-            "type": "string",
-            "enum": [
-              "full",
-              "partial",
-              "minimal",
-              "none"
-            ]
-          },
           "evidence": {
             "type": "object",
             "required": [

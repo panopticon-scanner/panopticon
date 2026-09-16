@@ -161,7 +161,6 @@ _OWNED_DOWNSTREAM = {
     "fingerprint": "stamped by verdicts.resolve_findings from evidence.finding_fingerprint",
     "delta": "stamped by delta.classify_findings from diff_map.classify",
     "citations": "enrich_citations rebuilds it from validated CWE/OWASP/SSVC/CVE parts",
-    "citation_quality": "popped by verdicts.resolve_findings before the report is built",
 }
 
 

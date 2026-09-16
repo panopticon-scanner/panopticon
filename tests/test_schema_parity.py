@@ -38,6 +38,7 @@ import scripts.hosts as hosts
 import scripts.run_tools as run_tools
 import scripts.synth.plan as plan_mod
 import scripts.synth.render as render_mod
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synthesize as syn
 
 SCHEMA_PATH = os.path.join(REPO_ROOT, "skill", "reference", "report-schema.json")
@@ -79,7 +80,18 @@ def _undescribed(value, node, root, path, out):
     node = _resolve(node, root)
     if isinstance(value, dict):
         props = node.get("properties")
-        if not props or node.get("additionalProperties") is True:
+        extra = node.get("additionalProperties")
+        if not props and isinstance(extra, dict):
+            # A map whose KEYS are open but whose VALUES are described --
+            # `meta.coverage.test_inventory`, and the per-capability
+            # state/by/detail triple #1602 asked for. Walking only `properties`
+            # treated these as leaves, so the triple was described and never
+            # checked (M3). The keys are free by definition; the values are not.
+            for key in sorted(value):
+                _undescribed(value[key], extra, root,
+                             "%s.<*>" % path if path else "<*>", out)
+            return
+        if not props or extra is True:
             return
         for key in sorted(value):
             here = "%s.%s" % (path, key) if path else key
@@ -124,7 +136,7 @@ def _agentic(n, sev="HIGH"):
         "panel": "security",
         "category": "injection",
         "code": "SEC-A2D",
-        "cvss": 7.5,
+        "cvss": {"score": 7.5, "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"},
         "exploit_scenario": "an attacker reaches sink %d with a crafted value" % n,
         "remediation": "parameterize the query at call site %d" % n,
         "location": {"file": "src/app.py", "line_start": 10 * n,
@@ -161,6 +173,22 @@ def _build_report(tmpdir):
     findings_path = os.path.join(run_dir, "findings-app-security.json")
     with open(findings_path, "w", encoding="utf-8") as fh:
         json.dump({"findings": [_agentic(n) for n in range(1, 9)]}, fh)
+
+    # M3: one cross-domain row, so `meta.integrity.cross_domain_findings` is
+    # non-empty and the walk descends into its item shape. A SEC cell filing a
+    # TST finding is the real shape this section exists to report.
+    cross_path = os.path.join(run_dir, "findings-app-SEC.json")
+    with open(cross_path, "w", encoding="utf-8") as fh:
+        json.dump({"findings": [dict(_agentic(9), domain="TST", code="TST-X0X",
+                                     panel="test", category="coverage")]}, fh)
+
+    # M3: one MISSING floor cell, so `meta.coverage.cells.missing_floor` is
+    # non-empty for the same reason. The floor names a domain no findings file
+    # answers for, which is exactly what a missing floor cell IS.
+    with open(os.path.join(run_dir, "coverage-app.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump({"group": "app", "floor": ["SEC", "ARC"],
+                   "effective": ["SEC", "ARC"], "excluded": []}, fh)
 
     # The tool axis, through the real writer's own manifest and a real SARIF.
     sarif = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
@@ -213,7 +241,7 @@ def _build_report(tmpdir):
     try:
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
-            syn.main(common + ["--emit-verify-queue", findings_path])
+            syn.main(common + ["--emit-verify-queue", findings_path, cross_path])
         with open(os.path.join(run_dir, "verify-queue.json"),
                   encoding="utf-8") as fh:
             queue = json.load(fh)
@@ -234,19 +262,19 @@ def _build_report(tmpdir):
         render_mod.write_report = _small_write
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
-            syn.main(common + ["--out", out, "--verdicts-dir", vdir,
-                               findings_path])
+            rc = syn.main(common + ["--out", out, "--verdicts-dir", vdir,
+                                    findings_path, cross_path])
     finally:
         render_mod.write_report = real_write
         os.chdir(prev)
-    return out
+    return out, rc
 
 
 class TestSchemaParity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
-        path = _build_report(cls._tmp.name)
+        path, cls.rc = _build_report(cls._tmp.name)
         # The HYDRATED union -- the main report plus every `_partN.json` and
         # the `-discarded.json` sibling it points at. Validating only the main
         # file would skip precisely the keys the split writer adds.
@@ -255,6 +283,33 @@ class TestSchemaParity(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls._tmp.cleanup()
+
+    def test_the_fixture_itself_builds_a_VALID_report(self):
+        """I1: a fixture that fails validation proves nothing about parity.
+
+        The first version of this file emitted `"cvss": 7.5` -- a bare float
+        where the schema pins an object -- so `synthesize.main()` was driven
+        into the artifact-invalid exit twice, with both streams redirected and
+        the return value discarded, and the flagship "the schema and the report
+        cannot drift apart" guard was green on a report the validator rejects.
+        The same species of silence #1602 is about. Assert the rc, and assert
+        the built artifact is clean, BEFORE reading anything off it.
+
+        The rc is 2, not 0, and that is the point rather than a wrinkle: the
+        fixture deliberately leaves one floor cell unanswered, so the GATE is
+        INCONCLUSIVE while the ARTIFACT is perfectly valid. Those are the two
+        different questions this whole change exists to keep apart, and the
+        fixture happens to be a worked example of them."""
+        self.assertNotEqual(
+            self.rc, validate_schema_mod.ARTIFACT_INVALID,
+            "the parity fixture wrote an artifact the validator rejects")
+        self.assertEqual(self.rc, 2,
+                         "expected INCONCLUSIVE (an unanswered floor cell), got %s"
+                         % self.rc)
+        errors = validate_schema_mod.schema_errors(self.report)
+        self.assertEqual(errors, [],
+                         "the fixture's own report fails the schema:\n  %s"
+                         % "\n  ".join(errors))
 
     def test_the_fixture_exercises_every_producer(self):
         # Vacuity guard: "no key is undescribed" is also satisfied by a report
@@ -273,6 +328,14 @@ class TestSchemaParity(unittest.TestCase):
         self.assertTrue(self.report["discarded_claims"],
                         "no claim was discarded: the verdict axis did not run")
         self.assertTrue(self.report["findings"], "no finding survived")
+        # M3: the two sections this PR added must be NON-EMPTY, or the walk
+        # stops at the list and never reaches the item shape it describes.
+        self.assertTrue(meta["integrity"]["cross_domain_findings"],
+                        "no cross-domain row: that section's item shape is unwalked")
+        self.assertTrue(meta["coverage"]["cells"]["missing_floor"],
+                        "no missing floor cell: that section's item shape is unwalked")
+        self.assertTrue(meta["host_capabilities"]["capabilities"],
+                        "no capability row: the state/by/detail triple is unwalked")
 
     def test_no_report_key_is_undescribed_by_the_schema(self):
         drift = _drift(self.report)
