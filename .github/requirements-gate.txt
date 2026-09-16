@@ -1,0 +1,74 @@
+# What the security gate is allowed to install, by version AND by bytes (#1641,
+# SEC-E2A). The gate runs under `pull_request_target` with `security-events:
+# write`, so it is reachable from a fork PR while holding the token that writes
+# the gate's own results -- the one workflow in this repo where "whatever the
+# index served today" is an execution primitive rather than an inconvenience.
+#
+# `pip install --require-hashes --no-deps -r` this file: --require-hashes makes
+# pip refuse any artifact whose digest is not written down below, and --no-deps
+# makes THIS FILE the complete list rather than a starting point for a resolver.
+# That is why the four packages under jsonschema are here: with --no-deps pip
+# installs exactly these lines, so a closure that is missing one fails loudly at
+# `import jsonschema` instead of silently resolving something unpinned.
+#
+# The digests are not written by hand. `python3 scripts/bump_pins.py
+# requirements --write` reads each one from PyPI's JSON API and recomputes it
+# from the downloaded wheel; see DEVELOPMENT.md, "Regenerating the pinned
+# dependency hashes". Versions are Dependabot's to bump, and must track
+# pyproject.toml's floors.
+
+# pip itself: the tool that installs everything below it. Leaving THIS unpinned
+# (`pip install --upgrade pip`) was the finding -- pinning what pip installs
+# says nothing about what pip is.
+pip==26.2.1 \
+    --hash=sha256:71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e
+
+# The gate's own dependencies. Versions track pyproject.toml's floors.
+pyyaml==6.0.3 \
+    --hash=sha256:00c4bdeba853cc34e7dd471f16b4114f4162dc03e6b7afcc2128711f0eca823c \
+    --hash=sha256:0150219816b6a1fa26fb4699fb7daa9caf09eb1999f3b70fb6e786805e80375a \
+    --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 \
+    --hash=sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65 \
+    --hash=sha256:22ba7cfcad58ef3ecddc7ed1db3409af68d023b7f940da23c6c2a1890976eda6 \
+    --hash=sha256:27c0abcb4a5dac13684a37f76e701e054692a9b2d3064b70f5e4eb54810553d7 \
+    --hash=sha256:37503bfbfc9d2c40b344d06b2199cf0e96e97957ab1c1b546fd4f87e53e5d3e4 \
+    --hash=sha256:41715c910c881bc081f1e8872880d3c650acf13dfa8214bad49ed4cede7c34ea \
+    --hash=sha256:5190d403f121660ce8d1d2c1bb2ef1bd05b5f68533fc5c2ea899bd15f4399b35 \
+    --hash=sha256:5e0b74767e5f8c593e8c9b5912019159ed0533c70051e9cce3e8b6aa699fcd69 \
+    --hash=sha256:6344df0d5755a2c9a276d4473ae6b90647e216ab4757f8426893b5dd2ac3f369 \
+    --hash=sha256:9c7708761fccb9397fe64bbc0395abcae8c4bf7b0eac081e12b809bf47700d0b \
+    --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d \
+    --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc \
+    --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5 \
+    --hash=sha256:eda16858a3cab07b80edaf74336ece1f986ba330fdb8ee0d6c0d68fe82bc96be
+jsonschema==4.26.0 \
+    --hash=sha256:d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce
+
+# jsonschema's runtime closure, spelled out because of --no-deps above.
+# typing-extensions is `referencing`'s, on python_version < "3.13" -- the gate
+# pins python 3.12, so it is reached.
+attrs==26.1.0 \
+    --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309
+jsonschema-specifications==2025.9.1 \
+    --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe
+referencing==0.37.0 \
+    --hash=sha256:381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231
+rpds-py==2026.6.3 \
+    --hash=sha256:1cf01971c4f2c5553b772a542e4aaf191789cd331bc2cd4ff0e6e65ba49e1e97 \
+    --hash=sha256:23a439f31ccbeff1574e24889128821d1f7917470e830cf6544dced1c662262a \
+    --hash=sha256:38a2fea2787428f811719ceb9114cb78964a3138838320c29ac39526c79c16ba \
+    --hash=sha256:536bceea4fa4acf7e1c61da2b5786304367c816c8895be71b8f537c480b0ea1f \
+    --hash=sha256:639c8929aa0afe81be836b04de888460d6bed38b9c54cfc18da8f6bfabf5af5d \
+    --hash=sha256:79486287de1730dbaff3dbd124d0ca4d2ef7f9d29bf2544f1f93c09b5bcbbd12 \
+    --hash=sha256:83e35b57523816c8613fd0776b40cd8bb9f596b37ddd2692eb4a6bb5ab2f8c93 \
+    --hash=sha256:8e4320744c1ffdd95a603def63344bfab2d33edeab301c5007e7de9f9f5b3885 \
+    --hash=sha256:8e65860d238379ed982fd9ba690579b5e95af2f4840f99c772816dbe573cb826 \
+    --hash=sha256:9c1255b302953c86a486b81d330d5ee1d5bd937691ce271b6be0ef0e299eaab7 \
+    --hash=sha256:a214c993455f99a89aaeadc9b21241900037adc9d97203e374d75513c5911822 \
+    --hash=sha256:a3450b693fde92133e9f51060568a4c31fcca76d5e53bbd611e689ca446517e9 \
+    --hash=sha256:acac386b453c2516111b50985d60ce46e7fadb5ea71ae7b25f4c946935bf27cf \
+    --hash=sha256:dc319e5a1de4b6913aac94bf6a2f9e847371e0a140a43dd4991db1a09bc2d504 \
+    --hash=sha256:ea7bb13b7c9a29791f87a0387ba7d3ad3a6d783d827e4d3f27b40a0ff44495e2 \
+    --hash=sha256:ecabd69db66de867690f9797f2f8fa27ba501bbc24540cbdbdc649cd15888ba6
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

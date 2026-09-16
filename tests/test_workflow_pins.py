@@ -334,10 +334,19 @@ def _join_lines(script):
     return re.sub(r"\\\s*\n\s*", " ", script)
 
 
+def _without_comments(script):
+    """The script with whole-line comments dropped. Half this repo's workflow
+    and Dockerfile prose QUOTES the commands it is explaining -- including the
+    two this rule was written for -- and a guard that reads a comment as an
+    install flags the explanation instead of the act."""
+    return "\n".join(line for line in script.splitlines()
+                     if not line.lstrip().startswith("#"))
+
+
 def pip_install_commands(script):
     """Every `pip install` command in a shell script, one per shell command."""
     out = []
-    for segment in re.split(r"&&|\|\||;|\n", _join_lines(script)):
+    for segment in re.split(r"&&|\|\||;|\n", _join_lines(_without_comments(script))):
         seg = " ".join(segment.split())
         if _PIP_INSTALL.search(seg):
             out.append(seg)
@@ -434,6 +443,15 @@ class TestInstallPinRule(unittest.TestCase):
         script = ("apt-get update \\\n    && pip install \\\n"
                   "        --no-cache-dir pytest\n")
         self.assertEqual(["pip install --no-cache-dir pytest"],
+                         pip_install_commands(script))
+
+    def test_a_comment_about_an_install_is_not_an_install(self):
+        # The prose explaining this very fix quotes both offending commands; so
+        # does the Dockerfile's note about semgrep. Reading those as installs
+        # would make the guard fire on its own documentation.
+        script = ("# the old line here was `pip install --upgrade pip`\n"
+                  "python -m pip install --require-hashes -r reqs.txt\n")
+        self.assertEqual(["python -m pip install --require-hashes -r reqs.txt"],
                          pip_install_commands(script))
 
     def test_a_script_with_no_install_is_left_alone(self):
