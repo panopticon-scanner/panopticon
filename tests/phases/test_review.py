@@ -241,3 +241,77 @@ class TestPanelsRecordWhetherTheySawScannerEvidence(unittest.TestCase):
         cells = runio._load_json(
             runio._pano(self.root, "panel-tools-context.json"))["cells"]
         self.assertEqual(cells, {"Auth/SEC": True, "Auth/DAT": True})
+
+
+class TestTestInventoryNote(unittest.TestCase):
+    """#1638 P13: the cell's `Tests:` inventory comes from the CLAIMING
+    group's `tests:` axis, and a reviewer's reads are confined to its own
+    cell -- so an empty inventory is indistinguishable, from inside the cell,
+    from a repository with no tests. Run-13 published the wrong one of those
+    two readings. The driver knows which it is (it assigned every file to a
+    group), so it says so on the prompt instead of leaving the reviewer to
+    guess.
+
+    Three states, computed from the run's OWN assignment (groups.json) and
+    the committed matrix `review_execute` already loads:
+
+    * complete -- the group has a `tests:` inventory and nothing is missing;
+    * empty    -- no test is assigned to it at all;
+    * split    -- test files NAMED after this group's modules exist, and
+                  another group claims them. This is run-13's case, and the
+                  only one that can name where the tests went.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard",
+                         "host": "claude"}
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
+        # `Code` owns src/a.py; its test lives in `Other`, exactly the
+        # matrix defect P06 described and P13 is the visible consequence of.
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [
+                              {"name": "Code", "files": ["src/a.py"]},
+                              {"name": "Other", "files": ["tests/test_a.py"]},
+                              {"name": "Lonely", "files": ["src/z.py"]}]})
+        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write("groups:\n"
+                     "  Code:\n    match: ['src/a.py']\n"
+                     "  Other:\n    match: ['other/**']\n"
+                     "    tests: ['tests/**']\n"
+                     "  Lonely:\n    match: ['src/z.py']\n")
+        for g in ("Code", "Other", "Lonely"):
+            runio._write_json(runio._pano(self.root, "coverage-%s.json" % g),
+                              {"group": g, "effective": ["TST"], "run_id": "R"})
+
+    def _prompts(self):
+        review.review_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        return {e["group"]: e for e in req["entries"]}
+
+    def test_a_group_whose_tests_another_group_claims_is_split(self):
+        entry = self._prompts()["Code"]
+        self.assertEqual("split", entry["inventory_note"])
+        self.assertIn("Inventory: split", entry["prompt"])
+        self.assertIn("Other", entry["prompt"])
+        self.assertIn("tests/test_a.py", entry["prompt"])
+
+    def test_a_group_with_its_own_tests_is_complete(self):
+        entry = self._prompts()["Other"]
+        self.assertEqual("complete", entry["inventory_note"])
+        self.assertIn("Inventory: complete", entry["prompt"])
+
+    def test_a_group_with_no_tests_anywhere_is_empty(self):
+        entry = self._prompts()["Lonely"]
+        self.assertEqual("empty", entry["inventory_note"])
+        self.assertIn("Inventory: empty", entry["prompt"])
+
+    def test_the_state_is_persisted_per_group_for_synthesis(self):
+        self._prompts()
+        body = runio._load_json(
+            runio._pano(self.root, "panel-test-inventory.json"))
+        self.assertEqual({"Code": "split", "Other": "complete",
+                          "Lonely": "empty"}, body["groups"])
