@@ -180,6 +180,105 @@ def _load_allowlist(allowlist_path):
     return out, ""
 
 
+# --- BINDING: a VERBATIM COPY of write_guard_hook's nested-component walk,
+# pinned AST-identical by
+# tests/test_write_guard_hook.py::TestBindingHelpersAreACopy. This module's
+# write branch IS that module's rules with Kimi's `path` field, so the two
+# have to refuse the same paths; copied and not imported for the reason
+# everything here is one (the hook runs standing alone, with no package on
+# sys.path).
+#
+# #1640 (run-13 AGT-861284148). The `.panopticon` segment is found LEXICALLY,
+# so every directory between the review root and the findings file is a
+# component whose NAME the guard trusted and whose target it never looked at.
+# The old rule refused only a symlinked LEAF, and a real findings path is
+# `<root>/.panopticon/runs/<tag>/findings-<group>-<domain>.json` -- so a
+# target repo that commits `.panopticon/runs` as a link had the Claude guard's
+# `allowlist_from_plan` store the EXTERNAL realpath as a grant and this branch
+# resolve the reviewer's Write to that same external path. Install and
+# enforcement AGREED on a destination outside the artifact tree.
+ARTIFACT_DIR = ".panopticon"
+SYMLINKED_COMPONENT = "findings output cannot pass through a symlinked directory: %s"
+UNMEASURABLE_COMPONENT = ("findings output cannot pass through a directory the guard "
+                          "could not measure: %s (%s)")
+ESCAPED_ARTIFACT_TREE = ("findings output resolves outside the review artifact tree: "
+                         "%s is not a %s path under %s")
+
+
+def _components(path):
+    """(review root, [directory component, ...]) for a path anchored in a
+    `.panopticon` tree: every directory from the `.panopticon` segment's
+    PARENT -- the review root -- down to the file's own parent, outermost
+    first.
+
+    (None, []) when the path carries no `.panopticon` segment. There is no
+    artifact tree to anchor on then, so there is nothing for this rule to say;
+    `_confined_to_artifact_roots` already refuses to carry such a grant
+    forward, and the probes' sandbox plans legitimately declare out_files that
+    live nowhere near an artifact tree.
+
+    The review root itself is the outermost component checked, and nothing
+    ABOVE it is: `os.path.islink` tests only a path's final component, so a
+    checkout reached through a symlinked ancestor (a macOS `/tmp`, a home
+    directory on another volume) is not the subject -- a review root whose own
+    name is a link is.
+    """
+    parts = os.path.abspath(path).split(os.sep)
+    if ARTIFACT_DIR not in parts:
+        return None, []
+    start = parts.index(ARTIFACT_DIR)
+    return (os.sep.join(parts[:start]) or os.sep,
+            [os.sep.join(parts[:i + 1]) or os.sep for i in range(start - 1, len(parts) - 1)])
+
+
+def _component_fault(component):
+    """Why this directory component may not be traversed, or "".
+
+    A component with NO INODE passes: the plan is written before the run
+    folder is created, and refusing an absent component would refuse every
+    first run. A component that exists but cannot be measured DENIES -- the
+    same rule `_hard_link_reason` applies one layer down (#1642, fix round 1):
+    a guard may not answer "allowed" about something it could not look at.
+    """
+    try:
+        info = os.lstat(component)
+    except (FileNotFoundError, NotADirectoryError):
+        return ""
+    except (OSError, ValueError) as exc:
+        return UNMEASURABLE_COMPONENT % (component, exc)
+    if stat.S_ISLNK(info.st_mode):
+        return SYMLINKED_COMPONENT % component
+    return ""
+
+
+def _escaped_component(path):
+    """Why `path` may not be trusted as a findings destination, or "".
+
+    Two rules, and the second is not redundant. The walk is a check at a
+    moment in time; the ANCHOR is what the destination must satisfy whatever
+    the components looked like -- a link swapped in after the walk, a bind
+    mount, a leaf that is itself a link into another tree. So the resolved
+    path must still carry a `.panopticon` segment and still lie under the
+    resolved review root the declared path named.
+    """
+    root, components = _components(path)
+    if root is None:
+        return ""
+    for component in components:
+        fault = _component_fault(component)
+        if fault:
+            return fault
+    real = os.path.realpath(path)
+    real_root = os.path.realpath(root)
+    if ARTIFACT_DIR not in real.split(os.sep) or not (
+            real == real_root or real.startswith(real_root + os.sep)):
+        return ESCAPED_ARTIFACT_TREE % (real, ARTIFACT_DIR, real_root)
+    return ""
+
+
+# --- end of the write_guard_hook copy ---
+
+
 def _readable(target, scope):
     return (target in scope["files"] or target in scope["reads"]
             or any(_under(target, d) for d in scope["dirs"]))
@@ -324,6 +423,9 @@ def _decide_write(tool_name, tool_input, allowlist, entry_id):
         if os.path.islink(absolute):
             return False, ("%s to %s is denied: findings targets must not be "
                            "symlinks" % (tool_name, raw))
+        fault = _escaped_component(absolute)      # #1640, and the walk is the copy above
+        if fault:
+            return False, "%s to %s is denied: %s" % (tool_name, raw, fault)
         target = os.path.realpath(absolute)
     except (ValueError, OSError, TypeError):
         return False, "%s is denied: unresolvable path %r" % (tool_name, raw)
