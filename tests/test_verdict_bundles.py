@@ -566,3 +566,47 @@ class TestDuplicateVerdictsTakeTheLeastFavourable(unittest.TestCase):
                 evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
                                              run_id="R")["verdict"],
                 "CONFIRMED")
+
+
+class TestTheTwoNeedsMoreInfoShapesAreOrdered(unittest.TestCase):
+    """Fix round 3, D4. `_VERDICT_SCEPTICISM` scored a bare NEEDS_MORE_INFO and
+    a scope-limited one identically, and `min` is stable -- so the advisor's own
+    array order decided whether the finding ended at factor 0.5 and out of the
+    gate or 1.5 and in it. A bare NMI is the more sceptical of the two: it says
+    the advisor LOOKED and the code does not say, where a scope-limited one says
+    it was not allowed to look. REJECTED > NMI (bare) > NMI (scope-limited) >
+    CONFIRMED."""
+
+    def _kept(self, backups):
+        with tempfile.TemporaryDirectory() as d:
+            tmp_path = Path(d)
+            _bundle(tmp_path, "verdicts-app-SEC.json",
+                    [{"finding_id": "SEC-100", "verdict": "CONFIRMED"}],
+                    stage="primary")
+            d_path = _bundle(tmp_path, "verdicts-app-SEC-backup.json", backups,
+                             stage="backup")
+            by_fid, _ = evidence.load_verdict_bundles(d_path)
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            return v, evidence.derive_evidence({"id": "SEC-100"}, v)["status"]
+
+    BARE = {"finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO",
+            "reasoning": "the code genuinely does not say"}
+    SCOPED = {"finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO",
+              "missing_evidence": ["x.py"]}
+
+    def test_a_bare_nmi_wins_whichever_order_it_arrives_in(self):
+        for backups in ([self.SCOPED, self.BARE], [self.BARE, self.SCOPED]):
+            v, status = self._kept(backups)
+            self.assertEqual(v["verdict"], "NEEDS_MORE_INFO")
+            self.assertEqual(v["stage"], "backup")
+            self.assertEqual(status, "needs_more_info", backups)
+
+    def test_a_rejection_still_beats_both(self):
+        rejected = {"finding_id": "SEC-100", "verdict": "REJECTED"}
+        for backups in ([self.SCOPED, self.BARE, rejected],
+                        [rejected, self.BARE, self.SCOPED]):
+            self.assertEqual(self._kept(backups)[1], "rejected", backups)
+
+    def test_a_scope_limited_nmi_alone_is_still_the_disclosure(self):
+        self.assertEqual(self._kept([self.SCOPED])[1], "backup_scope_limited")

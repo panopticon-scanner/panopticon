@@ -753,14 +753,68 @@ def record_merged_id(best, other):
 # there WOULD be a new lever: an advisor that disliked a claim could emit
 # CONFIRMED + NEEDS_MORE_INFO and drop it out of the gate at no cost. Duplicate
 # primaries keep today's first-wins.
-_VERDICT_SCEPTICISM = {"REJECTED": 0, "NEEDS_MORE_INFO": 1, "CONFIRMED": 2}
+# REJECTED > NEEDS_MORE_INFO (bare) > NEEDS_MORE_INFO (scope-limited) >
+# CONFIRMED. The two NMI shapes are NOT equal (fix round 3, D4): a bare one says
+# the advisor looked and the code does not say; a scope-limited one says it was
+# not allowed to look. Scoring them the same left `min`'s stability -- i.e. the
+# advisor's own array order -- deciding between factor 0.5 and out of the gate
+# and factor 1.5 and in it, which is the rule not being applied rather than a
+# rule with a tie in it.
+_VERDICT_SCEPTICISM = {"REJECTED": 0, "NEEDS_MORE_INFO": 1, "CONFIRMED": 3}
+_SCOPE_LIMITED_SCEPTICISM = 2
+_UNKNOWN_SCEPTICISM = 4
+
+
+def _scepticism(candidate):
+    """How unfavourable to the finding this verdict is; lower wins."""
+    verdict = str(candidate.get("verdict", "")).upper()
+    rank = _VERDICT_SCEPTICISM.get(verdict, _UNKNOWN_SCEPTICISM)
+    if verdict == "NEEDS_MORE_INFO" and scope_limited_paths(candidate):
+        return _SCOPE_LIMITED_SCEPTICISM
+    return rank
 
 
 def _least_favourable(candidates):
     """The most sceptical of several BACKUP verdicts for one finding."""
-    return min(candidates,
-               key=lambda c: _VERDICT_SCEPTICISM.get(
-                   str(c.get("verdict", "")).upper(), 3))
+    return min(candidates, key=_scepticism)
+
+
+def resolve_duplicates(candidates, stage="primary"):
+    """THE rule for several verdicts about one finding at one stage, or None.
+
+    One definition, called by BOTH the driver (`verify._cell_backup_findings`,
+    via `by_finding_id`) and synthesis (`match_verdict_by_id`) -- fix round 3,
+    D1, where they disagreed. The driver's map was a dict comprehension
+    (last-wins) and synthesis took `candidates[0]` (first-wins), so a primary
+    bundle emitting CONFIRMED then REJECTED for one finding made the driver see
+    `rejected`, drop the finding from the backup scope and dispatch NO
+    adversarial round, while synthesis published `advisor_confirmed` at factor
+    1.5 with nothing recording that the second opinion never happened. Two
+    readers of one bundle must not answer differently.
+
+    BACKUP duplicates take the least favourable to the finding (N6); PRIMARY
+    duplicates keep first-wins. The asymmetry is deliberate and documented in
+    `match_verdict_by_id`.
+    """
+    candidates = [c for c in candidates if isinstance(c, dict)]
+    if not candidates:
+        return None
+    return (_least_favourable(candidates) if stage == "backup"
+            else candidates[0])
+
+
+def by_finding_id(verdicts, stage="primary"):
+    """`finding_id -> the one verdict that counts`, duplicates resolved by
+    `resolve_duplicates`. The driver's shape; synthesis keeps the candidate
+    LISTS because it also filters them by run_id first."""
+    pools = {}
+    for v in verdicts:
+        if not isinstance(v, dict):
+            continue
+        fid = v.get("finding_id")
+        if fid is not None:
+            pools.setdefault(str(fid), []).append(v)
+    return {fid: resolve_duplicates(pool, stage) for fid, pool in pools.items()}
 
 
 def match_verdict_by_id(finding, by_fid, run_id=None):
@@ -812,8 +866,8 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
         return None
     backups = [c for c in candidates if c.get("stage") == "backup"]
     if not backups:
-        return candidates[0]
-    backup = _least_favourable(backups)
+        return resolve_duplicates(candidates, "primary")
+    backup = resolve_duplicates(backups, "backup")
     missing = scope_limited_paths(backup)
     if missing:
         primary = next((c for c in candidates
