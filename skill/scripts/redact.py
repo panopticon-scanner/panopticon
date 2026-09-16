@@ -47,9 +47,20 @@ _PATTERNS = [
     # first two starting eyJ (base64 of '{"'). Distinctive enough to be safe.
     (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
      "[REDACTED_JWT]"),
+    # PEM private key. The body is BOUNDED (#1639 P11): `[^"]` so a match can
+    # never cross a JSON string boundary, and `(?!-----BEGIN)` so an
+    # unterminated key cannot run on until some LATER block supplies an END.
+    # It was `.*?` under DOTALL -- the one rule here with no character class to
+    # stop it -- and a raw scanner capture is where that bit: gitleaks quotes a
+    # truncated `-----BEGIN RSA PRIVATE KEY-----` snippet with no END of its
+    # own (the committed golden has one), so a flat pass over the document ran
+    # from that snippet into the next result's END and collapsed every result,
+    # rule id and location in between into one token -- still valid JSON, so
+    # nothing downstream noticed. `[^"]` matches newlines, so a real multi-line
+    # block is still masked.
     (re.compile(
-        r"-----BEGIN[A-Z ]*PRIVATE KEY-----.*?-----END[A-Z ]*PRIVATE KEY-----",
-        re.DOTALL), "[REDACTED_PRIVATE_KEY]"),                # PEM private key
+        r"-----BEGIN[A-Z ]*PRIVATE KEY-----(?:(?!-----BEGIN)[^\"])*?"
+        r"-----END[A-Z ]*PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
     # Shape-only, and last: every rule above needs a prefix or an assignment to
     # anchor on, but a secret SCANNER reports the secret with that context
     # stripped (gitleaks emitted a leaked API key as a bare snippet, matching

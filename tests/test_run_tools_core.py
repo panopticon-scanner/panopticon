@@ -823,7 +823,23 @@ class TestRawCaptureRedaction(unittest.TestCase):
         names `_redact_capture` INLINE in the data it hands over. A fourth
         capture path added later cannot land unredacted, and the check reads the
         tree rather than the text -- a grep passes on a call that merely
-        mentions the name in a comment or a string."""
+        mentions the name in a comment or a string.
+
+        Scope, stated so it is not mistaken for more than it is: this guards
+        CAPTURE writes, not the tools directory. `write_manifest` writes
+        `tools-manifest.json` into the same out-dir with a plain `open()`, and
+        deliberately does not go through the choke point -- its payload is
+        controller-composed (tool names, produced paths, `run_id`, the
+        virtualenv rows the runner's own walk found, `redacted`), never scanner
+        text, and `json.dump` escapes any control character a hostile directory
+        name could carry, so it needs neither redaction nor `_prompt_safe`
+        (which exists to protect PROMPT-LINE structure, and nothing interpolates
+        these rows into a prompt). Nor does the directory-walk guard below reach
+        it: the driver points `--manifest` at `.panopticon/tools-manifest.json`,
+        a sibling of the captures directory rather than a file inside it. If the
+        manifest ever starts carrying scanner-derived text, it needs the choke
+        point and a guard of its own.
+        """
         import ast
         with open(os.path.join(REPO_ROOT, "skill", "scripts", "run_tools.py"),
                   encoding="utf-8") as fh:
@@ -1021,14 +1037,15 @@ class TestTruncationDoesNotHalfKeepASecret(unittest.TestCase):
         self.assertFalse(written.startswith(b"x" * 101), written[:120])
 
     def test_the_trim_never_discards_a_long_last_line(self):
-        """A capture that is one newline followed by megabytes of single line
-        must not be trimmed back to that first newline -- output that long is
-        not line-oriented, and the retained evidence matters more than the
-        fragment."""
-        payload = b"{\n" + b"y" * 400
-        written = self._stream(payload, 300)
+        """A capture that is one newline followed by an enormous single line
+        must not be trimmed back to that first newline -- a line that long is
+        not line-oriented output, and the retained evidence matters more than
+        the fragment. Bounded by `_TRUNCATE_TRIM_MAX`, so the test is written
+        against the constant rather than a number that could drift past it."""
+        body = b"y" * (rt._TRUNCATE_TRIM_MAX + 5000)
+        written = self._stream(b"{\n" + body, rt._TRUNCATE_TRIM_MAX + 2000)
         self.assertIn(b"TRUNCATED", written)
-        self.assertGreater(written.count(b"y"), 200)
+        self.assertGreater(written.count(b"y"), rt._TRUNCATE_TRIM_MAX)
 
 
 class TestTheManifestReportsTheRedactionPass(unittest.TestCase):

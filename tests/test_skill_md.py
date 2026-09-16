@@ -415,9 +415,10 @@ class TestSkillMd(unittest.TestCase):
         # still measured on the RAW stream.
         loop = _section(self.text, "## Driver run-loop", "## Driver setup")
         tools = _section(loop, "`tools`**", "`review`**")
-        for token in ["_redact_capture", "redact.redact", "before they are written",
-                      "gitleaks", "--redact", "ruleId", "byte-identical",
-                      "RAW stream", "`redacted: true`"]:
+        for token in ["_redact_capture", "redact.redact_tree", "string-leaf",
+                      "before they are written", "gitleaks", "--redact",
+                      "ruleId", "byte-identical", "RAW stream",
+                      "`redacted: true`", "last line break"]:
             self.assertIn(token, tools, token)
 
     def test_tools_dir_is_wired_into_synthesize_passes(self):
