@@ -59,7 +59,7 @@ _SPEC = r"%s\s*%s" % (_OP, _VER)
 # A bare PEP 508 requirement: name, optional extras, optional version specifier
 # set. No `@ url`, no path, no scheme -- those characters are not in the classes
 # above, which is what makes "kept" mean "names a release on an index".
-_BARE_REQ = re.compile(r"^(?:%s)(?:\s*%s)?\s*(?:%s(?:\s*,\s*%s)*)?\s*$"
+_BARE_REQ = re.compile(r"^(%s)(?:\s*%s)?\s*(?:%s(?:\s*,\s*%s)*)?\s*$"
                        % (_NAME, _EXTRAS, _SPEC, _SPEC))
 # An environment marker, conservatively: the characters PEP 508's marker grammar
 # actually uses. `@`, `/`, `\`, `:` and `#` are NOT here, so a marker can never
@@ -76,6 +76,24 @@ _SCHEME = re.compile(r"(?:^|@\s*)[A-Za-z][A-Za-z0-9+.-]*://")
 # PRODUCER, so no consumer has to remember to.
 _USERINFO = re.compile(r"(://)[^/\s@]*:[^/\s@]*@")
 _MAX_INCLUDE_DEPTH = 1
+
+# pip's `ARCHIVE_EXTENSIONS` (`pip._internal.utils.filetypes`, verified against
+# pip 26.2.1), hard-coded rather than imported -- importing `pip` would put the
+# resolver this module fences off back in-process.
+#
+# THIS IS NOT COSMETIC. `pip._internal.req.constructors._get_url_from_path`
+# calls `is_archive_file(name)` -- a pure SUFFIX match against this tuple --
+# BEFORE it considers whether the string looks like a path at all:
+#     _looks_like_path('evil.tar.gz') -> False
+#     is_archive_file('evil.tar.gz')  -> True
+#     install_req_from_line('evil.tar.gz') -> link=file://<cwd>/evil.tar.gz
+# So a name with no separator, no leading dot and no scheme -- one the grammar
+# above happily reads as `name` -- is resolved by pip as a LOCAL SDIST and has
+# its PEP 517 build backend invoked. That is the #1646 chain intact, which is
+# why a "no `@`, `/`, `:` in the character classes" argument is not sufficient
+# on its own and this list exists.
+_ARCHIVE_EXTENSIONS = (".whl", ".zip", ".tar", ".tgz", ".tbz", ".txz", ".tlz",
+                       ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.lz", ".tar.lzma")
 
 
 def _joined(text):
@@ -148,12 +166,25 @@ def sanitize_requirements(text):
             drop(line, "local path")
         else:
             head, sep, marker = line.partition(";")
-            if _BARE_REQ.match(head.strip()) and (
-                    not sep or _MARKER_OK.match(marker)):
-                kept.append(line)
-            else:
+            match = _BARE_REQ.match(head.strip())
+            if not match or (sep and not _MARKER_OK.match(marker)):
                 drop(line, "unparseable")
+            elif _is_archive_name(match.group(1)):
+                # A name pip resolves as a local archive, not a release on an
+                # index. Its own reason, not `local path`: nothing about the
+                # LINE looks like a path, and an operator reading the manifest
+                # needs to know which of the two rules caught it.
+                drop(line, "archive name")
+            else:
+                kept.append(line)
     return kept, dropped
+
+
+def _is_archive_name(name):
+    """True when pip would read `name` as a local archive rather than a project
+    name -- a suffix match, case-insensitive, exactly as `is_archive_file` does."""
+    lowered = name.lower()
+    return any(lowered.endswith(ext) for ext in _ARCHIVE_EXTENSIONS)
 
 
 def _hashes_present(text):
@@ -267,13 +298,22 @@ class PipAuditAdapter:
             # and the same grammar is what makes it safe.
             kept, _dropped = sanitize_requirements("\n".join(deps))
         tmp = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+        # #1646 C1(b): an EMPTY working directory, never the target mount. The
+        # image ends `WORKDIR /src` and `/src` IS the reviewed repository, so a
+        # cwd-relative name pip decides to resolve as a file finds one. The
+        # generated file makes that unreachable through the grammar; this makes
+        # it unreachable through the filesystem, so a future grammar gap costs a
+        # missed audit rather than a build-backend execution. `--requirement` is
+        # an absolute path, so nothing else here depends on the working dir.
+        scratch = tempfile.mkdtemp(prefix="pip-audit-cwd-")
         try:
             tmp.write("".join(line + "\n" for line in kept))
             tmp.close()
             cmd.extend(["--requirement", tmp.name])
-            return run_tool(cmd, timeout=300)
+            return run_tool(cmd, timeout=300, cwd=scratch)
         finally:
             os.unlink(tmp.name)
+            os.rmdir(scratch)
 
     def sanitization_report(self, target: str) -> dict | None:
         """What `invoke` will NOT audit, for the coverage manifest (#1646).

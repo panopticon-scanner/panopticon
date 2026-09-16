@@ -442,6 +442,19 @@ def filter_online(chosen, online):
     return kept
 
 
+# #1646 C1(b): the container working directory for adapters that must NOT
+# resolve a relative name against the reviewed repository. The image ends
+# `WORKDIR /src` and `/src` is the target mount, so pip -- which decides a
+# requirement is a local archive on a bare SUFFIX match, before it considers
+# whether the string looks like a path -- would find a committed `evil.tar.gz`
+# and run its build backend. Docker CREATES a `-w` directory that does not
+# exist, so this one is empty by construction and needs nothing in the image.
+# Scoped to the adapters that need it, not applied globally: every other
+# adapter's argv stays byte-identical, and a tool that legitimately reads the
+# tree relative to `/src` must not be moved out from under itself.
+ADAPTER_EMPTY_CWD = "/panopticon-empty-cwd"
+ADAPTERS_NEEDING_EMPTY_CWD = ("pip-audit",)
+
 MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 
 
@@ -968,6 +981,8 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
                       + _privilege_drop_flags())
             if tool not in ONLINE_ONLY:
                 docker.extend(["--network", "none"])
+            if tool in ADAPTERS_NEEDING_EMPTY_CWD:
+                docker.extend(["-w", ADAPTER_EMPTY_CWD])
             # Mount the checkout's adapter code over the image's baked-in copy
             # so local adapter fixes take effect without an image rebuild
             # (calibration 2026-08-03: fixed adapters silently kept failing

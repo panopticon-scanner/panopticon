@@ -257,7 +257,7 @@ class TestStaticPyproject(unittest.TestCase):
     def test_invoke_uses_requirement_file_not_positional(self):
         target = self._target(PYPROJECT_STATIC)
         captured = {}
-        def fake_run_tool(cmd, timeout=0):
+        def fake_run_tool(cmd, timeout=0, **kw):
             captured["cmd"] = list(cmd)
             # Guard the index so a command-shape change fails with a clear
             # message, not an opaque ValueError/IndexError (#587).
@@ -476,7 +476,7 @@ class TestInvokeNeverPassesTheRepoFile(unittest.TestCase):
     def _invoke(self, target):
         seen = {}
 
-        def fake_run_tool(cmd, timeout=0):
+        def fake_run_tool(cmd, timeout=0, **kw):
             seen["cmd"] = list(cmd)
             idx = cmd.index("--requirement")
             seen["req"] = cmd[idx + 1]
@@ -580,6 +580,115 @@ class TestSanitizationReport(unittest.TestCase):
         with mock.patch.object(pa, "run_tool") as rt_mock:
             pa.PipAuditAdapter().sanitization_report(d)
         rt_mock.assert_not_called()
+
+
+# #1646 fix round 1, C1: pip decides a requirement is a PATH before it decides
+# it looks like one. `pip._internal.req.constructors._get_url_from_path` tests
+# `is_archive_file(name)` -- a pure suffix match against
+# `pip._internal.utils.filetypes.ARCHIVE_EXTENSIONS` -- ahead of any
+# `_looks_like_path` consideration, so a bare name with no separator and no
+# leading dot still resolves to `file://<cwd>/<name>`. Verified by the reviewer
+# against real pip 26.2.1:
+#     _looks_like_path('evil.tar.gz') -> False
+#     is_archive_file('evil.tar.gz')  -> True
+#     install_req_from_line('evil.tar.gz') -> link=file:///.../src/evil.tar.gz
+# An sdist resolved that way has its PEP 517 build backend invoked -- the exact
+# #1646 chain. No cross-check against real pip here: pip is not a test-time
+# dependency, so the extension list is pinned by NAME and version in a comment
+# on `_ARCHIVE_EXTENSIONS` and by the named inputs below.
+ARCHIVE_NAMES = [
+    "evil.tar.gz", "evil.zip", "evil.tgz", "evil.tar", "evil.tar.bz2",
+    "evil.tbz", "evil.tar.xz", "evil.txz", "evil.tlz", "evil.tar.lz",
+    "evil.tar.lzma", "foo-1.0-py3-none-any.whl", "x.whl",
+    "evil.tar.gz==1.0", "evil.tar.gz ; python_version>'3'",
+]
+
+
+class TestArchiveSuffixedNames(unittest.TestCase):
+    def test_every_archive_suffixed_name_is_dropped(self):
+        for line in ARCHIVE_NAMES:
+            with self.subTest(line=line):
+                kept, dropped = pa.sanitize_requirements(line + "\n")
+                self.assertEqual(kept, [])
+                self.assertEqual(only(dropped),
+                                 {"line": line, "reason": "archive name"})
+
+    def test_the_suffix_match_is_case_insensitive(self):
+        for line in ("Evil.TAR.GZ", "X.WhL", "evil.ZIP"):
+            with self.subTest(line=line):
+                kept, _dropped = pa.sanitize_requirements(line + "\n")
+                self.assertEqual(kept, [])
+
+    def test_archive_suffixed_name_with_extras_is_dropped(self):
+        kept, dropped = pa.sanitize_requirements("evil.tar.gz[x]>=1\n")
+        self.assertEqual(kept, [])
+        self.assertEqual(only(dropped)["reason"], "archive name")
+
+    def test_an_ordinary_dotted_name_is_still_kept(self):
+        # `x.y` is not an archive suffix; pip treats it as a name, and dropping
+        # it would be coverage loss, not safety.
+        kept, dropped = pa.sanitize_requirements("x.y\nzope.interface>=5\n")
+        self.assertEqual(kept, ["x.y", "zope.interface>=5"])
+        self.assertEqual(dropped, [])
+
+    def test_the_generated_file_never_carries_an_archive_name(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as fh:
+            fh.write("evil.tar.gz\nok==1\n")
+        seen = {}
+
+        def fake_run_tool(cmd, timeout=0, **kw):
+            with open(cmd[cmd.index("--requirement") + 1], encoding="utf-8") as fh:
+                seen["content"] = fh.read()
+            return b"{}", 0
+        with mock.patch.object(pa, "run_tool", fake_run_tool):
+            pa.PipAuditAdapter().invoke(d)
+        self.assertEqual(seen["content"].splitlines(), ["ok==1"])
+
+
+class TestPipAuditRunsInAnEmptyWorkingDirectory(unittest.TestCase):
+    """C1(b), belt and braces: even if a future grammar gap lets a bare name
+    through, cwd-relative resolution must have nothing to find. The container's
+    WORKDIR is `/src` -- the target mount -- so without this the scanner's pip
+    subprocess resolves relative names INSIDE the reviewed repository."""
+
+    def _invoke(self, target):
+        seen = {}
+
+        def fake_run_tool(cmd, timeout=0, **kw):
+            seen["cwd"] = kw.get("cwd")
+            seen["cwd_entries"] = (sorted(os.listdir(kw["cwd"]))
+                                   if kw.get("cwd") else None)
+            return b"{}", 0
+        with mock.patch.object(pa, "run_tool", fake_run_tool):
+            pa.PipAuditAdapter().invoke(target)
+        return seen
+
+    def _target(self, name):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+            fh.write('[project]\nname = "x"\ndependencies = ["ok==1"]\n'
+                     if name == "pyproject.toml" else "ok==1\n")
+        return d
+
+    def test_the_requirements_branch_runs_in_an_empty_scratch_dir(self):
+        target = self._target("requirements.txt")
+        seen = self._invoke(target)
+        self.assertIsNotNone(seen["cwd"], "run_tool was given no cwd")
+        self.assertEqual(seen["cwd_entries"], [], "the scratch cwd was not empty")
+        self.assertFalse(os.path.realpath(seen["cwd"]).startswith(
+            os.path.realpath(target) + os.sep))
+
+    def test_the_pyproject_branch_runs_in_an_empty_scratch_dir(self):
+        seen = self._invoke(self._target("pyproject.toml"))
+        self.assertEqual(seen["cwd_entries"], [])
+
+    def test_the_scratch_dir_is_removed_after_the_run(self):
+        seen = self._invoke(self._target("requirements.txt"))
+        self.assertFalse(os.path.exists(seen["cwd"]),
+                         "the scratch cwd outlived the run")
 
 
 if __name__ == "__main__":
