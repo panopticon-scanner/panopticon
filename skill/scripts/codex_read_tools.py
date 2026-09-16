@@ -71,6 +71,14 @@ TRUNCATION_NOTE = "[truncated: enumeration stopped at %d files; pass path= to na
 # answer with a named reason. An EXPLICIT `search path=<the link>` is still a
 # refusal -- there the reviewer named that file and nothing else is an answer.
 SKIPPED_NOTE = "[skipped %s: %s]"
+# Fix round 2 (N1): and a BOUND on that block. Unbounded, the disclosure became
+# the payload -- the notes lead the body and `_result` truncates the tail, so a
+# few hundred planted links filled the answer with notes and pushed every real
+# match out of it, which is F2's evasion again at a few hundred `ln`s instead of
+# one. Eight names are enough to act on; the rest are a count. Constant-size, so
+# it can neither be truncated away nor crowd out what the reviewer asked for.
+MAX_SKIP_NOTES = 8
+SKIPPED_MORE_NOTE = "[skipped %d more hard-linked files inside this directory grant]"
 
 
 def _tool(name, description, properties, required=()):
@@ -176,15 +184,18 @@ def _read(path, *, grant=DIR_GRANT):
     return data[:MAX_FILE_BYTES].decode("utf-8", errors="replace"), len(data) > MAX_FILE_BYTES
 
 
-def _body(matches, skipped, tail=None):
+def _body(matches, skipped, more=0, tail=None):
     """One search body: the disclosure lines FIRST, then matches, then `tail`.
 
     Notes lead because `_result` truncates the TAIL of an over-long body, and a
     disclosure that can be cut off is not one. The truncation tail survives its
     own removal -- `_result` says the output was truncated -- but "this file was
-    skipped, and why" exists nowhere else.
+    skipped, and why" exists nowhere else. `skipped` is capped by the caller at
+    MAX_SKIP_NOTES and `more` carries whatever the cap dropped, so the block
+    that leads is bounded no matter how many links a target plants (N1).
     """
-    return "\n".join(list(skipped) + list(matches) + ([tail] if tail else []))
+    notes = list(skipped) + ([SKIPPED_MORE_NOTE % more] if more else [])
+    return "\n".join(notes + list(matches) + ([tail] if tail else []))
 
 
 def _result(text, error=False):
@@ -344,24 +355,28 @@ class Reader:
                 if not self.scope["dirs"]:
                     raise ValueError("search outside directory scope denied; supply an explicit granted file")
                 files, walk_truncated = self._files(self._roots(arguments))
-            matches, skipped, total = [], [], 0
+            matches, skipped, more, total = [], [], 0, 0
             for path in files:
                 try:
                     data, truncated = _read(path, grant=self._require(path))
                 except HardLinkDenied as exc:
-                    # F2: skip THIS file, disclose it, keep the rest of the answer.
-                    skipped.append(SKIPPED_NOTE % (path, exc))
+                    # F2: skip THIS file, disclose it, keep the rest of the
+                    # answer. N1: name the first MAX_SKIP_NOTES, count the rest.
+                    if len(skipped) < MAX_SKIP_NOTES:
+                        skipped.append(SKIPPED_NOTE % (path, exc))
+                    else:
+                        more += 1
                     continue
                 total += len(data.encode("utf-8"))
                 for number, line in enumerate(data.splitlines(), 1):
                     if pattern in line:
                         matches.append("%s:%d:%s" % (path, number, line))
                         if len(matches) >= 200 or sum(map(len, matches)) >= MAX_OUTPUT_CHARS:
-                            return _result(_body(matches, skipped, "[search truncated]"))
+                            return _result(_body(matches, skipped, more, "[search truncated]"))
                 if truncated or total >= MAX_SEARCH_BYTES:
-                    return _result(_body(matches, skipped,
+                    return _result(_body(matches, skipped, more,
                                          "[search truncated; pass path= to narrow]"))
-            return _result(_body(matches, skipped,
+            return _result(_body(matches, skipped, more,
                                  TRUNCATION_NOTE % len(files) if walk_truncated else None))
         except (OSError, ValueError, TypeError) as exc:
             return _result("Read tool refused: " + str(exc), error=True)

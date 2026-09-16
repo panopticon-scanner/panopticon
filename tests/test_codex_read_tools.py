@@ -172,6 +172,29 @@ def test_a_directory_search_skips_the_hard_link_and_keeps_every_other_match(tree
     assert "hard-linked" in text and "st_nlink=2" in text
 
 
+def test_a_flood_of_planted_links_cannot_crowd_the_matches_out_of_the_answer(tree):
+    # Fix round 2 (N1): F2's skip note is a disclosure, not a payload. Left
+    # unbounded it restored F2's own evasion at ~236 `ln`s -- the notes lead the
+    # body, `_result` truncates the tail, so a few hundred planted links filled
+    # the answer with notes and pushed every real match out of it. The block is
+    # bounded now: the first MAX_SKIP_NOTES named, the rest counted in one line,
+    # so the disclosure is constant-size and the matches keep the budget.
+    root, source, _, _, outside = tree
+    (source / "needle.py").write_text("found the needle\n", encoding="utf-8")
+    for n in range(500):
+        hard_link_or_skip(outside, source / ("link-%03d.txt" % n))
+    result = reader_for(tree, directories=True).call("search", {"pattern": "needle"})
+    assert result["isError"] is False, body(result)
+    lines = body(result).splitlines()
+    assert any(line.endswith("needle.py:1:found the needle") for line in lines), lines[:3]
+    assert "private outside content" not in body(result)
+    named = [line for line in lines if line.startswith("[skipped ") and " more " not in line]
+    assert len(named) == read_tools.MAX_SKIP_NOTES == 8
+    assert ("[skipped %d more hard-linked files inside this directory grant]"
+            % (500 - read_tools.MAX_SKIP_NOTES)) in lines
+    assert "[output truncated]" not in body(result)
+
+
 def test_an_exact_file_grant_still_reads_a_hard_linked_file(tree):
     # The other half of the rule: a path the ORCHESTRATOR named is readable
     # whatever its link count -- `files`/`reads` are exact grants, so there is
