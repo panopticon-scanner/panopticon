@@ -276,7 +276,11 @@ if __name__ == "__main__":  # pragma: no cover
 # on EXEMPT_INSTALLS below with a reason. The exemption list is checked in both
 # directions -- an entry that stops matching anything is a stale exemption and
 # fails, so the list cannot outlive the line it was written for.
-_PIP_INSTALL = re.compile(r"(?:\bpython3?\s+-m\s+)?\bpip3?\s+install\b")
+# `pip -q install`, `pip --disable-pip-version-check install`: an option between
+# the binary and the verb is still an install, and the two shapes above are the
+# ones a CI author reaches for first.
+_PIP_INSTALL = re.compile(
+    r"(?:\bpython3?\s+-m\s+)?\bpip3?\s+(?:-\S+\s+)*install\b")
 _REQ_FILE = re.compile(r"(?:^|\s)(?:-r|--requirement)[\s=]+(\S+)")
 _HASH_OPT = re.compile(r"--hash=sha256:([0-9a-f]{64})\b")
 _PIN_LINE = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)==(?P<version>[^\s;]+)")
@@ -310,6 +314,47 @@ EXEMPT_INSTALLS = (
     ("Dockerfile", "pip-audit==${PIP_AUDIT_VERSION}",
      "same: ARG-pinned version inside the digest-pinned scanner image."),
 )
+
+
+def _write_scopes(permissions):
+    """The write grants in a `permissions:` block, in either spelling."""
+    if permissions is None:
+        return []
+    if isinstance(permissions, str):            # `permissions: write-all`
+        return [permissions] if "write" in permissions else []
+    return sorted("%s: %s" % (scope, level)
+                  for scope, level in permissions.items()
+                  if isinstance(level, str) and level == "write")
+
+
+def privilege_defect(doc):
+    """Why this workflow is too privileged to carry an install exemption, or None.
+
+    Every exemption below is written against a POSTURE -- unprivileged trigger,
+    read-only token -- and keyed by filename, which is the part that cannot
+    change. The posture can: adding `pull_request_target` or one `write` grant to
+    `ci.yml` would silently keep four unpinned installs exempt in a workflow that
+    had just become reachable from a fork PR. So the posture is asserted, not
+    assumed.
+    """
+    on = doc.get(True, doc.get("on")) or {}
+    if isinstance(on, dict):
+        triggers = list(on.keys())
+    elif isinstance(on, list):
+        triggers = on
+    else:
+        triggers = [on]
+    if "pull_request_target" in triggers:
+        return "runs on pull_request_target, so a fork PR reaches it"
+    grants = [("workflow", _write_scopes(doc.get("permissions")))]
+    for name, job in (doc.get("jobs") or {}).items():
+        if isinstance(job, dict):
+            grants.append(("job %s" % name, _write_scopes(job.get("permissions"))))
+    held = ["%s holds %s" % (where, ", ".join(scopes))
+            for where, scopes in grants if scopes]
+    if held:
+        return "; ".join(held)
+    return None
 
 
 def install_pin_defect(command):
@@ -445,6 +490,13 @@ class TestInstallPinRule(unittest.TestCase):
         self.assertEqual(["pip install --no-cache-dir pytest"],
                          pip_install_commands(script))
 
+    def test_an_option_between_pip_and_install_is_still_an_install(self):
+        for script in ("pip -q install pytest\n",
+                       "pip --disable-pip-version-check install pytest\n"):
+            self.assertEqual(1, len(pip_install_commands(script)), script)
+            self.assertIsNotNone(
+                install_pin_defect(pip_install_commands(script)[0]), script)
+
     def test_a_comment_about_an_install_is_not_an_install(self):
         # The prose explaining this very fix quotes both offending commands; so
         # does the Dockerfile's note about semgrep. Reading those as installs
@@ -501,12 +553,58 @@ class TestEveryPrivilegedInstallIsPinned(unittest.TestCase):
         self.assertEqual([], stale, "exemptions that no longer match any "
                                     "install line; delete them:\n%s" % stale)
 
+    def test_no_exempted_workflow_has_become_privileged(self):
+        defects = []
+        for name in sorted({e[0] for e in EXEMPT_INSTALLS
+                            if e[0].endswith((".yml", ".yaml"))}):
+            with open(os.path.join(WORKFLOW_DIR, name), encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh.read()) or {}
+            why = privilege_defect(doc)
+            if why:
+                defects.append("%s -- %s" % (name, why))
+        self.assertEqual([], defects, "a workflow carrying an install exemption "
+                         "has become privileged; pin its installs or justify "
+                         "them again:\n" + "\n".join(defects))
+
     def test_the_scan_is_actually_finding_installs(self):
         # Guards the guard: a regex that matched nothing would report a clean
         # pass over a tree full of unpinned installs.
         self.assertGreater(len(_installs_in_repo()), 4,
                            "install scan found almost nothing; the scanner is "
                            "broken, not the tree")
+
+
+class TestExemptionPosture(unittest.TestCase):
+    """The posture rule on both answers, on scratch documents."""
+
+    READ_ONLY = {True: {"pull_request": {"branches": ["main"]}},
+                 "permissions": {"contents": "read"},
+                 "jobs": {"test": {"steps": []}}}
+
+    def test_an_unprivileged_pull_request_workflow_may_be_exempt(self):
+        self.assertIsNone(privilege_defect(self.READ_ONLY))
+
+    def test_pull_request_target_disqualifies_it(self):
+        # PyYAML 1.1 parses the unquoted `on:` key as the boolean True, which is
+        # why the rule reads both spellings and why this fixture uses that one.
+        doc = dict(self.READ_ONLY)
+        doc[True] = {"pull_request": None, "pull_request_target": None}
+        self.assertIn("pull_request_target", privilege_defect(doc))
+
+    def test_a_workflow_level_write_grant_disqualifies_it(self):
+        doc = dict(self.READ_ONLY, permissions={"contents": "read",
+                                                "security-events": "write"})
+        self.assertIn("security-events: write", privilege_defect(doc))
+
+    def test_a_job_level_write_grant_disqualifies_it(self):
+        doc = dict(self.READ_ONLY,
+                   jobs={"test": {"permissions": {"contents": "write"},
+                                  "steps": []}})
+        self.assertIn("job test holds contents: write", privilege_defect(doc))
+
+    def test_write_all_disqualifies_it(self):
+        self.assertIn("write-all",
+                      privilege_defect(dict(self.READ_ONLY, permissions="write-all")))
 
 
 class TestEveryPinnedRequirementsFileIsHashed(unittest.TestCase):
@@ -528,6 +626,16 @@ class TestEveryPinnedRequirementsFileIsHashed(unittest.TestCase):
         self.assertEqual([], defects, "\n".join(defects))
         self.assertTrue(seen, "no hash-pinned requirements file is installed "
                               "anywhere; the pin was removed, not satisfied")
+
+    def test_the_fixture_image_copies_the_repos_requirements_file(self):
+        # `_resolve_requirements` maps `/tmp/requirements-fixtures.txt` back to
+        # the repo by BASENAME, which proves the digests in this repo are
+        # hashed -- not that the image installs them. The COPY is what ties the
+        # path inside the image to the file this guard reads.
+        with open(os.path.join(REPO_ROOT, "Dockerfile.fixtures"),
+                  encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("COPY requirements-fixtures.txt", text)
 
     def test_the_gate_never_downgrades_pip(self):
         path = os.path.join(REPO_ROOT, ".github", "requirements-gate.txt")

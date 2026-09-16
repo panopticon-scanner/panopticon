@@ -222,6 +222,10 @@ python3 scripts/bump_pins.py requirements --write      # both files
 python3 scripts/bump_pins.py requirements --file .github/requirements-gate.txt --write
 ```
 
+Dependabot proposes the version bumps themselves — `.github/dependabot.yml` has a `pip` entry for
+`/` (the fixture file) and one for `/.github` (the gate file) — but the digests are this script's
+job, and `--require-hashes` fails the build until they match.
+
 It reads every artifact PyPI publishes for that release, keeps the ones a linux x86_64 build may
 install (the `any` wheels plus the linux x86_64 ones), verifies each published digest against the
 downloaded wheel, and rewrites the hash block. It refuses to write anything it could not verify, and

@@ -3,6 +3,8 @@ import unittest
 
 import yaml
 
+from test_workflow_pins import _without_comments
+
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "security.yml")
@@ -22,12 +24,22 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         ]
 
     def _run_text(self, workflow):
-        return "\n".join(
+        """Every `run:` script in the workflow, WITHOUT its comments.
+
+        The prose in this workflow quotes the commands it explains -- the
+        dependency step's own comment names the flags it passes and the shape
+        it replaced. Reading comments as script made two assertions here
+        satisfiable by documentation: `--require-hashes` stayed "present" with
+        the flag deleted from the command, and a reinstated `pip install
+        --upgrade pip` would have been hidden by a comment mentioning it. What
+        this file asserts is what the gate RUNS.
+        """
+        return _without_comments("\n".join(
             step.get("run", "")
             for job in workflow.get("jobs", {}).values()
             for step in job.get("steps", [])
             if "run" in step
-        )
+        ))
 
     def test_controller_and_target_are_separate_checkouts(self):
         wf = self._workflow()
