@@ -18,16 +18,28 @@ quietly become something else:
   run.
 * the exit code is the whole point -- `driver readiness && driver loop` -- so
   a gating row that fails must take it to 1, and an informational one must not.
+
+And one rule about the tests themselves, learned the hard way in fix round 3:
+EVERY invocation here declares its whole environment. The verb's answer is a
+function of the machine it runs on -- that is the product -- so a fixture that
+does not state the machine is not a fixture, it is a reading of whoever ran it.
+Four cases asserted exit 0 while inheriting the developer's PATH; they passed on
+a workstation with `claude` installed and went red on all four CI legs, where no
+host CLI exists at all. `_VerbCase._run` now sets PATH, HOME, `shutil.which` and
+the docker probe on every call, and a test that needs something present says so.
 """
 import contextlib
 import io
 import json
 import os
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
+import scripts.phases.runio as _runio
 from scripts import hosts
 
 from tools.git_repo import make_git_repo
@@ -64,18 +76,73 @@ def _which(found):
 
 
 class _VerbCase(unittest.TestCase):
+    """Every `_run`/`_json` here runs in a DECLARED environment.
+
+    Defaults are the CI machine, which is also the least forgiving one: an
+    empty PATH, a HOME with no skills under it, `shutil.which` answering from
+    `which` (`{}` -- nothing installed), and the docker probe stubbed. A test
+    that needs a binary, a sub-skill or a real PATH lookup passes `which=`,
+    `home=`, `path=` or `stub_which=False`, and that argument IS the fixture's
+    statement about the machine.
+
+    The TARGET is a plain directory, not a git repo, for the same reason: a
+    `make_git_repo` fixture reaches for `git` on the ambient PATH, which is one
+    more thing the test would be inheriting rather than stating. Nothing here
+    asserts anything git-specific -- `resolve_review_root` reviews the
+    directory itself and `discover_repo_files` walks it -- and
+    `TestBothFileListingsAgree` pins that walk against the `git ls-files`
+    listing on a PATH that declares git and nothing else. The upshot is that
+    this whole file runs under a literally empty PATH, which is the closest
+    thing to the CI machine a workstation can offer.
+    """
+
+    def _tmpdir(self):
+        # realpath: macOS hands out /var/folders/... which is a symlink to
+        # /private/var/..., and `resolve_review_root` abspaths a non-git target
+        # without resolving it -- so an unresolved path here would make the
+        # manifest fixture's `review_root` stamp look foreign.
+        path = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        return path
 
     def _repo(self, groups_yml=None):
+        """The review target: a plain directory that needs no binary to exist."""
+        root = self._tmpdir()
+        for relative, body in FILES.items():
+            path = os.path.join(root, relative)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+        if groups_yml is not None:
+            os.makedirs(os.path.join(root, ".panopticon"), exist_ok=True)
+            with open(os.path.join(root, ".panopticon", "groups.yml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write(groups_yml)
+        return root
+
+    def _git_repo(self, groups_yml=None):
+        """The same fixture as a real git repo -- for the ONE case that is
+        about `git ls-files`. Skips where git is absent, because that case is
+        measuring git and cannot substitute for it."""
+        if not shutil.which("git"):
+            self.skipTest("this case measures `git ls-files`; no git on PATH")
         return make_git_repo(test_case=self, files=dict(FILES),
                              groups_yml=groups_yml, branch="main",
                              user_email="t@t", user_name="t")
 
-    def _run(self, *argv, daemon=0, image=0):
-        """(exit_code, stdout) for `driver readiness ...`."""
+    def _run(self, *argv, daemon=0, image=0, which=None, home=None, path=None,
+             stub_which=True):
+        """(exit_code, stdout) for `driver readiness ...`, in a stated world."""
         out = io.StringIO()
-        with mock.patch(_READINESS + ".DOCKER_RUNNER",
-                        _docker_runner(daemon=daemon, image=image)), \
-                contextlib.redirect_stdout(out):
+        environ = {"PATH": self._tmpdir() if path is None else path,
+                   "HOME": self._tmpdir() if home is None else home}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch(_READINESS + ".DOCKER_RUNNER",
+                                           _docker_runner(daemon=daemon, image=image)))
+            stack.enter_context(mock.patch.dict(os.environ, environ))
+            if stub_which:
+                stack.enter_context(_which(which or {}))
+            stack.enter_context(contextlib.redirect_stdout(out))
             code = driver.main(["readiness", *argv])
         return code, out.getvalue()
 
@@ -84,15 +151,24 @@ class _VerbCase(unittest.TestCase):
         return code, json.loads(text)
 
 
+#: The host `runio.resolve_host` assumes when nothing else answers, read from
+#: the registry rather than spelled as a literal: a changed default would
+#: otherwise leave every "ready machine" fixture below quietly declaring the
+#: wrong binary present and passing for the wrong reason.
+DEFAULT_HOST = _runio._DEFAULTS["host"]
+READY_CLI = {DEFAULT_HOST: "/opt/bin/" + DEFAULT_HOST}
+
+
 class TestTheUnreadyMachine(_VerbCase):
     """No committed matrix, and Docker up with the image absent -- run-13's own
     environment, plus the setup step it had never run."""
 
     def test_it_exits_1_and_every_failing_row_carries_its_remedy(self):
         d = self._repo()
-        code, body = self._json(d, image=1)
+        code, body = self._json(d, image=1, which=READY_CLI)
         self.assertEqual(1, code)
         self.assertIs(False, body["ready"])
+        self.assertEqual(["matrix", "tools-image"], body["failed"])
         self.assertIn("docker pull ghcr.io/panopticon-scanner/panopticon-tools"
                       ":latest", body["tools_image"]["remedy"])
         self.assertIn("--no-tools", body["tools_image"]["remedy"])
@@ -103,19 +179,19 @@ class TestTheUnreadyMachine(_VerbCase):
 
     def test_the_image_remedy_is_the_phase_s_own_text_not_a_second_copy(self):
         d = self._repo()
-        _code, body = self._json(d, image=1)
+        _code, body = self._json(d, image=1, which=READY_CLI)
         self.assertEqual(readiness.IMAGE_REMEDY, body["tools_image"]["remedy"])
 
     def test_a_dead_daemon_is_gating_too(self):
         d = self._repo()
-        code, body = self._json(d, daemon=1, image=1)
+        code, body = self._json(d, daemon=1, image=1, which=READY_CLI)
         self.assertEqual(1, code)
         self.assertIs(False, body["tools_image"]["docker"])
         self.assertIn("--no-tools", body["tools_image"]["remedy"])
 
     def test_the_human_table_names_every_row_and_ends_with_the_verdict(self):
         d = self._repo()
-        code, text = self._run(d, image=1)
+        code, text = self._run(d, image=1, which=READY_CLI)
         self.assertEqual(1, code)
         for row in ("guide", "sub-skills", "matrix", "existing-run", "cli",
                     "tools-image", "capabilities"):
@@ -145,7 +221,7 @@ class TestTheReadyMachine(_VerbCase):
     def test_it_exits_0_and_the_counts_and_tag_are_right(self):
         d = self._repo(groups_yml=GROUPS_YML)
         tag, _folder = self._with_a_finished_run(d)
-        code, body = self._json(d)
+        code, body = self._json(d, which=READY_CLI)
         self.assertEqual(0, code, json.dumps(body, indent=2))
         self.assertIs(True, body["ready"])
         self.assertEqual(2, body["matrix"]["groups"])
@@ -161,7 +237,7 @@ class TestTheReadyMachine(_VerbCase):
     def test_the_last_run_s_capabilities_are_read_back_not_re_probed(self):
         d = self._repo(groups_yml=GROUPS_YML)
         self._with_a_finished_run(d)
-        _code, body = self._json(d)
+        _code, body = self._json(d, which=READY_CLI)
         self.assertIs(True, body["capabilities"]["measured"])
         self.assertEqual("claude", body["capabilities"]["host"])
         self.assertEqual({c: hosts.PROVEN for c in hosts.CAPABILITIES},
@@ -169,7 +245,7 @@ class TestTheReadyMachine(_VerbCase):
 
     def test_with_no_artifact_the_capabilities_row_says_so(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        _code, body = self._json(d)
+        _code, body = self._json(d, which=READY_CLI)
         self.assertIs(False, body["capabilities"]["measured"])
         self.assertIn("not measured", body["capabilities"]["detail"])
         self.assertEqual({}, body["capabilities"]["states"])
@@ -189,14 +265,14 @@ class TestTheReadyMachine(_VerbCase):
                                        folder, "findings-Core-SEC.json")},
                                    {"id": "c", "out_file": os.path.join(
                                        folder, "findings-Tests-TST.json")}]}, fh)
-        code, body = self._json(d)
+        code, body = self._json(d, which=READY_CLI)
         self.assertEqual(0, code)
         self.assertEqual("checkpoint", body["existing_run"]["status"])
         self.assertEqual(2, body["existing_run"]["pending"])
 
     def test_a_ready_machine_says_so_in_the_table_too(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        code, text = self._run(d)
+        code, text = self._run(d, which=READY_CLI)
         self.assertEqual(0, code)
         self.assertIn("READY", text)
         self.assertNotIn("NOT READY", text)
@@ -205,9 +281,7 @@ class TestTheReadyMachine(_VerbCase):
 class TestItLaunchesNothingAndWritesNothing(_VerbCase):
 
     def _shims(self, names=("claude", "codex", "kimi", "gemini", "agy", "docker")):
-        import tempfile
-        bin_dir = tempfile.mkdtemp()
-        self.addCleanup(__import__("shutil").rmtree, bin_dir, ignore_errors=True)
+        bin_dir = self._tmpdir()
         log = os.path.join(bin_dir, "launches.log")
         for name in names:
             path = os.path.join(bin_dir, name)
@@ -221,8 +295,11 @@ class TestItLaunchesNothingAndWritesNothing(_VerbCase):
         one would be recorded. The log must not exist."""
         d = self._repo(groups_yml=GROUPS_YML)
         bin_dir, log = self._shims()
-        with mock.patch.dict(os.environ, {"PATH": bin_dir}):
-            code, body = self._json(d)
+        # The one case that uses the REAL `shutil.which`: proving it finds a
+        # binary without running it is the whole assertion, so stubbing the
+        # lookup would delete the proof. PATH is still declared -- it is this
+        # directory of shims and nothing else.
+        code, body = self._json(d, path=bin_dir, stub_which=False)
         self.assertEqual(0, code)
         self.assertFalse(os.path.exists(log),
                          "driver readiness launched a binary: %s"
@@ -235,15 +312,13 @@ class TestItLaunchesNothingAndWritesNothing(_VerbCase):
                 self.assertEqual(os.path.join(bin_dir, host), row["path"])
 
     def test_every_cli_is_reported_absent_and_only_the_selected_one_gates(self):
-        """An empty PATH. All three rows report `on_path: false`; only the
-        host this invocation resolved to carries a remedy, and only it moves
-        the exit code (fix round 2 -- a bare invocation resolves one, so this
-        case exits 1 now where round 1 exited 0)."""
-        import tempfile
+        """A real `shutil.which` against an empty PATH. All three rows report
+        `on_path: false`; only the host this invocation resolved to carries a
+        remedy, and only it moves the exit code (fix round 2 -- a bare
+        invocation resolves one, so this case exits 1 now where round 1
+        exited 0)."""
         d = self._repo(groups_yml=GROUPS_YML)
-        with tempfile.TemporaryDirectory() as empty:
-            with mock.patch.dict(os.environ, {"PATH": empty}):
-                code, body = self._json(d)
+        code, body = self._json(d, stub_which=False)
         self.assertEqual(1, code)
         self.assertEqual([False, False, False],
                          [r["on_path"] for r in body["cli"]])
@@ -253,7 +328,7 @@ class TestItLaunchesNothingAndWritesNothing(_VerbCase):
     def test_it_writes_nothing_under_the_target(self):
         d = self._repo(groups_yml=GROUPS_YML)
         before = self._tree(d)
-        self._json(d, image=1)
+        self._json(d, image=1, which=READY_CLI)
         self.assertEqual(before, self._tree(d))
 
     @staticmethod
@@ -271,17 +346,14 @@ class TestItLaunchesNothingAndWritesNothing(_VerbCase):
 class TestTheSubSkillLookup(_VerbCase):
 
     def test_it_finds_a_sub_skill_in_a_host_s_plugin_tree_and_says_where(self):
-        import tempfile
         d = self._repo(groups_yml=GROUPS_YML)
-        home = tempfile.mkdtemp()
-        self.addCleanup(__import__("shutil").rmtree, home, ignore_errors=True)
+        home = self._tmpdir()
         found = os.path.join(home, ".claude", "plugins", "marketplace",
                              "superpowers", "skills", "writing-plans")
         os.makedirs(found)
         with open(os.path.join(found, "SKILL.md"), "w", encoding="utf-8") as fh:
             fh.write("---\nname: writing-plans\n---\n")
-        with mock.patch.dict(os.environ, {"HOME": home}):
-            _code, body = self._json(d)
+        _code, body = self._json(d, home=home, which=READY_CLI)
         rows = {r["name"]: r for r in body["sub_skills"]}
         self.assertEqual(sorted(rows), sorted(readiness.REQUIRED_SUB_SKILLS))
         self.assertEqual(os.path.join(found, "SKILL.md"),
@@ -295,10 +367,8 @@ class TestTheSubSkillLookup(_VerbCase):
         <leaf>/`. Five directories below the root -- deep enough that a star
         ladder grown by guesswork stops one level short, which is exactly what
         the first cut of this lookup did."""
-        import tempfile
         d = self._repo(groups_yml=GROUPS_YML)
-        home = tempfile.mkdtemp()
-        self.addCleanup(__import__("shutil").rmtree, home, ignore_errors=True)
+        home = self._tmpdir()
         for leaf in ("writing-plans", "subagent-driven-development",
                      "verification-before-completion"):
             found = os.path.join(home, ".claude", "plugins", "cache",
@@ -307,17 +377,13 @@ class TestTheSubSkillLookup(_VerbCase):
             os.makedirs(found)
             with open(os.path.join(found, "SKILL.md"), "w", encoding="utf-8") as fh:
                 fh.write("---\nname: %s\n---\n" % leaf)
-        with mock.patch.dict(os.environ, {"HOME": home}):
-            _code, body = self._json(d)
+        _code, body = self._json(d, home=home, which=READY_CLI)
         self.assertEqual([], [r["name"] for r in body["sub_skills"]
                               if r["found_at"] is None])
 
     def test_a_missing_sub_skill_is_never_gating(self):
-        import tempfile
         d = self._repo(groups_yml=GROUPS_YML)
-        with tempfile.TemporaryDirectory() as home:
-            with mock.patch.dict(os.environ, {"HOME": home}):
-                code, body = self._json(d)
+        code, body = self._json(d, which=READY_CLI)     # empty HOME by default
         self.assertEqual(0, code)
         self.assertEqual([None] * 3, [r["found_at"] for r in body["sub_skills"]])
 
@@ -334,7 +400,7 @@ class TestTheGuideRow(_VerbCase):
 
     def test_it_names_the_guide_inside_this_install_and_it_exists(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        _code, body = self._json(d)
+        _code, body = self._json(d, which=READY_CLI)
         self.assertEqual(hosts.guide_path(), body["guide"]["path"])
         self.assertIs(True, body["guide"]["exists"])
 
@@ -342,8 +408,9 @@ class TestTheGuideRow(_VerbCase):
         d = self._repo(groups_yml=GROUPS_YML)
         with mock.patch.object(hosts, "guide_path",
                                return_value="/nowhere/PANOPTICON.md"):
-            code, body = self._json(d)
+            code, body = self._json(d, which=READY_CLI)
         self.assertEqual(1, code)
+        self.assertEqual(["guide"], body["failed"])
         self.assertIs(False, body["guide"]["exists"])
         self.assertIn("reinstall", body["guide"]["detail"].lower())
 
@@ -371,8 +438,8 @@ class TestTheVerbIsWiredLikeRunAndLoop(_VerbCase):
 
     def test_the_selected_host_leads_the_cli_list(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({"kimi": "/opt/bin/kimi"}):
-            _code, body = self._json(d, "--host", "kimi")
+        _code, body = self._json(d, "--host", "kimi",
+                                 which={"kimi": "/opt/bin/kimi"})
         self.assertEqual("kimi", body["host"])
         self.assertEqual("kimi", body["cli"][0]["host"])
         self.assertIs(True, body["cli"][0]["selected"])
@@ -397,8 +464,7 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
 
     def test_the_selected_hosts_missing_binary_takes_the_exit_code_to_1(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({}):                      # nothing on PATH at all
-            code, body = self._json(d, "--host", "claude")
+        code, body = self._json(d, "--host", "claude")   # nothing installed
         self.assertEqual(1, code)
         self.assertIn("cli", body["failed"])
         row = body["cli"][0]
@@ -408,8 +474,7 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
 
     def test_the_remedy_names_the_binary_and_the_exact_session_invocation(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({}):
-            _code, text = self._run(d, "--host", "claude")
+        _code, text = self._run(d, "--host", "claude")
         for token in ("claude", "--mode session", "headless"):
             with self.subTest(token=token):
                 self.assertIn(token, text)
@@ -419,9 +484,10 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
 
     def test_the_selected_row_is_marked_in_the_table(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({"claude": "/opt/bin/claude", "codex": "/opt/bin/codex",
-                     "kimi": "/opt/bin/kimi"}):
-            code, text = self._run(d, "--host", "claude")
+        code, text = self._run(d, "--host", "claude",
+                               which={"claude": "/opt/bin/claude",
+                                      "codex": "/opt/bin/codex",
+                                      "kimi": "/opt/bin/kimi"})
         self.assertEqual(0, code)
         cli_line = [ln for ln in text.splitlines() if ln.strip().startswith("cli")][0]
         self.assertIn("→ claude:", cli_line)
@@ -429,16 +495,15 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
 
     def test_a_present_binary_is_not_gating(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({"claude": "/opt/bin/claude"}):
-            code, body = self._json(d, "--host", "claude")
+        code, body = self._json(d, "--host", "claude", which=READY_CLI)
         self.assertEqual(0, code)
         self.assertEqual([], body["failed"])
         self.assertEqual("/opt/bin/claude", body["cli"][0]["path"])
 
     def test_an_unselected_hosts_missing_binary_is_still_informational(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({"claude": "/opt/bin/claude"}):   # codex and kimi absent
-            code, body = self._json(d, "--host", "claude")
+        # codex and kimi absent
+        code, body = self._json(d, "--host", "claude", which=READY_CLI)
         self.assertEqual(0, code)
         self.assertEqual([False, False],
                          [r["on_path"] for r in body["cli"] if not r["selected"]])
@@ -447,8 +512,7 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
         """`--host generic` used to list three hosts the operator did not ask
         about and say nothing about the one they did."""
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({}):
-            code, body = self._json(d, "--host", "generic")
+        code, body = self._json(d, "--host", "generic")
         self.assertEqual(0, code)             # nothing to install; session only
         row = body["cli"][0]
         self.assertEqual("generic", row["host"])
@@ -464,13 +528,13 @@ class TestTheRowsThatSayNothingIsWrongSayItOnce(_VerbCase):
 
     def test_a_healthy_tools_image_carries_no_remedy(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        _code, body = self._json(d)
+        _code, body = self._json(d, which=READY_CLI)
         self.assertIs(True, body["tools_image"]["ok"])
         self.assertIsNone(body["tools_image"]["remedy"])
 
     def test_and_the_table_cell_is_blank_rather_than_a_stutter(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        _code, text = self._run(d)
+        _code, text = self._run(d, which=READY_CLI)
         line = [ln for ln in text.splitlines()
                 if ln.strip().startswith("tools-image")][0]
         self.assertEqual("tools-image   ok", line.strip())
@@ -486,7 +550,7 @@ class TestTheNoGroupsRemedyNamesTheWayOut(_VerbCase):
 
     def test_it_names_the_scopes_that_need_no_matrix(self):
         d = self._repo()
-        _code, body = self._json(d)
+        _code, body = self._json(d, which=READY_CLI)
         detail = body["matrix"]["detail"]
         self.assertIn("run `driver setup`", detail)
         for token in ("-f", "-d", "-g", "--pr"):
@@ -516,8 +580,7 @@ class TestTheAssumedHost(_VerbCase):
 
     def test_a_bare_invocation_gates_on_the_host_the_loop_would_pick(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({}):                       # nothing on PATH
-            code, body = self._json(d)
+        code, body = self._json(d)             # nothing installed
         self.assertEqual(1, code)
         self.assertIn("cli", body["failed"])
         self.assertEqual("claude", body["host"])
@@ -528,8 +591,8 @@ class TestTheAssumedHost(_VerbCase):
     def test_an_existing_runs_manifest_wins_over_the_static_default(self):
         d = self._repo(groups_yml=GROUPS_YML)
         self._manifest(d, "kimi")
-        with _which({"kimi": "/opt/bin/kimi"}):   # claude deliberately absent
-            code, body = self._json(d)
+        # claude deliberately absent
+        code, body = self._json(d, which={"kimi": "/opt/bin/kimi"})
         self.assertEqual(0, code)
         self.assertEqual("kimi", body["host"])
         self.assertEqual("manifest", body["selected_from"])
@@ -538,16 +601,15 @@ class TestTheAssumedHost(_VerbCase):
     def test_an_explicit_host_beats_the_manifest(self):
         d = self._repo(groups_yml=GROUPS_YML)
         self._manifest(d, "kimi")
-        with _which({"codex": "/opt/bin/codex"}):
-            code, body = self._json(d, "--host", "codex")
+        code, body = self._json(d, "--host", "codex",
+                                which={"codex": "/opt/bin/codex"})
         self.assertEqual(0, code)
         self.assertEqual("codex", body["host"])
         self.assertEqual("--host", body["selected_from"])
 
     def test_the_header_says_which_host_was_assumed_and_why(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({"claude": "/opt/bin/claude"}):
-            _code, text = self._run(d)
+        _code, text = self._run(d, which=READY_CLI)
         header = text.splitlines()[0]
         self.assertIn("host claude", header)
         self.assertIn("default", header)
@@ -571,24 +633,85 @@ class TestAHealthyCliRowReadsOk(_VerbCase):
 
     def test_the_row_reads_ok_when_the_binary_is_there(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({"claude": "/opt/bin/claude"}):
-            code, text = self._run(d, "--host", "claude")
+        code, text = self._run(d, "--host", "claude", which=READY_CLI)
         self.assertEqual(0, code)
         line = [ln for ln in text.splitlines() if ln.strip().startswith("cli")][0]
         self.assertRegex(line, r"^  cli\s+ok\s+→ claude:")
 
     def test_a_host_with_no_cli_of_ours_reads_ok_too(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({}):
-            code, text = self._run(d, "--host", "generic")
+        code, text = self._run(d, "--host", "generic")
         self.assertEqual(0, code)
         line = [ln for ln in text.splitlines() if ln.strip().startswith("cli")][0]
         self.assertRegex(line, r"^  cli\s+ok\s+→ generic:")
 
     def test_only_the_informational_rows_still_read_dashes(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with _which({"claude": "/opt/bin/claude"}):
-            _code, text = self._run(d, "--host", "claude")
+        _code, text = self._run(d, "--host", "claude", which=READY_CLI)
         dashed = sorted(ln.split()[0] for ln in text.splitlines()
                         if ln.startswith("  ") and " -- " in ln + " ")
         self.assertEqual(["capabilities", "existing-run", "sub-skills"], dashed)
+
+
+class TestTheCiMachine(_VerbCase):
+    """Fix round 3, and the reason this file has a rule about itself.
+
+    A GitHub runner has git and python and no host CLI at all. Four cases
+    here asserted exit 0 while inheriting the developer's PATH, where `claude`
+    happens to be installed; they were green locally, green under the PATH
+    shim (whose stubs include a `claude`), and red on every one of the four
+    Python legs. Nothing was wrong with the verb -- round 2's default-host
+    gating is exactly right, and "no host CLI on this machine" IS not-ready --
+    the fixtures simply had not said which machine they meant.
+
+    So: the ready-machine fixture, every gating input healthy, run with a
+    literally empty PATH and no lookup stub. It is not ready, and the row that
+    says so is the one CI was telling us about.
+    """
+
+    def test_the_ready_machine_is_not_ready_when_no_host_cli_exists(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        code, body = self._json(d, stub_which=False)     # empty PATH, real which
+        self.assertEqual(1, code)
+        self.assertEqual(["cli"], body["failed"])
+        self.assertIs(True, body["guide"]["exists"])
+        self.assertIs(True, body["matrix"]["ok"])
+        self.assertIs(True, body["tools_image"]["ok"])
+        row = body["cli"][0]
+        self.assertEqual(DEFAULT_HOST, row["host"])
+        self.assertIs(False, row["on_path"])
+        self.assertIn("--mode session", row["remedy"])
+
+    def test_and_the_same_fixture_is_ready_once_that_binary_exists(self):
+        """The other half, so the case above is pinning the CLI row and not
+        some unrelated breakage in the fixture."""
+        d = self._repo(groups_yml=GROUPS_YML)
+        code, body = self._json(d, which=READY_CLI)
+        self.assertEqual(0, code)
+        self.assertEqual([], body["failed"])
+
+
+class TestBothFileListingsAgree(_VerbCase):
+    """`_matrix_row` counts through `discovery.discover_repo_files`, which uses
+    `git ls-files` when git is reachable and an `os.walk` when it is not. Every
+    other case here runs with an empty PATH and therefore exercises the WALK.
+    This one declares a PATH holding exactly one binary -- git -- so the two
+    listings are pinned to the same answer instead of one of them going
+    unmeasured."""
+
+    def _git_only_path(self):
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("no git on PATH to link against")
+        bin_dir = self._tmpdir()
+        os.symlink(git, os.path.join(bin_dir, "git"))
+        return bin_dir
+
+    def test_the_counts_are_the_same_with_and_without_git(self):
+        d = self._git_repo(groups_yml=GROUPS_YML)
+        _code, walked = self._json(d, which=READY_CLI)
+        _code, listed = self._json(d, which=READY_CLI, path=self._git_only_path())
+        self.assertEqual({"groups": 2, "code_files": 2, "tests_files": 1},
+                         {k: walked["matrix"][k]
+                          for k in ("groups", "code_files", "tests_files")})
+        self.assertEqual(walked["matrix"], listed["matrix"])
