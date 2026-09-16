@@ -15,6 +15,12 @@ filenames: every file a run drops in the report directory OR the run directory
 is checked -- `verify-queue.json` lands in the latter -- so a new artifact
 producer is covered by construction rather than by remembering to extend a
 list here.
+
+What it does NOT reach is the RAW scanner captures under `.panopticon/tools/`:
+no synthesize pass writes them, and they are the tool runner's own artifact.
+#1639 P11 gives them their own choke point and their own directory-walk guard,
+in tests/test_run_tools_core.py::TestRawCaptureRedaction -- same construction,
+same `ghp_`-shaped marker, other end of the pipeline.
 """
 import contextlib
 import hashlib

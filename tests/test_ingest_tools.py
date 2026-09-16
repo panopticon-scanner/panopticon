@@ -2,7 +2,7 @@ import contextlib, io, os, json, tempfile, unittest
 from unittest.mock import patch
 
 import scripts.ingest_tools as it
-from _test_helpers import first
+from _test_helpers import first, only
 import json as _json
 import scripts.evidence as ev
 import scripts.tools as tools_mod
@@ -868,8 +868,8 @@ class TestRedactedCaptureStillIngests(unittest.TestCase):
         self.assertNotIn(self.MARKER.encode(), redacted)
 
         doc = _json.loads(redacted)
-        res = first(doc["runs"][0]["results"])
-        phys = res["locations"][0]["physicalLocation"]
+        res = only(first(doc["runs"], "run")["results"], "result")
+        phys = only(res["locations"], "location")["physicalLocation"]
         # Structure is untouched: only token-shaped substrings inside strings move.
         self.assertEqual(res["ruleId"], "github-pat")
         self.assertEqual(res["level"], "error")
