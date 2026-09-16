@@ -940,6 +940,26 @@ class TestDriverLoopContract(unittest.TestCase):
         self.assertIn("write_guard_hook.install", run_loop.replace("**", ""))  # still documented as what the LOOP does
         self.assertNotIn("Install the write-guard from the request's entries", run_loop)
 
+    def test_the_guide_states_the_two_write_mediation_rules_1640_added(self):
+        # #1640 fix round 1, F1: both sentences were written and NOTHING
+        # pinned them. The Kimi parenthetical here is one of the longest in
+        # the guide and gets re-edited; an edit that dropped either clause
+        # would leave the suite green while the guide stopped stating a
+        # control the code enforces -- and the next operator reading it would
+        # believe their `[[mcp.servers]]` are carried into the reviewed run.
+        # Pinned by PHRASE, not by line, so the paragraph stays editable.
+        doc = _read_doc().replace("**", "")
+        run_loop = doc[doc.index("## Driver run-loop"):doc.index("## Driver setup")]
+        for phrase in ("component by component",
+                       "must be a real directory, not a symlink",
+                       "no component may be `..`",
+                       "Operator MCP servers are disabled in the per-run home",
+                       "`mcp.enabled = false`"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, run_loop)
+        caps = doc[doc.index("## Host capabilities (5.2)"):doc.index("## Code layout (5.2)")]
+        self.assertIn("`[mcp]` block is inert", caps)
+
     def test_the_thirteen_duties_are_stated_as_the_loops_work(self):
         doc = _read_doc().replace("**", "")
         run_loop = doc[doc.index("## Driver run-loop"):doc.index("## Driver setup")]
