@@ -15,6 +15,7 @@ from . import grading as grading_mod
 from . import plan as plan_mod
 from . import cost as cost_mod
 from . import verdicts as verdicts_mod
+from . import validate_schema as validate_schema_mod
 
 
 # Format version of the report DOCUMENT itself (the meta/summary/groups/findings
@@ -290,13 +291,34 @@ def attach_schema_status(report, errors):
     report.setdefault("meta", {})["schema_errors"] = len(errors)
     return report
 
-def validate_report(report):
-    """Validate report structure and content, returning error and warning lists."""
+def validate_report(report, schema_path=None):
+    """Validate report structure and content, returning error and warning lists.
+
+    Two layers, one error list (#1639 P15). FIRST the published Draft 7 schema
+    (`skill/reference/report-schema.json`), which is the contract every
+    downstream consumer validates against and which this function used to
+    ignore entirely -- a report with `meta`, `summary` and `cross_panel` all
+    `null` passed here while schema validation rejected all three. THEN the
+    hand checks below, which are NOT redundant with it: the schema can express
+    shape, but not "an agent-sourced security HIGH needs a CVSS score and an
+    exploit scenario", not "no two findings share an id", and not the
+    evidence-status vocabulary, because each of those is a policy about
+    meaning rather than a fact about structure.
+
+    Schema failure is fail-closed (see `validate_schema`): an uninstallable
+    validator or an unreadable schema is an ERROR, never a silent pass.
+    `schema_path` overrides which schema file is loaded (tests).
+    """
     errors, warnings = [], []
+    errors.extend(validate_schema_mod.schema_errors(report, schema_path=schema_path))
     for key in ("meta", "summary", "groups", "findings", "cross_panel"):
         if key not in report:
             errors.append("missing top-level key: %s" % key)
-    for i, f in enumerate(report.get("findings", [])):
+    # `or []`, not a default: a report whose `findings` is explicitly `null` is
+    # precisely the shape this function now promises to REPORT on, and
+    # `enumerate(None)` would raise instead -- turning a validation answer into
+    # a traceback at the moment validation started mattering.
+    for i, f in enumerate(report.get("findings") or []):
         if not findings_mod.ID_RE.match(f.get("id", "")):
             errors.append("finding[%d] bad id: %r" % (i, f.get("id")))
         if not f.get("title"):
@@ -322,7 +344,7 @@ def validate_report(report):
             if not f.get("exploit_scenario"):
                 errors.append("finding[%d] %s %s missing exploit_scenario" % (i, f["panel"], f["severity"]))
     id_counts = {}
-    for f in report.get("findings", []):
+    for f in report.get("findings") or []:
         fid = f.get("id")
         if fid:
             id_counts[fid] = id_counts.get(fid, 0) + 1

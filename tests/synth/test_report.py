@@ -953,6 +953,36 @@ class TestReconciliation(unittest.TestCase):
             self.assertTrue(any(f["title"] == "crit" for f in report["findings"]))
 
     def test_validate_returns_errors_and_warnings(self):
+        # An ABSENT location is the warning case: the schema leaves `location`
+        # optional on a finding, so nothing here is a schema error and the
+        # hand check's "where is it?" warning is the whole answer. (#1639 P15:
+        # a PARTIAL location -- `{}`, or a line with no file -- is a different
+        # case and now errors, see the test below.)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(
+                findings=[
+                    {
+                        "id": "CD-001",
+                        "title": "t",
+                        "severity": "LOW",
+                        "confidence": "POSSIBLE",
+                        "panel": "code",
+                        "category": "general",
+                    }
+                ],
+            ),
+        ))
+        errors, warnings = report_mod.validate_report(report)
+        self.assertEqual(errors, [])
+        self.assertTrue(any("location" in w for w in warnings))
+
+    def test_schema_layer_rejects_a_location_with_no_file(self):
+        # #1639 P15: the published schema requires `file` on a `location` that
+        # is present at all, and validate_report never loaded it -- so a
+        # finding pointing at nowhere passed with a warning nobody had to
+        # read. The hand check still warns; the schema now also errors, and
+        # both land in the same list.
         report = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
             findings=findings_mod.FindingSet(
@@ -970,8 +1000,37 @@ class TestReconciliation(unittest.TestCase):
             ),
         ))
         errors, warnings = report_mod.validate_report(report)
-        self.assertEqual(errors, [])
+        self.assertIn("schema: $.findings[0].location: 'file' is a required property",
+                      errors)
         self.assertTrue(any("location" in w for w in warnings))
+
+    def test_validate_reports_the_null_sections_the_hand_checks_missed(self):
+        """#1639 P15, Codex's repro: `meta`/`summary`/`cross_panel` all null.
+
+        Every key is PRESENT, so the hand checks' `key not in report` test is
+        satisfied and the old validate_report returned no error and no warning
+        for a report three of whose five sections are nothing at all. Draft 7
+        validation rejects all three, and now so does this."""
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[]),
+        ))
+        report["meta"] = None
+        report["summary"] = None
+        report["cross_panel"] = None
+        errors, _warnings = report_mod.validate_report(report)
+        for section in ("$.meta", "$.summary", "$.cross_panel"):
+            self.assertTrue(
+                any(e.startswith("schema: %s:" % section) for e in errors),
+                "%s not rejected; got %r" % (section, errors))
+
+    def test_a_null_findings_list_is_reported_not_raised(self):
+        # `enumerate(None)` is a TypeError, and the hand checks used to reach
+        # it on exactly the shape schema validation exists to describe.
+        errors, _warnings = report_mod.validate_report(
+            {"meta": {}, "summary": {}, "groups": [], "findings": None,
+             "cross_panel": {}})
+        self.assertTrue(any("$.findings" in e for e in errors), errors)
 
     def test_tool_security_finding_exempt_from_cvss(self):
         report = report_mod.build_report(report_mod.ReportInputs(
