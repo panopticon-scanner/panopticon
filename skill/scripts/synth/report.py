@@ -267,7 +267,15 @@ def assemble(run, resolved, reconciled, graded, cost):
                 # so "pip-audit: produced" cannot be read as "every declared
                 # dependency was checked". `{}` means no manifest -- nothing
                 # measured, not nothing dropped.
-                "sanitized": reconciled.tools_sanitized},
+                "sanitized": reconciled.tools_sanitized,
+                # #1645: "pip-audit: produced" says a scanner ran; it has never
+                # said what that scanner could REACH while it ran. The two
+                # ONLINE_ONLY adapters used to get Docker's default bridge --
+                # every service on the runner's network -- and now get a per-run
+                # internal network behind an allowlisting proxy, or do not run
+                # at all. This is where the run says which. `{}` means no
+                # manifest: nothing measured, not nothing granted.
+                "network": reconciled.tools_network},
             "integrity": reconciled.integrity,
             "cost": cost,
             # 5.1 surface 2: the verified host posture, verbatim off the

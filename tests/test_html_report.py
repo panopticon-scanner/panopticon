@@ -1370,3 +1370,47 @@ class TestBackupScopeLimited(unittest.TestCase):
         out = hr.render(report)
         self.assertIn("1 verified", out)
         self.assertNotIn("backup-scope-limited", out)
+
+
+class TestEgressPostureLine(unittest.TestCase):
+    """#1645 ruling 3: an operator meets the online adapters' egress beside the
+    tool coverage, where they meet the rest of the tool axis."""
+
+    def _report(self, network):
+        report = _minimal_report()
+        report["meta"]["tools"] = {"network": network}
+        return report
+
+    def test_an_online_adapter_names_what_it_could_reach(self):
+        html_out = hr.render(self._report(
+            {"semgrep": "none",
+             "pip-audit": "proxied:files.pythonhosted.org,pypi.org"}))
+        self.assertIn("Scanner context:", html_out)
+        self.assertIn("pip-audit reached only files.pythonhosted.org, pypi.org",
+                      html_out)
+
+    def test_a_refused_adapter_says_it_did_not_run(self):
+        html_out = hr.render(self._report(
+            {"pip-audit": "excluded:online egress unavailable"}))
+        self.assertIn("pip-audit did not run: online egress unavailable",
+                      html_out)
+
+    def test_an_all_offline_run_says_nothing(self):
+        # Every scanner on `--network none` is the ordinary case; a line for it
+        # would bury the two that are not.
+        html_out = hr.render(self._report({"semgrep": "none", "trivy": "none"}))
+        self.assertNotIn("reached only", html_out)
+
+    def test_a_report_that_never_measured_this_says_nothing(self):
+        self.assertNotIn("reached only", hr.render(_minimal_report()))
+
+    def test_a_malformed_block_renders_no_line_rather_than_a_traceback(self):
+        for bad in ("nope", 7, {"pip-audit": 7}, {"pip-audit": ["proxied:x"]}):
+            with self.subTest(value=repr(bad)):
+                self.assertNotIn("reached only", hr.render(self._report(bad)))
+
+    def test_a_posture_string_cannot_inject_markup(self):
+        html_out = hr.render(self._report(
+            {"<script>alert(1)</script>": "proxied:<b>x</b>"}))
+        self.assertNotIn("<script>alert(1)</script>", html_out)
+        self.assertNotIn("proxied:<b>", html_out)

@@ -14,6 +14,7 @@ from scripts.tools import EXECUTES_TARGET_BUILD
 from . import coverage_io as coverage_io
 from . import findings as findings_mod
 from . import integrity as integrity_mod
+from . import repair as repair_mod
 from . import validate_schema as validate_schema_mod
 
 
@@ -140,6 +141,11 @@ class Reconciled:
     # says one of them produced a PARTIAL answer. `{}` on a run with no
     # manifest -- nothing measured, which is not "nothing was dropped".
     tools_sanitized: dict = field(default_factory=dict)
+    # #1645: what egress each scanner was given, off the same manifest and
+    # repaired at the same read. Beside `coverage` for the same reason as
+    # `tools_sanitized`: coverage says which adapters PRODUCED output, and this
+    # says what one of them could reach while doing it.
+    tools_network: dict = field(default_factory=dict)
 
 
 # One source for the per-group dispatch-plan filename glob (#681): synthesize
@@ -350,8 +356,12 @@ def reconcile(plan, tools, resolved):
     # (e.g. --no-tools, or a pre-manifest run) the 4.x scout-derived gate stands.
     # #1646: repaired AT THE READ, like every other manifest field this function
     # takes -- the file is target-writable and this block reaches the artifact.
-    sanitized = (validate_schema_mod.repair_tools_sanitized(
+    sanitized = (repair_mod.repair_tools_sanitized(
         tools.manifest.get("sanitized")) if isinstance(tools.manifest, dict) else {})
+    # #1645: same read, same repair -- the block is target-writable and reaches
+    # the artifact and the HTML.
+    network = (repair_mod.repair_tools_network(
+        tools.manifest.get("network")) if isinstance(tools.manifest, dict) else {})
     if isinstance(tools.manifest, dict):
         selected = set(validate_schema_mod.string_list(tools.manifest.get("selected")))
         produced_m = set(validate_schema_mod.string_list(tools.manifest.get("produced")))
@@ -482,7 +492,7 @@ def reconcile(plan, tools, resolved):
     return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
-                      tools_sanitized=sanitized)
+                      tools_sanitized=sanitized, tools_network=network)
 
 
 def load_groups_json(path):
@@ -507,7 +517,7 @@ def load_groups_json(path):
     if not isinstance(gj, dict):
         print("synthesize: %s is not a JSON object; ignoring" % path, file=sys.stderr)
         return {}
-    return validate_schema_mod.repair_groups_json(gj)
+    return repair_mod.repair_groups_json(gj)
 
 
 def load_verify_queue(run_dir):

@@ -11,17 +11,25 @@ only writer who can trip it is us. Without it, a reviewer that typed
 malformed file under `.panopticon`, would decide whether a paid-for run
 produces a result.
 
-Two halves, deliberately in one module so they cannot disagree about what the
-pinned type IS: `schema_errors` validates on the way out, the `repair_*`
-functions normalize on the way in, and the second derives its rules from the
-first's schema file rather than restating them. EVERY boundary where agent or
-target content enters is covered, against BOTH schemas the completion path
-enforces (fix round 2):
+Two halves that must not disagree about what the pinned type IS: `schema_errors`
+validates on the way out, the `repair_*` functions normalize on the way in, and
+the second derives its rules from the first's schema file rather than restating
+them. They lived in one module for that reason until #1645 pushed it past the
+700-line ratchet; the three TARGET-boundary readers now live in `synth/repair`
+(`repair_groups_json` and `tools-manifest.json`'s `sanitized` and `network`
+blocks, which also bound what they republish) and reach BACK across the split
+by module attribute for `_report_doc`, `_repair_node` and `_conforms` -- so the
+rules still come from this module's schema file, and nothing was copied. The
+AGENT-sourced repairs stay here, beside that machinery. EVERY boundary where
+agent or target content enters is covered, against BOTH schemas the completion
+path enforces (fix round 2):
 
   `repair_finding`   agent and tool findings, via `findings.normalize_finding`
   `repair_verdict`   an advisor's verdict, via THE sanitizer `evidence._agent_verdict`
                      -- PRESENTATION fields only, see REPAIRABLE_VERDICT_FIELDS
-  `repair_groups_json`  the target-writable `.panopticon/groups.json`, at its read
+  `repair.repair_groups_json`        the target-writable `.panopticon/groups.json`
+  `repair.repair_tools_sanitized`    `tools-manifest.json`'s partial-audit block
+  `repair.repair_tools_network`      `tools-manifest.json`'s egress-posture block
   `integrity.cross_domain_findings`  agent-stated domains on a cross-domain claim
   `coverage_io.normalized_cell`      the target-writable `.panopticon/coverage-*.json`
   `codes.*` / `x0x_report._domain`   an agent `code` naming no OCRDb domain, for
@@ -473,158 +481,6 @@ def repair_verdict(verdict, warn=None):
         else:
             print(message, file=sys.stderr)
     return verdict
-
-
-# ---------------------------------------------------------------------------
-# The TARGET boundary: `.panopticon/groups.json`.
-# ---------------------------------------------------------------------------
-# Same principle, third source (#1639 P15 fix round 2, F6). `groups.json` is
-# read out of `.panopticon/` inside the reviewed tree -- the same
-# target-writable directory as the `coverage-*.json` files `coverage_io`
-# already repairs -- and `plan.load_groups_json` is tolerant BY DESIGN: it
-# announces a corrupt file and returns {} rather than abort a paid-for run.
-# That promise stopped at the parse. Five of its fields reach the artifact or a
-# bare subscript untouched: `groups[].name` and `groups[].files` are copied
-# into the report's type-pinned `groups[]`, `parent` becomes a rolled-up unit's
-# name, `security_mode` becomes `meta.security_mode` (an enum), and `mode` is
-# used as a dict KEY -- so a list there raised TypeError, and a group without
-# `files` a KeyError, from a file the target can write.
-_GROUPS_KEEP_KEYS = ("name", "files", "parent")
-
-
-def repair_groups_json(gj, warn=None):
-    """Normalize the run's `groups.json` to the types the report pins.
-
-    Repairs in place and returns `gj` ({} when it is not a dict). Never raises
-    and never aborts: a group that cannot be repaired is dropped with a warning
-    and the rest of the run proceeds, which is `load_groups_json`'s contract
-    carried all the way to the artifact instead of only to the parse.
-    """
-    if not isinstance(gj, dict):
-        return {}
-    props = _report_doc().get("properties") or {}
-    item = (((props.get("groups") or {}).get("items") or {}).get("properties")) or {}
-    meta = ((props.get("meta") or {}).get("properties")) or {}
-    changes = []
-    if "groups" in gj:
-        raw = gj["groups"]
-        if not isinstance(raw, list):
-            changes.append(("groups", "dropped"))
-            raw = []
-        kept = []
-        for g in raw:
-            if not isinstance(g, dict) or not isinstance(g.get("name"), (str, int, float)) \
-                    or isinstance(g.get("name"), bool):
-                changes.append(("groups[]", "dropped"))
-                continue
-            for key in _GROUPS_KEEP_KEYS:
-                node = item.get(key) or ({"type": "string"} if key == "parent" else None)
-                if node is None or key not in g:
-                    continue
-                ok, repaired = _repair_node(g[key], node, "groups[].%s" % key, changes)
-                if ok:
-                    g[key] = repaired
-                else:
-                    g.pop(key, None)
-            if not isinstance(g.get("files"), list):
-                # grading subscripts `g["files"]` directly; absent is not a
-                # shape the report's groups[] can carry either (it is required).
-                g["files"] = []
-                changes.append(("groups[].files", "defaulted to []"))
-            kept.append(g)
-        gj["groups"] = kept
-    if "mode" in gj and not isinstance(gj["mode"], str):
-        # Read as a dict KEY (findings.MODE_TO_REVIEW_TYPE): unhashable raises.
-        gj.pop("mode")
-        changes.append(("mode", "dropped"))
-    node = meta.get("security_mode") or {}
-    if "security_mode" in gj and gj["security_mode"] is not None \
-            and not _conforms(gj["security_mode"], node):
-        gj.pop("security_mode")            # from_args then defaults it
-        changes.append(("security_mode", "dropped"))
-    for path, what in changes:
-        message = ("groups.json: %s %s -- it did not match the type "
-                   "report-schema.json pins for it" % (what, path))
-        if warn is not None:
-            warn(message)
-        else:
-            print(message, file=sys.stderr)
-    return gj
-
-
-_SANITIZED_ROW = ("source", "kept", "dropped", "hashes_stripped",
-                  "truncated", "dropped_truncated")
-
-
-def repair_tools_sanitized(value, warn=None):
-    """`tools-manifest.json`'s `sanitized` block, normalized to what the schema
-    pins for `meta.tools.sanitized` (#1646).
-
-    THE PRINCIPLE (see the module docstring and `synth/coverage_io`): the schema
-    pins the CONTROLLER's output, so a target-sourced input is repaired to the
-    pinned types AT ITS BOUNDARY. The manifest is written into the scanned tree
-    and a hostile target can pre-commit one, so every field this block carries
-    into the report -- and the HTML renders -- is checked here rather than
-    trusted, and a malformed row costs a warning and the row, never the run and
-    never an `artifact invalid` exit on a report the target authored a corner of.
-
-    DROPPED, never coerced: a `kept` of "lots" has no honest integer, and
-    inventing one would publish a number nobody measured. A bool is not an
-    integer for this purpose -- `jsonschema` rejects `True` where `integer` is
-    pinned, so an unrepaired one would fail the artifact it rode into. Keys the
-    schema does not describe go too: `meta` is closed and the parity walk is
-    stricter still.
-    """
-    changes = []
-    out = {}
-    if not isinstance(value, dict):
-        if value not in (None, {}):
-            changes.append(("sanitized", "dropped: not an object"))
-        value = {}
-    for name, row in value.items():
-        if not isinstance(name, str):
-            changes.append(("sanitized[%r]" % (name,), "dropped: name is not a string"))
-            continue
-        if not isinstance(row, dict):
-            changes.append(("sanitized.%s" % name, "dropped: not an object"))
-            continue
-        kept_row = {}
-        for field in _SANITIZED_ROW:
-            if field not in row:
-                continue
-            got = row[field]
-            if field == "source" and isinstance(got, str):
-                kept_row[field] = got
-            elif field == "kept" and isinstance(got, int) and not isinstance(got, bool):
-                kept_row[field] = got
-            elif field in ("hashes_stripped", "truncated") and isinstance(got, bool):
-                kept_row[field] = got
-            elif field == "dropped_truncated" and isinstance(got, int) \
-                    and not isinstance(got, bool):
-                kept_row[field] = got
-            elif field == "dropped" and isinstance(got, list):
-                kept_row[field] = [
-                    {"line": r["line"], "reason": r["reason"]} for r in got
-                    if isinstance(r, dict) and isinstance(r.get("line"), str)
-                    and isinstance(r.get("reason"), str)]
-                if len(kept_row[field]) != len(got):
-                    changes.append(("sanitized.%s.dropped" % name,
-                                    "dropped %d malformed row(s) from"
-                                    % (len(got) - len(kept_row[field]))))
-            else:
-                changes.append(("sanitized.%s.%s" % (name, field), "dropped"))
-        for extra in sorted(set(row) - set(_SANITIZED_ROW)):
-            changes.append(("sanitized.%s.%s" % (name, extra),
-                            "dropped: the schema describes no such field in"))
-        out[name] = kept_row
-    for path, what in changes:
-        message = ("tools-manifest.json: %s %s -- it did not match the type "
-                   "report-schema.json pins for it" % (what, path))
-        if warn is not None:
-            warn(message)
-        else:
-            print(message, file=sys.stderr)
-    return out
 
 
 def string_list(value):

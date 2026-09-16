@@ -10,7 +10,7 @@ from unittest import mock
 
 import scripts.run_tools as rt
 
-from run_tools_test_helpers import _FakeResult
+from run_tools_test_helpers import _DockerStub, _FakeResult
 
 
 class TestAdapterDispatch(unittest.TestCase):
@@ -221,16 +221,16 @@ class TestAdapterSelection(unittest.TestCase):
         # mount, so pip resolves a cwd-relative archive name inside the
         # reviewed repo. pip-audit gets an explicit empty working directory;
         # no other adapter's argv is touched.
-        calls = {}
-        fake = _FakeResult(returncode=0, stdout=b'{"dependencies":[]}', stderr=b'')
-
-        def runner(cmd, **kw):
-            calls[cmd[-1]] = cmd     # the adapter name is the last argv token
-            return fake
+        # #1645: the stub answers the egress control plane too, or pip-audit
+        # would fail closed (no proxy -> no dispatch) and never reach the
+        # assertion this test is about.
+        stub = _DockerStub()
         with tempfile.TemporaryDirectory() as d:
             out_dir = os.path.join(d, "out")
-            rt.run_tools(d, ["pip-audit", "osv-scanner"], out_dir,
-                         image="panopticon-tools", runner=runner, online=True)
+            with contextlib.redirect_stderr(io.StringIO()):
+                rt.run_tools(d, ["pip-audit", "osv-scanner"], out_dir,
+                             image="panopticon-tools", runner=stub, online=True)
+        calls = stub.dispatches()
         pip_argv = calls["pip-audit"]
         self.assertIn("-w", pip_argv)
         self.assertEqual(pip_argv[pip_argv.index("-w") + 1], rt.ADAPTER_EMPTY_CWD)

@@ -481,6 +481,31 @@ class TestSkillMd(unittest.TestCase):
                       "outside target", "1 MiB", "200"]:
             self.assertIn(token, tools, token)
 
+    def test_online_adapter_egress_is_documented(self):
+        # #1645 (SEC-C1A): the two ONLINE_ONLY adapters used to get Docker's
+        # DEFAULT BRIDGE -- every service reachable from the runner's network.
+        # The guide has to name the control (a per-run internal network and an
+        # allowlisting proxy), the allowlist itself, where a reader finds the
+        # posture, what happens when the egress cannot be built, and -- the
+        # part a claim of "nothing else" would get wrong -- the two limits of
+        # the containment: it is stated for a ROOTFUL daemon, and an internal
+        # network still reaches its own gateway address.
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        tools = _section(loop, "`tools`**", "`review`**")
+        for token in ["default bridge", "--internal", "tinyproxy",
+                      "FilterDefaultDeny Yes", "pypi.org",
+                      "files.pythonhosted.org", "registry.npmjs.org",
+                      "NO_PROXY", "meta.tools.network", "excluded_scope",
+                      "fails closed", "rootful",
+                      # Fix round 1, F1: Docker documents that an `--internal`
+                      # network still permits communication with the gateway
+                      # IP, so a host service bound there is NOT fenced by
+                      # this control. The claim has to stop short of absolute.
+                      "gateway",
+                      # F10: which artifact carries which fact.
+                      "tools-ran.json"]:
+            self.assertIn(token, tools, token)
+
     def test_tools_dir_is_wired_into_synthesize_passes(self):
         # F-2: a scan that runs but is never ingested reads as clean. 5.0:
         # the tool scan is a driver PHASE now, wired into the driver's own
