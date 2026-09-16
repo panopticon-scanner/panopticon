@@ -59,7 +59,8 @@ EV_LABEL = {"tool_reported": "evidence:tool-reported",
             "corroborated": "evidence:corroborated",
             "needs_more_info": "evidence:needs-more-info",
             "unverified": "evidence:unverified",
-            "rejected": "evidence:rejected"}
+            "rejected": "evidence:rejected",
+            "backup_scope_limited": "evidence:backup-scope-limited"}
 
 
 def labels_for(f, rejected=False):

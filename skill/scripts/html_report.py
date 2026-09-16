@@ -552,7 +552,13 @@ def _render_header(report):
                      % _escape(note))
     parts.append(_render_host_capabilities(meta))
     ev = summary.get("evidence_stats") or {}
-    verified = int(ev.get("advisor_confirmed", 0)) + int(ev.get("tool_confirmed", 0))
+    # #1638 P16: `backup_scope_limited` IS a primary-advisor confirmation (the
+    # backup reported a scope failure, not a doubt), so it counts as verified
+    # here for the same reason it stays gate-eligible -- see
+    # evidence.GATE_ELIGIBLE_DEFAULT.
+    verified = (int(ev.get("advisor_confirmed", 0))
+                + int(ev.get("tool_confirmed", 0))
+                + int(ev.get(evidence.BACKUP_SCOPE_LIMITED, 0)))
     unverified = int(ev.get("unverified", 0))
     tool_reported = int(ev.get("tool_reported", 0))
     cut = int(((meta.get("coverage") or {}).get("verdicts") or {}).get("cut", 0))
@@ -848,6 +854,17 @@ def _render_card(finding, delta=None):
         value = finding.get(key)
         if value:
             details.append(f"<dt>{label}</dt><dd>{_escape(value)}</dd>")
+
+    # #1638 P16: when the adversarial backup could not reach the files it needed,
+    # say so in the artifact a person opens -- the alternative is a CONFIRMED
+    # finding whose second opinion is silently missing. The paths are advisor-
+    # supplied (already redacted upstream by render.redact_report_secrets) and
+    # escaped here like every other agent string.
+    missing = [m for m in ((finding.get("evidence") or {}).get("missing_evidence") or [])
+               if isinstance(m, str) and m]
+    if missing:
+        details.append("<dt>Backup could not see</dt><dd>%s</dd>"
+                       % _escape(", ".join(missing)))
 
     refs = finding.get("references") or []
     if refs:

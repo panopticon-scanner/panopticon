@@ -8,6 +8,7 @@ import scripts.evidence as evidence
 import scripts.synthesize as synthesize
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
+import scripts.synth.codes as codes_mod
 
 def _bundle(tmp_path, name, verdicts, stage="primary", run_id="R"):
     d = tmp_path / "verdicts"
@@ -236,3 +237,98 @@ class TestVerdictBundles(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestScopeLimitedBackup(unittest.TestCase):
+    """#1638 P16 ruling 3: an evidence-scope failure is not a substantive
+    disagreement. A backup NEEDS_MORE_INFO that NAMES the files it could not
+    reach (`missing_evidence`) no longer displaces a primary CONFIRMED -- run-13
+    published the redaction-order defect as unverifiable for exactly that
+    reason. A backup NMI with no `missing_evidence` keeps today's semantics."""
+
+    def _by_fid(self, tmp_path, backup):
+        _bundle(tmp_path, "verdicts-app-SEC.json",
+                [{"finding_id": "SEC-100", "verdict": "CONFIRMED",
+                  "reasoning": "traced the call order"}], stage="primary")
+        d_path = _bundle(tmp_path, "verdicts-app-SEC-backup.json", [backup],
+                         stage="backup")
+        by_fid, _ = evidence.load_verdict_bundles(d_path)
+        return by_fid
+
+    def test_scope_limited_backup_nmi_keeps_the_primary_confirmed(self):
+        with tempfile.TemporaryDirectory() as d:
+            by_fid = self._by_fid(Path(d), {
+                "finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO",
+                "reasoning": "the call sites were not in my scope",
+                "missing_evidence": ["synth/grading.py", "synthesize.py"]})
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            self.assertEqual(v["verdict"], "CONFIRMED")
+            self.assertEqual(v["stage"], "primary")
+            self.assertEqual(evidence.scope_limited_paths(v),
+                             ["synth/grading.py", "synthesize.py"])
+
+    def test_scope_limited_backup_yields_the_backup_scope_limited_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            by_fid = self._by_fid(Path(d), {
+                "finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO",
+                "reasoning": "out of scope",
+                "missing_evidence": ["synth/grading.py"]})
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            ev_obj = evidence.derive_evidence({"id": "SEC-100"}, v)
+            self.assertEqual(ev_obj["status"], "backup_scope_limited")
+            self.assertEqual(ev_obj["missing_evidence"], ["synth/grading.py"])
+            self.assertIn("backup_scope_limited", evidence.EVIDENCE_STATUSES)
+            self.assertIn("backup_scope_limited", evidence.GATE_ELIGIBLE_DEFAULT)
+
+    def test_backup_nmi_without_missing_evidence_still_wins(self):
+        with tempfile.TemporaryDirectory() as d:
+            by_fid = self._by_fid(Path(d), {
+                "finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO",
+                "reasoning": "the code genuinely does not say"})
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            self.assertEqual(v["verdict"], "NEEDS_MORE_INFO")
+            self.assertEqual(v["stage"], "backup")
+            self.assertEqual(
+                evidence.derive_evidence({"id": "SEC-100"}, v)["status"],
+                "needs_more_info")
+
+    def test_a_scope_limited_backup_never_rescues_a_primary_rejection(self):
+        # Only a primary CONFIRMED is retained; anything else keeps the backup.
+        with tempfile.TemporaryDirectory() as d:
+            tmp_path = Path(d)
+            _bundle(tmp_path, "verdicts-app-SEC.json",
+                    [{"finding_id": "SEC-100", "verdict": "REJECTED"}],
+                    stage="primary")
+            d_path = _bundle(tmp_path, "verdicts-app-SEC-backup.json",
+                             [{"finding_id": "SEC-100",
+                               "verdict": "NEEDS_MORE_INFO",
+                               "missing_evidence": ["other.py"]}],
+                             stage="backup")
+            by_fid, _ = evidence.load_verdict_bundles(d_path)
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            self.assertEqual(v["verdict"], "NEEDS_MORE_INFO")
+            self.assertEqual(v["stage"], "backup")
+
+    def test_missing_evidence_must_be_a_list_of_paths(self):
+        for junk in ("grading.py", [], [""], [123], {"a": 1}, None):
+            self.assertEqual(
+                evidence.scope_limited_paths(
+                    {"verdict": "NEEDS_MORE_INFO", "missing_evidence": junk}),
+                [], junk)
+        # ... and only on a NEEDS_MORE_INFO verdict
+        self.assertEqual(
+            evidence.scope_limited_paths(
+                {"verdict": "CONFIRMED", "missing_evidence": ["a.py"]}), [])
+
+    def test_report_marks_the_finding_backup_unconfirmed(self):
+        # Ruling 3: `backup_confirmed` stays FALSE -- the backup did not
+        # corroborate, it could not look.
+        f = {"id": "SEC-100", "code": "SEC-A1A", "severity": "HIGH"}
+        v = {"finding_id": "SEC-100", "verdict": "CONFIRMED", "stage": "primary",
+             evidence.SCOPE_LIMITED_FIELD: ["synth/grading.py"]}
+        codes_mod.apply_verdict_quality([f], {id(f): v}, None)
+        self.assertIs(f["backup_confirmed"], False)

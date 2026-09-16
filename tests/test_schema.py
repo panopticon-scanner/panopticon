@@ -166,7 +166,10 @@ class TestReportSchema(unittest.TestCase):
         statuses = finding_props["properties"]["evidence"]["properties"]["status"]["enum"]
         self.assertEqual(set(statuses),
                          {"tool_reported", "tool_confirmed", "advisor_confirmed",
-                          "corroborated", "needs_more_info", "unverified", "rejected"})
+                          "corroborated", "needs_more_info", "unverified", "rejected",
+                          # #1638 P16: a primary CONFIRMED whose adversarial
+                          # backup was not granted the files it needed.
+                          "backup_scope_limited"})
 
     @unittest.skipIf(jsonschema is None, "jsonschema not installed")
     def test_actual_build_report_output_validates_against_schema(self):

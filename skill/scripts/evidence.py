@@ -23,11 +23,50 @@ SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 # html_report's _PANEL_ORDER, and the findings-filename regexes in synthesize
 # and group_runner all derive from this one definition.
 PANELS = ["code", "test", "security", "architecture", "database", "redteam"]
+# `backup_scope_limited` (#1638 P16, owner ruling D4): the PRIMARY advisor
+# confirmed this claim and the backup could not check it, because the files it
+# needed were outside the bounded evidence closure it was granted. It is a
+# confirmed finding wearing a disclosure, not a contested one -- see
+# `match_verdict_by_id`.
+BACKUP_SCOPE_LIMITED = "backup_scope_limited"
 EVIDENCE_STATUSES = ("tool_reported", "tool_confirmed", "advisor_confirmed",
                      "corroborated", "needs_more_info", "unverified",
-                     "rejected")
-GATE_ELIGIBLE_DEFAULT = frozenset({"tool_confirmed", "advisor_confirmed"})
+                     "rejected", BACKUP_SCOPE_LIMITED)
+# `backup_scope_limited` is gate-eligible for the same reason it exists: a
+# primary CONFIRMED stands. Before #1638 P16 the same finding was demoted to
+# `needs_more_info` and silently dropped out of the gate -- an evidence-scope
+# failure quietly deciding a release gate is the defect, not the fix.
+GATE_ELIGIBLE_DEFAULT = frozenset({"tool_confirmed", "advisor_confirmed",
+                                   BACKUP_SCOPE_LIMITED})
 VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
+
+# Internal carrier, underscore-prefixed like `_merged_ids`: the paths a
+# scope-limited backup named, hung on the PRIMARY verdict that survived it so
+# `derive_evidence` and the report can say what the backup could not see. Never
+# an agent-asserted trust field -- `match_verdict_by_id` is the only writer.
+SCOPE_LIMITED_FIELD = "_backup_missing_evidence"
+
+
+def scope_limited_paths(verdict):
+    """The files a verdict says it was NOT granted, or [].
+
+    Non-empty only for a NEEDS_MORE_INFO that named them (`missing_evidence`,
+    the backup advisor's way of reporting an evidence-SCOPE failure) or for a
+    verdict `match_verdict_by_id` has already annotated. A CONFIRMED or
+    REJECTED verdict decided; whatever it did not read is not a scope failure.
+    Defensive about shape: `missing_evidence` is agent-supplied.
+    """
+    if not isinstance(verdict, dict):
+        return []
+    carried = verdict.get(SCOPE_LIMITED_FIELD)
+    if isinstance(carried, list):
+        return [p for p in carried if isinstance(p, str) and p]
+    if str(verdict.get("verdict", "")).upper() != "NEEDS_MORE_INFO":
+        return []
+    missing = verdict.get("missing_evidence")
+    if not isinstance(missing, list):
+        return []
+    return [p for p in missing if isinstance(p, str) and p]
 
 
 def is_tool_sourced(finding):
@@ -192,11 +231,18 @@ def derive_evidence(finding, verdict=None):
             status = "needs_more_info"
         else:
             status = "tool_confirmed" if tool_like else "advisor_confirmed"
-        return {"status": status,
-                "verified_by": ([origin, "agent:advisor"] if tool_like
-                                else "agent:advisor"),
-                "reasoning": (verdict or {}).get("reasoning"),
-                "citation_quality": quality}
+        derived = {"status": status,
+                   "verified_by": ([origin, "agent:advisor"] if tool_like
+                                   else "agent:advisor"),
+                   "reasoning": (verdict or {}).get("reasoning"),
+                   "citation_quality": quality}
+        # #1638 P16: a CONFIRMED that survived a scope-limited backup is still
+        # confirmed, and the report says which files the backup could not see.
+        missing = scope_limited_paths(verdict or {})
+        if missing and v == "CONFIRMED":
+            derived["status"] = BACKUP_SCOPE_LIMITED
+            derived["missing_evidence"] = list(missing)
+        return derived
 
     if tool_like:
         return {"status": "tool_reported", "verified_by": origin,
@@ -622,7 +668,20 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
     finding_id to a LIST of candidate verdicts (primary and/or backup, possibly
     across runs). When run_id is given, only same-run candidates are eligible
     (so a stale cross-run verdict can never evict a valid one); among the
-    eligible, a backup-stage verdict wins over a primary."""
+    eligible, a backup-stage verdict wins over a primary -- EXCEPT when the
+    backup's NEEDS_MORE_INFO is an evidence-SCOPE failure (#1638 P16, ruling 3).
+
+    A backup that returns NEEDS_MORE_INFO naming the files it was not granted
+    (`missing_evidence`) is not disagreeing with the primary; it is reporting
+    that it could not look. Run-13's redaction-order defect was CONFIRMED by the
+    primary, reproduced by hand, and then published as unverifiable because the
+    backup -- granted the claim file alone -- said NEEDS_MORE_INFO about a
+    cross-file call order. So a scope-limited backup NMI does NOT displace a
+    primary CONFIRMED: the primary verdict is returned, carrying the paths the
+    backup named, and `derive_evidence` records the honest
+    `backup_scope_limited`. A backup NMI that names NOTHING is a substantive
+    "the code does not say", and keeps today's backup-wins semantics.
+    """
     fid = finding.get("id")
     if not fid:
         return None
@@ -644,10 +703,20 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
             break
     if not candidates:
         return None
-    for c in candidates:
-        if c.get("stage") == "backup":
-            return c
-    return candidates[0]
+    backup = next((c for c in candidates if c.get("stage") == "backup"), None)
+    if backup is None:
+        return candidates[0]
+    missing = scope_limited_paths(backup)
+    if missing:
+        primary = next((c for c in candidates
+                        if c.get("stage") != "backup"
+                        and str(c.get("verdict", "")).upper() == "CONFIRMED"),
+                       None)
+        if primary is not None:
+            kept = dict(primary)
+            kept[SCOPE_LIMITED_FIELD] = missing
+            return kept
+    return backup
 
 
 def apply_verdict(finding, verdict):
