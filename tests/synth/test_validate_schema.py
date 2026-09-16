@@ -1,4 +1,6 @@
 """Tests for scripts.synth.validate_schema: the published-schema layer (#1639 P15)."""
+import contextlib
+import io
 import json
 import os
 import sys
@@ -115,6 +117,127 @@ class TestSchemaErrors(unittest.TestCase):
             self.assertTrue(os.path.isfile(path), path)
             with open(path, encoding="utf-8") as fh:
                 self.assertIn("$schema", json.load(fh))
+
+
+def _valid_finding():
+    return {"id": "SE-001", "title": "t", "severity": "HIGH", "confidence": "LIKELY",
+            "panel": "security", "category": "injection",
+            "evidence": {"status": "unverified"}}
+
+
+def _a_value_the_schema_rejects(node):
+    """A deliberately wrong value for one pinned subschema."""
+    if "enum" in node:
+        return "not-in-this-vocabulary"
+    types = node.get("type")
+    types = [] if types is None else (types if isinstance(types, list) else [types])
+    if "string" in types:
+        return {"not": "a string"}
+    if "integer" in types or "number" in types:
+        return "not a number"
+    if "boolean" in types:
+        return "yes"
+    if "array" in types:
+        return {"not": "a list"}
+    if "object" in types:
+        return "not an object"
+    return None
+
+
+class TestEveryPinnedFieldIsRepairedOrOwned(unittest.TestCase):
+    """#1639 P15 C1: the drift guard for the principle itself.
+
+    The principle only holds if EVERY type the schema pins on a finding is
+    either normalized at the boundary or owned outright by a controller stage.
+    A field that is neither is a lever an agent can pull to end a run, and the
+    next one would be added in silence -- the failure mode #1602 is about.
+    This reads the schema, never a copy of it.
+    """
+
+    def setUp(self):
+        self.item = validate_schema_mod.finding_item_schema()
+        self.assertTrue(self.item.get("properties"), "findings item schema not loaded")
+
+    def test_every_pinned_field_is_repairable_or_declared_owned(self):
+        import jsonschema
+        validator = jsonschema.Draft7Validator(self.item)
+        for name, node in sorted(self.item["properties"].items()):
+            if name in validate_schema_mod._OWNED_DOWNSTREAM:
+                continue
+            bad = _a_value_the_schema_rejects(node)
+            if bad is None:
+                continue                      # unpinned (anyOf / free-form): nothing to repair
+            with self.subTest(field=name):
+                finding = _valid_finding()
+                finding[name] = bad
+                self.assertTrue(
+                    list(validator.iter_errors(finding)),
+                    "%s: the probe value is not actually rejected" % name)
+                # Through the real boundary, not repair_finding alone: a
+                # REQUIRED field that repair drops is re-defaulted by
+                # normalize_finding a few lines later, and the guard's claim
+                # is about what leaves the boundary.
+                with contextlib.redirect_stderr(io.StringIO()):
+                    findings_mod.normalize_finding(finding)
+                left = [e.json_path for e in validator.iter_errors(finding)]
+                self.assertEqual(
+                    left, [],
+                    "%s survives repair unrepaired: an agent that writes it ends "
+                    "the run. Repair it at the boundary or declare it in "
+                    "_OWNED_DOWNSTREAM with the stage that owns it." % name)
+
+    def test_every_owned_field_still_exists_and_says_who_owns_it(self):
+        for name, reason in sorted(validate_schema_mod._OWNED_DOWNSTREAM.items()):
+            with self.subTest(field=name):
+                self.assertIn(name, self.item["properties"],
+                              "%s is no longer in the schema -- drop the entry" % name)
+                self.assertGreater(len(reason), 20, name)
+
+    def test_a_repair_announces_itself(self):
+        finding = _valid_finding()
+        finding["references"] = "CWE-89"
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            validate_schema_mod.repair_finding(finding)
+        self.assertEqual(finding["references"], ["CWE-89"])
+        self.assertIn("repaired references", err.getvalue())
+
+    def test_a_drop_announces_itself(self):
+        finding = _valid_finding()
+        finding["depth"] = "profound"
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            validate_schema_mod.repair_finding(finding)
+        self.assertNotIn("depth", finding)
+        self.assertIn("dropped depth", err.getvalue())
+
+    def test_a_bare_cvss_score_is_kept_not_discarded(self):
+        # The one repair that is more than a type cast: `cvss: 7.5` says
+        # something real, and dropping it would lose a reviewer's judgement
+        # AND trip the CVSS-required rule for a security HIGH.
+        finding = _valid_finding()
+        finding["cvss"] = 7.5
+        with contextlib.redirect_stderr(io.StringIO()):
+            validate_schema_mod.repair_finding(finding)
+        self.assertEqual(finding["cvss"], {"score": 7.5})
+
+    def test_a_location_file_is_dropped_rather_than_invented(self):
+        # str(7) would be a fabricated path, and location.file drives on-diff
+        # classification and group attribution.
+        finding = _valid_finding()
+        finding["location"] = {"file": 7, "line_start": 3}
+        with contextlib.redirect_stderr(io.StringIO()):
+            validate_schema_mod.repair_finding(finding)
+        self.assertNotIn("location", finding)
+
+    def test_an_unreadable_schema_makes_repair_a_no_op_not_a_crash(self):
+        finding = _valid_finding()
+        finding["depth"] = "profound"
+        with mock.patch.object(validate_schema_mod, "finding_item_schema",
+                               return_value={}):
+            with contextlib.redirect_stderr(io.StringIO()):
+                validate_schema_mod.repair_finding(finding)
+        self.assertEqual(finding["depth"], "profound")   # untouched, never raised
 
 
 if __name__ == "__main__":

@@ -203,7 +203,13 @@ def audit_floor_cells(coverages, present):
             # not a missing floor cell — net exclude before auditing.
             if dom in excluded:
                 continue
-            if dom not in have:
+            # #1639 P15: `coverages` is read from <run_dir>/coverage-*.json,
+            # which on the agentic path is globbed out of the SCANNED REPO --
+            # a hostile target can pre-commit one. The pair is published as
+            # two strings, so a non-string pair is dropped here rather than
+            # carried into the artifact and rejected at the exit (it names no
+            # real cell anyway, and `sorted` would raise on the mix).
+            if dom not in have and isinstance(group, str) and isinstance(dom, str):
                 missing.append([group, dom])
     return {"missing_floor": sorted(missing)}
 

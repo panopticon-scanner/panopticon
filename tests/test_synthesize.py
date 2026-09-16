@@ -1114,3 +1114,117 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
                  "--out", out, fp])
         self.assertEqual(rc, 1)
         self.assertNotIn("artifact invalid", stderr)
+
+
+# #1639 P15 fix round 1, C1. The shapes a review agent can write that the
+# published schema does not permit -- every one of them observed or probed
+# against a real `synthesize.main()`. Before the type-repair pass, 15 of these
+# turned a completed run into terminal `error` (rc 4): an untrusted writer
+# decided whether a paid-for run produced a result. The principle is in
+# `synth/validate_schema.py`: the schema pins the CONTROLLER's output, so
+# everything an agent writes is normalized to the pinned types first.
+#
+# `expect_change` says whether the repair pass must ANNOUNCE what it did --
+# false only for the shapes some other normalizer already handled, which are
+# here as regression guards, not as new coverage.
+_SLOPPY_AGENT_SHAPES = [
+    ("location.file int", {"location": {"file": 7, "line_start": 3}}, True),
+    ("location.file dict", {"location": {"file": {"path": "a.py"}}}, True),
+    ("location.file list", {"location": {"file": ["a.py"]}}, True),
+    ("location.line_start string", {"location": {"file": "a.py", "line_start": "42"}}, True),
+    ("location.line_start zero", {"location": {"file": "a.py", "line_start": 0}}, True),
+    ("location.line_start negative", {"location": {"file": "a.py", "line_start": -1}}, True),
+    ("location.line_start float", {"location": {"file": "a.py", "line_start": 4.5}}, True),
+    ("location.function int", {"location": {"file": "a.py", "line_start": 3, "function": 7}}, True),
+    ("description int", {"description": 7}, True),
+    ("impact list", {"impact": ["bad"]}, True),
+    ("remediation dict", {"remediation": {"do": "this"}}, True),
+    ("references bare string", {"references": "CWE-89"}, True),
+    ("references int items", {"references": [1, 2]}, True),
+    ("cvss bare float", {"cvss": 7.5}, True),
+    ("cvss numeric string", {"cvss": "9.8"}, True),
+    ("cvss.score string", {"cvss": {"score": "9.8"}}, True),
+    ("domain off-enum", {"domain": "XYZ"}, True),
+    ("depth off-enum", {"depth": "profound"}, True),
+    ("source_role off-enum", {"source_role": "ninja"}, True),
+    ("provenance.discovered_by int", {"provenance": {"discovered_by": 5}}, True),
+    ("severity_override string", {"severity_override": "yes"}, True),
+    ("backup_confirmed string", {"backup_confirmed": "yes"}, True),
+    ("tool_evidence.rule_id int", {"tool_evidence": {"rule_id": 5}}, True),
+    ("code int", {"code": 7}, True),
+    ("category int", {"category": 7}, True),
+    # Already handled elsewhere -- regression guards.
+    ("location empty", {"location": {}}, False),
+    ("citations.owasp int items", {"citations": {"owasp": [1]}}, False),
+    ("unknown extra key", {"invented_by_the_agent": {"x": 1}}, False),
+]
+
+
+@pytest.mark.parametrize("label,patch,expect_change",
+                         _SLOPPY_AGENT_SHAPES,
+                         ids=[s[0] for s in _SLOPPY_AGENT_SHAPES])
+def test_a_sloppy_agent_finding_never_ends_the_run(label, patch, expect_change, tmp_path):
+    finding = {"id": "SE-001", "title": "sqli", "severity": "MEDIUM",
+               "confidence": "LIKELY", "panel": "code", "category": "injection",
+               "location": {"file": "a.py", "line_start": 1}}
+    finding.update(patch)
+    fp = tmp_path / "findings-g1-code.json"
+    fp.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--out", str(out), str(fp)])
+    assert rc == 0, "%s ended the run (rc=%s): %s" % (label, rc, err.getvalue())
+    assert "artifact invalid" not in err.getvalue(), label
+    if expect_change:
+        assert "report-schema.json pins" in err.getvalue(), \
+            "%s was accepted silently; the repair must say what it changed" % label
+
+
+def test_a_target_pre_committed_coverage_file_cannot_end_the_run(tmp_path):
+    # #1639 P15 C1 vector 3: `<run_dir>/coverage-*.json` is globbed straight
+    # out of the scanned repository on the agentic path, so a hostile target
+    # can pre-commit one. `meta.coverage.cells.missing_floor` publishes its
+    # group/domain pair as two strings -- a non-string pair must be dropped
+    # here, not carried into the artifact and rejected at the exit.
+    run_dir = tmp_path / ".panopticon"
+    run_dir.mkdir()
+    (run_dir / "coverage-evil.json").write_text(
+        json.dumps({"group": 7, "floor": ["SEC"], "effective": ["SEC"]}), encoding="utf-8")
+    (run_dir / "coverage-ok.json").write_text(
+        json.dumps({"group": "app", "floor": [9, "SEC"], "effective": ["SEC"]}),
+        encoding="utf-8")
+    fp = tmp_path / "findings-app-code.json"
+    fp.write_text(json.dumps({"findings": []}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--run-dir", str(run_dir),
+                       "--out", str(out), str(fp)])
+    assert rc in (0, 2), err.getvalue()      # 2 = INCONCLUSIVE, a GATE verdict
+    assert "artifact invalid" not in err.getvalue()
+    report = json.loads(out.read_text(encoding="utf-8"))
+    for pair in report["meta"]["coverage"]["cells"]["missing_floor"]:
+        assert all(isinstance(x, str) for x in pair), pair
+
+
+def test_a_cross_domain_finding_with_a_mistyped_code_cannot_end_the_run(tmp_path):
+    # #1639 P15 C1 vector 2: integrity.cross_domain_findings copies `code` and
+    # `domain` verbatim off the agent payload into a section the schema types.
+    fp = tmp_path / "findings-g1-SEC.json"
+    fp.write_text(json.dumps({"findings": [
+        {"id": "TS-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
+         "panel": "test", "category": "coverage", "domain": "TST", "code": 7,
+         "location": {"file": "a.py", "line_start": 1}}]}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--out", str(out), str(fp)])
+    assert rc == 0, err.getvalue()
+    assert "artifact invalid" not in err.getvalue()
+    for row in json.loads(out.read_text(encoding="utf-8"))["meta"]["integrity"]["cross_domain_findings"]:
+        assert isinstance(row["finding_domain"], str), row
+        assert row["code"] is None or isinstance(row["code"], str), row

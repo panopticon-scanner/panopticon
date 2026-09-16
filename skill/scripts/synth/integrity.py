@@ -158,10 +158,24 @@ def cross_domain_findings(paths):
             if not isinstance(f, dict):
                 continue
             fd = f.get("domain")
-            if fd and fd != domain:
-                out.append({"file": p, "cell_domain": domain,
-                            "finding_domain": fd,
-                            "code": f.get("ocrdb_code") or f.get("code")})
+            if not fd or fd == domain:
+                continue
+            # #1639 P15: this row is copied out of an AGENT payload into a
+            # section the schema pins as strings, so it is normalized at the
+            # boundary like every other agent input -- the schema pins the
+            # CONTROLLER's output, and a reviewer that wrote `"code": 7` must
+            # not be able to end a completed run in `error`. A non-string
+            # domain names no cell, so the row goes; a non-string code is a
+            # lossless str() (the row's point is the DOMAIN mismatch).
+            if not isinstance(fd, str):
+                print("integrity: %s: dropped a cross-domain row whose finding "
+                      "domain is not a string" % p, file=sys.stderr)
+                continue
+            code = f.get("ocrdb_code") or f.get("code")
+            if code is not None and not isinstance(code, str):
+                code = str(code)
+            out.append({"file": p, "cell_domain": domain,
+                        "finding_domain": fd, "code": code})
     return sorted(out, key=lambda r: (r["file"], str(r["finding_domain"]), str(r["code"])))
 
 def reconcile_findings_files(plan, ingested_paths):
