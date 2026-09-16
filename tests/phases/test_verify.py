@@ -625,3 +625,60 @@ class TestAGroupWithNoFilesGetsNoBackupEntry(TestBackupCellFixture):
         self.assertIsNotNone(res)
         for entry in requests.load_dispatch_request(self.root)["entries"]:
             self.assertTrue(entry["files"])
+
+
+class TestPartialDependencyAuditReachesTheAdvisor(unittest.TestCase):
+    """#1646 ruling 3: pip-audit is handed a GENERATED requirements list.
+
+    The advisor is told, in its own prompt, that the audit was partial --
+    advisor.md instructs it to "verify the package and version are actually
+    present" for a dependency claim, and a reviewer reasoning from an audit it
+    believes to be complete will draw a conclusion the audit cannot support.
+    The count is read off THIS run's manifest, never asserted here.
+    """
+
+    def _root(self, sanitized):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        os.makedirs(runio._pano(d), exist_ok=True)
+        if sanitized is not None:
+            runio._write_json(runio._pano(d, "tools-manifest.json"),
+                              {"schema_version": 1, "run_id": "r",
+                               "selected": ["pip-audit"], "produced": ["pip-audit"],
+                               "sanitized": sanitized})
+        return d
+
+    _BLOCK = {"pip-audit": {"source": "requirements.txt", "kept": 2,
+                            "dropped": [{"line": "-e .", "reason": "editable"},
+                                        {"line": "./v/p", "reason": "local path"}]}}
+
+    def _prompt(self, root, source="tool:pip-audit"):
+        finding = {"id": "T-1", "severity": "HIGH", "source": source,
+                   "location": {"file": "requirements.txt", "line_start": 1}}
+        return verify._tool_verify_entry(root, {"run_id": "r"}, "q1",
+                                         finding, "claude")["prompt"]
+
+    def test_a_pip_audit_claim_is_told_the_audit_was_partial(self):
+        prompt = self._prompt(self._root(self._BLOCK))
+        self.assertIn("pip-audit: 2 requirement lines not audited "
+                      "(editable/local/VCS)", prompt)
+
+    def test_another_tools_claim_is_not(self):
+        prompt = self._prompt(self._root(self._BLOCK), source="tool:bandit")
+        self.assertNotIn("requirement lines not audited", prompt)
+
+    def test_a_fully_audited_run_says_nothing(self):
+        root = self._root({"pip-audit": {"source": "requirements.txt",
+                                         "kept": 9, "dropped": []}})
+        self.assertNotIn("requirement lines not audited", self._prompt(root))
+
+    def test_no_manifest_says_nothing_rather_than_nothing_dropped(self):
+        self.assertNotIn("requirement lines not audited",
+                         self._prompt(self._root(None)))
+
+    def test_a_hostile_manifest_costs_the_note_not_the_dispatch(self):
+        for bad in ("nope", {"pip-audit": "nope"}, {"pip-audit": {"dropped": 7}}):
+            with self.subTest(value=repr(bad)):
+                prompt = self._prompt(self._root(bad))
+                self.assertNotIn("requirement lines not audited", prompt)
+                self.assertIn("Repo root:", prompt)
