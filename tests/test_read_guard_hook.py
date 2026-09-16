@@ -187,10 +187,29 @@ class TestDecide(unittest.TestCase):
     def test_a_directory_grants_ordinary_files_and_directories_are_unchanged(self):
         # A directory's st_nlink is its subdirectory count, so the rule is for
         # REGULAR files only: Grep and Glob over the granted root stay allowed.
+        # That last part is not "safe", it is the KNOWN GAP -- see
+        # test_a_directory_argument_grep_is_allowed_over_a_planted_link (#1683).
         self.assertEqual((True, ""), rg.decide("Read", {"file_path": self.root_file}, self.scan))
         self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": self.root_file}, self.scan))
         self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": self.root}, self.scan))
         self.assertEqual((True, ""), rg.decide("Glob", {"pattern": "*.py", "path": self.root}, self.scan))
+
+    def test_a_directory_argument_grep_is_allowed_over_a_planted_link(self):
+        # KNOWN GAP #1683, pinned on purpose so it is visible in the suite
+        # instead of silent. The hook adjudicates the PATH ARGUMENT: with a
+        # granted DIRECTORY as that argument, the host's own Grep/Glob does the
+        # traversal and can surface the very file the rule refuses by name. A
+        # PreToolUse hook can allow or deny a call, not rewrite it, and walking
+        # the target repository on every Grep is not a thing to do inside a
+        # synchronous hook -- so the closure is re-shaping the setup-scan grant
+        # (the only directory grant the driver issues), which is #1683's job.
+        # This test asserts today's behaviour; #1683 is what changes it.
+        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
+        self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": self.root}, self.scan))
+        self.assertEqual((True, ""), rg.decide("Glob", {"pattern": "*.py", "path": self.root}, self.scan))
+        # The half that IS closed: the same file, named directly.
+        self.assertFalse(rg.decide("Read", {"file_path": planted}, self.scan)[0])
+        self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": planted}, self.scan)[0])
 
     def test_symlink_out_of_scope_is_denied_by_realpath(self):
         link = os.path.join(os.path.dirname(self.inside), "link.py")

@@ -76,6 +76,20 @@ class TestHardLinksInDirectoryGrants(GuardCase):
         self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.inside))
         self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.cell))
 
+    def test_a_directory_argument_grep_is_allowed_over_the_planted_link(self):
+        # KNOWN GAP #1683, the Kimi copy, pinned so it is visible rather than
+        # silent: the hook adjudicates the path argument, and a Grep/Glob whose
+        # argument is the granted directory -- including the pathless one that
+        # defaults to the working directory -- is traversed by Kimi itself,
+        # which can surface the hard-linked file this rule refuses by name.
+        self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.cell))
+        self.assertEqual((True, ""), self.scan("Glob", pattern="*.py", path=self.cell))
+        self.assertEqual((True, ""), guard.adjudicate(
+            {"tool_name": "Grep", "tool_input": {"pattern": "x"}, "cwd": self.cell},
+            "read", self.scope_path, env={guard.ENV_ENTRY_ID: "entry-dir"}))
+        # The half that IS closed: the same file, named directly.
+        self.assertFalse(self.scan("Read", path=self.planted)[0])
+
     def test_a_target_the_rule_cannot_stat_is_denied_not_allowed(self):
         # Fix round 1 (F4), the Kimi copy: a guard that cannot measure denies.
         with mock.patch.object(os, "stat", side_effect=OSError("no stat here")):

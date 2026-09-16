@@ -754,6 +754,15 @@ class TestCodexHostDocs(unittest.TestCase):
         self.assertIn("st_nlink", doc)
         self.assertIn("Exact grants are not narrowed this way", doc)
         self.assertNotIn("inherent to path-based confinement", doc)
+        # Fix round 1 (F1): and the residual the rule does NOT cover, because
+        # an operator deciding whether `--host claude` is safe against a
+        # prepared tree reads this paragraph. The sentence it replaced claimed
+        # parity with a broker that has no such gap.
+        self.assertIn("#1683", doc)
+        self.assertNotIn("apply the same rule to their own directory grants", doc)
+        sentence = next(line for line in doc.splitlines() if "#1683" in line)
+        for phrase in ("traversed by the host", "Grep", "Glob", "Codex has no such gap"):
+            self.assertIn(phrase, sentence)
 
     def test_the_headless_runner_sentence_has_its_antecedent(self):
         # M-8: "...session when it does not (Claude and Codex have headless
