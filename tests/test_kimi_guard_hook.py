@@ -90,9 +90,18 @@ class TestHardLinksInDirectoryGrants(GuardCase):
         # The half that IS closed: the same file, named directly.
         self.assertFalse(self.scan("Read", path=self.planted)[0])
 
+    def test_a_path_with_no_inode_passes_through_to_the_tool(self):
+        # Fix round 2 (N2), the Kimi copy: no inode at that name is nothing to
+        # confine, and the tool's own not-found is the honest answer.
+        self.assertEqual((True, ""), self.scan("Read", path=os.path.join(self.cell, "go.mod")))
+        self.assertEqual((True, ""), self.scan("Grep", pattern="x",
+                                               path=os.path.join(self.cell, "go.mod")))
+        self.assertEqual((True, ""), self.scan("Read", path=os.path.join(self.inside, "inner.py")))
+
     def test_a_target_the_rule_cannot_stat_is_denied_not_allowed(self):
-        # Fix round 1 (F4), the Kimi copy: a guard that cannot measure denies.
-        with mock.patch.object(os, "stat", side_effect=OSError("no stat here")):
+        # Fix round 1 (F4), the Kimi copy: a guard that cannot measure denies --
+        # every errno except the no-inode ones above.
+        with mock.patch.object(os, "stat", side_effect=PermissionError("no stat here")):
             allow, reason = self.scan("Read", path=self.inside)
             self.assertFalse(allow, reason)
             self.assertIn("no stat here", reason)

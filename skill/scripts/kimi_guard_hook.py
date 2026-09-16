@@ -207,7 +207,10 @@ def _hard_link_reason(tool_name, raw, target, scope):
     Directories are not the subject: a directory's st_nlink is its subdirectory
     count, and the rule is about reading content. A path that cannot be stat'ed
     DENIES (fix round 1, F4): a guard may not answer "allowed" about something
-    it could not measure.
+    it could not measure. A path with NO INODE (ENOENT/ENOTDIR, a dangling
+    symlink included) is the exception and passes through (fix round 2, N2):
+    that is a successful measurement of nothing to confine, not a failure to
+    measure, and the tool's own not-found is what the caller should see.
 
     WHAT THIS DOES NOT COVER (#1683). The rule reaches reads whose argument is a
     FILE path. A `Grep` or `Glob` whose argument is a granted DIRECTORY is
@@ -227,11 +230,21 @@ def _hard_link_reason(tool_name, raw, target, scope):
         return ""
     try:
         info = os.stat(target)
+    except (FileNotFoundError, NotADirectoryError):
+        # Fix round 2 (N2): ENOENT/ENOTDIR -- including a dangling symlink --
+        # are not "could not measure". They are a successful measurement that
+        # there is NO INODE at that name, so there is nothing for a read fence
+        # to confine and nothing an attacker gains by inducing one. The tool's
+        # own not-found is the honest answer; a denial here reads as a fence to
+        # the scout probing an unknown tree for absent marker files, and nudges
+        # it toward the directory Grep that is #1683.
+        return ""
     except OSError as exc:
-        # Fix round 1 (F4): a guard that cannot measure DENIES. This used to
-        # answer "" -- allow -- reasoning that the host's own read of an
-        # unstattable name fails the same way; that is a guess about another
-        # process's syscall, made by the one component whose job is to be sure.
+        # Fix round 1 (F4): a guard that cannot measure DENIES -- every other
+        # errno (EACCES, ELOOP, ENAMETOOLONG, EIO). This used to answer "" --
+        # allow -- reasoning that the host's own read of an unstattable name
+        # fails the same way; that is a guess about another process's syscall,
+        # made by the one component whose job is to be sure.
         return ("%s of %s is denied: the read guard could not stat it to apply "
                 "the hard-link rule: %s" % (tool_name, raw, exc))
     if not stat.S_ISREG(info.st_mode) or info.st_nlink <= 1:

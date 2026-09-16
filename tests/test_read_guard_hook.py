@@ -172,12 +172,33 @@ class TestDecide(unittest.TestCase):
             with self.subTest(scope=scope):
                 self.assertEqual((True, ""), rg.decide("Read", {"file_path": planted}, scope))
 
+    def test_a_path_with_no_inode_passes_through_to_the_tool(self):
+        # Fix round 2 (N2): ENOENT/ENOTDIR are not "could not measure" -- they
+        # are a successful measurement that there is NO INODE at that name, so
+        # there is nothing for a read fence to confine. The scout profiles an
+        # unknown tree by probing for absent marker files (go.mod, Cargo.toml),
+        # and the setup scan is the only directory grant there is: denying those
+        # probes reads as a fence and nudges it toward the #1683 Grep path. The
+        # tool reports not-found, as it did before #1642.
+        missing = os.path.join(self.root, "go.mod")
+        self.assertEqual((True, ""), rg.decide("Read", {"file_path": missing}, self.scan))
+        self.assertEqual((True, ""), rg.decide(
+            "Grep", {"pattern": "x", "path": missing}, self.scan))
+        # ENOTDIR: a path component that is a file, not a directory.
+        through_file = os.path.join(self.root_file, "inner.py")
+        self.assertEqual((True, ""), rg.decide("Read", {"file_path": through_file}, self.scan))
+        # A dangling symlink resolves to a name with no inode: same answer.
+        dangling = os.path.join(self.root, "dangling.py")
+        os.symlink(os.path.join(self.root, "nowhere.py"), dangling)
+        self.assertEqual((True, ""), rg.decide("Read", {"file_path": dangling}, self.scan))
+
     def test_a_target_the_rule_cannot_stat_is_denied_not_allowed(self):
         # Fix round 1 (F4): the rule used to answer "" -- allow -- when os.stat
         # raised, which is a guard answering "yes" about something it could not
         # measure. It denies now, with the error in the reason, and only inside
-        # a directory grant: an exact grant never reaches the stat.
-        with mock.patch.object(os, "stat", side_effect=OSError("no stat here")):
+        # a directory grant: an exact grant never reaches the stat. Everything
+        # except the no-inode errnos above: EACCES, ELOOP, EIO, ENAMETOOLONG.
+        with mock.patch.object(os, "stat", side_effect=PermissionError("no stat here")):
             ok, reason = rg.decide("Read", {"file_path": self.root_file}, self.scan)
             self.assertFalse(ok, reason)
             self.assertIn("no stat here", reason)
