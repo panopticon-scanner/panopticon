@@ -11,10 +11,54 @@ a datetime aborting the run.
 
 It lives beside runners/kimi.py rather than inside it because it is a
 self-contained stdlib concern with no knowledge of the runner, and because
-that module is at the layout ceiling. One owner, one patch target.
+that module is at the layout ceiling. One owner, one patch target. #1640 put
+the `[mcp]` scrub here for both halves of that reason: it is a fact about the
+per-run config FILE, with no knowledge of the runner beyond the block it
+names, and the runner had no room left for it.
 """
 import datetime
 import json
+
+
+# #1640 (run-13 AGT-3297306866). The per-run home mediates what it can guard,
+# and MCP is outside that: `tools.disabled` names the CLI's own built-in
+# vocabulary, and the two PreToolUse hooks adjudicate calls to those same
+# native tools by name. An MCP server's tools are supplied at runtime by
+# ANOTHER PROCESS -- names neither list has heard, reaching the filesystem and
+# the network through that process, not through a tool call this hook sees.
+# Carrying the operator's `[[mcp.servers]]` into the armed home therefore
+# handed every reviewer a surface the home exists to close, and a hostile
+# target that steered a reviewer at one was outside the whole control.
+#
+# The block-level switch, not a per-server one: it is ONE fact to arm and one
+# to refute (the guard probes read two keys), where disabling servers
+# individually is a list to keep correct as the operator's config changes.
+MCP = "mcp"
+# One line, and a COUNT rather than the names: this shares the operator's
+# stderr with the run's own progress output, so a disclosure that grew with
+# their config would crowd out the thing they are watching.
+MCP_DISCLOSURE = "driver loop: %d operator MCP servers disabled in the per-run home"
+
+
+def mediated_mcp(source=None, disclose=None):
+    """The `[mcp]` block every per-run config carries -- inert, always.
+
+    CONSTRUCTED, never filtered: `enabled = false` with an empty `servers`
+    array says the same thing whatever the operator's config holds, including
+    shapes this writer would refuse to emit and per-server flags it would have
+    to understand.
+
+    `source` is the operator's config and `disclose` a stream; given both, the
+    number of `[[mcp.servers]]` being dropped is announced on it when there is
+    one (and nothing is said when there is not -- a line printed on every run
+    teaches its reader to skip the ones that matter).
+    """
+    block = source.get(MCP) if isinstance(source, dict) else None
+    servers = block.get("servers") if isinstance(block, dict) else None
+    dropped = len(servers) if isinstance(servers, list) else 0
+    if dropped and disclose is not None:
+        print(MCP_DISCLOSURE % dropped, file=disclose, flush=True)
+    return {"enabled": False, "servers": []}
 
 
 def _toml_key(key):

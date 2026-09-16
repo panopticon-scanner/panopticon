@@ -921,21 +921,60 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
             kimi_toml.dump_toml({"tools": {"disabled": None}})
         self.assertIn("disabled", str(caught.exception))
 
-    def test_the_real_merged_config_round_trips_with_an_mcp_block(self):
-        # End to end through the file the runner actually arms.
+    def test_the_real_merged_config_drops_the_operators_mcp_servers(self):
+        # #1640 (run-13 AGT-3297306866). This used to assert the OPPOSITE --
+        # that two `[[mcp.servers]]` and `enabled = true` round-tripped into
+        # the armed home -- which was true and was the defect: the per-run
+        # home's confinement is `tools.disabled` plus two PreToolUse hooks,
+        # and both adjudicate the CLI's own tool names. An MCP server's tools
+        # are supplied at runtime by another process, under names neither has
+        # heard, reaching the filesystem and the network through that process.
+        # The writer's ability to emit the nested shape is still covered, by
+        # `test_a_nested_array_of_tables_round_trips` above.
         with tempfile.TemporaryDirectory() as d:
             fixture = _fixture_home(d)
             with open(os.path.join(fixture, "config.toml"), "a", encoding="utf-8") as fh:
                 fh.write('\n[[mcp.servers]]\nname = "s1"\n\n[[mcp.servers]]\nname = "s2"\n'
                          '\n[mcp]\nenabled = true\n')
             home = os.path.join(d, "home")
-            kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
-                                        os.path.join(d, "a.json"), real_home=fixture)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+                                            os.path.join(d, "a.json"), real_home=fixture)
             with open(os.path.join(home, "config.toml"), "rb") as fh:
                 armed = tomllib.load(fh)
-        self.assertEqual(["s1", "s2"], [s["name"] for s in armed["mcp"]["servers"]])
-        self.assertTrue(armed["mcp"]["enabled"])
+        self.assertEqual([], armed["mcp"]["servers"])
+        self.assertFalse(armed["mcp"]["enabled"])
         self.assertEqual(2, len(armed["hooks"]))
+        # The disclosure is a COUNT on one line, never a list: it shares the
+        # operator's stderr with the run's own progress output, and a line
+        # that grows with the operator's config would crowd it out.
+        self.assertIn("2 operator MCP servers disabled in the per-run home",
+                      err.getvalue())
+        self.assertNotIn("s1", err.getvalue())
+
+    def test_an_operator_config_with_no_mcp_block_discloses_nothing(self):
+        # Nothing was dropped, so there is nothing to say; a line printed on
+        # every run teaches the operator to skip the ones that matter.
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+                                            os.path.join(d, "a.json"),
+                                            real_home=_fixture_home(d))
+            with open(os.path.join(home, "config.toml"), "rb") as fh:
+                armed = tomllib.load(fh)
+        self.assertEqual("", err.getvalue())
+        self.assertEqual({"enabled": False, "servers": []}, armed["mcp"])
+
+    def test_the_block_is_constructed_not_filtered(self):
+        # Whatever the operator's `[mcp]` holds -- a scalar, a table this
+        # writer could not emit, a per-server `enabled` flag -- the armed home
+        # carries the same two keys. Preferring the block-level switch over a
+        # per-server one is deliberate: it is one fact, and the probes refute
+        # it by reading two keys rather than walking a list.
+        merged = kimi_runner.build_merged_config(
+            {"mcp": "whatever the operator put here"}, "s.json", "a.json")
+        self.assertEqual({"enabled": False, "servers": []}, merged["mcp"])
 
 
 class TestDefaultAgentSurface(unittest.TestCase):

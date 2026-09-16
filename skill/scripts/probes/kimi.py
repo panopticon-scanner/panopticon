@@ -330,9 +330,11 @@ def _kimi_hooks_are_armed(sandbox, mode):
     the other one's absence is disclosed in the detail, naming the probe that
     owns it -- because over-refutation never blesses anything but it does make
     a reader scanning states alone believe the write guard is broken when only
-    read confinement is. What stays shared is the pair of faults that are not
-    a hook: a config.toml that will not parse (neither hook registers) and a
-    `tools.disabled` that no longer covers the derived set.
+    read confinement is. What stays shared are the faults that are not
+    a hook: a config.toml that will not parse (neither hook registers), a
+    `tools.disabled` that no longer covers the derived set, and a live `mcp`
+    block (#1640) -- MCP tools come from another process under names neither
+    guard has heard, so a home that carries one is unmediated for BOTH.
 
     C3: both guard probes are named "...-armed", and both used to prove only
     the adjudication -- payloads through the hook script -- while nothing
@@ -388,6 +390,15 @@ def _kimi_hooks_are_armed(sandbox, mode):
     missing = sorted(set(kimi_runner.disabled_tools()) - disabled)
     if missing:
         faults.append("tools.disabled omits %s" % ", ".join(missing))
+    # #1640: read back off the FILE, like every other fault here -- the
+    # question is what the home the run arms actually carries, not what
+    # `build_merged_config` meant to put in it.
+    mcp = config.get("mcp") if isinstance(config.get("mcp"), dict) else {}
+    servers = mcp.get("servers") if isinstance(mcp.get("servers"), list) else []
+    if mcp.get("enabled") or servers:
+        faults.append("the `mcp` block is live (enabled=%r, %d server(s)): MCP tools are "
+                      "served by another process under names neither guard adjudicates"
+                      % (mcp.get("enabled"), len(servers)))
     if faults:
         return False, ("the config.toml the runner generates does not arm the %s "
                        "guard: %s" % (mode, "; ".join(faults)))

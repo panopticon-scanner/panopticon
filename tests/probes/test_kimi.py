@@ -429,6 +429,32 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("tools.disabled", detail)
 
+    def test_an_armed_config_with_live_mcp_refutes_both_probes(self):
+        # #1640: the per-run home mediates what it can guard, and MCP tools
+        # are outside both hooks -- so an armed config whose `[mcp]` block is
+        # live is a refutation of the arming, exactly as a missing hook or a
+        # gutted `tools.disabled` is. Shared between the two probes for the
+        # same reason `tools.disabled` is: neither guard covers those tools.
+        import scripts.runners.kimi as kimi_runner
+        real = kimi_runner.build_merged_config
+
+        for name, block in (("enabled", {"enabled": True, "servers": []}),
+                            ("servers", {"enabled": False,
+                                         "servers": [{"name": "s1", "command": "x"}]})):
+            def with_mcp(source, scope_path, allowlist_path, *args, **kwargs):
+                merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+                merged["mcp"] = block
+                return merged
+            with self.subTest(live=name):
+                with mock.patch.object(kimi_runner, "build_merged_config",
+                                       side_effect=with_mcp):
+                    read = kimi_probes.probe_kimi_read_guard(
+                        "kimi", doctor_runner=_DoctorFake())
+                    write = kimi_probes.probe_kimi_write_guard("kimi")
+                for state, _by, detail in (read, write):
+                    self.assertEqual(hosts.REFUTED, state, detail)
+                    self.assertIn("mcp", detail)
+
     def test_the_armed_detail_names_the_config_it_parsed(self):
         state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.PROVEN, state)

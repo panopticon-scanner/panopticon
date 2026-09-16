@@ -6,7 +6,7 @@ WHY A PER-RUN KIMI HOME. Kimi Code registers hooks only in
 project-level hooks file -- and it discovers credentials under the same root.
 So `prepare` builds a per-run home: the operator's OAuth stores (`credentials`,
 `oauth`) are SYMLINKED in (never copied: no secret bytes are duplicated), and
-`config.toml` is regenerated from the operator's own with three deltas --
+`config.toml` is regenerated from the operator's own with four deltas --
 
   * the two guard hooks (kimi_guard_hook.py read/write) with this run's
     scope/allowlist paths baked into their commands;
@@ -18,9 +18,13 @@ So `prepare` builds a per-run home: the operator's OAuth stores (`credentials`,
     the only form Kimi's config takes. That closes the default-agent surface
     for UNENFORCED entries too (the setup scan is always one), where a
     three-name deny-list left an unguarded read tool, two egress tools and a
-    persistence tool live.
+    persistence tool live;
+  * ``[mcp]``, REPLACED rather than carried: `enabled = false` and no servers,
+    whatever the operator's config holds, because MCP tools come from another
+    process and neither the deny-list nor the hooks can see them. How many
+    were dropped is said on stderr (#1640; `kimi_toml.mediated_mcp` says why).
 
-The source config's other values are carried verbatim -- including any
+Every other value in the source config is carried verbatim -- including any
 plaintext `api_key` the operator keeps there (stripping it would break
 api_key-authenticated installs). BECAUSE it carries that surface the home is
 built under the operator's temp root (``$XDG_RUNTIME_DIR`` where there is one),
@@ -65,12 +69,11 @@ import scripts.kimi_guard_hook as kimi_guard_hook
 import scripts.model_resolver as model_resolver
 import scripts.runners.base as base
 
-# I3 (gate review): the launcher is a MODULE ATTRIBUTE, never a default
-# argument, and every spawn resolves it inside the body. A default argument
-# binds `subprocess.run` at import time, where `monkeypatch.setattr` cannot
-# reach it -- so tests/conftest.py's autouse `_no_live_host_launches` can only
-# refuse a real `kimi` launch if the name is looked up per call, here. The
-# sibling family PRs bind their own module attribute the same way.
+# I3 (gate review): the launcher is a MODULE ATTRIBUTE, never a default argument, and every spawn
+# resolves it inside the body. A default argument binds `subprocess.run` at import time, where
+# `monkeypatch.setattr` cannot reach it -- so tests/conftest.py's autouse `_no_live_host_launches`
+# can only refuse a real `kimi` launch if the name is looked up per call, here. The sibling family
+# PRs bind their own module attribute the same way.
 DEFAULT_RUNNER = subprocess.run
 # N1, done: the rebase step this class's docstring asked for. There is ONE
 # LaunchRefused, `base.LaunchRefused`, raised by the suite's guard through
@@ -78,30 +81,28 @@ DEFAULT_RUNNER = subprocess.run
 # because layout rule 4 bans a package module re-exporting a SIBLING's name.
 
 
-# C1 (gate review): the per-run home is built under the OPERATOR's temp root, never
-# under `<run_dir>` inside the reviewed tree. What lands in it is the operator's
-# credential surface -- the OAuth stores symlinked in and a config.toml carrying
-# whatever the source config holds, `api_key` included -- and a run folder inside the
-# target is readable by the always-unenforced setup-scan reviewer (its scope is the
-# whole review root), embedded by any `zip -r` of the run folder, and reachable by the
-# target's own tooling. chmod 700 does not help there: every one of those readers is the
-# same uid. The run folder keeps only POINTER_FILE, INFORMATIONAL ONLY (N2): an operator
-# debugging an errored run needs to know where the home is, but nothing here or in the
-# probes reads it back. It sits in the reviewed tree, so reading it would make an
-# untrusted file an input to where this run's credential surface is written and to what
-# the probes call evidence. Every `prepare` mints a fresh home; nothing is reused.
+# C1 (gate review): the per-run home is built under the OPERATOR's temp root, never under
+# `<run_dir>` inside the reviewed tree. What lands in it is the operator's credential surface --
+# the OAuth stores symlinked in and a config.toml carrying whatever the source config holds,
+# `api_key` included -- and a run folder inside the target is readable by the always-unenforced
+# setup-scan reviewer (its scope is the whole review root), embedded by any `zip -r` of the run
+# folder, and reachable by the target's own tooling. chmod 700 does not help there: every one of
+# those readers is the same uid. The run folder keeps only POINTER_FILE, INFORMATIONAL ONLY (N2):
+# an operator debugging an errored run needs to know where the home is, but nothing here or in the
+# probes reads it back. It sits in the reviewed tree, so reading it would make an untrusted file
+# an input to where this run's credential surface is written and to what the probes call evidence.
+# Every `prepare` mints a fresh home; nothing is reused.
 HOME_PREFIX = "panopticon-kimi-"
 POINTER_FILE = "kimi-home-path"
 _GUARD = os.path.abspath(kimi_guard_hook.__file__)
 # Symlinked into the per-run home: the OAuth credential stores (file + dir).
 # Config itself is regenerated, not linked -- the hooks have to merge into it.
 _CREDENTIAL_ITEMS = ("credentials", "oauth")
-# The CLI's builtin tool vocabulary by major.minor, measured from a live
-# session's `llm.tools_snapshot` on 0.42.0. It lives with the runner that must
-# DENY these names, not with the probe that reports on them: Kimi's config
-# offers `tools.disabled` and no allow-list, so closing the surface needs every
-# name the CLI ships. An uncovered version gets the union below (denying a name
-# the CLI lacks is inert); the PROBE is what refuses to bless one.
+# The CLI's builtin tool vocabulary by major.minor, measured from a live session's
+# `llm.tools_snapshot` on 0.42.0. It lives with the runner that must DENY these names, not with
+# the probe that reports on them: Kimi's config offers `tools.disabled` and no allow-list, so
+# closing the surface needs every name the CLI ships. An uncovered version gets the union below
+# (denying a name the CLI lacks is inert); the PROBE is what refuses to bless one.
 TOOL_VOCABULARY = {
     "0.42": frozenset({
         "Agent", "AgentSwarm", "AskUserQuestion", "Bash", "CreateGoal",
@@ -193,12 +194,12 @@ def build_merged_config(source, scope_path, allowlist_path, source_path=None):
     if isinstance(tools_in, dict):
         _expect(source_path, "tools.disabled", tools_in.get("disabled"), list,
                 "an array of strings", items=str)
-    # `[hooks]` rather than `[[hooks]]` used to iterate the dict's KEYS, drop
-    # them all as non-dicts, and arm a config whose operator hooks had silently
-    # vanished. Name it instead.
+    # `[hooks]` rather than `[[hooks]]` used to iterate the dict's KEYS, drop them all
+    # as non-dicts, and arm a config whose operator hooks had silently vanished. Name it instead.
     _expect(source_path, "hooks", source.get("hooks"), list, "an array of tables",
             items=dict)                                 # R2-3: and what is IN it
     merged = dict(source)
+    merged["mcp"] = kimi_toml.mediated_mcp(source, disclose=sys.stderr)   # #1640
     merged["merge_all_available_skills"] = False
     merged["builtin_product_skills"] = False
     tools = dict(merged.get("tools") or {})
@@ -263,11 +264,10 @@ def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
     derived from the reviewed tree.
     """
     real_home = real_home or os.environ.get("KIMI_CODE_HOME") or os.path.expanduser("~/.kimi-code")
-    # I2: lstat BEFORE the chmod. `makedirs(exist_ok=True)` is happy with a
-    # symlink to a directory and `chmod` follows it, so a link planted at this
-    # name (on a resume, where the path is re-derived rather than freshly
-    # minted) would relax someone else's directory to 700 and then take the
-    # merged config -- api_key included -- through the link.
+    # I2: lstat BEFORE the chmod. `makedirs(exist_ok=True)` is happy with a symlink to a
+    # directory and `chmod` follows it, so a link planted at this name (on a resume, where
+    # the path is re-derived rather than freshly minted) would relax someone else's
+    # directory to 700 and then take the merged config -- api_key included -- through it.
     if os.path.islink(home):
         raise OSError("refusing to build the kimi home through a symlink: %s" % home)
     os.makedirs(home, exist_ok=True)
