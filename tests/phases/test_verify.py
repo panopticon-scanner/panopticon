@@ -356,3 +356,71 @@ class TestBackupGrantBlockPlacement(unittest.TestCase):
         # (the TEMPLATE mentions the ceiling to say what it means; what must be
         # absent is the driver's counted sentence.)
         self.assertNotIn("further files omitted by the entry ceiling", prompt)
+
+
+class TestPlantedCarrierCannotSuppressTheBackupRound(unittest.TestCase):
+    """Fix round 2, N1. `_cell_verdicts` was the THIRD reader of an agent-written
+    verdict bundle and the one the F1 strip missed. Its output picks the backup
+    round's scope (`advisor_confirmed` only), so a PRIMARY advisor that plants
+    `_backup_missing_evidence` on its own verdicts flips them to
+    `backup_scope_limited`, empties the scope, and `_verify_backup_execute`
+    dispatches no adversarial round for the cell at all -- cheaper than the
+    exploit F1 closed, and invisible in the report."""
+
+    RUN_ID = "run-carrier-suppression"
+
+    def _cell(self, root, planted):
+        os.makedirs(runio._pano(root, "verdicts"), exist_ok=True)
+        manifest = {"run_id": self.RUN_ID, "host": "claude",
+                    "security_mode": "standard", "flags": {}}
+        runio._write_json(runio._pano(root, "groups.json"),
+                          {"groups": [{"name": "G", "files": ["src/a.py"]}]})
+        runio._write_json(runio._pano(root, "coverage-G.json"),
+                          {"effective": ["SEC"]})
+        runio._write_json(runio._pano(root, "findings-G-SEC.json"), {
+            "findings": [{"title": "injection %d" % i, "severity": "CRITICAL",
+                          "domain": "SEC", "code": "SEC-A3A",
+                          "category": "injection",
+                          "location": {"file": "src/a.py", "line_start": 10 + i}}
+                         for i in range(3)],
+            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                            "domain": "SEC", "group": "G"}})
+        cell = review._load_cell_findings(root, manifest, "G", "SEC")
+        verdict = lambda f: dict(                                  # noqa: E731
+            {"finding_id": f["id"], "verdict": "CONFIRMED",
+             "reasoning": "real"},
+            **({"_backup_missing_evidence": ["elsewhere.py"]} if planted else {}))
+        runio._write_json(
+            verify._verify_out_file(root, "G", "SEC", "primary"),
+            {"verdicts": [verdict(f) for f in cell],
+             "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
+                             "domain": "SEC", "group": "G", "stage": "primary"}})
+        return manifest
+
+    def _scope(self, planted):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            manifest = self._cell(root, planted)
+            return verify._cell_backup_findings(root, manifest, "G", "SEC")
+
+    def test_a_planted_carrier_does_not_shrink_the_backup_scope(self):
+        self.assertEqual(len(self._scope(planted=False)), 3)
+        self.assertEqual(len(self._scope(planted=True)), 3)
+
+    def test_the_backup_round_is_still_dispatched(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            manifest = self._cell(root, planted=True)
+            res = verify._verify_backup_execute(root, manifest, "claude",
+                                                ocrdb.load_bundle())
+            self.assertIsNotNone(res, "no adversarial backup entry dispatched")
+            self.assertEqual(res.checkpoint, "verify")
+
+    def test_cell_verdicts_strips_agent_private_keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            self._cell(root, planted=True)
+            got = verify._cell_verdicts(root, "G", "SEC", "primary")
+            self.assertEqual(len(got), 3)
+            for v in got:
+                self.assertEqual([k for k in v if k.startswith("_")], [], v)

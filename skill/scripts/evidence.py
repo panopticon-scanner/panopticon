@@ -49,25 +49,52 @@ VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
 SCOPE_LIMITED_FIELD = "_backup_missing_evidence"
 
 
+# Identity an advisor may not assert about its own verdict. `stage` decides how
+# the verdict is READ rather than what it says: it picks which candidate is
+# treated as the adversarial second opinion, and fix round 2 N2 demonstrated one
+# PRIMARY bundle declaring a second entry `stage: "backup"` and fabricating a
+# gate-eligible `backup_scope_limited` disclosure with no private key at all.
+# The loaders put the controller's own value back -- from `_panopticon.stage`
+# for a stamped bundle, from the controller-chosen FILENAME for a legacy
+# single-verdict file.
+#
+# `run_id` is deliberately NOT here. On the bundle path the stamp overrides it
+# anyway (`load_verdict_bundles` assigns rather than defaults), and on the legacy
+# queue path there is no stamp to restore it from: it is an ECHO the advisor was
+# handed and `match_verdict` checks, exactly like `finding_id`, and echoing it
+# wrongly only drops the advisor's own verdict. An echo confers nothing; `stage`
+# confers a round.
+CONTROLLER_STAMPED = ("stage",)
+
+
 def _agent_verdict(raw):
-    """An agent-supplied verdict with every private (`_`-prefixed) key removed.
+    """THE trust boundary for an agent-written verdict. One sanitizer, used by
+    every read path (`tests/test_agent_verdict_guard.py` walks the tree and
+    fails if a fourth reader appears without it).
 
-    The trust boundary for a verdict FILE, and the reason it exists (#1638 P16
-    fix round 1, F1): `_`-prefixed keys are the pipeline's own carriers --
-    `_backup_missing_evidence` here, `_merged_ids`/`_group` on findings -- and
-    an advisor that plants one is asserting a controller decision. Two exploits
-    were demonstrated through the production path: a backup REJECTION carrying
-    `_backup_missing_evidence` was laundered into a retained primary CONFIRMED
-    (rejected, factor 0.0, out of the gate -> backup_scope_limited, factor 1.5,
-    IN the gate), and a primary-only verdict carrying it fabricated a "backup
-    could not see" disclosure about a round that never ran.
+    Two jobs:
 
-    Stripping at LOAD rather than checking at each reader is the same discipline
-    as the controller-owned `_panopticon` stamp: one rule, at the door, for every
-    private key present and future. The public `missing_evidence` field is the
-    advisor's supported way to report a scope gap and is untouched.
+    (a) strip every private (`_`-prefixed) key. They are the pipeline's own
+        carriers -- `_backup_missing_evidence` here, `_merged_ids`/`_group` on
+        findings -- so an advisor that plants one is asserting a controller
+        decision. Round 1 F1 demonstrated a backup REJECTION laundered into a
+        retained primary CONFIRMED (rejected, factor 0.0, out of the gate ->
+        backup_scope_limited, factor 1.5, IN the gate) and a primary-only
+        verdict fabricating a "backup could not see" disclosure about a round
+        that never ran; round 2 N1 then found the same key emptying a cell's
+        whole backup scope through `phases/verify._cell_verdicts`, so no
+        adversarial round was dispatched;
+
+    (b) drop `CONTROLLER_STAMPED` (`stage`), which is round 2 N2: an advisor may
+        say what it concluded, never which ROUND it was.
+
+    A rule at the door rather than a check at each reader, for the same reason
+    the `_panopticon` stamp is controller-owned: per-reader discipline is what
+    failed, twice. Everything an advisor is actually asked for -- including the
+    public `missing_evidence` and `evidence_scope` -- passes through untouched.
     """
-    return {k: v for k, v in raw.items() if not str(k).startswith("_")}
+    return {k: v for k, v in raw.items()
+            if not str(k).startswith("_") and k not in CONTROLLER_STAMPED}
 
 
 def scope_limited_paths(verdict):
@@ -561,8 +588,13 @@ def load_verdicts_detailed(verdicts_dir):
             continue
         # F1: the same trust boundary as the bundle loader -- a single-verdict
         # file is agent-written too, and `match_verdict` feeds it to the same
-        # `derive_evidence`.
-        out[name[:-len(".json")]] = _agent_verdict(data)
+        # `derive_evidence`. The stage this path has is PATH-derived (fix round
+        # 2, N2): the controller chose the filename, so `-backup.json` is its
+        # own stamp, and an advisor's declared `stage` is gone with the rest.
+        queue_id = name[:-len(".json")]
+        out[queue_id] = dict(_agent_verdict(data),
+                             stage="backup" if queue_id.endswith("-backup")
+                             else "primary")
     return out, unloadable
 
 
@@ -658,8 +690,13 @@ def load_verdict_bundles(verdicts_dir):
                     and raw.get("finding_id")):
                 continue
             v = _agent_verdict(raw)
-            v.setdefault("run_id", run_id)
-            v.setdefault("stage", stage_default)
+            # Assigned, not setdefault'ed (fix round 2, N2): the CONTROLLER
+            # stamp is the only authority for either. The sanitizer has already
+            # dropped any declared `stage`; `run_id` is overwritten here for the
+            # same reason. An unstamped bundle gets run_id None and stage
+            # "primary" -- fail closed, since there is no authority for "backup"
+            # and persist refuses such a bundle anyway.
+            v["run_id"], v["stage"] = run_id, stage_default
             by_fid.setdefault(str(v["finding_id"]), []).append(v)
     return by_fid, unloadable
 
@@ -702,6 +739,30 @@ def record_merged_id(best, other):
         best[MERGED_IDS_FIELD] = aliases
 
 
+# Least favourable to the FINDING, first. A BACKUP advisor that says two things
+# about one claim has the more sceptical of them taken (fix round 2, N6):
+# first-wins silently discarded a REJECTED that arrived after a
+# NEEDS_MORE_INFO in the same bundle, which is a refutation thrown away. Ties
+# and unknown values keep arrival order, so a single-candidate pool is unchanged.
+#
+# Deliberately NOT applied to duplicate PRIMARIES, and the asymmetry is the
+# point. The backup round is adversarial by construction -- scepticism is what
+# it is for, and a backup that wanted to refute could simply emit the REJECTED
+# alone, so the rule hands a hostile backup nothing it did not already have. A
+# primary is the round that establishes a finding, and demoting on contradiction
+# there WOULD be a new lever: an advisor that disliked a claim could emit
+# CONFIRMED + NEEDS_MORE_INFO and drop it out of the gate at no cost. Duplicate
+# primaries keep today's first-wins.
+_VERDICT_SCEPTICISM = {"REJECTED": 0, "NEEDS_MORE_INFO": 1, "CONFIRMED": 2}
+
+
+def _least_favourable(candidates):
+    """The most sceptical of several BACKUP verdicts for one finding."""
+    return min(candidates,
+               key=lambda c: _VERDICT_SCEPTICISM.get(
+                   str(c.get("verdict", "")).upper(), 3))
+
+
 def match_verdict_by_id(finding, by_fid, run_id=None):
     """Match a bundle verdict to a finding by its assigned `id`. by_fid maps a
     finding_id to a LIST of candidate verdicts (primary and/or backup, possibly
@@ -720,6 +781,13 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
     backup named, and `derive_evidence` records the honest
     `backup_scope_limited`. A backup NMI that names NOTHING is a substantive
     "the code does not say", and keeps today's backup-wins semantics.
+
+    Where several BACKUP verdicts exist for one finding, the LEAST FAVOURABLE to
+    it is the one that counts (`_least_favourable`, fix round 2 N6). `stage`
+    itself is controller-stamped at load, so "the backup" is a round the driver
+    dispatched, never a label an advisor chose for itself -- which is also what
+    makes the retained primary and the scope-limited backup necessarily
+    different bundles.
     """
     fid = finding.get("id")
     if not fid:
@@ -742,9 +810,10 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
             break
     if not candidates:
         return None
-    backup = next((c for c in candidates if c.get("stage") == "backup"), None)
-    if backup is None:
+    backups = [c for c in candidates if c.get("stage") == "backup"]
+    if not backups:
         return candidates[0]
+    backup = _least_favourable(backups)
     missing = scope_limited_paths(backup)
     if missing:
         primary = next((c for c in candidates

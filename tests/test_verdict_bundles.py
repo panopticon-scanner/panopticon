@@ -126,7 +126,12 @@ class TestVerdictBundles(unittest.TestCase):
             self.assertEqual(report["findings"], [])
             self.assertEqual(report["discarded_claims"][0]["evidence"]["status"], "rejected")
 
-    def test_bundle_does_not_clobber_own_run_id_or_stage(self):
+    def test_the_controller_stamp_decides_run_id_and_stage(self):
+        # #1638 P16 fix round 2, N2: `run_id` and `stage` are CONTROLLER-stamped
+        # identity (persist._STAMP_KEYS), not advisor opinion. They used to be
+        # taken from the verdict when it carried them, which let one primary
+        # bundle declare a second entry `stage: "backup"` and fabricate a
+        # gate-eligible `backup_scope_limited` disclosure. The stamp wins now.
         with tempfile.TemporaryDirectory() as d:
             tmp_path = Path(d)
             v_dir = tmp_path / "verdicts"
@@ -136,9 +141,13 @@ class TestVerdictBundles(unittest.TestCase):
                               "run_id": "OWN", "stage": "backup"}],
                 "_panopticon": {"run_id": "BUNDLE", "stage": "primary"}}))
             by_fid, _ = evidence.load_verdict_bundles(str(v_dir))
-            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid, run_id="OWN")
-            self.assertEqual(v["run_id"], "OWN")
-            self.assertEqual(v["stage"], "backup")
+            self.assertIsNone(
+                evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="OWN"))
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="BUNDLE")
+            self.assertEqual(v["run_id"], "BUNDLE")
+            self.assertEqual(v["stage"], "primary")
 
     def test_non_dict_panopticon_is_tolerated(self):
         with tempfile.TemporaryDirectory() as d:
@@ -426,3 +435,134 @@ class TestPlantedCarrierIsNotTrusted(unittest.TestCase):
             evidence.carried_paths(
                 {"verdict": "CONFIRMED",
                  evidence.SCOPE_LIMITED_FIELD: ["a.py"]}), ["a.py"])
+
+
+class TestStageIsControllerOwned(unittest.TestCase):
+    """Fix round 2, N2. `stage` decides which candidate is treated as the
+    adversarial second opinion, so an advisor that declares its own reproduces
+    round-0's fabricated-disclosure shape with no `_`-prefixed key at all: ONE
+    primary bundle, two entries for one finding, no backup round anywhere."""
+
+    def _one_primary_bundle(self, tmp_path, verdicts):
+        v_dir = tmp_path / "verdicts"
+        v_dir.mkdir(exist_ok=True)
+        (v_dir / "verdicts-app-SEC.json").write_text(json.dumps({
+            "verdicts": verdicts,
+            "_panopticon": {"run_id": "R", "role": "domain_advisor",
+                            "domain": "SEC", "group": "app",
+                            "stage": "primary"}}))
+        return str(v_dir)
+
+    def test_a_primary_bundle_cannot_declare_its_own_backup_verdict(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._one_primary_bundle(Path(d), [
+                {"finding_id": "SEC-100", "verdict": "CONFIRMED",
+                 "reasoning": "mine"},
+                {"finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO",
+                 "stage": "backup",
+                 "missing_evidence": ["/etc/shadow", "secrets/prod.env"]}])
+            by_fid, _ = evidence.load_verdict_bundles(path)
+            self.assertEqual({v.get("stage") for v in by_fid["SEC-100"]},
+                             {"primary"})
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            ev_obj = evidence.derive_evidence({"id": "SEC-100"}, v)
+            self.assertEqual(ev_obj["status"], "advisor_confirmed")
+            self.assertNotIn("missing_evidence", ev_obj)
+
+    def test_an_unstamped_bundle_gets_no_backup_stage_either(self):
+        # Fail closed: with no controller stamp there is no authority for
+        # "backup", so the verdict reads as primary rather than as a second
+        # opinion. `persist` refuses an unstamped bundle anyway.
+        with tempfile.TemporaryDirectory() as d:
+            v_dir = Path(d) / "verdicts"
+            v_dir.mkdir()
+            (v_dir / "verdicts-app-SEC.json").write_text(json.dumps(
+                {"verdicts": [{"finding_id": "SEC-1", "verdict": "CONFIRMED",
+                               "stage": "backup"}]}))
+            by_fid, _ = evidence.load_verdict_bundles(str(v_dir))
+            self.assertEqual(by_fid["SEC-1"][0]["stage"], "primary")
+
+    def test_the_legacy_loader_derives_stage_from_the_file_name(self):
+        # Path-derived, never agent-declared: a legacy single-verdict file is
+        # written to a path the CONTROLLER chose.
+        with tempfile.TemporaryDirectory() as d:
+            v_dir = Path(d) / "verdicts"
+            v_dir.mkdir()
+            (v_dir / "Q1.json").write_text(json.dumps(
+                {"finding_id": "SEC-1", "verdict": "CONFIRMED",
+                 "stage": "backup"}))
+            (v_dir / "Q2-backup.json").write_text(json.dumps(
+                {"finding_id": "SEC-2", "verdict": "CONFIRMED"}))
+            verdicts, bad = evidence.load_verdicts_detailed(str(v_dir))
+            self.assertEqual(bad, [])
+            self.assertEqual(verdicts["Q1"]["stage"], "primary")
+            self.assertEqual(verdicts["Q2-backup"]["stage"], "backup")
+
+
+class TestDuplicateVerdictsTakeTheLeastFavourable(unittest.TestCase):
+    """Fix round 2, N6. `match_verdict_by_id` took the FIRST candidate of the
+    winning stage, so a backup bundle carrying both a scope-limited NMI and a
+    REJECTED for one finding silently discarded the refutation. When an advisor
+    says two things about one claim, the finding gets the least favourable of
+    them: REJECTED > NEEDS_MORE_INFO > CONFIRMED."""
+
+    def _dupes(self, tmp_path, verdicts, stage="backup"):
+        _bundle(tmp_path, "verdicts-app-SEC.json",
+                [{"finding_id": "SEC-100", "verdict": "CONFIRMED"}],
+                stage="primary")
+        d_path = _bundle(tmp_path, "verdicts-app-SEC-backup.json", verdicts,
+                         stage=stage)
+        return evidence.load_verdict_bundles(d_path)[0]
+
+    def test_a_rejection_beats_a_scope_limited_nmi_in_the_same_bundle(self):
+        with tempfile.TemporaryDirectory() as d:
+            by_fid = self._dupes(Path(d), [
+                {"finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO",
+                 "missing_evidence": ["x.py"]},
+                {"finding_id": "SEC-100", "verdict": "REJECTED",
+                 "reasoning": "the code does not do this"}])
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            self.assertEqual(v["verdict"], "REJECTED")
+            self.assertEqual(
+                evidence.derive_evidence({"id": "SEC-100"}, v)["status"],
+                "rejected")
+
+    def test_a_rejection_beats_a_confirmation_in_the_same_bundle(self):
+        with tempfile.TemporaryDirectory() as d:
+            by_fid = self._dupes(Path(d), [
+                {"finding_id": "SEC-100", "verdict": "CONFIRMED"},
+                {"finding_id": "SEC-100", "verdict": "REJECTED"}])
+            self.assertEqual(
+                evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")["verdict"],
+                "REJECTED")
+
+    def test_an_nmi_beats_a_confirmation_in_the_same_bundle(self):
+        with tempfile.TemporaryDirectory() as d:
+            by_fid = self._dupes(Path(d), [
+                {"finding_id": "SEC-100", "verdict": "CONFIRMED"},
+                {"finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO"}])
+            self.assertEqual(
+                evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")["verdict"],
+                "NEEDS_MORE_INFO")
+
+    def test_duplicate_primaries_keep_first_wins(self):
+        # Deliberately NOT extended to the primary round: it establishes a
+        # finding, so demoting on contradiction would hand a hostile advisor a
+        # free lever (emit CONFIRMED + NEEDS_MORE_INFO, drop it out of the
+        # gate). A backup that wanted to refute can already emit the REJECTED
+        # alone, so the rule gives it nothing new. Unchanged behaviour.
+        with tempfile.TemporaryDirectory() as d:
+            tmp_path = Path(d)
+            d_path = _bundle(tmp_path, "verdicts-app-SEC.json",
+                             [{"finding_id": "SEC-100", "verdict": "CONFIRMED"},
+                              {"finding_id": "SEC-100", "verdict": "REJECTED"}],
+                             stage="primary")
+            by_fid, _ = evidence.load_verdict_bundles(d_path)
+            self.assertEqual(
+                evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")["verdict"],
+                "CONFIRMED")

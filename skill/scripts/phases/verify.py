@@ -65,7 +65,16 @@ def _cell_verdicts(review_root, group, domain, stage, parts=1):
         data = runio._load_json(
             _verify_out_file(review_root, group, domain, stage, part))
         if isinstance(data, dict) and isinstance(data.get("verdicts"), list):
-            merged.extend(v for v in data["verdicts"] if isinstance(v, dict))
+            # #1638 P16 fix round 2, N1: the DRIVER's own reader of an
+            # agent-written bundle, and the third of three -- it was the one the
+            # F1 strip missed. `_cell_backup_findings` derives evidence from
+            # what this returns and keeps only `advisor_confirmed`, so a primary
+            # advisor planting `_backup_missing_evidence` on its own verdicts
+            # emptied its cell's backup scope and no adversarial round was
+            # dispatched at all. One sanitizer, every read path
+            # (tests/test_agent_verdict_guard.py).
+            merged.extend(evidence._agent_verdict(v) for v in data["verdicts"]
+                          if isinstance(v, dict))
     return merged
 
 
@@ -420,7 +429,10 @@ def _grant_block(review_root, grant):
 
 def _backup_grant(review_root, files, scope):
     """The bounded EVIDENCE CLOSURE this backup entry is granted, recorded:
-    `{granted, cap, truncated}`.
+    `{granted, cap, truncated, entry_cap, entry_truncated, omitted}` -- the
+    files, the per-claim and per-entry ceilings, whether each bit, and how many
+    distinct files the entry ceiling cost. `evidence_scope.grant` is the one
+    place that shape is defined.
 
     #1029 granted each scoped claim's `location.file` alone, when an advisor's
     Read/Grep were still unconfined and the list was only a cost cut. Plan 5/6
