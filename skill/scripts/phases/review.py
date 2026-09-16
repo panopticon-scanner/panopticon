@@ -419,11 +419,15 @@ def review_execute(review_root, manifest):
     # the matrix lookup, the "who holds this test" comparison and the report
     # key all name a group the operator authored (fix round 1, F3).
     units, unit_of = coverage._discovered_units(review_root)
-    inventory_of = {}
+    # One classify_files pass per unit, not one per (unit, other) pair -- the
+    # comparison below is over every other unit's files (#1638 P13 fix round 2,
+    # N2).
+    stems_of = inventory_mod.unit_stems_map(units)
+    unit_tests, inventory_of = {}, {}
     for unit, unit_files in sorted(units.items()):
+        unit_tests[unit] = sorted((matrix.get(unit) or {}).get("tests") or [])
         inventory_of[unit] = inventory_mod.note(
-            review_root, unit, unit_files,
-            sorted((matrix.get(unit) or {}).get("tests") or []), units)
+            review_root, unit, unit_files, unit_tests[unit], units, stems_of)
     for group, files in coverage._discovered_groups(review_root):
         domains = coverage._effective_domains(review_root, group)
         pending = [d for d in domains
@@ -433,7 +437,13 @@ def review_execute(review_root, manifest):
             continue
         ngroups += 1
         unit = unit_of.get(group, group)
-        tests = sorted((matrix.get(unit) or {}).get("tests") or [])
+        # The VERDICT is the unit's; the `Tests:` LINE is this cell's, because
+        # the read guard is built from `files`. Listing the parent's whole
+        # axis handed a chunk paths its own scope fence denies (fix round 2,
+        # N1). An unchunked group is its own unit, so it keeps the authored
+        # axis verbatim -- globs included.
+        tests = (unit_tests.get(unit) or [] if unit == group
+                 else inventory_mod.readable_tests(unit_tests.get(unit), files))
         all_entries.extend(
             _cell_entry(review_root, manifest, group, d, files, tests, host, bundle,
                         tools_context=tools_context,

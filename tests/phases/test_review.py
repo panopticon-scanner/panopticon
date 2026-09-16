@@ -6,8 +6,10 @@ import unittest
 from unittest import mock
 
 from scripts import hosts
+from scripts import read_guard_hook
 from conftest import write_host_evidence
 import scripts.phases.runio as runio
+import scripts.grouping_engine as grouping_engine
 import scripts.phases.review as review
 import scripts.phases.requests as requests
 
@@ -480,6 +482,33 @@ class TestChunkedGroupsFoldToTheirParent(unittest.TestCase):
                 self.assertNotIn("Big_1", line)
                 self.assertNotIn("Big_2", line)
 
+    def test_a_chunk_never_lists_a_test_the_read_guard_would_refuse(self):
+        # Fix round 2, N1. Round 1 moved the `Tests:` prompt line from
+        # `matrix.get(group)` to `matrix.get(unit)` so a chunk would inherit
+        # its parent's inventory -- right for the VERDICT, wrong for the line:
+        # the read guard is still built from the chunk's own `files`, so the
+        # entry listed four paths its own scope fence guarantees are denials.
+        for group, entry in self._entries().items():
+            # The first entry is inline on the `Tests: {tests}` line, so parse
+            # the whole block rather than only the lines that start with "- ".
+            block = entry["prompt"].split("\nTests:", 1)[1].split(
+                "\nSecurity mode:", 1)[0]
+            listed = [p.strip() for p in block.split("- ") if p.strip()
+                      and p.strip() != "(no tests)"]
+            for path in listed:
+                allow, reason = read_guard_hook.decide(
+                    "Read", {"file_path": os.path.join(self.root, path)},
+                    entry["scope"])
+                with self.subTest(group=group, path=path):
+                    self.assertTrue(allow, reason)
+
+    def test_a_chunk_still_lists_the_tests_it_does_hold(self):
+        # ... and the fix is an intersection, not a blanket blanking: `Big_2`
+        # holds both test files, so its prompt names them.
+        entry = self._entries()["Big_2"]
+        self.assertIn("- tests/test_m0.py", entry["prompt"])
+        self.assertIn("- tests/test_m1.py", entry["prompt"])
+
     def test_the_tally_is_keyed_by_the_group_the_operator_authored(self):
         # The HTML tells an operator to go fix their groups.yml. A key that is
         # not in their groups.yml is advice they cannot act on.
@@ -487,3 +516,55 @@ class TestChunkedGroupsFoldToTheirParent(unittest.TestCase):
         body = runio._load_json(
             runio._pano(self.root, "panel-test-inventory.json"))
         self.assertEqual({"Big": "complete"}, body["groups"])
+
+
+class TestTheInventoryPassIsLinearInUnits(unittest.TestCase):
+    """Fix round 2, N2. `inventory.foreign_tests` compares one unit's module
+    stems against every other unit's files, and round 1 derived the other
+    unit's stems by calling `unit_stems` -- hence
+    `grouping_engine.classify_files`, ~230 glob patterns per file -- INSIDE
+    that pair loop. The pass was O(units^2) over the classifier: 1.4s at 11
+    units, 12.9s at 33, 22.9s at 44, against 0.05s before. `review_execute`
+    recomputes it on every invocation (retries, resumes, a second `tools`
+    attempt), so a 40-group calibration run paid ~25s per driver iteration.
+
+    Pinned structurally rather than by a timer: a wall-clock assertion on a
+    shared machine is a flake generator, and the defect is a call COUNT.
+    """
+
+    UNITS = 8
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard",
+                         "host": "claude"}
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
+        groups, yml = [], ["groups:"]
+        for i in range(self.UNITS):
+            name = "U%d" % i
+            groups.append({"name": name, "chunk_of": name,
+                           "files": ["u%d/mod%d.py" % (i, j) for j in range(4)]})
+            yml.append("  %s:\n    match: ['u%d/**']" % (name, i))
+            runio._write_json(runio._pano(self.root, "coverage-%s.json" % name),
+                              {"group": name, "effective": ["TST"], "run_id": "R"})
+        runio._write_json(runio._pano(self.root, "groups.json"), {"groups": groups})
+        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write("\n".join(yml) + "\n")
+
+    def test_the_classifier_runs_once_per_unit_not_once_per_pair(self):
+        real = grouping_engine.classify_files
+        calls = []
+
+        def counting(files):
+            calls.append(tuple(files))
+            return real(files)
+
+        with mock.patch.object(grouping_engine, "classify_files", counting):
+            review.review_execute(self.root, self.manifest)
+        self.assertEqual(
+            self.UNITS, len(calls),
+            "classify_files ran %d times for %d units -- the inventory pass is "
+            "quadratic in units again" % (len(calls), self.UNITS))

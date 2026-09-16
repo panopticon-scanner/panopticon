@@ -87,7 +87,41 @@ def unit_stems(files):
     return modules, tested, own
 
 
-def foreign_tests(unit, stems, units):
+def unit_stems_map(units):
+    """`{unit: unit_stems(files)}` -- ONE `classify_files` pass per unit.
+
+    Fix round 2, N2. `foreign_tests` compares one unit's module stems against
+    every other unit's files, and deriving the other unit's stems inside that
+    pair loop made the pass O(units^2) over a classifier that walks ~230 glob
+    patterns per file: 1.4s at 11 units, 22.9s at 44, and `review_execute`
+    recomputes the whole thing on every invocation. Built once here, read
+    N times there.
+    """
+    return {u: unit_stems(files) for u, files in units.items()}
+
+
+def readable_tests(unit_tests, files):
+    """The `Tests:` inventory a cell may actually READ, given its own `files`.
+
+    Fix round 2, N1. The inventory VERDICT belongs to the authored unit, so a
+    chunk inherits its parent's -- but the read guard is still built from the
+    chunk's own file list, and listing the parent's whole `tests:` axis handed
+    a chunk four paths its own scope fence guarantees are denials (the prompt
+    says "review ONLY the files listed above … a call outside it is denied
+    with a reason, and recorded", so the entry contradicted itself).
+
+    Two sources, both confined to `files` by construction: the unit's `tests:`
+    entries this cell actually holds (literal paths; a glob is not a path and
+    is left to the caller's unchunked branch), and the test files in its own
+    list. `discovery.is_test_file` rather than `classify_files` deliberately --
+    it is a regex over the name, so this stays off the N2 hot path.
+    """
+    in_scope = set(files or ())
+    return sorted({t for t in (unit_tests or ()) if t in in_scope}
+                  | {f for f in in_scope if discovery.is_test_file(f)})
+
+
+def foreign_tests(unit, stems, units, stems_of):
     """{other unit: [test paths]} for tests NAMED after this unit's modules
     that some OTHER unit claims.
 
@@ -101,6 +135,10 @@ def foreign_tests(unit, stems, units):
     A UNIT, not a group: chunks of one authored leaf are folded together
     before this runs, because a sibling chunk is the same groups.yml entry
     and blaming it named a group the operator cannot find (fix round 1, F3).
+
+    `stems_of` is `unit_stems_map(units)` -- built ONCE by the caller, because
+    computing it here would re-classify every other unit's files for every
+    unit (fix round 2, N2).
 
     Two filters keep basename matching usable. A module this unit already has
     a same-named test for is excluded by the caller (`unit_stems`' `tested`
@@ -125,7 +163,7 @@ def foreign_tests(unit, stems, units):
     for other, other_files in units.items():
         if other == unit:
             continue
-        theirs, _tested, _own = unit_stems(other_files)
+        theirs = stems_of[other][0]
         hits = sorted(f for f in other_files or ()
                       for stem in [test_target_stem(f)]
                       if stem in stems and stem not in theirs)
@@ -134,7 +172,7 @@ def foreign_tests(unit, stems, units):
     return out
 
 
-def note(review_root, unit, files, tests, units=None):
+def note(review_root, unit, files, tests, units=None, stems_of=None):
     """`(state, prompt line)` for one review unit's test inventory (#1638 P13).
 
     `split` outranks `empty`: both mean the inventory is not to be trusted,
@@ -155,15 +193,18 @@ def note(review_root, unit, files, tests, units=None):
     judge it by.
 
     `units` defaults to reading `groups.json` and folding chunks onto their
-    authored unit; `review_execute` passes the mapping it already holds so
-    the whole batch reads the file once.
+    authored unit; `stems_of` to `unit_stems_map(units)`. `review_execute`
+    passes both, so the whole batch reads `groups.json` once and classifies
+    each unit's files once, however many units it dispatches.
     """
     if units is None:
         units, unit_of = coverage._discovered_units(review_root)
         unit = unit_of.get(unit, unit)
         files = units.get(unit, files)
-    stems, tested, own_tests = unit_stems(files)
-    foreign = foreign_tests(unit, stems - tested, units)
+    if stems_of is None:
+        stems_of = unit_stems_map(units)
+    stems, tested, own_tests = stems_of.get(unit) or unit_stems(files)
+    foreign = foreign_tests(unit, stems - tested, units, stems_of)
     if foreign:
         paths = sorted(p for hits in foreign.values() for p in hits)
         shown = paths[:PATHS_SHOWN]
