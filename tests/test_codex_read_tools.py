@@ -143,13 +143,33 @@ def test_a_hard_link_inside_a_directory_grant_is_denied_by_both_readers(tree):
         assert result["isError"] is True, body(result)
         assert "hard-linked" in body(result) and "st_nlink=2" in body(result)
         assert "private outside content" not in body(result)
-    for arguments in ({"pattern": "private", "path": planted},
-                      {"pattern": "private"}):
-        result = reader.call("search", arguments)
-        assert result["isError"] is True, body(result)
-        assert "private outside content" not in body(result)
+    # An EXPLICIT search of the link is a refusal, exactly like read_file: the
+    # reviewer named that file, and there is nothing else the answer could be.
+    result = reader.call("search", {"pattern": "private", "path": planted})
+    assert result["isError"] is True, body(result)
+    assert "hard-linked" in body(result)
+    assert "private outside content" not in body(result)
     # The singly-linked files of the same grant are untouched.
     assert reader.call("read_file", {"path": str(first)})["isError"] is False
+
+
+def test_a_directory_search_skips_the_hard_link_and_keeps_every_other_match(tree):
+    # Fix round 1 (F2): the per-file read used to let HardLinkDenied escape, so
+    # ONE planted link anywhere under the grant refused the whole call and threw
+    # away the matches already found -- an evasion lever costing an attacker one
+    # `ln`. A read fence's job is to make the content unreachable, which a skip
+    # does as well as an abort; the module already answers partially with a
+    # named reason ([search truncated...]), so this one does too.
+    root, source, first, second, outside = tree
+    # 'first.py' < 'middle.txt' < 'second.txt': matches on both sides of it.
+    planted = hard_link_or_skip(outside, source / "middle.txt")
+    result = reader_for(tree, directories=True).call("search", {"pattern": "beta"})
+    assert result["isError"] is False, body(result)
+    text = body(result)
+    assert "first.py:2:beta" in text and "second.txt:1:beta second" in text
+    assert "private outside content" not in text
+    assert "[skipped %s:" % planted in text
+    assert "hard-linked" in text and "st_nlink=2" in text
 
 
 def test_an_exact_file_grant_still_reads_a_hard_linked_file(tree):

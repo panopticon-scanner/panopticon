@@ -63,6 +63,14 @@ EXCLUDED_DIRECTORY_GLOBS = ("*.egg-info",)
 # shown", paired the PATTERN-FILTERED count with the ENUMERATED count --
 # "1 of 5" over a thirteen-file tree -- which is two different questions.
 TRUNCATION_NOTE = "[truncated: enumeration stopped at %d files; pass path= to narrow]"
+# Fix round 1 (F2): what a directory-wide search did NOT read, and why. One
+# planted hard link must not refuse the whole call -- a read fence's job is to
+# make that content unreachable, which a skip does as well as an abort, while
+# an abort also destroys the in-scope answer and hands a target an evasion
+# lever costing one `ln`. Same idiom as the truncation notes above: a partial
+# answer with a named reason. An EXPLICIT `search path=<the link>` is still a
+# refusal -- there the reviewer named that file and nothing else is an answer.
+SKIPPED_NOTE = "[skipped %s: %s]"
 
 
 def _tool(name, description, properties, required=()):
@@ -166,6 +174,17 @@ def _read(path, *, grant=DIR_GRANT):
             remaining -= len(chunk)
     data = b"".join(chunks)
     return data[:MAX_FILE_BYTES].decode("utf-8", errors="replace"), len(data) > MAX_FILE_BYTES
+
+
+def _body(matches, skipped, tail=None):
+    """One search body: the disclosure lines FIRST, then matches, then `tail`.
+
+    Notes lead because `_result` truncates the TAIL of an over-long body, and a
+    disclosure that can be cut off is not one. The truncation tail survives its
+    own removal -- `_result` says the output was truncated -- but "this file was
+    skipped, and why" exists nowhere else.
+    """
+    return "\n".join(list(skipped) + list(matches) + ([tail] if tail else []))
 
 
 def _result(text, error=False):
@@ -325,21 +344,25 @@ class Reader:
                 if not self.scope["dirs"]:
                     raise ValueError("search outside directory scope denied; supply an explicit granted file")
                 files, walk_truncated = self._files(self._roots(arguments))
-            matches, total = [], 0
+            matches, skipped, total = [], [], 0
             for path in files:
-                data, truncated = _read(path, grant=self._require(path))
+                try:
+                    data, truncated = _read(path, grant=self._require(path))
+                except HardLinkDenied as exc:
+                    # F2: skip THIS file, disclose it, keep the rest of the answer.
+                    skipped.append(SKIPPED_NOTE % (path, exc))
+                    continue
                 total += len(data.encode("utf-8"))
                 for number, line in enumerate(data.splitlines(), 1):
                     if pattern in line:
                         matches.append("%s:%d:%s" % (path, number, line))
                         if len(matches) >= 200 or sum(map(len, matches)) >= MAX_OUTPUT_CHARS:
-                            return _result("\n".join(matches) + "\n[search truncated]")
+                            return _result(_body(matches, skipped, "[search truncated]"))
                 if truncated or total >= MAX_SEARCH_BYTES:
-                    return _result("\n".join(matches) + "\n[search truncated; pass path= to narrow]")
-            text = "\n".join(matches)
-            if walk_truncated:
-                text += ("\n" if text else "") + TRUNCATION_NOTE % len(files)
-            return _result(text)
+                    return _result(_body(matches, skipped,
+                                         "[search truncated; pass path= to narrow]"))
+            return _result(_body(matches, skipped,
+                                 TRUNCATION_NOTE % len(files) if walk_truncated else None))
         except (OSError, ValueError, TypeError) as exc:
             return _result("Read tool refused: " + str(exc), error=True)
 
