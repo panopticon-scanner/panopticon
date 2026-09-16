@@ -27,8 +27,42 @@ file stays focused on the host-facing contract.
 
 - `superpowers:writing-plans` — before repo/PR/directory reviews with >15 files
   or >10 changes.
+  Save the review plan to `.panopticon/runs/<tag>/plan.md` (or
+  `.panopticon/scratch/<run>/` before a run exists) — never to
+  `docs/superpowers/`, which is not this review's artifact space.
 - `superpowers:subagent-driven-development` — for matrix-cell and advisor dispatch.
 - `superpowers:verification-before-completion` — before returning the report.
+
+## Dependencies
+
+The three `superpowers:*` sub-skills above are the only external things this
+skill asks for. Panopticon does not ship them and does not install them. The
+lookup is read-only: `driver readiness` reports which of the three it found
+and where, and nothing in this skill ever writes to the roots below.
+
+Where hosts typically look:
+
+| Host | Root |
+| --- | --- |
+| Claude Code | `~/.claude/plugins/…/superpowers/` |
+| Codex | `~/.codex/skills/` |
+| Kimi | `~/.kimi/skills/` |
+| Other agents | `~/.agents/skills/` |
+
+**A missing sub-skill is not a stop, and not a reason to go hunting through a
+host's plugin tree.** Proceed with the built-in default, which is what the
+driver does anyway:
+
+- `superpowers:writing-plans` → write the plan yourself to
+  `.panopticon/runs/<tag>/plan.md`.
+- `superpowers:subagent-driven-development` → dispatch per cell through the
+  driver: `driver loop` in headless mode, or the printed `dispatch` batch
+  through `skill/workflows/dispatch.js` in session mode.
+- `superpowers:verification-before-completion` → the `validate` phase IS the
+  verification; never return a report from a run whose `validate` did not pass.
+
+Disclose in the report which sub-skill was unavailable — the review is still
+valid, but a reader has to know which of these paths it took.
 
 ## Installed-flow substitution
 
@@ -40,6 +74,19 @@ resolve against cwd; only the script path substitutes.
 
 ## Quick reference
 
+- `driver readiness [target] [--host NAME] [--json]` — run this FIRST. The preflight, and
+  the only verb that writes nothing under the target and launches nothing (host CLIs are
+  looked up with `which`, never started): one compact table — or `--json` for the object —
+  covering the guide's path, which required sub-skills are installed and where, the
+  committed matrix's group/code/test counts, any run left to resume, which host CLIs are
+  on PATH, the Docker daemon and the `panopticon-tools` image, and the last run's measured
+  host capabilities. Every failing row carries its remedy on its own line. Exit 0 when
+  nothing gating fails and 1 otherwise, so a host can `driver readiness && driver loop`.
+  The host it reports on is resolved exactly as `driver loop` resolves one (`--host`, else
+  the run's manifest, else the default), so a bare invocation still checks a real host; its
+  row is marked `→` and GATES when its binary is off PATH — `driver loop` would resolve that
+  host to headless and have nothing to launch. `--json` says which rule picked it
+  (`selected_from`).
 - `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap; produces
   `.panopticon/groups.yml.draft` + `setup-report.md` (read the report first).
 - `driver loop [target] [driver run flags] [--mode {headless,session}] [--concurrency N]

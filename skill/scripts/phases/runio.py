@@ -458,6 +458,63 @@ def _confined_to_root(review_root, path):
 
 _DEFAULTS = {"host": "claude", "security": "standard"}
 
+# Which host DRIVES this invocation, and on whose authority. Lifted out of
+# `orchestrate._resolve_host` in #1637 P10 fix round 2, unchanged in behaviour:
+# `driver readiness` has to gate on the host `driver loop` would pick, and
+# `phases/` may not import `orchestrate` (tests/test_layout.py rule 3), so a
+# copy in the preflight would have been a second precedence able to drift from
+# the one it is checking. It belongs here anyway -- every ingredient already
+# did: `_DEFAULTS` above, `_foreign_manifest` below, and `run_manifest`.
+#
+# `host` is the CLI's `--host` (None when absent) rather than an `args`
+# namespace, because the two callers carry different shapes: `driver loop`'s
+# args have `--reset` and the preflight's deliberately do not.
+HOST_SOURCES = ("--host", "manifest", "default")
+
+
+def resolve_host(host, review_root, reset=False):
+    """(name, source) -- which host this invocation dispatches for (I5).
+
+    `--host` when given; otherwise the RUN's own host, off its manifest.
+    `driver.run` is manifest-authoritative about this -- it refuses a `--host`
+    that contradicts the manifest as flag drift -- so a resume WITHOUT the flag
+    is still a generic (or, for a run that predates a retirement, gemini) run.
+    Resolving off `_DEFAULTS["host"]` instead dispatched claude agents into it,
+    with no refusal anywhere on the path.
+
+    A `--reset` run re-mints the manifest from argv, so the OUTGOING manifest
+    must not steer this invocation: fall through to the default, which is what
+    `driver.run` is about to write.
+
+    The host it resolves may no longer be SELECTABLE: a run started before a
+    family PR's row was retired resumes off its own manifest. That is caught by
+    the caller (`orchestrate.loop`), not here, because this returns a name and
+    the refusal is a status document.
+
+    A FOREIGN manifest is ignored on exactly the terms `driver.run` ignores it
+    (#1093 / #run8 AGT-C1A, `_foreign_manifest`): a target can force-commit its
+    own `.panopticon/run-manifest.json`, and driver.run discards such a file and
+    rebuilds from the real CLI args. Reading it here unconditionally handed the
+    TARGET the choice of which family's agents got dispatched at it -- a
+    committed `"host": "gemini"` steered this invocation's runner while the run
+    itself proceeded as claude. Same check, same call shape, so the two cannot
+    drift on what "the run's host" means.
+
+    `source` is which of those three rules answered, for a surface that has to
+    tell an operator WHY it assumed a host (`driver readiness`). The loop
+    ignores it.
+    """
+    if host:
+        return host, "--host"
+    if not reset:
+        manifest = run_manifest.load_manifest(review_root)
+        if not _foreign_manifest(manifest, review_root,
+                                 run_manifest.manifest_path(review_root)):
+            named = (manifest or {}).get("host")
+            if named:
+                return named, "manifest"
+    return _DEFAULTS["host"], "default"
+
 def _error_status(message):
     return {"status": "error", "phase": None, "checkpoint": None, "group": None,
             "dispatch_request": None, "advanced": [], "message": message}

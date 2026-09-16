@@ -6,7 +6,9 @@ from conftest import SKILL_ROOT as ROOT   # #run7 TST-G1B: shared path anchor
 import scripts.hosts as hosts
 
 # #run7 QAL-D1C: the PANOPTICON.md guide was re-opened inline in 10 places.
-_DOC_PATH = os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md")
+# #1637 P01: it lives INSIDE the skill now (the repo-root path is a symlink
+# onto it), so this anchor is `skill/docs/` -- the one constant that moved.
+_DOC_PATH = hosts.guide_path()
 # #1344 plan 5 T5: shared anchor for the dispatched-role template files.
 AGENTS_DIR = os.path.join(ROOT, "agents")
 
@@ -889,3 +891,166 @@ class TestTheStampContractIsWrittenDown(unittest.TestCase):
         for phrase in ("runs/<tag>/rejected/<entry-id>-<attempt>.json",
                        "rejected_file", "prior_rejection"):
             self.assertIn(phrase, self.loop, phrase)
+
+
+class TestTheGuideResolvesInEveryInstallLayout(unittest.TestCase):
+    """#1637 P01: `skill/` is what gets symlinked into `~/.claude/skills/`,
+    `~/.kimi/skills/` and `~/.agents/skills/` (README), so SKILL.md's links are
+    resolved relative to SKILL.md's OWN directory in every installed layout --
+    and in the source checkout too. They pointed at `docs/PANOPTICON.md`, which
+    lived at the REPO ROOT and never at `skill/docs/`, so the first read the
+    skill instructs failed everywhere. The guide moved INTO the skill; the root
+    path stays as a symlink so every root-level reference (README, DEVELOPMENT,
+    docs/) keeps resolving to the same bytes.
+    """
+
+    ROOT_DOC = os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md")
+    SKILL_DOC = os.path.join(ROOT, "docs", "PANOPTICON.md")
+
+    def test_every_relative_link_in_skill_md_resolves_from_skill_mds_directory(self):
+        skill_md = _read_skill_md()
+        targets = sorted({
+            t for t in re.findall(r"\]\(([^)]+)\)", skill_md)
+            if not t.startswith(("http://", "https://", "#", "/"))})
+        self.assertIn("docs/PANOPTICON.md", targets)
+        missing = [t for t in targets
+                   if not os.path.exists(os.path.join(ROOT, t.split("#", 1)[0]))]
+        self.assertEqual(missing, [],
+                         "SKILL.md link(s) that do not resolve from %s -- the "
+                         "first read the skill instructs fails in every "
+                         "installed layout:\n%s" % (ROOT, "\n".join(missing)))
+
+    def test_the_guide_lives_inside_the_skill(self):
+        self.assertTrue(os.path.isfile(self.SKILL_DOC), self.SKILL_DOC)
+
+    def test_the_root_path_is_a_symlink_onto_the_very_same_file(self):
+        self.assertTrue(os.path.islink(self.ROOT_DOC),
+                        "%s must stay a symlink so README/DEVELOPMENT/docs "
+                        "references keep resolving" % self.ROOT_DOC)
+        self.assertTrue(os.path.samefile(self.ROOT_DOC, self.SKILL_DOC))
+        self.assertEqual(os.readlink(self.ROOT_DOC),
+                         os.path.join(os.pardir, "skill", "docs", "PANOPTICON.md"))
+
+    def test_hosts_guide_path_names_that_file(self):
+        self.assertEqual(os.path.realpath(hosts.guide_path()),
+                         os.path.realpath(self.SKILL_DOC))
+        self.assertTrue(os.path.isfile(hosts.guide_path()))
+
+
+# #1637 P03: `superpowers:writing-plans` defaults to `docs/superpowers/plans/`,
+# which in THIS repo is a symlink to a sibling private checkout a reviewing
+# host cannot write. Run-13 improvised `.panopticon/scratch/`. The plan is a
+# review artifact, so it belongs in the review's artifact space, and the skill
+# has to say so in the same breath as it requires the sub-skill.
+PLAN_LOCATION = (
+    "Save the review plan to `.panopticon/runs/<tag>/plan.md` (or "
+    "`.panopticon/scratch/<run>/` before a run exists) — never to "
+    "`docs/superpowers/`, which is not this review's artifact space.")
+
+
+class TestThePlanHasAHome(unittest.TestCase):
+    """Whitespace-collapsed on both sides: SKILL.md wraps at 80 columns and the
+    guide does not, and a sentence guard that also pinned the line breaks would
+    fail on a re-wrap that changed nothing a reader sees."""
+
+    @staticmethod
+    def _flat(text):
+        return " ".join(text.split())
+
+    def test_skill_md_says_where_the_review_plan_goes(self):
+        self.assertIn(PLAN_LOCATION, self._flat(_read_skill_md()))
+
+    def test_the_guide_says_the_same_thing_in_the_same_words(self):
+        self.assertIn(PLAN_LOCATION, self._flat(_read_doc()))
+
+
+# #1637 P02: SKILL.md required three `superpowers:*` sub-skills and said
+# nothing about where a host finds them or what to do when it cannot. Run-13's
+# controller searched another host's plugin cache to answer both questions and
+# then invented its own fallbacks. The roots below are where hosts TYPICALLY
+# look -- read-only, never written, and `driver readiness` reports which ones
+# it found (tests/phases/test_readiness_verb.py pins the code to this list).
+SKILL_ROOTS = ("~/.claude/plugins/…/superpowers/", "~/.codex/skills/",
+               "~/.agents/skills/", "~/.kimi/skills/")
+
+
+class TestTheDependenciesSection(unittest.TestCase):
+
+    def setUp(self):
+        self.section = _section(_read_skill_md(), "## Dependencies",
+                                "## Installed-flow substitution")
+
+    def test_it_names_all_three_required_sub_skills(self):
+        for name in ("superpowers:writing-plans",
+                     "superpowers:subagent-driven-development",
+                     "superpowers:verification-before-completion"):
+            with self.subTest(name=name):
+                self.assertIn(name, self.section)
+
+    def test_it_names_the_roots_hosts_typically_look_in(self):
+        for root in SKILL_ROOTS:
+            with self.subTest(root=root):
+                self.assertIn(root, self.section)
+
+    def test_it_says_the_roots_are_read_only(self):
+        self.assertIn("read-only", self.section.lower())
+
+    def test_a_missing_sub_skill_is_a_documented_default_not_a_stop(self):
+        """The whole point: an absent sub-skill must not send a host hunting
+        through plugin trees, and must not silently change what the review
+        did. Each of the three has a built-in answer, and the report says the
+        sub-skill was unavailable."""
+        for phrase in (".panopticon/runs/<tag>/plan.md",
+                       "skill/workflows/dispatch.js",
+                       "`validate` phase",
+                       "Disclose"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.section)
+
+
+class TestTheReadinessVerbIsAdvertised(unittest.TestCase):
+    """#1637 P10: a preflight nobody is told about is a preflight nobody runs."""
+
+    def test_the_quick_reference_leads_with_it_and_shows_the_exit_code_idiom(self):
+        skill = _read_skill_md()
+        quick = skill.split("## Quick reference", 1)[1]
+        self.assertIn("`driver readiness [target] [--host NAME] [--json]`", quick)
+        self.assertIn("driver readiness && driver loop", quick)
+        # It has to come before the verbs it gates.
+        self.assertLess(quick.index("driver readiness"), quick.index("driver setup"))
+
+    def test_the_guide_says_what_it_reads_and_what_it_never_does(self):
+        loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
+        self.assertIn("driver readiness", loop)
+        for phrase in ("writes nothing", "launches nothing"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, loop)
+
+    def test_the_guide_names_every_status_the_existing_run_row_can_report(self):
+        """Fix round 1, F3: `started` joined the set, and a doc that lists the
+        old four teaches a `--json` consumer to key on a value it will not
+        see."""
+        loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
+        for status in ("complete", "checkpoint", "error", "started", "none"):
+            with self.subTest(status=status):
+                self.assertIn("`%s`" % status, loop)
+
+    def test_the_guide_says_a_bare_invocation_still_resolves_a_host(self):
+        """Fix round 2: the docs said the `cli` row gates "only when `--host H`
+        was passed", which is now false -- a bare invocation resolves the same
+        host `driver loop` would and gates on it. That sentence is exactly what
+        an operator running it bare would have relied on."""
+        loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
+        self.assertIn("`selected_from`", loop)
+        self.assertIn("runio.resolve_host", loop)
+        self.assertNotIn("only when `--host H` was passed", loop)
+
+    def test_the_guide_says_the_selected_hosts_cli_gates(self):
+        """Fix round 1, F2. The guide previously said an absent host CLI never
+        gates, which is now false for the host `--host` named -- and that is
+        the sentence an operator would have trusted."""
+        loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
+        self.assertIn("--mode session", loop)
+        # Round 2 reworded this: the gate is on the RESOLVED host, with or
+        # without the flag, so the sentence no longer speaks of `--host` alone.
+        self.assertIn("resolves a host to headless", loop)

@@ -90,6 +90,29 @@ CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
 CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
 
 
+# --- where the guide is (#1637 P01) ----------------------------------------
+# SKILL.md's links are relative to SKILL.md's own directory, and `skill/` is
+# what gets symlinked or copied into `~/.claude/skills/`, `~/.kimi/skills/`
+# and `~/.agents/skills/` -- so the guide has to live INSIDE the skill or the
+# first read the skill instructs fails in every installed layout. It does now
+# (`skill/docs/PANOPTICON.md`); the repo-root path is a symlink onto it, so
+# every root-level reference still resolves.
+#
+# Here rather than in a module of its own because this is the same KIND of
+# fact as the registration directories above -- a path this repo's layout
+# fixes, computed from `__file__` and never from cwd (the driver runs with cwd
+# at the TARGET repo). PURE, like everything else in this module: it computes
+# the path and does not stat it. `driver readiness` reports whether it exists,
+# which is the one caller that has an answer to give when it does not.
+GUIDE = "PANOPTICON.md"
+_SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def guide_path():
+    """The absolute path of the user guide inside THIS skill install."""
+    return os.path.join(_SKILL_DIR, "docs", GUIDE)
+
+
 @dataclass(frozen=True)
 class HostSpec:
     """One host's static facts.
@@ -120,6 +143,26 @@ class HostSpec:
     # so a disclosure surface can tell "no answer" from "no question" --
     # tests/probes/test_common.py pins the two together.
     cli_flag_facts: tuple = ()
+    # The binary this host's HEADLESS runner launches (`HostRunner.CLI`), named
+    # here so a consumer can ask "is it on PATH" without importing
+    # `scripts.runners`. `""` means the host launches no CLI of ours (session
+    # mode, `generic`), and then there is nothing to look for.
+    #
+    # `driver readiness` is that consumer, and the reason is not a layout rule:
+    # test_layout pins the REVERSE edge (`runners/* -> phases`), so a
+    # `phases -> runners` import would pass it today. The reason is what the
+    # runners package IS -- host launch machinery -- and what the verb promises:
+    # that it starts nothing. A preflight that imports the launcher to learn a
+    # binary's NAME has taken on the launcher's import graph, its module-level
+    # state and its seams to say one string. This registry is the single pure
+    # source of static host facts (it sits with the registration directories
+    # above for the same reason), so the fact lives here.
+    #
+    # It is still a second name for something the runner owns, so it is PINNED
+    # to the runner by test (tests/test_hosts.py), exactly as `cli_flag_facts`
+    # is pinned to `OUTPUT_SCHEMA_FLAG`. Duplication a test forbids drifting is
+    # the price of keeping this registry importable from everywhere.
+    cli_binary: str = ""
 
 
 HOSTS = {
@@ -137,7 +180,8 @@ HOSTS = {
                 MODEL_BINDING: "entry-model-bound",
                 USAGE_LEDGER: "usage-source",
                 READ_SCOPE_CONFINED: "read-guard-armed"},
-        cli_flag_facts=(OUTPUT_SCHEMA,)),
+        cli_flag_facts=(OUTPUT_SCHEMA,),
+        cli_binary="claude"),
     "kimi": HostSpec(
         name="kimi",
         claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
@@ -152,7 +196,8 @@ HOSTS = {
                 READ_SCOPE_CONFINED: "kimi-read-guard-armed",
                 ARTIFACT_WRITE_GUARD: "kimi-write-guard-armed",
                 MODEL_BINDING: "kimi-model-alias-bound",
-                USAGE_LEDGER: "kimi-usage-wire"}),
+                USAGE_LEDGER: "kimi-usage-wire"},
+        cli_binary="kimi"),
     "codex": HostSpec(
         name="codex",
         claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED}),
@@ -163,7 +208,8 @@ HOSTS = {
         driver_selectable=True,
         probes={TOOL_POLICY_ENFORCED: "codex-effective-tools",
                 READ_SCOPE_CONFINED: "codex-read-scope"},
-        cli_flag_facts=(OUTPUT_SCHEMA,)),
+        cli_flag_facts=(OUTPUT_SCHEMA,),
+        cli_binary="codex"),
     # Registered, not selectable: its family PR did not clear the gate (#1621,
     # retired 2026-09-13). The row STAYS so the registry still knows the name
     # -- `known_hosts()` lists it, `spec("gemini")` resolves, it still claims

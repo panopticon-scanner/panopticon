@@ -515,3 +515,79 @@ class TestTheCliFlagsProbe(unittest.TestCase):
                 flag = ()
             with self.subTest(host=host):
                 self.assertEqual(bool(flag), declared)
+
+
+class TestAProbeThatCouldNotMeasureNamesTheOperation(unittest.TestCase):
+    """#1637 P05: run-13's capability probes reported `unknown` with a bare
+    `PermissionError: [Errno 1] Operation not permitted` and nothing else.
+
+    That detail is the whole answer an operator gets -- it is what lands in
+    `host-capabilities.json`, in the four disclosure surfaces and in the
+    report -- and it names neither what was attempted nor what the OS
+    actually refused. "Operation not permitted" doing which operation, to
+    what? A sandboxed `fork`, a settings file the seatbelt profile denied, a
+    socket: same errno, three completely different remedies, and the run-13
+    controller could not tell them apart.
+
+    So an `OSError` detail carries the errno NAME (`EPERM`, not `1`), the OS's
+    own `strerror`, the `filename` when the exception has one, and the
+    operation the probe was attempting. The verdict is unchanged: a probe that
+    could not measure still says `unknown`, never a guess.
+    """
+
+    DENIED = PermissionError(1, "Operation not permitted", "/x")
+
+    def test_the_detail_carries_errno_name_strerror_filename_and_operation(self):
+        detail = probes_common.failure_detail(
+            self.DENIED, "fork of `codex debug models`")
+        for token in ("PermissionError", "EPERM", "Operation not permitted",
+                      "/x", "fork of `codex debug models`"):
+            with self.subTest(token=token):
+                self.assertIn(token, detail)
+        # The raw errno number alone was the old answer; it must not be the
+        # only thing a reader gets.
+        self.assertNotEqual(detail, "PermissionError: [Errno 1] Operation not permitted")
+
+    def test_a_plain_exception_still_reports_its_type_and_message(self):
+        detail = probes_common.failure_detail(ValueError("nope"), "the thing")
+        self.assertIn("ValueError", detail)
+        self.assertIn("nope", detail)
+        self.assertIn("the thing", detail)
+
+    def test_a_cli_help_read_the_sandbox_denied_names_both(self):
+        """The `_cli_help` wrapper: same denial, reported through the path the
+        capability probes actually take."""
+        import scripts.runners.codex as codex_runner
+        denied = self.DENIED
+
+        def refuse(cmd, **_kwargs):
+            raise denied
+        with tempfile.TemporaryDirectory() as bin_dir:
+            path = os.path.join(bin_dir, "codex")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(path, 0o755)
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    mock.patch.object(codex_runner, "DEFAULT_RUNNER", refuse):
+                facts = probes_common.probe_cli_flags("codex")
+        detail = facts[hosts.OUTPUT_SCHEMA]["detail"]
+        self.assertIsNone(facts[hosts.OUTPUT_SCHEMA]["advertised"])
+        for token in ("EPERM", "Operation not permitted", "exec --help"):
+            with self.subTest(token=token):
+                self.assertIn(token, detail)
+
+    def test_the_codex_inspection_reports_the_same_way_and_stays_unknown(self):
+        """The exact run-13 site: `probes.codex._codex_measure`'s catch-all."""
+        import scripts.probes.codex as codex_probes
+        denied = self.DENIED
+
+        def refuse():
+            raise denied
+        state, _by, detail = codex_probes.probe_codex_tool_policy(
+            "codex", registration_dir="/nowhere",
+            settings_path="/nowhere/host-settings.json", measure=refuse)
+        self.assertEqual(hosts.UNKNOWN, state)
+        for token in ("EPERM", "Operation not permitted", "/x",
+                      "effective Codex inspection"):
+            with self.subTest(token=token):
+                self.assertIn(token, detail)
