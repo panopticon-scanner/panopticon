@@ -217,14 +217,15 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
     # Part A's abspath can't reach into that payload. The advisor inherits the
     # HOST's cwd (the user's checkout), never review_root/the --pr worktree, so
     # without this header a relative `location` resolves against the wrong tree.
-    prompt = ("Repo root: %s\nEvery relative path in the claims below resolves "
-              "against this root -- read files THERE, never in your session's "
-              "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
     # #1638 P16: the backup round's grant is a bounded closure, and the advisor
-    # has to be able to say it was too small. The block sits between the repo-root
-    # pin and the template so the advisor reads the fence before the claims.
-    if grant:
-        prompt = _grant_block(review_root, grant) + prompt
+    # has to be able to say it was too small. The block sits BETWEEN the
+    # repo-root pin and the template (fix round 1, F4 -- it was ahead of the pin,
+    # which the comment did not say): root first, then the fence over it, then
+    # the claims.
+    pin = ("Repo root: %s\nEvery relative path in the claims below resolves "
+           "against this root -- read files THERE, never in your session's "
+           "default checkout.\n\n" % os.path.abspath(review_root))
+    prompt = pin + (_grant_block(review_root, grant) if grant else "") + prompt
     host_ev = runio.host_evidence(review_root)
     enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
     # #1344 F4 (a): a host with no PROVEN artifact_write_guard gets return-persist
@@ -382,28 +383,39 @@ _GRANT_BLOCK = (
     "%s\n"
     "These files are the WHOLE of what your Read and Grep may reach this round: "
     "each claim's own file, the files its evidence names, and their one-hop "
-    "in-repo imports, capped at %d per claim (truncated: %s). Copy this list "
-    "verbatim into every verdict's `evidence_scope.granted`, with the same "
-    "`cap` and `truncated`. If you needed a file that is NOT listed here, "
-    "return NEEDS_MORE_INFO and name the files you could not reach in "
-    "`missing_evidence` -- a scope failure is recorded as one, and never counted "
-    "as a refutation.\n\n%s\n\n")
+    "in-repo imports, capped at %d per claim (truncated: %s) and at %d for this "
+    "check as a whole (entry_truncated: %s).%s Copy this list verbatim into "
+    "every verdict's `evidence_scope.granted`, with the same `cap`, "
+    "`truncated`, `entry_cap` and `entry_truncated`. If you needed a file that "
+    "is NOT listed here, return NEEDS_MORE_INFO and name the files you could "
+    "not reach in `missing_evidence` -- a scope failure is recorded as one, and "
+    "never counted as a refutation.\n\n%s\n\n")
+
+# Fix round 1, F3: when the entry ceiling bit, SAY SO with a number. An advisor
+# told only "truncated: no" reads its scope as complete, which is the same
+# dishonesty the closure exists to remove on the other side.
+_GRANT_OMITTED = (" %d further files omitted by the entry ceiling -- later "
+                  "claims in this check are the ones short of evidence.")
 
 
 def _grant_block(review_root, grant):
     """The prompt section that RECORDS what this backup entry was granted.
 
-    Prepended, exactly as the #975 repo-root pin is, rather than added as a
-    template placeholder: spec 7.4 keeps the templates fixed, and a new
-    placeholder would become mandatory for every `domain-advisor.md` render
-    (including the primary and tool rounds, which are granted no closure).
-    Paths go through `runio._abs_file_list`, so they are absolutized against the
-    review root (#975) and prompt-sanitized (#1190) -- a control character in a
-    target-tree filename cannot inject a bullet line here either."""
-    return _GRANT_BLOCK % (_GRANT_HEADING, int(grant.get("cap") or 0),
-                           "yes" if grant.get("truncated") else "no",
-                           runio._abs_file_list(review_root,
-                                                grant.get("granted") or []))
+    Composed here rather than added as a template placeholder: spec 7.4 keeps
+    the templates fixed, and a new placeholder would become mandatory for every
+    `domain-advisor.md` render (including the primary and tool rounds, which are
+    granted no closure). Paths go through `runio._abs_file_list`, so they are
+    absolutized against the review root (#975) and prompt-sanitized (#1190) -- a
+    control character in a target-tree filename cannot inject a bullet line here
+    either."""
+    omitted = int(grant.get("omitted") or 0)
+    return _GRANT_BLOCK % (
+        _GRANT_HEADING, int(grant.get("cap") or 0),
+        "yes" if grant.get("truncated") else "no",
+        int(grant.get("entry_cap") or 0),
+        "yes" if grant.get("entry_truncated") else "no",
+        _GRANT_OMITTED % omitted if omitted else "",
+        runio._abs_file_list(review_root, grant.get("granted") or []))
 
 
 def _backup_grant(review_root, files, scope):

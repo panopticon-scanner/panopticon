@@ -246,7 +246,9 @@ class TestBackupEvidenceClosure(unittest.TestCase):
             verify._backup_grant(self.root, files, [self._claim()]),
             {"granted": ["synth/render.py", "synth/grading.py",
                          "synthesize.py"],
-             "cap": evidence_scope.CAP, "truncated": False})
+             "cap": evidence_scope.CAP, "truncated": False,
+             "entry_cap": evidence_scope.ENTRY_CAP, "entry_truncated": False,
+             "omitted": 0})
 
     def test_backup_entry_prompt_lists_the_granted_evidence(self):
         files = self._run13_repo()
@@ -306,3 +308,51 @@ class TestBackupEvidenceClosure(unittest.TestCase):
         # rendered grant.
         self.assertNotIn("These files are the WHOLE of what", entry["prompt"])
         self.assertNotIn(verify._GRANT_HEADING + "\n", entry["prompt"])
+
+
+class TestBackupGrantBlockPlacement(unittest.TestCase):
+    """Fix round 1, F4: the grant block sits BETWEEN the repo-root pin and the
+    template, so the advisor reads the root, then its fence, then the claims --
+    which is what `_verify_entry`'s comment says. It was prepended ahead of the
+    pin. And F3: an entry-ceiling truncation is stated in the prompt, not left
+    for the advisor to discover a file at a time."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+
+    def _entry(self, grant):
+        claim = {"id": "F1", "code": "SEC-A1A", "severity": "HIGH",
+                 "title": "t", "category": "SEC",
+                 "location": {"file": "a.py", "line_start": 1},
+                 "description": "d"}
+        return verify._verify_entry(
+            self.root, {"run_id": "R", "host": "claude",
+                        "security_mode": "standard", "flags": {}},
+            "G", "SEC", grant["granted"], [claim], "claude",
+            ocrdb.load_bundle(), "backup", grant=grant)
+
+    def test_the_grant_block_sits_between_the_pin_and_the_template(self):
+        prompt = self._entry({"granted": ["a.py"], "cap": 12,
+                              "truncated": False, "entry_cap": 48,
+                              "entry_truncated": False})["prompt"]
+        pin = prompt.index("Repo root: ")
+        heading = prompt.index(verify._GRANT_HEADING)
+        template = prompt.index("You are an independent")
+        self.assertLess(pin, heading, "the repo-root pin must come first")
+        self.assertLess(heading, template)
+
+    def test_an_entry_ceiling_truncation_is_stated_in_the_prompt(self):
+        prompt = self._entry({"granted": ["a.py"], "cap": 12,
+                              "truncated": False, "entry_cap": 48,
+                              "entry_truncated": True, "omitted": 7})["prompt"]
+        self.assertIn("7 further files omitted by the entry ceiling", prompt)
+
+    def test_no_omission_line_when_the_ceiling_did_not_bite(self):
+        prompt = self._entry({"granted": ["a.py"], "cap": 12,
+                              "truncated": False, "entry_cap": 48,
+                              "entry_truncated": False})["prompt"]
+        # (the TEMPLATE mentions the ceiling to say what it means; what must be
+        # absent is the driver's counted sentence.)
+        self.assertNotIn("further files omitted by the entry ceiling", prompt)

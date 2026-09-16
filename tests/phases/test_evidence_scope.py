@@ -146,7 +146,8 @@ class TestGrant(_Repo):
         self.assertEqual(
             evidence_scope.grant(self.root, files, scope),
             {"granted": ["a.py", "b.py"], "cap": evidence_scope.CAP,
-             "truncated": False})
+             "truncated": False, "entry_cap": evidence_scope.ENTRY_CAP,
+             "entry_truncated": False, "omitted": 0})
 
     def test_grant_flags_truncation_when_any_claim_overflows(self):
         named = ["mod%02d.py" % i for i in range(30)]
@@ -158,13 +159,50 @@ class TestGrant(_Repo):
         self.assertTrue(got["truncated"])
         self.assertEqual(len(got["granted"]), evidence_scope.CAP)
 
+    def test_grant_stops_at_the_entry_ceiling(self):
+        # Fix round 1, F3: `CAP` bounds ONE claim (D4's own signature), so a
+        # 25-claim chunk could union 276 files over a 2-file group while telling
+        # the advisor "truncated: no". `ENTRY_CAP` bounds the union, claim order
+        # preserved, and says so.
+        named = ["mod%03d.py" % i for i in range(11)]
+        scope = []
+        for c in range(30):
+            claim_file = "claim%02d.py" % c
+            _write(self.root, claim_file, "import os\n")
+            block = ["c%02d_%s" % (c, n) for n in named]
+            for rel in block:
+                _write(self.root, rel, "import os\n")
+            scope.append({"location": {"file": claim_file},
+                          "description": " ".join(block)})
+        got = evidence_scope.grant(self.root, ["claim00.py"], scope)
+        self.assertEqual(len(got["granted"]), evidence_scope.ENTRY_CAP)
+        self.assertEqual(got["entry_cap"], evidence_scope.ENTRY_CAP)
+        self.assertTrue(got["entry_truncated"])
+        self.assertFalse(got["truncated"])       # no single claim overflowed CAP
+        # claim order preserved: the first claim's closure comes first, whole.
+        self.assertEqual(got["granted"][0], "claim00.py")
+        self.assertEqual(got["granted"][:evidence_scope.CAP],
+                         ["claim00.py"] + ["c00_%s" % n
+                                           for n in named][:evidence_scope.CAP - 1])
+
+    def test_a_grant_within_the_entry_ceiling_is_not_entry_truncated(self):
+        _write(self.root, "a.py", "import os\n")
+        _write(self.root, "b.py", "import os\n")
+        got = evidence_scope.grant(
+            self.root, ["a.py", "b.py"],
+            [{"location": {"file": "a.py"}, "description": "with b.py"}])
+        self.assertFalse(got["entry_truncated"])
+        self.assertEqual(got["entry_cap"], evidence_scope.ENTRY_CAP)
+
     def test_grant_falls_back_to_the_whole_group_for_an_unlocatable_claim(self):
         _write(self.root, "a.py", "import os\n")
         files = ["a.py", "b.py", "c.py"]
         scope = [{"location": {"file": "a.py"}}, {"location": {}}]
         self.assertEqual(evidence_scope.grant(self.root, files, scope),
                          {"granted": files, "cap": evidence_scope.CAP,
-                          "truncated": False})
+                          "truncated": False,
+                          "entry_cap": evidence_scope.ENTRY_CAP,
+                          "entry_truncated": False, "omitted": 0})
 
 
 if __name__ == "__main__":

@@ -58,6 +58,15 @@ from . import runio
 # and this number is a calibration detail, not an operator decision.
 CAP = 12
 
+# How many files ONE BACKUP ENTRY's grant may hold in total, across every claim
+# in its chunk (fix round 1, F3). `CAP` bounds a claim, which is what D4
+# specifies, and the union of up to `verify._CELL_CLAIMS_CAP` = 25 claims was
+# unbounded: measured at 276 files granted over a 2-file group, 275 of them from
+# outside it, while the prompt said "truncated: no". 48 is the review matrix's
+# own per-group ceiling -- the number that already decides how much code one cell
+# may be asked about -- so a backup is never granted more than a review cell is.
+ENTRY_CAP = 48
+
 # The claim fields whose free text may name a producer. `evidence.reasoning` is
 # read through `_EVIDENCE_FIELD` because it is nested.
 _TEXT_FIELDS = ("description", "exploit_scenario", "remediation")
@@ -261,29 +270,52 @@ def closure(review_root, claim, group_files, cap=CAP):
     return _closure_paths(review_root, claim, group_files)[:max(0, cap)]
 
 
-def grant(review_root, files, scope, cap=CAP):
-    """The evidence grant for one backup entry: `{granted, cap, truncated}`.
+def _fallback(files, cap, entry_cap):
+    """The whole-group grant, in the same recorded shape (#1029/#1096).
 
-    The union of its claims' closures, in claim order. `truncated` is true when
-    ANY claim's closure hit the cap, so the advisor is told that its scope is
-    known to be incomplete rather than discovering it a file at a time.
+    Deliberately NOT subject to `entry_cap`: the group is already bounded -- the
+    matrix chunks a group at 48 files -- and narrowing the safety net is how a
+    backup ends up refuting blind, which is the one thing the fallback exists to
+    prevent."""
+    return {"granted": list(files), "cap": cap, "truncated": False,
+            "entry_cap": entry_cap, "entry_truncated": False,
+            "omitted": 0}
+
+
+def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP):
+    """The evidence grant for one backup entry:
+    `{granted, cap, truncated, entry_cap, entry_truncated, omitted}`.
+
+    The union of its claims' closures, IN CLAIM ORDER, so the ceiling takes the
+    tail of the chunk rather than a slice of every claim: an early claim keeps a
+    whole, coherent closure instead of every claim getting a useless fragment.
+    `truncated` says a single claim's closure hit `cap`; `entry_truncated` says
+    the union hit `entry_cap`, with `omitted` counting what it cost. Both are
+    stated in the prompt and echoed in the verdict, so "my scope was complete" is
+    never something the advisor has to assume.
 
     Falls back to the whole group `files` when a scoped claim has no resolvable,
     confined `location.file` (unchanged from #1029/#1096): a backup must never
     refute blind. A path the claim NAMED but that escapes the root is simply not
     granted -- it never widens the fence and never triggers the fallback.
     """
-    granted, truncated = [], False
+    granted, truncated, omitted = [], False, 0
+    entry_cap = max(0, entry_cap)
     for claim in scope or []:
         loc = claim.get("location") if isinstance(claim, dict) else None
         path = loc.get("file") if isinstance(loc, dict) else None
         if not path or not runio._confined_to_root(review_root, path):
-            return {"granted": list(files), "cap": cap, "truncated": False}
+            return _fallback(files, cap, entry_cap)
         paths = _closure_paths(review_root, claim, files)
         if len(paths) > cap:
             truncated = True
         for entry in paths[:max(0, cap)] or [_norm(path)]:
-            if entry and entry not in granted:
-                granted.append(entry)
+            if not entry or entry in granted:
+                continue
+            if len(granted) >= entry_cap:
+                omitted += 1
+                continue
+            granted.append(entry)
     return {"granted": granted or list(files), "cap": cap,
-            "truncated": truncated}
+            "truncated": truncated, "entry_cap": entry_cap,
+            "entry_truncated": bool(omitted), "omitted": omitted}

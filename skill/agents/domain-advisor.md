@@ -70,8 +70,12 @@ files those claims' own evidence names, and their one-hop in-repo imports. That
 list is the whole of what you can read. Two things follow, both required:
 
 1. Copy the granted list verbatim into each verdict's `evidence_scope.granted`,
-   with the `cap` and `truncated` values stated in that section. It records what
-   you were actually given, so a thin verdict can be told from a thin grant.
+   with the `cap`, `truncated`, `entry_cap` and `entry_truncated` values stated
+   in that section. It records what you were actually given, so a thin verdict
+   can be told from a thin grant. `cap`/`truncated` bound one claim's evidence;
+   `entry_cap`/`entry_truncated` bound this whole check, and when the section
+   says files were omitted by the entry ceiling it is the LATER claims that are
+   short.
 2. If judging a claim needs a file that is NOT on that list, do not guess and do
    not reject: return `NEEDS_MORE_INFO` and name the files you could not reach
    in `missing_evidence`. A scope failure is recorded as one — it never
@@ -92,7 +96,7 @@ Each verdict is one object per claim:
       "explored": ["every/file/you/read/or/grepped"],
       "references": ["..."],
       "citations": {"cwe": [], "owasp": [], "cve": []},
-      "evidence_scope": {"granted": ["...the granted list, verbatim..."], "cap": 12, "truncated": false},
+      "evidence_scope": {"granted": ["...the granted list, verbatim..."], "cap": 12, "truncated": false, "entry_cap": 48, "entry_truncated": false},
       "missing_evidence": ["a/file/you/needed/and/could/not/read.py"]
     }
 

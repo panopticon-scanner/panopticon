@@ -385,6 +385,10 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("evidence_scope", verify)
         self.assertIn("missing_evidence", verify)
         self.assertIn("backup_scope_limited", verify)
+        # Fix round 1: the two honesty details an operator needs -- the entry
+        # ceiling, and that the status is NOT counted as verified.
+        self.assertIn("entry_truncated", verify)
+        self.assertIn("coverage line", verify)
 
     def test_an_environmental_tool_skip_is_documented_as_retried(self):
         loop = _section(self.text, "## Driver run-loop", "## Driver setup")
