@@ -14,8 +14,12 @@ cannot drift -- and the drift is what a test can prove without a daemon.
 
 No docker anywhere here: every assertion is over strings this module composes.
 """
+import contextlib
+import io
+import json
 import os
 import re
+import subprocess
 import unittest
 
 import scripts.tools.egress as egress
@@ -181,3 +185,138 @@ class TestConfigFilesOnDisk(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _PopenLike:
+    """The shape `run_tools._popen_runner` really hands `egress._control`.
+
+    Every other egress test drives a `CompletedProcess`-shaped double, which
+    takes the OTHER branch -- so the branch that runs on every real `--online`
+    scan was the one branch nothing exercised. This is the duck type, not a
+    mock: `communicate(timeout=)` returning a `(bytes, bytes)` pair, a
+    `returncode` that is None until it has been called, and a `kill()`.
+    """
+
+    def __init__(self, out=b"", err=b"", rc=0, timeout_once=False):
+        self._out, self._err, self._rc = out, err, rc
+        self._timeout_once = timeout_once
+        self.returncode = None
+        self.killed = False
+        self.communicate_calls = 0
+
+    def communicate(self, timeout=None):
+        self.communicate_calls += 1
+        if self._timeout_once and self.communicate_calls == 1:
+            raise subprocess.TimeoutExpired(cmd="docker", timeout=timeout)
+        self.returncode = self._rc
+        return self._out, self._err
+
+    def kill(self):
+        self.killed = True
+
+
+class TestControlAgainstTheRealRunnerShape(unittest.TestCase):
+    """#1645 fix round 1, F2: the seam the production runner actually takes.
+
+    `_popen_runner` returns a live `subprocess.Popen`, so `_control`'s
+    `communicate()` branch is what runs on every real `--online` scan -- and a
+    blanket `except Exception` around it would turn ANY defect there into a
+    silent `excluded:online egress unavailable` on every such run, with a green
+    suite and a plausible-looking manifest. One real-runner test per seam.
+    """
+
+    def _control(self, runner):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            result = egress._control(runner, ["docker", "network", "ls"])
+        return result, err.getvalue()
+
+    def test_a_live_child_is_read_through_communicate(self):
+        proc = _PopenLike(out=b"out\n", err=b"warn\n", rc=0)
+        (rc, out, err), _stderr = self._control(lambda cmd, **kw: proc)
+        self.assertEqual((rc, out, err), (0, "out\n", "warn\n"))
+        self.assertEqual(proc.communicate_calls, 1)
+        self.assertFalse(proc.killed)
+
+    def test_a_non_zero_child_reports_its_own_exit_code(self):
+        proc = _PopenLike(err=b"no such network\n", rc=1)
+        (rc, _out, err), _stderr = self._control(lambda cmd, **kw: proc)
+        self.assertEqual(rc, 1)
+        self.assertEqual(err, "no such network\n")
+
+    def test_a_child_that_will_not_finish_is_killed_and_reaped(self):
+        # Without the kill the `docker` client would be left running and the
+        # second communicate() would block the whole tools phase.
+        proc = _PopenLike(out=b"", rc=-9, timeout_once=True)
+        (rc, _out, _err), _stderr = self._control(lambda cmd, **kw: proc)
+        self.assertTrue(proc.killed)
+        self.assertEqual(proc.communicate_calls, 2)
+        self.assertEqual(rc, -9)
+
+    def test_the_kwargs_the_seam_is_called_with_are_the_ones_it_accepts(self):
+        # `_popen_runner(cmd, stdout=None, stderr=None, timeout=None)`. A
+        # fourth kwarg added here would be a TypeError on every real run and
+        # nothing in the suite would see it.
+        seen = {}
+
+        def runner(cmd, **kwargs):
+            seen.update(kwargs)
+            return _PopenLike()
+        self._control(runner)
+        self.assertEqual(sorted(seen), ["stderr", "stdout", "timeout"])
+        self.assertEqual(seen["stdout"], subprocess.PIPE)
+        self.assertEqual(seen["stderr"], subprocess.PIPE)
+
+    def test_a_docker_that_cannot_be_started_fails_closed_and_says_so(self):
+        def runner(cmd, **_kw):
+            raise FileNotFoundError(2, "No such file or directory: 'docker'")
+        (rc, _out, _err), stderr = self._control(runner)
+        self.assertEqual(rc, 127)
+        self.assertIn("docker", stderr)
+        self.assertIn("No such file or directory", stderr)
+
+    def test_a_subprocess_error_fails_closed_and_says_so(self):
+        def runner(cmd, **_kw):
+            raise subprocess.SubprocessError("the daemon hung up")
+        (rc, _out, _err), stderr = self._control(runner)
+        self.assertEqual(rc, 127)
+        self.assertIn("the daemon hung up", stderr)
+
+    def test_a_defect_in_this_module_propagates_rather_than_failing_closed(self):
+        # The whole hazard F2 names: a signature mismatch or a decode bug
+        # swallowed into 127 becomes "online egress unavailable" on every real
+        # run, indistinguishable from a daemon that really said no. It must be
+        # loud instead.
+        def runner(cmd, **_kw):
+            raise TypeError("unexpected keyword argument 'timeuot'")
+        with self.assertRaises(TypeError):
+            egress._control(runner, ["docker", "network", "ls"])
+
+
+class TestSessionAgainstTheRealRunnerShape(unittest.TestCase):
+    """The same seam, end to end: a whole `egress.session` driven by the Popen
+    duck type rather than the `CompletedProcess` one."""
+
+    def _runner(self, calls):
+        inspected = json.dumps([{"IPAM": {"Config": [
+            {"Subnet": "172.30.0.0/16", "Gateway": "172.30.0.1"}]}}])
+
+        def runner(cmd, **_kw):
+            calls.append(list(cmd))
+            if list(cmd[1:3]) == ["network", "inspect"]:
+                return _PopenLike(out=inspected.encode("utf-8"))
+            if cmd[1] == "inspect":
+                return _PopenLike(out=b"true\n")
+            return _PopenLike(out=b"")
+        return runner
+
+    def test_a_session_comes_up_and_tears_down_through_communicate(self):
+        calls = []
+        with contextlib.redirect_stderr(io.StringIO()):
+            with egress.session("docker", ["pip-audit"], self._runner(calls),
+                                run_id="r1645") as sess:
+                self.assertTrue(sess.serves("pip-audit"))
+                self.assertIn("-e", sess.flags_for("pip-audit"))
+                self.assertEqual(sess.proxy, "http://172.30.0.2:8888")
+        self.assertEqual([c[1:3] for c in calls][-2:],
+                         [["rm", "-f"], ["network", "rm"]])

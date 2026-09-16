@@ -461,6 +461,15 @@ def _control(runner, cmd, timeout=CONTROL_TIMEOUT):
     Accepts both shapes the seam returns: a live `Popen` (the production
     runner) and a `CompletedProcess`-like double, the same duck-typing
     `run_tools._capture_run` does at its own call site.
+
+    The except is NARROW on purpose. A docker that cannot be started or will
+    not answer is an unavailable egress, and failing closed on it is the whole
+    design -- but a blanket catch here would give the same treatment to a
+    DEFECT in this module (a signature mismatch against the seam, a decode
+    bug), turning it into `excluded:online egress unavailable` on every real
+    `--online` run while the suite stayed green and the manifest looked
+    plausible. Those propagate, and the caught ones say what happened on
+    stderr rather than being swallowed into a bare exit code.
     """
     try:
         proc = runner(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -474,8 +483,11 @@ def _control(runner, cmd, timeout=CONTROL_TIMEOUT):
             rc = proc.returncode
         else:
             out, err, rc = proc.stdout, proc.stderr, proc.returncode
-    except Exception as exc:   # noqa: BLE001 -- a docker that will not run is
-        return 127, "", str(exc)    # an unavailable egress, never a crashed scan
+    except (OSError, subprocess.SubprocessError) as exc:
+        print("egress: `%s` could not run: %s"
+              % (" ".join(str(token) for token in cmd[:3]), exc),
+              file=sys.stderr)
+        return 127, "", str(exc)
     return rc, _text(out), _text(err)
 
 
