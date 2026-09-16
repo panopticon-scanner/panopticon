@@ -10,6 +10,7 @@ import scripts.phases.requests as requests
 import scripts.phases.review as review
 import scripts.phases.verify as verify
 import scripts.phases.persist as persist
+import scripts.phases.evidence_scope as evidence_scope
 
 import scripts.ocrdb as ocrdb
 
@@ -196,3 +197,112 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
             self.assertIn("src/a.py", prompt)
             self.assertIn("src/b.py", prompt)
             self.assertNotIn("src/c.py", prompt)   # uncited group file excluded
+
+
+class TestBackupEvidenceClosure(unittest.TestCase):
+    """#1638 P16 (owner ruling D4): the backup advisor is granted a BOUNDED
+    EVIDENCE CLOSURE -- the claim's file, the producers its own evidence names,
+    and a one-hop in-repo import neighbourhood -- and the grant is recorded in
+    the prompt so the verdict can echo it. Run-13 granted the claim file alone,
+    so a cross-file defect the primary CONFIRMED came back NEEDS_MORE_INFO."""
+
+    RUN_ID = "run-backup-closure"
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+
+    def _write(self, rel, text="import os\n"):
+        path = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(path) or self.root, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return rel
+
+    def _run13_repo(self):
+        self._write("synth/__init__.py", "")
+        self._write("synth/render.py")
+        self._write("synth/grading.py")
+        self._write("synthesize.py", "import synth.render as render_mod\n")
+        return ["synth/render.py", "synth/grading.py", "synthesize.py"]
+
+    def _claim(self):
+        return {"id": "F1", "code": "SEC-A1A", "severity": "HIGH",
+                "title": "redaction runs after the render", "category": "SEC",
+                "location": {"file": "synth/render.py", "line_start": 12},
+                "description": "the call order in synth/grading.py and "
+                               "synthesize.py runs redact last"}
+
+    def test_backup_scope_files_grants_the_named_producers(self):
+        files = self._run13_repo()
+        self.assertEqual(
+            verify._backup_scope_files(self.root, files, [self._claim()]),
+            ["synth/render.py", "synth/grading.py", "synthesize.py"])
+
+    def test_backup_grant_records_the_cap_and_truncation(self):
+        files = self._run13_repo()
+        self.assertEqual(
+            verify._backup_grant(self.root, files, [self._claim()]),
+            {"granted": ["synth/render.py", "synth/grading.py",
+                         "synthesize.py"],
+             "cap": evidence_scope.CAP, "truncated": False})
+
+    def test_backup_entry_prompt_lists_the_granted_evidence(self):
+        files = self._run13_repo()
+        grant = verify._backup_grant(self.root, files, [self._claim()])
+        entry = verify._verify_entry(
+            self.root, {"run_id": self.RUN_ID, "host": "claude",
+                        "security_mode": "standard", "flags": {}},
+            "G", "SEC", grant["granted"], [self._claim()], "claude",
+            ocrdb.load_bundle(), "backup", grant=grant)
+        prompt = entry["prompt"]
+        self.assertIn("Evidence granted for this check (bounded closure)",
+                      prompt)
+        for rel in grant["granted"]:
+            self.assertIn(os.path.join(self.root, rel), prompt)
+        self.assertIn("missing_evidence", prompt)
+
+    def test_backup_entry_read_scope_is_exactly_the_granted_list(self):
+        # Family guardrails section 3: nothing is widened beyond the recorded
+        # list, and every granted path stays inside review_root.
+        files = self._run13_repo()
+        grant = verify._backup_grant(self.root, files, [self._claim()])
+        entry = verify._verify_entry(
+            self.root, {"run_id": self.RUN_ID, "host": "claude",
+                        "security_mode": "standard", "flags": {}},
+            "G", "SEC", grant["granted"], [self._claim()], "claude",
+            ocrdb.load_bundle(), "backup", grant=grant)
+        want = [os.path.join(self.root, rel) for rel in grant["granted"]]
+        self.assertEqual(entry["files"], want)
+        self.assertEqual(entry["scope"]["files"], want)
+        self.assertEqual(entry["scope"]["dirs"], [])
+        self.assertEqual(entry["scope"]["reads"], [])
+        for path in entry["scope"]["files"]:
+            self.assertTrue(runio._confined_to_root(self.root, path), path)
+
+    def test_granted_list_is_prompt_sanitized(self):
+        # #1190: a control character in a target-tree filename must not be able
+        # to inject prompt lines through the grant block.
+        rel = self._write("src/we\x07ird.py")
+        grant = {"granted": [rel], "cap": 12, "truncated": False}
+        entry = verify._verify_entry(
+            self.root, {"run_id": self.RUN_ID, "host": "claude",
+                        "security_mode": "standard", "flags": {}},
+            "G", "SEC", [rel], [self._claim()], "claude",
+            ocrdb.load_bundle(), "backup", grant=grant)
+        self.assertNotIn("\x07", entry["prompt"])
+        self.assertIn("we\\x07ird.py", entry["prompt"])
+
+    def test_primary_entry_carries_no_grant_block(self):
+        files = self._run13_repo()
+        entry = verify._verify_entry(
+            self.root, {"run_id": self.RUN_ID, "host": "claude",
+                        "security_mode": "standard", "flags": {}},
+            "G", "SEC", files, [self._claim()], "claude",
+            ocrdb.load_bundle(), "primary")
+        # The TEMPLATE names the heading (it tells a backup advisor what to do
+        # with the section); what a primary entry must not carry is the driver's
+        # rendered grant.
+        self.assertNotIn("These files are the WHOLE of what", entry["prompt"])
+        self.assertNotIn(verify._GRANT_HEADING + "\n", entry["prompt"])
