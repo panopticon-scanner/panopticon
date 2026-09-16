@@ -1297,9 +1297,23 @@ class TestBackupScopeLimited(unittest.TestCase):
         self.assertNotIn("<img src=x", out)
         self.assertIn("&lt;img", out)
 
-    def test_a_scope_limited_finding_still_counts_as_verified(self):
+    def test_a_scope_limited_finding_is_not_counted_as_verified(self):
+        # Fix round 1, F2: it keeps gate-eligibility and factor 1.5 (the base's
+        # primary-only treatment), but the coverage line does NOT call it
+        # verified -- it gets its own segment, so the count is disclosed rather
+        # than folded into a number that means "a second opinion agreed".
         report = _minimal_report([self._finding()])
         report["summary"]["evidence_stats"] = {"backup_scope_limited": 1,
                                                "advisor_confirmed": 0,
                                                "tool_confirmed": 0}
-        self.assertIn("1 verified", hr.render(report))
+        out = hr.render(report)
+        self.assertIn("0 verified", out)
+        self.assertIn("1 backup-scope-limited", out)
+
+    def test_the_coverage_line_omits_the_segment_when_there_are_none(self):
+        report = _minimal_report([self._finding()])
+        report["summary"]["evidence_stats"] = {"advisor_confirmed": 1,
+                                               "tool_confirmed": 0}
+        out = hr.render(report)
+        self.assertIn("1 verified", out)
+        self.assertNotIn("backup-scope-limited", out)

@@ -265,7 +265,7 @@ class TestScopeLimitedBackup(unittest.TestCase):
                                              run_id="R")
             self.assertEqual(v["verdict"], "CONFIRMED")
             self.assertEqual(v["stage"], "primary")
-            self.assertEqual(evidence.scope_limited_paths(v),
+            self.assertEqual(evidence.carried_paths(v),
                              ["synth/grading.py", "synthesize.py"])
 
     def test_scope_limited_backup_yields_the_backup_scope_limited_status(self):
@@ -332,3 +332,97 @@ class TestScopeLimitedBackup(unittest.TestCase):
              evidence.SCOPE_LIMITED_FIELD: ["synth/grading.py"]}
         codes_mod.apply_verdict_quality([f], {id(f): v}, None)
         self.assertIs(f["backup_confirmed"], False)
+
+
+class TestPlantedCarrierIsNotTrusted(unittest.TestCase):
+    """#1638 P16 fix round 1, F1. `_backup_missing_evidence` is a CONTROLLER key:
+    `match_verdict_by_id` is its only writer. Nothing enforced that -- the loaders
+    copied an agent's verdict object verbatim -- so an advisor could plant the key
+    itself and (a) have a REJECTION laundered into a gate-eligible CONFIRMED, or
+    (b) fabricate a "backup could not see" disclosure with no backup round at all.
+    The adversarial backup is precisely the surface the threat model distrusts."""
+
+    def _plant(self, tmp_path, primary, backup=None):
+        _bundle(tmp_path, "verdicts-app-SEC.json", [primary], stage="primary")
+        d_path = _bundle(tmp_path, "verdicts-app-SEC-backup.json",
+                         [backup], stage="backup") if backup else (
+            str(tmp_path / "verdicts"))
+        by_fid, _ = evidence.load_verdict_bundles(d_path)
+        return by_fid
+
+    def test_a_planted_carrier_cannot_launder_a_backup_rejection(self):
+        with tempfile.TemporaryDirectory() as d:
+            by_fid = self._plant(
+                Path(d),
+                {"finding_id": "SEC-100", "verdict": "CONFIRMED"},
+                {"finding_id": "SEC-100", "verdict": "REJECTED",
+                 "reasoning": "the code does not do this",
+                 evidence.SCOPE_LIMITED_FIELD: ["x.py"]})
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            self.assertEqual(v["verdict"], "REJECTED")
+            self.assertEqual(v["stage"], "backup")
+            self.assertNotIn(evidence.SCOPE_LIMITED_FIELD, v)
+            self.assertEqual(
+                evidence.derive_evidence({"id": "SEC-100"}, v)["status"],
+                "rejected")
+
+    def test_a_planted_carrier_fabricates_no_backup_disclosure(self):
+        # No backup round ran at all: a primary that plants the key must still
+        # derive `advisor_confirmed`, with no `missing_evidence` in the report.
+        with tempfile.TemporaryDirectory() as d:
+            by_fid = self._plant(Path(d), {
+                "finding_id": "SEC-100", "verdict": "CONFIRMED",
+                "reasoning": "y",
+                evidence.SCOPE_LIMITED_FIELD: ["/etc/passwd"]})
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            self.assertNotIn(evidence.SCOPE_LIMITED_FIELD, v)
+            ev_obj = evidence.derive_evidence({"id": "SEC-100"}, v)
+            self.assertEqual(ev_obj["status"], "advisor_confirmed")
+            self.assertNotIn("missing_evidence", ev_obj)
+
+    def test_every_underscore_key_is_stripped_from_an_agent_verdict(self):
+        # The rule is the TRUST BOUNDARY, not one key: an agent writes no
+        # underscore-prefixed key, the way it stamps no `_panopticon` identity.
+        with tempfile.TemporaryDirectory() as d:
+            by_fid = self._plant(Path(d), {
+                "finding_id": "SEC-100", "verdict": "CONFIRMED",
+                "_merged_ids": ["SEC-999"], "_group": "Other",
+                evidence.SCOPE_LIMITED_FIELD: ["x.py"]})
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            self.assertEqual([k for k in v if k.startswith("_")], [])
+
+    def test_the_legacy_single_verdict_loader_strips_it_too(self):
+        with tempfile.TemporaryDirectory() as d:
+            v_dir = Path(d) / "verdicts"
+            v_dir.mkdir()
+            (v_dir / "Q1.json").write_text(json.dumps(
+                {"finding_id": "SEC-100", "verdict": "CONFIRMED",
+                 evidence.SCOPE_LIMITED_FIELD: ["x.py"]}))
+            verdicts, bad = evidence.load_verdicts_detailed(str(v_dir))
+            self.assertEqual(bad, [])
+            self.assertNotIn(evidence.SCOPE_LIMITED_FIELD, verdicts["Q1"])
+
+    def test_missing_evidence_on_a_non_nmi_verdict_is_ignored(self):
+        # The PUBLIC field is only meaningful on a NEEDS_MORE_INFO; a CONFIRMED
+        # or REJECTED verdict decided, and what it did not read is not a scope
+        # failure. (Already true; pinned so the F1 reordering cannot undo it.)
+        for outcome in ("CONFIRMED", "REJECTED"):
+            self.assertEqual(
+                evidence.scope_limited_paths(
+                    {"verdict": outcome, "missing_evidence": ["a.py"]}),
+                [], outcome)
+
+    def test_scope_limited_paths_never_reads_the_controller_carrier(self):
+        # F1 ruling 2: the branch `match_verdict_by_id` consults is the public
+        # field, evaluated only once NEEDS_MORE_INFO is established.
+        self.assertEqual(
+            evidence.scope_limited_paths(
+                {"verdict": "REJECTED",
+                 evidence.SCOPE_LIMITED_FIELD: ["a.py"]}), [])
+        self.assertEqual(
+            evidence.carried_paths(
+                {"verdict": "CONFIRMED",
+                 evidence.SCOPE_LIMITED_FIELD: ["a.py"]}), ["a.py"])

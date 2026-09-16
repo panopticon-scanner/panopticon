@@ -552,19 +552,21 @@ def _render_header(report):
                      % _escape(note))
     parts.append(_render_host_capabilities(meta))
     ev = summary.get("evidence_stats") or {}
-    # #1638 P16: `backup_scope_limited` IS a primary-advisor confirmation (the
-    # backup reported a scope failure, not a doubt), so it counts as verified
-    # here for the same reason it stays gate-eligible -- see
-    # evidence.GATE_ELIGIBLE_DEFAULT.
-    verified = (int(ev.get("advisor_confirmed", 0))
-                + int(ev.get("tool_confirmed", 0))
-                + int(ev.get(evidence.BACKUP_SCOPE_LIMITED, 0)))
+    verified = int(ev.get("advisor_confirmed", 0)) + int(ev.get("tool_confirmed", 0))
     unverified = int(ev.get("unverified", 0))
     tool_reported = int(ev.get("tool_reported", 0))
     cut = int(((meta.get("coverage") or {}).get("verdicts") or {}).get("cut", 0))
     policy = "unverified" if summary.get("gate_policy") == "include_unverified" else "strict"
     coverage_parts = ["%d verified" % verified, "%d unverified" % unverified,
                        "%d tool-reported" % tool_reported]
+    # #1638 P16 (fix round 1, F2): `backup_scope_limited` keeps gate-eligibility
+    # and factor 1.5 -- the primary CONFIRMED stands -- but it is NOT "verified"
+    # here: that word means a second opinion agreed, and in this state a second
+    # opinion could not look. Its own segment, so the count is disclosed rather
+    # than folded into a number that would overstate it.
+    scope_limited = int(ev.get(evidence.BACKUP_SCOPE_LIMITED, 0))
+    if scope_limited:
+        coverage_parts.append("%d backup-scope-limited" % scope_limited)
     if cut:
         coverage_parts.append("%d cut" % cut)
     parts.append(

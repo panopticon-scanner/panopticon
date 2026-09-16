@@ -81,7 +81,7 @@ def apply_verdict_quality(findings, matched, bundle):
             if (str(v.get("stage")) == "backup"
                     and str(v.get("verdict", "")).upper() == "CONFIRMED"):
                 f["backup_confirmed"] = True
-            elif evidence_mod.scope_limited_paths(v):
+            elif evidence_mod.carried_paths(v):
                 # #1638 P16: the backup did not corroborate -- it could not
                 # look. Stated as FALSE rather than left absent, because the
                 # absent case ("no backup was summoned") is a different fact.

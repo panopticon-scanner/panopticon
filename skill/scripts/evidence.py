@@ -42,31 +42,67 @@ VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
 
 # Internal carrier, underscore-prefixed like `_merged_ids`: the paths a
 # scope-limited backup named, hung on the PRIMARY verdict that survived it so
-# `derive_evidence` and the report can say what the backup could not see. Never
-# an agent-asserted trust field -- `match_verdict_by_id` is the only writer.
+# `derive_evidence` and the report can say what the backup could not see.
+# CONTROLLER-OWNED: `match_verdict_by_id` is its only writer, which `_agent_verdict`
+# below is what actually enforces -- fix round 1 F1 found the comment asserting
+# it while both loaders copied an agent's object verbatim.
 SCOPE_LIMITED_FIELD = "_backup_missing_evidence"
 
 
-def scope_limited_paths(verdict):
-    """The files a verdict says it was NOT granted, or [].
+def _agent_verdict(raw):
+    """An agent-supplied verdict with every private (`_`-prefixed) key removed.
 
-    Non-empty only for a NEEDS_MORE_INFO that named them (`missing_evidence`,
-    the backup advisor's way of reporting an evidence-SCOPE failure) or for a
-    verdict `match_verdict_by_id` has already annotated. A CONFIRMED or
-    REJECTED verdict decided; whatever it did not read is not a scope failure.
-    Defensive about shape: `missing_evidence` is agent-supplied.
+    The trust boundary for a verdict FILE, and the reason it exists (#1638 P16
+    fix round 1, F1): `_`-prefixed keys are the pipeline's own carriers --
+    `_backup_missing_evidence` here, `_merged_ids`/`_group` on findings -- and
+    an advisor that plants one is asserting a controller decision. Two exploits
+    were demonstrated through the production path: a backup REJECTION carrying
+    `_backup_missing_evidence` was laundered into a retained primary CONFIRMED
+    (rejected, factor 0.0, out of the gate -> backup_scope_limited, factor 1.5,
+    IN the gate), and a primary-only verdict carrying it fabricated a "backup
+    could not see" disclosure about a round that never ran.
+
+    Stripping at LOAD rather than checking at each reader is the same discipline
+    as the controller-owned `_panopticon` stamp: one rule, at the door, for every
+    private key present and future. The public `missing_evidence` field is the
+    advisor's supported way to report a scope gap and is untouched.
+    """
+    return {k: v for k, v in raw.items() if not str(k).startswith("_")}
+
+
+def scope_limited_paths(verdict):
+    """The files a NEEDS_MORE_INFO verdict says it was NOT granted, or [].
+
+    The PUBLIC field only (`missing_evidence`), and only once the verdict is
+    established as NEEDS_MORE_INFO: a CONFIRMED or REJECTED advisor decided, and
+    whatever it did not read is not a scope failure. This is what
+    `match_verdict_by_id` consults, so no agent-supplied key can reach the
+    retain-the-primary branch. Defensive about shape -- the field is
+    agent-supplied.
     """
     if not isinstance(verdict, dict):
         return []
-    carried = verdict.get(SCOPE_LIMITED_FIELD)
-    if isinstance(carried, list):
-        return [p for p in carried if isinstance(p, str) and p]
     if str(verdict.get("verdict", "")).upper() != "NEEDS_MORE_INFO":
         return []
     missing = verdict.get("missing_evidence")
     if not isinstance(missing, list):
         return []
     return [p for p in missing if isinstance(p, str) and p]
+
+
+def carried_paths(verdict):
+    """What `match_verdict_by_id` RECORDED on the verdict it kept, or [].
+
+    The controller carrier, read by `derive_evidence` and `synth.codes` alone.
+    Separate from `scope_limited_paths` so the two directions cannot be confused:
+    one reads what an agent said, the other what the controller decided.
+    """
+    if not isinstance(verdict, dict):
+        return []
+    carried = verdict.get(SCOPE_LIMITED_FIELD)
+    if not isinstance(carried, list):
+        return []
+    return [p for p in carried if isinstance(p, str) and p]
 
 
 def is_tool_sourced(finding):
@@ -238,7 +274,7 @@ def derive_evidence(finding, verdict=None):
                    "citation_quality": quality}
         # #1638 P16: a CONFIRMED that survived a scope-limited backup is still
         # confirmed, and the report says which files the backup could not see.
-        missing = scope_limited_paths(verdict or {})
+        missing = carried_paths(verdict or {})
         if missing and v == "CONFIRMED":
             derived["status"] = BACKUP_SCOPE_LIMITED
             derived["missing_evidence"] = list(missing)
@@ -523,7 +559,10 @@ def load_verdicts_detailed(verdicts_dir):
                   file=sys.stderr)
             unloadable.append({"file": name, "reason": "missing/empty finding_id echo"})
             continue
-        out[name[:-len(".json")]] = data
+        # F1: the same trust boundary as the bundle loader -- a single-verdict
+        # file is agent-written too, and `match_verdict` feeds it to the same
+        # `derive_evidence`.
+        out[name[:-len(".json")]] = _agent_verdict(data)
     return out, unloadable
 
 
@@ -618,7 +657,7 @@ def load_verdict_bundles(verdicts_dir):
                     and str(raw.get("verdict", "")).upper() in VERDICT_VALUES
                     and raw.get("finding_id")):
                 continue
-            v = dict(raw)
+            v = _agent_verdict(raw)
             v.setdefault("run_id", run_id)
             v.setdefault("stage", stage_default)
             by_fid.setdefault(str(v["finding_id"]), []).append(v)
