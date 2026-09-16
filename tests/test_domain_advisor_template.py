@@ -94,3 +94,15 @@ def test_domain_advisor_renders_unknown_domain():
 def test_load_unknown_template_raises():
     with pytest.raises(ValueError, match="template not found"):
         dispatch.load_template("does-not-exist.md")
+
+
+def test_domain_advisor_is_told_to_record_the_evidence_scope():
+    # #1638 P16 ruling 2: the driver records the grant in the prompt; the
+    # advisor copies it into every verdict, and names what it could not reach
+    # rather than returning a bare NEEDS_MORE_INFO the pipeline reads as a
+    # refutation.
+    _, body = dispatch.load_template("domain-advisor.md")
+    assert "Evidence granted for this check (bounded closure)" in body
+    assert "evidence_scope" in body
+    assert "missing_evidence" in body
+    assert "verbatim" in body
