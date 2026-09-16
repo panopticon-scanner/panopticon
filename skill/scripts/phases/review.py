@@ -154,16 +154,41 @@ def _foreign_tests(group, files, discovered):
     this test file", not "whose glob might have matched it". That is the
     question the reviewer needs: a test in another group's file list is a
     test THIS reviewer will never be shown.
+
+    A module this cell ALREADY has a same-named test for is not split, even
+    when a similarly-named test exists elsewhere: `phases/synthesize.py` with
+    `tests/phases/test_synthesize.py` in the same group is covered here,
+    whatever `tests/test_synthesize.py` belongs to.
+
+    Nor is a test the other group has its OWN same-named module for: a tree
+    with `dispatch.py` and `workflows/dispatch.js` in different groups would
+    otherwise have `tests/test_dispatch.py` flag both, and the group that
+    owns the module the test is named after is the likelier subject. What
+    survives both filters is the run-13 shape -- a test named after a module
+    NOBODY who holds it owns.
+
+    Matching is by basename, which is what makes it cheap, and it stays
+    approximate: two same-named modules in groups that BOTH lack a matching
+    test still flag each other. That errs toward `split`, which costs a named
+    module its no-coverage claim and nothing else -- the reviewer still
+    grades every file the list does not name. The opposite error is the one
+    this exists to stop.
     """
-    stems = {stem for stem in (_module_stem(f) for f in files or ()) if stem}
+    covered = {stem for stem in (_test_target_stem(f) for f in files or ())
+               if stem}
+    stems = {stem for stem in (_module_stem(f) for f in files or ())
+             if stem and stem not in covered}
     if not stems:
         return {}
     out = {}
     for other, other_files in discovered:
         if other == group:
             continue
+        theirs = {stem for stem in (_module_stem(f) for f in other_files or ())
+                  if stem}
         hits = sorted(f for f in other_files or ()
-                      if _test_target_stem(f) in stems)
+                      for stem in [_test_target_stem(f)]
+                      if stem in stems and stem not in theirs)
         if hits:
             out[other] = hits
     return out

@@ -309,6 +309,30 @@ class TestTestInventoryNote(unittest.TestCase):
         self.assertEqual("empty", entry["inventory_note"])
         self.assertIn("Inventory: empty", entry["prompt"])
 
+    def test_a_test_the_other_group_owns_the_module_for_is_not_split(self):
+        # `dispatch.py` in one group and `workflows/dispatch.js` in another:
+        # `tests/test_dispatch.py` belongs to whoever owns the module it is
+        # named after, and must not flag the other as split. Basename matching
+        # is what makes this cheap; this is the filter that keeps it usable.
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [
+                              {"name": "Code", "files": ["src/a.py"]},
+                              {"name": "Other", "files": ["other/a.py",
+                                                          "tests/test_a.py"]}]})
+        self.assertEqual("empty", self._prompts()["Code"]["inventory_note"])
+
+    def test_the_split_line_caps_the_paths_it_names(self):
+        many = ["tests/test_m%d.py" % i for i in range(9)]
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [
+                              {"name": "Code",
+                               "files": ["src/m%d.py" % i for i in range(9)]},
+                              {"name": "Other", "files": many}]})
+        prompt = self._prompts()["Code"]["prompt"]
+        self.assertIn("9 test file(s)", prompt)
+        self.assertIn("(and 4 more)", prompt)
+        self.assertNotIn("tests/test_m8.py", prompt)
+
     def test_the_state_is_persisted_per_group_for_synthesis(self):
         self._prompts()
         body = runio._load_json(

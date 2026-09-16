@@ -230,6 +230,13 @@
               "type": "object",
               "description": "Planned-vs-executed gaps: {panels: {name: {planned, executed}}, tools: {name: 'requested_absent'|'produced_unusable'|'requested_unavailable'|'produced_noscan'}}. requested_absent (selected, no output) and produced_unusable (#1512: output produced but ingestion could not parse it) are lost required coverage and reach tools_absent, so they gate. requested_unavailable (scout asked for a tool the runner cannot run) and produced_noscan (#1335: ran but scanned zero files) are disclosure only and never gate."
             },
+            "test_inventory": {
+              "type": "object",
+              "additionalProperties": {
+                "enum": ["complete", "empty", "split"]
+              },
+              "description": "#1638 P13: per group, whether the test inventory its reviewers were shown could be believed -- complete (its own tests, nothing named after its modules missing), empty (the matrix assigns it no test at all), or split (test files named after its modules are claimed by another group). Recorded by the review phase as each prompt was rendered. An empty or split entry means a `TST` no-coverage claim from that group may be a defect in the MATRIX, not in the target's test suite; run-13 published exactly that claim for a module whose 138 tests the same session had run green. `{}` means this run did not measure it (a direct synthesize.py call), which is a different fact from every group being complete."
+            },
             "resume": {
               "type": [
                 "object",

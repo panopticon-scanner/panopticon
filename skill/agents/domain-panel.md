@@ -25,7 +25,10 @@ Review the listed files through the **`{domain}`** domain lens, grading against 
 **The inventory is not the repository.** `Tests:` above is this group's slice of the review matrix, not a listing of the target's test suite, and your reads are fenced to this cell — so you cannot see whether a test for these files exists somewhere else. The `Inventory:` line says which case you are in:
 
 - `complete` — the inventory is this group's own and nothing named after its modules is missing. A file here with no test covering it IS a `TST` coverage gap: report it against the menu code that fits.
-- `empty` or `split` — the matrix gave this cell no inventory, or its tests are claimed by another group. Report ONE **coverage diagnostic** for the cell instead: code `TST-X0X`, severity `INFO`, title `Test inventory for {group} is empty or incomplete`, description naming the state on the `Inventory:` line and saying that tests for these files may exist outside this review's scope. It is a defect in the matrix, not in the target's test suite, and it is the ONLY coverage claim this cell supports.
+- `split` — part of this group's coverage is claimed by another group, and the `Inventory:` line names those test files. File the coverage diagnostic below, and do NOT claim absent coverage for a module one of them is named after. Every other file in your list is graded normally.
+- `empty` — the matrix assigns this cell no test at all. File the coverage diagnostic below and make no other coverage claim: from here, absence cannot be established.
+
+**The coverage diagnostic** (`empty` or `split`): ONE finding, code `TST-X0X`, severity `INFO`, title `Test inventory for {group} is empty or incomplete`, description naming the state on the `Inventory:` line and saying tests for these files may exist outside this review's scope. It records a defect in the review matrix, not in the target's test suite.
 
 A claim that **no automated coverage exists** is a claim about the repository. Make it only from a `complete` inventory you have actually read. Deriving it from an empty inventory is how run-13 reported a module as untested in a session that had just run its 138 tests green.
 
