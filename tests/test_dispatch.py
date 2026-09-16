@@ -9,7 +9,7 @@ from unittest import mock
 
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
-from scripts import hosts
+from scripts import codex_read_tools, hosts
 
 
 class TestDetectHost(unittest.TestCase):
@@ -102,6 +102,89 @@ class TestRenderPrompt(unittest.TestCase):
         mapping["file_list"] = "weird-{menu}-name.py"   # value contains {menu}
         p = dispatch.render_prompt("domain-panel.md", mapping)
         self.assertIn("weird-{menu}-name.py", p)        # survives literally
+
+class TestCodexToolPolicyMatchesTheBrokerSurface(unittest.TestCase):
+    """P14 (run-13): the Codex tool-policy paragraph is RENDERED from the
+    surface the runner actually exposes -- `codex_read_tools.TOOLS`, the list
+    `codex_host.safety_config()` builds the broker's `enabled_tools` from --
+    instead of promising "shell commands only to read or search files" for a
+    launch that has never had a shell. The launch half of the parity (the
+    names this paragraph lists == the emitted role TOML's `enabled_tools` that
+    reach `codex exec`) is pinned in tests/test_codex_host.py, next to the
+    launch fixtures."""
+
+    # Claude's tool vocabulary plus the shell the old paragraph promised.
+    # Case-sensitive on purpose: the broker's own names are lowercase
+    # (`read_file`), so a case-insensitive "read" would match the surface
+    # this paragraph is supposed to name.
+    # `bash` lowercase as well as `Bash`: the capitalised token is Claude's
+    # tool name, the lowercase one is how a regression would word a shell
+    # ("run bash to grep"), and only the second slipped past this list.
+    ABSENT = ("shell command", "bash", "Bash", "Read", "Grep", "Glob", "Write",
+              "Edit", "Agent")
+
+    def _policy(self, role_file="domain-panel.md"):
+        meta, _body = dispatch.load_template(role_file)
+        return dispatch._tool_policy_line(meta, "codex")
+
+    def test_names_every_broker_tool_and_nothing_the_runner_lacks(self):
+        for role_file in sorted(dispatch.ROLE_FILES.values()):
+            with self.subTest(role_file=role_file):
+                policy = self._policy(role_file)
+                self.assertIn("panopticon_scope", policy)
+                self.assertIn("There is no shell.", policy)
+                for tool in codex_read_tools.TOOLS:
+                    # The gloss is the tool's own one-line description with its
+                    # initial LOWERED (not dropped) and one trailing period
+                    # removed. Re-derived here rather than borrowed from
+                    # _codex_tool_gloss, so the format is pinned by the test.
+                    text = tool["description"]
+                    gloss = (text[0].lower() + text[1:]).removesuffix(".")
+                    self.assertIn("`%s` (%s)" % (tool["name"], gloss), policy)
+                for word in self.ABSENT:
+                    self.assertNotIn(word, policy, word)
+
+    def test_the_paragraph_follows_the_broker_tool_list(self):
+        fixture = [dict(codex_read_tools.TOOLS[0]),
+                   {"name": "count_lines", "description": "Count lines in one granted file."}]
+        with mock.patch.object(codex_read_tools, "TOOLS", fixture):
+            policy = self._policy()
+        self.assertIn("`count_lines` (count lines in one granted file)", policy)
+        self.assertIn("`read_file`", policy)          # the surviving tool stays
+        self.assertNotIn("`search`", policy)          # a removed tool goes
+        self.assertNotIn("`list_files`", policy)
+
+    def test_the_registered_charter_names_the_same_tools(self):
+        # F1: `developer_instructions` carried a SECOND hand-written copy of
+        # the broker's tool list -- the standing instruction every Codex launch
+        # runs under. A TOOLS edit moved the argv allowlist and the task
+        # message while leaving that copy naming yesterday's surface.
+        charter = dispatch._codex_charter("domain_panel")
+        self.assertIn("domain_panel", charter)
+        for tool in codex_read_tools.TOOLS:
+            self.assertIn(tool["name"], charter)
+        fixture = [dict(codex_read_tools.TOOLS[0]),
+                   {"name": "count_lines", "description": "Count lines in one granted file."}]
+        import tomllib
+        with mock.patch.object(codex_read_tools, "TOOLS", fixture):
+            mutated = dispatch._codex_charter("domain_panel")
+            with tempfile.TemporaryDirectory() as d:
+                with open(dispatch.emit_host_agents("codex", d)[0], encoding="utf-8") as fh:
+                    emitted = tomllib.loads(fh.read())
+        self.assertIn("count_lines", mutated)
+        self.assertNotIn("list_files", mutated)
+        # and the rendered charter is what the registered shell carries
+        self.assertIn("count_lines", emitted["developer_instructions"])
+        self.assertNotIn("list_files", emitted["developer_instructions"])
+
+    def test_the_claude_branch_is_untouched(self):
+        meta, _body = dispatch.load_template("domain-panel.md")
+        for host in (None, "claude", "kimi", "generic"):
+            with self.subTest(host=host):
+                policy = dispatch._tool_policy_line(meta, host)
+                self.assertIn("Your only tools are Read, Grep, Glob, Write.", policy)
+                self.assertIn("must not use Bash, Edit, Agent", policy)
+
 
 class TestRenderGoldens(unittest.TestCase):
     def test_rendered_output_matches_goldens(self):

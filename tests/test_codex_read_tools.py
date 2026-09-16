@@ -41,6 +41,20 @@ def test_surface_has_only_narrow_reads():
                for tool in read_tools.TOOLS)
 
 
+def test_descriptions_are_single_line_and_carry_no_markdown():
+    # These strings are published twice: as MCP tool descriptions, and -- since
+    # #1639 P14 -- interpolated verbatim into the Codex reviewer's markdown
+    # tool-policy paragraph, inside a parenthesis next to a code span. A
+    # backtick would close that span early and a newline would end the
+    # paragraph (or open a fence or heading), so the constraint the rendering
+    # relies on is asserted here rather than left to convention.
+    for tool in read_tools.TOOLS:
+        description = tool["description"]
+        assert description == description.strip()
+        assert description.splitlines() == [description]
+        assert "`" not in description
+
+
 def test_numbered_relative_read_with_offset_and_limit(tree):
     result = reader_for(tree).call("read_file", {"path": "source/first.py", "offset": 2, "limit": 1})
     assert result["isError"] is False

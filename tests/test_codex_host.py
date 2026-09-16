@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tomllib
 from types import SimpleNamespace
@@ -205,6 +206,39 @@ def test_emitted_role_placeholder_is_replaced_by_scoped_broker(tmp_path, agent):
     expected["env"] = {**{key: env[key] for key in codex_host.ENV_KEYS},
                        "PANOPTICON_REVIEW_ROOT": str(root)}
     assert server == expected
+
+
+@pytest.mark.parametrize("role_file", [
+    "scout.md", "advisor.md", "domain-panel.md", "domain-advisor.md",
+])
+def test_prompt_tool_policy_names_exactly_the_launched_tools(tmp_path, role_file):
+    """P14 (run-13): the prose half of the contract, bound to the launch half.
+
+    The reviewer is told what it may call by `dispatch._tool_policy_line`; what
+    it CAN call is the `enabled_tools` allowlist this module puts on the argv,
+    read back off that argv by `validate_command`. Run-13 proved the two had
+    drifted -- the paragraph offered a shell the broker never exposed -- so the
+    two lists are compared here rather than maintained in parallel by hand.
+
+    Compared as SETS, matching what `validate_command` accepts off the argv
+    (codex_host.py I-2: a role's allowlist is a non-empty subset in any order).
+    The paragraph is role-blind today because every shipped template grants
+    Read+Grep+Glob; if one ever narrows, the remedy is to map that role's
+    `tool_policy.allowed` through the emitter's vocabulary table rather than to
+    loosen this assertion -- #1677."""
+    from scripts import dispatch
+
+    root, entry, env = _case(tmp_path)
+    registration_dir = tmp_path / "agents"
+    dispatch.emit_host_agents("codex", registration_dir)
+    entry["agent"] = dispatch.registered_agent_name(role_file)
+    entry["id"] = env["PANOPTICON_ENTRY_ID"] = "review-entry"
+    argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                              registration_dir=registration_dir)
+    launched = codex_host.validate_command(argv, env, root)["mcp_servers"]["panopticon_scope"]
+    meta, _body = dispatch.load_template(role_file)
+    named = re.findall(r"`([a-z_]+)` \(", dispatch._tool_policy_line(meta, "codex"))
+    assert set(named) == set(launched["enabled_tools"])
 
 
 @pytest.mark.parametrize("agent", ["../panopticon-scout", "/panopticon-scout", "panopticon-scout.toml", "other"])

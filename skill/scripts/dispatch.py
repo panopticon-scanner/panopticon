@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(                    # skill
     os.path.abspath(__file__))))
 import model_resolver
 
-from scripts import hosts
+from scripts import codex_read_tools, hosts
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -124,10 +124,15 @@ _CHARTER = (
     "you may use only %s and must never attempt %s.\n"
     "Return your result as the task message instructs.\n")
 
+# Two %s slots: the role, then the broker's tool names. The list is NOT
+# written out here -- F1 of #1639 P14's review: a second hard-coded copy of
+# `codex_read_tools.TOOLS` in this file is the same defect the epic is closing,
+# one string over. Rendered by `_codex_charter`, pinned by
+# tests/test_dispatch.py::TestCodexToolPolicyMatchesTheBrokerSurface.
 _CODEX_CHARTER = (
     "You are panopticon's `%s` reviewer. Follow the dispatched task message "
     "exactly; it contains your full instructions for this run. Use only the "
-    "scope-bound read_file, search, and list_files MCP tools. Read/Grep/Glob "
+    "scope-bound %s MCP tools. Read/Grep/Glob "
     "in the task refer to these tools; search is literal substring matching. "
     "For a file-scoped review, search must name one granted file and listing "
     "is unavailable; never execute target code or access the network. "
@@ -135,6 +140,19 @@ _CODEX_CHARTER = (
     "template says Write: the controller persists it. Include the task's "
     "`_panopticon` block verbatim in that JSON -- a reply without it is "
     "DISCARDED and the cell is treated as not done. Do not write artifacts.\n")
+
+
+def _codex_charter(role):
+    """The registered Codex shell's standing instruction, tool names included.
+
+    `developer_instructions` outlives the prompt: it is what the shell says the
+    reviewer may call, every launch. It named the three broker tools by hand,
+    so adding or retiring one in `codex_read_tools.TOOLS` moved the argv's
+    `enabled_tools` and the task message's tool policy while leaving the
+    standing instruction enumerating yesterday's surface -- P14 again, at a
+    second site. One join off the same list closes it.
+    """
+    return _CODEX_CHARTER % (role, ", ".join(t["name"] for t in codex_read_tools.TOOLS))
 
 
 def registered_agent_name(role_file):
@@ -215,7 +233,7 @@ def emit_host_agents(host, out_dir):
             cfg = model_resolver.registration_config("codex", role)
             policy = codex_host.safety_config()
             policy.update(name=agent, description=meta["description"],
-                          sandbox_mode="read-only", developer_instructions=_CODEX_CHARTER % role)
+                          sandbox_mode="read-only", developer_instructions=_codex_charter(role))
             policy.update({key: cfg[key] for key in ("model", "model_reasoning_effort") if cfg.get(key)})
             # Host vocabulary belongs here, not in the neutral role templates.
             # Write is deliberately omitted: every Codex role is return-persist.
@@ -304,14 +322,45 @@ def _prune_retired_shells(host, out_dir, written):
     return removed
 
 
+def _codex_tool_gloss(tool):
+    """One broker tool as prose: its own name, its own one-line description.
+
+    The description becomes a mid-sentence fragment: leading capital lowered
+    (so the paragraph never spells a Claude tool name like `Read` at the head
+    of a gloss) and exactly ONE trailing period dropped -- `removesuffix`, not
+    `rstrip`, which would eat a whole run and swallow an ellipsis.
+    """
+    text = tool["description"]
+    return "`%s` (%s)" % (tool["name"], (text[:1].lower() + text[1:]).removesuffix("."))
+
+
 def _tool_policy_line(meta, host=None):
     tp = meta["tool_policy"]
     if host == "codex":
-        return ("\n## Tool policy\n\nThe Codex runner enforces a read-only "
-                "sandbox and captures your final JSON itself. You may use shell "
-                "commands only to read or search files. Never execute target "
-                "code, run builds or tests, access the network, spawn agents, "
-                "or attempt any filesystem mutation.\n")
+        # P14 (run-13): this paragraph promised "shell commands only to read or
+        # search files" to a launch that has no shell at all -- codex_host.
+        # safety_config() disables shell_tool/unified_exec, and the only
+        # callable tools are the scoped `panopticon_scope` MCP ones whose
+        # allowlist IS the list rendered here. The runtime always enforced the
+        # narrower surface, so the cost was a reviewer told to use tools it did
+        # not have, in the one document it is supposed to trust. Render the
+        # sentence FROM that surface rather than asserting a second copy of it
+        # beside it: names and glosses come from codex_read_tools.TOOLS, and
+        # parity is pinned in both directions (tests/test_dispatch.py against
+        # TOOLS, tests/test_codex_host.py against the `enabled_tools` that
+        # reach the argv). Delivery -- the return-JSON contract and the
+        # `_panopticon` stamp -- belongs to the prompt body and the registered
+        # charter and is deliberately not repeated here. The paragraph is
+        # role-BLIND while the argv's `enabled_tools` is role-narrowed from the
+        # same template's `tool_policy.allowed`; every shipped role grants all
+        # three today, so the two agree -- #1677 covers the narrowing case (and
+        # the setup-scan/advisor sites that never thread `host` at all).
+        return ("\n## Tool policy\n\nYour only tools are the `panopticon_scope`"
+                " MCP tools %s. There is no shell. Never execute target code, "
+                "run builds or tests, access the network, spawn agents, or "
+                "attempt any filesystem mutation. The runner captures your "
+                "final JSON itself.\n"
+                % ", ".join(_codex_tool_gloss(t) for t in codex_read_tools.TOOLS))
     return ("\n## Tool policy\n\nYour only tools are %s. "
              "You must not use %s under any circumstances.\n"
              % (", ".join(tp["allowed"]), ", ".join(tp["forbidden"])))
