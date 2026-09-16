@@ -208,6 +208,53 @@ class TestWrites(GuardCase):
         self.assertFalse(allow)
         self.assertIn("symlink", reason)
 
+    def test_a_write_through_a_symlinked_component_is_denied(self):
+        # #1640, the Kimi copy: this hook's write branch is write_guard_hook's,
+        # so the nested-component rule has to move on both. The leaf is a real
+        # file inside a run folder whose `runs` directory is a link.
+        root = os.path.realpath(self.tmp.name)
+        elsewhere = os.path.join(root, "elsewhere")
+        pano = os.path.join(root, ".panopticon")
+        os.makedirs(pano)
+        link = os.path.join(pano, "runs")
+        os.symlink(elsewhere, link)
+        os.makedirs(os.path.join(link, "r1"))
+        target = os.path.join(link, "r1", "findings-A-SEC.json")
+        # The grant is the REALPATH, because that is what `allowlist_from_plan`
+        # stored before #1640 -- which is what made this a fail-open rather than
+        # a mismatch: the armed allowlist and this branch agreed on the external
+        # destination, and the write was allowed.
+        _write(self.allowlist_path,
+               wg.allowlist_document({"entry-1": [os.path.realpath(target)]}))
+        allow, reason = self.write("Write", path=target, content="{}")
+        self.assertFalse(allow)
+        self.assertIn("symlinked directory", reason)
+        self.assertIn(link, reason)
+
+    def test_a_write_through_a_parent_component_is_denied(self):
+        # #1640 fix round 1, the Kimi copy: the grant is what the pre-fix
+        # `allowlist_from_plan` would have stored for this declared path -- the
+        # normalised escape -- so on the base both ends agreed on a source file.
+        root = os.path.realpath(self.tmp.name)
+        os.makedirs(os.path.join(root, ".panopticon", "runs", "r1"))
+        os.makedirs(os.path.join(root, "src"), exist_ok=True)
+        escape = os.path.join(root, ".panopticon", "runs", "r1",
+                              "..", "..", "..", "src", "x.json")
+        _write(self.allowlist_path,
+               wg.allowlist_document({"entry-1": [os.path.realpath(escape)]}))
+        allow, reason = self.write("Write", path=escape, content="{}")
+        self.assertFalse(allow)
+        self.assertIn("findings output cannot contain '..'", reason)
+        self.assertIn(escape, reason)              # fix round 2, N1
+
+    def test_an_ordinary_run_folder_write_is_still_allowed(self):
+        root = os.path.realpath(self.tmp.name)
+        run = os.path.join(root, ".panopticon", "runs", "r1")
+        os.makedirs(run)
+        target = os.path.join(run, "findings-A-SEC.json")
+        _write(self.allowlist_path, wg.allowlist_document({"entry-1": [target]}))
+        self.assertEqual(self.write("Write", path=target, content="{}"), (True, ""))
+
     def test_a_malformed_allowlist_fails_closed(self):
         with open(self.allowlist_path, "w", encoding="utf-8") as fh:
             fh.write("not json")

@@ -240,6 +240,10 @@ class TestAllowlistFromPlan(unittest.TestCase):
         # is named .panopticon AND is itself a symlink -- a target could redirect
         # findings writes by planting that link. The guard existed but no test ever
         # constructed the triggering plan; this pins it.
+        #
+        # #1640 generalised the rule from "the immediate parent, if it is named
+        # .panopticon" to every component, so the wording this asserts is the
+        # general one -- the case itself is unchanged and must stay refused.
         with tempfile.TemporaryDirectory() as d:
             real = os.path.join(d, "real-dir")
             os.mkdir(real)
@@ -248,7 +252,171 @@ class TestAllowlistFromPlan(unittest.TestCase):
             plan = [{"out_file": os.path.join(link, "findings-app-SEC.json")}]
             with self.assertRaises(ValueError) as cm:
                 wg.allowlist_from_plan(plan)
-            self.assertIn("symlinked .panopticon", str(cm.exception))
+            self.assertIn("symlinked directory", str(cm.exception))
+            self.assertIn(link, str(cm.exception))
+
+
+class TestNestedSymlinkComponents(unittest.TestCase):
+    """#1640 (run-13 AGT-861284148): every component of a findings path is
+    checked, not just the one named `.panopticon`.
+
+    The old rule refused a symlink only when the out_file's IMMEDIATE parent
+    was named `.panopticon`, and a real findings path is
+    `<root>/.panopticon/runs/<tag>/findings-<group>-<domain>.json` -- whose
+    immediate parent is the run folder. A target that commits
+    `.panopticon/runs` as a link therefore had `allowlist_from_plan` store the
+    EXTERNAL realpath as an allowed destination, and `_resolve_target` resolve
+    the reviewer's Write to that same external path: install and enforcement
+    agreed on a destination outside the artifact tree, which is what makes it
+    a hole rather than a mismatch.
+    """
+
+    def _planted(self, component="runs"):
+        """(review root, out_file, the symlinked component) -- a review root
+        whose `.panopticon/<component>` is a link to somewhere else."""
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        elsewhere = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
+        pano = os.path.join(root, ".panopticon")
+        os.makedirs(pano)
+        link = os.path.join(pano, component)
+        os.symlink(elsewhere, link)
+        os.makedirs(os.path.join(link, "r1"))
+        return root, os.path.join(link, "r1", "findings-A-SEC.json"), link
+
+    def test_an_intermediate_symlink_refuses_the_plan(self):
+        _root, out_file, link = self._planted()
+        with self.assertRaises(ValueError) as caught:
+            wg.allowlist_from_plan([{"id": "A-SEC", "out_file": out_file}])
+        self.assertIn("symlinked directory", str(caught.exception))
+        self.assertIn(link, str(caught.exception))
+        self.assertIn("runs", str(caught.exception))
+
+    def test_enforcement_denies_the_same_path(self):
+        # Both halves, because agreeing with the install is exactly the bug.
+        _root, out_file, link = self._planted()
+        target, reason = wg._resolve_target(out_file)
+        self.assertIsNone(target)
+        self.assertIn("symlinked directory", reason)
+        self.assertIn(link, reason)
+
+    def test_a_deeper_component_is_refused_too(self):
+        # The run-tag folder, one level below `runs`.
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        elsewhere = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
+        runs = os.path.join(root, ".panopticon", "runs")
+        os.makedirs(runs)
+        link = os.path.join(runs, "tag")
+        os.symlink(elsewhere, link)
+        with self.assertRaises(ValueError) as caught:
+            wg.allowlist_from_plan([{"out_file": os.path.join(link, "findings-A-SEC.json")}])
+        self.assertIn(link, str(caught.exception))
+
+    def test_a_realpath_that_escaped_the_tree_is_refused_by_the_anchor(self):
+        # The anchor, not the walk. Every DIRECTORY component here is real; the
+        # escape is the out_file itself, a link `allowlist_from_plan` would
+        # otherwise follow straight into its `realpath` grant -- the same
+        # install-side hole one component lower. Whatever the components look
+        # like, the resolved destination must still lie inside THIS review
+        # root's artifact tree.
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        elsewhere = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, elsewhere, ignore_errors=True)
+        run = os.path.join(root, ".panopticon", "runs", "r1")
+        os.makedirs(run)
+        outside = os.path.join(elsewhere, "target.json")
+        open(outside, "w").close()
+        out_file = os.path.join(run, "findings-A-SEC.json")
+        os.symlink(outside, out_file)
+        with self.assertRaises(ValueError) as caught:
+            wg.allowlist_from_plan([{"out_file": out_file}])
+        self.assertIn("outside", str(caught.exception))
+        self.assertIn(outside, str(caught.exception))
+
+    def test_an_ordinary_run_folder_is_still_granted(self):
+        # The walk must not refuse the normal shape, or every run stops.
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        out_file = os.path.join(root, ".panopticon", "runs", "r1", "findings-A-SEC.json")
+        os.makedirs(os.path.dirname(out_file))
+        self.assertEqual({"A-SEC": [out_file]},
+                         wg.allowlist_from_plan([{"id": "A-SEC", "out_file": out_file}]))
+        target, reason = wg._resolve_target(out_file)
+        self.assertIsNone(reason)
+        self.assertEqual(out_file, target)
+
+    def test_a_run_folder_that_does_not_exist_yet_is_still_granted(self):
+        # The plan is written before the run folder is; a component with no
+        # inode is not a link, and refusing it would refuse every first run.
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        out_file = os.path.join(root, ".panopticon", "runs", "r1", "findings-A-SEC.json")
+        self.assertEqual({"A-SEC": [out_file]},
+                         wg.allowlist_from_plan([{"id": "A-SEC", "out_file": out_file}]))
+
+    def test_a_parent_component_cannot_strip_the_anchor(self):
+        # #1640 fix round 1. `_components` normalises with `abspath`, which
+        # collapses `..` LEXICALLY before the `.panopticon` test -- so a
+        # declared out_file of `<root>/.panopticon/runs/r1/../../../src/x.json`
+        # became `<root>/src/x.json`, carried no segment, and got neither the
+        # walk nor the anchor: a grant on a SOURCE FILE. Unreachable today only
+        # because `groups_schema._invalid_name` rejects `..` in a group name,
+        # and a guard may not rest on an upstream regex.
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        os.makedirs(os.path.join(root, ".panopticon", "runs", "r1"))
+        os.makedirs(os.path.join(root, "src"))
+        escape = os.path.join(root, ".panopticon", "runs", "r1",
+                              "..", "..", "..", "src", "x.json")
+        with self.assertRaises(ValueError) as caught:
+            wg.allowlist_from_plan([{"id": "A-SEC", "out_file": escape}])
+        self.assertIn("findings output cannot contain '..'", str(caught.exception))
+        # Fix round 2 (N1): and it names WHICH out_file. `install` raises with
+        # no context of its own, so a 200-entry fan-out aborting on one bad
+        # path used to tell the operator only that a `..` existed somewhere.
+        self.assertIn(escape, str(caught.exception))
+        target, reason = wg._resolve_target(escape)
+        self.assertIsNone(target)
+        self.assertIn("findings output cannot contain '..'", reason)
+        self.assertIn(escape, reason)
+
+    def test_a_parent_component_that_stays_inside_is_refused_too(self):
+        # The rule is the COMPONENT, not where it lands: `runs/r1/../r2/f.json`
+        # resolves inside the tree and is still refused. A guard that decided
+        # from the destination would have to re-decide at every enforcement,
+        # and the declared path has no business carrying one.
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        inside = os.path.join(root, ".panopticon", "runs", "r1", "..", "r2", "f.json")
+        with self.assertRaises(ValueError) as caught:
+            wg.allowlist_from_plan([{"out_file": inside}])
+        self.assertIn("findings output cannot contain '..'", str(caught.exception))
+        self.assertIn(inside, str(caught.exception))
+
+    def test_a_dotted_name_that_is_not_a_component_is_fine(self):
+        # `..` as part of a NAME is not a parent component. Refusing it would
+        # be a string match pretending to be a path rule.
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        out_file = os.path.join(root, ".panopticon", "runs", "r1", "findings..A-SEC.json")
+        os.makedirs(os.path.dirname(out_file))
+        self.assertEqual({"<unbound>": [out_file]},
+                         wg.allowlist_from_plan([{"out_file": out_file}]))
+
+    def test_a_path_with_no_panopticon_segment_is_left_alone(self):
+        # The probes' sandbox plans declare out_files with no artifact tree at
+        # all. There is no `.panopticon` to anchor on, so there is no walk --
+        # and `_confined_to_artifact_roots` already refuses to carry such a
+        # grant forward. Widening the refusal here would break them.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        out_file = os.path.join(d, "findings-probe.json")
+        self.assertEqual({"<unbound>": [out_file]},
+                         wg.allowlist_from_plan([{"out_file": out_file}]))
 
 
 class TestMain(unittest.TestCase):
@@ -1231,13 +1399,19 @@ class TestBindingHelpersAreACopy(unittest.TestCase):
     """
 
     NAMES = ("marker_of", "subagent_transcript", "_first_text", "bind")
+    # #1640: the component walk is the same shape of copy -- kimi_guard_hook's
+    # write branch IS this module's, with Kimi's `path` field, and the walk it
+    # calls has to be the same walk or one of the two guards quietly stops
+    # refusing a nested symlink.
+    COMPONENT_NAMES = ("_components", "_component_fault", "_escaped_component")
 
-    def _functions(self, module):
+    def _functions(self, module, names=None):
         import ast
+        names = self.NAMES if names is None else names
         with open(module.__file__, encoding="utf-8") as fh:
             tree = ast.parse(fh.read(), module.__file__)
         return {n.name: ast.dump(n) for n in tree.body
-                if isinstance(n, ast.FunctionDef) and n.name in self.NAMES}
+                if isinstance(n, ast.FunctionDef) and n.name in names}
 
     def test_the_binding_helpers_are_ast_identical_in_both_guards(self):
         import scripts.read_guard_hook as rg
@@ -1247,6 +1421,32 @@ class TestBindingHelpersAreACopy(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(mine.get(name), theirs[name],
                                  "%s has drifted from read_guard_hook's copy" % name)
+
+    def test_the_component_walk_is_ast_identical_in_both_write_guards(self):
+        import scripts.kimi_guard_hook as kg
+        mine = self._functions(wg, self.COMPONENT_NAMES)
+        theirs = self._functions(kg, self.COMPONENT_NAMES)
+        self.assertEqual(sorted(theirs), sorted(self.COMPONENT_NAMES))
+        for name in self.COMPONENT_NAMES:
+            with self.subTest(name=name):
+                self.assertEqual(mine.get(name), theirs[name],
+                                 "%s has drifted from the kimi guard's copy" % name)
+
+    def test_the_component_constants_match_too(self):
+        import scripts.kimi_guard_hook as kg
+        self.assertEqual(wg.ARTIFACT_DIR, kg.ARTIFACT_DIR)
+        self.assertEqual(wg.SYMLINKED_COMPONENT, kg.SYMLINKED_COMPONENT)
+        self.assertEqual(wg.UNMEASURABLE_COMPONENT, kg.UNMEASURABLE_COMPONENT)
+        self.assertEqual(wg.ESCAPED_ARTIFACT_TREE, kg.ESCAPED_ARTIFACT_TREE)
+        self.assertEqual(wg.PARENT_COMPONENT, kg.PARENT_COMPONENT)
+        # Fix round 2 (N1): all four carry a `%s`. A refusal that cannot say
+        # WHICH path or component it is about sends its reader to grep the
+        # plan -- and `allowlist_from_plan` re-raises these with no context of
+        # its own, so the constant is the only place the context can come from.
+        for name in ("SYMLINKED_COMPONENT", "UNMEASURABLE_COMPONENT",
+                     "ESCAPED_ARTIFACT_TREE", "PARENT_COMPONENT"):
+            with self.subTest(constant=name):
+                self.assertIn("%s", getattr(wg, name))
 
     def test_the_binding_constants_match_too(self):
         # The names the three hooks agree on by copy rather than by import:

@@ -429,6 +429,96 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("tools.disabled", detail)
 
+    def test_an_armed_config_with_live_mcp_refutes_both_probes(self):
+        # #1640: the per-run home mediates what it can guard, and MCP tools
+        # are outside both hooks -- so an armed config whose `[mcp]` block is
+        # live is a refutation of the arming, exactly as a missing hook or a
+        # gutted `tools.disabled` is. Shared between the two probes for the
+        # same reason `tools.disabled` is: neither guard covers those tools.
+        import scripts.runners.kimi as kimi_runner
+        real = kimi_runner.build_merged_config
+
+        for name, block in (("enabled", {"enabled": True, "servers": []}),
+                            ("servers", {"enabled": False,
+                                         "servers": [{"name": "s1", "command": "x"}]})):
+            def with_mcp(source, scope_path, allowlist_path, *args, **kwargs):
+                merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+                merged["mcp"] = block
+                return merged
+            with self.subTest(live=name):
+                with mock.patch.object(kimi_runner, "build_merged_config",
+                                       side_effect=with_mcp):
+                    read = kimi_probes.probe_kimi_read_guard(
+                        "kimi", doctor_runner=_DoctorFake())
+                    write = kimi_probes.probe_kimi_write_guard("kimi")
+                for state, _by, detail in (read, write):
+                    self.assertEqual(hosts.REFUTED, state, detail)
+                    self.assertIn("mcp", detail)
+
+    def test_an_armed_config_whose_mcp_block_is_not_the_inert_one_refutes(self):
+        # Fix round 1, F2: the coercions this used to make -- `mcp` to `{}` and
+        # `servers` to `[]` when either was not the expected type -- both fail
+        # OPEN. An ABSENT block, a scalar `mcp`, or a `servers` this cannot
+        # read are not evidence that MCP is off; they are the absence of
+        # evidence, and a probe named "...-armed" may not bless them. Measured
+        # on the base: all three reported `proven` on BOTH guard probes, so a
+        # refactor that dropped the `merged["mcp"]` assignment would have
+        # shipped a per-run home carrying the operator's MCP defaults.
+        import scripts.runners.kimi as kimi_runner
+        real = kimi_runner.build_merged_config
+
+        shapes = (("absent", None),
+                  ("scalar", "live-and-dangerous"),
+                  ("servers not an array", {"enabled": False, "servers": "hostile"}))
+        for name, block in shapes:
+            # Fix round 2 (N2): KEYWORD-ONLY. `_block` sat in the fourth
+            # POSITIONAL slot, which is `build_merged_config`'s `source_path`.
+            # The real call site passes that by keyword so this was correct,
+            # but a call site that ever passed it positionally would bind a
+            # path string into `_block`, every subTest would patch
+            # `merged["mcp"] = "<some path>"`, and the test would still pass
+            # (a path is also != the inert block) while testing none of the
+            # three shapes it names.
+            def armed(source, scope_path, allowlist_path, *args, _block=block, **kwargs):
+                merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+                if _block is None:
+                    merged.pop("mcp", None)
+                else:
+                    merged["mcp"] = _block
+                return merged
+            with self.subTest(shape=name):
+                with mock.patch.object(kimi_runner, "build_merged_config",
+                                       side_effect=armed):
+                    read = kimi_probes.probe_kimi_read_guard(
+                        "kimi", doctor_runner=_DoctorFake())
+                    write = kimi_probes.probe_kimi_write_guard("kimi")
+                for state, _by, detail in (read, write):
+                    self.assertEqual(hosts.REFUTED, state, detail)
+                    self.assertIn("mcp", detail)
+
+    def test_the_probes_bar_is_re_derived_and_cannot_be_moved(self):
+        # Fix round 2 (N3), from the probe's side: the equality bar is a fresh
+        # value per call, so mutating what a previous call handed out moves
+        # nothing. Both halves are asserted -- the PROVEN path still proves,
+        # and a live block still refutes -- because a bar that had been moved
+        # would break exactly one of them.
+        import scripts.kimi_toml as kimi_toml
+        import scripts.runners.kimi as kimi_runner
+        stolen = kimi_toml.inert_mcp()
+        stolen["enabled"] = True
+        stolen["servers"].append({"name": "planted"})
+        state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.PROVEN, state, detail)
+        real = kimi_runner.build_merged_config
+
+        def live(source, scope_path, allowlist_path, *args, **kwargs):
+            merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+            merged["mcp"] = {"enabled": True, "servers": [{"name": "planted"}]}
+            return merged
+        with mock.patch.object(kimi_runner, "build_merged_config", side_effect=live):
+            state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state, detail)
+
     def test_the_armed_detail_names_the_config_it_parsed(self):
         state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.PROVEN, state)

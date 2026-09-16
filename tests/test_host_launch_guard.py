@@ -16,11 +16,15 @@ whole `skill/scripts/` tree, package directories included.
 Per-seam discipline is what failed here twice, so this file does not name
 seams. It finds them: a module is a host-CLI launch seam if it imports
 `subprocess` AND either puts a registered host name at the head of a literal
-argv in a position an argv can go (handed to a call, or returned from one) or
-declares one as its runner's `CLI` constant, annotated or not. Every module
-the walk finds must read a module-level `DEFAULT_RUNNER`, and every one of
-those must be refusing while the autouse guard is in place. Adding a seventh
-seam therefore turns this file red instead of quietly reopening the hole.
+argv -- a list OR a tuple -- in a position an argv can go (handed to a call,
+or returned from one) or declares one as its runner's `CLI` constant,
+annotated or not. #1640 widened "a registered host name" by one hop: the head
+may be the name of a module-level string constant of that same module, since
+`_BINARY = "kimi"; runner([_BINARY, ...])` launches kimi exactly as the
+literal does and used to be invisible here. Every module the walk finds must
+read a module-level `DEFAULT_RUNNER`, and every one of those must be refusing
+while the autouse guard is in place. Adding a seventh seam therefore turns
+this file red instead of quietly reopening the hole.
 
 The `subprocess` gate is what keeps the walk from mistaking data for a
 launch: a module holding `FAMILIES = ["claude", "codex", ...]` starts nothing,
@@ -91,33 +95,90 @@ def _cli_constants(tree):
                 yield value
 
 
+def _module_constants(tree):
+    """{name: string} for this module's own `NAME = "literal"` / `NAME: str =
+    "literal"`, module level only.
+
+    #1640: the ONE HOP the walk below follows. A module-level string constant
+    is not dataflow -- it is the assignment three lines up, in the same file,
+    reachable by reading `tree.body`. A name bound anywhere else (a function
+    body, an import, an attribute, a call) is not here, on purpose.
+    """
+    out = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                out[target.id] = value.value
+    return out
+
+
+def _host_named_by(node, constants, host_names):
+    """The registered host `node` names, or None. A `Constant` is itself; a
+    `Name` is resolved one hop against `constants`."""
+    if isinstance(node, ast.Constant):
+        value = node.value
+    elif isinstance(node, ast.Name):
+        value = constants.get(node.id)
+    else:
+        return None
+    return value if value in host_names else None
+
+
 def _spawns_a_host_cli(tree, host_names):
     """Why this module is a launch seam, or [] if it is not one.
 
     Two shapes, because the families write the launch differently:
-    codex_host/setup_flow build the argv as a list literal whose head is the
-    binary, and the runners keep the binary in a class-level `CLI` constant
-    that `command()` reads. Both are additionally gated on the module
-    importing `subprocess`, so a data module that merely lists the families is
-    not told to grow a launcher it would never call.
+    codex_host/setup_flow build the argv as a list (or tuple) literal whose
+    head is the binary, and the runners keep the binary in a class-level `CLI`
+    constant that `command()` reads. Either head may be the binary spelled
+    literally or a MODULE-LEVEL string constant of this same module, resolved
+    one hop (`_BINARY = "kimi"; runner([_BINARY, ...])`, and `CLI = _BINARY`).
+    All of it is additionally gated on the module importing `subprocess`, so a
+    data module that merely lists the families is not told to grow a launcher
+    it would never call.
 
-    OUT OF SCOPE, deliberately: an argv whose head is a variable
-    (`_BINARY = "kimi"; runner([_BINARY, ...])`) and a tuple argv. Following a
-    name to its binding is a dataflow analysis, and this file is a tripwire.
-    Declare the binary as a literal `CLI` constant or as a literal argv head
-    and the guard sees it; both real families already do.
+    OUT OF SCOPE, deliberately, and this is the whole of the new limit: an
+    argv head that is neither a string literal nor a module-level string
+    constant of THIS module. A name bound by an import (`from x import BIN`),
+    read off an attribute (`spec.cli`), or returned by a call is not followed
+    -- one hop, no imports, no attributes, no calls -- because following any
+    of those means resolving another module and parsing it, which is a
+    dataflow analysis, and this file is a tripwire. Two narrower shapes are
+    out for the same reason and are named here so nobody has to rediscover
+    them: a constant assigned inside a module-level `if` (`if os.name ==
+    "posix": _BINARY = "kimi"`) is not in `tree.body` directly and is not
+    read, and an f-string head (`runner([f"kimi", ...])`) is an
+    `ast.JoinedStr`, not a `Constant`, however much it looks like a literal.
+    A name assigned twice resolves LAST-wins, which is what the module would
+    really run: `"kimi"` then `"echo"` is not a seam, `"echo"` then `"kimi"`
+    is. Declare the binary as a plain literal, as an unconditional
+    module-level string constant, or as a `CLI` constant and the guard sees
+    it; all three real families already do.
     """
     if not _imports_subprocess(tree):
         return []
+    constants = _module_constants(tree)
     reasons = []
     for value in _argv_positions(tree):
-        if isinstance(value, ast.List) and value.elts:
+        # A tuple argv launches exactly as a list one does -- `subprocess.run`
+        # takes any sequence -- and an `ast.List`-only test failed it silently.
+        if isinstance(value, (ast.List, ast.Tuple)) and value.elts:
             head = value.elts[0]
-            if isinstance(head, ast.Constant) and head.value in host_names:
-                reasons.append("argv %r at line %d" % (head.value, head.lineno))
+            named = _host_named_by(head, constants, host_names)
+            if named:
+                reasons.append("argv %r at line %d" % (named, head.lineno))
     for value in _cli_constants(tree):
-        if isinstance(value, ast.Constant) and value.value in host_names:
-            reasons.append("CLI = %r at line %d" % (value.value, value.lineno))
+        named = _host_named_by(value, constants, host_names)
+        if named:
+            reasons.append("CLI = %r at line %d" % (named, value.lineno))
     return reasons
 
 
@@ -222,6 +283,152 @@ class TestTheWalkRecognisesSeamsAndOnlySeams(unittest.TestCase):
                 return runner(["gemini", "--version"], capture_output=True)
             ''')
         self.assertEqual([relative for _, relative, _ in _seams(root)], ["probe.py"])
+
+    def test_an_argv_head_held_in_a_module_constant_is_a_seam(self):
+        """#1640 (run-13 AGT-3260033205). `runner([_BINARY, ...])` was OUT OF
+        SCOPE by declaration, and the declaration was the finding: a launcher
+        written this way is absent from `_seams()`, so the autouse fixture is
+        never told to swap its runner and the real `kimi` starts inside the
+        suite. One hop through a module-level string constant is not a
+        dataflow analysis -- it is reading the assignment three lines up."""
+        root = self._module("headless.py", '''
+            import subprocess
+
+            _BINARY = "kimi"
+
+            DEFAULT_RUNNER = subprocess.run
+
+            def launch(runner=None):
+                runner = DEFAULT_RUNNER if runner is None else runner
+                return runner([_BINARY, "-p", "hello"])
+            ''')
+        seams = _seams(root)
+        self.assertEqual([relative for _, relative, _ in seams], ["headless.py"])
+        self.assertIn("argv 'kimi'", seams[0][2][0])
+
+    def test_a_tuple_argv_is_a_seam(self):
+        """The other form the issue names. `subprocess.run` takes any
+        sequence, so a tuple argv launches exactly as a list one does -- and
+        the walk used to test `isinstance(value, ast.List)`, which a tuple
+        fails silently."""
+        root = self._module("exec.py", '''
+            import subprocess
+
+            def launch(runner=subprocess.run):
+                return runner(("codex", "exec", "--json"))
+            ''')
+        seams = _seams(root)
+        self.assertEqual([relative for _, relative, _ in seams], ["exec.py"])
+        self.assertIn("argv 'codex'", seams[0][2][0])
+
+    def test_a_cli_constant_bound_to_a_module_constant_is_a_seam(self):
+        """`CLI = _BINARY` is the same hop on the other shape: the runners
+        keep the binary in a class-level `CLI` the launcher reads, and a
+        family author who spells that constant once at module level and
+        references it is writing ordinary code, not hiding a launch."""
+        root = self._module("runner_mod.py", '''
+            import subprocess
+
+            _BINARY = "claude"
+
+            class Runner:
+                CLI = _BINARY
+
+                def command(self, runner=subprocess.run):
+                    return runner([self.CLI, "-p"])
+            ''')
+        seams = _seams(root)
+        self.assertEqual([relative for _, relative, _ in seams], ["runner_mod.py"])
+        self.assertIn("CLI = 'claude'", "; ".join(seams[0][2]))
+
+    def test_an_argv_head_imported_from_another_module_is_still_out_of_scope(self):
+        """The new limit, pinned as a limit rather than left to the docstring.
+
+        Following a name across a module boundary means resolving the import,
+        parsing the other module, and doing it for attribute access and call
+        results too -- which is the dataflow analysis this file declines to
+        be. The walk reads ONE hop, in THIS module's own body. A launcher
+        written this way is invisible to the tripwire, and that is a known
+        gap with a known remedy (declare the binary as a literal, a
+        module-level string constant, or a `CLI` constant), not an oversight.
+        """
+        root = self._module("imported.py", '''
+            import subprocess
+            from vendor.names import KIMI
+
+            def launch(runner=subprocess.run):
+                return runner([KIMI, "--version"])
+            ''')
+        self.assertEqual(_seams(root), [])
+
+    def test_an_argv_head_read_off_an_attribute_is_out_of_scope_too(self):
+        """The same limit on the other two shapes it names: an attribute and
+        a call result. `spec.cli` may be a host name at runtime; deciding that
+        statically is the analysis, not the tripwire."""
+        root = self._module("attribute.py", '''
+            import subprocess
+
+            def launch(spec, runner=subprocess.run):
+                return runner([spec.cli, "--version"]) or runner([name_of(), "-p"])
+            ''')
+        self.assertEqual(_seams(root), [])
+
+    def test_a_constant_assigned_inside_an_if_is_out_of_scope(self):
+        """Named in the docstring's limit, and pinned here so the naming
+        cannot drift from the behaviour. `_module_constants` reads `tree.body`
+        directly; a name bound inside a module-level `if` is one statement
+        deeper, and walking into branches means deciding which one runs."""
+        root = self._module("conditional.py", '''
+            import os
+            import subprocess
+
+            if os.name == "posix":
+                _BINARY = "kimi"
+            else:
+                _BINARY = "kimi.exe"
+
+            def launch(runner=subprocess.run):
+                return runner([_BINARY, "-p"])
+            ''')
+        self.assertEqual(_seams(root), [])
+
+    def test_an_f_string_argv_head_is_out_of_scope(self):
+        """The other named limit. `f"kimi"` parses to `ast.JoinedStr`, not
+        `ast.Constant` -- a human reader calls it a string literal and the
+        walk does not, which is exactly the kind of gap worth writing down."""
+        root = self._module("fstring.py", '''
+            import subprocess
+
+            def launch(runner=subprocess.run):
+                return runner([f"kimi", "-p"])
+            ''')
+        self.assertEqual(_seams(root), [])
+
+    def test_a_rebound_constant_resolves_last_wins(self):
+        """Not a limit but a rule, and undocumented rules are how a tripwire
+        gets quietly narrowed: the LAST module-level assignment is what the
+        module would really run, so it is what the walk reads."""
+        shadowed = self._module("shadowed.py", '''
+            import subprocess
+
+            _BINARY = "kimi"
+            _BINARY = "echo"
+
+            def launch(runner=subprocess.run):
+                return runner([_BINARY, "-p"])
+            ''')
+        self.assertEqual(_seams(shadowed), [])
+        promoted = self._module("promoted.py", '''
+            import subprocess
+
+            _BINARY = "echo"
+            _BINARY = "kimi"
+
+            def launch(runner=subprocess.run):
+                return runner([_BINARY, "-p"])
+            ''')
+        self.assertEqual([relative for _, relative, _ in _seams(promoted)],
+                         ["promoted.py"])
 
     def test_a_module_that_only_names_hosts_is_not_a_seam(self):
         """A data module listing the families launches nothing. Flagging it

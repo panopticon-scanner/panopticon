@@ -21,7 +21,7 @@ import sys
 import tempfile
 import tomllib
 
-from scripts import dispatch, hosts, model_resolver, write_guard_hook
+from scripts import dispatch, hosts, kimi_toml, model_resolver, write_guard_hook
 
 from . import common
 
@@ -330,9 +330,12 @@ def _kimi_hooks_are_armed(sandbox, mode):
     the other one's absence is disclosed in the detail, naming the probe that
     owns it -- because over-refutation never blesses anything but it does make
     a reader scanning states alone believe the write guard is broken when only
-    read confinement is. What stays shared is the pair of faults that are not
-    a hook: a config.toml that will not parse (neither hook registers) and a
-    `tools.disabled` that no longer covers the derived set.
+    read confinement is. What stays shared are the faults that are not
+    a hook: a config.toml that will not parse (neither hook registers), a
+    `tools.disabled` that no longer covers the derived set, and an `mcp` block
+    that is not the inert one the runner writes (#1640) -- MCP tools come from
+    another process under names neither guard has heard, so a home that does
+    not say they are off is unmediated for BOTH.
 
     C3: both guard probes are named "...-armed", and both used to prove only
     the adjudication -- payloads through the hook script -- while nothing
@@ -388,6 +391,24 @@ def _kimi_hooks_are_armed(sandbox, mode):
     missing = sorted(set(kimi_runner.disabled_tools()) - disabled)
     if missing:
         faults.append("tools.disabled omits %s" % ", ".join(missing))
+    # #1640: read back off the FILE, like every other fault here -- the
+    # question is what the home the run arms actually carries, not what
+    # `build_merged_config` meant to put in it.
+    #
+    # Fix round 1 (F2): the block must be PRESENT and be exactly the inert one.
+    # This used to coerce a non-dict `mcp` to `{}` and a non-list `servers` to
+    # `[]` and then ask whether anything was live -- both coercions fail OPEN,
+    # so an ABSENT block, a scalar `mcp`, or a `servers` it could not read all
+    # reported `proven`. Those are not evidence that MCP is off; they are the
+    # absence of evidence, and they are exactly the shape a refactor that
+    # dropped the `merged["mcp"]` assignment would leave behind. Compared
+    # against the one definition, so probe and runner cannot drift.
+    mcp, inert = config.get("mcp"), kimi_toml.inert_mcp()
+    if mcp != inert:
+        faults.append("the armed `mcp` block is %.120r, not the inert %r the runner writes: "
+                      "MCP tools are served by another process under names neither guard "
+                      "adjudicates, so a home that does not say they are off is not proof "
+                      "that they are" % (mcp, inert))
     if faults:
         return False, ("the config.toml the runner generates does not arm the %s "
                        "guard: %s" % (mode, "; ".join(faults)))
