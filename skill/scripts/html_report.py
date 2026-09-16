@@ -608,6 +608,7 @@ def _render_scanner_context(meta):
     if tools.get("disabled_mid_run") is True:
         parts.append("the tool scan was disabled mid-run with --no-tools")
     parts.extend(_partial_audit_notes(tools.get("sanitized")))
+    parts.extend(_egress_notes(tools.get("network")))
     if not parts:
         return ""
     return ("<div class='coverage'>Scanner context: %s</div>"
@@ -639,6 +640,34 @@ def _partial_audit_notes(sanitized):
             notes.append("%s: %d requirement lines not audited "
                          "(editable/local/VCS)"
                          % (_escape(name), len(dropped) + _more(row)))
+    return notes
+
+
+def _egress_notes(network):
+    """One line per adapter that was given network egress, or refused it (#1645).
+
+    Silent on `none`, which is every scanner but the two ONLINE_ONLY adapters
+    and the ordinary case -- a line for it would bury the two that are not --
+    and silent on a report that never measured this (pre-#1645, or one fed to
+    --compare), where "reached only" would state a measurement nobody made.
+
+    The block is copied from a target-writable manifest, so every shape is
+    checked rather than trusted and every value is escaped: a malformed row
+    renders no line, never a traceback and never markup, mid-report.
+    """
+    if not isinstance(network, dict):
+        return []
+    notes = []
+    for name in sorted(network):
+        value = network[name]
+        if not isinstance(value, str) or ":" not in value:
+            continue
+        kind, _sep, detail = value.partition(":")
+        if kind == "proxied" and detail:
+            notes.append("%s reached only %s, through this run's egress proxy"
+                         % (_escape(name), _escape(detail.replace(",", ", "))))
+        elif kind == "excluded" and detail:
+            notes.append("%s did not run: %s" % (_escape(name), _escape(detail)))
     return notes
 
 

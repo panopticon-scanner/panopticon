@@ -113,6 +113,13 @@
               "type": "boolean",
               "description": "True when this run started with the tool scan enabled and had it switched off with --no-tools while in flight (#1637 P08) -- the non-destructive rescue from a scanner environment that moved after the scouts were paid for. Distinct from a run that never had tools at all, and stated on every report (false included) so its absence cannot be read as its not having been measured."
             },
+            "network": {
+              "type": "object",
+              "description": "What egress each scanner was given this run, per tool, copied off `tools-manifest.json` (#1645). `none` is the `--network none` containers -- every scanner but the two ONLINE_ONLY adapters. `proxied:<comma-separated hosts>` is an ONLINE_ONLY adapter that ran on a per-run `--internal` network behind a deny-by-default forward proxy allowing exactly those advisory endpoints; before this it got Docker's DEFAULT BRIDGE, i.e. every service reachable from the runner's network. `excluded:<reason>` is one whose egress could not be established: it did NOT run and did NOT fall back to the bridge, and it rides the manifest's `excluded_scope` rather than `selected`. `{}` on a run with no tools manifest, or one written without the scan loop ever running: nothing was measured, which is not the same claim as nothing was granted. The manifest is target-writable, so `synth.validate_schema.repair_tools_network` normalizes it to the types pinned here at the read (a malformed row costs a warning and the row, never the run).",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
             "sanitized": {
               "type": "object",
               "description": "What an adapter refused to hand its scanner, per adapter, copied off `tools-manifest.json` (#1646). pip-audit is given a GENERATED requirements file holding only bare PEP 508 lines, because resolving an editable/local/VCS/URL requirement runs the reviewed repository's PEP 517 build backend -- so the dependency audit can be PARTIAL, and this says by how much and which lines. `{}` on a run with no tools manifest: nothing was measured, which is not the same claim as nothing was dropped. The manifest is target-writable, so `synth.validate_schema.repair_tools_sanitized` normalizes it to the types pinned here at the read (a malformed row costs a warning and the row, never the run).",

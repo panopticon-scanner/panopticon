@@ -1057,7 +1057,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
 
 
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
-                   excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None):
+                   excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
+                   network=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
@@ -1089,7 +1090,27 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     keeps -- an observation, so replacing the choke point with identity makes
     the claim go false rather than leaving a stale `true` behind. The tools
     phase copies it into `tools-ran.json`.
+
+    `network` (#1645) is the egress each tool was given: `"none"` for the
+    `--network none` containers, `"proxied:<allowlist>"` for an ONLINE_ONLY
+    adapter that ran behind this run's proxy, and `"excluded:online egress
+    unavailable"` for one that could not be given an egress path and was
+    therefore NOT run. "pip-audit: produced" has never said what that scanner
+    could reach while it ran, and this is where the answer goes. Defaults to
+    the ledger `run_tools()` filled while building each argv -- an observation,
+    like `redacted` -- and an explicit value is for a caller that did not run
+    the loop. The third posture also MOVES the adapter: it leaves `selected`
+    for `excluded_scope`, the shape the gate already reads as "applicable, not
+    required, disclosed", because an adapter left in both would read as a
+    required scanner that went missing (and `security_gate` rejects the
+    overlap outright).
     """
+    network = {str(k): str(v) for k, v in
+               (_NETWORK_POSTURE if network is None else network).items()}
+    refused = sorted(t for t, posture in network.items()
+                     if posture.startswith(egress.EXCLUDED_PREFIX))
+    selected = [t for t in selected if t not in set(refused)]
+    excluded_scope = list(excluded_scope) + refused
     selected = list(dict.fromkeys(str(tool) for tool in selected))
     produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
     payload = {"schema_version": 1, "run_id": run_id,
@@ -1104,6 +1125,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "redacted": bool(produced) and all(
                    tool in _REDACTED_CAPTURES for tool in produced),
                "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope)),
+               "network": network,
                "sanitized": dict(sanitized or {}),
                "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"])}
                                  for d in excluded_dirs or ()],

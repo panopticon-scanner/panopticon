@@ -627,6 +627,54 @@ def repair_tools_sanitized(value, warn=None):
     return out
 
 
+# Target-writable text bound for two published artifacts, so it is bounded the
+# way every other such field is. The controller's own longest posture is
+# `proxied:` plus its allowlist -- well under this.
+NETWORK_POSTURE_MAX = 200
+
+
+def repair_tools_network(value, warn=None):
+    """`tools-manifest.json`'s `network` block, normalized to what the schema
+    pins for `meta.tools.network` (#1645).
+
+    THE PRINCIPLE, unchanged from `repair_tools_sanitized` above: the schema
+    pins the CONTROLLER's output, so a target-sourced input is repaired to the
+    pinned types AT ITS BOUNDARY. The manifest is written into the scanned tree
+    and a hostile target can pre-commit one, so a malformed row costs a warning
+    and the row -- never the run, and never an `artifact invalid` exit on a
+    report the target authored a corner of.
+
+    Flat by design: a posture is one string per tool (`none`,
+    `proxied:<allowlist>`, `excluded:<reason>`), so anything that is not a
+    string is DROPPED rather than stringified -- `str({"kind": "none"})` would
+    publish a posture nobody recorded. The length cut is the one coercion, and
+    it is the same one the report applies to every other block of
+    target-authored text it republishes.
+    """
+    changes = []
+    out = {}
+    if not isinstance(value, dict):
+        if value not in (None, {}):
+            changes.append(("network", "dropped: not an object"))
+        value = {}
+    for name, posture in value.items():
+        if not isinstance(name, str):
+            changes.append(("network[%r]" % (name,), "dropped: name is not a string"))
+            continue
+        if not isinstance(posture, str):
+            changes.append(("network.%s" % name, "dropped: not a string"))
+            continue
+        out[name] = posture[:NETWORK_POSTURE_MAX]
+    for path, what in changes:
+        message = ("tools-manifest.json: %s %s -- it did not match the type "
+                   "report-schema.json pins for it" % (what, path))
+        if warn is not None:
+            warn(message)
+        else:
+            print(message, file=sys.stderr)
+    return out
+
+
 def string_list(value):
     """The strings in `value` when it is a list, else [].
 

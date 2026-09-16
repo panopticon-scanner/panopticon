@@ -414,3 +414,60 @@ class TestRepairToolsSanitized(unittest.TestCase):
                                                   "dropped": [{"line": None}]}},
                                    warn=lambda _m: None)
         self.assertEqual(validate_schema_mod.schema_errors(report), [])
+
+
+class TestRepairToolsNetwork(unittest.TestCase):
+    """#1645: `tools-manifest.json`'s `network` block reaches the report
+    (`meta.tools.network`) and the HTML, and the manifest is TARGET-WRITABLE.
+
+    Same principle as `sanitized` beside it: the schema pins the CONTROLLER's
+    output, so a target-sourced input is normalized to the pinned types at its
+    boundary. A hostile manifest costs a warning and the malformed rows, never
+    the run and never an `artifact invalid` exit.
+    """
+
+    def _repair(self, value):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = validate_schema_mod.repair_tools_network(value)
+        return got, err.getvalue()
+
+    def test_a_well_formed_block_passes_through(self):
+        block = {"semgrep": "none", "pip-audit": "proxied:pypi.org"}
+        got, err = self._repair(block)
+        self.assertEqual(got, block)
+        self.assertEqual(err, "")
+
+    def test_a_non_object_block_reads_as_nothing_measured(self):
+        for bad in ("none", [], 7, None, ["semgrep"]):
+            with self.subTest(value=repr(bad)):
+                got, _err = self._repair(bad)
+                self.assertEqual(got, {})
+
+    def test_a_non_string_posture_is_dropped_not_coerced(self):
+        # `{"semgrep": {"network": "none"}}` has no honest string, and
+        # stringifying it would publish a posture nobody recorded.
+        got, err = self._repair({"semgrep": {"kind": "none"}, "trivy": 7})
+        self.assertEqual(got, {})
+        self.assertIn("semgrep", err)
+        self.assertIn("trivy", err)
+
+    def test_a_non_string_tool_name_is_dropped(self):
+        got, _err = self._repair({7: "none"})
+        self.assertEqual(got, {})
+
+    def test_a_hostile_posture_string_is_bounded(self):
+        # Target-writable text bound for two published artifacts; the report
+        # already bounds every other such field, and an unbounded one here
+        # would ride a megabyte into the HTML.
+        got, _err = self._repair({"semgrep": "x" * 5000})
+        self.assertLessEqual(len(got["semgrep"]),
+                             validate_schema_mod.NETWORK_POSTURE_MAX)
+
+    def test_a_hostile_manifest_never_makes_the_artifact_invalid(self):
+        report = _minimal_report()
+        report["meta"]["tools"]["network"] = validate_schema_mod.\
+            repair_tools_network({"semgrep": {"deeply": ["nested"]},
+                                  "pip-audit": "proxied:pypi.org"},
+                                 warn=lambda _m: None)
+        self.assertEqual(validate_schema_mod.schema_errors(report), [])

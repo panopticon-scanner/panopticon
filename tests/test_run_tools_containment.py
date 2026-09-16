@@ -240,3 +240,63 @@ class TestOnlineEgress(unittest.TestCase):
                 self.assertEqual(
                     argv[argv.index("timeout") + 1],
                     str(rt.TOOL_TIMEOUT * len(tools) + rt_egress.SIDECAR_SLACK))
+
+
+class TestManifestNetworkPosture(unittest.TestCase):
+    """#1645 ruling 3: the manifest discloses the egress posture per tool.
+
+    "pip-audit: produced" says a scanner ran. It has never said what that
+    scanner could reach while it ran, and until this field there was nowhere
+    for the answer to go.
+    """
+
+    def _manifest(self, tools, stub=None, online=True):
+        stub = stub or _DockerStub()
+        with tempfile.TemporaryDirectory() as d:
+            with contextlib.redirect_stderr(io.StringIO()):
+                written = rt.run_tools(d, tools, os.path.join(d, "out"),
+                                       runner=stub, online=online,
+                                       run_id="r1645")
+                return rt.write_manifest(os.path.join(d, "m.json"), tools,
+                                         written)
+
+    def test_an_offline_tool_is_recorded_as_having_no_network(self):
+        payload = self._manifest(["semgrep", "osv-scanner"])
+        self.assertEqual(payload["network"],
+                         {"semgrep": "none", "osv-scanner": "none"})
+
+    def test_an_online_adapter_names_the_allowlist_it_was_confined_to(self):
+        payload = self._manifest(["pip-audit"])
+        self.assertEqual(payload["network"]["pip-audit"],
+                         "proxied:api.osv.dev,files.pythonhosted.org,pypi.org")
+
+    def test_a_refused_adapter_leaves_selected_for_excluded_scope(self):
+        # Ruling 2, as the artifact sees it: the adapter did not run, and the
+        # manifest says so in the shape the gate already understands. It must
+        # leave `selected` at the same time -- `security_gate` rejects a
+        # manifest whose `excluded_scope` overlaps `selected`, and an adapter
+        # left in both would read as a scanner that was required and missing.
+        payload = self._manifest(["pip-audit", "semgrep"],
+                                 stub=_DockerStub(fail=["network create"]))
+        self.assertEqual(payload["network"]["pip-audit"],
+                         "excluded:online egress unavailable")
+        self.assertEqual(payload["excluded_scope"], ["pip-audit"])
+        self.assertNotIn("pip-audit", payload["selected"])
+        self.assertNotIn("pip-audit", payload["missing"])
+
+    def test_a_manifest_written_without_a_scan_claims_no_posture(self):
+        # Read off what the runner OBSERVED itself granting, the same
+        # construction as `redacted`: the docker-absent path writes a manifest
+        # without ever running the loop, and it must claim nothing rather than
+        # assert a posture nobody established.
+        rt._NETWORK_POSTURE.clear()
+        with tempfile.TemporaryDirectory() as d:
+            payload = rt.write_manifest(os.path.join(d, "m.json"),
+                                        ["semgrep"], [])
+        self.assertEqual(payload["network"], {})
+
+    def test_a_caller_may_state_a_posture_the_loop_did_not_observe(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = rt.write_manifest(os.path.join(d, "m.json"), ["semgrep"],
+                                        [], network={"semgrep": "none"})
+        self.assertEqual(payload["network"], {"semgrep": "none"})

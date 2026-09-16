@@ -199,8 +199,14 @@ def _build_report(tmpdir):
     # M3/#1646: a NON-EMPTY `sanitized` block, so the walk descends into the
     # per-tool row and its `dropped[]` item shape rather than stopping at an
     # empty map. It is written through the real writer, like everything else here.
+    # M3/#1645: a NON-EMPTY `network` block for the same reason -- an empty map
+    # leaves the per-tool value unwalked. Stated rather than observed here: this
+    # fixture writes the manifest without running the scan loop, which is
+    # exactly the caller the explicit argument exists for.
     run_tools.write_manifest(os.path.join(run_dir, "tools-manifest.json"),
                              ["bandit"], [sarif_path], run_id="parity-run",
+                             network={"bandit": "none",
+                                      "pip-audit": "proxied:pypi.org"},
                              sanitized={"pip-audit": {
                                  "source": "requirements.txt", "kept": 2,
                                  "dropped": [{"line": "-e .", "reason": "editable"}],
@@ -348,6 +354,11 @@ class TestSchemaParity(unittest.TestCase):
         # and its `dropped[]` item shape unwalked.
         self.assertTrue(meta["tools"]["sanitized"]["pip-audit"]["dropped"],
                         "no dropped requirement line: that item shape is unwalked")
+        # #1645: same reason -- an empty `network` map leaves the per-tool
+        # posture value unwalked.
+        self.assertEqual(meta["tools"]["network"]["pip-audit"],
+                         "proxied:pypi.org",
+                         "no egress posture: that value is unwalked")
 
     def test_no_report_key_is_undescribed_by_the_schema(self):
         drift = _drift(self.report)

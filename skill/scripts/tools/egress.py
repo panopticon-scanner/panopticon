@@ -241,7 +241,8 @@ CONTROL_TIMEOUT = 60
 # `excluded_scope` is a list of NAMES (`security_gate` validates it as one) and
 # has nowhere to put a why.
 NO_NETWORK = "none"
-UNAVAILABLE = "excluded:online egress unavailable"
+EXCLUDED_PREFIX = "excluded:"
+UNAVAILABLE = EXCLUDED_PREFIX + "online egress unavailable"
 
 
 class _Unavailable(Exception):
