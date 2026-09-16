@@ -6,6 +6,9 @@ on:
     paths:
       - Dockerfile
       - Dockerfile.fixtures
+      # The fixture image's pinned dependency digests: changing them changes
+      # what that build installs, so the build has to run (#1641).
+      - requirements-fixtures.txt
       - .github/workflows/docker-publish.yml
       - .github/workflows/docker-build-pr.yml
       - skill/scripts/**

@@ -88,8 +88,16 @@ RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
 # always uses the current repo's code; do not COPY them into the image.
 
 # pytest is needed by the integration-test harness that runs inside this image.
-# hadolint ignore=DL3013
-RUN pip install --no-cache-dir pytest
+# #1641 (SEC-E2A): by version AND by digest. This install runs as root at image
+# build, so an unconstrained resolve executes an attacker-chosen release's
+# install-time code with full privileges inside the very image the scanner
+# adapters are validated against -- and pyproject.toml's `pytest>=9.1.1` floor
+# does not reach this separate command. --require-hashes makes pip refuse any
+# artifact whose sha256 is not in the file, a missing transitive dependency
+# included; `scripts/bump_pins.py requirements --write` is what writes them.
+COPY requirements-fixtures.txt /tmp/requirements-fixtures.txt
+RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements-fixtures.txt \
+    && rm /tmp/requirements-fixtures.txt
 
 ENV PYTHONPATH=/opt/panopticon
 ENV FIXTURE_ROOT=/opt/panopticon-fixtures

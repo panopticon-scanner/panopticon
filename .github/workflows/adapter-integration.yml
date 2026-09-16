@@ -60,7 +60,8 @@ jobs:
           docker tag "$IMAGE" panopticon-tools:latest
 
       # FROM panopticon-tools:latest, adding the railsgoat / WebGoat / AspGoat
-      # fixtures (SHA-pinned in Dockerfile.fixtures) and pytest.
+      # fixtures (SHA-pinned in Dockerfile.fixtures) and pytest (hash-pinned in
+      # requirements-fixtures.txt).
       - name: Build the fixtures image
         run: docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 

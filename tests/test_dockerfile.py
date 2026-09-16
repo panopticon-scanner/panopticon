@@ -396,6 +396,8 @@ class TestDockerBuildPrWorkflow(unittest.TestCase):
         step_names = " ".join(
             s.get("name", "") for s in self.wf["jobs"]["build"]["steps"])
         self.assertIn("Build Dockerfile.fixtures", step_names)
+        # #1641: the image's pinned digests are part of what it builds.
+        self.assertIn("requirements-fixtures.txt", paths)
 
 
 class TestDockerfileFixtures(unittest.TestCase):
