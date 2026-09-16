@@ -177,11 +177,11 @@ def main(argv=None):
         default_groups = os.path.join(".panopticon", "groups.json")
         if os.path.isfile(default_groups):
             groups_path = default_groups
-    # #1639 P15 fix round 2 (F6): groups.json is read from the target's own
-    # `.panopticon/`, and five of its fields are type-pinned by the time they
-    # reach the artifact. Normalize at the read -- the only one in the tree --
-    # so `load_groups_json`'s "never abort a run" survives the validator.
-    gj = validate_schema_mod.repair_groups_json(plan_mod.load_groups_json(groups_path))
+    # #1639 P15 (F6): groups.json is read from the target's own `.panopticon/`,
+    # and five of its fields are type-pinned by the time they reach the
+    # artifact. `load_groups_json` normalizes them at the read, so its "never
+    # abort a run" contract survives the validator for every caller.
+    gj = plan_mod.load_groups_json(groups_path)
     groups_meta = gj.get("groups", [])
 
     # #17/#16: run-scoped artifacts (tools-manifest, scout-*, coverage-*, dispatch

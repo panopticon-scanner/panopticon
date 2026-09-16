@@ -7,11 +7,11 @@ import sys
 
 import scripts.evidence as evidence_mod
 import scripts.group_runner as group_runner
-import scripts.groups_schema as groups_schema
 import scripts.ingest_tools as ingest_tools
 import scripts.plan_contract as plan_contract
 import scripts.score_gate as score_gate
 from scripts.tools import EXECUTES_TARGET_BUILD
+from . import coverage_io as coverage_io
 from . import findings as findings_mod
 from . import integrity as integrity_mod
 from . import validate_schema as validate_schema_mod
@@ -65,7 +65,7 @@ class PlanInputs:
         # 5.0 (matrix Sec5.1): auto-discover <run_dir>/coverage-<group>.json the
         # same way groups.json/scout-*.json are -- fed to audit_floor_cells in
         # reconcile along with the ingested paths.
-        coverages = load_coverage_files(run_dir)
+        coverages = coverage_io.load_coverage_files(run_dir)
         return cls(groups_meta=groups_meta, fan_out=fan_out,
                    scout_requested=sorted(scout_requested),
                    scout_profiles_seen=scout_profiles_seen, out_of_scope=out_of_scope,
@@ -180,81 +180,6 @@ def _finding_owed_verification(finding, engaged):
     if grp is not None and dom is not None:
         return (grp, dom) in engaged
     return True
-
-def audit_floor_cells(coverages, present):
-    """Certifiable-coverage check (matrix Sec5.1): every FLOOR (domain, group)
-    cell must have produced a findings file. `coverages` = the per-group
-    coverage dicts (as written to .panopticon/coverage-<group>.json by
-    phases.coverage.coverage_execute: {"group", "floor", "effective", ...}); `present`
-    = {group: set(domains with a findings file)}. A missing floor cell is the
-    INCONCLUSIVE story -- scout-WIDENED (non-floor) domains are never audited
-    here, matching the matrix's floor-is-the-contract semantics. A floor domain
-    listed in the cell's `excluded` (e.g. a universal global-floor domain a group
-    opted out of, #5.0-11) does NOT run and is netted out first -- it is not a
-    missing floor cell. Pure; never raises.
-    """
-    missing = []
-    for cov in coverages:
-        group = cov.get("group")
-        have = present.get(group, set())
-        excluded = set(cov.get("excluded") or [])
-        for dom in cov.get("floor") or []:
-            # #5.0-11: a floor domain explicitly excluded (e.g. a universal
-            # global-floor domain a group opted out of) does not run, so it is
-            # not a missing floor cell — net exclude before auditing.
-            if dom in excluded:
-                continue
-            # #1639 P15: `coverages` is read from <run_dir>/coverage-*.json,
-            # which on the agentic path is globbed out of the SCANNED REPO --
-            # a hostile target can pre-commit one. The pair is published as
-            # two strings, so a non-string pair is dropped here rather than
-            # carried into the artifact and rejected at the exit (it names no
-            # real cell anyway, and `sorted` would raise on the mix).
-            if dom not in have and isinstance(group, str) and isinstance(dom, str):
-                missing.append([group, dom])
-    return {"missing_floor": sorted(missing)}
-
-def present_cells(paths):
-    """{group: set(domains)} from findings-<group>-<domain>.json names among
-    the ingested paths (P4 review cells; feeds audit_floor_cells).
-
-    Filename-only, deliberately: presence means synthesize was HANDED a
-    findings file for that (group, domain) cell, independent of whether the
-    reviewer found anything in it -- an empty findings-Auth-SEC.json still
-    proves the SEC floor cell for group Auth ran. Domain codes
-    (groups_schema.DOMAINS) are hyphen-free, so the domain is the LAST
-    hyphen-delimited token before `.json`; this can never collide with the
-    legacy panel-suffixed shape (findings-<group>-<panel>[-panel_review|
-    -lens_sweep-<lens>].json, see GROUP_RE) because panel tokens are lowercase
-    words and domain codes are upper-case 2-3 letter codes -- disjoint
-    alphabets by construction (groups_schema.DOMAINS vs. PANEL_ORDER).
-    """
-    out = {}
-    for p in paths or []:
-        base = os.path.basename(str(p))
-        if not (base.startswith("findings-") and base.endswith(".json")):
-            continue
-        stem = base[len("findings-"):-len(".json")]
-        group, sep, domain = stem.rpartition("-")
-        if sep and group and domain in groups_schema.DOMAINS:
-            out.setdefault(group, set()).add(domain)
-    return out
-
-def load_coverage_files(panopticon_dir=".panopticon"):
-    """Load every .panopticon/coverage-<group>.json cell-coverage artifact
-    (phases.coverage.coverage_execute's output) for audit_floor_cells. Tolerant:
-    unreadable/malformed/non-dict files are skipped, never raise -- these are
-    the same run artifacts groups.json/scout-*.json are read as elsewhere."""
-    out = []
-    for path in sorted(glob.glob(os.path.join(panopticon_dir, "coverage-*.json"))):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        if isinstance(data, dict):
-            out.append(data)
-    return out
 
 def out_of_scope_findings(findings_paths, plan):
     """#441: count agent findings whose location.file falls outside the FILE
@@ -502,12 +427,12 @@ def reconcile(plan, tools, resolved):
     # is not completed work -- so net it out before the floor audit and let it
     # surface as missing_floor, the channel that already means "a floor cell did
     # not produce a review".
-    present = present_cells(tools.ingested_paths)
+    present = coverage_io.present_cells(tools.ingested_paths)
     for entry in (integrity.get("malformed_findings_files") or []):
         cell = entry.get("cell") if isinstance(entry, dict) else None
         if cell and cell[0] in present:
             present[cell[0]].discard(cell[1])
-    cell_audit = audit_floor_cells(plan.coverages or [], present)
+    cell_audit = coverage_io.audit_floor_cells(plan.coverages or [], present)
     coverage = {
         "adapters": tools.dispositions or {},
         "tools_ran": (sorted(tools_ran) if tools_ran is not None
@@ -550,9 +475,16 @@ def reconcile(plan, tools, resolved):
 
 
 def load_groups_json(path):
-    """The run's groups.json as a dict, or {} when absent, unreadable or not a
-    JSON object -- tolerant by design (never abort a run), both announced on
-    stderr. Target-writable: callers repair it (validate_schema) before use."""
+    """The run's groups.json as a dict, or {} when there is no file at `path`,
+    it cannot be read, or it is not a JSON object -- tolerant by design (never
+    abort a run); the two failure modes are announced on stderr.
+
+    The file is target-writable, and five of its fields are type-pinned by the
+    time they reach the artifact, so the dict is normalized HERE rather than by
+    the caller (#1639 P15 fix round 3, R2-6): repairing at the read is what
+    makes a second caller safe by construction. It lived at the caller for one
+    round only because this module was two lines under its ceiling.
+    """
     if not (path and os.path.isfile(path)):
         return {}
     try:
@@ -564,7 +496,7 @@ def load_groups_json(path):
     if not isinstance(gj, dict):
         print("synthesize: %s is not a JSON object; ignoring" % path, file=sys.stderr)
         return {}
-    return gj
+    return validate_schema_mod.repair_groups_json(gj)
 
 
 def load_verify_queue(run_dir):

@@ -2,6 +2,7 @@
 tests/synth/test_<module>.py (WS-0 S4).
 """
 import contextlib
+import inspect
 import io
 import os
 import json
@@ -12,6 +13,8 @@ from unittest import mock
 import scripts.synthesize as syn
 import scripts.run_tools as run_tools
 import scripts.synth.findings as findings_mod
+import scripts.phases.coverage as coverage_phase
+import scripts.synth.coverage_io as coverage_io
 import scripts.synth.plan as plan_mod
 import scripts.synth.verdicts as verdicts_mod
 import scripts.synth.render as render_mod
@@ -1265,6 +1268,65 @@ def test_a_target_pre_committed_coverage_file_cannot_end_the_run(tmp_path):
         assert all(isinstance(x, str) for x in pair), pair
 
 
+# Fix round 3, R2-2. Round 1 pinned what `missing_floor` PUBLISHES; the READ
+# was still raw, and the real record shape is `{group, floor, excluded,
+# effective}` -- `group` is used as a dict key, `floor` is iterated and
+# `excluded` becomes a set, so eleven ordinary wrong types ended the run in
+# TypeError before the published pair was ever built.
+_HOSTILE_COVERAGE_CELLS = [
+    ("group dict", {"group": {"a": 1}, "floor": ["SEC"]}),
+    ("group list", {"group": [1], "floor": ["SEC"]}),
+    ("group int", {"group": 7, "floor": ["SEC"]}),
+    ("floor int", {"group": "g1", "floor": 7}),
+    ("floor bool", {"group": "g1", "floor": True}),
+    ("floor bare string", {"group": "g1", "floor": "SEC"}),
+    ("floor nested list", {"group": "g1", "floor": [[1]]}),
+    ("floor dict", {"group": "g1", "floor": {"SEC": 1}}),
+    ("excluded int", {"group": "g1", "floor": ["SEC"], "excluded": 7}),
+    ("excluded float", {"group": "g1", "floor": ["SEC"], "excluded": 1.5}),
+    ("excluded nested list", {"group": "g1", "floor": ["SEC"], "excluded": [[1]]}),
+]
+
+
+@pytest.mark.parametrize("label,cell", _HOSTILE_COVERAGE_CELLS,
+                         ids=[x[0] for x in _HOSTILE_COVERAGE_CELLS])
+def test_no_coverage_cell_a_target_can_write_ends_the_run(tmp_path, label, cell):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "coverage-g1.json").write_text(json.dumps(cell), encoding="utf-8")
+    fp = run_dir / "findings-g1-SEC.json"
+    fp.write_text(json.dumps({"findings": []}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--run-dir", str(run_dir),
+                       "--out", str(out), str(fp)])
+    assert rc in (0, 2), err.getvalue()      # 2 = INCONCLUSIVE, a GATE verdict
+    assert "artifact invalid" not in err.getvalue()
+    report = json.loads(out.read_text(encoding="utf-8"))
+    for pair in report["meta"]["coverage"]["cells"]["missing_floor"]:
+        assert all(isinstance(x, str) for x in pair), pair
+
+
+def test_the_coverage_reader_reads_the_shape_the_phase_writes():
+    # The sweep row for `coverage-g1.json` used to write `{"cells": [...],
+    # "missing_floor": [...]}` -- keys `audit_floor_cells` never looks at -- so
+    # it was green over zero coverage of the artifact it named. Pin the three
+    # field names against the phase that WRITES the record, so a rename on
+    # either side is caught instead of silently emptying every hostile fixture.
+    writer = inspect.getsource(coverage_phase.coverage_execute)
+    reader = (inspect.getsource(coverage_io.audit_floor_cells)
+              + inspect.getsource(coverage_io.normalized_cell))
+    for key in ("group", "floor", "excluded"):
+        assert '"%s":' % key in writer, "%s is not written by the phase" % key
+        assert '"%s"' % key in reader, "%s is not read by the audit" % key
+    for row in _HOSTILE_RUN_ARTIFACTS:
+        if row[0] == "coverage-g1.json":
+            assert set(row[1]) & {"group", "floor", "excluded"}, \
+                "the sweep's coverage row must use keys the reader reads"
+
+
 def test_a_cross_domain_finding_with_a_mistyped_code_cannot_end_the_run(tmp_path):
     # #1639 P15 C1 vector 2: integrity.cross_domain_findings copies `code` and
     # `domain` verbatim off the agent payload into a section the schema types.
@@ -1434,8 +1496,11 @@ _HOSTILE_RUN_ARTIFACTS = [
     ("scout-g1.json", {"tools": [7, "semgrep"], "domains": 7}),
     ("dispatch-plan-driver.json", {"cells": 7}),
     ("verify-queue.json", {"entries": [{"queue_id": 7, "finding": 9}], "run_id": 7}),
-    ("coverage-g1.json", {"cells": [{"domain": 7, "group": 9}],
-                          "missing_floor": [[7, 8]]}),
+    # The REAL record shape (R2-2): `{group, floor, excluded, effective}` is
+    # what `phases.coverage` writes and `coverage_io` reads. The row that
+    # named `cells`/`missing_floor` exercised nothing.
+    ("coverage-g1.json", {"group": {"a": 1}, "floor": 7, "excluded": [[1]],
+                          "effective": ["SEC"]}),
     ("tools-manifest.json", {"schema_version": 1, "selected": [7], "missing": 8}),
 ]
 

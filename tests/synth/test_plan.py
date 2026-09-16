@@ -10,6 +10,7 @@ import unittest
 
 import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
+import scripts.synth.coverage_io as coverage_io
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
 import scripts.group_runner as gr
@@ -25,13 +26,13 @@ class TestFloorCellAudit(unittest.TestCase):
 
     def test_missing_floor_cell_is_inconclusive(self):
         # a coverage file declares SEC as floor; no findings-<g>-SEC.json exists
-        cells = plan_mod.audit_floor_cells(
+        cells = coverage_io.audit_floor_cells(
             [{"group": "Auth", "floor": ["SEC"], "effective": ["SEC"]}], present={"Auth": set()}
         )  # no cell findings present
         self.assertEqual(cells["missing_floor"], [["Auth", "SEC"]])
 
     def test_present_floor_cell_ok(self):
-        cells = plan_mod.audit_floor_cells(
+        cells = coverage_io.audit_floor_cells(
             [{"group": "Auth", "floor": ["SEC"], "effective": ["SEC"]}], present={"Auth": {"SEC"}}
         )
         self.assertEqual(cells["missing_floor"], [])
@@ -39,7 +40,7 @@ class TestFloorCellAudit(unittest.TestCase):
     def test_excluded_floor_cell_not_missing(self):
         # #5.0-11: a floor domain a group opted out of (e.g. a universal global-
         # floor domain) does not run, so it is not a missing floor cell.
-        cells = plan_mod.audit_floor_cells(
+        cells = coverage_io.audit_floor_cells(
             [{"group": "Auth", "floor": ["SEC", "DAT"], "excluded": ["DAT"], "effective": ["SEC"]}],
             present={"Auth": {"SEC"}},
         )  # only SEC ran; DAT excluded
@@ -52,32 +53,32 @@ class TestPresentCells(unittest.TestCase):
 
     def test_parses_group_and_domain(self):
         self.assertEqual(
-            plan_mod.present_cells([os.path.join(".panopticon", "findings-Auth-SEC.json")]),
+            coverage_io.present_cells([os.path.join(".panopticon", "findings-Auth-SEC.json")]),
             {"Auth": {"SEC"}},
         )
 
     def test_hyphenated_group_name_preserved(self):
         # groups may themselves contain hyphens; the domain is the fixed
         # hyphen-free suffix, so rpartition keeps the rest as the group.
-        self.assertEqual(plan_mod.present_cells(["findings-my-group-DAT.json"]), {"my-group": {"DAT"}})
+        self.assertEqual(coverage_io.present_cells(["findings-my-group-DAT.json"]), {"my-group": {"DAT"}})
 
     def test_legacy_panel_suffixed_names_do_not_match(self):
         # lowercase panel tokens (and -panel_review/-lens_sweep-<lens>
         # suffixes) are never a domain code -- no false "present" cell.
         self.assertEqual(
-            plan_mod.present_cells(["findings-g1-code-panel_review.json", "findings-g1-security.json"]),
+            coverage_io.present_cells(["findings-g1-code-panel_review.json", "findings-g1-security.json"]),
             {},
         )
 
     def test_multiple_domains_accumulate_per_group(self):
         self.assertEqual(
-            plan_mod.present_cells(["findings-Auth-SEC.json", "findings-Auth-DAT.json"]),
+            coverage_io.present_cells(["findings-Auth-SEC.json", "findings-Auth-DAT.json"]),
             {"Auth": {"SEC", "DAT"}},
         )
 
     def test_empty_and_none_tolerated(self):
-        self.assertEqual(plan_mod.present_cells([]), {})
-        self.assertEqual(plan_mod.present_cells(None), {})
+        self.assertEqual(coverage_io.present_cells([]), {})
+        self.assertEqual(coverage_io.present_cells(None), {})
 
 class TestToolPolicyMode(unittest.TestCase):
     def _write_plan(self, d, flags):
@@ -332,7 +333,14 @@ class PlanLoadersTest(unittest.TestCase):
             good = os.path.join(d, "groups.json")
             with open(good, "w") as fh:
                 json.dump({"groups": [{"name": "g1"}], "mode": "repo"}, fh)
-            self.assertEqual(plan_mod.load_groups_json(good)["groups"], [{"name": "g1"}])
+            # The reader REPAIRS as well as parses (#1639 P15 R2-6): the file is
+            # target-writable and `grading` subscripts `g["files"]`, so an entry
+            # without one comes back with the empty list, not a KeyError later.
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                loaded = plan_mod.load_groups_json(good)
+            self.assertEqual(loaded["groups"], [{"name": "g1", "files": []}])
+            self.assertIn("groups.json:", err.getvalue())
 
     def test_load_verify_queue_three_outcomes(self):
         with tempfile.TemporaryDirectory() as d:
@@ -462,6 +470,6 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertEqual(pi.scout_requested, ["semgrep"])
             self.assertEqual(pi.scout_profiles_seen, 1)
             self.assertEqual(pi.integrity["plans_seen"], 0)
-            self.assertEqual(pi.coverages, plan_mod.load_coverage_files(d))
+            self.assertEqual(pi.coverages, coverage_io.load_coverage_files(d))
             self.assertEqual(pi.resume, group_runner_mod.resume_stats([], None, None, _verdicts={}))
             self.assertEqual(pi.out_of_scope, plan_mod.out_of_scope_findings([], []))
