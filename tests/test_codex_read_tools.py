@@ -375,10 +375,15 @@ def test_the_exclusion_list_matches_the_one_discovery_prunes():
     from conftest import REPO_ROOT
     from scripts import discovery
 
-    # Discovery's primary surface is `git ls-files --exclude-standard`, so it
-    # also drops everything the target's .gitignore drops. The broker has no
-    # git; these two names are how it reaches the same answer, and they are
-    # only legitimate while the repo really does ignore them.
+    # The broker has no git, so it cannot read the target's .gitignore the way
+    # discovery's `git ls-files --exclude-standard` surface does; these two
+    # names are how it reaches the same answer. What actually keeps discovery
+    # off them is `_filter_reviewable`'s dot-dir prune, which holds whatever
+    # git reports: since #1638 P06 the tracked `.panopticon/groups.yml` IS
+    # listed by `git ls-files`, and `discover_repo_files` still returns zero
+    # `.panopticon/` entries. The .gitignore assertion below stays as the
+    # second half of the parity -- both names remain ignored for the tools that
+    # do read it, so the broker's hard-coded pair cannot drift unnoticed.
     gitignore_parity = {".panopticon", ".worktrees"}
     assert set(read_tools.EXCLUDED_DIRECTORIES) == set(discovery.EXCLUDE_DIRS) | gitignore_parity
     assert read_tools.EXCLUDED_DIRECTORY_GLOBS == discovery.EXCLUDE_DIR_GLOBS

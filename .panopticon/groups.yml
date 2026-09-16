@@ -94,9 +94,14 @@ groups:
       - skill/scripts/phases/**
       - skill/scripts/orchestrate.py
       - skill/scripts/progress.py
-      # phases/persist.py is this schema's only writer and validator; the
-      # sibling envelope/verdict schemas sit in Reporting:Core, which is at
-      # the 48-file cap.
+      # Deliberately NOT with its four sibling contracts (findings-envelope,
+      # advisor-verdict, report, x0x-report) in Reporting:Core: that leaf is at
+      # 48/48, and a 49th file would chunk it into `Reporting:Core_1`, a name
+      # the matrix has no entry for -- the cell would then be reviewed with an
+      # empty test inventory, which is the P13 defect this PR exists to close.
+      # phases/persist.py is this schema's only writer and validator, so Phases
+      # is a true home rather than a parking space. Returns to its siblings
+      # when the Reporting split (follow-up to #1638 P06) lands.
       - skill/reference/verdict-bundle-schema.json
       tests:
       - tests/test_driver.py
