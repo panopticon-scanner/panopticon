@@ -179,11 +179,16 @@ class TestGrant(_Repo):
         self.assertEqual(got["entry_cap"], evidence_scope.ENTRY_CAP)
         self.assertTrue(got["entry_truncated"])
         self.assertFalse(got["truncated"])       # no single claim overflowed CAP
-        # claim order preserved: the first claim's closure comes first, whole.
-        self.assertEqual(got["granted"][0], "claim00.py")
-        self.assertEqual(got["granted"][:evidence_scope.CAP],
-                         ["claim00.py"] + ["c00_%s" % n
-                                           for n in named][:evidence_scope.CAP - 1])
+        # The floor first -- every claim's own file, always (fix round 2, N3) --
+        # then the EXTRAS in claim order, so the first claims keep whole,
+        # coherent neighbourhoods and the tail is what goes short.
+        floor = ["claim%02d.py" % c for c in range(30)]
+        self.assertEqual(got["granted"][:30], floor)
+        # 48 - 30 floor files = 18 extras: all 11 of claim 0's, then 7 of
+        # claim 1's, and nothing at all for claims 2..29.
+        self.assertEqual(got["granted"][30:],
+                         ["c00_%s" % n for n in named]
+                         + ["c01_%s" % n for n in named][:7])
 
     def test_a_grant_within_the_entry_ceiling_is_not_entry_truncated(self):
         _write(self.root, "a.py", "import os\n")
@@ -207,3 +212,68 @@ class TestGrant(_Repo):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEntryCeilingNeverStarvesAClaim(_Repo):
+    """Fix round 2, N3/N4. `ENTRY_CAP` bounds the closure EXTRAS, never a
+    claim's own `location.file`. The ceiling used to drop whatever came after
+    it, the claim file included -- and the read guard ENFORCES the grant, so a
+    starved claim could only ever answer NEEDS_MORE_INFO, which is now
+    `backup_scope_limited`: gate-eligible at 1.5 and permanently unrefutable.
+    That is the #1029 floor (`paths[:cap] or [location.file]`), and it holds
+    ahead of both caps."""
+
+    def _claims(self, n, extras_per_claim=1):
+        scope = []
+        for i in range(n):
+            own = "c%03d.py" % i
+            _write(self.root, own, "import os\n")
+            extras = ["x%03d_%02d.py" % (i, j) for j in range(extras_per_claim)]
+            for rel in extras:
+                _write(self.root, rel, "import os\n")
+            scope.append({"location": {"file": own},
+                          "description": " ".join(extras)})
+        return scope
+
+    def test_every_claim_keeps_its_own_file_past_the_ceiling(self):
+        scope = self._claims(60)
+        got = evidence_scope.grant(self.root, ["c000.py"], scope)
+        own = ["c%03d.py" % i for i in range(60)]
+        self.assertEqual(got["granted"], own)          # all 60, zero extras
+        self.assertTrue(got["entry_truncated"])
+        self.assertEqual(got["omitted"], 60)           # every extra dropped
+
+    def test_the_ceiling_bounds_extras_not_the_floor(self):
+        # 10 claims, 20 extras each: the 10 claim files are always granted and
+        # the extras fill the REMAINING budget up to ENTRY_CAP.
+        scope = self._claims(10, extras_per_claim=20)
+        got = evidence_scope.grant(self.root, ["c000.py"], scope)
+        own = {"c%03d.py" % i for i in range(10)}
+        self.assertTrue(own <= set(got["granted"]))
+        self.assertEqual(len(got["granted"]), evidence_scope.ENTRY_CAP)
+        self.assertTrue(got["entry_truncated"])
+
+    def test_omitted_counts_distinct_files(self):
+        # N4: the dedupe check preceded the ceiling check, so one file named by
+        # three claims incremented `omitted` three times and the prompt
+        # over-reported.
+        _write(self.root, "a.py", "import os\n")
+        _write(self.root, "b.py", "import os\n")
+        _write(self.root, "shared.py", "import os\n")
+        scope = [{"location": {"file": "a.py"}, "description": "shared.py"},
+                 {"location": {"file": "b.py"}, "description": "shared.py"}]
+        got = evidence_scope.grant(self.root, ["a.py"], scope, entry_cap=0)
+        self.assertEqual(got["omitted"], 1)            # one DISTINCT file
+
+    def test_entry_cap_zero_fails_closed_to_the_floor(self):
+        # N4: `granted or list(files)` handed back the WHOLE GROUP when the
+        # ceiling emptied the grant -- a ceiling of zero yielding an unbounded
+        # read. The floor is the floor; nothing widens past it.
+        _write(self.root, "a.py", "import os\n")
+        _write(self.root, "b.py", "import os\n")
+        got = evidence_scope.grant(
+            self.root, ["a.py", "b.py", "c.py"],
+            [{"location": {"file": "a.py"}, "description": "with b.py"}],
+            entry_cap=0)
+        self.assertEqual(got["granted"], ["a.py"])
+        self.assertTrue(got["entry_truncated"])

@@ -274,48 +274,82 @@ def _fallback(files, cap, entry_cap):
     """The whole-group grant, in the same recorded shape (#1029/#1096).
 
     Deliberately NOT subject to `entry_cap`: the group is already bounded -- the
-    matrix chunks a group at 48 files -- and narrowing the safety net is how a
-    backup ends up refuting blind, which is the one thing the fallback exists to
-    prevent."""
+    matrix chunks a group at `--max-per-group` (default 48, so at defaults this
+    grants exactly `ENTRY_CAP` and the exemption is a no-op) -- and narrowing the
+    safety net is how a backup ends up refuting blind, which is the one thing the
+    fallback exists to prevent. At a raised `--max-per-group` the fallback is
+    correspondingly larger; that is the operator's own bound on how much code one
+    cell covers."""
     return {"granted": list(files), "cap": cap, "truncated": False,
             "entry_cap": entry_cap, "entry_truncated": False,
             "omitted": 0}
+
+
+def _claim_floor(review_root, scope):
+    """Every scoped claim's own `location.file`, in claim order, or None if one
+    of them has no resolvable, confined path (the whole-group fallback case).
+
+    The #1029 floor, and the reason it is computed FIRST (fix round 2, N3): the
+    grant is a read fence the guard enforces, so a claim denied its own file
+    cannot be adjudicated at all -- the only answer left to the advisor is
+    NEEDS_MORE_INFO, which is now `backup_scope_limited`: gate-eligible at 1.5
+    and permanently unrefutable. A ceiling that manufactures those is worse than
+    no ceiling. So the floor is exempt from both caps and `entry_cap` bounds the
+    closure EXTRAS alone."""
+    floor = []
+    for claim in scope or []:
+        loc = claim.get("location") if isinstance(claim, dict) else None
+        path = loc.get("file") if isinstance(loc, dict) else None
+        if not path or not runio._confined_to_root(review_root, path):
+            return None
+        path = _norm(path)
+        if path and path not in floor:
+            floor.append(path)
+    return floor
 
 
 def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP):
     """The evidence grant for one backup entry:
     `{granted, cap, truncated, entry_cap, entry_truncated, omitted}`.
 
-    The union of its claims' closures, IN CLAIM ORDER, so the ceiling takes the
-    tail of the chunk rather than a slice of every claim: an early claim keeps a
-    whole, coherent closure instead of every claim getting a useless fragment.
+    Every scoped claim's own `location.file` first -- the floor, always granted
+    -- then the union of their closure EXTRAS in claim order, up to `entry_cap`.
+    Claim order, so the ceiling takes the tail of the chunk rather than a slice
+    of every claim: an early claim keeps a whole, coherent neighbourhood instead
+    of every claim getting a useless fragment. The total is therefore at most
+    `max(entry_cap, len(floor))`.
+
     `truncated` says a single claim's closure hit `cap`; `entry_truncated` says
-    the union hit `entry_cap`, with `omitted` counting what it cost. Both are
-    stated in the prompt and echoed in the verdict, so "my scope was complete" is
-    never something the advisor has to assume.
+    the extras hit `entry_cap`, with `omitted` counting the DISTINCT files it
+    cost. Both are stated in the prompt and echoed in the verdict, so "my scope
+    was complete" is never something the advisor has to assume.
 
     Falls back to the whole group `files` when a scoped claim has no resolvable,
     confined `location.file` (unchanged from #1029/#1096): a backup must never
     refute blind. A path the claim NAMED but that escapes the root is simply not
     granted -- it never widens the fence and never triggers the fallback.
     """
-    granted, truncated, omitted = [], False, 0
     entry_cap = max(0, entry_cap)
-    for claim in scope or []:
-        loc = claim.get("location") if isinstance(claim, dict) else None
-        path = loc.get("file") if isinstance(loc, dict) else None
-        if not path or not runio._confined_to_root(review_root, path):
-            return _fallback(files, cap, entry_cap)
+    floor = _claim_floor(review_root, scope)
+    if floor is None or not scope:
+        return _fallback(files, cap, entry_cap)
+    granted, truncated, omitted = list(floor), False, set()
+    budget = max(0, entry_cap - len(floor))
+    for claim in scope:
         paths = _closure_paths(review_root, claim, files)
         if len(paths) > cap:
             truncated = True
-        for entry in paths[:max(0, cap)] or [_norm(path)]:
+        for entry in paths[:max(0, cap)]:
             if not entry or entry in granted:
-                continue
-            if len(granted) >= entry_cap:
-                omitted += 1
+                continue          # already granted: never an omission
+            if len(granted) - len(floor) >= budget:
+                omitted.add(entry)
                 continue
             granted.append(entry)
-    return {"granted": granted or list(files), "cap": cap,
-            "truncated": truncated, "entry_cap": entry_cap,
-            "entry_truncated": bool(omitted), "omitted": omitted}
+    # No `or list(files)`: the floor is non-empty whenever `scope` is, so an
+    # emptied grant can only come from a zero ceiling -- and a ceiling of zero
+    # handing back the whole group would be the one direction a ceiling must
+    # never fail (fix round 2, N4).
+    return {"granted": granted, "cap": cap, "truncated": truncated,
+            "entry_cap": entry_cap, "entry_truncated": bool(omitted),
+            "omitted": len(omitted)}
