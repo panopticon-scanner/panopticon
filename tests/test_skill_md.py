@@ -389,6 +389,11 @@ class TestSkillMd(unittest.TestCase):
         # ceiling, and that the status is NOT counted as verified.
         self.assertIn("entry_truncated", verify)
         self.assertIn("coverage line", verify)
+        # Fix round 4, N3: the CANONICAL shape list -- the one an advisor is
+        # told to copy -- must be the whole shape. It named `floor_count` two
+        # clauses earlier and then listed six keys.
+        self.assertIn("evidence_scope: {granted, cap, truncated, entry_cap, "
+                      "entry_truncated, floor_count}", verify)
 
     def test_an_environmental_tool_skip_is_documented_as_retried(self):
         loop = _section(self.text, "## Driver run-loop", "## Driver setup")

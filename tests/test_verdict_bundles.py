@@ -305,7 +305,11 @@ class TestScopeLimitedBackup(unittest.TestCase):
                 "needs_more_info")
 
     def test_a_scope_limited_backup_never_rescues_a_primary_rejection(self):
-        # Only a primary CONFIRMED is retained; anything else keeps the backup.
+        # The primary is retained WHATEVER it said, because a backup that could
+        # not look is not disagreeing with it (fix round 4, N1). Until then the
+        # backup won here, which turned a refuted finding into a gate-eligible
+        # `backup_scope_limited` at factor 1.5 -- a partial rescue of exactly
+        # the rejection this test is named for.
         with tempfile.TemporaryDirectory() as d:
             tmp_path = Path(d)
             _bundle(tmp_path, "verdicts-app-SEC.json",
@@ -319,8 +323,11 @@ class TestScopeLimitedBackup(unittest.TestCase):
             by_fid, _ = evidence.load_verdict_bundles(d_path)
             v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
                                              run_id="R")
-            self.assertEqual(v["verdict"], "NEEDS_MORE_INFO")
-            self.assertEqual(v["stage"], "backup")
+            self.assertEqual(v["verdict"], "REJECTED")
+            self.assertEqual(v["stage"], "primary")
+            self.assertEqual(
+                evidence.derive_evidence({"id": "SEC-100"}, v)["status"],
+                "rejected")
 
     def test_missing_evidence_must_be_a_list_of_paths(self):
         for junk in ("grading.py", [], [""], [123], {"a": 1}, None):
@@ -610,3 +617,78 @@ class TestTheTwoNeedsMoreInfoShapesAreOrdered(unittest.TestCase):
 
     def test_a_scope_limited_nmi_alone_is_still_the_disclosure(self):
         self.assertEqual(self._kept([self.SCOPED])[1], "backup_scope_limited")
+
+
+class TestTheRetainedPrimaryIsTheSharedRulesPrimary(unittest.TestCase):
+    """Fix round 4, N1. The retain-primary branch selected with `next(c for c in
+    candidates if c["verdict"] == "CONFIRMED")` -- the one selection among
+    primaries that D1's shared rule did not own. So a primary bundle emitting
+    REJECTED then CONFIRMED for one finding, plus a scope-limited backup, was
+    published `backup_scope_limited` (gate-eligible, factor 1.5) while first-wins
+    and the driver both said `rejected`: D1's divergence in miniature, in the
+    very function whose docstring says two readers of one bundle must not answer
+    differently.
+
+    The rule is now stated once: an evidence-SCOPE failure is not a substantive
+    disagreement, so it does not displace the primary -- whichever verdict the
+    shared rule says the primary is. The carrier rides along and
+    `derive_evidence` only turns it into `backup_scope_limited` on a CONFIRMED,
+    so a rejection stays a rejection and a bare NMI stays one."""
+
+    SCOPED = {"finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO",
+              "reasoning": "the call sites were not in my scope",
+              "missing_evidence": ["other.py"]}
+
+    def _published(self, primaries):
+        with tempfile.TemporaryDirectory() as d:
+            tmp_path = Path(d)
+            _bundle(tmp_path, "verdicts-app-SEC.json", primaries,
+                    stage="primary")
+            d_path = _bundle(tmp_path, "verdicts-app-SEC-backup.json",
+                             [self.SCOPED], stage="backup")
+            by_fid, _ = evidence.load_verdict_bundles(d_path)
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            shared = evidence.resolve_duplicates(
+                [c for c in by_fid["SEC-100"] if c.get("stage") != "backup"],
+                "primary")
+            return (evidence.derive_evidence({"id": "SEC-100"}, v)["status"],
+                    shared["verdict"])
+
+    REJECTED = {"finding_id": "SEC-100", "verdict": "REJECTED",
+                "reasoning": "the code does not do this"}
+    CONFIRMED = {"finding_id": "SEC-100", "verdict": "CONFIRMED",
+                 "reasoning": "traced it"}
+    BARE_NMI = {"finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO",
+                "reasoning": "the code does not say"}
+
+    def test_a_rejected_first_primary_is_still_the_published_verdict(self):
+        status, shared = self._published([self.REJECTED, self.CONFIRMED])
+        self.assertEqual(shared, "REJECTED")
+        self.assertEqual(status, "rejected")
+
+    def test_a_bare_nmi_first_primary_is_still_the_published_verdict(self):
+        status, shared = self._published([self.BARE_NMI, self.CONFIRMED])
+        self.assertEqual(shared, "NEEDS_MORE_INFO")
+        self.assertEqual(status, "needs_more_info")
+
+    def test_a_confirmed_first_primary_still_carries_the_disclosure(self):
+        status, shared = self._published([self.CONFIRMED, self.REJECTED])
+        self.assertEqual(shared, "CONFIRMED")
+        self.assertEqual(status, "backup_scope_limited")
+
+    def test_with_no_primary_at_all_the_backup_is_simply_the_verdict(self):
+        # Nothing to retain, so nothing to protect: `backup_scope_limited` is a
+        # disclosure ABOUT a retained primary CONFIRMED, and with no primary the
+        # backup's own NEEDS_MORE_INFO is the whole of what the run knows.
+        # Unchanged by this fix; pinned so the branch cannot start inventing one.
+        with tempfile.TemporaryDirectory() as d:
+            d_path = _bundle(Path(d), "verdicts-app-SEC-backup.json",
+                             [self.SCOPED], stage="backup")
+            by_fid, _ = evidence.load_verdict_bundles(d_path)
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            self.assertEqual(v["stage"], "backup")
+            self.assertEqual(
+                evidence.derive_evidence({"id": "SEC-100"}, v)["status"],
+                "needs_more_info")

@@ -9,6 +9,7 @@ as unverifiable. The closure is the fix: the claim's file, the producers its own
 evidence names, and a one-hop in-repo import neighbourhood, capped.
 """
 import os
+import re
 import tempfile
 import unittest
 
@@ -354,3 +355,38 @@ class TestTheGrantRecordsItsFloor(_Repo):
              {"location": {"file": "a.py"}},
              {"location": {"file": "b.py"}}])
         self.assertEqual(got["floor_count"], 2)      # a.py, b.py -- not x.py
+
+
+class TestTheRecordedShapeIsWrittenDownWhereItIsPromised(unittest.TestCase):
+    """Fix round 4, N3 -- and round 2's N4 before it, on the other docstring.
+    Both `grant()` and `verify._backup_grant` open by naming the dict they
+    return, and `PANOPTICON.md` gives the same list as the shape the advisor
+    copies into `evidence_scope`. Three hand-maintained copies of one shape drift
+    the moment a key is added; this derives the list from the function instead,
+    so adding a key fails here rather than quietly leaving two of the three
+    stale."""
+
+    def _keys(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            _write(root, "a.py", "import os\n")
+            return evidence_scope.grant(root, ["a.py"],
+                                        [{"location": {"file": "a.py"}}])
+
+    @staticmethod
+    def _declared(doc):
+        """The `{a, b, c}` shape list the docstring opens with. The SUMMARY
+        list, not a mention anywhere in the prose -- round 3 added `floor_count`
+        to `grant()`'s body three paragraphs down and left the summary reading
+        six keys, which is precisely the drift that looks fixed."""
+        body = re.search(r"\{([a-z_,\s]+)\}", doc.replace("\n", " "))
+        return sorted(n.strip() for n in body.group(1).split(",") if n.strip())
+
+    def test_grant_names_every_key_it_returns(self):
+        self.assertEqual(self._declared(evidence_scope.grant.__doc__),
+                         sorted(self._keys()))
+
+    def test_the_driver_side_docstring_names_them_too(self):
+        import scripts.phases.verify as verify
+        self.assertEqual(self._declared(verify._backup_grant.__doc__),
+                         sorted(self._keys()))

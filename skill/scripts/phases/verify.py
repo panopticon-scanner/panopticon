@@ -2,6 +2,7 @@
 import glob as _glob
 import json
 import os
+import sys
 
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
@@ -399,7 +400,7 @@ _GRANT_BLOCK = (
     "each claim's own file, the files its evidence names, and their one-hop "
     "in-repo imports, capped at %d per claim (truncated: %s) and, for the "
     "IMPORT/NAMED extras across this whole check, at %d (entry_truncated: %s); "
-    "%d of the files below are claim files, which no cap bounds.%s Copy this "
+    "%s, which no cap bounds.%s Copy this "
     "list verbatim into every verdict's `evidence_scope.granted`, with the same "
     "`cap`, `truncated`, `entry_cap`, `entry_truncated` and `floor_count`. If "
     "you needed a file that is NOT listed here, return NEEDS_MORE_INFO and name "
@@ -423,13 +424,17 @@ def _grant_block(review_root, grant):
     absolutized against the review root (#975) and prompt-sanitized (#1190) -- a
     control character in a target-tree filename cannot inject a bullet line here
     either."""
-    omitted = int(grant.get("omitted") or 0)
+    omitted, floor = int(grant.get("omitted") or 0), int(
+        grant.get("floor_count") or 0)
     return _GRANT_BLOCK % (
         _GRANT_HEADING, int(grant.get("cap") or 0),
         "yes" if grant.get("truncated") else "no",
         int(grant.get("entry_cap") or 0),
         "yes" if grant.get("entry_truncated") else "no",
-        int(grant.get("floor_count") or 0),
+        # N5: a backup chunk is often ONE finding, and the plural sentence is
+        # then the one an advisor actually reads.
+        ("1 of the files below is a claim file" if floor == 1
+         else "%d of the files below are claim files" % floor),
         _GRANT_OMITTED % omitted if omitted else "",
         runio._abs_file_list(review_root, grant.get("granted") or []))
 
@@ -440,23 +445,13 @@ def _backup_grant(review_root, files, scope):
     floor_count}` -- the files, the per-claim and per-entry ceilings, whether
     each bit, how many distinct EXTRA files the entry ceiling cost, and how many
     of the granted files are claim files (which no cap bounds).
-    `evidence_scope.grant` is the one place that shape is defined.
-
-    #1029 granted each scoped claim's `location.file` alone, when an advisor's
-    Read/Grep were still unconfined and the list was only a cost cut. Plan 5/6
-    made it a READ FENCE, and run-13 paid for the difference: the redaction-order
-    defect (#1634) was CONFIRMED by the primary, which saw the cell, and
-    NEEDS_MORE_INFO by the backup, which was granted `synth/render.py` while the
-    defect lived in the call order between it and two files it could not open.
-    Synthesis prefers the backup, so a reproduced defect published as
-    unverifiable -- the backup had LESS evidence than the primary it checked.
-
-    `evidence_scope.grant` widens that to the claim's file, the producers the
-    claim's own evidence names, and a one-hop in-repo import neighbourhood,
-    capped -- and hands back what it granted, which the prompt states and the
-    verdict echoes. The full-group fallback for an unlocatable or escaping
-    `location.file` is unchanged (#1096): a backup must never refute blind, and
-    never read outside the tree."""
+    `evidence_scope.grant` is the one place that shape is defined, and its
+    module docstring is where the WHY lives: #1029 granted each claim's
+    `location.file` alone as a cost cut, plan 5/6 turned that list into a READ
+    FENCE, and run-13's #1634 was published unverifiable because the backup held
+    less evidence than the primary it was checking. The full-group fallback for
+    an unlocatable or escaping `location.file` is unchanged (#1096): a backup
+    must never refute blind, and never read outside the tree."""
     return evidence_scope.grant(review_root, files, scope)
 
 
@@ -486,6 +481,17 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
                 for part, chunk in enumerate(_cell_chunks(scope))
                 if not _part_done(review_root, manifest, group, domain,
                                   "backup", part, chunk))
+        if pending and not files:
+            # Fix round 4, N2: `grant()` keeps the grant non-empty by falling
+            # back to THIS list, which guarantees nothing when it is empty --
+            # the entry would ship `files: []`, a deny-all fence whose only
+            # answer manufactures an unrefutable `backup_scope_limited`. A group
+            # with no files has nothing to verify, so no entry is BUILT; and the
+            # skip is said out loud, never silent.
+            print("driver: verify backup SKIPPED for group %s -- no files, so "
+                  "nothing to grant and an empty grant is a deny-all fence"
+                  % group, file=sys.stderr)
+            continue
         if pending:
             ngroups += 1
             # #1029/#1638 P16: the backup reads its scoped claims' BOUNDED
@@ -508,7 +514,10 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
     return None
 
 def _verify_backup_done(review_root, manifest):
-    for group, _files in coverage._discovered_groups(review_root):
+    for group, files in coverage._discovered_groups(review_root):
+        # N2: a cell that will never be dispatched must not hold the phase open.
+        if not files:
+            continue
         for domain in coverage._effective_domains(review_root, group):
             scope = _cell_backup_findings(review_root, manifest, group, domain)
             if scope and not _verify_cell_done(review_root, manifest, group,

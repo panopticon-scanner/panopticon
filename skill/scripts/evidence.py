@@ -830,14 +830,20 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
     that it could not look. Run-13's redaction-order defect was CONFIRMED by the
     primary, reproduced by hand, and then published as unverifiable because the
     backup -- granted the claim file alone -- said NEEDS_MORE_INFO about a
-    cross-file call order. So a scope-limited backup NMI does NOT displace a
-    primary CONFIRMED: the primary verdict is returned, carrying the paths the
-    backup named, and `derive_evidence` records the honest
-    `backup_scope_limited`. A backup NMI that names NOTHING is a substantive
-    "the code does not say", and keeps today's backup-wins semantics.
+    cross-file call order. So a scope-limited backup NMI displaces NO primary:
+    the primary verdict is returned, carrying the paths the backup named, and
+    `derive_evidence` spends that carrier only on a CONFIRMED -- which is what
+    makes the honest `backup_scope_limited`, while a primary REJECTED stays
+    `rejected` and a bare primary NMI stays `needs_more_info` (fix round 4, N1;
+    the branch used to retain a CONFIRMED only, so a rejected finding was
+    published as a gate-eligible disclosure instead). A backup NMI that names
+    NOTHING is a substantive "the code does not say", and keeps today's
+    backup-wins semantics.
 
     Where several BACKUP verdicts exist for one finding, the LEAST FAVOURABLE to
-    it is the one that counts (`_least_favourable`, fix round 2 N6). `stage`
+    it is the one that counts, and where several PRIMARY verdicts do, first-wins
+    -- BOTH through `resolve_duplicates`, so the retained primary above is the
+    same verdict the driver acted on. `stage`
     itself is controller-stamped at load, so "the backup" is a round the driver
     dispatched, never a label an advisor chose for itself -- which is also what
     makes the retained primary and the scope-limited backup necessarily
@@ -870,11 +876,19 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
     backup = resolve_duplicates(backups, "backup")
     missing = scope_limited_paths(backup)
     if missing:
-        primary = next((c for c in candidates
-                        if c.get("stage") != "backup"
-                        and str(c.get("verdict", "")).upper() == "CONFIRMED"),
-                       None)
+        # Fix round 4, N1: WHICH primary is the shared rule's job, not a local
+        # `next(... == "CONFIRMED")`. A primary bundle emitting REJECTED then
+        # CONFIRMED for one finding used to hand this branch the CONFIRMED that
+        # first-wins had already discarded -- publishing `backup_scope_limited`
+        # (factor 1.5) where the driver said `rejected`.
+        primary = resolve_duplicates(
+            [c for c in candidates if c.get("stage") != "backup"], "primary")
         if primary is not None:
+            # Whatever that verdict is: a scope failure is not a disagreement,
+            # so it displaces NOTHING. The carrier rides along and
+            # `derive_evidence` spends it only on a CONFIRMED, so a rejection
+            # stays `rejected` and a bare NMI stays `needs_more_info` instead of
+            # being upgraded into a gate-eligible disclosure.
             kept = dict(primary)
             kept[SCOPE_LIMITED_FIELD] = missing
             return kept

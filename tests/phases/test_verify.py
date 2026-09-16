@@ -1,5 +1,7 @@
 """Tests for scripts.phases.verify: cell, backup and tool verification.
 """
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -384,6 +386,24 @@ class TestBackupGrantBlockPlacement(unittest.TestCase):
         # absent is the driver's counted sentence.)
         self.assertNotIn("further files omitted by the entry ceiling", prompt)
 
+    def _floor_sentence(self, floor_count):
+        prompt = self._entry({"granted": ["a.py"], "cap": 12,
+                              "truncated": False, "entry_cap": 48,
+                              "entry_truncated": False,
+                              "floor_count": floor_count})["prompt"]
+        return prompt
+
+    def test_one_claim_file_is_said_in_the_singular(self):
+        # Fix round 4, N5. The single-claim entry is the COMMON case (a backup
+        # chunk is often one finding), so "1 of the files below are claim files"
+        # is the sentence most advisors actually read.
+        self.assertIn("1 of the files below is a claim file, which no cap "
+                      "bounds.", self._floor_sentence(1))
+
+    def test_several_claim_files_stay_plural(self):
+        self.assertIn("3 of the files below are claim files, which no cap "
+                      "bounds.", self._floor_sentence(3))
+
 
 class TestPlantedCarrierCannotSuppressTheBackupRound(unittest.TestCase):
     """Fix round 2, N1. `_cell_verdicts` was the THIRD reader of an agent-written
@@ -467,7 +487,8 @@ class TestBackupCellFixture(unittest.TestCase):
                          "security_mode": "standard", "flags": {}}
 
     def _cell(self, loc_file="src/a.py", verdicts_for=None, files=None):
-        files = files or ["src/a.py", "src/b.py"]
+        # `files=[]` is a deliberate value, not "unset" -- N2's group.
+        files = ["src/a.py", "src/b.py"] if files is None else files
         for rel in files:
             path = os.path.join(self.root, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -559,3 +580,48 @@ class TestNoBackupEntryIsEverDispatchedWithAnEmptyGrant(TestBackupCellFixture):
             for entry in self._entries(loc):
                 self.assertTrue(entry["files"], (loc, entry["id"]))
                 self.assertTrue(entry["scope"]["files"], (loc, entry["id"]))
+
+
+class TestAGroupWithNoFilesGetsNoBackupEntry(TestBackupCellFixture):
+    """Fix round 4, N2. The never-empty invariant was enforced inside `grant()`,
+    which guarantees it by falling back to the GROUP's file list -- so the
+    guarantee was conditional on that list being non-empty. A group carrying
+    `files: []` fell back to nothing and an entry shipped a deny-all fence.
+
+    Unreachable through the pipeline (`discovery.assign_scoped` never writes an
+    empty group), so this is defence in depth. The invariant is made
+    unconditional at the layer it is about: a group with no files has nothing to
+    verify, so no backup entry is BUILT for it -- and the done-predicate agrees,
+    because a cell nobody will ever dispatch must not hold the phase open."""
+
+    def _no_files(self):
+        self._cell(files=[])
+
+    def test_no_entry_is_dispatched_for_a_group_with_no_files(self):
+        self._no_files()
+        res = verify._verify_backup_execute(self.root, self.manifest, "claude",
+                                            ocrdb.load_bundle())
+        self.assertIsNone(res, "a backup entry was built for an empty group")
+
+    def test_the_skip_is_recorded_not_silent(self):
+        self._no_files()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            verify._verify_backup_execute(self.root, self.manifest, "claude",
+                                          ocrdb.load_bundle())
+        self.assertIn("G", err.getvalue())
+        self.assertIn("no files", err.getvalue())
+
+    def test_the_phase_does_not_hang_on_the_skipped_cell(self):
+        # A cell that will never be dispatched must not leave `verify` waiting
+        # on a verdict file that can never arrive.
+        self._no_files()
+        self.assertTrue(verify._verify_backup_done(self.root, self.manifest))
+
+    def test_a_group_with_files_still_gets_its_entry(self):
+        self._cell()
+        res = verify._verify_backup_execute(self.root, self.manifest, "claude",
+                                            ocrdb.load_bundle())
+        self.assertIsNotNone(res)
+        for entry in requests.load_dispatch_request(self.root)["entries"]:
+            self.assertTrue(entry["files"])

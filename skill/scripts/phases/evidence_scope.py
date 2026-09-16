@@ -321,7 +321,7 @@ def _claim_floor(review_root, scope):
 
 def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP):
     """The evidence grant for one backup entry:
-    `{granted, cap, truncated, entry_cap, entry_truncated, omitted}`.
+    `{granted, cap, truncated, entry_cap, entry_truncated, omitted, floor_count}`.
 
     Every scoped claim's own `location.file` first -- the floor, always granted
     -- then the union of their closure EXTRAS in claim order, up to `entry_cap`.
