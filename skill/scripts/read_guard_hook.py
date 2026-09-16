@@ -165,18 +165,34 @@ def _hard_link_reason(tool_name, raw, target, scope):
 
     Directories are not the subject: a directory's st_nlink is its subdirectory
     count, and the rule is about reading content. A path that cannot be stat'ed
-    is left alone -- the tool is about to fail on it for the same reason, and
-    there is no content behind an unstattable name to confine. Unlike the Codex
-    broker, which reads the count off the descriptor it then reads FROM, a
-    PreToolUse hook adjudicates a NAME the host reopens: this is exactly as
-    path-based as the realpath check beside it, and carries the same race.
+    DENIES (fix round 1, F4): a guard may not answer "allowed" about something
+    it could not measure.
+
+    WHAT THIS DOES NOT COVER (#1683). The rule reaches reads whose argument is a
+    FILE path. A `Grep` or `Glob` whose argument is a granted DIRECTORY is
+    adjudicated by path and then traversed by the HOST's own tool, which opens
+    the files itself -- so a hard link inside that subtree still reaches the
+    agent through Grep output. A PreToolUse hook can allow or deny a call, not
+    rewrite it, and walking the target repository on every Grep is not a thing
+    to do inside a synchronous hook; closing it means re-shaping the setup-scan
+    grant (the only directory grant the driver issues), which is #1683. The
+    Codex broker has no such gap: it reads the files itself.
+
+    Unlike that broker, which reads the count off the descriptor it then reads
+    FROM, a PreToolUse hook adjudicates a NAME the host reopens: this is exactly
+    as path-based as the realpath check beside it, and carries the same race.
     """
     if target in scope["files"] or target in scope["reads"]:
         return ""
     try:
         info = os.stat(target)
-    except OSError:
-        return ""
+    except OSError as exc:
+        # Fix round 1 (F4): a guard that cannot measure DENIES. This used to
+        # answer "" -- allow -- reasoning that the host's own read of an
+        # unstattable name fails the same way; that is a guess about another
+        # process's syscall, made by the one component whose job is to be sure.
+        return ("%s of %s is denied: the read guard could not stat it to apply "
+                "the hard-link rule: %s" % (tool_name, raw, exc))
     if not stat.S_ISREG(info.st_mode) or info.st_nlink <= 1:
         return ""
     return "%s of %s is denied: %s" % (tool_name, raw, HARD_LINK_DENIAL % info.st_nlink)

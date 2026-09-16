@@ -76,6 +76,13 @@ class TestHardLinksInDirectoryGrants(GuardCase):
         self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.inside))
         self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.cell))
 
+    def test_a_target_the_rule_cannot_stat_is_denied_not_allowed(self):
+        # Fix round 1 (F4), the Kimi copy: a guard that cannot measure denies.
+        with mock.patch.object(os, "stat", side_effect=OSError("no stat here")):
+            allow, reason = self.scan("Read", path=self.inside)
+            self.assertFalse(allow, reason)
+            self.assertIn("no stat here", reason)
+
     def test_an_exact_grant_reads_a_hard_linked_file(self):
         _write(self.scope_path,
                {"entry-1": {"files": [self.planted], "dirs": [], "reads": []}})

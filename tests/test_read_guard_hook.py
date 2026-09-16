@@ -172,6 +172,18 @@ class TestDecide(unittest.TestCase):
             with self.subTest(scope=scope):
                 self.assertEqual((True, ""), rg.decide("Read", {"file_path": planted}, scope))
 
+    def test_a_target_the_rule_cannot_stat_is_denied_not_allowed(self):
+        # Fix round 1 (F4): the rule used to answer "" -- allow -- when os.stat
+        # raised, which is a guard answering "yes" about something it could not
+        # measure. It denies now, with the error in the reason, and only inside
+        # a directory grant: an exact grant never reaches the stat.
+        with mock.patch.object(os, "stat", side_effect=OSError("no stat here")):
+            ok, reason = rg.decide("Read", {"file_path": self.root_file}, self.scan)
+            self.assertFalse(ok, reason)
+            self.assertIn("no stat here", reason)
+            self.assertEqual((True, ""), rg.decide(
+                "Read", {"file_path": self.root_file}, _scope(files=[self.root_file])))
+
     def test_a_directory_grants_ordinary_files_and_directories_are_unchanged(self):
         # A directory's st_nlink is its subdirectory count, so the rule is for
         # REGULAR files only: Grep and Glob over the granted root stay allowed.
