@@ -304,6 +304,30 @@ class TestScopeLimitedBackup(unittest.TestCase):
                 evidence.derive_evidence({"id": "SEC-100"}, v)["status"],
                 "needs_more_info")
 
+    def test_a_mistyped_missing_evidence_cannot_retain_the_primary(self):
+        # #1639 P15 fix round 3, R2-4. `missing_evidence` is what
+        # `match_verdict_by_id` consults to decide whether the backup displaces
+        # the primary, and `scope_limited_paths` treats a non-list as "said
+        # nothing" ON PURPOSE -- the field is agent-supplied. A type repair that
+        # turns the bare string into `["a.py"]` therefore does not fix a
+        # presentation glitch: it moves a finding from `needs_more_info` (not
+        # gate-eligible) to a retained primary CONFIRMED published as
+        # `backup_scope_limited` (gate-eligible), and it can only ever move
+        # findings that way. The outcome must be what it was before repair
+        # existed.
+        with tempfile.TemporaryDirectory() as d:
+            by_fid = self._by_fid(Path(d), {
+                "finding_id": "SEC-100", "verdict": "NEEDS_MORE_INFO",
+                "reasoning": "out of scope",
+                "missing_evidence": "a.py"})       # a string, not a list
+            v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
+                                             run_id="R")
+            self.assertEqual(v["verdict"], "NEEDS_MORE_INFO")
+            self.assertEqual(v["stage"], "backup")
+            self.assertEqual(
+                evidence.derive_evidence({"id": "SEC-100"}, v)["status"],
+                "needs_more_info")
+
     def test_a_scope_limited_backup_never_rescues_a_primary_rejection(self):
         # The primary is retained WHATEVER it said, because a backup that could
         # not look is not disagreeing with it (fix round 4, N1). Until then the

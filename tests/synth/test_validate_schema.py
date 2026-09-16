@@ -1,5 +1,6 @@
 """Tests for scripts.synth.validate_schema: the published-schema layer (#1639 P15)."""
 import contextlib
+import copy
 import io
 import json
 import os
@@ -121,11 +122,16 @@ class TestSchemaErrors(unittest.TestCase):
                 self.assertIn("$schema", json.load(fh))
 
 
+def _probe_finding():
+    """The ordinary agent finding every probe patches one field of."""
+    return {"id": "SE-001", "title": "sqli", "severity": "MEDIUM",
+            "confidence": "LIKELY", "panel": "code", "category": "injection",
+            "location": {"file": "a.py", "line_start": 1}}
+
+
 def _synthesize_one(patch):
     """(rc, report, stderr) for one agent finding through the real main()."""
-    finding = {"id": "SE-001", "title": "sqli", "severity": "MEDIUM",
-               "confidence": "LIKELY", "panel": "code", "category": "injection",
-               "location": {"file": "a.py", "line_start": 1}}
+    finding = _probe_finding()
     finding.update(patch)
     with tempfile.TemporaryDirectory() as d, _chdir(d):
         path = os.path.join(d, "findings-g1-code.json")
@@ -143,29 +149,54 @@ def _synthesize_one(patch):
             return rc, json.load(fh), err.getvalue()
 
 
+_MISSING = object()
+
+
 def _valid_finding():
     return {"id": "SE-001", "title": "t", "severity": "HIGH", "confidence": "LIKELY",
             "panel": "security", "category": "injection",
             "evidence": {"status": "unverified"}}
 
 
-def _a_value_the_schema_rejects(node):
-    """A deliberately wrong value for one pinned subschema."""
+# An UNHASHABLE value is always among them (fix round 3, R2-3). One probe value
+# per node, and a string for every enum node, is what let `panel` keep a false
+# ownership claim for two rounds: its normalizer is a SET membership test, so
+# only a dict or a list reaches the TypeError, and the generator could not
+# produce one.
+_UNHASHABLE = ({"a": 1}, [1])
+
+
+def _values_the_schema_rejects(node):
+    """Several deliberately wrong values for one pinned subschema.
+
+    At least two, always including an unhashable container: a normalizer that
+    survives `"wrong"` and raises on `{"a": 1}` has not normalized anything.
+    """
     if "enum" in node:
-        return "not-in-this-vocabulary"
+        return ["not-in-this-vocabulary"] + list(_UNHASHABLE)
     types = node.get("type")
     types = [] if types is None else (types if isinstance(types, list) else [types])
     if "string" in types:
-        return {"not": "a string"}
+        return list(_UNHASHABLE)
     if "integer" in types or "number" in types:
-        return "not a number"
+        return ["not a number"] + list(_UNHASHABLE)
     if "boolean" in types:
-        return "yes"
+        return ["yes"] + list(_UNHASHABLE)
     if "array" in types:
-        return {"not": "a list"}
+        return [{"not": "a list"}, "not a list"]
     if "object" in types:
-        return "not an object"
-    return None
+        return ["not an object", [1]]
+    return []
+
+
+# How each `_OWNED_DOWNSTREAM` entry is checked. The declared owner is asked for
+# the value it would produce and the ARTIFACT must carry exactly that: "not the
+# agent's value" is not the claim the entry makes, and an owned field that was
+# simply DROPPED passed the old `assertNotEqual` (`citations` did, for a round).
+# Two fields are genuinely run-dependent -- a content hash and a generated id --
+# and for those the assertion is presence plus the pinned type.
+_OWNED_BY_NORMALIZER = ("severity", "confidence", "title", "short_title")
+_OWNED_RUN_DEPENDENT = ("id", "fingerprint")
 
 
 class TestEveryPinnedFieldIsRepairedOrOwned(unittest.TestCase):
@@ -194,22 +225,42 @@ class TestEveryPinnedFieldIsRepairedOrOwned(unittest.TestCase):
         stage that runs later (`derive_evidence`) or only sometimes
         (`classify_findings`) is invisible to a boundary-only probe.
         """
+        owned = validate_schema_mod._OWNED_DOWNSTREAM
+        self.assertEqual(sorted(owned),
+                         sorted(_OWNED_BY_NORMALIZER + _OWNED_RUN_DEPENDENT),
+                         "an owned field with no check above is an unproven claim: "
+                         "say how the controller's value for it is established")
         for name, node in sorted(self.item["properties"].items()):
-            bad = _a_value_the_schema_rejects(node)
-            if bad is None:
-                continue                  # unpinned (anyOf / free-form)
-            with self.subTest(field=name):
-                rc, report, err = _synthesize_one({name: bad})
-                self.assertEqual(
-                    rc, 0,
-                    "an agent %s of %r ended the run (rc=%s): %s\nRepair it at "
-                    "a boundary, or declare it in _OWNED_DOWNSTREAM with the "
-                    "stage that owns it." % (name, bad, rc, err))
-                if name in validate_schema_mod._OWNED_DOWNSTREAM:
-                    self.assertNotEqual(
-                        report["findings"][0].get(name), bad,
-                        "%s reached the artifact verbatim: the stage named in "
-                        "_OWNED_DOWNSTREAM does not own it" % name)
+            for bad in _values_the_schema_rejects(node):
+                with self.subTest(field=name, value=repr(bad)):
+                    rc, report, err = _synthesize_one({name: bad})
+                    self.assertEqual(
+                        rc, 0,
+                        "an agent %s of %r ended the run (rc=%s): %s\nRepair it "
+                        "at a boundary, or declare it in _OWNED_DOWNSTREAM with "
+                        "the stage that owns it." % (name, bad, rc, err))
+                    if name not in owned:
+                        continue
+                    got = report["findings"][0].get(name, _MISSING)
+                    if name in _OWNED_BY_NORMALIZER:
+                        probe = _probe_finding()
+                        probe[name] = copy.deepcopy(bad)
+                        want = findings_mod.normalize_finding(probe).get(name)
+                        self.assertEqual(
+                            got, want,
+                            "%s: the artifact carries %r, but %s -- the stage "
+                            "_OWNED_DOWNSTREAM names -- answers %r. Ownership "
+                            "means the controller's value reaches the report."
+                            % (name, got, owned[name].split(" ")[0], want))
+                    else:
+                        self.assertIsNot(got, _MISSING,
+                                         "%s is absent from the artifact: dropped "
+                                         "is not owned" % name)
+                        self.assertTrue(
+                            validate_schema_mod._conforms(got, node),
+                            "%s came out as %r, which the schema still rejects"
+                            % (name, got))
+                        self.assertNotEqual(got, bad, name)
 
     def test_every_owned_field_still_exists_and_says_who_owns_it(self):
         for name, reason in sorted(validate_schema_mod._OWNED_DOWNSTREAM.items()):

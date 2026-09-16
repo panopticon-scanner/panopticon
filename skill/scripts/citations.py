@@ -282,8 +282,15 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
                 derived = _derive_cwe_from_category(f["category"], catalog)
                 if derived:
                     clean["cwe"] = [derived]
-            if raw.get("epss"):
-                clean["epss"] = raw["epss"]
+            # #1639 P15 fix round 3, R2-1: `epss` rows are OBJECTS with a
+            # `score` -- that is what `epss_lookup` writes and what
+            # `render.render_summary` reads (`e.get("score")`). An agent that
+            # wrote a string, or a list of them, used to reach the renderer and
+            # end the run there, after the report was already built.
+            epss = [e for e in (raw.get("epss") or []) if isinstance(e, dict)] \
+                if isinstance(raw.get("epss"), list) else []
+            if epss:
+                clean["epss"] = epss
             f["citation_quality"] = _compute_citation_quality(clean, f.get("cvss"))
             if clean:
                 f["citations"] = clean

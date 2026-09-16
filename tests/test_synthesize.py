@@ -1198,6 +1198,16 @@ _SLOPPY_AGENT_SHAPES = [
      {"provenance": {"model": "m", "discovered_by": {"a": 1}}}, PINS),  # F2
     ("agent-supplied delta outside delta mode",
      {"delta": {"on_diff": "yes", "hunk": "a", "distance": "x"}}, PINS),  # F4
+    # Fix round 3, R2-1: the two `_OWNED_DOWNSTREAM` entries whose declared
+    # normalizer RAISES on the value it is declared to normalize. `panel` is
+    # tested for set membership (unhashable -> TypeError) before any derivation,
+    # and the `epss` consumer in citations.py assumes objects.
+    ("panel dict", {"panel": {"a": 1}}, PINS),
+    ("panel list", {"panel": [1]}, PINS),
+    ("citations.epss dict", {"citations": {"epss": {"a": 1}}}, PINS),
+    ("citations.epss string", {"citations": {"epss": "x"}}, PINS),
+    ("citations.epss string items", {"citations": {"epss": ["x"]}}, PINS),
+    ("citations.epss list items", {"citations": {"epss": [[1]]}}, PINS),
     # Already handled elsewhere -- regression guards.
     ("location empty", {"location": {}}, None),
     ("citations.owasp int items", {"citations": {"owasp": [1]}}, None),

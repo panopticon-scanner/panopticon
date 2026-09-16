@@ -137,7 +137,7 @@ def normalize_finding(f):
     # panel: keep a valid legacy panel; else derive from the finding's domain
     # (matrix cells are domain-scoped); else the historical "code" default.
     panel = f.get("panel")
-    if panel not in VALID_PANELS:
+    if not isinstance(panel, str) or panel not in VALID_PANELS:
         domain = f.get("domain") or ocrdb.domain_of(f.get("code"))
         panel = ocrdb.DOMAIN_TO_PANEL.get(domain, "code")
     f["panel"] = panel

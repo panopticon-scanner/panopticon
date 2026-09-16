@@ -20,9 +20,10 @@ enforces (fix round 2):
 
   `repair_finding`   agent and tool findings, via `findings.normalize_finding`
   `repair_verdict`   an advisor's verdict, via THE sanitizer `evidence._agent_verdict`
-  `repair_groups_json`  the target-writable `.panopticon/groups.json`
+                     -- PRESENTATION fields only, see REPAIRABLE_VERDICT_FIELDS
+  `repair_groups_json`  the target-writable `.panopticon/groups.json`, at its read
   `integrity.cross_domain_findings`  agent-stated domains on a cross-domain claim
-  `plan.audit_floor_cells`           the target-writable `.panopticon/coverage-*.json`
+  `coverage_io.normalized_cell`      the target-writable `.panopticon/coverage-*.json`
   `codes.*` / `x0x_report._domain`   an agent `code` naming no OCRDb domain, for
                                      the x0x schema's `candidates[].domain` enum
   `report._role_from_discovered_by`  a finding with no usable `provenance.model`
@@ -186,18 +187,28 @@ _DROP_NEVER_COERCE = ("location.file", "groups[].files[]")
 #   agent FINDINGS, false about the rebuild's own input (that boundary is now
 #   `repair_verdict`).
 #
-# Both are gone. The shape to distrust is an entry naming a later STAGE rather
-# than a normalizer: a stage that does not always run, and a stage that rebuilds
-# from a second untrusted source.
+# Round 3 removed two more, of a third shape: a normalizer that RAISES on the
+# value it is declared to normalize, so skipping the repair does not hand the
+# field to its owner, it hands the process a traceback.
+#
+#   `panel` named normalize_finding's `panel not in VALID_PANELS` -- a SET
+#   membership test, which raises TypeError on an unhashable value before any
+#   derivation can happen. `{"a": 1}` and `[1]` both ended the run.
+#   `citations` named `enrich_citations`, which copies `epss` through verbatim;
+#   `render.render_summary` then read `e.get("score")` off whatever that was.
+#
+# All four are gone. Two shapes to distrust: an entry naming a later STAGE
+# rather than a normalizer (a stage that does not always run, or that rebuilds
+# from a second untrusted source), and an entry whose normalizer cannot survive
+# the value. The meta-test proves what is left, node by node, against the
+# controller's own expected value.
 _OWNED_DOWNSTREAM = {
     "id": "rewritten by evidence.matrix_finding_id after normalization (#1109)",
     "severity": "normalize_finding coerces case-insensitively and falls back to INFO",
     "confidence": "normalize_finding coerces, else derives it from `verdict`",
-    "panel": "normalize_finding validates it, else derives it from the domain",
     "title": "normalize_finding rebuilds it from title/description, always a string",
     "short_title": "normalize_finding derives it from the repaired title",
     "fingerprint": "stamped by verdicts.resolve_findings from evidence.finding_fingerprint",
-    "citations": "enrich_citations rebuilds it from validated CWE/OWASP/SSVC/CVE parts",
 }
 
 
@@ -379,13 +390,29 @@ def repair_finding(finding, warn=None):
 # completed. Each verdict field is repaired against the report-schema node it
 # ends up in, so this boundary and the findings boundary cannot disagree about
 # the type either.
-_VERDICT_FIELDS = {
+# PRESENTATION fields only, and that is a hard boundary (#1639 P15 fix round 3,
+# R2-4). A verdict carries two kinds of key: what the advisor SAID (prose, a
+# model name, citations -- copied into the report, type-pinned, repairable) and
+# what the ADJUDICATION reads to decide an outcome (`verdict`, `stage`,
+# `run_id`, `finding_id`, `missing_evidence`). Repairing one of the second kind
+# is not a repair, it is a different answer: `missing_evidence` was in this map
+# for one round, and because `scope_limited_paths` treats a non-list as "said
+# nothing" ON PURPOSE -- the field is agent-supplied -- coercing `"a.py"` to
+# `["a.py"]` moved the finding from `needs_more_info` (not gate-eligible) to a
+# retained primary CONFIRMED published as `backup_scope_limited` (gate-eligible),
+# in that direction only. It also bought nothing: the report's
+# `evidence.missing_evidence` is written from the controller carrier
+# `evidence.SCOPE_LIMITED_FIELD`, whose contents `scope_limited_paths` has
+# already filtered to non-empty strings.
+#
+# tests/test_agent_verdict_guard.py holds the line: it AST-walks the
+# adjudication functions and fails if any key they read appears here.
+REPAIRABLE_VERDICT_FIELDS = {
     "reasoning": "evidence.reasoning",          # and provenance.confirmation_reasoning
     "model": "provenance.confirmed_by_model",
     "code": "provenance.advisor_code",
     "references": "references",
     "citations": "citations",
-    "missing_evidence": "evidence.missing_evidence",
 }
 
 
@@ -423,7 +450,7 @@ def repair_verdict(verdict, warn=None):
     if not isinstance(verdict, dict):
         return verdict
     changes = []
-    for key, dotted in _VERDICT_FIELDS.items():
+    for key, dotted in REPAIRABLE_VERDICT_FIELDS.items():
         if key not in verdict or verdict[key] is None:
             continue
         node = _subschema(dotted)
@@ -453,7 +480,7 @@ def repair_verdict(verdict, warn=None):
 # ---------------------------------------------------------------------------
 # Same principle, third source (#1639 P15 fix round 2, F6). `groups.json` is
 # read out of `.panopticon/` inside the reviewed tree -- the same
-# target-writable directory as the `coverage-*.json` files audit_floor_cells
+# target-writable directory as the `coverage-*.json` files `coverage_io`
 # already repairs -- and `plan.load_groups_json` is tolerant BY DESIGN: it
 # announces a corrupt file and returns {} rather than abort a paid-for run.
 # That promise stopped at the parse. Five of its fields reach the artifact or a
