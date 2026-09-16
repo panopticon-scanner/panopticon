@@ -415,52 +415,54 @@ class TestSanitizeRequirementsFile(unittest.TestCase):
     def test_include_is_followed_once_and_sanitized(self):
         d = self._target({"requirements.txt": "-r base.txt\ntop==1\n",
                           "base.txt": "-e .\nbase==2\n"})
-        kept, dropped, hashes = pa.sanitize_requirements_file(
+        report = pa.sanitize_requirements_file(
             os.path.join(d, "requirements.txt"), d)
-        self.assertEqual(kept, ["base==2", "top==1"])
-        self.assertEqual(dropped, [{"line": "-e .", "reason": "editable"}])
-        self.assertFalse(hashes)
+        self.assertEqual(report["kept"], ["base==2", "top==1"])
+        self.assertEqual(report["dropped"],
+                         [{"line": "-e .", "reason": "editable"}])
+        self.assertFalse(report["hashes_stripped"])
 
     def test_include_outside_the_target_is_dropped(self):
         d = self._target({"requirements.txt": "-r ../outside.txt\nok==1\n"})
-        kept, dropped, _h = pa.sanitize_requirements_file(
+        report = pa.sanitize_requirements_file(
             os.path.join(d, "requirements.txt"), d)
-        self.assertEqual(kept, ["ok==1"])
-        self.assertEqual(dropped, [{"line": "-r ../outside.txt",
-                                    "reason": "include outside target"}])
+        self.assertEqual(report["kept"], ["ok==1"])
+        self.assertEqual(report["dropped"], [{"line": "-r ../outside.txt",
+                                              "reason": "include outside target"}])
 
     def test_include_cycle_is_dropped_as_nested_include(self):
         d = self._target({"requirements.txt": "-r self.txt\n",
                           "self.txt": "-r self.txt\nok==1\n"})
-        kept, dropped, _h = pa.sanitize_requirements_file(
+        report = pa.sanitize_requirements_file(
             os.path.join(d, "requirements.txt"), d)
-        self.assertEqual(kept, ["ok==1"])
-        self.assertEqual(dropped, [{"line": "-r self.txt",
-                                    "reason": "nested include"}])
+        self.assertEqual(report["kept"], ["ok==1"])
+        self.assertEqual(report["dropped"], [{"line": "-r self.txt",
+                                              "reason": "nested include"}])
 
     def test_second_level_include_is_dropped_as_nested_include(self):
         d = self._target({"requirements.txt": "-r a.txt\n",
                           "a.txt": "-r b.txt\na==1\n",
                           "b.txt": "b==2\n"})
-        kept, dropped, _h = pa.sanitize_requirements_file(
+        report = pa.sanitize_requirements_file(
             os.path.join(d, "requirements.txt"), d)
-        self.assertEqual(kept, ["a==1"])
-        self.assertEqual(dropped, [{"line": "-r b.txt",
-                                    "reason": "nested include"}])
+        self.assertEqual(report["kept"], ["a==1"])
+        self.assertEqual(report["dropped"], [{"line": "-r b.txt",
+                                              "reason": "nested include"}])
 
     def test_unreadable_include_is_disclosed(self):
         d = self._target({"requirements.txt": "-r gone.txt\nok==1\n"})
-        kept, dropped, _h = pa.sanitize_requirements_file(
+        report = pa.sanitize_requirements_file(
             os.path.join(d, "requirements.txt"), d)
-        self.assertEqual(kept, ["ok==1"])
-        self.assertEqual(dropped, [{"line": "-r gone.txt",
-                                    "reason": "include unreadable"}])
+        self.assertEqual(report["kept"], ["ok==1"])
+        self.assertEqual(report["dropped"], [{"line": "-r gone.txt",
+                                              "reason": "include unreadable"}])
 
     def test_hashes_stripped_is_reported_once_for_the_whole_tree(self):
         d = self._target({"requirements.txt": "pkg==1 --hash=sha256:abc\n"})
-        kept, dropped, hashes = pa.sanitize_requirements_file(
+        report = pa.sanitize_requirements_file(
             os.path.join(d, "requirements.txt"), d)
-        self.assertEqual((kept, dropped, hashes), (["pkg==1"], [], True))
+        self.assertEqual((report["kept"], report["dropped"],
+                          report["hashes_stripped"]), (["pkg==1"], [], True))
 
 
 class TestInvokeNeverPassesTheRepoFile(unittest.TestCase):
@@ -689,6 +691,135 @@ class TestPipAuditRunsInAnEmptyWorkingDirectory(unittest.TestCase):
         seen = self._invoke(self._target("requirements.txt"))
         self.assertFalse(os.path.exists(seen["cwd"]),
                          "the scratch cwd outlived the run")
+
+
+# Every requirements document any test in this file feeds the sanitizer. The
+# cross-check below re-parses each KEPT line with the real `packaging` parser,
+# so the corpus has to be one list rather than scattered literals.
+KEPT_CORPUS = [
+    HOSTILE_REQUIREMENTS,
+    "\n".join(SAFE_LINES),
+    "\n".join(ARCHIVE_NAMES),
+    'name==1.2.3\nname>=1,<2\nname[extra]~=1.4 ; python_version < "3.12"\n',
+    "x.y\nzope.interface>=5\nPKG\npkg_name\npkg.name\npkg-name\n",
+    "pkg[a,b]>=1,<2\npkg~=1.4\npkg===1.0\npkg ==1.0 ;os_name==\"nt\"\n",
+    "pkg==1.0 --hash=sha256:aa --hash=sha256:bb\n",
+    "pkg==1.0 \\\n  --hash=sha256:aa\n",
+    "pkg==1.0\\\n# comment\ngood==2.0\n",
+    "\ufeffpkg==1.0\n",
+    "pkg==1.0 # comment with -e .\n",
+    "req==1\nok==1\ntop==1\nbase==2\ngood>=1\n",
+]
+
+
+class TestKeptLinesParseWithTheRealPep508Parser(unittest.TestCase):
+    """The kept grammar must be at least as STRICT as pip-audit's own parser.
+
+    pip-audit resolves the generated file through `pip install --dry-run`,
+    which parses every line. One line this module keeps but pip cannot parse
+    aborts the WHOLE dependency audit -- pip-audit produces nothing, the
+    coverage manifest lands it in `missing`, and the gate reads a target-side
+    typo as a scanner failure. The whole point of a generated file is that it
+    is always parseable.
+
+    `packaging` is not a declared runtime dependency (see pyproject.toml) and
+    the module deliberately does not import it, so this is a TEST-ONLY
+    cross-check and skips where it is unavailable.
+    """
+
+    def test_every_kept_line_in_the_corpus_is_a_real_url_free_requirement(self):
+        try:
+            from packaging.requirements import Requirement
+        except ImportError:                       # pragma: no cover
+            # A CROSS-CHECK against a parser the module deliberately does not
+            # depend on (`packaging` is not a declared runtime dep); the
+            # grammar's own coverage is the rest of this file and never skips,
+            # so losing this costs a second opinion, not a tested behaviour.
+            # strict-skip-exempt: no adapter behaviour goes untested here
+            self.skipTest("packaging is not importable at test time")
+        seen = 0
+        for text in KEPT_CORPUS:
+            kept, _dropped = pa.sanitize_requirements(text)
+            for line in kept:
+                with self.subTest(line=line):
+                    req = Requirement(line)       # raises InvalidRequirement
+                    self.assertIsNone(req.url, "a kept line carries a URL")
+                    seen += 1
+        self.assertGreater(seen, 15, "the corpus kept almost nothing: vacuous")
+
+
+class TestPipJoinAndEncodingParity(unittest.TestCase):
+    """M4/M5/M6: three ways a VALID pin was silently lost or a broken one kept."""
+
+    def test_a_comment_after_a_continuation_does_not_eat_the_pin(self):
+        # pip's `join_lines` prepends a space to a comment line before joining,
+        # precisely so the comment is still recognisable afterwards. Appending
+        # it raw produced `pkg==1.0# comment`, which `_COMMENT` (which needs
+        # `^` or whitespace before the `#`) cannot strip -- so a correctly
+        # pinned dependency was dropped as `unparseable`.
+        kept, dropped = pa.sanitize_requirements(
+            "pkg==1.0\\\n# comment\ngood==2.0\n")
+        self.assertEqual(kept, ["pkg==1.0", "good==2.0"])
+        self.assertEqual(dropped, [])
+
+    def test_a_utf8_bom_does_not_cost_the_first_dependency(self):
+        # pip strips the BOM (`auto_decode`); a requirements.txt saved by a
+        # Windows editor otherwise loses its first entry with no signal beyond
+        # one `unparseable` row.
+        kept, dropped = pa.sanitize_requirements("\ufeffpkg==1.0\ngood==2\n")
+        self.assertEqual(kept, ["pkg==1.0", "good==2"])
+        self.assertEqual(dropped, [])
+
+    def test_an_empty_marker_is_dropped_rather_than_kept_and_fatal(self):
+        # `packaging.requirements.Requirement("pkg==1.0;")` raises, and
+        # pip-audit parses every line of the generated file -- so keeping this
+        # would trade one bad target line for the entire audit.
+        for line in ("pkg==1.0;", "pkg==1.0; ", "pkg==1.0 ;"):
+            with self.subTest(line=line):
+                kept, dropped = pa.sanitize_requirements(line + "\n")
+                self.assertEqual(kept, [])
+                self.assertEqual(only(dropped)["reason"], "unparseable")
+
+    def test_a_real_marker_is_still_kept(self):
+        kept, _dropped = pa.sanitize_requirements(
+            'pkg==1.0 ; python_version < "3.12"\n')
+        self.assertEqual(kept, ['pkg==1.0 ; python_version < "3.12"'])
+
+
+class TestIncludeResolutionUsesTheRawLine(unittest.TestCase):
+    """M7: include resolution must not depend on the redactor's pattern set.
+
+    `dropped[].line` is MASKED before publication. Re-parsing that masked copy
+    to find the include target keys path resolution off a lossy string -- the
+    failure mode is closed today (a mangled path becomes `include unreadable`),
+    but it makes the redactor's patterns load-bearing for confinement, which
+    they must never be.
+    """
+
+    def test_an_include_whose_path_the_redactor_rewrites_is_still_followed(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        # A filename carrying a shape `redact.redact` masks (a bare UUID).
+        name = "reqs-123e4567-e89b-12d3-a456-426614174000.txt"
+        with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+            fh.write("base==2\n")
+        with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as fh:
+            fh.write("-r %s\ntop==1\n" % name)
+        report = pa.sanitize_requirements_file(
+            os.path.join(d, "requirements.txt"), d)
+        self.assertEqual(report["kept"], ["base==2", "top==1"])
+        self.assertEqual(report["dropped"], [])
+
+    def test_what_is_published_is_still_masked(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as fh:
+            fh.write("-r /etc/hosts-123e4567-e89b-12d3-a456-426614174000.txt\n")
+        report = pa.sanitize_requirements_file(
+            os.path.join(d, "requirements.txt"), d)
+        entry = only(report["dropped"])
+        self.assertEqual(entry["reason"], "include outside target")
+        self.assertNotIn("123e4567-e89b-12d3-a456-426614174000", entry["line"])
 
 
 if __name__ == "__main__":

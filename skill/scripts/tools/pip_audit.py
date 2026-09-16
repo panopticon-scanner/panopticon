@@ -64,7 +64,13 @@ _BARE_REQ = re.compile(r"^(%s)(?:\s*%s)?\s*(?:%s(?:\s*,\s*%s)*)?\s*$"
 # An environment marker, conservatively: the characters PEP 508's marker grammar
 # actually uses. `@`, `/`, `\`, `:` and `#` are NOT here, so a marker can never
 # smuggle a URL or a path past the check above.
-_MARKER_OK = re.compile(r"^[\sA-Za-z0-9_.()'\"<>=!~,*+-]*$")
+# `\S` in the middle, not `*`: an EMPTY marker matched, so `pkg==1.0;` was kept
+# -- and `packaging.requirements.Requirement("pkg==1.0;")` raises, while
+# pip-audit parses every line of the generated file. One such target line would
+# have aborted the entire dependency audit, which is the one thing a GENERATED
+# file exists to make impossible (M6).
+_MARKER_CHARS = r"[\sA-Za-z0-9_.()'\"<>=!~,*+-]"
+_MARKER_OK = re.compile(r"^%s*\S%s*$" % (_MARKER_CHARS, _MARKER_CHARS))
 _COMMENT = re.compile(r"(^|\s+)#.*$")
 _HASH = re.compile(r"\s*--hash[=\s]+\S+")
 _INCLUDE = re.compile(r"^(?:-r|--requirement|-c|--constraint)(?:[=\s]+)(\S.*)$")
@@ -107,12 +113,20 @@ def _joined(text):
     backslash inside a comment cannot swallow the requirement after it.
     """
     out, buf = [], []
-    for raw in str(text or "").splitlines():
+    # M5: pip's `auto_decode` strips a UTF-8 BOM. Without this the first
+    # requirement of any file a Windows editor saved is dropped `unparseable`.
+    for raw in str(text or "").lstrip("\ufeff").splitlines():
         line = raw.rstrip()
-        if line.endswith("\\") and not line.lstrip().startswith("#"):
+        comment = line.lstrip().startswith("#")
+        if line.endswith("\\") and not comment:
             buf.append(line.strip("\\"))
             continue
-        buf.append(line)
+        # M4: pip PREPENDS a space to a comment line before joining, precisely
+        # so the comment is still recognisable afterwards. Appending it raw
+        # produced `pkg==1.0# comment`, which `_COMMENT` -- which needs `^` or
+        # whitespace before the `#` -- cannot strip, so a correctly pinned
+        # dependency was lost as `unparseable`.
+        buf.append(" " + line if buf and comment else line)
         out.append("".join(buf))
         buf = []
     if buf:
@@ -126,24 +140,16 @@ def _safe_to_publish(line):
     return redact.redact(_USERINFO.sub(r"\1[REDACTED]@", line))
 
 
-def sanitize_requirements(text):
-    """`(kept, dropped)` for one requirements document.
-
-    `kept` holds the lines that parse as a bare PEP 508 requirement -- verbatim,
-    minus any `--hash=` tokens (pip-audit does not need them, and leaving one in
-    would put the generated file under `--require-hashes` semantics it cannot
-    satisfy). Everything else is `{"line", "reason"}` with one of `editable`,
-    `local path`, `vcs url`, `direct url`, `option line`, `include`,
-    `unparseable`. Comments and blank lines are simply skipped: they are not
-    requirements and nothing was lost by not auditing them.
-
-    `include` is classified, never followed: this function reads no files.
-    `sanitize_requirements_file` is the wrapper that resolves `-r`/`-c`.
+def _classify(text):
+    """`(kept, dropped)` with the dropped lines RAW -- the grammar, and nothing
+    else. `sanitize_requirements` masks on the way out; the include follower
+    resolves `-r`/`-c` off these originals, so path resolution can never depend
+    on the redactor's pattern set (M7).
     """
     kept, dropped = [], []
 
     def drop(line, reason):
-        dropped.append({"line": _safe_to_publish(line), "reason": reason})
+        dropped.append({"line": line, "reason": reason})
 
     for line in _joined(text):
         line = _COMMENT.sub("", line).strip()
@@ -180,6 +186,30 @@ def sanitize_requirements(text):
     return kept, dropped
 
 
+def _published(dropped):
+    """The dropped rows as the manifest may carry them."""
+    return [{"line": _safe_to_publish(row["line"]), "reason": row["reason"]}
+            for row in dropped]
+
+
+def sanitize_requirements(text):
+    """`(kept, dropped)` for one requirements document.
+
+    `kept` holds the lines that parse as a bare PEP 508 requirement -- verbatim,
+    minus any `--hash=` tokens (pip-audit does not need them, and leaving one in
+    would put the generated file under `--require-hashes` semantics it cannot
+    satisfy). Everything else is `{"line", "reason"}` with one of `editable`,
+    `local path`, `vcs url`, `direct url`, `option line`, `include`,
+    `unparseable`. Comments and blank lines are simply skipped: they are not
+    requirements and nothing was lost by not auditing them.
+
+    `include` is classified, never followed: this function reads no files.
+    `sanitize_requirements_file` is the wrapper that resolves `-r`/`-c`.
+    """
+    kept, dropped = _classify(text)
+    return kept, _published(dropped)
+
+
 def _is_archive_name(name):
     """True when pip would read `name` as a local archive rather than a project
     name -- a suffix match, case-insensitive, exactly as `is_archive_file` does."""
@@ -201,7 +231,8 @@ def _within(root, path):
 
 
 def sanitize_requirements_file(path, root):
-    """`(kept, dropped, hashes_stripped)` for a requirements file on disk.
+    """The whole sanitization of one requirements file on disk, as a report:
+    `{"kept": [lines], "dropped": [{"line", "reason"}], "hashes_stripped": bool}`.
 
     `-r`/`-c` includes are followed ONE level and sanitized the same way, so the
     ordinary `requirements.txt -> -r requirements-base.txt` layout is still
@@ -210,6 +241,11 @@ def sanitize_requirements_file(path, root):
     a file already read (`nested include`), or when it cannot be read
     (`include unreadable`). Included lines come FIRST, in include order, which is
     the order pip would have resolved them in.
+
+    Resolution runs on the RAW classified lines and masking happens once, at the
+    end, on what is actually published (M7): keying path resolution off a
+    redacted copy would make the redactor's pattern set load-bearing for
+    confinement.
     """
     seen, hashes = set(), False
 
@@ -226,7 +262,7 @@ def sanitize_requirements_file(path, root):
             text = read(p)
         except OSError:
             return [], []
-        kept, dropped = sanitize_requirements(text)
+        kept, dropped = _classify(text)
         resolved_kept, resolved_dropped = [], []
         base = os.path.dirname(os.path.abspath(p))
         for entry in dropped:
@@ -248,7 +284,8 @@ def sanitize_requirements_file(path, root):
         return resolved_kept + kept, resolved_dropped
 
     kept, dropped = walk(path, 0)
-    return kept, dropped, hashes
+    return {"kept": kept, "dropped": _published(dropped),
+            "hashes_stripped": hashes}
 
 
 class PipAuditAdapter:
@@ -281,7 +318,7 @@ class PipAuditAdapter:
             # is what pip-audit sees; the repo path survives only as the
             # LOCATION findings are reported against, which reads no file.
             _manifest_path_cv.set(req)
-            kept, _dropped, _hashes = sanitize_requirements_file(req, target)
+            kept = sanitize_requirements_file(req, target)["kept"]
         else:
             # Never pass the project directory positionally: resolving a
             # source tree can invoke its PEP 517 build backend (#218).
@@ -334,7 +371,9 @@ class PipAuditAdapter:
         """
         req = self._find_requirement(target)
         if req:
-            kept, dropped, hashes = sanitize_requirements_file(req, target)
+            report = sanitize_requirements_file(req, target)
+            kept, dropped = report["kept"], report["dropped"]
+            hashes = report["hashes_stripped"]
             source = os.path.relpath(req, target)
         else:
             deps = _deps_from_pyproject(target)

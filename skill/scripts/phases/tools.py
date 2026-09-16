@@ -98,6 +98,7 @@ def partial_audit_note(review_root, finding):
             "evidence the repository does not require it; `tools-manifest.json` "
             "lists every line under `sanitized`.\n\n" % (tool, tool, len(dropped)))
 
+
 def tools_execute(review_root, manifest):
     if (manifest.get("flags") or {}).get("tools") is False:
         runio._write_json(runio._pano(review_root, "tools-ran.json"),
