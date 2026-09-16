@@ -733,7 +733,9 @@ class TestVirtualenvExclusion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             cache = {}
             self.assertFalse(it._is_run_artifact_path("../outside/x.py", root, cache))
-            self.assertEqual(cache, {})   # refused before any stat
+            # Refused before any stat: no directory was ever looked up (the
+            # cache's only entry is the resolved root itself).
+            self.assertEqual([k for k in cache if isinstance(k, str)], [])
 
     def test_marker_lookups_are_cached_per_directory(self):
         with tempfile.TemporaryDirectory() as root:
@@ -742,7 +744,25 @@ class TestVirtualenvExclusion(unittest.TestCase):
             fresh = {}
             self._venv(root, "env")
             self.assertTrue(it._is_run_artifact_path("env/a/b.py", root, fresh))
-            self.assertEqual(fresh, {"env": True})   # short-circuits at the hit
+            self.assertTrue(fresh["env"])
+            self.assertNotIn("env/a", fresh)         # short-circuits at the hit
+
+    def test_the_root_is_resolved_once_per_ingest_run(self):
+        # #1638 P09 F6: `realpath` ran once per FINDING (and again per ancestor
+        # inside the marker check). It is memoized in the same per-run cache the
+        # directory lookups use, under a key no relative path can collide with.
+        with tempfile.TemporaryDirectory() as root:
+            self._venv(root, "env")
+            cache = {}
+            with patch.object(it.os.path, "realpath",
+                              side_effect=os.path.realpath) as rp:
+                for i in range(5):
+                    it._is_run_artifact_path("env/lib/m%d.py" % i, root, cache)
+            root_calls = [c for c in rp.call_args_list
+                          if c.args and c.args[0] == root]
+            self.assertEqual(len(root_calls), 1,
+                             "the root was re-resolved per finding: %r"
+                             % (rp.call_args_list,))
 
     def test_both_virtualenv_layouts_drop_on_their_marker(self):
         # stdlib `python -m venv venv` and pipenv/poetry in-project `.venv`.

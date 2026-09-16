@@ -87,6 +87,9 @@ _VENV_NAME_SEGMENTS = _VENV_DIR_NAMES | {"site-packages"}
 # Where a tools directory sits inside the scanned repo, used to derive the
 # target root when no caller passes one.
 _ARTIFACT_DIR = ".panopticon"
+# The venv cache's slot for the RESOLVED root. A tuple, so it can never collide
+# with the relative-directory strings that are the cache's other keys.
+_REAL_ROOT_KEY = ("__realpath__",)
 
 
 def _has_venv_marker(root, rel):
@@ -110,10 +113,14 @@ def _under_a_virtualenv(dirs, target_root, cache=None):
     test fixture, say) marks its own directory and nothing above or beside it.
     A segment that could climb out of the root refuses before any stat. Lookups
     are memoized per directory for the whole ingest run: a venv holds thousands
-    of files that would otherwise re-stat the same handful of directories.
+    of files that would otherwise re-stat the same handful of directories. The
+    ROOT's own resolution is memoized in the same cache (#1638 P09 F6) -- it was
+    recomputed for every finding, and `realpath` is a syscall per path segment.
     """
     cache = {} if cache is None else cache
-    root = os.path.realpath(target_root)
+    root = cache.get(_REAL_ROOT_KEY)
+    if root is None:
+        root = cache[_REAL_ROOT_KEY] = os.path.realpath(target_root)
     rel = ""
     for seg in dirs:
         if seg in ("", ".", ".."):

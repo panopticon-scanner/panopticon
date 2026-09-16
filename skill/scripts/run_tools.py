@@ -6,6 +6,7 @@ code; roslyn-secguard executes target build logic inside a no-egress,
 no-secret container (recorded in report meta); pip-audit/npm-audit run only
 under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 """
+import configparser
 import fnmatch
 import json
 import os
@@ -228,10 +229,22 @@ def find_virtualenvs(target, max_depth=VENV_MAX_DEPTH):
     by path. A flagged directory is never descended into (a venv inside a venv
     is the same exclusion), and `reason` is what the tools manifest discloses so
     a report can say what was pruned and on what evidence.
+
+    CONFINED to the target, like the ingest half: `os.walk` will not descend a
+    symlink, but `os.path.isfile` follows one, so a link pointing at a venv
+    OUTSIDE the target would otherwise be stat'd and flagged (#1638 P09 F1).
+    Every candidate is resolved and anything landing outside the resolved root
+    is skipped -- and not walked into either. A link that stays inside the
+    target still counts: it resolves to a venv of this target.
+
+    DEPTH-BOUNDED, so this list is a subset of what ingest prunes: the manifest
+    records what the SCANNERS were told to skip, while `ingest_tools` drops a
+    finding from a virtualenv (or a `site-packages`) at ANY depth. A venv nested
+    deeper than *max_depth* costs scan time and produces no findings.
     """
-    root = os.path.abspath(target)
+    root = os.path.realpath(target)
     found = {}
-    for dirpath, dirnames, _files in os.walk(root):
+    for dirpath, dirnames, _files in os.walk(root, followlinks=False):
         rel = os.path.relpath(dirpath, root)
         depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
         dirnames[:] = [d for d in sorted(dirnames) if d not in _VENV_WALK_PRUNE]
@@ -241,6 +254,9 @@ def find_virtualenvs(target, max_depth=VENV_MAX_DEPTH):
         keep = []
         for name in dirnames:
             child = os.path.join(dirpath, name)
+            real = os.path.realpath(child)
+            if not (real == root or real.startswith(root + os.sep)):
+                continue      # resolves outside the target: not ours to flag
             if os.path.isfile(os.path.join(child, VENV_MARKER)):
                 reason = "pyvenv.cfg"
             elif name in VENV_DIR_NAMES:
@@ -253,29 +269,79 @@ def find_virtualenvs(target, max_depth=VENV_MAX_DEPTH):
     return [{"path": p, "reason": found[p]} for p in sorted(found)]
 
 
-# The exclusion knob each legacy SARIF scanner already exposes, for the
-# directories above. NOT listed, deliberately: `gitleaks` (v8 has no path-
+# The exclusion knob each legacy SARIF scanner already exposes, repeated once
+# per venv directory. NOT listed, deliberately: `gitleaks` (v8 has no path-
 # exclusion flag -- its allowlist is a config file, and inventing one would just
-# make the tool exit 2), `bandit` (excluded through the target's `.bandit`
-# config, which is where its other excludes live) and `gosec` (Go surface; a
-# Python virtualenv is not in it). Whatever a scanner still reports from a venv
-# is dropped by ingest_tools anyway -- this half only saves the walk.
+# make the tool exit 2) and `gosec` (`./...` loads Go packages, so it never
+# enters a Python virtualenv at all). `bandit` has one too but takes a single
+# comma-separated value, so it is built separately below. Whatever a scanner
+# still reports from a venv is dropped by ingest_tools anyway -- this half only
+# saves the walk.
 _VENV_EXCLUDE_FLAG = {"semgrep": "--exclude", "trivy": "--skip-dirs"}
 
+# bandit's own parser default for --exclude, restated because bandit PREFERS a
+# command-line --exclude over both that default and the `.bandit` ini's
+# `exclude` (its `_log_option_source` takes the arg whenever it differs from the
+# default) instead of merging them. Passing one without these would silently
+# WIDEN the scan -- the opposite of what the flag is for.
+BANDIT_DEFAULT_EXCLUDES = (".svn", "CVS", ".bzr", ".hg", ".git", "__pycache__",
+                           ".tox", ".eggs", "*.egg")
 
-def _with_venv_excludes(tool, cmd, venv_dirs):
-    """`cmd` with this tool's own exclusion flag repeated for each venv dir.
+
+def _bandit_ini_excludes(target):
+    """The `exclude` entries in the target's own `.bandit`, or [].
+
+    Tolerant by design: a missing, unreadable or malformed config yields nothing
+    rather than failing a scan. `run_tools` already pins that same file with
+    `--ini`, so reading it here adds no trust.
+    """
+    try:
+        parser = configparser.ConfigParser()
+        parser.read(os.path.join(target, ".bandit"))
+        raw = parser.get("bandit", "exclude")
+    except (configparser.Error, OSError, UnicodeDecodeError):
+        return []
+    return [entry.strip() for entry in raw.split(",") if entry.strip()]
+
+
+def _bandit_exclude_value(target, venv_dirs):
+    """bandit's single `--exclude=` value: its defaults, the target's `.bandit`
+    entries, then this run's virtualenvs as CONTAINER paths (`/src/...`, which
+    is where bandit sees them; it substring-matches, so the anchored form cannot
+    catch an unrelated `prevent.py`). Deduplicated, order preserved."""
+    entries = list(BANDIT_DEFAULT_EXCLUDES) + _bandit_ini_excludes(target)
+    entries += ["/src/%s" % d["path"] for d in venv_dirs]
+    return ",".join(dict.fromkeys(entries))
+
+
+def _with_venv_excludes(tool, cmd, venv_dirs, target=None):
+    """`cmd` with this tool's own exclusion knob set for each venv directory.
 
     The flags go BEFORE the trailing `/src` positional so the scan target stays
-    last, and the paths are root-relative because that is what both tools match
-    against (trivy cleans `--skip-dirs` and compares it to the path relative to
-    the scan root, so a container-absolute `/src/.venv` would silently match
-    nothing).
+    last, in the ATTACHED `--flag=value` form so a directory named `-rf` can
+    never read as an option, and the paths are root-relative because that is
+    what both repeatable tools match against (trivy cleans `--skip-dirs` and
+    compares it to the path relative to the scan root, so a container-absolute
+    `/src/.venv` would silently match nothing).
+
+    Accepted trade-off (#1638 P09 F4): trivy's python-pkg analyzer reads
+    `.dist-info`/`.egg-info` METADATA under `site-packages`, so skipping the
+    venv also drops that installed-package surface. Ruling 3 protects the five
+    ROOT-level manifests (`requirements*.txt`, `pyproject.toml`, `Pipfile.lock`,
+    `poetry.lock`, `uv.lock`), which no skip-dir covers; a target whose only
+    dependency evidence is an installed venv loses trivy's view of it, and
+    ingest's `site-packages` rule would have dropped those findings regardless.
     """
-    flag = _VENV_EXCLUDE_FLAG.get(tool)
-    if not (flag and venv_dirs):
+    if not venv_dirs:
         return cmd
-    extra = [arg for d in venv_dirs for arg in (flag, d["path"])]
+    if tool == "bandit":
+        value = _bandit_exclude_value(target, venv_dirs)
+        extra = ["--exclude=%s" % value] if value else []
+    else:
+        flag = _VENV_EXCLUDE_FLAG.get(tool)
+        if not flag:
+            return cmd
+        extra = ["%s=%s" % (flag, d["path"]) for d in venv_dirs]
     at = cmd.index("/src") if "/src" in cmd else len(cmd)
     return cmd[:at] + extra + cmd[at:]
 
@@ -678,7 +744,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
             # .bandit -- otherwise bandit runs with its built-in defaults.
             if tool == "bandit" and os.path.isfile(os.path.join(target, ".bandit")):
                 cmd = cmd[:1] + ["--ini", "/src/.bandit"] + cmd[1:]
-            cmd = _with_venv_excludes(tool, cmd, venv_dirs)   # #1638 P09
+            cmd = _with_venv_excludes(tool, cmd, venv_dirs, target)   # #1638 P09
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
             docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
                       + _privilege_drop_flags()
@@ -727,7 +793,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
 
 
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
-                   excluded_dirs=()):
+                   excluded_dirs=(), depth_bound=VENV_MAX_DEPTH):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
@@ -738,9 +804,12 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     `excluded_dirs` (#1638 P09) are the virtualenv directories the scan was told
     to skip, as ``{"path", "reason"}`` rows -- so a report can say what was
     pruned and on what evidence (`pyvenv.cfg` or the conventional name) rather
-    than leaving a silent hole in the scanned surface. Additive: the field is
-    new in this schema version and every consumer reads it optionally, so an
-    older manifest without it still loads.
+    than leaving a silent hole in the scanned surface. `depth_bound` is how deep
+    the walk that found them looked: the list is what the SCANNERS were told to
+    skip, and ingest drops virtualenv findings at any depth, so a reader knows
+    the list is bounded rather than exhaustive. Additive: both fields are new in
+    this schema version and every consumer reads them optionally, so an older
+    manifest without them still loads.
     """
     selected = list(dict.fromkeys(str(tool) for tool in selected))
     produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
@@ -749,7 +818,8 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "missing": sorted(set(selected) - set(produced)),
                "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope)),
                "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"])}
-                                 for d in excluded_dirs or ()]}
+                                 for d in excluded_dirs or ()],
+               "depth_bound": depth_bound}
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)

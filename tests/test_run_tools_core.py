@@ -558,11 +558,10 @@ class TestVirtualenvExclusion(unittest.TestCase):
             rt.run_tools(d, ["semgrep", "trivy", "gitleaks"],
                          os.path.join(d, "out"), runner=runner)
             semgrep, trivy, gitleaks = calls
-            i = semgrep.index("--exclude")
-            self.assertEqual(semgrep[i + 1], ".venv")
+            # Attached form (F7): a directory named `-rf` can never read as a flag.
+            self.assertIn("--exclude=.venv", semgrep)
             self.assertEqual(semgrep[-1], "/src")     # the scan target stays last
-            j = trivy.index("--skip-dirs")
-            self.assertEqual(trivy[j + 1], ".venv")   # trivy matches root-relative
+            self.assertIn("--skip-dirs=.venv", trivy)  # trivy matches root-relative
             self.assertEqual(trivy[-1], "/src")
             # gitleaks exposes no path-exclusion flag (config-file allowlist
             # only), so its argv is untouched -- the ingest filter covers it.
@@ -577,9 +576,79 @@ class TestVirtualenvExclusion(unittest.TestCase):
             calls.append(cmd)
             return fake
         with tempfile.TemporaryDirectory() as d:
-            rt.run_tools(d, ["semgrep"], os.path.join(d, "out"), runner=runner)
-            self.assertEqual(calls[0][-len(rt.TOOL_CMD["semgrep"]):],
-                             list(rt.TOOL_CMD["semgrep"]))
+            rt.run_tools(d, ["semgrep", "bandit"], os.path.join(d, "out"),
+                         runner=runner)
+            for cmd, tool in zip(calls, ("semgrep", "bandit")):
+                self.assertEqual(cmd[-len(rt.TOOL_CMD[tool]):],
+                                 list(rt.TOOL_CMD[tool]), tool)
+
+    def test_an_option_shaped_directory_name_stays_a_value(self):
+        # F7: the attached form is what makes this safe, not the tool's parser.
+        cmd = rt._with_venv_excludes(
+            "semgrep", list(rt.TOOL_CMD["semgrep"]), [{"path": "-rf", "reason": "name"}])
+        self.assertIn("--exclude=-rf", cmd)
+        self.assertNotIn("-rf", cmd)
+
+    def test_bandit_excludes_the_marker_detected_dirs_too(self):
+        # F3: `.bandit` carries only the NAME spellings, so a venv detected by
+        # its `pyvenv.cfg` under another name was excluded for semgrep/trivy and
+        # still walked by bandit. bandit has a real `--exclude`, so it joins.
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            self._venv(d, "env")
+            rt.run_tools(d, ["bandit"], os.path.join(d, "out"), runner=runner)
+            flag = [a for a in calls[0] if a.startswith("--exclude=")]
+            self.assertEqual(len(flag), 1, calls[0])
+            entries = flag[0][len("--exclude="):].split(",")
+            self.assertIn("/src/env", entries)          # container-side path
+            for default in rt.BANDIT_DEFAULT_EXCLUDES:  # never WIDEN the scan
+                self.assertIn(default, entries)
+
+    def test_bandit_cli_exclude_carries_the_ini_entries_forward(self):
+        # bandit PREFERS a CLI --exclude over the `.bandit` ini's `exclude`
+        # rather than merging them, so passing one without the ini entries would
+        # silently drop the tests/.worktrees/.git exclusions the config exists
+        # to apply.
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            self._venv(d, ".venv")
+            with open(os.path.join(d, ".bandit"), "w") as fh:
+                fh.write("[bandit]\nexclude = /tests,tests,/.worktrees\n")
+            rt.run_tools(d, ["bandit"], os.path.join(d, "out"), runner=runner)
+            flag = [a for a in calls[0] if a.startswith("--exclude=")]
+            entries = flag[0][len("--exclude="):].split(",")
+            for entry in ("/tests", "tests", "/.worktrees", "/src/.venv"):
+                self.assertIn(entry, entries)
+            self.assertIn("--ini", calls[0])        # the ini pin is still there
+
+    def test_a_symlink_out_of_the_target_is_not_a_virtualenv(self):
+        # F1: `os.walk` will not DESCEND a symlink, but `isfile` follows one, so
+        # a link pointing at a venv outside the target was stat'd and flagged.
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as outside:
+            self._venv(outside, "real")
+            os.symlink(os.path.join(outside, "real"), os.path.join(d, "linked"))
+            os.symlink(os.path.join(outside, "real"), os.path.join(d, ".venv"))
+            self.assertEqual(rt.find_virtualenvs(d), [])
+
+    def test_a_symlink_inside_the_target_is_still_a_virtualenv(self):
+        # Confinement, not blanket symlink rejection: a link that stays inside
+        # the target resolves to a real venv of the target.
+        with tempfile.TemporaryDirectory() as d:
+            self._venv(d, os.path.join("build", "env"))
+            os.symlink(os.path.join(d, "build", "env"), os.path.join(d, "linked"))
+            self.assertEqual([v["path"] for v in rt.find_virtualenvs(d)],
+                             ["build/env", "linked"])
 
     def test_manifest_records_excluded_dirs_with_reasons(self):
         with tempfile.TemporaryDirectory() as d:
@@ -590,6 +659,9 @@ class TestVirtualenvExclusion(unittest.TestCase):
             self.assertEqual(payload["excluded_dirs"],
                              [{"path": ".venv", "reason": "pyvenv.cfg"},
                               {"path": "venv", "reason": "name"}])
+            # F2: the list is what the SCAN was told to skip, found by a
+            # depth-bounded walk -- ingest prunes a superset, at any depth.
+            self.assertEqual(payload["depth_bound"], rt.VENV_MAX_DEPTH)
             with open(os.path.join(d, "m.json"), encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh), payload)
 
@@ -597,6 +669,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             payload = rt.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [])
             self.assertEqual(payload["excluded_dirs"], [])
+            self.assertEqual(payload["depth_bound"], rt.VENV_MAX_DEPTH)
 
     def test_main_records_the_detected_venvs_in_the_manifest(self):
         # Docker absent: selection is still faithful, and so is what it pruned.
@@ -608,8 +681,10 @@ class TestVirtualenvExclusion(unittest.TestCase):
                 rt.main(["--target", d, "--out", os.path.join(d, "out"),
                          "--tools", "semgrep", "--manifest", manifest])
             with open(manifest, encoding="utf-8") as fh:
-                self.assertEqual(json.load(fh)["excluded_dirs"],
-                                 [{"path": ".venv", "reason": "pyvenv.cfg"}])
+                written = json.load(fh)
+            self.assertEqual(written["excluded_dirs"],
+                             [{"path": ".venv", "reason": "pyvenv.cfg"}])
+            self.assertEqual(written["depth_bound"], rt.VENV_MAX_DEPTH)
 
     def test_bandit_config_excludes_both_venv_spellings(self):
         import configparser
@@ -619,20 +694,40 @@ class TestVirtualenvExclusion(unittest.TestCase):
         for entry in ("/.venv", ".venv", "/venv", "venv"):
             self.assertIn(entry, excludes)
 
-    def test_dependency_auditing_survives_the_venv_exclusion(self):
-        # Ruling 3: pip-audit/osv-scanner read MANIFESTS, not the venv tree, so
-        # excluding the venv must never demote them.
-        from scripts.tools.osv_scanner import OsvScannerAdapter
-        from scripts.tools.pip_audit import PipAuditAdapter
-        with tempfile.TemporaryDirectory() as d:
-            self._venv(d, ".venv")
-            with open(os.path.join(d, "requirements.txt"), "w") as fh:
-                fh.write("requests==2.0.0\n")
-            self.assertEqual([v["path"] for v in rt.find_virtualenvs(d)], [".venv"])
-            self.assertTrue(PipAuditAdapter().is_applicable(d))
-            self.assertTrue(OsvScannerAdapter().is_applicable(d))
-            required, excluded = rt.partition_by_exclusion(
-                {"pip-audit": PipAuditAdapter(), "osv-scanner": OsvScannerAdapter()},
-                d, [".venv/*", "venv/*"])
-            self.assertEqual(excluded, [])
-            self.assertCountEqual(required, ["pip-audit", "osv-scanner"])
+    # Ruling 3's five manifests, and the adapters that key on each. poetry.lock
+    # and uv.lock select no adapter today -- trivy reads them from its own root
+    # scan, which the venv skip-dir never covers.
+    _DEP_MARKERS = {"requirements.txt": ("pip-audit", "osv-scanner"),
+                    "pyproject.toml": ("pip-audit", "osv-scanner"),
+                    "Pipfile.lock": ("osv-scanner",),
+                    "poetry.lock": (),
+                    "uv.lock": ()}
+
+    def test_every_python_manifest_survives_beside_an_excluded_venv(self):
+        # Ruling 3: the exclusion covers the venv TREE and nothing at the root.
+        for marker, adapters in sorted(self._DEP_MARKERS.items()):
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as d:
+                self._venv(d, ".venv")
+                for where in (d, os.path.join(d, ".venv")):
+                    with open(os.path.join(where, marker), "w") as fh:
+                        fh.write("")
+                venvs = rt.find_virtualenvs(d)
+                self.assertEqual([v["path"] for v in venvs], [".venv"])
+                globs = ["%s/*" % v["path"] for v in venvs]
+                self.assertFalse(rt._is_excluded(marker, globs))       # root: audited
+                self.assertTrue(rt._is_excluded(".venv/" + marker, globs))  # copy: not
+                # The scanners are told to skip the venv, never the root.
+                skips = rt._with_venv_excludes("trivy", list(rt.TOOL_CMD["trivy"]), venvs)
+                self.assertEqual([a for a in skips if a.startswith("--skip-dirs=")],
+                                 ["--skip-dirs=.venv"])
+                selected = rt.select_adapters(d)
+                for name in adapters:
+                    self.assertIn(name, selected, marker)
+
+    def test_the_manifest_survival_check_is_not_vacuous(self):
+        # MUTATION: exclude the PARENT instead of the venv and every assertion
+        # above must go red -- proof the check can fail at all.
+        for marker in sorted(self._DEP_MARKERS):
+            with self.subTest(marker=marker):
+                self.assertTrue(rt._is_excluded(marker, ["*"]))
+                self.assertTrue(rt._is_excluded(marker, ["*/%s" % marker, marker]))
