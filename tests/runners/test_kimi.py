@@ -966,6 +966,60 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
         self.assertEqual("", err.getvalue())
         self.assertEqual({"enabled": False, "servers": []}, armed["mcp"])
 
+    def test_every_shape_it_scrubs_is_disclosed_exactly_once(self):
+        # Fix round 1, F4. `dropped` counted only a real list, and the line
+        # printed only when that count was truthy -- so a scalar `mcp`, a
+        # hostile `servers`, and an `enabled = true` with no servers listed
+        # were all replaced in TOTAL SILENCE. Those are the shapes an operator
+        # is least likely to notice, and their MCP configuration is being
+        # removed. One line each, naming the shape and the count; never two,
+        # never none.
+        shapes = (
+            ({"enabled": True, "servers": [{"name": "s1"}, {"name": "s2"}]},
+             "2 operator MCP servers disabled in the per-run home"),
+            ({"enabled": True, "servers": [{"name": "s1"}]},
+             "1 operator MCP server disabled in the per-run home"),
+            ({"enabled": True, "servers": []},
+             "`mcp.enabled` was set with no servers listed"),
+            ({"enabled": True}, "`mcp.enabled` was set with no servers listed"),
+            ({"enabled": False, "servers": "hostile"},
+             "`mcp.servers` was a str, not an array"),
+            ({"servers": {"a": 1}}, "`mcp.servers` was a dict, not an array"),
+            ("whatever the operator put here", "`mcp` was a str, not a table"),
+            ([1, 2, 3], "`mcp` was a list, not a table"),
+        )
+        for block, phrase in shapes:
+            with self.subTest(block=repr(block)[:40]):
+                stream = io.StringIO()
+                self.assertEqual({"enabled": False, "servers": []},
+                                 kimi_toml.mediated_mcp({"mcp": block}, disclose=stream))
+                lines = stream.getvalue().splitlines()
+                self.assertEqual(1, len(lines), lines)
+                self.assertIn(phrase, lines[0])
+                self.assertTrue(lines[0].startswith("driver loop: "), lines[0])
+                self.assertNotIn("s1", lines[0])
+
+    def test_nothing_to_scrub_says_nothing(self):
+        # Two no-ops, and both must stay silent: an operator with no `[mcp]`
+        # at all, and one whose block is already exactly what the per-run home
+        # writes. A line on every run teaches its reader to skip the ones that
+        # matter.
+        for source in ({}, {"mcp": {"enabled": False, "servers": []}}):
+            with self.subTest(source=source):
+                stream = io.StringIO()
+                kimi_toml.mediated_mcp(source, disclose=stream)
+                self.assertEqual("", stream.getvalue())
+
+    def test_the_inert_block_it_returns_is_never_the_shared_constant(self):
+        # Every armed config gets its OWN dict and its OWN list: one config
+        # mutating the block it was handed must not reach the next.
+        first = kimi_toml.mediated_mcp()
+        second = kimi_toml.mediated_mcp()
+        self.assertEqual(kimi_toml.INERT_MCP, first)
+        self.assertIsNot(kimi_toml.INERT_MCP, first)
+        self.assertIsNot(first["servers"], second["servers"])
+        self.assertIsNot(first["servers"], kimi_toml.INERT_MCP["servers"])
+
     def test_the_block_is_constructed_not_filtered(self):
         # Whatever the operator's `[mcp]` holds -- a scalar, a table this
         # writer could not emit, a per-server `enabled` flag -- the armed home

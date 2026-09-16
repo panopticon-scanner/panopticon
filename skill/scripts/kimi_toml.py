@@ -42,8 +42,29 @@ MCP = "mcp"
 INERT_MCP = {"enabled": False, "servers": []}
 # One line, and a COUNT rather than the names: this shares the operator's
 # stderr with the run's own progress output, so a disclosure that grew with
-# their config would crowd out the thing they are watching.
-MCP_DISCLOSURE = "driver loop: %d operator MCP servers disabled in the per-run home"
+# their config would crowd out the thing they are watching. The trailing
+# clause names the SHAPE when the count alone would not explain the line (fix
+# round 1, F4): a scrub the operator is told nothing about is a posture change
+# they cannot see, and the shapes that used to be silent here are the ones
+# they are least likely to notice in their own config.
+MCP_DISCLOSURE = "driver loop: %d operator MCP server%s disabled in the per-run home%s"
+_ABSENT = object()
+
+
+def _mcp_shape(block):
+    """(servers dropped, what to say about the shape) for an operator `[mcp]`
+    block that is not already inert. The shape clause is "" when the count
+    speaks for itself."""
+    if not isinstance(block, dict):
+        return 0, "`mcp` was a %s, not a table" % type(block).__name__
+    servers = block.get("servers")
+    if servers is not None and not isinstance(servers, list):
+        return 0, "`mcp.servers` was a %s, not an array" % type(servers).__name__
+    if servers:
+        return len(servers), ""
+    if block.get("enabled"):
+        return 0, "`mcp.enabled` was set with no servers listed"
+    return 0, "the block carried keys the per-run home does not pass through"
 
 
 def mediated_mcp(source=None, disclose=None):
@@ -52,18 +73,22 @@ def mediated_mcp(source=None, disclose=None):
     CONSTRUCTED, never filtered: `enabled = false` with an empty `servers`
     array says the same thing whatever the operator's config holds, including
     shapes this writer would refuse to emit and per-server flags it would have
-    to understand.
+    to understand. A fresh dict and a fresh list every call, so one armed
+    config cannot reach the next through a shared value.
 
-    `source` is the operator's config and `disclose` a stream; given both, the
-    number of `[[mcp.servers]]` being dropped is announced on it when there is
-    one (and nothing is said when there is not -- a line printed on every run
-    teaches its reader to skip the ones that matter).
+    `source` is the operator's config and `disclose` a stream; given both,
+    EXACTLY ONE line is written for every block this REPLACES -- naming the
+    count, and the shape when the count alone would not explain it -- and
+    nothing at all for the two no-ops: no `[mcp]` key, or one already equal to
+    what this writes. A line on every run teaches its reader to skip the ones
+    that matter; silence about a block that WAS removed is worse.
     """
-    block = source.get(MCP) if isinstance(source, dict) else None
-    servers = block.get("servers") if isinstance(block, dict) else None
-    dropped = len(servers) if isinstance(servers, list) else 0
-    if dropped and disclose is not None:
-        print(MCP_DISCLOSURE % dropped, file=disclose, flush=True)
+    block = source.get(MCP, _ABSENT) if isinstance(source, dict) else _ABSENT
+    if disclose is not None and block is not _ABSENT and block != INERT_MCP:
+        dropped, shape = _mcp_shape(block)
+        print(MCP_DISCLOSURE % (dropped, "" if dropped == 1 else "s",
+                                " (%s; replaced with an inert block)" % shape if shape else ""),
+              file=disclose, flush=True)
     return {"enabled": False, "servers": []}
 
 
