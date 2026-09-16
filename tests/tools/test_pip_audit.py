@@ -1,3 +1,4 @@
+import ast
 import contextlib
 import contextvars
 import io
@@ -12,6 +13,52 @@ import pytest
 
 from _test_helpers import FakePopen, first, only
 import scripts.tools.pip_audit as pa
+
+try:
+    from packaging.requirements import Requirement
+except ImportError:                                  # pragma: no cover
+    Requirement = None
+
+
+def _assert_every_kept_line_parses(kept):
+    """Every KEPT line must parse as a real, URL-free PEP 508 requirement.
+
+    pip-audit resolves the generated file through `pip install --dry-run`,
+    which parses every line, so ONE line this module keeps but pip cannot parse
+    aborts the WHOLE dependency audit: pip-audit produces nothing, the coverage
+    manifest lands it in `missing`, and the gate reads a target-side typo as a
+    scanner failure. The kept grammar therefore has to be at least as strict as
+    pip-audit's own parser -- which is what this asserts, with the real parser.
+
+    `packaging` is not a declared runtime dependency (see pyproject.toml) and
+    `scripts/tools/pip_audit.py` deliberately does not import it, so this is a
+    TEST-ONLY cross-check and is a no-op where it is unavailable. It runs on
+    this workstation and on the 3.11 leg.
+    """
+    if Requirement is None:                          # pragma: no cover
+        return
+    for line in kept:
+        req = Requirement(line)                      # raises InvalidRequirement
+        assert req.url is None, "a kept line carries a URL: %r" % (line,)
+
+
+def sanitize(text):
+    """The ONLY way this module calls `sanitize_requirements`.
+
+    Every call is cross-checked inline, so "the corpus is complete" is
+    structural rather than a comment somebody has to remember to honour --
+    `TestEverySanitizerCallGoesThroughTheHelper` is what keeps it that way.
+    """
+    kept, dropped = pa.sanitize_requirements(text)
+    _assert_every_kept_line_parses(kept)
+    return kept, dropped
+
+
+def sanitize_file(path, root):
+    """The ONLY way this module calls `sanitize_requirements_file`."""
+    report = pa.sanitize_requirements_file(path, root)
+    _assert_every_kept_line_parses(report["kept"])
+    return report
 
 
 @pytest.fixture(autouse=True)
@@ -333,7 +380,7 @@ class TestSanitizeRequirements(unittest.TestCase):
     """The grammar: a kept line is a bare PEP 508 requirement and nothing else."""
 
     def test_the_hostile_fixture_keeps_only_the_two_safe_lines(self):
-        kept, dropped = pa.sanitize_requirements(HOSTILE_REQUIREMENTS)
+        kept, dropped = sanitize(HOSTILE_REQUIREMENTS)
         self.assertEqual(kept, SAFE_LINES)
         self.assertEqual(
             dropped,
@@ -345,7 +392,7 @@ class TestSanitizeRequirements(unittest.TestCase):
              {"line": "--extra-index-url https://evil2", "reason": "option line"}])
 
     def test_comments_and_blanks_are_skipped_not_dropped(self):
-        kept, dropped = pa.sanitize_requirements("\n# note\n\n  \nreq==1\n")
+        kept, dropped = sanitize("\n# note\n\n  \nreq==1\n")
         self.assertEqual(kept, ["req==1"])
         self.assertEqual(dropped, [])
 
@@ -353,24 +400,24 @@ class TestSanitizeRequirements(unittest.TestCase):
         text = ('name==1.2.3\n'
                 'name>=1,<2\n'
                 'name[extra]~=1.4 ; python_version < "3.12"\n')
-        kept, dropped = pa.sanitize_requirements(text)
+        kept, dropped = sanitize(text)
         self.assertEqual(kept, text.splitlines())
         self.assertEqual(dropped, [])
 
     def test_direct_url_reference_is_dropped_not_kept(self):
-        kept, dropped = pa.sanitize_requirements("name @ https://x/y.whl\n")
+        kept, dropped = sanitize("name @ https://x/y.whl\n")
         self.assertEqual(kept, [])
         self.assertEqual(dropped, [{"line": "name @ https://x/y.whl",
                                     "reason": "direct url"}])
 
     def test_vcs_direct_reference_is_dropped_as_vcs(self):
-        kept, dropped = pa.sanitize_requirements("name @ git+ssh://x/y.git\n")
+        kept, dropped = sanitize("name @ git+ssh://x/y.git\n")
         self.assertEqual(kept, [])
         self.assertEqual(dropped, [{"line": "name @ git+ssh://x/y.git",
                                     "reason": "vcs url"}])
 
     def test_unparseable_line_is_dropped_with_that_reason(self):
-        kept, dropped = pa.sanitize_requirements("not a requirement!!\n")
+        kept, dropped = sanitize("not a requirement!!\n")
         self.assertEqual(kept, [])
         self.assertEqual(dropped, [{"line": "not a requirement!!",
                                     "reason": "unparseable"}])
@@ -378,7 +425,7 @@ class TestSanitizeRequirements(unittest.TestCase):
     def test_include_lines_are_dropped_by_the_pure_grammar(self):
         # The pure function never reads the filesystem: it classifies -r/-c as
         # `include` and the include-following wrapper decides what to do.
-        kept, dropped = pa.sanitize_requirements("-r base.txt\n-c pins.txt\n")
+        kept, dropped = sanitize("-r base.txt\n-c pins.txt\n")
         self.assertEqual(kept, [])
         self.assertEqual([d["reason"] for d in dropped], ["include", "include"])
 
@@ -386,14 +433,14 @@ class TestSanitizeRequirements(unittest.TestCase):
         # tools-manifest.json is an artifact operators copy into CI; a dropped
         # option line is target-authored text and can carry a private-index
         # password. Mask it at the producer, not at the sink.
-        _kept, dropped = pa.sanitize_requirements(
+        _kept, dropped = sanitize(
             "--index-url https://bob:hunter2@pypi.internal/simple\n")
         entry = only(dropped)
         self.assertEqual(entry["reason"], "option line")
         self.assertNotIn("hunter2", entry["line"])
 
     def test_hashes_are_stripped_from_a_kept_line(self):
-        kept, dropped = pa.sanitize_requirements(
+        kept, dropped = sanitize(
             "pkg==1.0 --hash=sha256:abc --hash=sha256:def\n")
         self.assertEqual(kept, ["pkg==1.0"])
         self.assertEqual(dropped, [])
@@ -415,7 +462,7 @@ class TestSanitizeRequirementsFile(unittest.TestCase):
     def test_include_is_followed_once_and_sanitized(self):
         d = self._target({"requirements.txt": "-r base.txt\ntop==1\n",
                           "base.txt": "-e .\nbase==2\n"})
-        report = pa.sanitize_requirements_file(
+        report = sanitize_file(
             os.path.join(d, "requirements.txt"), d)
         self.assertEqual(report["kept"], ["base==2", "top==1"])
         self.assertEqual(report["dropped"],
@@ -424,7 +471,7 @@ class TestSanitizeRequirementsFile(unittest.TestCase):
 
     def test_include_outside_the_target_is_dropped(self):
         d = self._target({"requirements.txt": "-r ../outside.txt\nok==1\n"})
-        report = pa.sanitize_requirements_file(
+        report = sanitize_file(
             os.path.join(d, "requirements.txt"), d)
         self.assertEqual(report["kept"], ["ok==1"])
         self.assertEqual(report["dropped"], [{"line": "-r ../outside.txt",
@@ -433,7 +480,7 @@ class TestSanitizeRequirementsFile(unittest.TestCase):
     def test_include_cycle_is_dropped_as_nested_include(self):
         d = self._target({"requirements.txt": "-r self.txt\n",
                           "self.txt": "-r self.txt\nok==1\n"})
-        report = pa.sanitize_requirements_file(
+        report = sanitize_file(
             os.path.join(d, "requirements.txt"), d)
         self.assertEqual(report["kept"], ["ok==1"])
         self.assertEqual(report["dropped"], [{"line": "-r self.txt",
@@ -443,7 +490,7 @@ class TestSanitizeRequirementsFile(unittest.TestCase):
         d = self._target({"requirements.txt": "-r a.txt\n",
                           "a.txt": "-r b.txt\na==1\n",
                           "b.txt": "b==2\n"})
-        report = pa.sanitize_requirements_file(
+        report = sanitize_file(
             os.path.join(d, "requirements.txt"), d)
         self.assertEqual(report["kept"], ["a==1"])
         self.assertEqual(report["dropped"], [{"line": "-r b.txt",
@@ -451,7 +498,7 @@ class TestSanitizeRequirementsFile(unittest.TestCase):
 
     def test_unreadable_include_is_disclosed(self):
         d = self._target({"requirements.txt": "-r gone.txt\nok==1\n"})
-        report = pa.sanitize_requirements_file(
+        report = sanitize_file(
             os.path.join(d, "requirements.txt"), d)
         self.assertEqual(report["kept"], ["ok==1"])
         self.assertEqual(report["dropped"], [{"line": "-r gone.txt",
@@ -459,7 +506,7 @@ class TestSanitizeRequirementsFile(unittest.TestCase):
 
     def test_hashes_stripped_is_reported_once_for_the_whole_tree(self):
         d = self._target({"requirements.txt": "pkg==1 --hash=sha256:abc\n"})
-        report = pa.sanitize_requirements_file(
+        report = sanitize_file(
             os.path.join(d, "requirements.txt"), d)
         self.assertEqual((report["kept"], report["dropped"],
                           report["hashes_stripped"]), (["pkg==1"], [], True))
@@ -610,7 +657,7 @@ class TestArchiveSuffixedNames(unittest.TestCase):
     def test_every_archive_suffixed_name_is_dropped(self):
         for line in ARCHIVE_NAMES:
             with self.subTest(line=line):
-                kept, dropped = pa.sanitize_requirements(line + "\n")
+                kept, dropped = sanitize(line + "\n")
                 self.assertEqual(kept, [])
                 self.assertEqual(only(dropped),
                                  {"line": line, "reason": "archive name"})
@@ -618,18 +665,18 @@ class TestArchiveSuffixedNames(unittest.TestCase):
     def test_the_suffix_match_is_case_insensitive(self):
         for line in ("Evil.TAR.GZ", "X.WhL", "evil.ZIP"):
             with self.subTest(line=line):
-                kept, _dropped = pa.sanitize_requirements(line + "\n")
+                kept, _dropped = sanitize(line + "\n")
                 self.assertEqual(kept, [])
 
     def test_archive_suffixed_name_with_extras_is_dropped(self):
-        kept, dropped = pa.sanitize_requirements("evil.tar.gz[x]>=1\n")
+        kept, dropped = sanitize("evil.tar.gz[x]>=1\n")
         self.assertEqual(kept, [])
         self.assertEqual(only(dropped)["reason"], "archive name")
 
     def test_an_ordinary_dotted_name_is_still_kept(self):
         # `x.y` is not an archive suffix; pip treats it as a name, and dropping
         # it would be coverage loss, not safety.
-        kept, dropped = pa.sanitize_requirements("x.y\nzope.interface>=5\n")
+        kept, dropped = sanitize("x.y\nzope.interface>=5\n")
         self.assertEqual(kept, ["x.y", "zope.interface>=5"])
         self.assertEqual(dropped, [])
 
@@ -693,61 +740,6 @@ class TestPipAuditRunsInAnEmptyWorkingDirectory(unittest.TestCase):
                          "the scratch cwd outlived the run")
 
 
-# Every requirements document any test in this file feeds the sanitizer. The
-# cross-check below re-parses each KEPT line with the real `packaging` parser,
-# so the corpus has to be one list rather than scattered literals.
-KEPT_CORPUS = [
-    HOSTILE_REQUIREMENTS,
-    "\n".join(SAFE_LINES),
-    "\n".join(ARCHIVE_NAMES),
-    'name==1.2.3\nname>=1,<2\nname[extra]~=1.4 ; python_version < "3.12"\n',
-    "x.y\nzope.interface>=5\nPKG\npkg_name\npkg.name\npkg-name\n",
-    "pkg[a,b]>=1,<2\npkg~=1.4\npkg===1.0\npkg ==1.0 ;os_name==\"nt\"\n",
-    "pkg==1.0 --hash=sha256:aa --hash=sha256:bb\n",
-    "pkg==1.0 \\\n  --hash=sha256:aa\n",
-    "pkg==1.0\\\n# comment\ngood==2.0\n",
-    "\ufeffpkg==1.0\n",
-    "pkg==1.0 # comment with -e .\n",
-    "req==1\nok==1\ntop==1\nbase==2\ngood>=1\n",
-]
-
-
-class TestKeptLinesParseWithTheRealPep508Parser(unittest.TestCase):
-    """The kept grammar must be at least as STRICT as pip-audit's own parser.
-
-    pip-audit resolves the generated file through `pip install --dry-run`,
-    which parses every line. One line this module keeps but pip cannot parse
-    aborts the WHOLE dependency audit -- pip-audit produces nothing, the
-    coverage manifest lands it in `missing`, and the gate reads a target-side
-    typo as a scanner failure. The whole point of a generated file is that it
-    is always parseable.
-
-    `packaging` is not a declared runtime dependency (see pyproject.toml) and
-    the module deliberately does not import it, so this is a TEST-ONLY
-    cross-check and skips where it is unavailable.
-    """
-
-    def test_every_kept_line_in_the_corpus_is_a_real_url_free_requirement(self):
-        try:
-            from packaging.requirements import Requirement
-        except ImportError:                       # pragma: no cover
-            # A CROSS-CHECK against a parser the module deliberately does not
-            # depend on (`packaging` is not a declared runtime dep); the
-            # grammar's own coverage is the rest of this file and never skips,
-            # so losing this costs a second opinion, not a tested behaviour.
-            # strict-skip-exempt: no adapter behaviour goes untested here
-            self.skipTest("packaging is not importable at test time")
-        seen = 0
-        for text in KEPT_CORPUS:
-            kept, _dropped = pa.sanitize_requirements(text)
-            for line in kept:
-                with self.subTest(line=line):
-                    req = Requirement(line)       # raises InvalidRequirement
-                    self.assertIsNone(req.url, "a kept line carries a URL")
-                    seen += 1
-        self.assertGreater(seen, 15, "the corpus kept almost nothing: vacuous")
-
-
 class TestPipJoinAndEncodingParity(unittest.TestCase):
     """M4/M5/M6: three ways a VALID pin was silently lost or a broken one kept."""
 
@@ -757,7 +749,7 @@ class TestPipJoinAndEncodingParity(unittest.TestCase):
         # it raw produced `pkg==1.0# comment`, which `_COMMENT` (which needs
         # `^` or whitespace before the `#`) cannot strip -- so a correctly
         # pinned dependency was dropped as `unparseable`.
-        kept, dropped = pa.sanitize_requirements(
+        kept, dropped = sanitize(
             "pkg==1.0\\\n# comment\ngood==2.0\n")
         self.assertEqual(kept, ["pkg==1.0", "good==2.0"])
         self.assertEqual(dropped, [])
@@ -766,7 +758,7 @@ class TestPipJoinAndEncodingParity(unittest.TestCase):
         # pip strips the BOM (`auto_decode`); a requirements.txt saved by a
         # Windows editor otherwise loses its first entry with no signal beyond
         # one `unparseable` row.
-        kept, dropped = pa.sanitize_requirements("\ufeffpkg==1.0\ngood==2\n")
+        kept, dropped = sanitize("\ufeffpkg==1.0\ngood==2\n")
         self.assertEqual(kept, ["pkg==1.0", "good==2"])
         self.assertEqual(dropped, [])
 
@@ -776,12 +768,12 @@ class TestPipJoinAndEncodingParity(unittest.TestCase):
         # would trade one bad target line for the entire audit.
         for line in ("pkg==1.0;", "pkg==1.0; ", "pkg==1.0 ;"):
             with self.subTest(line=line):
-                kept, dropped = pa.sanitize_requirements(line + "\n")
+                kept, dropped = sanitize(line + "\n")
                 self.assertEqual(kept, [])
                 self.assertEqual(only(dropped)["reason"], "unparseable")
 
     def test_a_real_marker_is_still_kept(self):
-        kept, _dropped = pa.sanitize_requirements(
+        kept, _dropped = sanitize(
             'pkg==1.0 ; python_version < "3.12"\n')
         self.assertEqual(kept, ['pkg==1.0 ; python_version < "3.12"'])
 
@@ -805,7 +797,7 @@ class TestIncludeResolutionUsesTheRawLine(unittest.TestCase):
             fh.write("base==2\n")
         with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as fh:
             fh.write("-r %s\ntop==1\n" % name)
-        report = pa.sanitize_requirements_file(
+        report = sanitize_file(
             os.path.join(d, "requirements.txt"), d)
         self.assertEqual(report["kept"], ["base==2", "top==1"])
         self.assertEqual(report["dropped"], [])
@@ -815,7 +807,7 @@ class TestIncludeResolutionUsesTheRawLine(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as fh:
             fh.write("-r /etc/hosts-123e4567-e89b-12d3-a456-426614174000.txt\n")
-        report = pa.sanitize_requirements_file(
+        report = sanitize_file(
             os.path.join(d, "requirements.txt"), d)
         entry = only(report["dropped"])
         self.assertEqual(entry["reason"], "include outside target")
@@ -912,20 +904,20 @@ class TestPublishedLinesAreBounded(unittest.TestCase):
         return d
 
     def test_a_secret_on_a_dropped_line_is_published_redacted(self):
-        _kept, dropped = pa.sanitize_requirements(
+        _kept, dropped = sanitize(
             "--index-url https://AKIAIOSFODNN7EXAMPLE@evil\n")
         entry = only(dropped)
         self.assertNotIn("AKIAIOSFODNN7EXAMPLE", entry["line"])
         self.assertIn("[REDACTED_AWS_KEY]", entry["line"])
 
     def test_a_long_dropped_line_is_truncated_with_a_marker(self):
-        _kept, dropped = pa.sanitize_requirements("!" * 5000 + "\n")
+        _kept, dropped = sanitize("!" * 5000 + "\n")
         line = only(dropped)["line"]
         self.assertEqual(len(line), pa._MAX_PUBLISHED_CHARS + 1)
         self.assertTrue(line.endswith("\u2026"))
 
     def test_a_short_dropped_line_is_untouched(self):
-        _kept, dropped = pa.sanitize_requirements("-e .\n")
+        _kept, dropped = sanitize("-e .\n")
         self.assertEqual(only(dropped)["line"], "-e .")
 
     def test_dropped_rows_are_capped_and_the_remainder_counted(self):
@@ -953,6 +945,85 @@ class TestPublishedLinesAreBounded(unittest.TestCase):
             self._target("ok==1\n" * (pa._MAX_READ_LINES + 10)))
         self.assertTrue(report["truncated"])
         self.assertLessEqual(report["kept"], pa._MAX_READ_LINES)
+
+
+class TestEverySanitizerCallGoesThroughTheHelper(unittest.TestCase):
+    """The drift guard for the cross-check itself (fix round 2, F4).
+
+    The `packaging` re-parse is only as good as the set of lines it sees, and a
+    hand-assembled corpus has no mechanism to stay complete: round 1's corpus
+    comment claimed "every requirements document any test in this file feeds
+    the sanitizer" and the one line the grammar comment explicitly promised to
+    reject (`… or "a" @ "b"`) appeared nowhere in the module, so the check ran
+    green over a corpus that did not contain the very input that would have
+    failed it.
+
+    Routing every call through `sanitize`/`sanitize_file` makes the claim
+    STRUCTURAL: a new hostile literal is cross-checked because there is no
+    other way to call the sanitizer from here. This test is what keeps that
+    true. AST, not grep -- a text scan cannot tell a call from a mention in a
+    docstring, and cannot see which function body a call sits in.
+    """
+
+    _SANITIZERS = ("sanitize_requirements", "sanitize_requirements_file")
+    _HELPERS = ("sanitize", "sanitize_file")
+
+    def _offenders(self):
+        with open(__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), __file__)
+        allowed = set()
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name in self._HELPERS:
+                allowed.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+        out = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute)
+                    and func.attr in self._SANITIZERS
+                    and isinstance(func.value, ast.Name) and func.value.id == "pa"):
+                continue
+            if node.lineno in allowed:
+                continue
+            out.append("%s:%d %s" % (os.path.basename(__file__), node.lineno,
+                                     ast.unparse(node)))
+        return out
+
+    def test_no_test_calls_the_sanitizer_directly(self):
+        self.assertEqual(
+            self._offenders(), [],
+            "call sanitize()/sanitize_file() instead: a direct call skips the "
+            "packaging cross-check, and the kept grammar must be at least as "
+            "strict as pip-audit's own parser or one target line aborts the "
+            "whole audit:\n  " + "\n  ".join(self._offenders()))
+
+    def test_the_guard_can_actually_fail(self):
+        # MUTATION: with no helper recognised, the two calls INSIDE the helpers
+        # must be reported -- proof the walk can see a `pa.sanitize_*` call at
+        # all, so the green above means "none outside", not "matched nothing".
+        with mock.patch.object(type(self), "_HELPERS", ()):
+            found = self._offenders()
+        self.assertEqual(len(found), 2, found)
+        blob = "\n".join(found)
+        for name in self._SANITIZERS:
+            self.assertIn("pa.%s(" % name, blob)
+
+
+@unittest.skipUnless(Requirement is not None, "packaging is not importable")
+class TestTheParserCrossCheckIsLive(unittest.TestCase):
+    """Vacuity guard: the helper's assertion must be able to FAIL."""
+
+    def test_a_line_packaging_rejects_would_fail_the_helper(self):
+        with self.assertRaises(Exception):
+            _assert_every_kept_line_parses(["pkg==1.0;"])
+
+    def test_a_line_carrying_a_url_would_fail_the_helper(self):
+        with self.assertRaises(AssertionError):
+            _assert_every_kept_line_parses(["pkg @ https://x/y.whl"])
+
+    def test_ordinary_kept_lines_pass(self):
+        _assert_every_kept_line_parses(['pkg==1.0 ; python_version < "3.12"'])
 
 
 if __name__ == "__main__":
