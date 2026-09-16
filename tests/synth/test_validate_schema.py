@@ -318,3 +318,81 @@ class TestEveryPinnedFieldIsRepairedOrOwned(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRepairToolsSanitized(unittest.TestCase):
+    """#1646: `tools-manifest.json` is TARGET-WRITABLE, and its `sanitized`
+    block now reaches the report (`meta.tools.sanitized`) and the HTML.
+
+    The principle #1639 P15 established applies unchanged: the schema pins the
+    CONTROLLER's output, so a target-sourced input is normalized to the pinned
+    types at its boundary. A hostile manifest must cost a warning and the
+    malformed rows, never the run and never an `artifact invalid` exit.
+    """
+
+    def _repair(self, value):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = validate_schema_mod.repair_tools_sanitized(value)
+        return got, err.getvalue()
+
+    def test_a_well_formed_block_passes_through(self):
+        block = {"pip-audit": {"source": "requirements.txt", "kept": 2,
+                               "dropped": [{"line": "-e .", "reason": "editable"}],
+                               "hashes_stripped": True}}
+        got, err = self._repair(block)
+        self.assertEqual(got, block)
+        self.assertEqual(err, "")
+
+    def test_a_non_object_block_reads_as_nothing_measured(self):
+        for bad in ("[]", [], 7, None, "pip-audit"):
+            with self.subTest(value=repr(bad)):
+                got, _err = self._repair(bad)
+                self.assertEqual(got, {})
+
+    def test_a_non_object_row_is_dropped_with_a_warning(self):
+        got, err = self._repair({"pip-audit": ["-e ."]})
+        self.assertEqual(got, {})
+        self.assertIn("pip-audit", err)
+
+    def test_a_non_string_tool_name_is_dropped(self):
+        got, _err = self._repair({7: {"kept": 1}})
+        self.assertEqual(got, {})
+
+    def test_wrongly_typed_fields_are_dropped_not_coerced_into_a_lie(self):
+        got, err = self._repair({"pip-audit": {
+            "source": {"nested": "object"}, "kept": "lots",
+            "hashes_stripped": "yes", "dropped": "everything"}})
+        self.assertEqual(got, {"pip-audit": {}})
+        for field in ("source", "kept", "hashes_stripped", "dropped"):
+            self.assertIn(field, err)
+
+    def test_a_boolean_kept_is_not_an_integer(self):
+        # True == 1 in Python but `jsonschema` does not accept a bool where an
+        # integer is pinned, so an unrepaired True would fail the ARTIFACT.
+        got, _err = self._repair({"pip-audit": {"kept": True}})
+        self.assertEqual(got, {"pip-audit": {}})
+
+    def test_malformed_dropped_rows_are_dropped_row_by_row(self):
+        got, _err = self._repair({"pip-audit": {"dropped": [
+            {"line": "-e .", "reason": "editable"},
+            {"line": 7, "reason": "editable"},
+            "not a row",
+            {"line": "./x"},
+        ]}})
+        self.assertEqual(got, {"pip-audit": {
+            "dropped": [{"line": "-e .", "reason": "editable"}]}})
+
+    def test_an_unknown_field_inside_a_row_is_dropped(self):
+        # `meta` is closed and the parity walk is stricter still: a key the
+        # schema does not describe must not ride into the artifact.
+        got, _err = self._repair({"pip-audit": {"kept": 1, "surprise": "x"}})
+        self.assertEqual(got, {"pip-audit": {"kept": 1}})
+
+    def test_a_hostile_manifest_never_makes_the_artifact_invalid(self):
+        report = _minimal_report()
+        report["meta"]["tools"]["sanitized"] = validate_schema_mod.\
+            repair_tools_sanitized({"pip-audit": {"kept": "lots",
+                                                  "dropped": [{"line": None}]}},
+                                   warn=lambda _m: None)
+        self.assertEqual(validate_schema_mod.schema_errors(report), [])

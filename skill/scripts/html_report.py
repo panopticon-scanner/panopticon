@@ -607,10 +607,38 @@ def _render_scanner_context(meta):
     # panel at all -- it is a fact about what this run could still have found.
     if tools.get("disabled_mid_run") is True:
         parts.append("the tool scan was disabled mid-run with --no-tools")
+    parts.extend(_partial_audit_notes(tools.get("sanitized")))
     if not parts:
         return ""
     return ("<div class='coverage'>Scanner context: %s</div>"
             % " &mdash; ".join(parts))
+
+
+def _partial_audit_notes(sanitized):
+    """One line per adapter that audited less than the target declared (#1646).
+
+    pip-audit is handed a GENERATED requirements list -- resolving an editable,
+    local, VCS or URL requirement runs the reviewed repo's PEP 517 build
+    backend -- so "pip-audit: produced" no longer means every declared
+    dependency was checked. This is the sentence that says so, beside the
+    coverage line where an operator meets the tool axis.
+
+    Silent on a fully-audited run and on a report that never measured this: a
+    pre-#1646 report, or one fed to --compare, did not, and "0 lines not
+    audited" would state a measurement nobody made. The block is copied from a
+    target-writable manifest, so every shape here is checked rather than
+    trusted -- a malformed row renders no line, never a traceback mid-report.
+    """
+    if not isinstance(sanitized, dict):
+        return []
+    notes = []
+    for name in sorted(sanitized):
+        row = sanitized[name]
+        dropped = row.get("dropped") if isinstance(row, dict) else None
+        if isinstance(dropped, list) and dropped:
+            notes.append("%s: %d requirement lines not audited "
+                         "(editable/local/VCS)" % (_escape(name), len(dropped)))
+    return notes
 
 
 def _render_test_inventory(meta):

@@ -4059,6 +4059,50 @@ class TestPanelsWithScannerContext(unittest.TestCase):
         self.assertIn("panels_with_scanner_context", block["properties"])
 
 
+class TestSanitizedRequirementLinesReachTheReport(unittest.TestCase):
+    """#1646 ruling 3: pip-audit is handed a GENERATED requirements list, so the
+    dependency audit can be PARTIAL. The manifest records what was dropped; the
+    report has to carry it, or an operator reads "pip-audit: produced" and
+    believes every declared dependency was checked."""
+
+    _BLOCK = {"pip-audit": {"source": "requirements.txt", "kept": 2,
+                            "dropped": [{"line": "-e .", "reason": "editable"},
+                                        {"line": "./v/p", "reason": "local path"}],
+                            "hashes_stripped": False}}
+
+    def _meta(self, manifest):
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=plan_mod.ToolAxis(manifest=manifest)))["meta"]
+
+    def test_meta_tools_carries_the_manifest_block(self):
+        meta = self._meta({"schema_version": 1, "selected": [], "produced": [],
+                           "sanitized": self._BLOCK})
+        self.assertEqual(meta["tools"]["sanitized"], self._BLOCK)
+
+    def test_a_run_with_no_manifest_says_nothing_rather_than_nothing_dropped(self):
+        self.assertEqual(self._meta(None)["tools"]["sanitized"], {})
+
+    def test_a_hostile_manifest_block_is_repaired_not_carried(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            meta = self._meta({"schema_version": 1, "selected": [], "produced": [],
+                               "sanitized": {"pip-audit": {"kept": "lots"},
+                                             "npm-audit": "nope"}})
+        self.assertEqual(meta["tools"]["sanitized"], {"pip-audit": {}})
+
+    def test_the_schema_declares_the_field(self):
+        with open(os.path.join(SKILL_ROOT, "reference",
+                               "report-schema.json"), encoding="utf-8") as fh:
+            schema = json.load(fh)
+        block = schema["properties"]["meta"]["properties"]["tools"]
+        self.assertIn("sanitized", block["properties"])
+        row = block["properties"]["sanitized"]["additionalProperties"]
+        self.assertEqual(sorted(row["properties"]),
+                         ["dropped", "hashes_stripped", "kept", "source"])
+
+
 class TestAMidRunToolsDowngradeIsDisclosed(unittest.TestCase):
     """#1637 P08 F2: `--no-tools` rescues a run whose scanner environment
     moved, instead of `--reset` discarding every paid scout. It is a real

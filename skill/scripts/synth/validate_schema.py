@@ -552,6 +552,77 @@ def repair_groups_json(gj, warn=None):
     return gj
 
 
+_SANITIZED_ROW = ("source", "kept", "dropped", "hashes_stripped")
+
+
+def repair_tools_sanitized(value, warn=None):
+    """`tools-manifest.json`'s `sanitized` block, normalized to what the schema
+    pins for `meta.tools.sanitized` (#1646).
+
+    THE PRINCIPLE (see the module docstring and `synth/coverage_io`): the schema
+    pins the CONTROLLER's output, so a target-sourced input is repaired to the
+    pinned types AT ITS BOUNDARY. The manifest is written into the scanned tree
+    and a hostile target can pre-commit one, so every field this block carries
+    into the report -- and the HTML renders -- is checked here rather than
+    trusted, and a malformed row costs a warning and the row, never the run and
+    never an `artifact invalid` exit on a report the target authored a corner of.
+
+    DROPPED, never coerced: a `kept` of "lots" has no honest integer, and
+    inventing one would publish a number nobody measured. A bool is not an
+    integer for this purpose -- `jsonschema` rejects `True` where `integer` is
+    pinned, so an unrepaired one would fail the artifact it rode into. Keys the
+    schema does not describe go too: `meta` is closed and the parity walk is
+    stricter still.
+    """
+    changes = []
+    out = {}
+    if not isinstance(value, dict):
+        if value not in (None, {}):
+            changes.append(("sanitized", "dropped: not an object"))
+        value = {}
+    for name, row in value.items():
+        if not isinstance(name, str):
+            changes.append(("sanitized[%r]" % (name,), "dropped: name is not a string"))
+            continue
+        if not isinstance(row, dict):
+            changes.append(("sanitized.%s" % name, "dropped: not an object"))
+            continue
+        kept_row = {}
+        for field in _SANITIZED_ROW:
+            if field not in row:
+                continue
+            got = row[field]
+            if field == "source" and isinstance(got, str):
+                kept_row[field] = got
+            elif field == "kept" and isinstance(got, int) and not isinstance(got, bool):
+                kept_row[field] = got
+            elif field == "hashes_stripped" and isinstance(got, bool):
+                kept_row[field] = got
+            elif field == "dropped" and isinstance(got, list):
+                kept_row[field] = [
+                    {"line": r["line"], "reason": r["reason"]} for r in got
+                    if isinstance(r, dict) and isinstance(r.get("line"), str)
+                    and isinstance(r.get("reason"), str)]
+                if len(kept_row[field]) != len(got):
+                    changes.append(("sanitized.%s.dropped" % name,
+                                    "dropped %d malformed row(s) from"
+                                    % (len(got) - len(kept_row[field]))))
+            else:
+                changes.append(("sanitized.%s.%s" % (name, field), "dropped"))
+        for extra in sorted(set(row) - set(_SANITIZED_ROW)):
+            changes.append(("sanitized.%s.%s" % (name, extra),
+                            "dropped: the schema describes no such field in"))
+        out[name] = kept_row
+    for path, what in changes:
+        message = ("tools-manifest.json: %s %s -- it did not match the type "
+                   "report-schema.json pins for it" % (what, path))
+        if warn is not None:
+            warn(message)
+        else:
+            print(message, file=sys.stderr)
+    return out
+
+
 def string_list(value):
     """The strings in `value` when it is a list, else [].
 

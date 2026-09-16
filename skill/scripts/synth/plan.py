@@ -134,6 +134,12 @@ class Reconciled:
     tools_absent: list
     cell_audit: dict
     groups_meta: list
+    # #1646: what the adapters refused to hand their scanners, off the runner's
+    # manifest and repaired at that read. Beside `coverage` rather than inside
+    # it: `meta.coverage` accounts for which ADAPTERS produced output, and this
+    # says one of them produced a PARTIAL answer. `{}` on a run with no
+    # manifest -- nothing measured, which is not "nothing was dropped".
+    tools_sanitized: dict = field(default_factory=dict)
 
 
 # One source for the per-group dispatch-plan filename glob (#681): synthesize
@@ -342,6 +348,10 @@ def reconcile(plan, tools, resolved):
     # (no adapter, or inapplicable to the target) is disclosed as non-gating
     # `requested_unavailable`, never sinking coverage_certified. With no manifest
     # (e.g. --no-tools, or a pre-manifest run) the 4.x scout-derived gate stands.
+    # #1646: repaired AT THE READ, like every other manifest field this function
+    # takes -- the file is target-writable and this block reaches the artifact.
+    sanitized = (validate_schema_mod.repair_tools_sanitized(
+        tools.manifest.get("sanitized")) if isinstance(tools.manifest, dict) else {})
     if isinstance(tools.manifest, dict):
         selected = set(validate_schema_mod.string_list(tools.manifest.get("selected")))
         produced_m = set(validate_schema_mod.string_list(tools.manifest.get("produced")))
@@ -471,7 +481,8 @@ def reconcile(plan, tools, resolved):
     }
     return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
-                      cell_audit=cell_audit, groups_meta=plan.groups_meta)
+                      cell_audit=cell_audit, groups_meta=plan.groups_meta,
+                      tools_sanitized=sanitized)
 
 
 def load_groups_json(path):
