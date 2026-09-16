@@ -3,7 +3,7 @@ import os
 import unittest
 
 import scripts.dispatch as dispatch
-import scripts.phases.review as review_phase
+import scripts.phases.inventory as inventory
 
 
 ROLES = ["scout.md", "advisor.md", "setup-scan.md",
@@ -48,7 +48,7 @@ class TestUntrustedContentPreamble(unittest.TestCase):
         panel = dispatch.render_prompt("domain-panel.md", {
             "domain": "SEC", "group": "g1", "file_list": "a.py",
             "security_mode": "standard", "tests": "t.py", "menu": "m",
-            "inventory_note": "complete — x",
+            "tst_guidance": "",
             "criteria": "c", "tool_hits": "", "security_checklist": "", "run_id": "R",
             "out_file": ".panopticon/f.json"})
         self.assertIn("UNTRUSTED DATA", panel)
@@ -188,7 +188,7 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A os-command-injection — Qualifies when …",
                    "tool_hits": "", "security_checklist": "",
-                   "inventory_note": "complete — x",
+                   "tst_guidance": "",
                    "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("`SEC` domain reviewer", out)
@@ -209,7 +209,7 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A — CRITERIA-SENTINEL — met only when …",
                    "tool_hits": "", "security_checklist": "",
-                   "inventory_note": "complete — x",
+                   "tst_guidance": "",
                    "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("## Grading criteria", out)
@@ -281,7 +281,7 @@ class TestTestInventoryFraming(unittest.TestCase):
             "tests": "- (no tests)", "security_mode": "standard",
             "menu": "%s-A1A x (HIGH)" % domain, "run_id": "R",
             "criteria": "c", "tool_hits": "", "security_checklist": "",
-            "tst_guidance": review_phase._render_tst_guidance(domain, note),
+            "tst_guidance": inventory.render_tst_guidance(domain, note),
             "out_file": "/abs/findings-Auth-%s.json" % domain}, "claude")
 
     def test_the_unconditional_coverage_gap_sentence_is_gone(self):
@@ -293,12 +293,21 @@ class TestTestInventoryFraming(unittest.TestCase):
             "you must report", self._body())
 
     def test_no_finding_is_mandated_for_the_inventory_state(self):
+        # The code and the mandated title are gone from the template; the
+        # rendered TST cell says positively that the driver already recorded
+        # the state and the reviewer files nothing. (The conditional block
+        # lives in `review._TST_GUIDANCE`, the same place `_format_tool_hits`
+        # and `_render_security_checklist` build their conditional sections.)
         body = self._body()
         self.assertNotIn("TST-X0X", body)
         self.assertNotIn("Test inventory for {group} is empty or incomplete",
                          body)
-        self.assertIn("file no finding", body.lower())
-        self.assertIn("meta.coverage.test_inventory", body)
+        tst = self._render("TST")
+        # (the one `TST-X0X` a TST cell still sees is the template's generic
+        # `{domain}-X0X` catalog-gap fallback, which predates P13)
+        self.assertNotIn("Test inventory for Auth", tst)
+        self.assertIn("file no finding", tst.lower())
+        self.assertIn("meta.coverage.test_inventory", tst)
 
     def test_only_the_tst_cell_is_given_the_inventory_guidance(self):
         # The guidance is TST-shaped: it governs coverage claims and cites TST

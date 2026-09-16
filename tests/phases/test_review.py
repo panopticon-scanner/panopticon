@@ -366,7 +366,10 @@ class TestTestInventoryNote(unittest.TestCase):
     def test_docs_and_config_are_not_modules(self):
         # Fix round 1, F4. `_module_stem` counted anything that was not itself
         # a test, so `pyproject.toml` + `tests/test_pyproject.py` in another
-        # group read as a split on this repo's own tree.
+        # group read as a split on this repo's own tree. A group holding no
+        # CODE has nothing whose coverage could be claimed absent, so it is
+        # `complete` -- flagging it sends an operator to fix a matrix that is
+        # not broken.
         runio._write_json(runio._pano(self.root, "groups.json"),
                           {"groups": [
                               {"name": "Commons", "files": ["pyproject.toml",
@@ -376,8 +379,23 @@ class TestTestInventoryNote(unittest.TestCase):
         for g in ("Commons", "CI"):
             runio._write_json(runio._pano(self.root, "coverage-%s.json" % g),
                               {"group": g, "effective": ["TST"], "run_id": "R"})
-        self.assertEqual("empty",
+        self.assertEqual("complete",
                          self._prompts()["Commons"]["inventory_note"])
+
+    def test_test_tree_plumbing_counts_as_the_groups_own_tests(self):
+        # The auto-formed `Tests` sweep holds `conftest.py`, `_test_helpers.py`
+        # and the golden corpora -- test-tree material that the `test_*.py`
+        # NAMING rule does not match but `classify_files` calls `tests`. Both
+        # of discovery's test classifications count, or this repo's own Tests
+        # group reads `empty` with twenty test files in its read grant.
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [
+                              {"name": "Tests",
+                               "files": ["tests/conftest.py",
+                                         "tests/goldens/scout.rendered.txt"]}]})
+        runio._write_json(runio._pano(self.root, "coverage-Tests.json"),
+                          {"group": "Tests", "effective": ["TST"], "run_id": "R"})
+        self.assertEqual("complete", self._prompts()["Tests"]["inventory_note"])
 
     def test_the_split_line_caps_the_group_names_it_lists(self):
         # Fix round 1, F5. The paths were capped and the group names were not,

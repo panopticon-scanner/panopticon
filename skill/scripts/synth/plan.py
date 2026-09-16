@@ -31,7 +31,7 @@ class PlanInputs:
     coverages: list | None = None
     integrity: dict | None = None
     resume: dict | None = None
-    # #1638 P13: {group: "complete"|"empty"|"split"} -- whether each cell's
+    # #1638 P13: {unit: "complete"|"empty"|"split"} -- whether each cell's
     # reviewers could believe their own test inventory. {} / None when this
     # run did not measure it (a direct synthesize.py call over hand-collected
     # findings had no driver to write the tally).
@@ -529,9 +529,10 @@ def reconcile(plan, tools, resolved):
         # disclosure -- {"missing_floor": [[group, domain], ...]}. A
         # non-empty list is what forces the gate to INCONCLUSIVE.
         "cells": cell_audit,
-        # #1638 P13: which groups' reviewers were shown a test inventory they
-        # could believe. An empty/split entry is why a `TST` no-coverage claim
-        # in this report may be about the MATRIX rather than about the target.
+        # #1638 P13: which review units were shown a test inventory their
+        # reviewers could believe. An empty/split entry is why a `TST`
+        # no-coverage claim here may be about the MATRIX, not the target.
+        # Driver-computed; no agent files a finding for it.
         "test_inventory": dict(plan.test_inventory or {}),
         "resume": plan.resume,
         "delta": resolved.delta_meta,
@@ -615,12 +616,13 @@ INVENTORY_STATES = ("complete", "empty", "split")
 
 
 def load_test_inventory(run_dir):
-    """`{group: state}` over <run_dir>/panel-test-inventory.json (#1638 P13).
+    """`{unit: state}` over <run_dir>/panel-test-inventory.json (#1638 P13).
 
-    The review phase records, per group, whether the test inventory it built
-    that group's prompts from was `complete`, `empty` or `split`; this reads
-    it back so `meta.coverage.test_inventory` can say which `TST` coverage
-    claims in this report rest on an inventory nobody could trust.
+    The review phase records, per REVIEW UNIT (the groups.yml entry a chunked
+    `<name>_N` was split out of, so the key names a group the operator can
+    find), whether that unit's prompts were built from a `complete`, `empty`
+    or `split` inventory; this reads it back so `meta.coverage.test_inventory`
+    can say which `TST` coverage claims rest on one nobody could trust.
 
     Fail-closed to `{}` on an absent or unreadable file, and any state outside
     `INVENTORY_STATES` is DROPPED rather than carried: this lives under
