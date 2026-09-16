@@ -33,6 +33,33 @@ class TestRedact(unittest.TestCase):
         self.assertIn("[REDACTED_PRIVATE_KEY]", out)
         self.assertNotIn("secret", out)
 
+    def test_an_unterminated_pem_does_not_swallow_what_follows_it(self):
+        """#1639 P11 F1: the PEM rule is the ONE pattern here that is not
+        anchored to a character class -- it used to be `.*?` under DOTALL, so a
+        BEGIN with no END of its own ran on until it found somebody else's END
+        and deleted everything in between. A truncated key snippet (gitleaks
+        quotes one in the committed golden) plus any later complete block is all
+        it takes."""
+        text = ("-----BEGIN RSA PRIVATE KEY-----\nMIIBtruncated\n"
+                "KEEP THIS LINE\n"
+                "-----BEGIN RSA PRIVATE KEY-----\nMIIBrealkey\n"
+                "-----END RSA PRIVATE KEY-----\n")
+        out = redact.redact(text)
+        self.assertIn("KEEP THIS LINE", out)
+        self.assertIn("[REDACTED_PRIVATE_KEY]", out)
+        self.assertNotIn("MIIBrealkey", out)
+
+    def test_a_pem_cannot_span_a_json_string_boundary(self):
+        """The same rule applied FLAT to a JSON document (a raw scanner capture)
+        could run from a snippet in one result into a snippet in another,
+        collapsing every field in between. Nothing may match across a `"`."""
+        doc = ('{"a": "-----BEGIN RSA PRIVATE KEY-----\nMIIBone", '
+               '"b": "keep-me", '
+               '"c": "MIIBtwo\n-----END RSA PRIVATE KEY-----"}')
+        out = redact.redact(doc)
+        self.assertIn('"b": "keep-me"', out)
+        self.assertIn('"c":', out)
+
     def test_preserves_prose_that_only_mentions_a_format(self):
         # anchored to prefix+length -> a bare mention is NOT a well-formed token
         for prose in ("store the ghp_ token in the env",

@@ -886,3 +886,196 @@ class TestRawCaptureRedaction(unittest.TestCase):
             if rt._redact_capture(name[:-4], raw) != raw:
                 changed.append(name)
         self.assertEqual(changed, [], "redaction rewrote a clean golden: %s" % changed)
+
+
+class TestCaptureRedactionKeepsEveryFinding(unittest.TestCase):
+    """#1639 P11 fix round 1 (F1): a flat regex pass over a whole JSON capture
+    is not structure-safe. Every pattern in `scripts/redact.py` is anchored to a
+    character class that excludes `"` -- except the PEM rule, which was `.*?`
+    under DOTALL. A capture whose first BEGIN has no END of its own (the
+    committed gitleaks golden quotes exactly that: a truncated key snippet) runs
+    on until a LATER result's snippet supplies one, and everything in between --
+    whole results, their rule ids and their locations -- collapses into one
+    token. The output is still valid JSON, so ingest parses it happily and
+    simply reports fewer findings, the survivor carrying somebody else's
+    location.
+    """
+
+    TOKEN = "ghp_" + "POC" + "C" * 33
+
+    def _capture(self):
+        """The reviewer's four-result PoC: an unterminated BEGIN in result 2 and
+        the END that closes it in result 4, with an unrelated result between."""
+        def result(rule, uri, line, snippet):
+            return {"ruleId": rule, "level": "error",
+                    "message": {"text": "%s detected in %s" % (rule, uri)},
+                    "locations": [{"physicalLocation": {
+                        "artifactLocation": {"uri": uri},
+                        "region": {"startLine": line,
+                                   "snippet": {"text": snippet}}}}]}
+        return json.dumps({"runs": [{
+            "tool": {"driver": {"name": "gitleaks"}},
+            "results": [
+                result("generic-api-key", "a/one.env", 1,
+                       "TOKEN=%s" % self.TOKEN),
+                result("private-key", "b/two.pem", 2,
+                       "-----BEGIN RSA PRIVATE KEY-----\nMIIBsomekey\n"),
+                result("aws-access-token", "c/three.py", 3, "harmless"),
+                result("private-key", "d/four.pem", 9,
+                       "AB12cd==\n-----END RSA PRIVATE KEY-----"),
+            ]}]}).encode("utf-8")
+
+    def test_no_finding_is_lost_and_no_location_is_re_attributed(self):
+        doc = json.loads(rt._redact_capture("gitleaks", self._capture()))
+        runs = doc["runs"]
+        self.assertEqual(len(runs), 1)
+        results = runs[0]["results"]
+        self.assertEqual(len(results), 4, "results were swallowed: %s" % results)
+        self.assertEqual([r["ruleId"] for r in results],
+                         ["generic-api-key", "private-key", "aws-access-token",
+                          "private-key"])
+        self.assertEqual(
+            [(r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+              r["locations"][0]["physicalLocation"]["region"]["startLine"])
+             for r in results],
+            [("a/one.env", 1), ("b/two.pem", 2), ("c/three.py", 3),
+             ("d/four.pem", 9)])
+
+    def test_the_secrets_in_that_capture_are_still_masked(self):
+        out = rt._redact_capture("gitleaks", self._capture())
+        self.assertNotIn(self.TOKEN.encode(), out)
+        self.assertIn(b"[REDACTED_TOKEN]", out)
+
+    def test_a_non_json_capture_keeps_the_lines_around_a_pem(self):
+        """The XML/plain-text fallback (spotbugs is the one non-JSON golden).
+        A complete block spanning lines is still masked -- and an unterminated
+        BEGIN earlier in the file no longer eats the records between them."""
+        raw = (b'<BugInstance type="ONE" file="app/a.java"/>\n'
+               b'<Snippet>-----BEGIN RSA PRIVATE KEY-----\nMIIBtruncated</Snippet>\n'
+               b'<BugInstance type="TWO" file="app/b.java"/>\n'
+               b'<Snippet>-----BEGIN RSA PRIVATE KEY-----\nMIIBrealkey\n'
+               b'-----END RSA PRIVATE KEY-----</Snippet>\n')
+        out = rt._redact_capture("spotbugs", raw)
+        self.assertIn(b'<BugInstance type="TWO" file="app/b.java"/>', out)
+        self.assertIn(b"[REDACTED_PRIVATE_KEY]", out)
+        self.assertNotIn(b"MIIBrealkey", out)
+
+    def test_a_json_capture_keeps_its_own_formatting(self):
+        """Re-serialization is only reached when redaction fired, and it keeps
+        the producer's own layout where that is recognisable -- so a capture
+        diffed across two runs shows the masked value, not a reformatting of
+        every line."""
+        doc = {"runs": [{"results": [{"ruleId": "x",
+                                      "message": {"text": self.TOKEN}}]}]}
+        for style in ({"indent": 1}, {"indent": 2}, {}, {"separators": (",", ":")}):
+            raw = json.dumps(doc, **style).encode("utf-8")
+            out = rt._redact_capture("gitleaks", raw).decode("utf-8")
+            with self.subTest(style=style):
+                self.assertNotIn(self.TOKEN, out)
+                self.assertEqual(
+                    out, json.dumps(json.loads(out), **style),
+                    "re-serialized in a different layout than the capture's")
+
+
+class TestTruncationDoesNotHalfKeepASecret(unittest.TestCase):
+    """#1639 P11 fix round 1 (F2): the byte cap is measured on the RAW stream
+    (ruling 4 -- it is the only count that bounds memory), so it can land in the
+    middle of a token, and the length-anchored pattern no longer matches the
+    fragment left behind. Scanner output is line-oriented, so dropping back to
+    the last newline before the cap drops the partial value instead of keeping
+    half of it."""
+
+    TOKEN = "ghp_" + "CUT" + "Q" * 33
+
+    def _stream(self, payload, cap):
+        child = "import sys; sys.stdout.buffer.write(%r)" % payload
+        proc = rt._popen_runner([sys.executable, "-c", child],
+                                stdout=sp.PIPE, stderr=sp.PIPE)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        out = os.path.join(d, "gitleaks.sarif")
+        with contextlib.redirect_stderr(io.StringIO()), \
+                mock.patch.object(rt, "MAX_TOOL_OUTPUT_BYTES", cap):
+            self.assertEqual(
+                rt._stream_and_write("tool", "gitleaks", proc, out, timeout=30), out)
+        with open(out, "rb") as fh:
+            return fh.read()
+
+    def test_a_token_split_by_the_cap_is_dropped_not_half_kept(self):
+        head = b"keep this whole line\n"
+        payload = head + b"TOKEN=" + self.TOKEN.encode() + b"\nzzzz\n"
+        # Land the cap ten characters into the token.
+        written = self._stream(payload, len(head) + len("TOKEN=") + 10)
+        self.assertIn(b"keep this whole line", written)
+        self.assertIn(b"TRUNCATED", written)
+        self.assertNotIn(b"ghp_", written)
+
+    def test_a_capture_with_no_line_break_keeps_its_prefix(self):
+        """The trim must never empty a file: single-line output (a compact
+        SARIF) has no newline to fall back to, so the prefix is kept as it was
+        and the fragment risk is what the marker comment documents."""
+        payload = b"x" * 400
+        written = self._stream(payload, 100)
+        self.assertIn(b"TRUNCATED", written)
+        self.assertTrue(written.startswith(b"x" * 100), written[:120])
+        self.assertFalse(written.startswith(b"x" * 101), written[:120])
+
+    def test_the_trim_never_discards_a_long_last_line(self):
+        """A capture that is one newline followed by megabytes of single line
+        must not be trimmed back to that first newline -- output that long is
+        not line-oriented, and the retained evidence matters more than the
+        fragment."""
+        payload = b"{\n" + b"y" * 400
+        written = self._stream(payload, 300)
+        self.assertIn(b"TRUNCATED", written)
+        self.assertGreater(written.count(b"y"), 200)
+
+
+class TestTheManifestReportsTheRedactionPass(unittest.TestCase):
+    """#1639 P11 fix round 1 (F5): `tools-ran.json`'s `redacted` claim used to
+    be a literal in the phase module asserting another module's behaviour. The
+    runner reports what it actually did -- `_redact_capture` records each
+    capture it passes, `write_manifest` publishes it, and the phase copies the
+    answer instead of restating it."""
+
+    TOKEN = "ghp_" + "MANIFEST" + "M" * 28
+
+    def _run(self, d, patch_identity=False):
+        payload = json.dumps({"runs": [{"results": [
+            {"ruleId": "r", "message": {"text": self.TOKEN}}]}]}).encode()
+
+        def runner(cmd, **kw):
+            return _FakeResult(returncode=0, stdout=payload)
+
+        out_dir = os.path.join(d, "tools")
+        ctx = (mock.patch.object(rt, "_redact_capture", lambda tool, data: data)
+               if patch_identity else contextlib.nullcontext())
+        with contextlib.redirect_stderr(io.StringIO()), ctx:
+            written = rt.run_tools(d, ["gitleaks", "semgrep"], out_dir, runner=runner)
+        return rt.write_manifest(os.path.join(d, "tools-manifest.json"),
+                                 ["gitleaks", "semgrep"], written)
+
+    def test_a_run_through_the_choke_point_claims_the_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = self._run(d)
+        self.assertEqual(payload["produced"], ["gitleaks", "semgrep"])
+        self.assertIs(payload["redacted"], True)
+
+    def test_bypassing_the_choke_point_makes_the_claim_go_false(self):
+        """The coupling: with the redactor replaced by identity the captures are
+        written unmasked, and the artifact says so rather than repeating a
+        literal `true` nobody checked."""
+        with tempfile.TemporaryDirectory() as d:
+            payload = self._run(d, patch_identity=True)
+            with open(os.path.join(d, "tools", "gitleaks.sarif"), "rb") as fh:
+                self.assertIn(self.TOKEN.encode(), fh.read())   # non-vacuous
+        self.assertEqual(payload["produced"], ["gitleaks", "semgrep"])
+        self.assertIs(payload["redacted"], False)
+
+    def test_no_capture_written_makes_no_claim(self):
+        # The docker-absent manifest (produced=[]): nothing was written, so
+        # there is nothing to vouch for.
+        with tempfile.TemporaryDirectory() as d:
+            payload = rt.write_manifest(os.path.join(d, "m.json"),
+                                        ["gitleaks"], [])
+        self.assertIs(payload["redacted"], False)

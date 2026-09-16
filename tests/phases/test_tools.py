@@ -31,21 +31,38 @@ class TestToolsPhase(unittest.TestCase):
         self.assertTrue(marker["ran"])
         self.assertTrue(tools_phase.tools_done(self.root, self.manifest))
 
-    def test_marker_discloses_that_the_captures_were_redacted(self):
-        # #1639 P11 ruling 4: the raw captures under `.panopticon/tools/` go
-        # through run_tools' redaction choke point, and the marker says so --
-        # an operator about to copy that directory into a CI artifact reads the
-        # claim from the run's own artifact, not from the docs. Additive: only
-        # the branch that actually ran a scan claims it.
+    def _run_with_manifest(self, redacted):
+        """A scan that writes one capture and the runner's own coverage
+        manifest, whose `redacted` field is what run_tools observed."""
         def fake_run(cmd, **kw):
             out = cmd[cmd.index("--out") + 1]
             os.makedirs(out, exist_ok=True)
             open(os.path.join(out, "trivy.json"), "w").close()
+            if redacted is not None:
+                runio._write_json(cmd[cmd.index("--manifest") + 1],
+                                  {"schema_version": 1, "selected": ["trivy"],
+                                   "produced": ["trivy"], "redacted": redacted})
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run):
             tools_phase.tools_execute(self.root, self.manifest)
-        marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
-        self.assertIs(marker["redacted"], True)
+        return runio._load_json(runio._pano(self.root, "tools-ran.json"))
+
+    def test_marker_copies_the_runners_redaction_claim(self):
+        # #1639 P11 ruling 4, fix round 1 F5: the raw captures under
+        # `.panopticon/tools/` go through run_tools' redaction choke point and
+        # the marker says so -- an operator about to copy that directory into a
+        # CI artifact reads the claim from the run's own artifacts. The phase
+        # COPIES what the runner reported; it does not assert another module's
+        # behaviour with a literal nobody checks.
+        self.assertIs(self._run_with_manifest(True)["redacted"], True)
+
+    def test_marker_does_not_upgrade_a_runner_that_reported_no_pass(self):
+        self.assertIs(self._run_with_manifest(False)["redacted"], False)
+
+    def test_marker_claims_nothing_when_the_runner_left_no_manifest(self):
+        # A crash before the manifest was written leaves no claim to copy, and
+        # the phase invents none.
+        self.assertIs(self._run_with_manifest(None)["redacted"], False)
 
     def test_no_tools_marker_claims_nothing_about_redaction(self):
         # `--no-tools` writes no capture at all, so it must not claim a pass
