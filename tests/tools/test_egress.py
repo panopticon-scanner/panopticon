@@ -197,16 +197,19 @@ class _PopenLike:
     `returncode` that is None until it has been called, and a `kill()`.
     """
 
-    def __init__(self, out=b"", err=b"", rc=0, timeout_once=False):
+    def __init__(self, out=b"", err=b"", rc=0, timeout_once=False,
+                 timeout_always=False):
         self._out, self._err, self._rc = out, err, rc
-        self._timeout_once = timeout_once
+        self._timeout_once = timeout_once or timeout_always
+        self._timeout_always = timeout_always
         self.returncode = None
         self.killed = False
         self.communicate_calls = 0
 
     def communicate(self, timeout=None):
         self.communicate_calls += 1
-        if self._timeout_once and self.communicate_calls == 1:
+        if self._timeout_always or (self._timeout_once
+                                    and self.communicate_calls == 1):
             raise subprocess.TimeoutExpired(cmd="docker", timeout=timeout)
         self.returncode = self._rc
         return self._out, self._err
@@ -252,6 +255,19 @@ class TestControlAgainstTheRealRunnerShape(unittest.TestCase):
         self.assertTrue(proc.killed)
         self.assertEqual(proc.communicate_calls, 2)
         self.assertEqual(rc, -9)
+
+    def test_a_child_that_times_out_even_after_the_kill_fails_closed(self):
+        # Fix round 2, N3. The inline timeout arm (kill, reap, the child's own
+        # rc) has its own test above; THIS is the other one -- a
+        # `TimeoutExpired` from the second communicate(), or from the seam call
+        # itself, reaching the narrow except. It was covered only because
+        # TimeoutExpired subclasses SubprocessError; now it is named.
+        proc = _PopenLike(timeout_always=True)
+        (rc, out, _err), stderr = self._control(lambda cmd, **kw: proc)
+        self.assertTrue(proc.killed)
+        self.assertEqual(proc.communicate_calls, 2)
+        self.assertEqual((rc, out), (127, ""))
+        self.assertIn("docker network ls", stderr)
 
     def test_the_kwargs_the_seam_is_called_with_are_the_ones_it_accepts(self):
         # `_popen_runner(cmd, stdout=None, stderr=None, timeout=None)`. A

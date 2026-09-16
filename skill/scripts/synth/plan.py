@@ -14,6 +14,7 @@ from scripts.tools import EXECUTES_TARGET_BUILD
 from . import coverage_io as coverage_io
 from . import findings as findings_mod
 from . import integrity as integrity_mod
+from . import repair as repair_mod
 from . import validate_schema as validate_schema_mod
 
 
@@ -355,11 +356,11 @@ def reconcile(plan, tools, resolved):
     # (e.g. --no-tools, or a pre-manifest run) the 4.x scout-derived gate stands.
     # #1646: repaired AT THE READ, like every other manifest field this function
     # takes -- the file is target-writable and this block reaches the artifact.
-    sanitized = (validate_schema_mod.repair_tools_sanitized(
+    sanitized = (repair_mod.repair_tools_sanitized(
         tools.manifest.get("sanitized")) if isinstance(tools.manifest, dict) else {})
     # #1645: same read, same repair -- the block is target-writable and reaches
     # the artifact and the HTML.
-    network = (validate_schema_mod.repair_tools_network(
+    network = (repair_mod.repair_tools_network(
         tools.manifest.get("network")) if isinstance(tools.manifest, dict) else {})
     if isinstance(tools.manifest, dict):
         selected = set(validate_schema_mod.string_list(tools.manifest.get("selected")))
@@ -516,7 +517,7 @@ def load_groups_json(path):
     if not isinstance(gj, dict):
         print("synthesize: %s is not a JSON object; ignoring" % path, file=sys.stderr)
         return {}
-    return validate_schema_mod.repair_groups_json(gj)
+    return repair_mod.repair_groups_json(gj)
 
 
 def load_verify_queue(run_dir):
