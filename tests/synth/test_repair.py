@@ -354,6 +354,28 @@ class TestRepairGroupsJson(unittest.TestCase):
             {"groups": [{"name": "g", "parent": "p" * 50000, "files": []}]})
         self.assertEqual(len(got["groups"][0]["parent"]), repair_mod.NAME_MAX)
 
+    def test_a_group_file_list_is_bounded_in_count(self):
+        # Round-3 re-review: the 200-group cap bounds how many GROUPS survive,
+        # not how many files one group may list -- one group with 100,000
+        # entries reached the report and its HTML with zero warnings.
+        got, err = self._repair(
+            {"groups": [{"name": "g", "files": ["f%d.py" % n
+                                                 for n in range(100000)]}]})
+        self.assertEqual(len(got["groups"][0]["files"]), repair_mod.FILES_MAX)
+        self.assertIn("100000", err)
+        self.assertEqual(err.count("rows in"), 1, "one aggregate warning")
+
+    def test_an_impossible_path_is_dropped_not_cut(self):
+        # A cut path names a file that does not exist; a path longer than any
+        # filesystem allows names none either, so it is dropped, and the
+        # neighbouring real path survives untouched.
+        long = "d/" * (repair_mod.PATH_MAX // 2) + "x.py"
+        got, err = self._repair(
+            {"groups": [{"name": "g", "files": ["a.py", long, "b.py"]}]})
+        self.assertEqual(got["groups"][0]["files"], ["a.py", "b.py"])
+        self.assertIn("dropped", err)
+        self.assertLessEqual(len(err), 1000, "%d chars" % len(err))
+
     def test_a_correct_groups_json_is_unchanged_and_silent(self):
         gj = {"groups": [{"name": "App", "files": ["a.py"], "parent": "Core"}],
               "mode": "repo"}

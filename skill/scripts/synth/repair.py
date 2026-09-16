@@ -26,7 +26,10 @@ The one thing NOT cut, said plainly rather than covered by "identically":
 `groups.json`'s `files[]` entries. They are repo-relative paths, a cut path
 names a file that does not exist, and corrupting a location is worse than
 republishing a long one -- so they are type-checked (`string_list`, and the
-schema node) and bounded only by the group row cap above them.
+schema node) and bounded by DROPPING rather than cutting: a list is kept to
+its first `FILES_MAX` entries (the group row cap says nothing about how many
+files ONE group may list), and an entry longer than `PATH_MAX` -- longer than
+any filesystem lets a path be, so a name for nothing -- is dropped whole.
 """
 import sys
 
@@ -47,6 +50,13 @@ VALUE_MAX = 200
 # exists to prevent, one layer out. Nothing is hidden: the tail line carries
 # the true remaining count.
 WARN_LINES_MAX = 20
+
+# `groups[].files[]` is the one list bounded by dropping, not cutting (module
+# docstring). The count is an order of magnitude above the largest group the
+# grouping engine forms and the fixture sinks a hand-written groups.yml
+# carries; the length is PATH_MAX on every platform panopticon runs on.
+FILES_MAX = 10000
+PATH_MAX = 4096
 
 
 def warn_repairs(artifact, changes, warn):
@@ -101,6 +111,21 @@ def _cut(text, path, changes):
     changes.append((path, "cut a value to %d of %d characters in"
                     % (VALUE_MAX, len(text))))
     return text[:VALUE_MAX]
+
+
+def _bounded_paths(files, changes):
+    """`groups[].files[]` kept to `FILES_MAX` entries, each no longer than
+    `PATH_MAX` -- by dropping, never cutting, because a cut path is a location
+    that does not exist. Both announced once per list, not once per entry."""
+    if len(files) > FILES_MAX:
+        changes.append(("groups[].files", "kept the first %d of %d rows in"
+                        % (FILES_MAX, len(files))))
+        files = files[:FILES_MAX]
+    kept = [f for f in files if not (isinstance(f, str) and len(f) > PATH_MAX)]
+    if len(kept) != len(files):
+        changes.append(("groups[].files[]", "dropped %d paths longer than %d in"
+                        % (len(files) - len(kept), PATH_MAX)))
+    return kept
 
 
 _GROUPS_KEEP_KEYS = ("name", "files", "parent")
@@ -159,7 +184,8 @@ def repair_groups_json(gj, warn=None):
             # pre-commit -- so they are bounded like every other name here.
             # `files[]` entries are NOT cut: they are repo-relative paths, and
             # a cut path names a file that does not exist, which corrupts a
-            # location rather than bounding text. See the module docstring.
+            # location rather than bounding text -- they are bounded below by
+            # dropping instead (`_bounded_paths`). See the module docstring.
             for key in ("name", "parent"):
                 if isinstance(g.get(key), str):
                     g[key] = _cut(g[key], "groups[].%s" % key, changes)
@@ -168,6 +194,8 @@ def repair_groups_json(gj, warn=None):
                 # shape the report's groups[] can carry either (it is required).
                 g["files"] = []
                 changes.append(("groups[].files", "defaulted to []"))
+            else:
+                g["files"] = _bounded_paths(g["files"], changes)
             kept.append(g)
         gj["groups"] = kept
     if "mode" in gj and not isinstance(gj["mode"], str):
