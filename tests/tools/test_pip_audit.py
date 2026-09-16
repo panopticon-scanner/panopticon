@@ -1089,5 +1089,106 @@ class TestOnlyRealFilesAreCandidates(unittest.TestCase):
                          os.path.join(d, "requirements-b.txt"))
 
 
+class TestBothBranchesShareOneBound(unittest.TestCase):
+    """F2: I1's cap was applied to the requirements branch only.
+
+    `invoke`'s pyproject arm had no bound at all and `sanitization_report`'s
+    had a DIFFERENT one -- a character slice with no newline rollback -- plus a
+    hard-coded `truncated: False`. Measured on 120,000 dependencies: `invoke`
+    wrote all 120,000 into the generated file while the manifest claimed
+    `kept: 65536, truncated: false`. Three failures in one place: the "read is
+    capped FIRST" guarantee did not hold, `kept` measured nothing, and a
+    published field asserted the opposite of what had just happened.
+    """
+
+    _N = pa._MAX_READ_LINES + 10000
+
+    def _target(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        deps = ",\n  ".join('"dep%d==1.0"' % n for n in range(self._N))
+        with open(os.path.join(d, "pyproject.toml"), "w", encoding="utf-8") as fh:
+            fh.write('[project]\nname = "x"\ndependencies = [\n  %s\n]\n' % deps)
+        return d
+
+    def test_invoke_writes_at_most_the_bound(self):
+        seen = {}
+
+        def fake_run_tool(cmd, timeout=0, **kw):
+            with open(cmd[cmd.index("--requirement") + 1], encoding="utf-8") as fh:
+                seen["lines"] = fh.read().splitlines()
+            return b"{}", 0
+        with mock.patch.object(pa, "run_tool", fake_run_tool):
+            pa.PipAuditAdapter().invoke(self._target())
+        self.assertEqual(len(seen["lines"]), pa._MAX_READ_LINES)
+
+    def test_the_manifest_reports_the_true_kept_and_truncated(self):
+        report = pa.PipAuditAdapter().sanitization_report(self._target())
+        self.assertEqual(report["kept"], pa._MAX_READ_LINES)
+        self.assertTrue(report["truncated"])
+
+    def test_the_two_call_sites_cannot_disagree(self):
+        # The generated file and the disclosure are built from ONE bounding
+        # helper, so what pip-audit was handed is what the manifest counts.
+        target = self._target()
+        seen = {}
+
+        def fake_run_tool(cmd, timeout=0, **kw):
+            with open(cmd[cmd.index("--requirement") + 1], encoding="utf-8") as fh:
+                seen["lines"] = fh.read().splitlines()
+            return b"{}", 0
+        with mock.patch.object(pa, "run_tool", fake_run_tool):
+            pa.PipAuditAdapter().invoke(target)
+        self.assertEqual(len(seen["lines"]),
+                         pa.PipAuditAdapter().sanitization_report(target)["kept"])
+
+    def test_a_small_pyproject_is_not_reported_as_truncated(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "pyproject.toml"), "w", encoding="utf-8") as fh:
+            fh.write('[project]\nname = "x"\ndependencies = ["ok==1"]\n')
+        report = pa.PipAuditAdapter().sanitization_report(d)
+        self.assertEqual((report["kept"], report["truncated"]), (1, False))
+
+    def test_the_byte_bound_rolls_back_to_a_line_break(self):
+        # A character slice can cut a dependency mid-string and manufacture a
+        # bogus `unparseable` row; `_read_bounded` already rolled back for the
+        # requirements branch and both must behave the same.
+        text, truncated = pa._bounded("ok==1\n" * 400000)
+        self.assertTrue(truncated)
+        self.assertFalse(text.endswith("ok=="))
+        self.assertEqual(set(text.splitlines()), {"ok==1"})
+
+
+class TestTheScratchCwdIsRemovedEvenIfSomethingWroteThere(unittest.TestCase):
+    """F3: `os.rmdir` in `finally` turned a SUCCESSFUL audit into a lost tool.
+
+    The scratch directory exists precisely to be where stray writes land -- a
+    build backend's temp file, pip's legacy in-cwd artifacts -- so "something
+    wrote there" is the expected case. `os.rmdir` raised `OSError: Directory
+    not empty`, `_run_adapter.main` caught it and returned FAIL_RC, and
+    pip-audit landed in the manifest's `missing`: the coverage gate degraded on
+    a run whose audit had actually succeeded.
+    """
+
+    def test_a_file_written_into_the_scratch_cwd_does_not_fail_the_audit(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as fh:
+            fh.write("ok==1\n")
+        scratch = {}
+
+        def fake_run_tool(cmd, timeout=0, **kw):
+            scratch["path"] = kw["cwd"]
+            with open(os.path.join(kw["cwd"], "pip-build-junk"), "w") as fh:
+                fh.write("x")
+            return b'{"dependencies": []}', 0
+        with mock.patch.object(pa, "run_tool", fake_run_tool):
+            raw, rc = pa.PipAuditAdapter().invoke(d)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(raw), {"dependencies": []})
+        self.assertFalse(os.path.exists(scratch["path"]))
+
+
 if __name__ == "__main__":
     unittest.main()

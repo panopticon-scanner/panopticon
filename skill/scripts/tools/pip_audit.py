@@ -4,6 +4,7 @@ import contextvars
 import glob
 import os
 import re
+import shutil
 import sys
 import tempfile
 import tomllib
@@ -175,17 +176,27 @@ def _safe_to_publish(line):
     return out
 
 
-def _read_bounded(path):
+def _bounded(data):
     """`(text, truncated)` -- at most `_MAX_READ_BYTES` and `_MAX_READ_LINES`,
-    whichever bites first.
+    whichever bites first. Accepts bytes (a file read) or str (the PEP 621
+    dependency list joined).
 
-    Bytes are read with an explicit size, so a 10 MB single line never reaches
-    memory whole; a byte-truncated tail is dropped back to its last line break,
-    because a half-line is not a requirement and publishing one as
-    `unparseable` would be noise.
+    ONE helper for BOTH branches, deliberately (fix round 2, F2). Round 1 bound
+    only the requirements branch: `invoke`'s pyproject arm had no bound at all
+    and `sanitization_report`'s had a different one -- a character slice with no
+    newline rollback -- plus a hard-coded `truncated: False`. On 120,000
+    dependencies `invoke` wrote all 120,000 into the generated file while the
+    manifest claimed `kept: 65536, truncated: false`: the guarantee that the
+    read is capped before anything is parsed did not hold, `kept` measured
+    nothing, and a published field asserted the opposite of what had happened.
+    Two call sites with two bounds is how that happens; one helper is the fix.
+
+    A byte-truncated tail is dropped back to its last line break, because a
+    half-line is not a requirement and publishing one as `unparseable` would be
+    noise -- and a character slice could cut a dependency mid-string and
+    manufacture exactly that row.
     """
-    with open(path, "rb") as fh:
-        raw = fh.read(_MAX_READ_BYTES + 1)
+    raw = data if isinstance(data, bytes) else str(data or "").encode("utf-8", "replace")
     truncated = len(raw) > _MAX_READ_BYTES
     if truncated:
         raw = raw[:_MAX_READ_BYTES]
@@ -196,6 +207,13 @@ def _read_bounded(path):
     if len(lines) > _MAX_READ_LINES:
         return "\n".join(lines[:_MAX_READ_LINES]), True
     return text, truncated
+
+
+def _read_bounded(path):
+    """`_bounded` over a file, reading with an explicit size so a 10 MB single
+    line never reaches memory whole."""
+    with open(path, "rb") as fh:
+        return _bounded(fh.read(_MAX_READ_BYTES + 1))
 
 
 def _capped(rows):
@@ -445,8 +463,10 @@ class PipAuditAdapter:
             # The PEP 621 read is static, but `[project.dependencies]` may
             # itself hold `name @ git+https://...` -- the same build-backend
             # door through a second file. Both branches write a GENERATED file
-            # and the same grammar is what makes it safe.
-            kept, _dropped = sanitize_requirements("\n".join(deps))
+            # and the same grammar is what makes it safe -- and the same bound,
+            # so what is written here is what `sanitization_report` counts (F2).
+            text, _truncated = _bounded("\n".join(deps))
+            kept, _dropped = sanitize_requirements(text)
         tmp = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
         # #1646 C1(b): an EMPTY working directory, never the target mount. The
         # image ends `WORKDIR /src` and `/src` IS the reviewed repository, so a
@@ -463,7 +483,14 @@ class PipAuditAdapter:
             return run_tool(cmd, timeout=300, cwd=scratch)
         finally:
             os.unlink(tmp.name)
-            os.rmdir(scratch)
+            # `rmtree(ignore_errors=True)`, never `rmdir` (F3): the scratch
+            # directory exists PRECISELY to be where stray writes land -- a
+            # build backend's temp file, pip's legacy in-cwd artifacts -- so
+            # "something wrote there" is the expected case. `os.rmdir` raised
+            # `Directory not empty`, `_run_adapter` caught it and returned
+            # FAIL_RC, and pip-audit landed in the manifest's `missing`: the
+            # coverage gate degraded on a run whose audit had succeeded.
+            shutil.rmtree(scratch, ignore_errors=True)
 
     def sanitization_report(self, target: str) -> dict | None:
         """What `invoke` will NOT audit, for the coverage manifest (#1646).
@@ -491,10 +518,11 @@ class PipAuditAdapter:
             deps = _deps_from_pyproject(target)
             if not deps and not rejected:
                 return None
-            kept, dropped = sanitize_requirements("\n".join(deps or [])[:_MAX_READ_BYTES])
+            text, truncated = _bounded("\n".join(deps or []))
+            kept, dropped = sanitize_requirements(text)
             rows, more = _capped(dropped)
             report = {"dropped": rows, "hashes_stripped": False,
-                      "truncated": False, "dropped_truncated": more}
+                      "truncated": truncated, "dropped_truncated": more}
             kept_n = len(kept)
             source = "pyproject.toml" if deps else ""
         return {"source": _source_label(source, rejected), "kept": kept_n,
