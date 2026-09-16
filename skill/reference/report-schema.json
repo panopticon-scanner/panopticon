@@ -527,6 +527,9 @@
             },
             "rejected": {
               "type": "integer"
+            },
+            "backup_scope_limited": {
+              "type": "integer"
             }
           }
         },
@@ -855,8 +858,16 @@
                   "corroborated",
                   "needs_more_info",
                   "unverified",
-                  "rejected"
+                  "rejected",
+                  "backup_scope_limited"
                 ]
+              },
+              "missing_evidence": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Present with status `backup_scope_limited` (#1638 P16): the files the backup advisor said it was not granted. The primary CONFIRMED stands and the report names what the second opinion could not see, instead of implying it looked and could not tell."
               },
               "verified_by": {},
               "reasoning": {

@@ -455,7 +455,12 @@ def _verify_accepts(entry, data):
     if part >= len(chunks):
         return False, ("bundle is part %d of a cell with %d chunk(s)"
                        % (part, len(chunks)))
-    mine = [v for v in data.get("verdicts") or [] if isinstance(v, dict)]
+    # Sanitized like every other verdict read path (#1638 P16 fix round 2): this
+    # one only asks "was every claim adjudicated", but the rule is that an agent
+    # verdict enters the controller exactly one way, so there is no reader left
+    # to reason about separately.
+    mine = [evidence._agent_verdict(v) for v in data.get("verdicts") or []
+            if isinstance(v, dict)]
     # Parts strictly BEFORE this one, from disk -- `_part_done` merges parts
     # 0..part and this reply stands in for part `part` itself.
     earlier = (verify._cell_verdicts(review_root, group, domain, stage, part)

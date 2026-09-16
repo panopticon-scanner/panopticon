@@ -559,6 +559,14 @@ def _render_header(report):
     policy = "unverified" if summary.get("gate_policy") == "include_unverified" else "strict"
     coverage_parts = ["%d verified" % verified, "%d unverified" % unverified,
                        "%d tool-reported" % tool_reported]
+    # #1638 P16 (fix round 1, F2): `backup_scope_limited` keeps gate-eligibility
+    # and factor 1.5 -- the primary CONFIRMED stands -- but it is NOT "verified"
+    # here: that word means a second opinion agreed, and in this state a second
+    # opinion could not look. Its own segment, so the count is disclosed rather
+    # than folded into a number that would overstate it.
+    scope_limited = int(ev.get(evidence.BACKUP_SCOPE_LIMITED, 0))
+    if scope_limited:
+        coverage_parts.append("%d backup-scope-limited" % scope_limited)
     if cut:
         coverage_parts.append("%d cut" % cut)
     parts.append(
@@ -848,6 +856,17 @@ def _render_card(finding, delta=None):
         value = finding.get(key)
         if value:
             details.append(f"<dt>{label}</dt><dd>{_escape(value)}</dd>")
+
+    # #1638 P16: when the adversarial backup could not reach the files it needed,
+    # say so in the artifact a person opens -- the alternative is a CONFIRMED
+    # finding whose second opinion is silently missing. The paths are advisor-
+    # supplied (already redacted upstream by render.redact_report_secrets) and
+    # escaped here like every other agent string.
+    missing = [m for m in ((finding.get("evidence") or {}).get("missing_evidence") or [])
+               if isinstance(m, str) and m]
+    if missing:
+        details.append("<dt>Backup could not see</dt><dd>%s</dd>"
+                       % _escape(", ".join(missing)))
 
     refs = finding.get("references") or []
     if refs:

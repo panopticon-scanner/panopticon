@@ -23,11 +23,113 @@ SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 # html_report's _PANEL_ORDER, and the findings-filename regexes in synthesize
 # and group_runner all derive from this one definition.
 PANELS = ["code", "test", "security", "architecture", "database", "redteam"]
+# `backup_scope_limited` (#1638 P16, owner ruling D4): the PRIMARY advisor
+# confirmed this claim and the backup could not check it, because the files it
+# needed were outside the bounded evidence closure it was granted. It is a
+# confirmed finding wearing a disclosure, not a contested one -- see
+# `match_verdict_by_id`.
+BACKUP_SCOPE_LIMITED = "backup_scope_limited"
 EVIDENCE_STATUSES = ("tool_reported", "tool_confirmed", "advisor_confirmed",
                      "corroborated", "needs_more_info", "unverified",
-                     "rejected")
-GATE_ELIGIBLE_DEFAULT = frozenset({"tool_confirmed", "advisor_confirmed"})
+                     "rejected", BACKUP_SCOPE_LIMITED)
+# `backup_scope_limited` is gate-eligible for the same reason it exists: a
+# primary CONFIRMED stands. Before #1638 P16 the same finding was demoted to
+# `needs_more_info` and silently dropped out of the gate -- an evidence-scope
+# failure quietly deciding a release gate is the defect, not the fix.
+GATE_ELIGIBLE_DEFAULT = frozenset({"tool_confirmed", "advisor_confirmed",
+                                   BACKUP_SCOPE_LIMITED})
 VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
+
+# Internal carrier, underscore-prefixed like `_merged_ids`: the paths a
+# scope-limited backup named, hung on the PRIMARY verdict that survived it so
+# `derive_evidence` and the report can say what the backup could not see.
+# CONTROLLER-OWNED: `match_verdict_by_id` is its only writer, which `_agent_verdict`
+# below is what actually enforces -- fix round 1 F1 found the comment asserting
+# it while both loaders copied an agent's object verbatim.
+SCOPE_LIMITED_FIELD = "_backup_missing_evidence"
+
+
+# Identity an advisor may not assert about its own verdict. `stage` decides how
+# the verdict is READ rather than what it says: it picks which candidate is
+# treated as the adversarial second opinion, and fix round 2 N2 demonstrated one
+# PRIMARY bundle declaring a second entry `stage: "backup"` and fabricating a
+# gate-eligible `backup_scope_limited` disclosure with no private key at all.
+# The loaders put the controller's own value back -- from `_panopticon.stage`
+# for a stamped bundle, from the controller-chosen FILENAME for a legacy
+# single-verdict file.
+#
+# `run_id` is deliberately NOT here. On the bundle path the stamp overrides it
+# anyway (`load_verdict_bundles` assigns rather than defaults), and on the legacy
+# queue path there is no stamp to restore it from: it is an ECHO the advisor was
+# handed and `match_verdict` checks, exactly like `finding_id`, and echoing it
+# wrongly only drops the advisor's own verdict. An echo confers nothing; `stage`
+# confers a round.
+CONTROLLER_STAMPED = ("stage",)
+
+
+def _agent_verdict(raw):
+    """THE trust boundary for an agent-written verdict. One sanitizer, used by
+    every read path (`tests/test_agent_verdict_guard.py` walks the tree and
+    fails if a fourth reader appears without it).
+
+    Two jobs:
+
+    (a) strip every private (`_`-prefixed) key. They are the pipeline's own
+        carriers -- `_backup_missing_evidence` here, `_merged_ids`/`_group` on
+        findings -- so an advisor that plants one is asserting a controller
+        decision. Round 1 F1 demonstrated a backup REJECTION laundered into a
+        retained primary CONFIRMED (rejected, factor 0.0, out of the gate ->
+        backup_scope_limited, factor 1.5, IN the gate) and a primary-only
+        verdict fabricating a "backup could not see" disclosure about a round
+        that never ran; round 2 N1 then found the same key emptying a cell's
+        whole backup scope through `phases/verify._cell_verdicts`, so no
+        adversarial round was dispatched;
+
+    (b) drop `CONTROLLER_STAMPED` (`stage`), which is round 2 N2: an advisor may
+        say what it concluded, never which ROUND it was.
+
+    A rule at the door rather than a check at each reader, for the same reason
+    the `_panopticon` stamp is controller-owned: per-reader discipline is what
+    failed, twice. Everything an advisor is actually asked for -- including the
+    public `missing_evidence` and `evidence_scope` -- passes through untouched.
+    """
+    return {k: v for k, v in raw.items()
+            if not str(k).startswith("_") and k not in CONTROLLER_STAMPED}
+
+
+def scope_limited_paths(verdict):
+    """The files a NEEDS_MORE_INFO verdict says it was NOT granted, or [].
+
+    The PUBLIC field only (`missing_evidence`), and only once the verdict is
+    established as NEEDS_MORE_INFO: a CONFIRMED or REJECTED advisor decided, and
+    whatever it did not read is not a scope failure. This is what
+    `match_verdict_by_id` consults, so no agent-supplied key can reach the
+    retain-the-primary branch. Defensive about shape -- the field is
+    agent-supplied.
+    """
+    if not isinstance(verdict, dict):
+        return []
+    if str(verdict.get("verdict", "")).upper() != "NEEDS_MORE_INFO":
+        return []
+    missing = verdict.get("missing_evidence")
+    if not isinstance(missing, list):
+        return []
+    return [p for p in missing if isinstance(p, str) and p]
+
+
+def carried_paths(verdict):
+    """What `match_verdict_by_id` RECORDED on the verdict it kept, or [].
+
+    The controller carrier, read by `derive_evidence` and `synth.codes` alone.
+    Separate from `scope_limited_paths` so the two directions cannot be confused:
+    one reads what an agent said, the other what the controller decided.
+    """
+    if not isinstance(verdict, dict):
+        return []
+    carried = verdict.get(SCOPE_LIMITED_FIELD)
+    if not isinstance(carried, list):
+        return []
+    return [p for p in carried if isinstance(p, str) and p]
 
 
 def is_tool_sourced(finding):
@@ -192,11 +294,18 @@ def derive_evidence(finding, verdict=None):
             status = "needs_more_info"
         else:
             status = "tool_confirmed" if tool_like else "advisor_confirmed"
-        return {"status": status,
-                "verified_by": ([origin, "agent:advisor"] if tool_like
-                                else "agent:advisor"),
-                "reasoning": (verdict or {}).get("reasoning"),
-                "citation_quality": quality}
+        derived = {"status": status,
+                   "verified_by": ([origin, "agent:advisor"] if tool_like
+                                   else "agent:advisor"),
+                   "reasoning": (verdict or {}).get("reasoning"),
+                   "citation_quality": quality}
+        # #1638 P16: a CONFIRMED that survived a scope-limited backup is still
+        # confirmed, and the report says which files the backup could not see.
+        missing = carried_paths(verdict or {})
+        if missing and v == "CONFIRMED":
+            derived["status"] = BACKUP_SCOPE_LIMITED
+            derived["missing_evidence"] = list(missing)
+        return derived
 
     if tool_like:
         return {"status": "tool_reported", "verified_by": origin,
@@ -477,7 +586,15 @@ def load_verdicts_detailed(verdicts_dir):
                   file=sys.stderr)
             unloadable.append({"file": name, "reason": "missing/empty finding_id echo"})
             continue
-        out[name[:-len(".json")]] = data
+        # F1: the same trust boundary as the bundle loader -- a single-verdict
+        # file is agent-written too, and `match_verdict` feeds it to the same
+        # `derive_evidence`. The stage this path has is PATH-derived (fix round
+        # 2, N2): the controller chose the filename, so `-backup.json` is its
+        # own stamp, and an advisor's declared `stage` is gone with the rest.
+        queue_id = name[:-len(".json")]
+        out[queue_id] = dict(_agent_verdict(data),
+                             stage="backup" if queue_id.endswith("-backup")
+                             else "primary")
     return out, unloadable
 
 
@@ -572,9 +689,14 @@ def load_verdict_bundles(verdicts_dir):
                     and str(raw.get("verdict", "")).upper() in VERDICT_VALUES
                     and raw.get("finding_id")):
                 continue
-            v = dict(raw)
-            v.setdefault("run_id", run_id)
-            v.setdefault("stage", stage_default)
+            v = _agent_verdict(raw)
+            # Assigned, not setdefault'ed (fix round 2, N2): the CONTROLLER
+            # stamp is the only authority for either. The sanitizer has already
+            # dropped any declared `stage`; `run_id` is overwritten here for the
+            # same reason. An unstamped bundle gets run_id None and stage
+            # "primary" -- fail closed, since there is no authority for "backup"
+            # and persist refuses such a bundle anyway.
+            v["run_id"], v["stage"] = run_id, stage_default
             by_fid.setdefault(str(v["finding_id"]), []).append(v)
     return by_fid, unloadable
 
@@ -617,12 +739,116 @@ def record_merged_id(best, other):
         best[MERGED_IDS_FIELD] = aliases
 
 
+# Least favourable to the FINDING, first. A BACKUP advisor that says two things
+# about one claim has the more sceptical of them taken (fix round 2, N6):
+# first-wins silently discarded a REJECTED that arrived after a
+# NEEDS_MORE_INFO in the same bundle, which is a refutation thrown away. Ties
+# and unknown values keep arrival order, so a single-candidate pool is unchanged.
+#
+# Deliberately NOT applied to duplicate PRIMARIES, and the asymmetry is the
+# point. The backup round is adversarial by construction -- scepticism is what
+# it is for, and a backup that wanted to refute could simply emit the REJECTED
+# alone, so the rule hands a hostile backup nothing it did not already have. A
+# primary is the round that establishes a finding, and demoting on contradiction
+# there WOULD be a new lever: an advisor that disliked a claim could emit
+# CONFIRMED + NEEDS_MORE_INFO and drop it out of the gate at no cost. Duplicate
+# primaries keep today's first-wins.
+# REJECTED > NEEDS_MORE_INFO (bare) > NEEDS_MORE_INFO (scope-limited) >
+# CONFIRMED. The two NMI shapes are NOT equal (fix round 3, D4): a bare one says
+# the advisor looked and the code does not say; a scope-limited one says it was
+# not allowed to look. Scoring them the same left `min`'s stability -- i.e. the
+# advisor's own array order -- deciding between factor 0.5 and out of the gate
+# and factor 1.5 and in it, which is the rule not being applied rather than a
+# rule with a tie in it.
+_VERDICT_SCEPTICISM = {"REJECTED": 0, "NEEDS_MORE_INFO": 1, "CONFIRMED": 3}
+_SCOPE_LIMITED_SCEPTICISM = 2
+_UNKNOWN_SCEPTICISM = 4
+
+
+def _scepticism(candidate):
+    """How unfavourable to the finding this verdict is; lower wins."""
+    verdict = str(candidate.get("verdict", "")).upper()
+    rank = _VERDICT_SCEPTICISM.get(verdict, _UNKNOWN_SCEPTICISM)
+    if verdict == "NEEDS_MORE_INFO" and scope_limited_paths(candidate):
+        return _SCOPE_LIMITED_SCEPTICISM
+    return rank
+
+
+def _least_favourable(candidates):
+    """The most sceptical of several BACKUP verdicts for one finding."""
+    return min(candidates, key=_scepticism)
+
+
+def resolve_duplicates(candidates, stage="primary"):
+    """THE rule for several verdicts about one finding at one stage, or None.
+
+    One definition, called by BOTH the driver (`verify._cell_backup_findings`,
+    via `by_finding_id`) and synthesis (`match_verdict_by_id`) -- fix round 3,
+    D1, where they disagreed. The driver's map was a dict comprehension
+    (last-wins) and synthesis took `candidates[0]` (first-wins), so a primary
+    bundle emitting CONFIRMED then REJECTED for one finding made the driver see
+    `rejected`, drop the finding from the backup scope and dispatch NO
+    adversarial round, while synthesis published `advisor_confirmed` at factor
+    1.5 with nothing recording that the second opinion never happened. Two
+    readers of one bundle must not answer differently.
+
+    BACKUP duplicates take the least favourable to the finding (N6); PRIMARY
+    duplicates keep first-wins. The asymmetry is deliberate and documented in
+    `match_verdict_by_id`.
+    """
+    candidates = [c for c in candidates if isinstance(c, dict)]
+    if not candidates:
+        return None
+    return (_least_favourable(candidates) if stage == "backup"
+            else candidates[0])
+
+
+def by_finding_id(verdicts, stage="primary"):
+    """`finding_id -> the one verdict that counts`, duplicates resolved by
+    `resolve_duplicates`. The driver's shape; synthesis keeps the candidate
+    LISTS because it also filters them by run_id first."""
+    pools = {}
+    for v in verdicts:
+        if not isinstance(v, dict):
+            continue
+        fid = v.get("finding_id")
+        if fid is not None:
+            pools.setdefault(str(fid), []).append(v)
+    return {fid: resolve_duplicates(pool, stage) for fid, pool in pools.items()}
+
+
 def match_verdict_by_id(finding, by_fid, run_id=None):
     """Match a bundle verdict to a finding by its assigned `id`. by_fid maps a
     finding_id to a LIST of candidate verdicts (primary and/or backup, possibly
     across runs). When run_id is given, only same-run candidates are eligible
     (so a stale cross-run verdict can never evict a valid one); among the
-    eligible, a backup-stage verdict wins over a primary."""
+    eligible, a backup-stage verdict wins over a primary -- EXCEPT when the
+    backup's NEEDS_MORE_INFO is an evidence-SCOPE failure (#1638 P16, ruling 3).
+
+    A backup that returns NEEDS_MORE_INFO naming the files it was not granted
+    (`missing_evidence`) is not disagreeing with the primary; it is reporting
+    that it could not look. Run-13's redaction-order defect was CONFIRMED by the
+    primary, reproduced by hand, and then published as unverifiable because the
+    backup -- granted the claim file alone -- said NEEDS_MORE_INFO about a
+    cross-file call order. So a scope-limited backup NMI displaces NO primary:
+    the primary verdict is returned, carrying the paths the backup named, and
+    `derive_evidence` spends that carrier only on a CONFIRMED -- which is what
+    makes the honest `backup_scope_limited`, while a primary REJECTED stays
+    `rejected` and a bare primary NMI stays `needs_more_info` (fix round 4, N1;
+    the branch used to retain a CONFIRMED only, so a rejected finding was
+    published as a gate-eligible disclosure instead). A backup NMI that names
+    NOTHING is a substantive "the code does not say", and keeps today's
+    backup-wins semantics.
+
+    Where several BACKUP verdicts exist for one finding, the LEAST FAVOURABLE to
+    it is the one that counts, and where several PRIMARY verdicts do, first-wins
+    -- BOTH through `resolve_duplicates`, so the retained primary above is the
+    same verdict the driver acted on. `stage`
+    itself is controller-stamped at load, so "the backup" is a round the driver
+    dispatched, never a label an advisor chose for itself -- which is also what
+    makes the retained primary and the scope-limited backup necessarily
+    different bundles.
+    """
     fid = finding.get("id")
     if not fid:
         return None
@@ -644,10 +870,29 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
             break
     if not candidates:
         return None
-    for c in candidates:
-        if c.get("stage") == "backup":
-            return c
-    return candidates[0]
+    backups = [c for c in candidates if c.get("stage") == "backup"]
+    if not backups:
+        return resolve_duplicates(candidates, "primary")
+    backup = resolve_duplicates(backups, "backup")
+    missing = scope_limited_paths(backup)
+    if missing:
+        # Fix round 4, N1: WHICH primary is the shared rule's job, not a local
+        # `next(... == "CONFIRMED")`. A primary bundle emitting REJECTED then
+        # CONFIRMED for one finding used to hand this branch the CONFIRMED that
+        # first-wins had already discarded -- publishing `backup_scope_limited`
+        # (factor 1.5) where the driver said `rejected`.
+        primary = resolve_duplicates(
+            [c for c in candidates if c.get("stage") != "backup"], "primary")
+        if primary is not None:
+            # Whatever that verdict is: a scope failure is not a disagreement,
+            # so it displaces NOTHING. The carrier rides along and
+            # `derive_evidence` spends it only on a CONFIRMED, so a rejection
+            # stays `rejected` and a bare NMI stays `needs_more_info` instead of
+            # being upgraded into a gate-eligible disclosure.
+            kept = dict(primary)
+            kept[SCOPE_LIMITED_FIELD] = missing
+            return kept
+    return backup
 
 
 def apply_verdict(finding, verdict):

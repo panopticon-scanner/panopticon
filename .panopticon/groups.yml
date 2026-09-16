@@ -110,6 +110,12 @@ groups:
       - tests/phases/**
       - tests/test_orchestrate.py
       - tests/test_orchestrate_session.py
+      # #1638 P16: the AST tripwire over every agent-written-verdict read path.
+      # Two of its three subjects are phases/ modules (verify._cell_verdicts,
+      # persist._verify_accepts); the third, scripts/evidence.py, sits in
+      # Reporting:Core, which is full at 48/48 -- and a parking space there
+      # would chunk that leaf. This is the true home, not the spare one.
+      - tests/test_agent_verdict_guard.py
       - tests/test_assets.py
       - tests/test_e2e.py
       - tests/test_tree_baseline.py

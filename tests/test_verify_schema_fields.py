@@ -149,3 +149,60 @@ def test_no_published_schema_requires_a_stamp_key_the_driver_cannot_fill():
         assert set(stamp["required"]) <= set(persist._STAMP_KEYS), (name, stamp["required"])
         body["_panopticon"] = dict(stamped, stamped_by="controller")
         assert jsonschema.validate(body, schema) is None, name
+
+
+def test_advisor_verdict_schema_carries_the_evidence_scope_fields():
+    # #1638 P16 ruling 2: the grant the driver made is RECORDED in the verdict,
+    # and a verdict that could not be reached inside it names what it needed.
+    # Both OPTIONAL -- a primary-round verdict is granted the whole cell and
+    # records neither.
+    schema = _load("advisor-verdict-schema.json")
+    props = schema["properties"]
+    assert set(props["evidence_scope"]["properties"]) == {
+        "granted", "cap", "truncated", "entry_cap", "entry_truncated",
+        "floor_count"}
+    assert props["evidence_scope"]["properties"]["granted"]["items"]["type"] == "string"
+    assert props["evidence_scope"]["properties"]["cap"]["type"] == "integer"
+    assert props["evidence_scope"]["properties"]["truncated"]["type"] == "boolean"
+    # Fix round 1, F3: the per-ENTRY ceiling on the union, and whether it bit.
+    assert props["evidence_scope"]["properties"]["entry_cap"]["type"] == "integer"
+    assert props["evidence_scope"]["properties"]["entry_truncated"]["type"] == "boolean"
+    # Fix round 3, D5: how much of the grant is claim files, which no cap bounds
+    # -- the number that explains a grant larger than its own `entry_cap`.
+    assert props["evidence_scope"]["properties"]["floor_count"]["type"] == "integer"
+    assert props["missing_evidence"]["items"]["type"] == "string"
+    assert "evidence_scope" not in schema["required"]
+    assert "missing_evidence" not in schema["required"]
+
+
+def test_a_scope_limited_verdict_validates_against_both_published_schemas():
+    verdict = {
+        "finding_id": "SEC-001",
+        "verdict": "NEEDS_MORE_INFO",
+        "confidence": "POSSIBLE",
+        "reasoning": "the call sites are outside my granted evidence",
+        "explored": ["synth/render.py"],
+        "references": ["synth/render.py:12"],
+        "citations": {"cwe": [], "owasp": [], "cve": []},
+        "evidence_scope": {"granted": ["synth/render.py"], "cap": 12,
+                           "truncated": False, "entry_cap": 48,
+                           "entry_truncated": False, "floor_count": 1},
+        "missing_evidence": ["synth/grading.py", "synthesize.py"],
+    }
+    assert jsonschema.validate(verdict, _load("advisor-verdict-schema.json")) is None
+    bundle = {"verdicts": [verdict], "_panopticon": {"run_id": "RID"}}
+    assert jsonschema.validate(bundle, _load("verdict-bundle-schema.json")) is None
+
+
+def test_report_schema_knows_the_backup_scope_limited_status():
+    # Ruling 3: the new status is a REPORTED state, so the published report
+    # schema has to admit it -- in the finding's evidence block and in the
+    # evidence_stats counters the dashboard reads.
+    schema = _load("report-schema.json")
+    ev = (schema["properties"]["findings"]["items"]["properties"]["evidence"]
+          ["properties"])
+    assert "backup_scope_limited" in ev["status"]["enum"]
+    assert ev["missing_evidence"]["items"]["type"] == "string"
+    stats = (schema["properties"]["summary"]["properties"]["evidence_stats"]
+             ["properties"])
+    assert stats["backup_scope_limited"]["type"] == "integer"

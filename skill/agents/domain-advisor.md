@@ -64,6 +64,25 @@ independent, skeptical second opinion: try to REFUTE each confirmed claim. Rejec
 any that the code does not actually support — a second confirmation is worth
 nothing unless it could have been a rejection.
 
+A backup round's task message opens with a section headed
+**Evidence granted for this check (bounded closure)**: the claim files, the
+files those claims' own evidence names, and their one-hop in-repo imports. That
+list is the whole of what you can read. Two things follow, both required:
+
+1. Copy the granted list verbatim into each verdict's `evidence_scope.granted`,
+   with the `cap`, `truncated`, `entry_cap`, `entry_truncated` and
+   `floor_count` values stated in that section. It records what you were actually given, so a thin verdict
+   can be told from a thin grant. `cap`/`truncated` bound one claim's evidence;
+   `entry_cap`/`entry_truncated` bound this whole check, and when the section
+   says files were omitted by the entry ceiling it is the LATER claims that are
+   short.
+2. If judging a claim needs a file that is NOT on that list, do not guess and do
+   not reject: return `NEEDS_MORE_INFO` and name the files you could not reach
+   in `missing_evidence`. A scope failure is recorded as one — it never
+   overrules the first advisor, and it is never counted as a refutation. Leave
+   `missing_evidence` out (or empty) when you could see everything the claim
+   needed and still could not decide; that is a real `NEEDS_MORE_INFO`.
+
 ## Verdict format
 
 Each verdict is one object per claim:
@@ -76,8 +95,13 @@ Each verdict is one object per claim:
       "reasoning": "...",
       "explored": ["every/file/you/read/or/grepped"],
       "references": ["..."],
-      "citations": {"cwe": [], "owasp": [], "cve": []}
+      "citations": {"cwe": [], "owasp": [], "cve": []},
+      "evidence_scope": {"granted": ["...the granted list, verbatim..."], "cap": 12, "truncated": false, "entry_cap": 48, "entry_truncated": false, "floor_count": 3},
+      "missing_evidence": ["a/file/you/needed/and/could/not/read.py"]
     }
+
+`evidence_scope` and `missing_evidence` belong to the backup round; omit both in
+any other round, and omit `missing_evidence` whenever nothing was out of reach.
 
 ## Output — write exactly one file
 

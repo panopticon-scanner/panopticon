@@ -374,6 +374,27 @@ class TestSkillMd(unittest.TestCase):
         self.assertNotIn("TST-X0X", review)
         self.assertIn("no finding", review)
 
+    def test_the_backup_evidence_closure_is_documented(self):
+        # #1638 P16 (ruling D4): an operator reading a `backup_scope_limited`
+        # finding has to be able to find out that the backup was granted a
+        # BOUNDED closure, that the grant is recorded in the verdict, and that
+        # a scope-limited NEEDS_MORE_INFO does not overrule the primary.
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        verify = _section(loop, "`review`** / **`verify`**", "- **`synthesize`**")
+        self.assertIn("bounded closure", verify)
+        self.assertIn("evidence_scope", verify)
+        self.assertIn("missing_evidence", verify)
+        self.assertIn("backup_scope_limited", verify)
+        # Fix round 1: the two honesty details an operator needs -- the entry
+        # ceiling, and that the status is NOT counted as verified.
+        self.assertIn("entry_truncated", verify)
+        self.assertIn("coverage line", verify)
+        # Fix round 4, N3: the CANONICAL shape list -- the one an advisor is
+        # told to copy -- must be the whole shape. It named `floor_count` two
+        # clauses earlier and then listed six keys.
+        self.assertIn("evidence_scope: {granted, cap, truncated, entry_cap, "
+                      "entry_truncated, floor_count}", verify)
+
     def test_an_environmental_tool_skip_is_documented_as_retried(self):
         loop = _section(self.text, "## Driver run-loop", "## Driver setup")
         tools = _section(loop, "`tools`**", "`review`**")

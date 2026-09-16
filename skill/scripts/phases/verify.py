@@ -2,6 +2,7 @@
 import glob as _glob
 import json
 import os
+import sys
 
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
@@ -11,6 +12,7 @@ import scripts.synth.findings as findings_mod
 from scripts import hosts
 from scripts import read_guard_hook
 from . import engine
+from . import evidence_scope
 from . import runio
 from . import coverage
 from . import requests
@@ -64,7 +66,16 @@ def _cell_verdicts(review_root, group, domain, stage, parts=1):
         data = runio._load_json(
             _verify_out_file(review_root, group, domain, stage, part))
         if isinstance(data, dict) and isinstance(data.get("verdicts"), list):
-            merged.extend(v for v in data["verdicts"] if isinstance(v, dict))
+            # #1638 P16 fix round 2, N1: the DRIVER's own reader of an
+            # agent-written bundle, and the third of three -- it was the one the
+            # F1 strip missed. `_cell_backup_findings` derives evidence from
+            # what this returns and keeps only `advisor_confirmed`, so a primary
+            # advisor planting `_backup_missing_evidence` on its own verdicts
+            # emptied its cell's backup scope and no adversarial round was
+            # dispatched at all. One sanitizer, every read path
+            # (tests/test_agent_verdict_guard.py).
+            merged.extend(evidence._agent_verdict(v) for v in data["verdicts"]
+                          if isinstance(v, dict))
     return merged
 
 
@@ -202,7 +213,7 @@ def _render_findings(review_root, cell):
     return json.dumps(slim, indent=2)
 
 def _verify_entry(review_root, manifest, group, domain, files, cell, host,
-                  bundle, stage, part=0):
+                  bundle, stage, part=0, grant=None):
     file_list = runio._abs_file_list(review_root, files)
     out_file = _verify_out_file(review_root, group, domain, stage, part)
     prompt = dispatch.render_prompt("domain-advisor.md", {
@@ -216,9 +227,15 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
     # Part A's abspath can't reach into that payload. The advisor inherits the
     # HOST's cwd (the user's checkout), never review_root/the --pr worktree, so
     # without this header a relative `location` resolves against the wrong tree.
-    prompt = ("Repo root: %s\nEvery relative path in the claims below resolves "
-              "against this root -- read files THERE, never in your session's "
-              "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
+    # #1638 P16: the backup round's grant is a bounded closure, and the advisor
+    # has to be able to say it was too small. The block sits BETWEEN the
+    # repo-root pin and the template (fix round 1, F4 -- it was ahead of the pin,
+    # which the comment did not say): root first, then the fence over it, then
+    # the claims.
+    pin = ("Repo root: %s\nEvery relative path in the claims below resolves "
+           "against this root -- read files THERE, never in your session's "
+           "default checkout.\n\n" % os.path.abspath(review_root))
+    prompt = pin + (_grant_block(review_root, grant) if grant else "") + prompt
     host_ev = runio.host_evidence(review_root)
     enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
     # #1344 F4 (a): a host with no PROVEN artifact_write_guard gets return-persist
@@ -330,8 +347,13 @@ def _cell_backup_findings(review_root, manifest, group, domain):
                               parts=len(_cell_chunks(cell)))
     if not verdicts:
         return []
-    by_fid = {str(v.get("finding_id")): v for v in verdicts
-              if v.get("finding_id")}
+    # #1638 P16 fix round 3, D1: the SHARED duplicate rule, not a dict
+    # comprehension. That comprehension was last-wins while
+    # `evidence.match_verdict_by_id` is first-wins, so one primary bundle with
+    # two verdicts for a finding made this function see `rejected` (scope
+    # emptied, no adversarial round dispatched) and synthesis see
+    # `advisor_confirmed` -- N1's outcome with no private key involved.
+    by_fid = evidence.by_finding_id(verdicts, "primary")
     for f in cell:
         f["evidence"] = evidence.derive_evidence(f, by_fid.get(str(f["id"])))
     by_cat = {}
@@ -366,23 +388,76 @@ def _confine_claim_location(review_root, loc):
         loc["file"] = _REDACTED_CLAIM_PATH
     return loc
 
-def _backup_scope_files(review_root, files, scope):
-    """The files a backup advisor needs: the ones its scoped (advisor-confirmed,
-    >= F_b) claims cite -- not the whole cell. The domain-advisor is claim-driven
-    and its Read/Grep/Glob are unconfined, so a narrow list preserves coverage
-    while dropping the whole-cell re-read cost (#1029). Falls back to the full
-    group `files` if ANY scoped claim lacks a resolvable location.file, or names
-    one that escapes review_root (absolute/`../` -- untrusted, #1096) -- a backup
+# #1638 P16. The heading the backup prompt puts the grant under, and the wording
+# that tells the advisor what to do with it. ONE definition: the entry builder
+# renders it, `skill/agents/domain-advisor.md` refers to it by this exact
+# heading, and tests/phases/test_verify.py + tests/test_domain_advisor_template.py
+# each pin their own side of that agreement.
+_GRANT_HEADING = "Evidence granted for this check (bounded closure)"
+_GRANT_BLOCK = (
+    "%s\n"
+    "These files are the WHOLE of what your Read and Grep may reach this round: "
+    "each claim's own file, the files its evidence names, and their one-hop "
+    "in-repo imports, capped at %d per claim (truncated: %s) and, for the "
+    "IMPORT/NAMED extras across this whole check, at %d (entry_truncated: %s); "
+    "%s, which no cap bounds.%s Copy this "
+    "list verbatim into every verdict's `evidence_scope.granted`, with the same "
+    "`cap`, `truncated`, `entry_cap`, `entry_truncated` and `floor_count`. If "
+    "you needed a file that is NOT listed here, return NEEDS_MORE_INFO and name "
+    "the files you could not reach in `missing_evidence` -- a scope failure is "
+    "recorded as one, and never counted as a refutation.\n\n%s\n\n")
+
+# Fix round 1, F3: when the entry ceiling bit, SAY SO with a number. An advisor
+# told only "truncated: no" reads its scope as complete, which is the same
+# dishonesty the closure exists to remove on the other side.
+_GRANT_OMITTED = (" %d further files omitted by the entry ceiling -- later "
+                  "claims in this check are the ones short of evidence.")
+
+
+def _grant_block(review_root, grant):
+    """The prompt section that RECORDS what this backup entry was granted.
+
+    Composed here rather than added as a template placeholder: spec 7.4 keeps
+    the templates fixed, and a new placeholder would become mandatory for every
+    `domain-advisor.md` render (including the primary and tool rounds, which are
+    granted no closure). Paths go through `runio._abs_file_list`, so they are
+    absolutized against the review root (#975) and prompt-sanitized (#1190) -- a
+    control character in a target-tree filename cannot inject a bullet line here
+    either."""
+    omitted, floor = int(grant.get("omitted") or 0), int(
+        grant.get("floor_count") or 0)
+    return _GRANT_BLOCK % (
+        _GRANT_HEADING, int(grant.get("cap") or 0),
+        "yes" if grant.get("truncated") else "no",
+        int(grant.get("entry_cap") or 0),
+        "yes" if grant.get("entry_truncated") else "no",
+        # N5: a backup chunk is often ONE finding, and the plural sentence is
+        # then the one an advisor actually reads.
+        ("1 of the files below is a claim file" if floor == 1
+         else "%d of the files below are claim files" % floor),
+        _GRANT_OMITTED % omitted if omitted else "",
+        runio._abs_file_list(review_root, grant.get("granted") or []))
+
+
+def _backup_grant(review_root, files, scope):
+    """The bounded EVIDENCE CLOSURE this backup entry is granted, recorded:
+    `{granted, cap, truncated, entry_cap, entry_truncated, omitted,
+    floor_count}` -- the files, the per-claim and per-entry ceilings, whether
+    each bit, how many distinct EXTRA files the entry ceiling cost, and how many
+    of the granted files are claim files (which no cap bounds).
+    `evidence_scope.grant` is the one place that shape is defined, and its
+    module docstring is where the WHY lives: #1029 granted each claim's
+    `location.file` alone as a cost cut, plan 5/6 turned that list into a READ
+    FENCE, and run-13's #1634 was published unverifiable because the backup held
+    less evidence than the primary it was checking. The full-group fallback for
+    an unlocatable or escaping `location.file` is unchanged (#1096): a backup
     must never refute blind, and never read outside the tree."""
-    located = []
-    for f in scope:
-        loc = f.get("location") if isinstance(f, dict) else None
-        path = loc.get("file") if isinstance(loc, dict) else None
-        if not path or not runio._confined_to_root(review_root, path):
-            return list(files)
-        if path not in located:
-            located.append(path)
-    return located or list(files)
+    return evidence_scope.grant(review_root, files, scope)
+
+
+def _backup_scope_files(review_root, files, scope):
+    """Just the file list out of `_backup_grant` -- what the entry reads."""
+    return _backup_grant(review_root, files, scope)["granted"]
 
 def _verify_backup_execute(review_root, manifest, host, bundle):
     # #20: batch every pending BACKUP advisor across ALL groups into one
@@ -406,15 +481,29 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
                 for part, chunk in enumerate(_cell_chunks(scope))
                 if not _part_done(review_root, manifest, group, domain,
                                   "backup", part, chunk))
+        if pending and not files:
+            # Fix round 4, N2: `grant()` keeps the grant non-empty by falling
+            # back to THIS list, which guarantees nothing when it is empty --
+            # the entry would ship `files: []`, a deny-all fence whose only
+            # answer manufactures an unrefutable `backup_scope_limited`. A group
+            # with no files has nothing to verify, so no entry is BUILT; and the
+            # skip is said out loud, never silent.
+            print("driver: verify backup SKIPPED for group %s -- no files, so "
+                  "nothing to grant and an empty grant is a deny-all fence"
+                  % group, file=sys.stderr)
+            continue
         if pending:
             ngroups += 1
-            # #1029: the backup re-reads only its scoped claims' files, not the
-            # whole group -- coverage-preserving (claim-driven, unconfined reads).
-            all_entries.extend(
-                _verify_entry(review_root, manifest, group, d,
-                              _backup_scope_files(review_root, files, c), c,
-                              host, bundle, "backup", part)
-                for d, c, part in pending)
+            # #1029/#1638 P16: the backup reads its scoped claims' BOUNDED
+            # EVIDENCE CLOSURE -- their files, the producers those claims name,
+            # and a one-hop import neighbourhood -- not the whole group, and the
+            # grant it was given is recorded in its prompt.
+            for d, c, part in pending:
+                grant = _backup_grant(review_root, files, c)
+                all_entries.append(
+                    _verify_entry(review_root, manifest, group, d,
+                                  grant["granted"], c, host, bundle, "backup",
+                                  part, grant=grant))
     if all_entries:
         req = requests.write_dispatch_request(review_root, manifest["run_id"], "verify",
                                      None, all_entries)
@@ -425,7 +514,10 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
     return None
 
 def _verify_backup_done(review_root, manifest):
-    for group, _files in coverage._discovered_groups(review_root):
+    for group, files in coverage._discovered_groups(review_root):
+        # N2: a cell that will never be dispatched must not hold the phase open.
+        if not files:
+            continue
         for domain in coverage._effective_domains(review_root, group):
             scope = _cell_backup_findings(review_root, manifest, group, domain)
             if scope and not _verify_cell_done(review_root, manifest, group,

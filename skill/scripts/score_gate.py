@@ -24,6 +24,10 @@ EVIDENCE_FACTOR = {
     "corroborated": 1.5,
     "advisor_confirmed": 1.5,
     "tool_confirmed": 1.5,
+    # #1638 P16: a primary CONFIRMED whose backup could not reach the evidence.
+    # Scored as the confirmation it is -- the backup reported a scope failure,
+    # not a doubt, and demoting the score would let the fence decide the gate.
+    "backup_scope_limited": 1.5,
 }
 # Enforce that every canonical evidence status is accounted for in the score gate
 if set(EVIDENCE_FACTOR) != set(evidence.EVIDENCE_STATUSES):

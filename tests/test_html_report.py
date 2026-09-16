@@ -1256,3 +1256,64 @@ class TestTestInventoryLine(unittest.TestCase):
         out = hr.render(self._report({"<script>alert(1)</script>": "empty"}))
         self.assertNotIn("<script>alert(1)</script>", out)
         self.assertIn("&lt;script&gt;", out)
+
+
+class TestBackupScopeLimited(unittest.TestCase):
+    """#1638 P16 ruling 3: the report's advisor classification stays honest --
+    the reader is told which files the backup could not see, rather than being
+    shown a NEEDS_MORE_INFO that was really a scope failure."""
+
+    def _finding(self, **over):
+        f = {"id": "SEC-001", "title": "redaction runs last", "severity": "HIGH",
+             "confidence": "CERTAIN", "panel": "security", "category": "general",
+             "location": {"file": "synth/render.py", "line_start": 12},
+             "description": "d", "references": [],
+             "backup_confirmed": False,
+             "evidence": {"status": "backup_scope_limited",
+                          "verified_by": "agent:advisor",
+                          "reasoning": "primary traced the call order",
+                          "citation_quality": "full",
+                          "missing_evidence": ["synth/grading.py",
+                                               "synthesize.py"]}}
+        f.update(over)
+        return f
+
+    def test_card_names_the_files_the_backup_could_not_see(self):
+        out = hr._render_card(self._finding())
+        self.assertIn("Backup could not see", out)
+        self.assertIn("synth/grading.py", out)
+        self.assertIn("synthesize.py", out)
+
+    def test_no_line_when_nothing_was_missing(self):
+        f = self._finding()
+        f["evidence"] = {"status": "advisor_confirmed", "citation_quality": "full"}
+        self.assertNotIn("Backup could not see", hr._render_card(f))
+
+    def test_missing_evidence_cannot_inject_markup(self):
+        f = self._finding()
+        f["evidence"]["missing_evidence"] = [
+            "a.py'><img src=x onerror=alert(1)><span class='"]
+        out = hr._render_card(f)
+        self.assertNotIn("<img src=x", out)
+        self.assertIn("&lt;img", out)
+
+    def test_a_scope_limited_finding_is_not_counted_as_verified(self):
+        # Fix round 1, F2: it keeps gate-eligibility and factor 1.5 (the base's
+        # primary-only treatment), but the coverage line does NOT call it
+        # verified -- it gets its own segment, so the count is disclosed rather
+        # than folded into a number that means "a second opinion agreed".
+        report = _minimal_report([self._finding()])
+        report["summary"]["evidence_stats"] = {"backup_scope_limited": 1,
+                                               "advisor_confirmed": 0,
+                                               "tool_confirmed": 0}
+        out = hr.render(report)
+        self.assertIn("0 verified", out)
+        self.assertIn("1 backup-scope-limited", out)
+
+    def test_the_coverage_line_omits_the_segment_when_there_are_none(self):
+        report = _minimal_report([self._finding()])
+        report["summary"]["evidence_stats"] = {"advisor_confirmed": 1,
+                                               "tool_confirmed": 0}
+        out = hr.render(report)
+        self.assertIn("1 verified", out)
+        self.assertNotIn("backup-scope-limited", out)
