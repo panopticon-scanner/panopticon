@@ -627,10 +627,16 @@ def repair_tools_sanitized(value, warn=None):
     return out
 
 
-# Target-writable text bound for two published artifacts, so it is bounded the
-# way every other such field is. The controller's own longest posture is
-# `proxied:` plus its allowlist -- well under this.
+# Target-writable text bound for two published artifacts, so it is bounded on
+# all three axes the way every other such field is: `sanitized` is capped at
+# 200 rows and 200 published characters AT ITS PRODUCER (pip_audit's
+# `_MAX_DROPPED_ROWS`/`_MAX_PUBLISHED_CHARS`), and this block's producer is the
+# controller's own ledger, so the cap has to live at the read instead. The
+# controller writes one row per selected tool and its longest posture is
+# `proxied:` plus an allowlist -- an order of magnitude inside all three.
 NETWORK_POSTURE_MAX = 200
+NETWORK_ROWS_MAX = 200
+NETWORK_NAME_MAX = 200
 
 
 def repair_tools_network(value, warn=None):
@@ -647,9 +653,13 @@ def repair_tools_network(value, warn=None):
     Flat by design: a posture is one string per tool (`none`,
     `proxied:<allowlist>`, `excluded:<reason>`), so anything that is not a
     string is DROPPED rather than stringified -- `str({"kind": "none"})` would
-    publish a posture nobody recorded. The length cut is the one coercion, and
-    it is the same one the report applies to every other block of
-    target-authored text it republishes.
+    publish a posture nobody recorded. The posture LENGTH cut is the one
+    coercion, and it is the same one the report applies to every other block of
+    target-authored text it republishes; a NAME over the bound is dropped
+    instead, because a name is an identity and cutting one could collide two
+    rows into one and file an adapter's posture under another's. The row count
+    is bounded too, and the rows kept are the sorted-first ones so the same
+    manifest always yields the same report.
     """
     changes = []
     out = {}
@@ -657,9 +667,17 @@ def repair_tools_network(value, warn=None):
         if value not in (None, {}):
             changes.append(("network", "dropped: not an object"))
         value = {}
-    for name, posture in value.items():
+    if len(value) > NETWORK_ROWS_MAX:
+        changes.append(("network", "kept the first %d of %d rows in"
+                        % (NETWORK_ROWS_MAX, len(value))))
+    for name, posture in sorted(value.items(), key=lambda kv: str(kv[0]))[:NETWORK_ROWS_MAX]:
         if not isinstance(name, str):
             changes.append(("network[%r]" % (name,), "dropped: name is not a string"))
+            continue
+        if len(name) > NETWORK_NAME_MAX:
+            changes.append(("network.%s..." % name[:40],
+                            "dropped: name is longer than %d characters in"
+                            % NETWORK_NAME_MAX))
             continue
         if not isinstance(posture, str):
             changes.append(("network.%s" % name, "dropped: not a string"))

@@ -464,6 +464,31 @@ class TestRepairToolsNetwork(unittest.TestCase):
         self.assertLessEqual(len(got["semgrep"]),
                              validate_schema_mod.NETWORK_POSTURE_MAX)
 
+    def test_the_row_count_is_bounded(self):
+        # Fix round 1, F9. `sanitized` is bounded to 200 rows AT ITS PRODUCER
+        # (scripts.tools.pip_audit._MAX_DROPPED_ROWS); this block's producer is
+        # the controller's own ledger, so the bound has to live here -- a
+        # hostile manifest with 50,000 rows would otherwise render 50,000
+        # escaped lines into the HTML coverage block.
+        got, err = self._repair({"t%d" % n: "none" for n in range(500)})
+        self.assertEqual(len(got), validate_schema_mod.NETWORK_ROWS_MAX)
+        self.assertIn("500", err)
+
+    def test_the_rows_kept_are_the_same_ones_every_time(self):
+        # A bound that kept an arbitrary subset would make the report
+        # unreproducible from the same manifest.
+        block = {"t%d" % n: "none" for n in range(500)}
+        first, _err = self._repair(block)
+        second, _err2 = self._repair(dict(reversed(list(block.items()))))
+        self.assertEqual(first, second)
+
+    def test_an_over_long_tool_name_is_dropped_not_truncated(self):
+        # A NAME is an identity: cutting it could collide two rows into one and
+        # attribute one adapter's posture to another.
+        got, err = self._repair({"x" * 5000: "none", "semgrep": "none"})
+        self.assertEqual(got, {"semgrep": "none"})
+        self.assertIn("dropped", err)
+
     def test_a_hostile_manifest_never_makes_the_artifact_invalid(self):
         report = _minimal_report()
         report["meta"]["tools"]["network"] = validate_schema_mod.\
