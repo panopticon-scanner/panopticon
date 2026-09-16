@@ -34,6 +34,12 @@ import json
 # to refute (the guard probes read two keys), where disabling servers
 # individually is a list to keep correct as the operator's config changes.
 MCP = "mcp"
+# What every per-run config carries, and what the guard probes must FIND in the
+# armed file (fix round 1, F2). One definition, so the runner and the probe
+# cannot drift about what "MCP is off in this home" looks like -- and so the
+# probe can demand the block EXPLICITLY rather than reading an absent or
+# unparseable one as "nothing live here", which is the absence of evidence.
+INERT_MCP = {"enabled": False, "servers": []}
 # One line, and a COUNT rather than the names: this shares the operator's
 # stderr with the run's own progress output, so a disclosure that grew with
 # their config would crowd out the thing they are watching.

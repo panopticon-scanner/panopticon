@@ -455,6 +455,39 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
                     self.assertEqual(hosts.REFUTED, state, detail)
                     self.assertIn("mcp", detail)
 
+    def test_an_armed_config_whose_mcp_block_is_not_the_inert_one_refutes(self):
+        # Fix round 1, F2: the coercions this used to make -- `mcp` to `{}` and
+        # `servers` to `[]` when either was not the expected type -- both fail
+        # OPEN. An ABSENT block, a scalar `mcp`, or a `servers` this cannot
+        # read are not evidence that MCP is off; they are the absence of
+        # evidence, and a probe named "...-armed" may not bless them. Measured
+        # on the base: all three reported `proven` on BOTH guard probes, so a
+        # refactor that dropped the `merged["mcp"]` assignment would have
+        # shipped a per-run home carrying the operator's MCP defaults.
+        import scripts.runners.kimi as kimi_runner
+        real = kimi_runner.build_merged_config
+
+        shapes = (("absent", None),
+                  ("scalar", "live-and-dangerous"),
+                  ("servers not an array", {"enabled": False, "servers": "hostile"}))
+        for name, block in shapes:
+            def armed(source, scope_path, allowlist_path, _block=block, *args, **kwargs):
+                merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+                if _block is None:
+                    merged.pop("mcp", None)
+                else:
+                    merged["mcp"] = _block
+                return merged
+            with self.subTest(shape=name):
+                with mock.patch.object(kimi_runner, "build_merged_config",
+                                       side_effect=armed):
+                    read = kimi_probes.probe_kimi_read_guard(
+                        "kimi", doctor_runner=_DoctorFake())
+                    write = kimi_probes.probe_kimi_write_guard("kimi")
+                for state, _by, detail in (read, write):
+                    self.assertEqual(hosts.REFUTED, state, detail)
+                    self.assertIn("mcp", detail)
+
     def test_the_armed_detail_names_the_config_it_parsed(self):
         state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.PROVEN, state)
