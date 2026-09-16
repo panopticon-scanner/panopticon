@@ -4024,3 +4024,118 @@ class TestAMidRunToolsDowngradeIsDisclosed(unittest.TestCase):
             schema = json.load(fh)
         block = schema["properties"]["meta"]["properties"]["tools"]
         self.assertIn("disabled_mid_run", block["properties"])
+
+
+class TestTestInventoryCoverage(unittest.TestCase):
+    """#1638 P13: an operator reading run-13's report saw a TST panel claim a
+    module had no automated coverage. Nothing in the report said the claim had
+    been derived from an EMPTY inventory rather than from the tree, so nothing
+    in the report distinguished a real coverage gap from a matrix defect.
+    `meta.coverage.test_inventory` is that distinction, counted per group off
+    the tally the review phase persists as it renders each prompt.
+    """
+
+    def _coverage(self, inventory):
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(test_inventory=inventory)))
+        return report["meta"]["coverage"]
+
+    def test_the_states_reach_the_report_per_group(self):
+        self.assertEqual({"Code": "split", "Other": "complete"},
+                         self._coverage({"Code": "split",
+                                         "Other": "complete"})["test_inventory"])
+
+    def test_a_run_that_measured_nothing_reports_an_empty_map(self):
+        # Stated on every report, `{}` included: an absent key would make
+        # "nobody measured" and "every group is fine" the same document.
+        self.assertEqual({}, self._coverage(None)["test_inventory"])
+
+    def test_the_tally_is_loaded_from_the_run_folder(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panel-test-inventory.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"schema_version": 1,
+                           "groups": {"A": "complete", "B": "empty"}}, fh)
+            self.assertEqual({"A": "complete", "B": "empty"},
+                             plan_mod.load_test_inventory(d))
+
+    def test_an_absent_or_corrupt_tally_reads_as_nothing_measured(self):
+        # Fail-closed like its sibling: `.panopticon` is a directory a hostile
+        # target can pre-commit, and a state this run did not measure must not
+        # be invented from one it did not write.
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual({}, plan_mod.load_test_inventory(d))
+            with open(os.path.join(d, "panel-test-inventory.json"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("{ not json")
+            self.assertEqual({}, plan_mod.load_test_inventory(d))
+
+    def test_an_unknown_state_is_dropped_rather_than_carried(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panel-test-inventory.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"groups": {"A": "complete", "B": "sideways",
+                                      "C": {"nested": 1}}}, fh)
+            self.assertEqual({"A": "complete"}, plan_mod.load_test_inventory(d))
+
+    def test_the_schema_declares_the_field(self):
+        with open(os.path.join(SKILL_ROOT, "reference",
+                               "report-schema.json"), encoding="utf-8") as fh:
+            schema = json.load(fh)
+        block = schema["properties"]["meta"]["properties"]["coverage"]
+        self.assertIn("test_inventory", block["properties"])
+
+
+class TestTheInventoryDiagnosticNeverGates(unittest.TestCase):
+    """#1638 P13 ruling 4: the coverage diagnostic is a note about the MATRIX,
+    so it must not move the target's gate or grade. `score_gate` and the
+    health weights already treat INFO as weightless -- asserted here rather
+    than assumed, because a diagnostic every empty-inventory cell emits would
+    otherwise be a self-inflicted grade change on every run that has one.
+
+    Non-vacuous by construction: the diagnostic is CONFIRMED, so it IS in the
+    gate-eligible set and its severity is the only thing keeping it out.
+    """
+
+    GROUPS = [{"name": "g1", "files": ["a.py"]}]
+
+    def _diagnostic(self):
+        return _agentic(fid="AG-INV", sev="INFO", panel="test",
+                        code="TST-X0X", category="coverage",
+                        title="Test inventory for g1 is empty or incomplete",
+                        location={"file": "a.py", "line_start": 1, "line_end": 1})
+
+    def _report(self, extra):
+        real = _agentic(sev="HIGH", location={"file": "a.py", "line_start": 5,
+                                              "line_end": 8})
+        findings = [real] + extra
+        verdicts = {evidence_mod.finding_fingerprint(f): {
+            "finding_id": f["id"], "verdict": "CONFIRMED", "reasoning": "v"}
+            for f in findings}
+        with _target_with_files(self.GROUPS, lines=200) as tgt:
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=tgt, fail_on="high",
+                                         timestamp=DEFAULT_TIMESTAMP),
+                findings=findings_mod.FindingSet(findings=findings,
+                                                 verdicts=verdicts),
+                plan=plan_mod.PlanInputs(groups_meta=self.GROUPS)))
+
+    def test_the_diagnostic_is_confirmed_and_therefore_gate_eligible(self):
+        # Guards the two assertions below from passing vacuously on a finding
+        # that never reached the gate-eligible set at all.
+        report = self._report([self._diagnostic()])
+        diag = [f for f in report["findings"] if f["id"] == "AG-INV"]
+        self.assertEqual(1, len(diag))
+        self.assertEqual("advisor_confirmed", diag[0]["evidence"]["status"])
+
+    def test_it_changes_neither_the_gate_nor_the_grade(self):
+        without = self._report([])["summary"]
+        with_diag = self._report([self._diagnostic()])["summary"]
+        self.assertEqual(without["gate"], with_diag["gate"])
+        self.assertEqual(without["overall_grade"], with_diag["overall_grade"])
+        self.assertEqual(without["health"], with_diag["health"])
+        self.assertEqual(without["risk_level"], with_diag["risk_level"])
+        self.assertEqual(without["gate_severities"], with_diag["gate_severities"])
