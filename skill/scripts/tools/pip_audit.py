@@ -64,13 +64,23 @@ _BARE_REQ = re.compile(r"^(%s)(?:\s*%s)?\s*(?:%s(?:\s*,\s*%s)*)?\s*$"
 # An environment marker, conservatively: the characters PEP 508's marker grammar
 # actually uses. `@`, `/`, `\`, `:` and `#` are NOT here, so a marker can never
 # smuggle a URL or a path past the check above.
-# `\S` in the middle, not `*`: an EMPTY marker matched, so `pkg==1.0;` was kept
-# -- and `packaging.requirements.Requirement("pkg==1.0;")` raises, while
-# pip-audit parses every line of the generated file. One such target line would
-# have aborted the entire dependency audit, which is the one thing a GENERATED
-# file exists to make impossible (M6).
+# The marker alphabet, and NOTHING else: identifiers, quotes, the comparison
+# operators, parentheses, the `and`/`or`/`in`/`not in` keywords (letters), and
+# whitespace. Deliberately narrower than PEP 508's `python_str_c`, which admits
+# almost every printable character INSIDE a quoted string -- a marker using one
+# of those is dropped `unparseable`, which is coverage loss, not a hole.
 _MARKER_CHARS = r"[\sA-Za-z0-9_.()'\"<>=!~,*+-]"
-_MARKER_OK = re.compile(r"^%s*\S%s*$" % (_MARKER_CHARS, _MARKER_CHARS))
+# Charset and non-emptiness are SEPARATE tests (fix round 2, F1). M6 forced
+# non-emptiness with `^%s*\S%s*$`, which reads "the marker charset, then
+# exactly one character that may be ANYTHING, then the marker charset" -- `\S`
+# is any non-whitespace character, not any character from the class above. That
+# let `@`, `:`, `#` and NUL back in, one apiece, and every such line raises
+# InvalidRequirement in packaging while pip-audit parses every line of the
+# generated file: one of them in a target's requirements.txt aborts the entire
+# dependency audit. That is verbatim the class M6 exists to close, reopened by
+# M6's own fix. The charset invariant below is load-bearing, so it is asserted
+# as an invariant, not merely exercised by examples.
+_MARKER_OK = re.compile(r"^%s*$" % _MARKER_CHARS)
 _COMMENT = re.compile(r"(^|\s+)#.*$")
 _HASH = re.compile(r"\s*--hash[=\s]+\S+")
 _INCLUDE = re.compile(r"^(?:-r|--requirement|-c|--constraint)(?:[=\s]+)(\S.*)$")
@@ -240,7 +250,8 @@ def _classify(text):
         else:
             head, sep, marker = line.partition(";")
             match = _BARE_REQ.match(head.strip())
-            if not match or (sep and not _MARKER_OK.match(marker)):
+            if not match or (sep and (not marker.strip()
+                                      or not _MARKER_OK.match(marker))):
                 drop(line, "unparseable")
             elif _is_archive_name(match.group(1)):
                 # A name pip resolves as a local archive, not a release on an
@@ -297,9 +308,12 @@ def _requirement_candidate(target):
     `requirements.txt` beside a real `requirements-dev.txt` still gets audited.
     """
     exact = os.path.join(target, "requirements.txt")
-    candidates = [exact] if os.path.isfile(exact) else []
-    candidates += sorted(glob.glob(os.path.join(target, "requirements*.txt")))
-    candidates = list(dict.fromkeys(candidates))   # exact first, no duplicate
+    candidates = [exact] + sorted(glob.glob(os.path.join(target, "requirements*.txt")))
+    # F5: `isfile` on EVERY candidate, not only the canonical name. A directory
+    # called `requirements-x.txt` used to win the glob, `walk` swallowed the
+    # IsADirectoryError, and the manifest read `kept: 0, dropped: []` -- which
+    # says "audited, nothing to disclose", not "could not read".
+    candidates = [c for c in dict.fromkeys(candidates) if os.path.isfile(c)]
     rejected = []
     for candidate in candidates:
         if _within(target, candidate):

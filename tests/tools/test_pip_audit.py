@@ -235,22 +235,26 @@ class TestPipAuditAdapter(unittest.TestCase):
 
     def test_invoke_uses_a_generated_file_not_the_found_requirements_txt(self):
         # #1646: this test used to PIN the defect -- it asserted the argv
-        # carried `/tmp/fake/requirements.txt`, the repo's own file. The
-        # adapter now always names a generated temp file; the repo path it
-        # found survives only in the argv's ABSENCE of it.
-        adapter = pa.PipAuditAdapter()
+        # carried the target's own `requirements.txt`. The adapter now always
+        # names a generated temp file; the repo path it found survives only in
+        # the argv's ABSENCE of it. A REAL file on disk, not a mocked glob:
+        # fix round 2 F5 made every candidate `isfile`-checked, and a fixture
+        # naming a path that does not exist would stop exercising this branch.
+        target = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, target, ignore_errors=True)
+        with open(os.path.join(target, "requirements.txt"), "w", encoding="utf-8") as fh:
+            fh.write("ok==1\n")
         fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
         with mock.patch("scripts.tools.base.subprocess.Popen",
                         return_value=fake_run) as popen_mock:
-            with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=["/tmp/fake/requirements.txt"]):
-                stdout, rc = adapter.invoke("/tmp/fake")
+            stdout, rc = pa.PipAuditAdapter().invoke(target)
         self.assertEqual(stdout, b"[]")
         self.assertEqual(rc, 0)
         argv = popen_mock.call_args[0][0]
         self.assertEqual(argv[:5], ["pip-audit", "--format=json", "--desc=on",
                                     "--progress-spinner=off", "--requirement"])
-        self.assertNotIn("/tmp/fake/requirements.txt", argv)
-        self.assertFalse(argv[5].startswith("/tmp/fake/"))
+        self.assertNotIn(os.path.join(target, "requirements.txt"), argv)
+        self.assertFalse(argv[5].startswith(target + os.sep))
 
     def test_invoke_falls_back_to_pyproject_toml(self):
         adapter = pa.PipAuditAdapter()
@@ -322,14 +326,17 @@ class TestStaticPyproject(unittest.TestCase):
 
     def test_invoke_reports_nonzero_exit(self):
         import contextlib, io
+        target = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, target, ignore_errors=True)
+        with open(os.path.join(target, "requirements.txt"), "w", encoding="utf-8") as fh:
+            fh.write("ok==1\n")
         adapter = pa.PipAuditAdapter()
         fake_run = FakePopen(stdout=b"audit output", stderr=b"pip-audit failed",
                              returncode=2)
         buf = io.StringIO()
         with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run), \
-             mock.patch("scripts.tools.pip_audit.glob.glob", return_value=["/tmp/fake/requirements.txt"]), \
              contextlib.redirect_stderr(buf):
-            stdout, rc = adapter.invoke("/tmp/fake")
+            stdout, rc = adapter.invoke(target)
         self.assertEqual(stdout, b"audit output")
         self.assertEqual(rc, 2)
         self.assertIn("tool pip-audit exited 2", buf.getvalue())
@@ -772,6 +779,36 @@ class TestPipJoinAndEncodingParity(unittest.TestCase):
                 self.assertEqual(kept, [])
                 self.assertEqual(only(dropped)["reason"], "unparseable")
 
+    # Fix round 2, F1: the `\S` M6 used to force a NON-EMPTY marker also let one
+    # ARBITRARY character through -- the regex read "marker charset, then any
+    # one character, then marker charset". Every one of these raises
+    # InvalidRequirement in packaging, so each is one line away from aborting
+    # the whole audit: verbatim the class M6 exists to close, reopened by its
+    # own fix. The first is a REGRESSION -- round 0 dropped it.
+    SMUGGLED_MARKERS = [
+        'pkg==1.0; python_version<"3" or "a" @ "b"',
+        "pkg==1.0;@",
+        "pkg==1.0; @",
+        "pkg==1.0;a#b",
+        "pkg==1.0;a:b",
+        "pkg==1.0;\x00",
+        'pkg==1.0; extra == "x" @',
+    ]
+
+    def test_one_arbitrary_character_cannot_ride_into_the_marker(self):
+        for line in self.SMUGGLED_MARKERS:
+            with self.subTest(line=line):
+                kept, dropped = sanitize(line + "\n")
+                self.assertEqual(kept, [])
+                self.assertEqual(only(dropped)["reason"], "unparseable")
+
+    def test_the_marker_charset_invariant_holds(self):
+        # The comment on `_MARKER_CHARS` promises `@`, `/`, `\`, `:` and `#`
+        # cannot appear in a marker. Assert the promise, not just the examples.
+        for ch in "@/\\:#$`|&":
+            with self.subTest(ch=ch):
+                self.assertIsNone(pa._MARKER_OK.match('a == "x" ' + ch))
+
     def test_a_real_marker_is_still_kept(self):
         kept, _dropped = sanitize(
             'pkg==1.0 ; python_version < "3.12"\n')
@@ -1024,6 +1061,32 @@ class TestTheParserCrossCheckIsLive(unittest.TestCase):
 
     def test_ordinary_kept_lines_pass(self):
         _assert_every_kept_line_parses(['pkg==1.0 ; python_version < "3.12"'])
+
+
+class TestOnlyRealFilesAreCandidates(unittest.TestCase):
+    """F5: only the canonical name was `isfile`-checked.
+
+    A directory named `requirements-x.txt` became the chosen candidate; `walk`
+    swallowed the `IsADirectoryError` and the manifest said `kept: 0,
+    dropped: [], truncated: false` -- which reads as "audited, nothing to
+    disclose" rather than "could not read". The confinement loop is the natural
+    place for the check.
+    """
+
+    def test_a_directory_named_like_a_manifest_is_not_a_candidate(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.mkdir(os.path.join(d, "requirements-x.txt"))
+        self.assertIsNone(pa.PipAuditAdapter()._find_requirement(d))
+
+    def test_a_real_sibling_beside_it_still_wins(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.mkdir(os.path.join(d, "requirements-a.txt"))
+        with open(os.path.join(d, "requirements-b.txt"), "w", encoding="utf-8") as fh:
+            fh.write("ok==1\n")
+        self.assertEqual(pa.PipAuditAdapter()._find_requirement(d),
+                         os.path.join(d, "requirements-b.txt"))
 
 
 if __name__ == "__main__":
