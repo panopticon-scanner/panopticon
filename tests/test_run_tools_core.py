@@ -731,3 +731,158 @@ class TestVirtualenvExclusion(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertTrue(rt._is_excluded(marker, ["*"]))
                 self.assertTrue(rt._is_excluded(marker, ["*/%s" % marker, marker]))
+
+
+class TestRawCaptureRedaction(unittest.TestCase):
+    """#1639 P11: the raw captures under `.panopticon/tools/` are what an operator
+    copies into a CI artifact, and nothing redacted them -- the report's pass
+    (`redact.redact_tree`, #1634) runs over the REPORT tree and never touches
+    these files. Every write path now goes through ONE choke point,
+    `_redact_capture`, immediately before `_atomic_write`.
+
+    The marker is `ghp_` + 36 token characters: a shape `scripts/redact.py`
+    ALREADY masks, so a survival here is a wiring defect and never a pattern-set
+    gap (that is #1572). Not a credential -- 'A'*29 is not a secret.
+    """
+
+    MARKER = "ghp_" + "CAPTURE" + "A" * 29
+    GOLDENS = os.path.join(REPO_ROOT, "tests", "goldens", "tool-raw")
+
+    def _sarif(self, secret):
+        """A gitleaks-shaped SARIF carrying `secret` in the two places a secret
+        scanner puts one: the result message and the snippet."""
+        return json.dumps({"runs": [{
+            "tool": {"driver": {"name": "gitleaks", "rules": [
+                {"id": "github-pat"}]}},
+            "results": [{
+                "ruleId": "github-pat", "level": "error",
+                "message": {"text": "github-pat detected: %s" % secret},
+                "locations": [{"physicalLocation": {
+                    "artifactLocation": {"uri": "app/settings.py"},
+                    "region": {"startLine": 7,
+                               "snippet": {"text": "TOKEN = '%s'" % secret}}}}],
+            }]}]}).encode("utf-8")
+
+    def _stream(self, payload, tool="gitleaks", out_name="gitleaks.sarif"):
+        """Drive the REAL streaming writer over a child that prints `payload`.
+        python3 (never a scanner binary, never docker) -- same seam the semgrep
+        annotation tests use."""
+        child = "import sys; sys.stdout.buffer.write(%r)" % payload
+        proc = rt._popen_runner([sys.executable, "-c", child],
+                                stdout=sp.PIPE, stderr=sp.PIPE)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        out = os.path.join(d, out_name)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(
+                rt._stream_and_write("tool", tool, proc, out, timeout=30), out)
+        with open(out, "rb") as fh:
+            return fh.read()
+
+    def test_completed_path_redacts(self):
+        """`_write_completed`: the CompletedProcess runner (Codex's repro --
+        `_write_completed` saved a credential-shaped value verbatim)."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        out = os.path.join(d, "gitleaks.sarif")
+        res = _FakeResult(returncode=1, stdout=self._sarif(self.MARKER))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(rt._write_completed("tool", "gitleaks", res, out), out)
+        with open(out, "rb") as fh:
+            written = fh.read()
+        self.assertNotIn(self.MARKER.encode(), written)
+        self.assertIn(b"[REDACTED_TOKEN]", written)
+
+    def test_streamed_path_redacts(self):
+        written = self._stream(self._sarif(self.MARKER))
+        self.assertNotIn(self.MARKER.encode(), written)
+        self.assertIn(b"[REDACTED_TOKEN]", written)
+
+    def test_streamed_path_redacts_after_its_stderr_annotation(self):
+        """semgrep's capture is rewritten by `_annotate_from_stderr` on the way
+        out; the choke point sits after it, so the annotator can never reopen
+        the hole."""
+        payload = json.dumps({"runs": [{"results": [], "tool": {"driver": {
+            "name": "semgrep"}}}], "leak": self.MARKER}).encode("utf-8")
+        written = self._stream(payload, tool="semgrep", out_name="semgrep.sarif")
+        self.assertNotIn(self.MARKER.encode(), written)
+        self.assertIn(b"[REDACTED_TOKEN]", written)
+
+    def test_truncated_path_redacts_the_retained_prefix(self):
+        """The over-cap branch keeps the first MAX_TOOL_OUTPUT_BYTES and appends
+        a marker; the retained prefix is redacted too."""
+        payload = self._sarif(self.MARKER) + b"z" * 4000
+        with mock.patch.object(rt, "MAX_TOOL_OUTPUT_BYTES", 1200):
+            written = self._stream(payload)
+        self.assertIn(b"TRUNCATED", written)
+        self.assertNotIn(self.MARKER.encode(), written)
+        self.assertIn(b"[REDACTED_TOKEN]", written)
+
+    def test_every_write_path_goes_through_the_choke_point(self):
+        """Structural, over the AST: every `_atomic_write` call in run_tools.py
+        names `_redact_capture` INLINE in the data it hands over. A fourth
+        capture path added later cannot land unredacted, and the check reads the
+        tree rather than the text -- a grep passes on a call that merely
+        mentions the name in a comment or a string."""
+        import ast
+        with open(os.path.join(REPO_ROOT, "skill", "scripts", "run_tools.py"),
+                  encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name) and n.func.id == "_atomic_write"]
+        self.assertTrue(calls, "no _atomic_write call sites found -- guard is vacuous")
+        unguarded = []
+        for call in calls:
+            # Inline anywhere in the data expression: the truncation path is
+            # `_redact_capture(...) + marker`, because the marker is appended
+            # AFTER the pass.
+            data = call.args[1] if len(call.args) > 1 else None
+            redacted = data is not None and any(
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "_redact_capture" for n in ast.walk(data))
+            if not redacted:
+                unguarded.append(call.lineno)
+        self.assertEqual(unguarded, [],
+                         "unredacted _atomic_write at lines %s" % unguarded)
+
+    def test_run_tools_leaves_no_marker_anywhere_in_the_out_dir(self):
+        """The guard by construction: walk everything a run drops in the tools
+        directory rather than naming the files, so a future capture path is
+        covered without remembering to extend this test."""
+        payload = self._sarif(self.MARKER)
+
+        def runner(cmd, **kw):
+            return _FakeResult(returncode=0, stdout=payload)
+
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        out_dir = os.path.join(d, "tools")
+        with contextlib.redirect_stderr(io.StringIO()):
+            written = rt.run_tools(d, ["gitleaks", "semgrep", "osv-scanner"],
+                                   out_dir, runner=runner)
+        self.assertEqual(len(written), 3, written)   # non-vacuous: files exist
+        leaked = []
+        for root, _dirs, files in os.walk(out_dir):
+            for name in sorted(files):
+                path = os.path.join(root, name)
+                with open(path, "rb") as fh:
+                    if self.MARKER.encode() in fh.read():
+                        leaked.append(name)
+        self.assertEqual(leaked, [], "raw capture kept the marker: %s" % leaked)
+
+    def test_clean_goldens_are_byte_identical(self):
+        """Ruling 1: redaction never changes SARIF STRUCTURE. Every committed
+        real-scanner golden -- 15 tools, SARIF, JSON and XML -- comes back
+        byte-for-byte through the choke point, so `ruleId`, `locations`,
+        `region` line numbers and `level` are provably untouched on output that
+        carries no secret."""
+        names = sorted(n for n in os.listdir(self.GOLDENS) if n.endswith(".raw"))
+        self.assertIn("gitleaks.raw", names)
+        self.assertGreaterEqual(len(names), 15, names)
+        changed = []
+        for name in names:
+            with open(os.path.join(self.GOLDENS, name), "rb") as fh:
+                raw = fh.read()
+            if rt._redact_capture(name[:-4], raw) != raw:
+                changed.append(name)
+        self.assertEqual(changed, [], "redaction rewrote a clean golden: %s" % changed)

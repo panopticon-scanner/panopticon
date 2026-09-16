@@ -31,6 +31,31 @@ class TestToolsPhase(unittest.TestCase):
         self.assertTrue(marker["ran"])
         self.assertTrue(tools_phase.tools_done(self.root, self.manifest))
 
+    def test_marker_discloses_that_the_captures_were_redacted(self):
+        # #1639 P11 ruling 4: the raw captures under `.panopticon/tools/` go
+        # through run_tools' redaction choke point, and the marker says so --
+        # an operator about to copy that directory into a CI artifact reads the
+        # claim from the run's own artifact, not from the docs. Additive: only
+        # the branch that actually ran a scan claims it.
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            open(os.path.join(out, "trivy.json"), "w").close()
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            tools_phase.tools_execute(self.root, self.manifest)
+        marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
+        self.assertIs(marker["redacted"], True)
+
+    def test_no_tools_marker_claims_nothing_about_redaction(self):
+        # `--no-tools` writes no capture at all, so it must not claim a pass
+        # over files an earlier run left in place.
+        m = {"run_id": "R", "flags": {"tools": False}}
+        with mock.patch("subprocess.run"):
+            tools_phase.tools_execute(self.root, m)
+        marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
+        self.assertNotIn("redacted", marker)
+
     def test_passes_manifest_flag(self):
         # #1031: tools_execute asks run_tools for the deterministic adapter
         # manifest so synthesize certifies tool coverage against it, not the
