@@ -1,4 +1,5 @@
 """build_report: assemble and validate the CodeReviewReport."""
+import sys
 from dataclasses import dataclass, field
 
 try:
@@ -30,13 +31,26 @@ from . import validate_schema as validate_schema_mod
 # folders make cross-version report reads routine.
 REPORT_SCHEMA_VERSION = 1
 
+# #1639 P15 fix round 2 (F2): what `models_used[].role` says when the finding
+# does not say. `role` is pinned `type: string`, and the old None reached the
+# artifact and ended the run -- on an ordinary payload (`provenance.model` with
+# no `discovered_by`), which means an agent could deny a paid-for run its result
+# by omitting a field. There is no documented default role in any producer
+# contract, so the honest word is the one that says nobody recorded it.
+UNKNOWN_ROLE = "unknown"
+
+
 def _role_from_discovered_by(discovered_by):
-    """Map a provenance discovered_by value to a model role."""
-    if not discovered_by:
-        return None
-    discovered_by = str(discovered_by)
+    """Map a provenance discovered_by value to a model role.
+
+    Never None: see UNKNOWN_ROLE. A non-string value is not a role either --
+    "who found this" is a name, and `str({...})` would publish a dict's repr as
+    one.
+    """
+    if not discovered_by or not isinstance(discovered_by, str):
+        return UNKNOWN_ROLE
     if discovered_by.startswith("agent:"):
-        return discovered_by.split(":", 1)[1]
+        return discovered_by.split(":", 1)[1] or UNKNOWN_ROLE
     return discovered_by
 
 def _collect_models_used(findings):
@@ -56,6 +70,10 @@ def _collect_models_used(findings):
         if not model:
             continue
         role = _role_from_discovered_by(prov.get("discovered_by"))
+        if role == UNKNOWN_ROLE:
+            print("synthesize: %s: provenance.model %r with no usable "
+                  "discovered_by; models_used role recorded as %r"
+                  % (f.get("id") or "?", model, UNKNOWN_ROLE), file=sys.stderr)
         # Dedup by (model, role): agents self-report model_version
         # inconsistently (F-CAL-3), which produced duplicate entries.
         key = (model, role)

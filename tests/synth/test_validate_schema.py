@@ -12,7 +12,9 @@ import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.synth.validate_schema as validate_schema_mod
 
-from tests.synth.helpers import DEFAULT_TIMESTAMP
+import scripts.synthesize as synthesize
+
+from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir
 
 
 def _minimal_report():
@@ -119,6 +121,28 @@ class TestSchemaErrors(unittest.TestCase):
                 self.assertIn("$schema", json.load(fh))
 
 
+def _synthesize_one(patch):
+    """(rc, report, stderr) for one agent finding through the real main()."""
+    finding = {"id": "SE-001", "title": "sqli", "severity": "MEDIUM",
+               "confidence": "LIKELY", "panel": "code", "category": "injection",
+               "location": {"file": "a.py", "line_start": 1}}
+    finding.update(patch)
+    with tempfile.TemporaryDirectory() as d, _chdir(d):
+        path = os.path.join(d, "findings-g1-code.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"findings": [finding]}, fh)
+        out = os.path.join(d, "report.json")
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(err):
+            try:
+                rc = synthesize.main(["--target", "src", "--out", out, path])
+            except Exception as exc:      # a crash is a failure with a reason
+                return -1, {"findings": [{}]}, "%r\n%s" % (exc, err.getvalue())
+        with open(out, encoding="utf-8") as fh:
+            return rc, json.load(fh), err.getvalue()
+
+
 def _valid_finding():
     return {"id": "SE-001", "title": "t", "severity": "HIGH", "confidence": "LIKELY",
             "panel": "security", "category": "injection",
@@ -158,33 +182,34 @@ class TestEveryPinnedFieldIsRepairedOrOwned(unittest.TestCase):
         self.item = validate_schema_mod.finding_item_schema()
         self.assertTrue(self.item.get("properties"), "findings item schema not loaded")
 
-    def test_every_pinned_field_is_repairable_or_declared_owned(self):
-        import jsonschema
-        validator = jsonschema.Draft7Validator(self.item)
+    def test_every_pinned_field_survives_a_wrong_typed_agent_value(self):
+        """The drift guard for the principle, through the REAL pipeline.
+
+        One mechanism for both halves (fix round 2, F5): inject a value the
+        schema rejects and run the actual `synthesize.main()`. A field that is
+        REPAIRED must not end the run; a field declared owned must additionally
+        come out carrying the controller's answer rather than the agent's.
+        Round 1 ran the probe through `normalize_finding` alone and `continue`d
+        on owned fields, which is why two false ownership claims shipped: a
+        stage that runs later (`derive_evidence`) or only sometimes
+        (`classify_findings`) is invisible to a boundary-only probe.
+        """
         for name, node in sorted(self.item["properties"].items()):
-            if name in validate_schema_mod._OWNED_DOWNSTREAM:
-                continue
             bad = _a_value_the_schema_rejects(node)
             if bad is None:
-                continue                      # unpinned (anyOf / free-form): nothing to repair
+                continue                  # unpinned (anyOf / free-form)
             with self.subTest(field=name):
-                finding = _valid_finding()
-                finding[name] = bad
-                self.assertTrue(
-                    list(validator.iter_errors(finding)),
-                    "%s: the probe value is not actually rejected" % name)
-                # Through the real boundary, not repair_finding alone: a
-                # REQUIRED field that repair drops is re-defaulted by
-                # normalize_finding a few lines later, and the guard's claim
-                # is about what leaves the boundary.
-                with contextlib.redirect_stderr(io.StringIO()):
-                    findings_mod.normalize_finding(finding)
-                left = [e.json_path for e in validator.iter_errors(finding)]
+                rc, report, err = _synthesize_one({name: bad})
                 self.assertEqual(
-                    left, [],
-                    "%s survives repair unrepaired: an agent that writes it ends "
-                    "the run. Repair it at the boundary or declare it in "
-                    "_OWNED_DOWNSTREAM with the stage that owns it." % name)
+                    rc, 0,
+                    "an agent %s of %r ended the run (rc=%s): %s\nRepair it at "
+                    "a boundary, or declare it in _OWNED_DOWNSTREAM with the "
+                    "stage that owns it." % (name, bad, rc, err))
+                if name in validate_schema_mod._OWNED_DOWNSTREAM:
+                    self.assertNotEqual(
+                        report["findings"][0].get(name), bad,
+                        "%s reached the artifact verbatim: the stage named in "
+                        "_OWNED_DOWNSTREAM does not own it" % name)
 
     def test_every_owned_field_still_exists_and_says_who_owns_it(self):
         for name, reason in sorted(validate_schema_mod._OWNED_DOWNSTREAM.items()):

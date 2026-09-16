@@ -14,6 +14,7 @@ import scripts.score_gate as score_gate
 from scripts.tools import EXECUTES_TARGET_BUILD
 from . import findings as findings_mod
 from . import integrity as integrity_mod
+from . import validate_schema as validate_schema_mod
 
 
 @dataclass(frozen=True)
@@ -417,11 +418,11 @@ def reconcile(plan, tools, resolved):
     # `requested_unavailable`, never sinking coverage_certified. With no manifest
     # (e.g. --no-tools, or a pre-manifest run) the 4.x scout-derived gate stands.
     if isinstance(tools.manifest, dict):
-        selected = set(tools.manifest.get("selected") or [])
-        produced_m = set(tools.manifest.get("produced") or [])
+        selected = set(validate_schema_mod.string_list(tools.manifest.get("selected")))
+        produced_m = set(validate_schema_mod.string_list(tools.manifest.get("produced")))
         missing = tools.manifest.get("missing")
-        missing_list = sorted(missing if isinstance(missing, list)
-                              else selected - produced_m)
+        missing_list = sorted(validate_schema_mod.string_list(missing)
+                              if isinstance(missing, list) else selected - produced_m)
         tools_absent = list(missing_list)
         tool_divergence = {t: "requested_absent" for t in missing_list}
         # #1512 (Codex BR-02): the manifest records what the RUNNER wrote, which
@@ -549,9 +550,9 @@ def reconcile(plan, tools, resolved):
 
 
 def load_groups_json(path):
-    """The run's groups.json as a dict, or {} when there is no file at `path`,
-    it cannot be read, or it is not a JSON object -- tolerant by design (never
-    abort a run); the two failure modes are announced on stderr."""
+    """The run's groups.json as a dict, or {} when absent, unreadable or not a
+    JSON object -- tolerant by design (never abort a run), both announced on
+    stderr. Target-writable: callers repair it (validate_schema) before use."""
     if not (path and os.path.isfile(path)):
         return {}
     try:

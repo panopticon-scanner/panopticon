@@ -12,15 +12,24 @@ malformed file under `.panopticon`, would decide whether a paid-for run
 produces a result.
 
 Two halves, deliberately in one module so they cannot disagree about what the
-pinned type IS: `schema_errors` validates on the way out, `repair_finding`
-normalizes on the way in, and the second derives its rules from the first's
-schema file rather than restating them. The boundaries the principle covers:
-`repair_finding` (agent and tool findings, via `findings.normalize_finding`),
-`integrity.cross_domain_findings` and `plan.audit_floor_cells` (which read
-agent payloads and `.panopticon/coverage-*.json` respectively), and
-`report.assemble`'s deliberately un-type-pinned `meta.host_capabilities`
-subtree, which is copied verbatim from an untrusted artifact and is therefore
-described in the schema without being constrained by it.
+pinned type IS: `schema_errors` validates on the way out, the `repair_*`
+functions normalize on the way in, and the second derives its rules from the
+first's schema file rather than restating them. EVERY boundary where agent or
+target content enters is covered, against BOTH schemas the completion path
+enforces (fix round 2):
+
+  `repair_finding`   agent and tool findings, via `findings.normalize_finding`
+  `repair_verdict`   an advisor's verdict, via THE sanitizer `evidence._agent_verdict`
+  `repair_groups_json`  the target-writable `.panopticon/groups.json`
+  `integrity.cross_domain_findings`  agent-stated domains on a cross-domain claim
+  `plan.audit_floor_cells`           the target-writable `.panopticon/coverage-*.json`
+  `codes.*` / `x0x_report._domain`   an agent `code` naming no OCRDb domain, for
+                                     the x0x schema's `candidates[].domain` enum
+  `report._role_from_discovered_by`  a finding with no usable `provenance.model`
+
+`report.assemble`'s `meta.host_capabilities` subtree is the one deliberate
+exception: copied verbatim from an untrusted artifact, it is described in the
+schema without being constrained by it.
 
 #1639 P15. `report.validate_report` hand-checked a selected list of fields --
 top-level keys, finding ids/severities/panels, the CVSS-and-exploit rule for
@@ -126,14 +135,30 @@ def finding_item_schema():
     """
     global _FINDING_ITEM
     if _FINDING_ITEM is None:
+        node = ((_report_doc().get("properties") or {}).get("findings") or {}).get("items")
+        _FINDING_ITEM = node if isinstance(node, dict) else {}
+    return _FINDING_ITEM
+
+
+_REPORT_DOC = None
+
+
+def _report_doc():
+    """`report-schema.json` as a dict, loaded once; {} when unreadable.
+
+    The repair half reads the same file the validating half does, so the two
+    cannot disagree about what a pinned type IS. Unreadable makes every repair
+    a no-op -- `schema_errors` is the half that fails closed.
+    """
+    global _REPORT_DOC
+    if _REPORT_DOC is None:
         try:
             with open(os.path.join(REFERENCE_DIR, REPORT_SCHEMA),
                       encoding="utf-8") as fh:
-                doc = json.load(fh)
-            _FINDING_ITEM = doc["properties"]["findings"]["items"]
-        except (OSError, ValueError, KeyError, TypeError):
-            _FINDING_ITEM = {}
-    return _FINDING_ITEM
+                _REPORT_DOC = json.load(fh)
+        except (OSError, ValueError):
+            _REPORT_DOC = {}
+    return _REPORT_DOC if isinstance(_REPORT_DOC, dict) else {}
 
 
 # Fields whose non-conforming value is DROPPED rather than coerced, because the
@@ -142,14 +167,28 @@ def finding_item_schema():
 # `str(7)` there is not a repair, it is a fabricated path. Dropping it makes
 # the whole location fall away (findings.normalize_finding's #1522 rule), which
 # is the honest answer: the finding is real, its locus was not stated.
-_DROP_NEVER_COERCE = ("location.file",)
+_DROP_NEVER_COERCE = ("location.file", "groups[].files[]")
 
 # Fields a LATER controller stage owns outright, which this pass must leave
 # alone: it would drop a value that stage is about to repair better (it knows
 # what the field means; this pass only knows its type) or rebuild from scratch.
 # Skipping one is a claim that the report cannot carry a bad value for it, so
-# each entry says which stage makes that true -- and `test_validate_schema`
-# holds the list to the schema, so a new pinned field cannot join it silently.
+# each entry says which stage makes that true -- and the meta-test PROVES the
+# claim for every entry (it feeds a wrong-typed agent value through the real
+# pipeline and checks the artifact carries the controller's answer instead),
+# because round 1 shipped two entries that were simply false:
+#
+#   `delta` named `delta.classify_findings`, which only runs under
+#   `--diff-hunks` -- so on every other run the key was skipped here and
+#   touched by nothing, and an agent's `delta` reached the artifact verbatim.
+#   `evidence` named `derive_evidence`, which does rebuild the object -- out of
+#   the advisor's verdict, whose `reasoning` it copies through. True about
+#   agent FINDINGS, false about the rebuild's own input (that boundary is now
+#   `repair_verdict`).
+#
+# Both are gone. The shape to distrust is an entry naming a later STAGE rather
+# than a normalizer: a stage that does not always run, and a stage that rebuilds
+# from a second untrusted source.
 _OWNED_DOWNSTREAM = {
     "id": "rewritten by evidence.matrix_finding_id after normalization (#1109)",
     "severity": "normalize_finding coerces case-insensitively and falls back to INFO",
@@ -157,9 +196,7 @@ _OWNED_DOWNSTREAM = {
     "panel": "normalize_finding validates it, else derives it from the domain",
     "title": "normalize_finding rebuilds it from title/description, always a string",
     "short_title": "normalize_finding derives it from the repaired title",
-    "evidence": "derive_evidence rebuilds it from a real verdict; agent copies are stripped",
     "fingerprint": "stamped by verdicts.resolve_findings from evidence.finding_fingerprint",
-    "delta": "stamped by delta.classify_findings from diff_map.classify",
     "citations": "enrich_citations rebuilds it from validated CWE/OWASP/SSVC/CVE parts",
 }
 
@@ -244,12 +281,23 @@ def _coerce(value, node, path):
     return False, None
 
 
+# #1639 P15 fix round 2 (F2): a field whose non-conforming value is replaced by
+# a DEFAULT rather than removed, because removing it is what manufactures the
+# invalid output. `provenance.discovered_by` is the case: drop it and
+# `report._collect_models_used` has no role to publish, and the `None` it wrote
+# instead is what ended the run. The repair must not create the bug it exists to
+# prevent.
+_DEFAULT_WHEN_DROPPED = {"provenance.discovered_by": "unknown"}
+
+
 def _repair_node(value, node, path, changes):
     """(ok, value) for one value against one subschema; recurses into
     described objects and arrays. `changes` collects (path, what) for every
     field this pass repaired or dropped."""
     if not _conforms(value, node):
         ok, repaired = _coerce(value, node, path)
+        if not ok and path in _DEFAULT_WHEN_DROPPED:
+            ok, repaired = True, _DEFAULT_WHEN_DROPPED[path]
         if not ok:
             changes.append((path, "dropped"))
             return False, None
@@ -318,3 +366,172 @@ def repair_finding(finding, warn=None):
         else:
             print(message, file=sys.stderr)
     return finding
+
+
+# ---------------------------------------------------------------------------
+# The SECOND agent boundary: an advisor's verdict.
+# ---------------------------------------------------------------------------
+# `repair_finding` runs at the findings-file ingest. The verify round then
+# writes type-pinned fields onto those same findings from a different
+# agent-authored source -- the advisor's verdict JSON -- AFTER that boundary
+# (#1639 P15 fix round 2, F3). One advisor typing a list where a string belongs
+# produced four schema errors and a terminal `error` on a run whose review had
+# completed. Each verdict field is repaired against the report-schema node it
+# ends up in, so this boundary and the findings boundary cannot disagree about
+# the type either.
+_VERDICT_FIELDS = {
+    "reasoning": "evidence.reasoning",          # and provenance.confirmation_reasoning
+    "model": "provenance.confirmed_by_model",
+    "code": "provenance.advisor_code",
+    "references": "references",
+    "citations": "citations",
+    "missing_evidence": "evidence.missing_evidence",
+}
+
+
+def _subschema(dotted):
+    """The `findings[]` item subschema at a dotted path, or None."""
+    node = finding_item_schema()
+    for part in dotted.split("."):
+        node = (node.get("properties") or {}).get(part)
+        if not isinstance(node, dict):
+            return None
+    return node
+
+
+def _as_prose(value):
+    """An advisor's free text, as the string the report pins.
+
+    A list of scalars is JOINED rather than dropped: an advisor that answered in
+    bullets said something, and throwing its reasoning away to satisfy a type
+    would lose the one part of a verdict a human actually reads.
+    """
+    if isinstance(value, list) and all(
+            isinstance(x, (str, int, float, bool)) for x in value):
+        return "; ".join(str(x) for x in value)
+    return str(value)
+
+
+def repair_verdict(verdict, warn=None):
+    """Normalize one advisor verdict's report-bound fields to the pinned types.
+
+    Called from `evidence._agent_verdict` -- THE verdict sanitizer, which
+    `tests/test_agent_verdict_guard.py` forces every reader through, so this
+    cannot be bypassed by a new read path. Repairs in place and returns the
+    verdict; never raises.
+    """
+    if not isinstance(verdict, dict):
+        return verdict
+    changes = []
+    for key, dotted in _VERDICT_FIELDS.items():
+        if key not in verdict or verdict[key] is None:
+            continue
+        node = _subschema(dotted)
+        if node is None:
+            continue                       # schema unreadable: repair is a no-op
+        value = verdict[key]
+        if key == "reasoning" and not isinstance(value, str):
+            value = _as_prose(value)
+            changes.append((key, "repaired"))
+        ok, repaired = _repair_node(value, node, key, changes)
+        if ok:
+            verdict[key] = repaired
+        else:
+            verdict.pop(key, None)
+    for key, what in changes:
+        message = ("verdicts: %s %s -- it did not match the type "
+                   "report-schema.json pins for it" % (what, key))
+        if warn is not None:
+            warn(message)
+        else:
+            print(message, file=sys.stderr)
+    return verdict
+
+
+# ---------------------------------------------------------------------------
+# The TARGET boundary: `.panopticon/groups.json`.
+# ---------------------------------------------------------------------------
+# Same principle, third source (#1639 P15 fix round 2, F6). `groups.json` is
+# read out of `.panopticon/` inside the reviewed tree -- the same
+# target-writable directory as the `coverage-*.json` files audit_floor_cells
+# already repairs -- and `plan.load_groups_json` is tolerant BY DESIGN: it
+# announces a corrupt file and returns {} rather than abort a paid-for run.
+# That promise stopped at the parse. Five of its fields reach the artifact or a
+# bare subscript untouched: `groups[].name` and `groups[].files` are copied
+# into the report's type-pinned `groups[]`, `parent` becomes a rolled-up unit's
+# name, `security_mode` becomes `meta.security_mode` (an enum), and `mode` is
+# used as a dict KEY -- so a list there raised TypeError, and a group without
+# `files` a KeyError, from a file the target can write.
+_GROUPS_KEEP_KEYS = ("name", "files", "parent")
+
+
+def repair_groups_json(gj, warn=None):
+    """Normalize the run's `groups.json` to the types the report pins.
+
+    Repairs in place and returns `gj` ({} when it is not a dict). Never raises
+    and never aborts: a group that cannot be repaired is dropped with a warning
+    and the rest of the run proceeds, which is `load_groups_json`'s contract
+    carried all the way to the artifact instead of only to the parse.
+    """
+    if not isinstance(gj, dict):
+        return {}
+    props = _report_doc().get("properties") or {}
+    item = (((props.get("groups") or {}).get("items") or {}).get("properties")) or {}
+    meta = ((props.get("meta") or {}).get("properties")) or {}
+    changes = []
+    if "groups" in gj:
+        raw = gj["groups"]
+        if not isinstance(raw, list):
+            changes.append(("groups", "dropped"))
+            raw = []
+        kept = []
+        for g in raw:
+            if not isinstance(g, dict) or not isinstance(g.get("name"), (str, int, float)) \
+                    or isinstance(g.get("name"), bool):
+                changes.append(("groups[]", "dropped"))
+                continue
+            for key in _GROUPS_KEEP_KEYS:
+                node = item.get(key) or ({"type": "string"} if key == "parent" else None)
+                if node is None or key not in g:
+                    continue
+                ok, repaired = _repair_node(g[key], node, "groups[].%s" % key, changes)
+                if ok:
+                    g[key] = repaired
+                else:
+                    g.pop(key, None)
+            if not isinstance(g.get("files"), list):
+                # grading subscripts `g["files"]` directly; absent is not a
+                # shape the report's groups[] can carry either (it is required).
+                g["files"] = []
+                changes.append(("groups[].files", "defaulted to []"))
+            kept.append(g)
+        gj["groups"] = kept
+    if "mode" in gj and not isinstance(gj["mode"], str):
+        # Read as a dict KEY (findings.MODE_TO_REVIEW_TYPE): unhashable raises.
+        gj.pop("mode")
+        changes.append(("mode", "dropped"))
+    node = meta.get("security_mode") or {}
+    if "security_mode" in gj and gj["security_mode"] is not None \
+            and not _conforms(gj["security_mode"], node):
+        gj.pop("security_mode")            # from_args then defaults it
+        changes.append(("security_mode", "dropped"))
+    for path, what in changes:
+        message = ("groups.json: %s %s -- it did not match the type "
+                   "report-schema.json pins for it" % (what, path))
+        if warn is not None:
+            warn(message)
+        else:
+            print(message, file=sys.stderr)
+    return gj
+
+
+def string_list(value):
+    """The strings in `value` when it is a list, else [].
+
+    The run artifacts name things -- tools, files, groups -- and a NAME is a
+    string everywhere it lands: a `meta.coverage.tools_ran[]` entry, a
+    `divergence` key, a sorted join in the terminal summary. One integer in
+    `tools-manifest.json` crashed `render_summary` on a report that had already
+    been written and validated, so the names are pinned where they are read.
+    """
+    return [x for x in value if isinstance(x, str)] if isinstance(value, list) else []

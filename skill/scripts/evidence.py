@@ -18,6 +18,12 @@ try:
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     from _version import __version__
 
+# #1639 P15 F3: the pinned types live in ONE module (it both enforces them on
+# the way out and normalizes to them on the way in), and the verdict boundary
+# is one of the places that has to normalize. `validate_schema` imports nothing
+# of ours, so this cannot cycle back through `synth`.
+import scripts.synth.validate_schema as validate_schema_mod
+
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 # Canonical panel list, in display order. synthesize's VALID_PANELS/PANEL_ORDER,
 # html_report's _PANEL_ORDER, and the findings-filename regexes in synthesize
@@ -91,10 +97,21 @@ def _agent_verdict(raw):
     A rule at the door rather than a check at each reader, for the same reason
     the `_panopticon` stamp is controller-owned: per-reader discipline is what
     failed, twice. Everything an advisor is actually asked for -- including the
-    public `missing_evidence` and `evidence_scope` -- passes through untouched.
+    public `missing_evidence` and `evidence_scope` -- passes through with its
+    CONTENT untouched.
+
+    Three jobs since #1639 P15 fix round 2 (F3). The third is TYPE repair: the
+    verify round writes this verdict's `reasoning`, `model`, `code`,
+    `references` and `citations` onto an already-normalized finding, into
+    fields `report-schema.json` pins -- after the findings boundary, with
+    nothing between. One advisor answering in a list where a string belongs
+    ended a completed run in `error`. `validate_schema.repair_verdict` does it
+    against the schema nodes those fields land in, so this boundary and the
+    findings boundary cannot disagree about a type.
     """
-    return {k: v for k, v in raw.items()
-            if not str(k).startswith("_") and k not in CONTROLLER_STAMPED}
+    return validate_schema_mod.repair_verdict(
+        {k: v for k, v in raw.items()
+         if not str(k).startswith("_") and k not in CONTROLLER_STAMPED})
 
 
 def scope_limited_paths(verdict):

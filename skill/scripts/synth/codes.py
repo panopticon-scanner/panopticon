@@ -34,6 +34,20 @@ def validate_finding_codes(findings, bundle):
         if not code:
             continue
         stated, derived = f.get("domain"), ocrdb.domain_of(code)
+        if derived is not None and not ocrdb.is_domain(derived):
+            # #1639 P15 F1: a code prefix is what the agent CLAIMS, not a
+            # domain. `CWE-798` (the CWE id typed into the OCRDb code field --
+            # the most plausible slip there is) claimed `CWE`, which reached
+            # `candidates[].domain` in the X0X artifact, where the 11-domain
+            # roster is an ENUM: a valid-looking string ended the whole run in
+            # `error`, and silently, because the string conforms to
+            # report-schema.json. Off-roster is domainless, which the ZZZ
+            # sentinel already means; say so rather than repair in silence.
+            print("synthesize: %s: code %r names no OCRDb domain (%r); filing it "
+                  "under the %s catalog-gap sentinel"
+                  % (f.get("id") or "?", code, derived,
+                     ocrdb.UNKNOWN_DOMAIN_FALLBACK), file=sys.stderr)
+            derived = None
         if stated and derived and stated != derived:
             mismatch += 1                      # #1034/#3: disclose, don't rewrite
         domain = stated or derived
