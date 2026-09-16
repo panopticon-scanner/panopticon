@@ -56,6 +56,30 @@ class TestSchemaErrors(unittest.TestCase):
             validate_schema_mod.schema_errors({"candidates": []},
                                               validate_schema_mod.X0X_SCHEMA))
 
+    def test_an_undescribed_meta_section_is_rejected(self):
+        # #1602 ruling 4: `meta` is closed. This is the whole point of the
+        # issue -- `host_capabilities` drifted for a release because an
+        # undescribed section validated fine, and a parity test alone would
+        # only catch it in CI, not in a run.
+        report = _minimal_report()
+        report["meta"]["invented_section"] = {"anything": True}
+        errors = validate_schema_mod.schema_errors(report)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("invented_section", errors[0])
+        self.assertTrue(errors[0].startswith("schema: $.meta:"), errors[0])
+
+    def test_every_key_the_writers_stamp_after_build_is_described(self):
+        # The keys written OUTSIDE assemble() -- by the split writer and by
+        # attach_schema_status -- are the ones a closed `meta` is most likely
+        # to reject by surprise, because they are added after the document
+        # validate_report saw.
+        report = _minimal_report()
+        report["meta"]["parts"] = ["report_part2.json"]
+        report["meta"]["discarded_claims_file"] = "report-discarded.json"
+        report["meta"]["discarded_claims_count"] = 3
+        report["meta"]["schema_errors"] = 0
+        self.assertEqual(validate_schema_mod.schema_errors(report), [])
+
     def test_a_missing_jsonschema_fails_closed(self):
         # `sys.modules[name] = None` is what Python itself raises ImportError
         # on, so this is the real import path, not a stubbed-out branch.
