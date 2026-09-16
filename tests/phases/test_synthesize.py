@@ -12,6 +12,7 @@ from scripts import hosts
 from conftest import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.synthesize as syn
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.phases.synthesize as synthesize
 
 import scripts.driver as driver
@@ -245,6 +246,59 @@ class TestSynthesizePhase(unittest.TestCase):
         with mock.patch("subprocess.run", side_effect=fake_run):
             result = synthesize.synthesize_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
+
+    def test_an_invalid_artifact_ends_the_run_in_error(self):
+        # #1639 P15 ruling 2: a report that does not satisfy its own published
+        # schema is NOT a gate verdict -- it is the artifact failing to be what
+        # it claims to be, and the run's terminal status says so. The report
+        # file exists and parses (that is the point: JSON-parseable and
+        # schema-valid are different questions), so the existing
+        # "report absent" guard cannot catch it.
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"grade": "A", "findings": []}, fh)
+            return mock.Mock(returncode=validate_schema_mod.ARTIFACT_INVALID,
+                             stdout="", stderr="artifact invalid: 3 schema errors")
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            with self.assertRaises(runio.DriverError) as ctx:
+                synthesize.synthesize_execute(self.root, self.manifest)
+        self.assertIn("artifact invalid", str(ctx.exception))
+
+    def test_an_invalid_artifact_still_repoints_the_compat_path_at_this_run(self):
+        # #1639 P15 I3: `.panopticon/report.json` is the documented
+        # backward-compat path. Raising before the relink left it pointing at
+        # the PREVIOUS run's report -- complete, valid, possibly PASS -- so a
+        # CI consumer reading it after a failed run silently read someone
+        # else's result. The tag-named report this run wrote is the honest
+        # artifact: it exists, it carries meta.schema_errors, and the run's
+        # status says `error` beside it.
+        with open(os.path.join(self.root, ".panopticon", "run-manifest.json"),
+                  "w", encoding="utf-8") as fh:
+            json.dump({"review_root": self.root, "run_id": "r1d2e3f4a5b6",
+                       "host": "claude", "security_mode": "standard",
+                       "scope": {"mode": "repo"},
+                       "started_at": "2026-09-16T00:00:00Z"}, fh)
+        compat = runio._pano(self.root, "report.json")
+        stale = os.path.join(self.root, ".panopticon", "previous-run-report.json")
+        with open(stale, "w") as fh:
+            json.dump({"summary": {"gate": "PASS"}, "findings": []}, fh)
+        os.symlink("previous-run-report.json", compat)
+
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"grade": "A", "findings": [],
+                           "meta": {"schema_errors": 1}}, fh)
+            return mock.Mock(returncode=validate_schema_mod.ARTIFACT_INVALID,
+                             stdout="", stderr="artifact invalid: 1 schema errors")
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            with self.assertRaises(runio.DriverError):
+                synthesize.synthesize_execute(self.root, self.manifest)
+        tag = runio._run_tag(self.root)
+        self.assertTrue(tag, "the fixture has no run tag to relink onto")
+        self.assertEqual(os.readlink(compat), "%s-report.json" % tag)
+        with open(compat) as fh:
+            self.assertEqual(json.load(fh)["meta"]["schema_errors"], 1)
 
     def test_absent_report_raises(self):
         with mock.patch("subprocess.run",

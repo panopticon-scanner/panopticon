@@ -5,6 +5,7 @@ import unittest
 import jsonschema
 
 from _test_helpers import only
+import scripts.ocrdb as ocrdb
 import scripts.x0x_report as x0x
 
 
@@ -116,3 +117,22 @@ class TestX0XReport(unittest.TestCase):
                     _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", "b.tsx", 5, "f2",
                        refs=["CWE-639"])]
         self.assertIsNone(jsonschema.validate(x0x.build_report(findings, meta, run_id="run-xyz"), schema))
+
+class TestTheDomainRosterMatchesTheSchema(unittest.TestCase):
+    """#1639 P15 F1: the roster and the published enum are one contract.
+
+    `_domain` clamps to `ocrdb.DOMAIN_TO_PANEL`; the artifact is validated
+    against `candidates[].domain`'s enum. If those two ever diverge the clamp
+    starts producing a value the schema rejects -- which is the exact failure
+    it was written to prevent, reintroduced one level up.
+    """
+
+    def test_the_roster_and_the_x0x_enum_are_the_same_set(self):
+        path = os.path.join(os.path.dirname(__file__), os.pardir, "skill",
+                            "reference", "x0x-report-schema.json")
+        with open(path, encoding="utf-8") as fh:
+            schema = json.load(fh)
+        enum = schema["properties"]["candidates"]["items"]["properties"]["domain"]["enum"]
+        self.assertEqual(sorted(enum), sorted(ocrdb.DOMAIN_TO_PANEL))
+
+

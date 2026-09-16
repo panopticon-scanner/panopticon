@@ -147,6 +147,19 @@ def verdict_is_done(queue_id, verdicts_dir, finding_id=None, run_id=None,
     return finding_matches and run_matches
 
 
+def _queued_finding_id(entry):
+    """The id of the finding a queue entry names, or None.
+
+    #1639 P15 fix round 2: the entry-level `isinstance(e, dict)` guard below
+    did not reach the NESTED object, so a verify-queue.json whose `finding` was
+    not one ended synthesis in AttributeError -- a run artifact deciding
+    whether a paid-for run produces a result. None is what an entry with no
+    finding already meant to `verdict_is_done` ("any finding matches").
+    """
+    finding = entry.get("finding") if isinstance(entry, dict) else None
+    return finding.get("id") if isinstance(finding, dict) else None
+
+
 def pending_verdicts(queue, verdicts_dir, _verdicts=None):
     """The verify-queue entries whose queue_id has no valid verdict yet — the
     verify resume set. `queue` is the verify-queue dict ({'entries': [...]}) or
@@ -159,7 +172,7 @@ def pending_verdicts(queue, verdicts_dir, _verdicts=None):
     return [e for e in entries
             if isinstance(e, dict) and e.get("queue_id") and
             not verdict_is_done(
-                e["queue_id"], None, (e.get("finding") or {}).get("id"),
+                e["queue_id"], None, _queued_finding_id(e),
                 run_id,
                 _done=done)]
 

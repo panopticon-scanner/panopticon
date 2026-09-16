@@ -16,6 +16,7 @@
     },
     "meta": {
       "type": "object",
+      "description": "#1602 ruling 4: CLOSED. `additionalProperties: false`, so a meta section the schema does not describe fails validation at RUN time, not only in tests/test_schema_parity.py -- which is how `host_capabilities` drifted for a whole release. Three producers write here and only three: `synth.report.assemble` (every section below except the four that follow), `synth.render.write_report` (`parts`, `discarded_claims_file`, `discarded_claims_count`) and `synth.report.attach_schema_status` (`schema_errors`). A new key means a schema entry in the same PR -- describe it, do not reopen this.",
       "required": [
         "target",
         "review_type",
@@ -24,6 +25,7 @@
         "security_mode",
         "coverage"
       ],
+      "additionalProperties": false,
       "properties": {
         "target": {
           "type": "string"
@@ -59,7 +61,20 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Basenames of the `<stem>_partN.json` continuation files this report was split into, written when the document exceeds the writer's byte budget. The main file then carries only the first chunk of `findings`, so a consumer that reads it alone has a PARTIAL report: hydrate the union before validating or comparing (synth/render._read_json_report is that reader)."
+        },
+        "discarded_claims_file": {
+          "type": "string",
+          "description": "#15: basename of the `<stem>-discarded.json` sibling holding `discarded_claims` when the report is too large to carry them inline (rejected claims keep their full advisor prose and grow precisely when verification works well). Present only on a split report, and independent of `parts` -- the spill can happen with no findings chunking at all."
+        },
+        "discarded_claims_count": {
+          "type": "integer",
+          "description": "#15: how many claims went to `discarded_claims_file`, so a reader of the main file alone still knows the size of what it is not holding."
+        },
+        "schema_errors": {
+          "type": "integer",
+          "description": "#1639 P15: how many validation errors the PRE-WRITE pass (`synth.report.validate_report`: the published schema plus the domain rules the schema cannot express) raised against this report. Stamped after that pass, so it is in the artifact on disk but was not in the document that was validated. It is not the run's whole answer and must not be read as one: the artifact pass that follows re-validates the hydrated split union and the X0X sibling, which this count cannot include, and the `artifact invalid: N schema errors` status line carries that full count. Every artifact is still written either way -- a report that failed validation is on disk, with this count in it, precisely so it can be inspected."
         },
         "models_used": {
           "type": "array",
@@ -230,6 +245,21 @@
               "type": "object",
               "description": "Planned-vs-executed gaps: {panels: {name: {planned, executed}}, tools: {name: 'requested_absent'|'produced_unusable'|'requested_unavailable'|'produced_noscan'}}. requested_absent (selected, no output) and produced_unusable (#1512: output produced but ingestion could not parse it) are lost required coverage and reach tools_absent, so they gate. requested_unavailable (scout asked for a tool the runner cannot run) and produced_noscan (#1335: ran but scanned zero files) are disclosure only and never gate."
             },
+            "cells": {
+              "type": "object",
+              "description": "5.0 (matrix Sec5.1) certifiable-coverage audit of the FLOOR cells: `{\"missing_floor\": [[group, domain], ...]}`. A floor (group, domain) cell that produced no findings file is lost required coverage, and a non-empty list is what forces the gate to INCONCLUSIVE. Scout-WIDENED domains are never audited here -- the floor is the contract -- and a floor domain the group explicitly excluded is netted out first.",
+              "properties": {
+                "missing_floor": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
             "test_inventory": {
               "type": "object",
               "additionalProperties": {
@@ -283,6 +313,43 @@
             }
           }
         },
+        "host_capabilities": {
+          "type": "object",
+          "description": "5.2 surface 2 (#1344 F3b): the host posture this run VERIFIED, copied verbatim off `runs/<tag>/host-capabilities.json`. Documented in prose since #1344 and undescribed here until #1602 -- the drift the parity test (tests/test_schema_parity.py) now exists to prevent. Every field fails closed (`null`, `{}` for the maps) on an artifact that is absent, truncated or not a JSON object, so a malformed record reads as \"nobody looked\" rather than as a posture. The INNER values are described but not type-pinned on purpose: this subtree is copied verbatim out of a file under `.panopticon`, which a hostile target can pre-commit, and the posture is disclosure that explicitly does NOT gate (it moves no grade, no gate and no certification). Pinning types here would hand that target a way to make every run exit `artifact invalid` -- a junk posture must be readable AS junk, not a reason to throw the report away. The shape below is what panopticon's own probes write.",
+          "properties": {
+            "host": {
+              "type": ["string", "null"],
+              "description": "The host the posture was measured on (claude / codex / kimi / generic); null when no readable artifact named one."
+            },
+            "schema_version": {
+              "description": "Version of the host-capabilities ARTIFACT's own format -- what a consumer diffing two runs needs before it may compare them at all. Normally an integer; deliberately UNTYPED here, with `probed_at` and the `capabilities` triple, for the reason in this section's description."
+            },
+            "probed_at": {
+              "description": "When this posture was last ESTABLISHED (the record is rewritten when something an operator cares about moves, not on every probe), so the interval probed_at..end-of-run is one over which the enforcement posture held unbroken. Normally an ISO-8601 string. Distinct from meta.timestamp, which is synthesis time. Never defaulted: \"nobody wrote down when\" has to stay distinguishable from a measured moment."
+            },
+            "capabilities": {
+              "type": "object",
+              "description": "The artifact's capability map VERBATIM, one entry per capability name (tool_policy_enforced, read_scope_confined, artifact_write_guard, model_binding, usage_ledger), so the REASON survives into the report and two runs can be diffed rather than merely compared. `{}` means nothing was measured, which is a different fact from every capability being refuted.",
+              "additionalProperties": {
+                "properties": {
+                  "state": {
+                    "description": "`proven`, `refuted` or `unknown`, as written by the probe. `unknown` is NOT benign -- nobody looked -- and is treated exactly as `refuted` wherever posture is consumed; the two are kept apart because they have different remedies. Stated here rather than pinned as an enum, for the reason in this section's description."
+                  },
+                  "by": {
+                    "description": "Probe id that established the state (e.g. registered-shell-tools, read-guard-armed, kimi-usage-wire). `null` when no probe ran at all -- an `unknown` row carries its reason in `detail` and nothing in `by`."
+                  },
+                  "detail": {
+                    "description": "What the probe actually found, in the probe's own words -- the half of a disclosure that makes it a disclosure rather than a mood. Every agreeing probe's finding, joined."
+                  }
+                }
+              }
+            },
+            "cli_flags": {
+              "type": "object",
+              "description": "D10 N3: the operational CLI facts ride BESIDE `capabilities`, never inside it, exactly as they do in the artifact -- a consumer diffing two postures must not read a flag that gates nothing as a capability that moved."
+            }
+          }
+        },
         "integrity": {
           "type": "object",
           "description": "Run-integrity reconciliation driving certification: unexpected, duplicate, mislabeled, malformed, content-mismatched, empty, or invalid dispatch artifacts force gate INCONCLUSIVE — as does a fan-out snapshot that is corrupt (content_snapshot_unreadable) or owed-but-absent (content_snapshot_missing).",
@@ -311,6 +378,27 @@
             },
             "mislabeled_findings_files": {
               "type": "array"
+            },
+            "cross_domain_findings": {
+              "type": "array",
+              "description": "#calibration-4: findings filed under a domain other than their cell's -- REPORTED, never gating. A reviewer that files a TST finding from an ARC cell has stepped outside its lane, which is a real signal about panel discipline and about catalog gaps (most are `<DOM>-X0X`), but it is evidence about the REVIEW, not about whether the artifacts on disk can be trusted. Treating it as an integrity failure once sank certification on a run whose file integrity was perfect.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string"
+                  },
+                  "cell_domain": {
+                    "type": "string"
+                  },
+                  "finding_domain": {
+                    "type": "string"
+                  },
+                  "code": {
+                    "type": ["string", "null"]
+                  }
+                }
+              }
             },
             "unenforced_acknowledged": {
               "type": "boolean"
@@ -714,6 +802,32 @@
           "lens": {
             "type": "string"
           },
+          "short_title": {
+            "type": "string",
+            "description": "The title trimmed to issue-title length, derived by findings normalization on EVERY finding (equal to `title` when it already fits). Tool messages are sometimes whole remediation paragraphs; the issue filer, the X0X candidate builder and the strain report all read this and keep the full text in the body."
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "Stable identity of the CLAIM (panel/category/file/title-derived), the same identity the verify queue keys a verdict on. Exported so a consumer can bind a finding across runs and across the queue. KNOWN DIVERGENCE: the queue disambiguates a collision with a `-<n>` suffix that never appears here, so a fingerprint -> queue_id lookup is ambiguous for a colliding pair."
+          },
+          "delta": {
+            "type": ["object", "null"],
+            "description": "#449 on-diff classification against the run's diff-hunks.json, stamped on every finding in delta mode and absent outside it. `on_diff` fails OPEN (true) where the file changed but the finding carries no line, so a delta gate never silently drops a claim it could not place.",
+            "properties": {
+              "on_diff": {
+                "type": "boolean"
+              },
+              "hunk": {
+                "type": ["array", "null"],
+                "items": {
+                  "type": "integer"
+                }
+              },
+              "distance": {
+                "type": ["integer", "null"]
+              }
+            }
+          },
           "category": {
             "type": "string"
           },
@@ -833,15 +947,6 @@
             "items": {
               "type": "string"
             }
-          },
-          "citation_quality": {
-            "type": "string",
-            "enum": [
-              "full",
-              "partial",
-              "minimal",
-              "none"
-            ]
           },
           "evidence": {
             "type": "object",

@@ -10,6 +10,7 @@ import scripts.evidence as evidence_mod
 import scripts.findings_contract as findings_contract
 import scripts.groups_schema as groups_schema
 import scripts.ocrdb as ocrdb
+from . import validate_schema as validate_schema_mod
 
 
 # evidence_mod owns the canonical severity and panel scales (#688's aliasing
@@ -123,6 +124,8 @@ SHORT_TITLE_MAX = 100
 
 def normalize_finding(f):
     """Normalize and validate finding fields with sensible defaults."""
+    # #1639 P15: pinned types first, at the boundary -- see validate_schema.repair_finding.
+    validate_schema_mod.repair_finding(f)
     sev = str(f.get("severity", "INFO")).upper()
     f["severity"] = sev if sev in SEVERITIES else "INFO"
     conf = str(f.get("confidence", "")).upper()
@@ -134,7 +137,7 @@ def normalize_finding(f):
     # panel: keep a valid legacy panel; else derive from the finding's domain
     # (matrix cells are domain-scoped); else the historical "code" default.
     panel = f.get("panel")
-    if panel not in VALID_PANELS:
+    if not isinstance(panel, str) or panel not in VALID_PANELS:
         domain = f.get("domain") or ocrdb.domain_of(f.get("code"))
         panel = ocrdb.DOMAIN_TO_PANEL.get(domain, "code")
     f["panel"] = panel

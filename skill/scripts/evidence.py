@@ -18,6 +18,27 @@ try:
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     from _version import __version__
 
+# #1639 P15 F3: the pinned types live in ONE module (it both enforces them on
+# the way out and normalizes to them on the way in), and the verdict boundary
+# is one of the places that has to normalize. `validate_schema` imports nothing
+# of ours, so this cannot cycle back through `synth`.
+#
+# Fix round 3, R2-5: this module must stay importable FLAT (with skill/scripts
+# itself on sys.path) -- `citations` and `html_report` reach it that way, and
+# round 2 narrowed the mode by accident. The `_version` idiom three lines up
+# cannot be copied here, though: `synth` is a PACKAGE, and layout rule 2
+# (tests/test_layout.py) forbids `import synth.validate_schema` anywhere under
+# skill/scripts, because a flat package import builds a SECOND module object
+# with its own state and its own patch targets. So flat mode gets None and the
+# repair becomes a no-op there -- narrower than the package path and said out
+# loud rather than crashing four modules at import. No flat caller adjudicates
+# verdicts: every verdict reader (`phases/verify`, `synthesize`) is
+# package-imported, which `tests/test_agent_verdict_guard.py` enumerates.
+try:
+    import scripts.synth.validate_schema as validate_schema_mod
+except ModuleNotFoundError:            # imported flat: see above
+    validate_schema_mod = None
+
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 # Canonical panel list, in display order. synthesize's VALID_PANELS/PANEL_ORDER,
 # html_report's _PANEL_ORDER, and the findings-filename regexes in synthesize
@@ -91,10 +112,23 @@ def _agent_verdict(raw):
     A rule at the door rather than a check at each reader, for the same reason
     the `_panopticon` stamp is controller-owned: per-reader discipline is what
     failed, twice. Everything an advisor is actually asked for -- including the
-    public `missing_evidence` and `evidence_scope` -- passes through untouched.
+    public `missing_evidence` and `evidence_scope` -- passes through with its
+    CONTENT untouched.
+
+    Three jobs since #1639 P15 fix round 2 (F3). The third is TYPE repair: the
+    verify round writes this verdict's `reasoning`, `model`, `code`,
+    `references` and `citations` onto an already-normalized finding, into
+    fields `report-schema.json` pins -- after the findings boundary, with
+    nothing between. One advisor answering in a list where a string belongs
+    ended a completed run in `error`. `validate_schema.repair_verdict` does it
+    against the schema nodes those fields land in, so this boundary and the
+    findings boundary cannot disagree about a type.
     """
-    return {k: v for k, v in raw.items()
-            if not str(k).startswith("_") and k not in CONTROLLER_STAMPED}
+    clean = {k: v for k, v in raw.items()
+             if not str(k).startswith("_") and k not in CONTROLLER_STAMPED}
+    if validate_schema_mod is None:
+        return clean                   # flat import: no schema to repair against
+    return validate_schema_mod.repair_verdict(clean)
 
 
 def scope_limited_paths(verdict):

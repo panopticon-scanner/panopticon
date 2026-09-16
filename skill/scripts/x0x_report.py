@@ -12,6 +12,12 @@ not emitter output, so this emitter omits them (the schema leaves both optional 
 X0X findings is a separate, reviewer-side follow-on.
 """
 import re
+import sys
+
+try:
+    import scripts.ocrdb as ocrdb
+except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+    import ocrdb
 
 SCHEMA_VERSION = 1
 
@@ -68,7 +74,18 @@ def _domain(finding):
     # "SEC" and "sec" cluster into ONE candidate instead of splitting on the key
     # (the title half is already lowercased). Also normalizes the emitted
     # candidate's `domain`, which reuses this value.
-    return str(dom).upper()
+    dom = str(dom).upper()
+    if not ocrdb.is_domain(dom):
+        # #1639 P15 F1: this value IS the published `candidates[].domain`, and
+        # the x0x schema pins it to the roster. The prefix of an agent's `code`
+        # is not a domain just because it looks like one. `codes.py` normally
+        # rewrites such a code to the ZZZ sentinel upstream; this is the same
+        # answer at the artifact's own boundary, because the X0X schema is a
+        # SECOND published contract and the repair pass reads only the first.
+        print("x0x: %s: domain %r is not an OCRDb domain; filing the candidate "
+              "under ZZZ" % (finding.get("id") or "?", dom), file=sys.stderr)
+        return "ZZZ"
+    return dom
 
 
 def build_candidates(findings):

@@ -266,6 +266,45 @@ class TestSkillMd(unittest.TestCase):
         for host in ("Claude", "kimi", "generic"):
             self.assertIn(host, loop, host)
 
+    def test_skill_md_names_the_python_packages_a_run_needs(self):
+        # #1639 P15 I2: SKILL.md said the three sub-skills were the only
+        # external things this skill asks for. Two Python packages are not
+        # optional, and the one this PR made load-bearing fails AFTER the
+        # review is paid for, so the operator meets it in the wrong place.
+        deps = _section(self.skill_md, "## Dependencies", "Where hosts typically look")
+        for token in ("pyyaml", "jsonschema", "pip install",
+                      "driver readiness", "dependencies"):
+            self.assertIn(token, deps, token)
+
+    def test_the_guide_distinguishes_completion_validity_and_certification(self):
+        # #1639 P15: the run-13 ledger's complaint was that final-schema
+        # assurance lived in a controller-side check, and that terminal
+        # completion, artifact validity and coverage certification were not
+        # told apart anywhere an operator reads. The Output section is where
+        # an operator meets an exit code, so the distinction is pinned HERE,
+        # in the paragraph that has to carry it -- including the two artifacts
+        # a reader would otherwise never know were validated (the hydrated
+        # split union and the X0X sibling) and the fail-closed rule.
+        out = _section(self.text, "## Output", "## Host capabilities")
+        for token in (
+            "Terminal completion, artifact validity and coverage certification",
+            "report-schema.json",
+            "x0x-report-schema.json",
+            "hydrated",
+            "artifact invalid: N schema errors",
+            "fail-closed",
+            # Fix round 1: the principle that makes a terminal schema failure
+            # safe to have at all.
+            "The schema pins the *controller's* output",
+            "never a lever a reviewed repository or a reviewer can pull",
+            "SCHEMA pre-write:",
+            "SCHEMA artifact:",
+        ):
+            self.assertIn(token, out, token)
+        # The exit code is stated with the others, not only in prose.
+        self.assertIn("exits `1` on FAIL, `2` on INCONCLUSIVE, `4` when an "
+                      "artifact it wrote fails its own published schema", out)
+
     def test_pins_round1_flags_and_render_advisor(self):
         for token in [
             "--gate-unverified",

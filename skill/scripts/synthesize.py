@@ -20,6 +20,7 @@ import scripts.synth.plan as plan_mod
 import scripts.synth.cost as cost_mod
 import scripts.synth.report as report_mod
 import scripts.synth.render as render_mod
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synth.verdicts as verdicts_mod
 
 
@@ -97,6 +98,49 @@ def build_parser():
     return ap
 
 
+def validate_artifacts(report_path, x0x_path):
+    """Validate the artifacts AS WRITTEN against their published schemas.
+
+    #1639 P15 ruling 2. `validate_report` checks the in-memory document; this
+    checks what is on disk, which is not the same object and is the only thing
+    a consumer will ever read. Two differences make it its own step:
+
+    * the report may be SPLIT. `report.json` then carries one chunk of
+      `findings` and a `meta.parts` list, so validating the main file alone
+      says nothing about the other chunks. The HYDRATED union is validated,
+      through the same reader `--compare` hydrates with, so the two can never
+      disagree about what "the report" means. A part that cannot be read makes
+      the union unknowable, which fails CLOSED -- a run may not claim validity
+      it could not establish.
+    * `report-x0x.json` is a sibling artifact with its own schema, ingested
+      downstream by OCRDb's candidate pool, and nothing had ever validated it.
+
+    Each error names its artifact, because "N schema errors" across two files
+    is not actionable without knowing which.
+    """
+    errors = []
+    hydrated = render_mod._read_json_report(report_path)
+    name = os.path.basename(report_path)
+    if hydrated is None:
+        errors.append("%s: schema: the written report could not be re-read as "
+                      "one document (see the error above) — validity unknown"
+                      % name)
+    else:
+        errors.extend("%s: %s" % (name, e)
+                      for e in validate_schema_mod.schema_errors(hydrated))
+    x0x_name = os.path.basename(x0x_path)
+    try:
+        with open(x0x_path, encoding="utf-8") as fh:
+            x0x_doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        errors.append("%s: schema: unreadable (%s)" % (x0x_name, exc))
+    else:
+        errors.extend("%s: %s" % (x0x_name, e) for e in
+                      validate_schema_mod.schema_errors(
+                          x0x_doc, validate_schema_mod.X0X_SCHEMA))
+    return errors
+
+
 def main(argv=None):
     """Main entry point: load findings, enrich citations, build and validate report."""
     args = build_parser().parse_args(argv)
@@ -133,6 +177,10 @@ def main(argv=None):
         default_groups = os.path.join(".panopticon", "groups.json")
         if os.path.isfile(default_groups):
             groups_path = default_groups
+    # #1639 P15 (F6): groups.json is read from the target's own `.panopticon/`,
+    # and five of its fields are type-pinned by the time they reach the
+    # artifact. `load_groups_json` normalizes them at the read, so its "never
+    # abort a run" contract survives the validator for every caller.
     gj = plan_mod.load_groups_json(groups_path)
     groups_meta = gj.get("groups", [])
 
@@ -267,7 +315,12 @@ def main(argv=None):
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)
     for e in errors:
-        print("SCHEMA: %s" % e, file=sys.stderr)
+        # Labelled: this pass and the artifact pass below validate different
+        # documents (attach_schema_status and the split writer both add keys
+        # between them), so an unlabelled line left a reader guessing which
+        # document a message was about -- and, on the common case, seeing the
+        # same defect twice as if it were two.
+        print("SCHEMA pre-write: %s" % e, file=sys.stderr)
 
     paths = render_mod.write_report(report, out)
     # §5.1: emit the X0X catalog-gap report — the <DOM>-X0X / ZZZ-X0X findings as
@@ -291,6 +344,30 @@ def main(argv=None):
         print("HTML artifact: %s" % html_out)
     print(render_mod.render_summary(report))
     print("\nJSON artifact: %s" % ", ".join(paths))
+    # #1639 P15: terminal completion, artifact validity and coverage
+    # certification are three different facts, so they get three different
+    # channels. The gate's verdicts (1/2) are VALID reports about a coverage
+    # question and are answered below; this is the artifact itself failing to
+    # be what it claims to be, and it is reported AFTER the summary so the
+    # grade/gate text a run always prints is unchanged by it.
+    artifact_errors = validate_artifacts(paths[0], x0x_path)
+    if artifact_errors:
+        # An artifact error that the pre-write pass already printed is counted
+        # but not reprinted: the two passes agree about it, which is not two
+        # problems. The status line below is the source of truth for the count.
+        already, repeats = set(errors), 0
+        for e in artifact_errors:
+            if (e.split(": ", 1)[-1] if ": " in e else e) in already:
+                repeats += 1
+                continue
+            print("SCHEMA artifact: %s" % e, file=sys.stderr)
+        if repeats:
+            print("SCHEMA artifact: %d error(s) already listed above as pre-write"
+                  % repeats, file=sys.stderr)
+        print("synthesize: artifact invalid: %d schema errors (see %s)"
+              % (len(artifact_errors), ", ".join([paths[0], x0x_path])),
+              file=sys.stderr)
+        return validate_schema_mod.ARTIFACT_INVALID
     gate = report["summary"]["gate"]
     return 1 if gate == "FAIL" else 2 if gate == "INCONCLUSIVE" else 0
 

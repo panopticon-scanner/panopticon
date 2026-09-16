@@ -35,10 +35,23 @@ file stays focused on the host-facing contract.
 
 ## Dependencies
 
-The three `superpowers:*` sub-skills above are the only external things this
-skill asks for. Panopticon does not ship them and does not install them. The
-lookup is read-only: `driver readiness` reports which of the three it found
-and where, and nothing in this skill ever writes to the roots below.
+Two kinds, and `driver readiness` reports both.
+
+**Python packages** — `pyyaml` and `jsonschema`, declared in `pyproject.toml`
+and imported by the run itself (`pyyaml` by discovery, `jsonschema` by the
+completion path that validates the published report against its schema).
+Neither is optional and neither fails cheaply: a missing `pyyaml` takes
+discovery down with a traceback, and a missing `jsonschema` is fail-closed by
+design, so the run exits `artifact invalid` *after* the whole review has been
+paid for. `driver readiness` has a gating `dependencies` row that says which
+one is absent and the `pip install` that fixes it — run it before you run
+anything.
+
+**The three `superpowers:*` sub-skills above** are the only other external
+things this skill asks for. Panopticon does not ship them and does not install
+them, and a missing one is a disclosure rather than a stop. The lookup is
+read-only: `driver readiness` reports which of the three it found and where,
+and nothing in this skill ever writes to the roots below.
 
 Where hosts typically look:
 

@@ -47,6 +47,7 @@ import unittest
 from conftest import SKILL_ROOT
 
 import scripts.evidence as evidence
+import scripts.synth.validate_schema as validate_schema_mod
 
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
 SANITIZER = "_agent_verdict"
@@ -342,3 +343,78 @@ class TestTheDetectorSeesEveryOrdinaryReaderShape(unittest.TestCase):
     def test_a_function_that_never_names_the_key_is_not_a_reader(self):
         self.assertFalse(_detects("    out.append(data['findings'])\n"))
         self.assertFalse(_detects("    out = data.get('verdict')\n"))
+
+
+# --------------------------------------------------------------------------
+# What the sanitizer may REPAIR (#1639 P15 fix round 3, R2-4).
+# --------------------------------------------------------------------------
+# The sanitizer gained a second job in #1639 P15: normalizing the verdict's
+# type-pinned fields to what `report-schema.json` says, so one advisor's
+# `"reasoning": [1, 2]` cannot end a completed run in `error`. That is safe for
+# fields the report only PRINTS, and unsafe for any field an adjudication
+# function reads: there, a repair is not a repair, it is a different answer.
+# `missing_evidence` was in the repair set for one round and did exactly that --
+# `scope_limited_paths` treats a non-list as "said nothing" on purpose, so
+# coercing it retained a primary CONFIRMED (gate-eligible) where the base
+# published `needs_more_info`.
+#
+# Naming the functions rather than the keys, like the guard above: a new key
+# read by the adjudication is caught even if nobody remembers this file.
+ADJUDICATION_FUNCTIONS = (
+    ("scripts/evidence.py", ("match_verdict_by_id", "match_verdict",
+                             "scope_limited_paths", "resolve_duplicates")),
+    ("scripts/synth/verdicts.py", ("resolve_findings",)),
+    ("scripts/group_runner.py", ("verdict_is_done", "pending_verdicts")),
+)
+
+
+def _keys_read(path, names):
+    """Every string key those functions subscript or `.get()`, plus the names
+    actually found -- so a rename cannot silently empty this guard."""
+    with open(os.path.join(SKILL_ROOT, path), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    keys, seen = set(), set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in names:
+            continue
+        seen.add(node.name)
+        for inner in ast.walk(node):
+            if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr == "get" and inner.args
+                    and isinstance(inner.args[0], ast.Constant)
+                    and isinstance(inner.args[0].value, str)):
+                keys.add(inner.args[0].value)
+            if (isinstance(inner, ast.Subscript) and isinstance(inner.slice, ast.Constant)
+                    and isinstance(inner.slice.value, str)):
+                keys.add(inner.slice.value)
+    return keys, seen
+
+
+class TestRepairTouchesPresentationOnly(unittest.TestCase):
+
+    def test_the_repairable_set_is_disjoint_from_what_adjudication_reads(self):
+        repairable = set(validate_schema_mod.REPAIRABLE_VERDICT_FIELDS)
+        for path, names in ADJUDICATION_FUNCTIONS:
+            keys, seen = _keys_read(path, names)
+            self.assertEqual(sorted(seen), sorted(names),
+                             "%s: these adjudication functions were not found, so "
+                             "the guard read nothing: %s"
+                             % (path, sorted(set(names) - seen)))
+            overlap = sorted(repairable & keys)
+            self.assertEqual(overlap, [], (
+                "%s reads %s, and the verdict repair rewrites it. A field the "
+                "adjudication reads is not a presentation field: repairing it "
+                "changes which findings are published and gate-eligible, always "
+                "in the same direction. Either the key leaves "
+                "REPAIRABLE_VERDICT_FIELDS, or the change is a product decision "
+                "with a test that pins the new outcome." % (path, overlap)))
+
+    def test_the_presentation_path_is_deliberately_not_guarded(self):
+        # `derive_evidence` reads `reasoning` and the controller carrier: it is
+        # what builds the report's `evidence` object, and repairing its inputs
+        # is the whole point. Naming it here keeps the exclusion deliberate.
+        keys, _seen = _keys_read("scripts/evidence.py", ("derive_evidence",))
+        self.assertIn("reasoning", keys)
+        self.assertIn("reasoning", validate_schema_mod.REPAIRABLE_VERDICT_FIELDS)

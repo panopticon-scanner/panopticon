@@ -125,8 +125,26 @@ def domain_criteria(bundle, domain):
     return out
 
 
+def is_domain(name):
+    """True iff `name` is one of the roster domains (ZZZ included).
+
+    #1639 P15 fix round 2 (F1): the roster is `DOMAIN_TO_PANEL`'s keys and is
+    ALSO the `candidates[].domain` enum in x0x-report-schema.json, so anything
+    outside it is off-contract for a published artifact. One predicate, so the
+    two call sites that had to invent the check cannot disagree with each other
+    or with the roster.
+    """
+    return isinstance(name, str) and name in DOMAIN_TO_PANEL
+
+
 def domain_of(code):
-    """The domain prefix of a code ('SEC-A1A' -> 'SEC'), or None."""
+    """The domain prefix of a code ('SEC-A1A' -> 'SEC'), or None.
+
+    PREFIX ONLY -- it says what the code claims, not whether the claim is a
+    real domain. `is_domain` is that question, and a caller that puts this
+    value into an artifact must ask it (F1: `"code": "CWE-798"` claims domain
+    `CWE`, which is not a domain, and reached the X0X enum).
+    """
     if not isinstance(code, str) or "-" not in code:
         return None
     return code.split("-", 1)[0]

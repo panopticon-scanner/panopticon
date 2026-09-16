@@ -17,12 +17,13 @@ def test_authors_and_keywords_are_under_project_table():
 
 
 def test_jsonschema_is_a_core_runtime_dependency():
-    # #run7 ARC-F2E put jsonschema under core [project.dependencies]. #run10: the
-    # original rationale cited codex_runner.validate_schema, deleted in #1441, and
-    # validators in discovery/model_resolver/score_gate that never imported it --
-    # no runtime module imports jsonschema today. This test pins the DECLARATION,
-    # which is deliberately unchanged; see the pyproject comment for the standing
-    # question of whether it still belongs in core.
+    # #run7 ARC-F2E put jsonschema under core [project.dependencies]. #run10
+    # recorded that its named consumer (codex_runner.validate_schema) had been
+    # deleted in #1441 and that no runtime module imported it any more, leaving
+    # a standing question about whether it still belonged in core. #1639 P15
+    # answers it: scripts.synth.validate_schema imports jsonschema in the
+    # normal completion path, so the declaration is load-bearing again -- a
+    # core install without it makes every run exit "artifact invalid".
     data = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     core = data["project"]["dependencies"]
     assert any(d.startswith("jsonschema") for d in core), \

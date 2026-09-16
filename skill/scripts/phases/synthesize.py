@@ -6,6 +6,7 @@ import sys
 
 from scripts import hosts
 import scripts.run_manifest as run_manifest
+import scripts.synth.validate_schema as validate_schema_mod
 from . import engine
 from . import runio
 from . import requests
@@ -165,6 +166,18 @@ def synthesize_execute(review_root, manifest):
     # existing reader of report.json / report.json.html resolves it unchanged, and
     # refresh runs/latest. The tag-named files are the durable top-level outputs;
     # the run folder can be cleared without touching them.
+    #
+    # #1639 P15 I3: this runs for ANY run that produced a parseable report --
+    # before the artifact-invalid raise below, not after. Raising first left
+    # `.panopticon/report.json`, the documented backward-compat path, pointing
+    # at the PREVIOUS run's report: complete, valid, possibly PASS. A CI
+    # consumer reading that path after a failed run read someone else's result
+    # and had no way to tell. This run's report is on disk and is the honest
+    # thing to point at; the `error` status beside it, carrying the schema-error
+    # COUNT, is what says not to trust it. (The count is the discriminator, not
+    # `meta.schema_errors`: an x0x-only failure leaves that field at 0 in a
+    # report.json that is itself valid -- the invalid artifact is the other
+    # file, and only the status says so.)
     tag = runio._run_tag(review_root)
     if tag:
         try:   # compat symlinks are best-effort; the tag-named report is authoritative
@@ -175,4 +188,14 @@ def synthesize_execute(review_root, manifest):
         except OSError:
             pass
         runio._ensure_run_symlinks(review_root)
+    # #1639 P15: the one non-gate non-zero status. The report parses — that is
+    # why the guard above cannot see this — but it does not satisfy the schema
+    # panopticon publishes for it, or its hydrated parts / X0X sibling do not.
+    # Artifact validity is not coverage certification and not a gate verdict,
+    # so it ends the run in `error` rather than being absorbed as one.
+    if proc.returncode == validate_schema_mod.ARTIFACT_INVALID:
+        raise runio.DriverError(
+            "synthesize wrote an artifact that fails its own published schema "
+            "(rc=%s): %s" % (proc.returncode,
+                             runio._redact_output((proc.stderr or proc.stdout)[-400:])))
     return engine.PhaseResult(kind="advanced", message="synthesize: report.json written")

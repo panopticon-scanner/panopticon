@@ -2,6 +2,7 @@
 tests/synth/test_<module>.py (WS-0 S4).
 """
 import contextlib
+import inspect
 import io
 import os
 import json
@@ -12,9 +13,12 @@ from unittest import mock
 import scripts.synthesize as syn
 import scripts.run_tools as run_tools
 import scripts.synth.findings as findings_mod
+import scripts.phases.coverage as coverage_phase
+import scripts.synth.coverage_io as coverage_io
 import scripts.synth.plan as plan_mod
 import scripts.synth.verdicts as verdicts_mod
 import scripts.synth.render as render_mod
+import scripts.synth.report as report_mod
 import scripts.evidence as evidence_mod
 
 import pytest
@@ -1004,3 +1008,520 @@ class MainLoaderOrderTest(unittest.TestCase):
             # And the deletion is real: a fresh read after main() returns sees
             # no queue at all, exactly like a run with no leftover file.
             self.assertEqual(plan_mod.load_verify_queue(panopticon_dir), (None, None))
+
+
+class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
+    """#1639 P15 ruling 2: the artifacts AS WRITTEN are validated, and an
+    invalid one is a terminal status of its own.
+
+    Three facts a consumer must be able to tell apart, and each now has its own
+    channel: terminal completion (this exit status), artifact validity (this
+    exit status too, distinctly -- code 4, "artifact invalid"), and coverage
+    certification (`summary.gate` / `summary.coverage_certified`, codes 1 and
+    2, both of them VALID reports about a coverage question). Validating the
+    in-memory report only would miss the two artifacts a consumer actually
+    reads: the HYDRATED union of the split parts, and the X0X sibling.
+    """
+
+    def _fixture(self, d):
+        fp = os.path.join(d, "findings-g1-security.json")
+        with open(fp, "w") as fh:
+            json.dump({"findings": [_agentic("SE-001")]}, fh)
+        return fp, os.path.join(d, "report.json")
+
+    def _run(self, args):
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = syn.main(args)
+        return rc, buf.getvalue(), err.getvalue()
+
+    def test_a_valid_run_is_unaffected(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("artifact invalid", stderr)
+        self.assertIn("Grade:", stdout)
+
+    def test_an_invalid_part_is_caught_through_the_hydrated_union(self):
+        # The MAIN report stays valid; the defect is in a `_partN.json`, which
+        # is exactly the artifact a consumer hydrates and validates and which
+        # nothing on this path had ever read back.
+        real_write = render_mod.write_report
+
+        def _corrupting_write(report, out_path, max_bytes=None):
+            paths = real_write(report, out_path)
+            part = out_path.replace(".json", "_part2.json")
+            with open(part, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [{"id": "SE-002", "title": "t",
+                                         "severity": "SEVERE",   # not a severity
+                                         "confidence": "LIKELY", "panel": "security",
+                                         "category": "injection",
+                                         "evidence": {"status": "unverified"}}]}, fh)
+            report["meta"]["parts"] = [os.path.basename(part)]
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(report, fh)
+            return paths
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(render_mod, "write_report",
+                                   side_effect=_corrupting_write):
+                rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertEqual(rc, 4)
+        self.assertIn("artifact invalid: 1 schema errors", stderr)
+        self.assertIn("SEVERE", stderr)
+        # The gate/certification story is untouched: a different question,
+        # separately answered, still printed.
+        self.assertIn("Grade:", stdout)
+        self.assertIn("Gate:", stdout)
+
+    def test_an_invalid_x0x_artifact_fails_the_run(self):
+        import scripts.x0x_report as x0x_report
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(x0x_report, "build_report",
+                                   return_value={"candidates": []}):   # no schema_version
+                rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertEqual(rc, 4)
+        self.assertIn("artifact invalid:", stderr)
+        self.assertIn("report-x0x.json", stderr)
+        self.assertIn("Grade:", stdout)
+
+    def test_an_unhydratable_part_is_an_invalid_artifact_not_a_silent_pass(self):
+        # A `meta.parts` pointer at a file that cannot be read makes the union
+        # unknowable. Fail closed: the run cannot claim its artifact is valid.
+        real_write = render_mod.write_report
+
+        def _dangling_write(report, out_path, max_bytes=None):
+            paths = real_write(report, out_path)
+            report["meta"]["parts"] = ["report_part2.json"]   # never written
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(report, fh)
+            return paths
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(render_mod, "write_report",
+                                   side_effect=_dangling_write):
+                rc, _stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertEqual(rc, 4)
+        self.assertIn("artifact invalid:", stderr)
+
+    def test_the_two_passes_are_labelled_and_an_error_is_not_printed_twice(self):
+        # M1/M2: the pre-write pass and the artifact pass validate different
+        # documents, so both run — but on the common case they find the SAME
+        # defect, and printing it twice with only a filename between the two
+        # copies reads as two problems. The status line is the source of truth
+        # for the count.
+        real_write = render_mod.write_report
+
+        def _passthrough(report, out_path, max_bytes=None):
+            return real_write(report, out_path)
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = os.path.join(d, "findings-g1-code.json")
+            with open(fp, "w") as fh:
+                json.dump({"findings": [_agentic("SE-001")]}, fh)
+            out = os.path.join(d, "report.json")
+            # Corrupt the built report AFTER validation would have seen it is
+            # impossible from outside; instead break it in a way BOTH passes
+            # see, by writing the same document through unchanged.
+            with mock.patch.object(render_mod, "write_report",
+                                   side_effect=_passthrough),                     mock.patch.object(report_mod, "REPORT_SCHEMA_VERSION", "one"):
+                rc, _stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertEqual(rc, 4, stderr)
+        self.assertIn("SCHEMA pre-write: schema: $.schema_version", stderr)
+        self.assertIn("already listed above as pre-write", stderr)
+        self.assertEqual(stderr.count("$.schema_version:"), 1, stderr)
+        self.assertIn("artifact invalid: 1 schema errors", stderr)
+
+    def test_the_gate_still_owns_codes_1_and_2(self):
+        # Artifact validity must not shadow the gate's own verdicts.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            rc, _stdout, stderr = self._run(
+                ["--target", "src", "--fail-on", "high", "--gate-unverified",
+                 "--out", out, fp])
+        self.assertEqual(rc, 1)
+        self.assertNotIn("artifact invalid", stderr)
+
+
+# #1639 P15 fix round 1, C1. The shapes a review agent can write that the
+# published schema does not permit -- every one of them observed or probed
+# against a real `synthesize.main()`. Before the type-repair pass, 15 of these
+# turned a completed run into terminal `error` (rc 4): an untrusted writer
+# decided whether a paid-for run produced a result. The principle is in
+# `synth/validate_schema.py`: the schema pins the CONTROLLER's output, so
+# everything an agent writes is normalized to the pinned types first.
+#
+# The third column is the stderr fragment the run must ANNOUNCE for that
+# shape -- `PINS` for the schema-driven repair pass, a boundary's own text for
+# the boundaries that do their own normalizing, and `None` only for the shapes
+# some other normalizer already handled, which are here as regression guards
+# rather than as new coverage. No silent repair: a value we changed or dropped
+# is a fact about the reviewer's output.
+PINS = "report-schema.json pins"
+
+_SLOPPY_AGENT_SHAPES = [
+    ("location.file int", {"location": {"file": 7, "line_start": 3}}, PINS),
+    ("location.file dict", {"location": {"file": {"path": "a.py"}}}, PINS),
+    ("location.file list", {"location": {"file": ["a.py"]}}, PINS),
+    ("location.line_start string", {"location": {"file": "a.py", "line_start": "42"}}, PINS),
+    ("location.line_start zero", {"location": {"file": "a.py", "line_start": 0}}, PINS),
+    ("location.line_start negative", {"location": {"file": "a.py", "line_start": -1}}, PINS),
+    ("location.line_start float", {"location": {"file": "a.py", "line_start": 4.5}}, PINS),
+    ("location.function int", {"location": {"file": "a.py", "line_start": 3, "function": 7}}, PINS),
+    ("description int", {"description": 7}, PINS),
+    ("impact list", {"impact": ["bad"]}, PINS),
+    ("remediation dict", {"remediation": {"do": "this"}}, PINS),
+    ("references bare string", {"references": "CWE-89"}, PINS),
+    ("references int items", {"references": [1, 2]}, PINS),
+    ("cvss bare float", {"cvss": 7.5}, PINS),
+    ("cvss numeric string", {"cvss": "9.8"}, PINS),
+    ("cvss.score string", {"cvss": {"score": "9.8"}}, PINS),
+    ("domain off-enum", {"domain": "XYZ"}, PINS),
+    ("depth off-enum", {"depth": "profound"}, PINS),
+    ("source_role off-enum", {"source_role": "ninja"}, PINS),
+    ("provenance.discovered_by int", {"provenance": {"discovered_by": 5}}, PINS),
+    ("severity_override string", {"severity_override": "yes"}, PINS),
+    ("backup_confirmed string", {"backup_confirmed": "yes"}, PINS),
+    ("tool_evidence.rule_id int", {"tool_evidence": {"rule_id": 5}}, PINS),
+    ("code int", {"code": 7}, PINS),
+    ("category int", {"category": 7}, PINS),
+    # Fix round 2: four more boundaries the round-1 pass never saw.
+    ("code with a non-roster domain prefix", {"code": "CWE-798"},
+     "names no OCRDb domain"),                                          # F1
+    ("domain off-enum with a matching code", {"domain": "XYZ", "code": "XYZ-A1A"},
+     "names no OCRDb domain"),                                          # F1
+    ("provenance.model with no discovered_by",
+     {"provenance": {"model": "gpt-6"}}, "role recorded as"),           # F2
+    ("provenance.discovered_by dict",
+     {"provenance": {"model": "m", "discovered_by": {"a": 1}}}, PINS),  # F2
+    ("agent-supplied delta outside delta mode",
+     {"delta": {"on_diff": "yes", "hunk": "a", "distance": "x"}}, PINS),  # F4
+    # Fix round 3, R2-1: the two `_OWNED_DOWNSTREAM` entries whose declared
+    # normalizer RAISES on the value it is declared to normalize. `panel` is
+    # tested for set membership (unhashable -> TypeError) before any derivation,
+    # and the `epss` consumer in citations.py assumes objects.
+    ("panel dict", {"panel": {"a": 1}}, PINS),
+    ("panel list", {"panel": [1]}, PINS),
+    ("citations.epss dict", {"citations": {"epss": {"a": 1}}}, PINS),
+    ("citations.epss string", {"citations": {"epss": "x"}}, PINS),
+    ("citations.epss string items", {"citations": {"epss": ["x"]}}, PINS),
+    ("citations.epss list items", {"citations": {"epss": [[1]]}}, PINS),
+    # Already handled elsewhere -- regression guards.
+    ("location empty", {"location": {}}, None),
+    ("citations.owasp int items", {"citations": {"owasp": [1]}}, None),
+    ("unknown extra key", {"invented_by_the_agent": {"x": 1}}, None),
+]
+
+
+@pytest.mark.parametrize("label,patch,announces",
+                         _SLOPPY_AGENT_SHAPES,
+                         ids=[s[0] for s in _SLOPPY_AGENT_SHAPES])
+def test_a_sloppy_agent_finding_never_ends_the_run(label, patch, announces, tmp_path):
+    finding = {"id": "SE-001", "title": "sqli", "severity": "MEDIUM",
+               "confidence": "LIKELY", "panel": "code", "category": "injection",
+               "location": {"file": "a.py", "line_start": 1}}
+    finding.update(patch)
+    fp = tmp_path / "findings-g1-code.json"
+    fp.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--out", str(out), str(fp)])
+    assert rc == 0, "%s ended the run (rc=%s): %s" % (label, rc, err.getvalue())
+    assert "artifact invalid" not in err.getvalue(), label
+    if announces:
+        assert announces in err.getvalue(), \
+            "%s was accepted silently; the boundary must say what it changed" % label
+
+
+def test_a_target_pre_committed_coverage_file_cannot_end_the_run(tmp_path):
+    # #1639 P15 C1 vector 3: `<run_dir>/coverage-*.json` is globbed straight
+    # out of the scanned repository on the agentic path, so a hostile target
+    # can pre-commit one. `meta.coverage.cells.missing_floor` publishes its
+    # group/domain pair as two strings -- a non-string pair must be dropped
+    # here, not carried into the artifact and rejected at the exit.
+    run_dir = tmp_path / ".panopticon"
+    run_dir.mkdir()
+    (run_dir / "coverage-evil.json").write_text(
+        json.dumps({"group": 7, "floor": ["SEC"], "effective": ["SEC"]}), encoding="utf-8")
+    (run_dir / "coverage-ok.json").write_text(
+        json.dumps({"group": "app", "floor": [9, "SEC"], "effective": ["SEC"]}),
+        encoding="utf-8")
+    fp = tmp_path / "findings-app-code.json"
+    fp.write_text(json.dumps({"findings": []}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--run-dir", str(run_dir),
+                       "--out", str(out), str(fp)])
+    assert rc in (0, 2), err.getvalue()      # 2 = INCONCLUSIVE, a GATE verdict
+    assert "artifact invalid" not in err.getvalue()
+    report = json.loads(out.read_text(encoding="utf-8"))
+    for pair in report["meta"]["coverage"]["cells"]["missing_floor"]:
+        assert all(isinstance(x, str) for x in pair), pair
+
+
+# Fix round 3, R2-2. Round 1 pinned what `missing_floor` PUBLISHES; the READ
+# was still raw, and the real record shape is `{group, floor, excluded,
+# effective}` -- `group` is used as a dict key, `floor` is iterated and
+# `excluded` becomes a set, so eleven ordinary wrong types ended the run in
+# TypeError before the published pair was ever built.
+_HOSTILE_COVERAGE_CELLS = [
+    ("group dict", {"group": {"a": 1}, "floor": ["SEC"]}),
+    ("group list", {"group": [1], "floor": ["SEC"]}),
+    ("group int", {"group": 7, "floor": ["SEC"]}),
+    ("floor int", {"group": "g1", "floor": 7}),
+    ("floor bool", {"group": "g1", "floor": True}),
+    ("floor bare string", {"group": "g1", "floor": "SEC"}),
+    ("floor nested list", {"group": "g1", "floor": [[1]]}),
+    ("floor dict", {"group": "g1", "floor": {"SEC": 1}}),
+    ("excluded int", {"group": "g1", "floor": ["SEC"], "excluded": 7}),
+    ("excluded float", {"group": "g1", "floor": ["SEC"], "excluded": 1.5}),
+    ("excluded nested list", {"group": "g1", "floor": ["SEC"], "excluded": [[1]]}),
+]
+
+
+@pytest.mark.parametrize("label,cell", _HOSTILE_COVERAGE_CELLS,
+                         ids=[x[0] for x in _HOSTILE_COVERAGE_CELLS])
+def test_no_coverage_cell_a_target_can_write_ends_the_run(tmp_path, label, cell):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "coverage-g1.json").write_text(json.dumps(cell), encoding="utf-8")
+    fp = run_dir / "findings-g1-SEC.json"
+    fp.write_text(json.dumps({"findings": []}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--run-dir", str(run_dir),
+                       "--out", str(out), str(fp)])
+    assert rc in (0, 2), err.getvalue()      # 2 = INCONCLUSIVE, a GATE verdict
+    assert "artifact invalid" not in err.getvalue()
+    report = json.loads(out.read_text(encoding="utf-8"))
+    for pair in report["meta"]["coverage"]["cells"]["missing_floor"]:
+        assert all(isinstance(x, str) for x in pair), pair
+
+
+def test_the_coverage_reader_reads_the_shape_the_phase_writes():
+    # The sweep row for `coverage-g1.json` used to write `{"cells": [...],
+    # "missing_floor": [...]}` -- keys `audit_floor_cells` never looks at -- so
+    # it was green over zero coverage of the artifact it named. Pin the three
+    # field names against the phase that WRITES the record, so a rename on
+    # either side is caught instead of silently emptying every hostile fixture.
+    writer = inspect.getsource(coverage_phase.coverage_execute)
+    reader = (inspect.getsource(coverage_io.audit_floor_cells)
+              + inspect.getsource(coverage_io.normalized_cell))
+    for key in ("group", "floor", "excluded"):
+        assert '"%s":' % key in writer, "%s is not written by the phase" % key
+        assert '"%s"' % key in reader, "%s is not read by the audit" % key
+    for row in _HOSTILE_RUN_ARTIFACTS:
+        if row[0] == "coverage-g1.json":
+            assert set(row[1]) & {"group", "floor", "excluded"}, \
+                "the sweep's coverage row must use keys the reader reads"
+
+
+def test_a_cross_domain_finding_with_a_mistyped_code_cannot_end_the_run(tmp_path):
+    # #1639 P15 C1 vector 2: integrity.cross_domain_findings copies `code` and
+    # `domain` verbatim off the agent payload into a section the schema types.
+    fp = tmp_path / "findings-g1-SEC.json"
+    fp.write_text(json.dumps({"findings": [
+        {"id": "TS-001", "title": "t", "severity": "LOW", "confidence": "POSSIBLE",
+         "panel": "test", "category": "coverage", "domain": "TST", "code": 7,
+         "location": {"file": "a.py", "line_start": 1}}]}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--out", str(out), str(fp)])
+    assert rc == 0, err.getvalue()
+    assert "artifact invalid" not in err.getvalue()
+    for row in json.loads(out.read_text(encoding="utf-8"))["meta"]["integrity"]["cross_domain_findings"]:
+        assert isinstance(row["finding_domain"], str), row
+        assert row["code"] is None or isinstance(row["code"], str), row
+
+
+def test_a_code_with_no_ocrdb_domain_files_under_the_ZZZ_sentinel(tmp_path):
+    # #1639 P15 fix round 2, F1. `repair_finding` derives its rules from
+    # report-schema.json, but the completion path enforces TWO schemas, and the
+    # X0X sibling pins `candidates[].domain` to the 11-domain roster. Its value
+    # came straight off the agent's `code` prefix with no roster check, so
+    # `"code": "CWE-798"` -- the CWE id in the OCRDb code field, the single most
+    # plausible slip there is -- emitted `domain: "CWE"` and ended the run.
+    # Silently: `code` is a perfectly good string, so the repair pass had
+    # nothing to say about it.
+    fp = tmp_path / "findings-g1-code.json"
+    fp.write_text(json.dumps({"findings": [
+        {"id": "SE-001", "title": "hardcoded key", "severity": "HIGH",
+         "confidence": "LIKELY", "panel": "code", "category": "secrets",
+         "code": "CWE-798", "location": {"file": "a.py", "line_start": 1}}]}),
+        encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--out", str(out), str(fp)])
+    assert rc == 0, err.getvalue()
+    assert "artifact invalid" not in err.getvalue()
+    assert "names no OCRDb domain" in err.getvalue(), err.getvalue()
+    x0x = json.loads((tmp_path / "report-x0x.json").read_text(encoding="utf-8"))
+    assert [c["domain"] for c in x0x["candidates"]] == ["ZZZ"], x0x
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["findings"][0]["code"] == "ZZZ-X0X"
+
+
+def test_an_advisor_verdict_with_mistyped_prose_cannot_end_the_run(tmp_path):
+    # #1639 P15 fix round 2, F3: the verify round writes THREE type-pinned
+    # fields onto an already-normalized finding from a SECOND agent-authored
+    # source -- the advisor's verdict JSON -- after the findings boundary. One
+    # advisor typing a list where a string belongs produced four schema errors
+    # and a terminal `error`.
+    run_dir = tmp_path / "run"
+    vdir = tmp_path / "verdicts"
+    run_dir.mkdir()
+    vdir.mkdir()
+    fp = run_dir / "findings-g1-SEC.json"
+    fp.write_text(json.dumps({"findings": [_agentic("SE-001")]}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        syn.main(["--target", "src", "--run-dir", str(run_dir),
+                  "--emit-verify-queue", str(fp)])
+        queue = json.loads((run_dir / "verify-queue.json").read_text(encoding="utf-8"))
+        fid = queue["entries"][0]["finding"]["id"]
+        (vdir / "verdicts-g1-SEC.json").write_text(json.dumps(
+            {"verdicts": [{"finding_id": fid, "verdict": "CONFIRMED",
+                           "reasoning": [1, 2], "model": 7}],
+             "_panopticon": {"run_id": queue["run_id"], "role": "domain_advisor",
+                             "domain": "SEC", "group": "g1", "stage": "primary"}}),
+            encoding="utf-8")
+        rc = syn.main(["--target", "src", "--run-dir", str(run_dir),
+                       "--verdicts-dir", str(vdir), "--out", str(out), str(fp)])
+    assert rc == 0, err.getvalue()
+    assert "artifact invalid" not in err.getvalue()
+    report = json.loads(out.read_text(encoding="utf-8"))
+    # The verdict still BOUND -- the repair must not cost the run its verification.
+    assert report["meta"]["coverage"]["verdicts"]["matched"] == 1, report["meta"]["coverage"]["verdicts"]
+    finding = report["findings"][0]
+    assert finding["evidence"]["status"] == "advisor_confirmed", finding["evidence"]
+    assert isinstance(finding["evidence"]["reasoning"], str), finding["evidence"]
+    assert isinstance(finding["provenance"]["confirmed_by_model"], str)
+
+
+def test_a_mistyped_groups_json_cannot_end_the_run(tmp_path):
+    # #1639 P15 fix round 2, F6: `.panopticon/groups.json` sits in the same
+    # target-writable directory as `coverage-*.json`, and `load_groups_json` is
+    # tolerant BY DESIGN ("never abort a run"). `groups[].files` is pinned as an
+    # array, so a bare string aborted the run two hundred lines later -- the
+    # loader's promise broken by a validator it never heard of.
+    groups = tmp_path / "groups.json"
+    groups.write_text(json.dumps({"groups": [
+        {"name": "g1", "files": "a.py"},
+        {"name": 7, "files": ["b.py"]},
+        {"name": "g3", "files": ["c.py", 9]}]}), encoding="utf-8")
+    fp = tmp_path / "findings-g1-code.json"
+    fp.write_text(json.dumps({"findings": []}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--groups", str(groups),
+                       "--out", str(out), str(fp)])
+    assert rc == 0, err.getvalue()
+    assert "artifact invalid" not in err.getvalue()
+    report = json.loads(out.read_text(encoding="utf-8"))
+    for group in report["groups"]:
+        assert isinstance(group["name"], str), group
+        assert isinstance(group["files"], list), group
+        assert all(isinstance(f, str) for f in group["files"]), group
+
+
+# The rest of what a target can write into `.panopticon/groups.json`: `files`
+# omitted (`grading` subscripts it), `parent` and `groups` mistyped (both are
+# subscripted or regexed), `mode` read as a dict KEY (unhashable -> TypeError),
+# and `security_mode` copied into an enum-pinned `meta` field.
+_HOSTILE_GROUPS_JSON = [
+    ("files omitted", {"groups": [{"name": "g1"}]}),
+    ("groups not a list", {"groups": "g1"}),
+    ("a group that is not an object", {"groups": [7, {"name": "g1", "files": []}]}),
+    ("parent mistyped", {"groups": [{"name": "g1", "files": ["a.py"], "parent": 7}]}),
+    ("mode mistyped", {"groups": [], "mode": ["repo"]}),
+    ("security_mode mistyped", {"groups": [], "security_mode": 7}),
+    ("security_mode off-enum", {"groups": [], "security_mode": "wide-open"}),
+]
+
+
+@pytest.mark.parametrize("label,groups_json", _HOSTILE_GROUPS_JSON,
+                         ids=[x[0] for x in _HOSTILE_GROUPS_JSON])
+def test_no_groups_json_a_target_can_write_ends_the_run(tmp_path, label, groups_json):
+    groups = tmp_path / "groups.json"
+    groups.write_text(json.dumps(groups_json), encoding="utf-8")
+    fp = tmp_path / "findings-g1-code.json"
+    fp.write_text(json.dumps({"findings": []}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--groups", str(groups),
+                       "--out", str(out), str(fp)])
+    assert rc == 0, err.getvalue()
+    assert "artifact invalid" not in err.getvalue()
+    assert "groups.json:" in err.getvalue(), err.getvalue()
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["meta"]["security_mode"] in ("standard", "redteam")
+
+
+# The rest of the run folder, swept field by field against both schemas
+# (#1639 P15 fix round 2, the implementer's own trace). Everything under
+# `.panopticon` is readable and pre-committable by the reviewed repository, so
+# every artifact synthesize reads gets one deliberately wrong-typed value here.
+# The two that were NOT tolerant: a verify-queue entry whose `finding` is not
+# an object (AttributeError in `group_runner.pending_verdicts`, whose docstring
+# already promised to skip malformed entries) and a tools-manifest whose
+# `selected` names are not strings (TypeError joining them in
+# `render.render_summary`, on a report that had already validated).
+_HOSTILE_RUN_ARTIFACTS = [
+    ("host-capabilities.json", {"host": 7, "capabilities": [], "cli_flags": 3}),
+    ("panel-tools-context.json", {"with": "many", "without": None}),
+    ("usage.json", {"total": "lots", "by_phase": 7}),
+    ("unenforced-ack.json", {"acknowledged": 7, "hashes": "x"}),
+    ("panel-test-inventory.json", {"g1": 7}),
+    ("scout-g1.json", {"tools": [7, "semgrep"], "domains": 7}),
+    ("dispatch-plan-driver.json", {"cells": 7}),
+    ("verify-queue.json", {"entries": [{"queue_id": 7, "finding": 9}], "run_id": 7}),
+    # The REAL record shape (R2-2): `{group, floor, excluded, effective}` is
+    # what `phases.coverage` writes and `coverage_io` reads. The row that
+    # named `cells`/`missing_floor` exercised nothing.
+    ("coverage-g1.json", {"group": {"a": 1}, "floor": 7, "excluded": [[1]],
+                          "effective": ["SEC"]}),
+    ("tools-manifest.json", {"schema_version": 1, "selected": [7], "missing": 8}),
+]
+
+
+@pytest.mark.parametrize("name,body", _HOSTILE_RUN_ARTIFACTS,
+                         ids=[x[0] for x in _HOSTILE_RUN_ARTIFACTS])
+def test_no_run_artifact_a_target_can_write_ends_the_run(tmp_path, name, body):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / name).write_text(json.dumps(body), encoding="utf-8")
+    fp = run_dir / "findings-g1-SEC.json"
+    fp.write_text(json.dumps({"findings": [_agentic("SE-001")]}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    buf, err = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
+            contextlib.redirect_stderr(err):
+        rc = syn.main(["--target", "src", "--run-dir", str(run_dir),
+                       "--out", str(out), str(fp)])
+    assert rc != 4, err.getvalue()
+    assert "artifact invalid" not in err.getvalue()
+    # No JSON-path (type) error from either schema. `meta.schema_errors` also
+    # counts the advisory domain checks, which this fixture deliberately trips.
+    assert "schema: $." not in err.getvalue()
+    json.loads(out.read_text(encoding="utf-8"))

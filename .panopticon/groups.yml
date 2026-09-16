@@ -255,6 +255,7 @@ groups:
       - tests/test_no_per_file_sys_path.py
       - tests/test_replay_report.py
       - tests/test_report_redaction_e2e.py
+      - tests/test_schema_parity.py
       - tests/test_verdict_binding.py
     Core:
       match:
