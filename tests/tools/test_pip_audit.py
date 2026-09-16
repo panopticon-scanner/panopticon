@@ -1004,10 +1004,76 @@ class TestEverySanitizerCallGoesThroughTheHelper(unittest.TestCase):
 
     _SANITIZERS = ("sanitize_requirements", "sanitize_requirements_file")
     _HELPERS = ("sanitize", "sanitize_file")
+    _MODULE = "pip_audit"
 
-    def _offenders(self):
-        with open(__file__, encoding="utf-8") as fh:
-            tree = ast.parse(fh.read(), __file__)
+    @staticmethod
+    def _dotted(node):
+        """`pa` / `scripts.tools.pip_audit` for a Name/Attribute chain, else ''."""
+        parts = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if not isinstance(node, ast.Name):
+            return ""
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+
+    def _bindings(self, tree):
+        """`(receivers, bare)` DERIVED from the module's own import statements.
+
+        Hard-coding the receiver name is what made round 2's guard recognise
+        one of five spellings (F7). `import … pip_audit as pa` binds a
+        receiver; `from …pip_audit import sanitize_requirements [as s]` binds a
+        bare name; `from scripts.tools import pip_audit` binds a receiver too.
+        A plain `import scripts.tools.pip_audit` binds `scripts`, and the call
+        is then a dotted chain -- handled by `_dotted` at the call site rather
+        than by a binding.
+        """
+        receivers, bare = set(), set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.rpartition(".")[2] == self._MODULE and alias.asname:
+                        receivers.add(alias.asname)
+            elif isinstance(node, ast.ImportFrom):
+                where = (node.module or "").rpartition(".")[2]
+                for alias in node.names:
+                    if where == self._MODULE and alias.name in self._SANITIZERS:
+                        bare.add(alias.asname or alias.name)
+                    elif alias.name == self._MODULE:
+                        receivers.add(alias.asname or alias.name)
+        # A local bind of a sanitizer to a bare name (`f = pa.sanitize_…`) is
+        # another spelling; resolve to a fixed point so a chain of them counts.
+        changed = True
+        while changed:
+            changed = False
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                    continue
+                (target,) = node.targets          # unpack; never index a node
+                if not isinstance(target, ast.Name) or target.id in bare:
+                    continue
+                name, value = target.id, node.value
+                if (self._is_sanitizer_attr(value, receivers)
+                        or (isinstance(value, ast.Name) and value.id in bare)):
+                    bare.add(name)
+                    changed = True
+        return receivers, bare
+
+    def _is_sanitizer_attr(self, node, receivers):
+        """`<module>.sanitize_requirements[_file]`, by any spelling of <module>."""
+        if not (isinstance(node, ast.Attribute) and node.attr in self._SANITIZERS):
+            return False
+        owner = self._dotted(node.value)
+        return owner in receivers or owner.rpartition(".")[2] == self._MODULE
+
+    def _offenders(self, source=None, path=None):
+        path = path or __file__
+        if source is None:
+            with open(path, encoding="utf-8") as fh:
+                source = fh.read()
+        tree = ast.parse(source, path)
+        receivers, bare = self._bindings(tree)
         allowed = set()
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name in self._HELPERS:
@@ -1017,13 +1083,11 @@ class TestEverySanitizerCallGoesThroughTheHelper(unittest.TestCase):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            if not (isinstance(func, ast.Attribute)
-                    and func.attr in self._SANITIZERS
-                    and isinstance(func.value, ast.Name) and func.value.id == "pa"):
+            direct = (self._is_sanitizer_attr(func, receivers)
+                      or (isinstance(func, ast.Name) and func.id in bare))
+            if not direct or node.lineno in allowed:
                 continue
-            if node.lineno in allowed:
-                continue
-            out.append("%s:%d %s" % (os.path.basename(__file__), node.lineno,
+            out.append("%s:%d %s" % (os.path.basename(path), node.lineno,
                                      ast.unparse(node)))
         return out
 
@@ -1045,6 +1109,50 @@ class TestEverySanitizerCallGoesThroughTheHelper(unittest.TestCase):
         blob = "\n".join(found)
         for name in self._SANITIZERS:
             self.assertIn("pa.%s(" % name, blob)
+
+    # Fix round 3, F7: the guard hard-coded the receiver name `pa`, so it
+    # recognised ONE of the five ways this module could call the sanitizer --
+    # a completeness claim whose mechanism does not cover the case that
+    # matters, which is the round-1 F4 defect reproduced one level up. Each
+    # spelling is mutation-proved here rather than assumed.
+    _SPELLINGS = {
+        "module alias":
+            "import scripts.tools.pip_audit as pa\n"
+            "pa.sanitize_requirements('x')\n",
+        "a different module alias":
+            "import scripts.tools.pip_audit as pip_audit\n"
+            "pip_audit.sanitize_requirements('x')\n",
+        "from-import":
+            "from scripts.tools.pip_audit import sanitize_requirements\n"
+            "sanitize_requirements('x')\n",
+        "renamed from-import":
+            "from scripts.tools.pip_audit import sanitize_requirements as s\n"
+            "s('x')\n",
+        "bound alias":
+            "import scripts.tools.pip_audit as pa\n"
+            "f = pa.sanitize_requirements\n"
+            "f('x')\n",
+        "dotted module path":
+            "import scripts.tools.pip_audit\n"
+            "scripts.tools.pip_audit.sanitize_requirements_file('x', 'y')\n",
+        "from-import of the module":
+            "from scripts.tools import pip_audit\n"
+            "pip_audit.sanitize_requirements_file('x', 'y')\n",
+    }
+
+    def test_every_spelling_of_a_direct_call_is_caught(self):
+        for label, source in sorted(self._SPELLINGS.items()):
+            with self.subTest(spelling=label):
+                self.assertTrue(self._offenders(source, "<%s>" % label),
+                                "this spelling walks past the guard:\n" + source)
+
+    def test_an_unrelated_call_is_not_flagged(self):
+        # The receiver set is DERIVED from the module's own imports, so an
+        # unrelated object that happens to expose the same method name is not
+        # an offender -- the guard must not become noise nobody can satisfy.
+        self.assertEqual(
+            self._offenders("import other\nother.sanitize_requirements('x')\n",
+                            "<unrelated>"), [])
 
 
 @unittest.skipUnless(Requirement is not None, "packaging is not importable")
@@ -1078,6 +1186,28 @@ class TestOnlyRealFilesAreCandidates(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         os.mkdir(os.path.join(d, "requirements-x.txt"))
         self.assertIsNone(pa.PipAuditAdapter()._find_requirement(d))
+
+    def test_a_dangling_symlink_out_of_the_tree_still_says_outside_target(self):
+        # F8: `isfile` ran BEFORE the confinement loop, and `isfile` is false
+        # for a symlink whose target does not exist -- so a repo whose
+        # `requirements.txt` points at a non-existent host path read as having
+        # NO manifest, which is precisely the reading C2(a) promised to make
+        # impossible. Nothing to read and nothing to publish, so no security
+        # consequence; it is a hole in the disclosure.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.symlink("/nonexistent/outside/credentials",
+                   os.path.join(d, "requirements.txt"))
+        report = pa.PipAuditAdapter().sanitization_report(d)
+        self.assertIsNotNone(report, "the escaping manifest was not disclosed")
+        self.assertIn("outside target", report["source"])
+
+    def test_a_dangling_symlink_inside_the_tree_is_just_absent(self):
+        # Confined and broken is not an escape: nothing to disclose.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        os.symlink(os.path.join(d, "gone.txt"), os.path.join(d, "requirements.txt"))
+        self.assertIsNone(pa.PipAuditAdapter().sanitization_report(d))
 
     def test_a_real_sibling_beside_it_still_wins(self):
         d = tempfile.mkdtemp()
@@ -1149,6 +1279,19 @@ class TestBothBranchesShareOneBound(unittest.TestCase):
             fh.write('[project]\nname = "x"\ndependencies = ["ok==1"]\n')
         report = pa.PipAuditAdapter().sanitization_report(d)
         self.assertEqual((report["kept"], report["truncated"]), (1, False))
+
+    def test_a_leading_newline_does_not_keep_a_megabyte_of_partial_line(self):
+        # F9: the rollback guarded on `cut > 0` to avoid emptying the buffer,
+        # so a document whose only newline is byte 0 kept its whole 1 MiB
+        # partial tail -- exactly the noise row the rollback exists to prevent,
+        # in the one case it declined to handle. Same for no newline at all:
+        # neither holds a COMPLETE line, and a partial line is not a
+        # requirement.
+        for data in (b"\n" + b"z" * (2 * 1024 * 1024), b"z" * (2 * 1024 * 1024)):
+            with self.subTest(leading_newline=data.startswith(b"\n")):
+                text, truncated = pa._bounded(data)
+                self.assertTrue(truncated)
+                self.assertEqual(text, "")
 
     def test_the_byte_bound_rolls_back_to_a_line_break(self):
         # A character slice can cut a dependency mid-string and manufacture a

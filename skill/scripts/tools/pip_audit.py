@@ -199,9 +199,13 @@ def _bounded(data):
     raw = data if isinstance(data, bytes) else str(data or "").encode("utf-8", "replace")
     truncated = len(raw) > _MAX_READ_BYTES
     if truncated:
-        raw = raw[:_MAX_READ_BYTES]
-        cut = raw.rfind(b"\n")
-        raw = raw[:cut] if cut > 0 else raw
+        # Keep only COMPLETE lines (F9). `rpartition` is the whole rule: it
+        # yields "" when the last newline is at byte 0 and when there is no
+        # newline at all, which the previous `cut > 0` guard did not -- it kept
+        # the entire 1 MiB partial tail in both cases, and that tail was then
+        # classified and published as a truncated `unparseable` row, exactly
+        # the noise the rollback exists to prevent.
+        raw, _sep, _tail = raw[:_MAX_READ_BYTES].rpartition(b"\n")
     text = raw.decode("utf-8", "replace")
     lines = text.splitlines()
     if len(lines) > _MAX_READ_LINES:
@@ -327,16 +331,22 @@ def _requirement_candidate(target):
     """
     exact = os.path.join(target, "requirements.txt")
     candidates = [exact] + sorted(glob.glob(os.path.join(target, "requirements*.txt")))
-    # F5: `isfile` on EVERY candidate, not only the canonical name. A directory
-    # called `requirements-x.txt` used to win the glob, `walk` swallowed the
-    # IsADirectoryError, and the manifest read `kept: 0, dropped: []` -- which
-    # says "audited, nothing to disclose", not "could not read".
-    candidates = [c for c in dict.fromkeys(candidates) if os.path.isfile(c)]
+    # `lexists`, not `isfile`: a DANGLING symlink is a path entry that exists
+    # and has to be judged, and `isfile` is false for one (F8). Filtering on
+    # `isfile` here ran the F5 check ahead of confinement, so
+    # `requirements.txt -> /nonexistent/outside/creds` reported as "no
+    # manifest" -- the exact reading C2(a) exists to make impossible.
+    candidates = [c for c in dict.fromkeys(candidates) if os.path.lexists(c)]
     rejected = []
     for candidate in candidates:
-        if _within(target, candidate):
+        if not _within(target, candidate):
+            rejected.append(os.path.relpath(candidate, target))
+        elif os.path.isfile(candidate):
             return candidate, rejected
-        rejected.append(os.path.relpath(candidate, target))
+        # Confined but not a regular file -- a DIRECTORY named
+        # `requirements-x.txt` (F5), or an in-tree symlink whose target is
+        # gone. Not a candidate, and not an escape either, so nothing to
+        # disclose: it is simply not a manifest.
     return None, rejected
 
 
