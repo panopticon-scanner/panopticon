@@ -742,12 +742,18 @@ class TestCodexHostDocs(unittest.TestCase):
         self.assertIn("generic", skill)
 
 
-    def test_the_read_confinement_limit_is_recorded(self):
-        # M-3: O_NOFOLLOW stops symlinks, not HARD links. A target that ships
-        # a hard link to a file outside a directory grant is readable through
-        # it. Inherent to path-based confinement (Claude's read guard has the
-        # same property), so it is recorded rather than fixed -- but recorded.
-        self.assertIn("hard link", _read_doc())
+    def test_the_hard_link_rule_for_directory_grants_is_stated(self):
+        # M-3 recorded this as an inherent limit: a hard link to a file outside
+        # a directory grant "reads as a file in the grant, because it is one".
+        # #1642 closed it, so the guide states the RULE instead -- including
+        # which grant kind refuses what, and what it costs, because the
+        # reviewer whose hard-linked build output stopped being readable is the
+        # one who comes here to find out why.
+        doc = _read_doc()
+        self.assertIn("hard link", doc)
+        self.assertIn("st_nlink", doc)
+        self.assertIn("Exact grants are not narrowed this way", doc)
+        self.assertNotIn("inherent to path-based confinement", doc)
 
     def test_the_headless_runner_sentence_has_its_antecedent(self):
         # M-8: "...session when it does not (Claude and Codex have headless
