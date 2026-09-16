@@ -172,9 +172,12 @@ def synthesize_execute(review_root, manifest):
     # `.panopticon/report.json`, the documented backward-compat path, pointing
     # at the PREVIOUS run's report: complete, valid, possibly PASS. A CI
     # consumer reading that path after a failed run read someone else's result
-    # and had no way to tell. This run's report is on disk, carries
-    # `meta.schema_errors`, and is the honest thing to point at; the `error`
-    # status beside it is what says not to trust it.
+    # and had no way to tell. This run's report is on disk and is the honest
+    # thing to point at; the `error` status beside it, carrying the schema-error
+    # COUNT, is what says not to trust it. (The count is the discriminator, not
+    # `meta.schema_errors`: an x0x-only failure leaves that field at 0 in a
+    # report.json that is itself valid -- the invalid artifact is the other
+    # file, and only the status says so.)
     tag = runio._run_tag(review_root)
     if tag:
         try:   # compat symlinks are best-effort; the tag-named report is authoritative
