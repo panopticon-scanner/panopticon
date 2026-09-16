@@ -11,17 +11,25 @@ only writer who can trip it is us. Without it, a reviewer that typed
 malformed file under `.panopticon`, would decide whether a paid-for run
 produces a result.
 
-Two halves, deliberately in one module so they cannot disagree about what the
-pinned type IS: `schema_errors` validates on the way out, the `repair_*`
-functions normalize on the way in, and the second derives its rules from the
-first's schema file rather than restating them. EVERY boundary where agent or
-target content enters is covered, against BOTH schemas the completion path
-enforces (fix round 2):
+Two halves that must not disagree about what the pinned type IS: `schema_errors`
+validates on the way out, the `repair_*` functions normalize on the way in, and
+the second derives its rules from the first's schema file rather than restating
+them. They lived in one module for that reason until #1645 pushed it past the
+700-line ratchet; the three TARGET-boundary readers now live in `synth/repair`
+(`repair_groups_json` and `tools-manifest.json`'s `sanitized` and `network`
+blocks, which also bound what they republish) and reach BACK across the split
+by module attribute for `_report_doc`, `_repair_node` and `_conforms` -- so the
+rules still come from this module's schema file, and nothing was copied. The
+AGENT-sourced repairs stay here, beside that machinery. EVERY boundary where
+agent or target content enters is covered, against BOTH schemas the completion
+path enforces (fix round 2):
 
   `repair_finding`   agent and tool findings, via `findings.normalize_finding`
   `repair_verdict`   an advisor's verdict, via THE sanitizer `evidence._agent_verdict`
                      -- PRESENTATION fields only, see REPAIRABLE_VERDICT_FIELDS
-  `repair_groups_json`  the target-writable `.panopticon/groups.json`, at its read
+  `repair.repair_groups_json`        the target-writable `.panopticon/groups.json`
+  `repair.repair_tools_sanitized`    `tools-manifest.json`'s partial-audit block
+  `repair.repair_tools_network`      `tools-manifest.json`'s egress-posture block
   `integrity.cross_domain_findings`  agent-stated domains on a cross-domain claim
   `coverage_io.normalized_cell`      the target-writable `.panopticon/coverage-*.json`
   `codes.*` / `x0x_report._domain`   an agent `code` naming no OCRDb domain, for

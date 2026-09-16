@@ -16,11 +16,17 @@ module past the 700-line ratchet -- the agent-sourced repairs (`repair_finding`,
 which this module reaches by module attribute for `repair_groups_json`.
 
 BOUNDS. Everything here is text bound for two published artifacts (the report
-and its HTML), so every read is bounded on three axes: how many rows, how long
-a name, how long a value. One set of numbers, applied identically at all three
-boundaries -- a producer that caps its own output (`scripts.tools.pip_audit`)
-is a statement about the CONTROLLER's manifest and no defence at all on the
-path these functions exist for.
+and its HTML), so every read is bounded: how many rows it may carry, and how
+long a name may be. One set of numbers (`ROWS_MAX`/`NAME_MAX`/`VALUE_MAX`),
+and the announcements about them are bounded too -- a producer that caps its
+own output (`scripts.tools.pip_audit`) is a statement about the CONTROLLER's
+manifest and no defence at all on the path these functions exist for.
+
+The one thing NOT cut, said plainly rather than covered by "identically":
+`groups.json`'s `files[]` entries. They are repo-relative paths, a cut path
+names a file that does not exist, and corrupting a location is worse than
+republishing a long one -- so they are type-checked (`string_list`, and the
+schema node) and bounded only by the group row cap above them.
 """
 import sys
 
@@ -34,20 +40,41 @@ ROWS_MAX = 200
 NAME_MAX = 200
 VALUE_MAX = 200
 
+# How many repair lines a single read may announce before it summarises the
+# rest. The content bounds above stopped a hostile manifest from reaching the
+# artifact; without this one it still reached synthesize's STDERR, 120,401
+# lines and 17.9 MB of it -- which is the same denial-of-attention `_bounded`
+# exists to prevent, one layer out. Nothing is hidden: the tail line carries
+# the true remaining count.
+WARN_LINES_MAX = 20
+
 
 def warn_repairs(artifact, changes, warn):
-    """Announce every repair a boundary read made, one line each -- through
+    """Announce the repairs a boundary read made, one line each -- through
     `warn` when a caller supplied one (synthesis collects them), on stderr
     otherwise. Shared by the three repairers below, which each held the same
     seven lines: a fourth must not have to remember the wording.
+
+    BOUNDED on both axes, like the content it describes: at most
+    `WARN_LINES_MAX` lines, each naming a path cut to `NAME_MAX`. A repair
+    path can embed a target-authored key, and an unbounded one turned a single
+    100 KB field name into a single 100 KB log line.
     """
-    for path, what in changes:
-        message = ("%s: %s %s -- it did not match the type "
-                   "report-schema.json pins for it" % (artifact, what, path))
+    def emit(message):
         if warn is not None:
             warn(message)
         else:
             print(message, file=sys.stderr)
+
+    for path, what in changes[:WARN_LINES_MAX]:
+        emit("%s: %s %s -- it did not match the type "
+             "report-schema.json pins for it"
+             % (artifact, what, str(path)[:NAME_MAX]))
+    remaining = len(changes) - WARN_LINES_MAX
+    if remaining > 0:
+        emit("%s: ... and %d more repairs, not listed -- this artifact did not "
+             "match the types report-schema.json pins for it at all"
+             % (artifact, remaining))
 
 
 def _bounded(rows, path, changes):
@@ -113,7 +140,7 @@ def repair_groups_json(gj, warn=None):
             changes.append(("groups", "dropped"))
             raw = []
         kept = []
-        for g in raw:
+        for g in _bounded(raw, "groups", changes):
             if not isinstance(g, dict) or not isinstance(g.get("name"), (str, int, float)) \
                     or isinstance(g.get("name"), bool):
                 changes.append(("groups[]", "dropped"))
@@ -127,6 +154,15 @@ def repair_groups_json(gj, warn=None):
                     g[key] = repaired
                 else:
                     g.pop(key, None)
+            # `name` and `parent` are NAMES that ride into the report's
+            # type-pinned `groups[]` and its HTML, from a file the target can
+            # pre-commit -- so they are bounded like every other name here.
+            # `files[]` entries are NOT cut: they are repo-relative paths, and
+            # a cut path names a file that does not exist, which corrupts a
+            # location rather than bounding text. See the module docstring.
+            for key in ("name", "parent"):
+                if isinstance(g.get(key), str):
+                    g[key] = _cut(g[key], "groups[].%s" % key, changes)
             if not isinstance(g.get("files"), list):
                 # grading subscripts `g["files"]` directly; absent is not a
                 # shape the report's groups[] can carry either (it is required).
@@ -214,8 +250,9 @@ def repair_tools_sanitized(value, warn=None):
                 path = "sanitized.%s.dropped" % name
                 rows = _bounded(got, path, changes)
                 kept_row[field] = [
-                    {"line": _cut(r["line"], path, changes),
-                     "reason": _cut(r["reason"], path, changes)} for r in rows
+                    {"line": _cut(r["line"], path + ".line", changes),
+                     "reason": _cut(r["reason"], path + ".reason", changes)}
+                    for r in rows
                     if isinstance(r, dict) and isinstance(r.get("line"), str)
                     and isinstance(r.get("reason"), str)]
                 if len(kept_row[field]) != len(rows):
@@ -224,7 +261,7 @@ def repair_tools_sanitized(value, warn=None):
             else:
                 changes.append(("sanitized.%s.%s" % (name, field), "dropped"))
         for extra in sorted(set(row) - set(_SANITIZED_ROW)):
-            changes.append(("sanitized.%s.%s" % (name, extra),
+            changes.append(("sanitized.%s.%s" % (name, str(extra)[:NAME_MAX]),
                             "dropped: the schema describes no such field in"))
         out[name] = kept_row
     warn_repairs("tools-manifest.json", changes, warn)
