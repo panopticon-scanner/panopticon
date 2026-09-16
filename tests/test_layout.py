@@ -267,6 +267,46 @@ class LayoutTest(unittest.TestCase):
                          + "\n".join(failures))
 
 
+class FlatImportModeTest(unittest.TestCase):
+    """The modules that carry a flat-import fallback still import flat.
+
+    #1639 P15 fix round 3, R2-5. `skill/scripts` is also on sys.path in
+    several live paths (`setup_flow` imports `plan_contract`, `discovery`,
+    `grouping_engine`, `coverage_model` flat; `dispatch` imports
+    `model_resolver` flat), and seven modules carry `try: from scripts.x import
+    ... except ModuleNotFoundError: from x import ...` for it. Round 2 added a
+    package-qualified import to `evidence` and `x0x_report` with no fallback,
+    which narrowed the mode for four modules at once -- silently, because
+    nothing live reaches those four flat today and the suite stayed green.
+
+    A fresh interpreter per module, run FROM skill/scripts with only that
+    directory on the path -- the real shape of the mode (a script in that
+    directory executed directly), and the one where the package-qualified name
+    is unreachable, which is the whole point.
+    """
+
+    FLAT_MODULES = ("evidence", "x0x_report", "citations", "html_report",
+                    "ocrdb", "plan_contract", "host_disclosure",
+                    "model_resolver", "redact")
+
+    def test_every_flat_importable_module_still_imports_flat(self):
+        env = dict(os.environ)
+        env["PYTHONPATH"] = SCRIPTS         # deliberately NOT SKILL_ROOT
+        failures = []
+        for mod in self.FLAT_MODULES:
+            r = subprocess.run(  # nosec B603
+                [sys.executable, "-c", "import " + mod],
+                capture_output=True, text=True, env=env, cwd=SCRIPTS)
+            if r.returncode != 0:
+                failures.append("%s: %s"
+                                % (mod, (r.stderr.strip().splitlines() or [""])[-1]))
+        self.assertEqual(failures, [], "these modules no longer import with only "
+                         "skill/scripts on sys.path; add the `except "
+                         "ModuleNotFoundError` fallback the file already uses "
+                         "three lines above (and never for a PACKAGE module --"
+                         " rule 2):\n" + "\n".join(failures))
+
+
 class ScriptsDirTest(unittest.TestCase):
     """`runio._SCRIPTS_DIR` is the one expression WS-0 D1 had to rewrite: the
     package sits a directory deeper than driver.py did, and `_script()` /

@@ -14,7 +14,10 @@ X0X findings is a separate, reviewer-side follow-on.
 import re
 import sys
 
-import scripts.ocrdb as ocrdb
+try:
+    import scripts.ocrdb as ocrdb
+except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+    import ocrdb
 
 SCHEMA_VERSION = 1
 
