@@ -161,6 +161,35 @@ def test_probe_fixture_uses_real_emitter_but_injects_all_runtime_work(tmp_path):
     assert len(set(seen)) == len(probes_common.DRIVER_ROLES) + 1
 
 
+def test_an_unplantable_hard_link_fixture_only_unproves_the_read_scope_row(tmp_path):
+    # Fix round 1 (F3): the fixture belongs to ONE row. `_codex_surfaces` used
+    # to RAISE when os.link failed, and the measurement is shared by both codex
+    # probes -- so a filesystem with no links to plant also un-proved
+    # codex-effective-tools, a claim about the effective V8 surface that has
+    # nothing to do with hard links (and `hosts.py`: UNKNOWN gates as REFUTED).
+    # Nothing was cached on that path either, so the whole inspection ran twice.
+    registered = tmp_path / "registered"
+    dispatch.emit_host_agents("codex", str(registered))
+    seen = []
+
+    def inspect(entry, env, root, run_dir, **kwargs):
+        seen.append(kwargs["probe_paths"])
+        return copy.deepcopy(surfaces()[0][1])
+
+    with mock.patch.object(os, "link", side_effect=OSError("cross-device link")), \
+            mock.patch.object(probes_common, "probe_cli_flags", return_value={}), \
+            mock.patch("scripts.codex_host.inspect_surface", inspect):
+        artifact = host_probes.run_probes("codex", str(tmp_path), registration_dir=str(registered),
+                                          settings_path=str(tmp_path / "settings.json"))
+    assert artifact["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"] == hosts.PROVEN
+    read_row = artifact["capabilities"][hosts.READ_SCOPE_CONFINED]
+    assert read_row["state"] == hosts.UNKNOWN
+    assert "cross-device link" in read_row["detail"]
+    # Measured ONCE for both probes, and with no probe paths at all: a
+    # two-read measurement must not stand in for the three-read one.
+    assert seen == [None] * (len(probes_common.DRIVER_ROLES) + 1)
+
+
 def test_registry_dispatch_shares_measurement_only_within_one_invocation(tmp_path):
     # `probe_cli_flags` reads `codex exec --help` on every headless run (D10
     # N1) and is tested in tests/probes/test_common.py; stubbed here so this

@@ -53,15 +53,25 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
         # inode OUTSIDE it -- the one case where "this name is under the grant"
         # and "this content is in scope" come apart. Lexical authorization
         # admits the name; the broker has to refuse the inode. Planted once, so
-        # every role drives the same three reads; a filesystem with no links to
-        # plant makes the whole measurement UNKNOWN rather than silently
-        # proving the claim on two reads.
+        # every role drives the same three reads.
+        #
+        # A filesystem with no links to plant does NOT raise (fix round 1, F3).
+        # This measurement is shared by both codex probes, so raising also
+        # un-proved `codex-effective-tools` -- a claim about the effective V8
+        # surface that has nothing to do with hard links, gating as REFUTED
+        # (hosts.py) on somebody's tmp mount -- and, because the caller caches
+        # only a successful measurement, ran the whole inspection twice. The
+        # reason rides ALONG with each surface instead, and only
+        # `probe_codex_read_scope` treats it as UNKNOWN. No fixture, no probe
+        # paths: a two-read measurement must not stand in for the three-read one.
         linked = os.path.join(cell, "linked.txt")
+        fixture_error = None
         try:
             os.link(outside, linked)
         except OSError as exc:
-            raise ValueError("the hard-link refutation fixture could not be planted at %s: %s"
-                             % (linked, exc)) from exc
+            fixture_error = ("the hard-link refutation fixture could not be planted at %s: %s"
+                             % (linked, exc))
+        probe_paths = None if fixture_error else (inside, outside, linked)
         jobs = []
         for role in (*common.DRIVER_ROLES, "setup-scan"):
             setup = role == "setup-scan"
@@ -91,8 +101,11 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
 
         def measure(job):
             shell, entry, env, review_root = job
-            return shell, inspector(entry, env, review_root, root, registration_dir=directory,
-                                    probe_paths=(inside, outside, linked), catalog=catalog)
+            surface = inspector(entry, env, review_root, root, registration_dir=directory,
+                                probe_paths=probe_paths, catalog=catalog)
+            if fixture_error and isinstance(surface, dict):
+                surface = dict(surface, hard_link_fixture=fixture_error)
+            return shell, surface
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(jobs)) as pool:
             return list(pool.map(measure, jobs))
@@ -173,6 +186,10 @@ def probe_codex_read_scope(host, registration_dir=None, settings_path=None, meas
         problem = _codex_surface_problem(surface)
         if problem:
             return hosts.REFUTED, CODEX_READ_SCOPE, "%s: %s" % (path, problem)
+        fixture_error = surface.get("hard_link_fixture")
+        if fixture_error:
+            # F3: this row's fixture, and only this row's verdict.
+            return hosts.UNKNOWN, CODEX_READ_SCOPE, "%s: %s" % (path, fixture_error)
         reads = surface.get("reads")
         if not isinstance(reads, list) or len(reads) != 3:
             return (hosts.UNKNOWN, CODEX_READ_SCOPE, "%s: runtime returned no three-read measurement" % path)
