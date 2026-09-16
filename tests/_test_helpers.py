@@ -5,6 +5,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import unittest
 
 from conftest import FIXTURE_ROOT, REPO_ROOT  # noqa: E402
 
@@ -245,3 +246,22 @@ def argv_through_shell(command, cwd, interpreter="python3"):
     except ValueError as exc:
         raise AssertionError("the stubbed %s printed no JSON argv (%s): %r"
                              % (interpreter, exc, proc.stdout)) from exc
+
+
+# --- #1642: the hard-link fixture -------------------------------------------
+# Every read broker refuses a multiply-linked regular file that only a
+# DIRECTORY grant admits, and the only honest way to test that is to plant a
+# real hard link -- a mocked st_nlink would prove the branch, not the rule.
+# Some filesystems have no links to plant (FAT/exFAT volumes, a few container
+# tmpfs mounts), so the fixture SKIPS with the reason rather than failing a
+# suite on the machine's storage. Every caller sits under the default temp
+# directory, which is the mount CI actually runs on.
+
+def hard_link_or_skip(target, link):
+    """Hard-link `target` at `link` and return `link`, or skip with the reason."""
+    try:
+        os.link(str(target), str(link))
+    except (OSError, NotImplementedError, AttributeError) as exc:
+        raise unittest.SkipTest("this filesystem refuses hard links: %s: %s"
+                                % (type(exc).__name__, exc))
+    return str(link)

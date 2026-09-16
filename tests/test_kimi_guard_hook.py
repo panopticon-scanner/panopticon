@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _test_helpers import hard_link_or_skip
 import scripts.kimi_guard_hook as guard
 import scripts.write_guard_hook as wg
 
@@ -42,6 +43,43 @@ class GuardCase(unittest.TestCase):
     def write(self, tool, **tool_input):
         return guard.adjudicate({"tool_name": tool, "tool_input": tool_input},
                                 "write", self.allowlist_path, env=self.env)
+
+
+class TestHardLinksInDirectoryGrants(GuardCase):
+    """#1642, the Kimi copy of the rule: this hook's read branch is Claude's,
+    with Kimi's `path` field, so the boundary has to move on both."""
+
+    def setUp(self):
+        super().setUp()
+        self.cell = os.path.dirname(self.inside)
+        _write(self.scope_path,
+               {"entry-1": {"files": [self.inside], "dirs": [], "reads": []},
+                "entry-dir": {"files": [], "dirs": [self.cell], "reads": []}})
+        self.planted = hard_link_or_skip(self.outside, os.path.join(self.cell, "innocent.py"))
+
+    def scan(self, tool, **tool_input):
+        return guard.adjudicate({"tool_name": tool, "tool_input": tool_input,
+                                 "cwd": self.tmp.name}, "read", self.scope_path,
+                                env={guard.ENV_ENTRY_ID: "entry-dir"})
+
+    def test_a_hard_link_inside_the_directory_grant_is_denied(self):
+        for tool in ("Read", "ReadMediaFile", "Grep"):
+            with self.subTest(tool=tool):
+                allow, reason = self.scan(tool, path=self.planted, pattern="x")
+                self.assertFalse(allow, reason)
+                self.assertIn("hard-linked", reason)
+                self.assertIn("st_nlink=2", reason)
+                self.assertIn("entry-dir", reason)
+
+    def test_the_singly_linked_files_and_directories_of_that_grant_are_unchanged(self):
+        self.assertEqual((True, ""), self.scan("Read", path=self.inside))
+        self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.inside))
+        self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.cell))
+
+    def test_an_exact_grant_reads_a_hard_linked_file(self):
+        _write(self.scope_path,
+               {"entry-1": {"files": [self.planted], "dirs": [], "reads": []}})
+        self.assertEqual((True, ""), self.read("Read", path=self.planted))
 
 
 class TestReads(GuardCase):

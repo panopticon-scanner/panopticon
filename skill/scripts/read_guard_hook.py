@@ -42,6 +42,7 @@ import glob
 import json
 import os
 import shlex
+import stat
 import sys
 
 _READ_TOOLS_LIST = ["Read", "Grep", "Glob"]
@@ -143,6 +144,44 @@ def _readable(target, scope):
             or any(_under(target, d) for d in scope["dirs"]))
 
 
+# #1642: one wording for one rule, across three read brokers.
+# `codex_read_tools.HARD_LINK_DENIAL` is the original, and
+# tests/test_codex_read_tools.py::test_the_hard_link_denial_is_one_wording pins
+# the copies equal. Copied rather than imported for the reason everything in
+# this module is: the hook runs standing alone, with no package on sys.path.
+HARD_LINK_DENIAL = "read scope denies a hard-linked file inside a directory grant (st_nlink=%d)"
+
+
+def _hard_link_reason(tool_name, raw, target, scope):
+    """The denial for a multiply-linked REGULAR file that only a DIRECTORY grant
+    admits, or "" (#1642).
+
+    realpath resolves SYMlinks; nothing resolves a hard link, because the link
+    IS the file -- and a directory grant is matched by NAME, so a target that
+    plants one inside the granted subtree, naming a file outside it, read as
+    in-scope. An EXACT grant (`files`/`reads`) is the file the orchestrator
+    chose and is unaffected whatever its link count, including when a directory
+    grant covers it too (the normal cell shape).
+
+    Directories are not the subject: a directory's st_nlink is its subdirectory
+    count, and the rule is about reading content. A path that cannot be stat'ed
+    is left alone -- the tool is about to fail on it for the same reason, and
+    there is no content behind an unstattable name to confine. Unlike the Codex
+    broker, which reads the count off the descriptor it then reads FROM, a
+    PreToolUse hook adjudicates a NAME the host reopens: this is exactly as
+    path-based as the realpath check beside it, and carries the same race.
+    """
+    if target in scope["files"] or target in scope["reads"]:
+        return ""
+    try:
+        info = os.stat(target)
+    except OSError:
+        return ""
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink <= 1:
+        return ""
+    return "%s of %s is denied: %s" % (tool_name, raw, HARD_LINK_DENIAL % info.st_nlink)
+
+
 def decide(tool_name, tool_input, scope):
     """(allow, reason) for a subagent's call. `scope` is the bound entry's
     scope dict, or None for an unbound subagent (deny). Design spec 4.3."""
@@ -161,7 +200,8 @@ def decide(tool_name, tool_input, scope):
         if target is None:
             return False, "Read is denied: unresolvable path %r" % (raw,)
         if _readable(target, scope):
-            return True, ""
+            denial = _hard_link_reason(tool_name, raw, target, scope)
+            return (False, denial) if denial else (True, "")
         return False, ("Read of %s is outside your cell's scope; the files you may "
                        "read are listed in your prompt" % raw)
     raw = tool_input.get("path")
@@ -179,7 +219,8 @@ def decide(tool_name, tool_input, scope):
                        "your prompt")
     if tool_name == "Grep":
         if _readable(target, scope):
-            return True, ""
+            denial = _hard_link_reason(tool_name, raw, target, scope)
+            return (False, denial) if denial else (True, "")
         return False, ("Grep of %s is outside your cell's scope; the files you may "
                        "search are listed in your prompt" % raw)
     return False, "Glob is not available in a confined cell: your file list is in your prompt"

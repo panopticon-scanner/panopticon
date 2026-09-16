@@ -21,6 +21,19 @@ MAX_DIRECTORIES = 512
 MAX_ENTRIES = 20000
 MAX_SEARCH_BYTES = 8 * MAX_FILE_BYTES
 SCOPE_KEYS = ("files", "dirs", "reads")
+# How a path was authorized, threaded from `_require` into `_open` (#1642).
+# A DIRECTORY grant names a SUBTREE, and `_under` matches it by name, so a link
+# planted inside it can name an inode outside it; an EXACT grant names the file
+# the orchestrator chose. `_open` needs that distinction and must not re-derive
+# it, so the authorizer hands it over. DIR_GRANT is the default everywhere
+# below: a caller that forgets to say gets the strict rule, not the loose one.
+DIR_GRANT = "dirs"
+EXACT_GRANT = "files"
+# One wording for one rule, across three brokers. read_guard_hook and
+# kimi_guard_hook are stdlib-only and standing alone (no package on sys.path),
+# so each spells its own copy; tests/test_codex_read_tools.py::
+# test_the_hard_link_denial_is_one_wording pins the three equal.
+HARD_LINK_DENIAL = "read scope denies a hard-linked file inside a directory grant (st_nlink=%d)"
 # Directory NAMES and basename GLOBS the walk skips at every depth. A directory
 # grant is the whole repository for the setup scan, and a checkout's VCS store
 # and dependency trees hold far more entries than its source does -- walking
@@ -88,18 +101,37 @@ def _under(path, directory):
     return path == directory or path.startswith(directory.rstrip(os.sep) + os.sep)
 
 
+class HardLinkDenied(ValueError):
+    """A multiply-linked file refused inside a directory grant (#1642).
+
+    A ValueError like every other refusal here, so `call` reports it the same
+    way -- but its OWN type, because search classifies file-vs-directory by
+    catching ValueError out of `_open` and falling back to a walk. A denial read
+    as "that path must be a directory" would answer a refused read with a
+    listing of the grant instead of the refusal.
+    """
+
+
 @contextmanager
-def _open(path, *, directory=False):
+def _open(path, *, directory=False, grant=DIR_GRANT):
     """Open a regular file/directory without any symlink traversal, even races.
 
-    M-3, recorded limit: O_NOFOLLOW stops SYMlinks, not HARD links. A target
-    repository that ships a hard link inside a directory grant to a file
-    outside it stays readable through that grant, because the link is the
-    file. This is inherent to path-based confinement -- Claude's read guard
-    has the same property -- and closing it would mean refusing st_nlink > 1
-    inside a directory grant, which also refuses ordinary hard-linked build
-    output. Not fixed here; documented in docs/PANOPTICON.md's Codex section
-    so it is a known boundary rather than an assumed one.
+    M-3/#1642: O_NOFOLLOW stops SYMlinks, not HARD links, and `_under`
+    authorizes a directory grant by NAME -- so a target repository that plants a
+    link inside the granted subtree naming a same-filesystem inode outside it
+    used to read through that grant, because the link IS the file. A regular
+    file a DIRECTORY grant admits is therefore refused when it carries more than
+    one link; a file an EXACT grant names (`scope.files`/`scope.reads`) is what
+    the orchestrator chose on purpose and stays readable whatever its link
+    count. The cost is deliberate: ordinary hard-linked build output under a
+    directory grant is unreadable, and shows in the transcript as this denial
+    (docs/PANOPTICON.md's Codex section says so).
+
+    The link count is read off the OPEN DESCRIPTOR, after the same walk that
+    refuses symlinks, so no rename or relink between the check and the read can
+    widen it. Directories are not the subject -- a directory's link count is its
+    subdirectory count, and `list_files` enumerates NAMES, which is not reading
+    the content a grant confines.
     """
     if (os.name != "posix" or not hasattr(os, "O_NOFOLLOW")
             or os.open not in os.supports_dir_fd or os.scandir not in os.supports_fd):
@@ -113,16 +145,18 @@ def _open(path, *, directory=False):
             child = os.open(part, flags | (os.O_DIRECTORY if want_dir else 0), dir_fd=fd)
             os.close(fd)
             fd = child
-        mode = os.fstat(fd).st_mode
-        if not (stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)):
+        info = os.fstat(fd)
+        if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
             raise ValueError("read scope permits regular files only")
+        if not directory and grant == DIR_GRANT and info.st_nlink > 1:
+            raise HardLinkDenied(HARD_LINK_DENIAL % info.st_nlink)
         yield fd
     finally:
         os.close(fd)
 
 
-def _read(path):
-    with _open(path) as fd:
+def _read(path, *, grant=DIR_GRANT):
+    with _open(path, grant=grant) as fd:
         chunks, remaining = [], MAX_FILE_BYTES + 1
         while remaining:
             chunk = os.read(fd, min(remaining, 65536))
@@ -154,14 +188,26 @@ class Reader:
             self.scope[key] = frozenset(_path(value, self.cwd) for value in values)
 
     def _allowed(self, path):
-        return (path in self.scope["files"] or path in self.scope["reads"]
-                or any(_under(path, directory) for directory in self.scope["dirs"]))
+        """Which grant kind authorizes `path` (EXACT_GRANT/DIR_GRANT), or None.
+
+        EXACT wins wherever both do: a cell's granted files usually sit inside
+        some directory grant, and a file the orchestrator named must not be
+        narrowed by the subtree it happens to live in (#1642).
+        """
+        if path in self.scope["files"] or path in self.scope["reads"]:
+            return EXACT_GRANT
+        if any(_under(path, directory) for directory in self.scope["dirs"]):
+            return DIR_GRANT
+        return None
 
     def _require(self, path, *, directory=False):
-        allowed = (any(_under(path, d) for d in self.scope["dirs"])
-                   if directory else self._allowed(path))
-        if not allowed:
+        """Authorize `path` and return HOW -- the fact `_open` needs and may not
+        re-derive. `directory=True` asks only about directory grants."""
+        grant = ((DIR_GRANT if any(_under(path, d) for d in self.scope["dirs"]) else None)
+                 if directory else self._allowed(path))
+        if grant is None:
             raise ValueError("Denied: %s is outside this entry's read scope" % path)
+        return grant
 
     def _files(self, directories):
         """Bounded descriptor-based enumeration; never walk linked directories.
@@ -239,12 +285,12 @@ class Reader:
                 raise ValueError("invalid read tool arguments")
             if name == "read_file":
                 path = _path(arguments["path"], self.cwd)
-                self._require(path)
+                grant = self._require(path)
                 offset, limit = arguments.get("offset", 1), arguments.get("limit", 200)
                 if (type(offset) is not int or type(limit) is not int
                         or not 1 <= offset <= 100000 or not 1 <= limit <= 1000):
                     raise ValueError("offset/limit outside bounded read range")
-                data, truncated = _read(path)
+                data, truncated = _read(path, grant=grant)
                 lines = data.splitlines()
                 text = "\n".join("%s:%d:%s" % (path, n + 1, lines[n])
                                  for n in range(offset - 1, min(len(lines), offset - 1 + limit)))
@@ -265,12 +311,14 @@ class Reader:
             walk_truncated = False
             if "path" in arguments:
                 path = _path(arguments["path"], self.cwd)
-                self._require(path)
+                grant = self._require(path)
                 # Directory classification also refuses symlinks and nonregular files.
                 try:
-                    with _open(path):
+                    with _open(path, grant=grant):
                         pass
                     files = [path]
+                except HardLinkDenied:
+                    raise            # a refusal of THIS path, never "it is a directory"
                 except (IsADirectoryError, ValueError):
                     files, walk_truncated = self._files(self._roots(arguments))
             else:
@@ -279,8 +327,7 @@ class Reader:
                 files, walk_truncated = self._files(self._roots(arguments))
             matches, total = [], 0
             for path in files:
-                self._require(path)
-                data, truncated = _read(path)
+                data, truncated = _read(path, grant=self._require(path))
                 total += len(data.encode("utf-8"))
                 for number, line in enumerate(data.splitlines(), 1):
                     if pattern in line:
@@ -303,7 +350,9 @@ def load_reader(env=None, cwd=None):
     if (not isinstance(entry_id, str) or not entry_id or not isinstance(scope_path, str)
             or not scope_path or not os.path.isabs(scope_path)):
         raise ValueError("missing read scope entry/path binding")
-    data, truncated = _read(scope_path)
+    # EXACT: the scope file is the env BINDING, not something a grant admits --
+    # it is named by PANOPTICON_READ_SCOPE, which the launcher sets (#1642).
+    data, truncated = _read(scope_path, grant=EXACT_GRANT)
     if truncated:
         raise ValueError("armed read scope is too large")
     scopes = json.loads(data)

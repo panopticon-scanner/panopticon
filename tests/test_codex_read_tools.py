@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from _test_helpers import hard_link_or_skip
 from scripts import codex_read_tools as read_tools
 
 
@@ -127,6 +128,63 @@ def test_symlink_leaf_and_directory_are_never_followed(tree):
         assert result["isError"] is True and "private outside content" not in body(result)
     listed = body(reader.call("list_files", {}))
     assert "linked-directory" not in listed and "first.py" not in listed
+
+
+def test_a_hard_link_inside_a_directory_grant_is_denied_by_both_readers(tree):
+    # #1642: O_NOFOLLOW stops symlinks, not HARD links, and `_under` authorizes
+    # by NAME. A target that plants a link inside the granted subtree naming a
+    # same-filesystem inode outside it was read through the grant, because the
+    # link IS the file. Both read_file and search route through `_read`.
+    root, source, first, _, outside = tree
+    planted = hard_link_or_skip(outside, source / "innocent.txt")
+    reader = reader_for(tree, directories=True)
+    for arguments in ({"path": planted}, {"path": "source/innocent.txt"}):
+        result = reader.call("read_file", arguments)
+        assert result["isError"] is True, body(result)
+        assert "hard-linked" in body(result) and "st_nlink=2" in body(result)
+        assert "private outside content" not in body(result)
+    for arguments in ({"pattern": "private", "path": planted},
+                      {"pattern": "private"}):
+        result = reader.call("search", arguments)
+        assert result["isError"] is True, body(result)
+        assert "private outside content" not in body(result)
+    # The singly-linked files of the same grant are untouched.
+    assert reader.call("read_file", {"path": str(first)})["isError"] is False
+
+
+def test_an_exact_file_grant_still_reads_a_hard_linked_file(tree):
+    # The other half of the rule: a path the ORCHESTRATOR named is readable
+    # whatever its link count -- `files`/`reads` are exact grants, so there is
+    # no lexical subtree for a planted name to hide in.
+    root, source, _, _, outside = tree
+    planted = hard_link_or_skip(outside, source / "innocent.txt")
+    for key in ("files", "reads"):
+        reader = read_tools.Reader({key: [planted]}, str(root))
+        result = reader.call("read_file", {"path": planted})
+        assert result["isError"] is False, body(result)
+        assert "private outside content" in body(result)
+
+
+def test_a_file_named_by_both_grants_is_read_as_the_exact_one(tree):
+    # A cell whose files sit inside a directory grant is the normal shape, and
+    # an exact grant must not be narrowed by the directory it happens to be in.
+    root, source, _, _, outside = tree
+    planted = hard_link_or_skip(outside, source / "innocent.txt")
+    reader = read_tools.Reader({"files": [planted], "dirs": [str(source)]}, str(root))
+    assert reader.call("read_file", {"path": planted})["isError"] is False
+
+
+def test_the_hard_link_denial_is_one_wording(tree):
+    # Three brokers refuse the same thing; a divergent sentence is how one of
+    # them silently stops being checked. read_guard_hook/kimi_guard_hook are
+    # stdlib-only and cannot import this constant, so the copies are pinned.
+    import scripts.kimi_guard_hook as kimi_guard_hook
+    import scripts.read_guard_hook as read_guard_hook
+
+    assert (read_tools.HARD_LINK_DENIAL == read_guard_hook.HARD_LINK_DENIAL
+            == kimi_guard_hook.HARD_LINK_DENIAL)
+    assert read_tools.HARD_LINK_DENIAL % 2 == (
+        "read scope denies a hard-linked file inside a directory grant (st_nlink=2)")
 
 
 def test_symlink_swap_between_scope_check_and_open_is_denied(tree, monkeypatch):
