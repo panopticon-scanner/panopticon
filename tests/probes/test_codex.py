@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from unittest import mock
 
 import pytest
@@ -17,8 +18,12 @@ def surfaces():
                   "list_mcp_resource_templates", "read_mcp_resource"],
         "direct_tools": ["functions.exec", "functions.wait", "functions.request_user_input"],
         "forbidden": dict.fromkeys(("exec", "patch", "spawn", "fetch", "process", "require"), "undefined"),
+        # Third read (#1642): the hard link planted INSIDE the directory grant.
+        # The wording is the broker's own, because that is what the probe reads.
         "reads": [{"isError": False, "content": [{"type": "text", "text": "inside fixture"}]},
-                  {"isError": True, "content": [{"type": "text", "text": "outside this entry scope"}]}],
+                  {"isError": True, "content": [{"type": "text", "text": "outside this entry scope"}]},
+                  {"isError": True, "content": [{"type": "text", "text": "Read tool refused: read scope "
+                    "denies a hard-linked file inside a directory grant (st_nlink=2)"}]}],
     }
     return [(role + ".toml", copy.deepcopy(surface)) for role in (*probes_common.DRIVER_ROLES, "setup-scan")]
 
@@ -67,6 +72,46 @@ def test_widened_scope_mutation_refutes_actual_read_boundary(tmp_path):
     assert "deny failed" in detail
 
 
+def test_a_readable_hard_link_inside_a_directory_grant_refutes_the_claim(tmp_path):
+    # #1642: the boundary this row claims is not "a path outside the grant is
+    # denied" but "nothing outside the grant is readable THROUGH it". A hard
+    # link is the case where those two differ, so the probe plants one.
+    measured = surfaces()
+    measured[-1][1]["reads"][2] = {"isError": False, "content": [
+        {"type": "text", "text": "private outside content"}]}
+    state, by, detail = codex_probes.probe_codex_read_scope(
+        "codex", settings_path=str(tmp_path / "settings.json"), measure=lambda: measured)
+    assert state == hosts.REFUTED
+    assert by == codex_probes.CODEX_READ_SCOPE
+    assert "hard link" in detail and measured[-1][0] in detail
+
+
+def test_a_hard_link_denied_for_some_other_reason_refutes_too(tmp_path):
+    # Every role but setup-scan holds FILE grants, where the planted link is
+    # denied for being outside the scope at all -- a denial that proves nothing
+    # about the rule. The probe therefore requires that the one role with a
+    # DIRECTORY grant refused it BY the hard-link rule; a build where the rule
+    # is gone denies every read for the old reason and must not read as proven.
+    measured = surfaces()
+    for _path, surface in measured:
+        surface["reads"][2] = {"isError": True, "content": [
+            {"type": "text", "text": "Read tool refused: Denied: /x is outside this entry's read scope"}]}
+    state, _by, detail = codex_probes.probe_codex_read_scope(
+        "codex", settings_path=str(tmp_path / "settings.json"), measure=lambda: measured)
+    assert state == hosts.REFUTED
+    assert "hard-link" in detail
+
+
+def test_a_two_read_measurement_is_unknown_not_proven(tmp_path):
+    measured = surfaces()
+    for _path, surface in measured:
+        surface["reads"] = surface["reads"][:2]
+    state, _by, detail = codex_probes.probe_codex_read_scope(
+        "codex", settings_path=str(tmp_path / "settings.json"), measure=lambda: measured)
+    assert state == hosts.UNKNOWN
+    assert "three-read" in detail
+
+
 @pytest.mark.parametrize("probe", [codex_probes.probe_codex_tool_policy, codex_probes.probe_codex_read_scope])
 def test_unavailable_runtime_is_unknown_with_reason(probe, tmp_path):
     state, _by, detail = probe("codex", settings_path=str(tmp_path / "settings.json"),
@@ -93,7 +138,11 @@ def test_probe_fixture_uses_real_emitter_but_injects_all_runtime_work(tmp_path):
     def inspect(entry, env, root, run_dir, **kwargs):
         with open(env["PANOPTICON_READ_SCOPE"], encoding="utf-8") as stream:
             assert json.load(stream) == {entry["id"]: entry["scope"]}
-        inside, outside = kwargs["probe_paths"]
+        inside, outside, linked = kwargs["probe_paths"]
+        # #1642: a REAL hard link inside the directory grant, naming the file
+        # outside it -- the fixture the refutation row rests on.
+        assert os.path.dirname(linked) == os.path.dirname(inside)
+        assert os.path.samefile(linked, outside) and os.stat(linked).st_nlink == 2
         if entry["id"] == "setup-scan":
             assert entry["scope"] == {"files": [], "dirs": [root], "reads": []}
             assert entry["model"] is None
@@ -101,6 +150,7 @@ def test_probe_fixture_uses_real_emitter_but_injects_all_runtime_work(tmp_path):
             assert entry["scope"]["files"] == [inside]
             assert root == run_dir
         assert outside not in entry["scope"]["files"]
+        assert linked not in entry["scope"]["files"]
         assert env["PANOPTICON_ENTRY_ID"] == entry["id"]
         assert kwargs["registration_dir"] == str(registered)
         seen.append(entry["agent"])

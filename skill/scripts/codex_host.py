@@ -374,9 +374,17 @@ def validate_command(argv, env, review_root):
 
 
 def _probe_script(probe_paths):
+    """The inspection script, reading each of `probe_paths` through the broker.
+
+    The paths are the inside/outside/hard-link TRIPLE the codex probe plants
+    (#1642): the third is a hard link inside the directory grant naming the file
+    outside it, and a measurement that carried only the first two would leave
+    the probe's hard-link refutation row unmeasured -- which is the shape the
+    row exists to catch. All of 0 or all of 3; never a subset.
+    """
     paths = list(probe_paths or ())
-    if len(paths) not in (0, 2) or any(not isinstance(path, str) for path in paths):
-        raise ValueError("probe_paths must be an inside/outside path pair")
+    if len(paths) not in (0, 3) or any(not isinstance(path, str) for path in paths):
+        raise ValueError("probe_paths must be the inside/outside/hard-link probe triple")
     return ("const result = {tools: ALL_TOOLS.map(t => t.name), forbidden: {"
             "exec: typeof tools.exec_command, patch: typeof tools.apply_patch, "
             "spawn: typeof tools.multi_agent_v1__spawn_agent, fetch: typeof fetch, "
