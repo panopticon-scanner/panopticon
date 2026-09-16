@@ -39,6 +39,17 @@ _ATTEMPTS_FILE = "cell-attempts.json"
 # the report has to count every panel the run dispatched, not the last batch.
 _TOOLS_CONTEXT_FILE = "panel-tools-context.json"
 
+# #1638 P13: the per-GROUP verdict on the test inventory the cell's prompt was
+# built from -- keyed by group, not by cell, because the inventory is a fact
+# about the matrix entry every one of the group's domains shares. Read back at
+# synthesis as meta.coverage.test_inventory.
+_TEST_INVENTORY_FILE = "panel-test-inventory.json"
+
+# How many foreign test paths the `split` note names before it says "and N
+# more". Five is enough for a reviewer to recognise the pattern and short
+# enough that a badly-split 300-file group cannot flood the prompt.
+_INVENTORY_PATHS_SHOWN = 5
+
 
 def _cell_key(group, domain):
     return "%s/%s" % (group, domain)
@@ -84,6 +95,114 @@ def _record_tools_context(review_root, entries):
         cells[_cell_key(entry["group"], entry["domain"])] = bool(
             entry.get("tools_context"))
     runio._write_json(path, {"schema_version": 1, "cells": cells})
+
+
+def _record_test_inventory(review_root, entries):
+    """Merge this batch's per-group `inventory_note` into the run's durable
+    tally (#1638 P13).
+
+    Merged, not rewritten, for the same reason the tools tally is: a run
+    dispatches its cells in several batches, and a later batch that carries
+    only two groups must not erase the twenty the first batch recorded.
+    Every domain of a group answers identically (the state is a property of
+    the matrix entry), so a repeat write is a no-op rather than a conflict.
+    """
+    path = runio._pano(review_root, _TEST_INVENTORY_FILE)
+    body = runio._load_json(path)
+    prior = body.get("groups") if isinstance(body, dict) else None
+    groups = dict(prior) if isinstance(prior, dict) else {}
+    for entry in entries:
+        note = entry.get("inventory_note")
+        if entry.get("group") and note:
+            groups[entry["group"]] = note
+    runio._write_json(path, {"schema_version": 1, "groups": groups})
+
+
+def _module_stem(path):
+    """The module name a test file would be NAMED after, or None for a test.
+
+    Test files are excluded from the stem set deliberately: `test_a.py` in a
+    group's own file list must not make `test_test_a.py` elsewhere look like
+    that group's missing coverage.
+    """
+    stem = os.path.splitext(os.path.basename(path or ""))[0]
+    if not stem or stem.startswith("test_") or stem.endswith("_test"):
+        return None
+    return stem
+
+
+def _test_target_stem(path):
+    """`a` for `tests/test_a.py` or `a_test.go`, else None -- the one naming
+    convention this detector claims to understand. It is deliberately
+    conservative: a test named after nothing in the cell is simply not
+    counted, which under-reports `split` rather than inventing one."""
+    stem = os.path.splitext(os.path.basename(path or ""))[0]
+    if stem.startswith("test_"):
+        return stem[len("test_"):] or None
+    if stem.endswith("_test"):
+        return stem[:-len("_test")] or None
+    return None
+
+
+def _foreign_tests(group, files, discovered):
+    """{other group: [test paths]} for tests NAMED after this cell's modules
+    that some OTHER group claims.
+
+    Read off the run's own assignment (`groups.json`), which is the matrix's
+    `tests:`/`match:` axes already resolved against the real tree by
+    `discovery.assign_scoped` -- so this answers "who was actually handed
+    this test file", not "whose glob might have matched it". That is the
+    question the reviewer needs: a test in another group's file list is a
+    test THIS reviewer will never be shown.
+    """
+    stems = {stem for stem in (_module_stem(f) for f in files or ()) if stem}
+    if not stems:
+        return {}
+    out = {}
+    for other, other_files in discovered:
+        if other == group:
+            continue
+        hits = sorted(f for f in other_files or ()
+                      if _test_target_stem(f) in stems)
+        if hits:
+            out[other] = hits
+    return out
+
+
+def _inventory_note(review_root, group, files, tests, discovered=None):
+    """(state, prompt line) for one cell's test inventory (#1638 P13).
+
+    `split` outranks `empty`: both mean the inventory is not to be trusted,
+    but only `split` can say WHERE the tests went, which is the difference
+    between a diagnostic an operator can act on and one they cannot. A group
+    that has its own tests AND is missing others named after its modules is
+    also `split` -- the inventory is incomplete, which is the same defect at
+    a smaller scale.
+
+    `discovered` defaults to reading `groups.json`; `review_execute` passes
+    the listing it already holds so the whole batch reads the file once.
+    """
+    if discovered is None:
+        discovered = coverage._discovered_groups(review_root)
+    foreign = _foreign_tests(group, files, discovered)
+    if foreign:
+        paths = sorted(p for hits in foreign.values() for p in hits)
+        shown = paths[:_INVENTORY_PATHS_SHOWN]
+        return "split", (
+            "split — %d test file(s) matching this group's modules are "
+            "claimed by group %s: %s%s. Tests for this code EXIST and are "
+            "outside your scope."
+            % (len(paths), ", ".join(sorted(foreign)), ", ".join(shown),
+               " (and %d more)" % (len(paths) - len(shown))
+               if len(paths) > len(shown) else ""))
+    if not tests:
+        return "empty", (
+            "empty — the review matrix assigns this group no test file at "
+            "all. That is a gap in the matrix, not evidence about the "
+            "target: tests for these files may exist outside your scope.")
+    return "complete", (
+        "complete — the tests listed above are this group's own inventory "
+        "and no test named after its modules is claimed elsewhere.")
 
 
 def _cell_exhausted(review_root, group, domain):
@@ -252,13 +371,20 @@ def _tool_hits_for_cell(review_root, manifest, domain, files):
     return _format_tool_hits(hits)
 
 def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle,
-                tools_context=False):
+                tools_context=False, inventory=None):
     file_list = runio._abs_file_list(review_root, files)
     test_list = "\n".join("- " + t for t in tests) or "- (no tests)"
+    # #1638 P13: the reviewer is fenced to this cell, so the driver -- which
+    # assigned every file in the tree to a group -- is the only party that can
+    # tell it whether the inventory above is the whole story.
+    if inventory is None:
+        inventory = _inventory_note(review_root, group, files, tests)
+    inventory_state, inventory_line = inventory
     out_file = os.path.abspath(runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))
     prompt = dispatch.render_prompt("domain-panel.md", {
         "domain": domain, "group": group, "file_list": file_list,
-        "tests": test_list, "security_mode": manifest.get("security_mode", "standard"),
+        "tests": test_list, "inventory_note": inventory_line,
+        "security_mode": manifest.get("security_mode", "standard"),
         "menu": _render_menu(bundle, domain),
         "criteria": _render_criteria(bundle, domain), "run_id": manifest["run_id"],
         "tool_hits": _tool_hits_for_cell(review_root, manifest, domain, files),
@@ -290,6 +416,11 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
             # was shown scanner evidence. Read back off the persisted tally at
             # synthesis as meta.tools.panels_with_scanner_context.
             "tools_context": bool(tools_context),
+            # #1638 P13: stamped beside it and for the same reason -- what THIS
+            # reviewer was told about its own test inventory, recorded as the
+            # prompt is rendered rather than reconstructed afterwards. Read
+            # back at synthesis as meta.coverage.test_inventory.
+            "inventory_note": inventory_state,
             "scope": requests.scope(files=abs_files, reads=_cell_reads(domain))}
     if mode:
         entry["delivery"] = mode
@@ -365,7 +496,10 @@ def review_execute(review_root, manifest):
     # (_write_driver_plan above already declared them all for reconcile).
     all_entries, ngroups = [], 0
     tools_context = _tools_context(review_root)
-    for group, files in coverage._discovered_groups(review_root):
+    # Read once for the whole batch: the inventory verdict for any one group
+    # is computed against every OTHER group's assigned files (#1638 P13).
+    discovered = coverage._discovered_groups(review_root)
+    for group, files in discovered:
         domains = coverage._effective_domains(review_root, group)
         pending = [d for d in domains
                    if not _cell_done(review_root, manifest, group, d)
@@ -374,15 +508,17 @@ def review_execute(review_root, manifest):
             continue
         ngroups += 1
         tests = sorted((matrix.get(group) or {}).get("tests") or [])
+        inventory = _inventory_note(review_root, group, files, tests, discovered)
         all_entries.extend(
             _cell_entry(review_root, manifest, group, d, files, tests, host, bundle,
-                        tools_context=tools_context)
+                        tools_context=tools_context, inventory=inventory)
             for d in pending)
     if all_entries:
         _record_attempts(review_root, [_cell_key(e["group"], e["domain"])
                                        for e in all_entries
                                        if e.get("group") and e.get("domain")])
         _record_tools_context(review_root, all_entries)
+        _record_test_inventory(review_root, all_entries)
         req = requests.write_dispatch_request(review_root, manifest["run_id"], "review",
                                      None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="review", group=None,

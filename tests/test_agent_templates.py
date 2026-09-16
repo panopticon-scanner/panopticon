@@ -47,6 +47,7 @@ class TestUntrustedContentPreamble(unittest.TestCase):
         panel = dispatch.render_prompt("domain-panel.md", {
             "domain": "SEC", "group": "g1", "file_list": "a.py",
             "security_mode": "standard", "tests": "t.py", "menu": "m",
+            "inventory_note": "complete — x",
             "criteria": "c", "tool_hits": "", "security_checklist": "", "run_id": "R",
             "out_file": ".panopticon/f.json"})
         self.assertIn("UNTRUSTED DATA", panel)
@@ -186,6 +187,7 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A os-command-injection — Qualifies when …",
                    "tool_hits": "", "security_checklist": "",
+                   "inventory_note": "complete — x",
                    "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("`SEC` domain reviewer", out)
@@ -206,6 +208,7 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A — CRITERIA-SENTINEL — met only when …",
                    "tool_hits": "", "security_checklist": "",
+                   "inventory_note": "complete — x",
                    "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
         self.assertIn("## Grading criteria", out)
