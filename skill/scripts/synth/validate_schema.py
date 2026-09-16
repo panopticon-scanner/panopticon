@@ -492,6 +492,21 @@ def repair_verdict(verdict, warn=None):
 _GROUPS_KEEP_KEYS = ("name", "files", "parent")
 
 
+def _warn_repairs(artifact, changes, warn):
+    """Announce every repair a boundary read made, one line each -- through
+    `warn` when a caller supplied one (synthesis collects them), on stderr
+    otherwise. Shared by the three repairers below, which each held the same
+    seven lines: a fourth must not have to remember the wording.
+    """
+    for path, what in changes:
+        message = ("%s: %s %s -- it did not match the type "
+                   "report-schema.json pins for it" % (artifact, what, path))
+        if warn is not None:
+            warn(message)
+        else:
+            print(message, file=sys.stderr)
+
+
 def repair_groups_json(gj, warn=None):
     """Normalize the run's `groups.json` to the types the report pins.
 
@@ -542,13 +557,7 @@ def repair_groups_json(gj, warn=None):
             and not _conforms(gj["security_mode"], node):
         gj.pop("security_mode")            # from_args then defaults it
         changes.append(("security_mode", "dropped"))
-    for path, what in changes:
-        message = ("groups.json: %s %s -- it did not match the type "
-                   "report-schema.json pins for it" % (what, path))
-        if warn is not None:
-            warn(message)
-        else:
-            print(message, file=sys.stderr)
+    _warn_repairs("groups.json", changes, warn)
     return gj
 
 
@@ -617,23 +626,16 @@ def repair_tools_sanitized(value, warn=None):
             changes.append(("sanitized.%s.%s" % (name, extra),
                             "dropped: the schema describes no such field in"))
         out[name] = kept_row
-    for path, what in changes:
-        message = ("tools-manifest.json: %s %s -- it did not match the type "
-                   "report-schema.json pins for it" % (what, path))
-        if warn is not None:
-            warn(message)
-        else:
-            print(message, file=sys.stderr)
+    _warn_repairs("tools-manifest.json", changes, warn)
     return out
 
 
 # Target-writable text bound for two published artifacts, so it is bounded on
-# all three axes the way every other such field is: `sanitized` is capped at
-# 200 rows and 200 published characters AT ITS PRODUCER (pip_audit's
-# `_MAX_DROPPED_ROWS`/`_MAX_PUBLISHED_CHARS`), and this block's producer is the
-# controller's own ledger, so the cap has to live at the read instead. The
-# controller writes one row per selected tool and its longest posture is
-# `proxied:` plus an allowlist -- an order of magnitude inside all three.
+# all three axes. `sanitized` carries the same two caps at its PRODUCER
+# (pip_audit's `_MAX_DROPPED_ROWS`/`_MAX_PUBLISHED_CHARS`); this block's
+# producer is the controller's own ledger, so they live at the read instead.
+# One row per selected tool, `proxied:` plus an allowlist -- well inside all
+# three.
 NETWORK_POSTURE_MAX = 200
 NETWORK_ROWS_MAX = 200
 NETWORK_NAME_MAX = 200
@@ -643,23 +645,19 @@ def repair_tools_network(value, warn=None):
     """`tools-manifest.json`'s `network` block, normalized to what the schema
     pins for `meta.tools.network` (#1645).
 
-    THE PRINCIPLE, unchanged from `repair_tools_sanitized` above: the schema
-    pins the CONTROLLER's output, so a target-sourced input is repaired to the
-    pinned types AT ITS BOUNDARY. The manifest is written into the scanned tree
-    and a hostile target can pre-commit one, so a malformed row costs a warning
-    and the row -- never the run, and never an `artifact invalid` exit on a
-    report the target authored a corner of.
+    The principle and the manifest's hostility are `repair_tools_sanitized`'s
+    above, unchanged: a malformed row costs a warning and the row, never the
+    run and never an `artifact invalid` exit.
 
     Flat by design: a posture is one string per tool (`none`,
     `proxied:<allowlist>`, `excluded:<reason>`), so anything that is not a
     string is DROPPED rather than stringified -- `str({"kind": "none"})` would
-    publish a posture nobody recorded. The posture LENGTH cut is the one
-    coercion, and it is the same one the report applies to every other block of
-    target-authored text it republishes; a NAME over the bound is dropped
-    instead, because a name is an identity and cutting one could collide two
-    rows into one and file an adapter's posture under another's. The row count
-    is bounded too, and the rows kept are the sorted-first ones so the same
-    manifest always yields the same report.
+    publish a posture nobody recorded. Cutting an over-long POSTURE is the one
+    coercion, the same one every other block of republished target text gets; a
+    NAME over the bound is dropped instead, because a name is an identity and
+    cutting one could collide two rows and file an adapter's posture under
+    another's. Rows are taken sorted-first, so one manifest always yields one
+    report.
     """
     changes = []
     out = {}
@@ -683,13 +681,7 @@ def repair_tools_network(value, warn=None):
             changes.append(("network.%s" % name, "dropped: not a string"))
             continue
         out[name] = posture[:NETWORK_POSTURE_MAX]
-    for path, what in changes:
-        message = ("tools-manifest.json: %s %s -- it did not match the type "
-                   "report-schema.json pins for it" % (what, path))
-        if warn is not None:
-            warn(message)
-        else:
-            print(message, file=sys.stderr)
+    _warn_repairs("tools-manifest.json", changes, warn)
     return out
 
 
