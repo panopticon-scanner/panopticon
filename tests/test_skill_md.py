@@ -759,6 +759,9 @@ class TestCodexHostDocs(unittest.TestCase):
         # prepared tree reads this paragraph. The sentence it replaced claimed
         # parity with a broker that has no such gap.
         self.assertIn("#1683", doc)
+        # Fix round 3 (N6): and what the skip line actually promises -- at most
+        # eight named, inside a bounded block, the rest counted.
+        self.assertIn("at most eight are named", doc)
         self.assertNotIn("apply the same rule to their own directory grants", doc)
         # Fix round 2 (N4): anchored on the phrase that STATES the limit, not
         # on the first line mentioning the issue -- a second #1683 reference

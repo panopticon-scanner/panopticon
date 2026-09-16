@@ -168,8 +168,11 @@ def test_a_directory_search_skips_the_hard_link_and_keeps_every_other_match(tree
     text = body(result)
     assert "first.py:2:beta" in text and "second.txt:1:beta second" in text
     assert "private outside content" not in text
-    assert "[skipped %s:" % planted in text
-    assert "hard-linked" in text and "st_nlink=2" in text
+    note = next(line for line in text.splitlines() if line.startswith("[skipped "))
+    # The path is elided from the middle when it is long (N5), so the note is
+    # pinned on what survives: the file's own name and the reason.
+    assert os.path.basename(planted) in note
+    assert "hard-linked" in note and "st_nlink=2" in note
 
 
 def test_a_flood_of_planted_links_cannot_crowd_the_matches_out_of_the_answer(tree):
@@ -193,6 +196,52 @@ def test_a_flood_of_planted_links_cannot_crowd_the_matches_out_of_the_answer(tre
     assert ("[skipped %d more hard-linked files inside this directory grant]"
             % (500 - read_tools.MAX_SKIP_NOTES)) in lines
     assert "[output truncated]" not in body(result)
+
+
+def _deep_directory(root, depth, name):
+    """`depth` nested directories under `root`, returning an open fd on the
+    bottom one. Built with dir_fd: the whole path is far past PATH_MAX, so no
+    absolute-path call could create -- or later reach -- it."""
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for _ in range(depth):
+            os.mkdir(name, dir_fd=fd)
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    except OSError:
+        os.close(fd)
+        raise
+    return fd
+
+
+def test_one_link_down_a_deep_path_cannot_eat_the_answer_either(tree):
+    # Fix round 3 (N5): N1 bounded the note block in COUNT, not in BYTES. The
+    # broker walks component-by-component with dir_fd, so it reaches and NAMES
+    # paths far past PATH_MAX -- one link at the bottom of a 300 x 200-char tree
+    # is a single ~60 KB note, which leads the body and eats the whole 48 KiB
+    # budget. Same evasion as F2/N1 for one `ln` plus a mkdir loop.
+    root, source, first, second, outside = tree
+    reader = reader_for(tree, directories=True)
+    # The answer this search gives at base, byte for byte: no notes, no extras.
+    assert body(reader.call("search", {"pattern": "beta"})) == (
+        "%s:2:beta\n%s:1:beta second" % (first, second))
+    bottom = _deep_directory(str(source), 300, "d" * 200)
+    try:
+        try:
+            os.link(str(outside), "planted.txt", dst_dir_fd=bottom)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip("this filesystem refuses deep hard links: %s" % exc)
+    finally:
+        os.close(bottom)
+    text = body(reader.call("search", {"pattern": "beta"}))
+    assert "%s:2:beta" % first in text and "%s:1:beta second" % second in text
+    assert "private outside content" not in text
+    assert "[output truncated]" not in text
+    notes = [line for line in text.splitlines() if line.startswith("[skipped ")]
+    assert len(notes) == 1 and "st_nlink=2" in notes[0]
+    assert "…" in notes[0] and "d" * 200 not in notes[0]
+    assert sum(len(line.encode("utf-8")) + 1 for line in notes) <= read_tools.MAX_SKIP_NOTE_BYTES == 2048
 
 
 def test_an_exact_file_grant_still_reads_a_hard_linked_file(tree):

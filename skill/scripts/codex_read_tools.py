@@ -79,6 +79,17 @@ SKIPPED_NOTE = "[skipped %s: %s]"
 # it can neither be truncated away nor crowd out what the reviewer asked for.
 MAX_SKIP_NOTES = 8
 SKIPPED_MORE_NOTE = "[skipped %d more hard-linked files inside this directory grant]"
+# Fix round 3 (N5): and a bound in BYTES, because eight notes are not eight
+# bounded notes. `_open` walks component-by-component with dir_fd and `_files`
+# joins without a length check, so the broker reaches -- and NAMES -- paths far
+# past PATH_MAX: one link at the bottom of a 300-deep tree of 200-char names is
+# a single ~60 KB note that eats the whole output budget on its own, which is
+# N1's crowding-out again for one `ln` plus a mkdir loop. So each note's path is
+# elided from the MIDDLE (both ends identify the file; the middle is the part a
+# target pads), and the block as a whole is capped -- anything over either bound
+# folds into the count, which is itself one constant-size line.
+MAX_SKIP_NOTE_BYTES = 2048
+SKIP_PATH_WINDOW = 48
 
 
 def _tool(name, description, properties, required=()):
@@ -184,6 +195,18 @@ def _read(path, *, grant=DIR_GRANT):
     return data[:MAX_FILE_BYTES].decode("utf-8", errors="replace"), len(data) > MAX_FILE_BYTES
 
 
+def _elided(path, window=SKIP_PATH_WINDOW):
+    """`path` with its middle replaced by an ellipsis, to a fixed width.
+
+    Both ends are kept: the head says which grant it sits under and the tail
+    names the file, which is what a reviewer with `list_files` needs to find it.
+    Only the middle -- the segment a hostile tree pads -- is dropped.
+    """
+    if len(path) <= 2 * window + 1:
+        return path
+    return path[:window] + "\u2026" + path[-window:]
+
+
 def _body(matches, skipped, more=0, tail=None):
     """One search body: the disclosure lines FIRST, then matches, then `tail`.
 
@@ -191,8 +214,9 @@ def _body(matches, skipped, more=0, tail=None):
     disclosure that can be cut off is not one. The truncation tail survives its
     own removal -- `_result` says the output was truncated -- but "this file was
     skipped, and why" exists nowhere else. `skipped` is capped by the caller at
-    MAX_SKIP_NOTES and `more` carries whatever the cap dropped, so the block
-    that leads is bounded no matter how many links a target plants (N1).
+    MAX_SKIP_NOTES notes AND MAX_SKIP_NOTE_BYTES bytes, with `more` carrying
+    whatever either cap dropped, so the block that leads is bounded no matter
+    how many links a target plants (N1) or how deep it buries them (N5).
     """
     notes = list(skipped) + ([SKIPPED_MORE_NOTE % more] if more else [])
     return "\n".join(notes + list(matches) + ([tail] if tail else []))
@@ -356,14 +380,22 @@ class Reader:
                     raise ValueError("search outside directory scope denied; supply an explicit granted file")
                 files, walk_truncated = self._files(self._roots(arguments))
             matches, skipped, more, total = [], [], 0, 0
+            note_bytes = 0
             for path in files:
                 try:
                     data, truncated = _read(path, grant=self._require(path))
                 except HardLinkDenied as exc:
                     # F2: skip THIS file, disclose it, keep the rest of the
                     # answer. N1: name the first MAX_SKIP_NOTES, count the rest.
-                    if len(skipped) < MAX_SKIP_NOTES:
-                        skipped.append(SKIPPED_NOTE % (path, exc))
+                    # N5: and stop at MAX_SKIP_NOTE_BYTES, whichever comes first,
+                    # over paths elided to a fixed width. Both bounds are applied
+                    # HERE, before the body is assembled, so whatever the notes
+                    # do not spend is left to the matches.
+                    note = SKIPPED_NOTE % (_elided(path), exc)
+                    size = len(note.encode("utf-8")) + 1
+                    if len(skipped) < MAX_SKIP_NOTES and note_bytes + size <= MAX_SKIP_NOTE_BYTES:
+                        skipped.append(note)
+                        note_bytes += size
                     else:
                         more += 1
                     continue
