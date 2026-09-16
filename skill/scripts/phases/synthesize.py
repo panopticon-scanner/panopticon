@@ -162,20 +162,19 @@ def synthesize_execute(review_root, manifest):
     if not runio._json_parses(report):
         raise runio.DriverError("synthesize produced no report.json (rc=%s): %s"
                           % (proc.returncode, runio._redact_output((proc.stderr or proc.stdout)[:400])))
-    # #1639 P15: the one non-gate non-zero status. The report parses — that is
-    # why the guard above cannot see this — but it does not satisfy the schema
-    # panopticon publishes for it, or its hydrated parts / X0X sibling do not.
-    # Artifact validity is not coverage certification and not a gate verdict,
-    # so it ends the run in `error` rather than being absorbed as one.
-    if proc.returncode == validate_schema_mod.ARTIFACT_INVALID:
-        raise runio.DriverError(
-            "synthesize wrote an artifact that fails its own published schema "
-            "(rc=%s): %s" % (proc.returncode,
-                             runio._redact_output((proc.stderr or proc.stdout)[-400:])))
     # §5.1: point the flat compat paths at the latest tag-named report, so every
     # existing reader of report.json / report.json.html resolves it unchanged, and
     # refresh runs/latest. The tag-named files are the durable top-level outputs;
     # the run folder can be cleared without touching them.
+    #
+    # #1639 P15 I3: this runs for ANY run that produced a parseable report --
+    # before the artifact-invalid raise below, not after. Raising first left
+    # `.panopticon/report.json`, the documented backward-compat path, pointing
+    # at the PREVIOUS run's report: complete, valid, possibly PASS. A CI
+    # consumer reading that path after a failed run read someone else's result
+    # and had no way to tell. This run's report is on disk, carries
+    # `meta.schema_errors`, and is the honest thing to point at; the `error`
+    # status beside it is what says not to trust it.
     tag = runio._run_tag(review_root)
     if tag:
         try:   # compat symlinks are best-effort; the tag-named report is authoritative
@@ -186,4 +185,14 @@ def synthesize_execute(review_root, manifest):
         except OSError:
             pass
         runio._ensure_run_symlinks(review_root)
+    # #1639 P15: the one non-gate non-zero status. The report parses — that is
+    # why the guard above cannot see this — but it does not satisfy the schema
+    # panopticon publishes for it, or its hydrated parts / X0X sibling do not.
+    # Artifact validity is not coverage certification and not a gate verdict,
+    # so it ends the run in `error` rather than being absorbed as one.
+    if proc.returncode == validate_schema_mod.ARTIFACT_INVALID:
+        raise runio.DriverError(
+            "synthesize wrote an artifact that fails its own published schema "
+            "(rc=%s): %s" % (proc.returncode,
+                             runio._redact_output((proc.stderr or proc.stdout)[-400:])))
     return engine.PhaseResult(kind="advanced", message="synthesize: report.json written")
