@@ -665,6 +665,69 @@ class TestVirtualenvExclusion(unittest.TestCase):
             with open(os.path.join(d, "m.json"), encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh), payload)
 
+    def test_manifest_records_what_the_sanitizer_dropped(self):
+        # #1646 ruling 3: the audit was PARTIAL and the manifest says so.
+        block = {"pip-audit": {"source": "requirements.txt", "kept": 2,
+                               "dropped": [{"line": "-e .", "reason": "editable"}],
+                               "hashes_stripped": True}}
+        with tempfile.TemporaryDirectory() as d:
+            payload = rt.write_manifest(os.path.join(d, "m.json"), ["pip-audit"],
+                                        [], sanitized=block)
+            self.assertEqual(payload["sanitized"], block)
+            with open(os.path.join(d, "m.json"), encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["sanitized"], block)
+
+    def test_manifest_sanitized_defaults_to_empty(self):
+        # Stated on every manifest, `{}` included: absence must not be readable
+        # as "nobody measured" -- the same rule `excluded_dirs` follows.
+        with tempfile.TemporaryDirectory() as d:
+            payload = rt.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [])
+            self.assertEqual(payload["sanitized"], {})
+
+    def test_collect_sanitization_asks_only_the_adapters_that_answer(self):
+        class _Quiet:
+            pass
+
+        class _Loud:
+            def sanitization_report(self, target):
+                return {"source": "requirements.txt", "kept": 1, "dropped": []}
+
+        class _Absent:
+            def sanitization_report(self, target):
+                return None
+        got = rt.collect_sanitization(
+            {"semgrep": _Quiet(), "pip-audit": _Loud(), "npm-audit": _Absent()},
+            "/repo")
+        self.assertEqual(got, {"pip-audit": {"source": "requirements.txt",
+                                             "kept": 1, "dropped": []}})
+
+    def test_collect_sanitization_survives_a_crashing_adapter(self):
+        class _Boom:
+            def sanitization_report(self, target):
+                raise OSError("unreadable")
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            self.assertEqual(rt.collect_sanitization({"pip-audit": _Boom()}, "/repo"), {})
+        self.assertIn("pip-audit", buf.getvalue())
+
+    def test_main_records_the_sanitizer_disclosure_in_the_manifest(self):
+        # Docker absent: the disclosure is a pure filesystem read, so it is
+        # faithful on the branch that never launches a scanner -- exactly like
+        # `excluded_scope` and `excluded_dirs` beside it.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "requirements.txt"), "w") as fh:
+                fh.write("-e .\nok==1\n")
+            manifest = os.path.join(d, "tools-manifest.json")
+            with mock.patch.object(rt, "docker_available", return_value=False), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rt.main(["--target", d, "--out", os.path.join(d, "out"),
+                         "--tools", "pip-audit", "--online", "--manifest", manifest])
+            with open(manifest, encoding="utf-8") as fh:
+                written = json.load(fh)
+            self.assertEqual(written["sanitized"]["pip-audit"]["kept"], 1)
+            self.assertEqual(written["sanitized"]["pip-audit"]["dropped"],
+                             [{"line": "-e .", "reason": "editable"}])
+
     def test_manifest_excluded_dirs_defaults_to_empty(self):
         with tempfile.TemporaryDirectory() as d:
             payload = rt.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [])

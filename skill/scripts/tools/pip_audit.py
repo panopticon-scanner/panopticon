@@ -275,6 +275,37 @@ class PipAuditAdapter:
         finally:
             os.unlink(tmp.name)
 
+    def sanitization_report(self, target: str) -> dict | None:
+        """What `invoke` will NOT audit, for the coverage manifest (#1646).
+
+        `{"source": <repo-relative path>, "kept": n, "dropped": [{"line",
+        "reason"}], "hashes_stripped": bool}`, or None when no manifest this
+        adapter reads is present.
+
+        The runner calls this ON THE HOST, in process, exactly as it calls
+        `applicable_files` for `excluded_scope` -- so the disclosure is
+        available on the docker-absent path too, where no adapter runs at all.
+        It is a pure filesystem read and launches nothing, which is what makes
+        that safe; the cost of computing the grammar twice is a re-read of one
+        small file.
+
+        `source` is repo-relative: the manifest is published, and an absolute
+        path would leak the scanner host's directory layout into it.
+        """
+        req = self._find_requirement(target)
+        if req:
+            kept, dropped, hashes = sanitize_requirements_file(req, target)
+            source = os.path.relpath(req, target)
+        else:
+            deps = _deps_from_pyproject(target)
+            if not deps:
+                return None
+            kept, dropped = sanitize_requirements("\n".join(deps))
+            hashes = False
+            source = "pyproject.toml"
+        return {"source": source, "kept": len(kept), "dropped": dropped,
+                "hashes_stripped": hashes}
+
     def _find_requirement(self, target: str) -> str | None:
         # Prefer the canonical requirements.txt (#707). The glob fallback
         # returns the lexicographically-first match, and '-' (0x2D) sorts

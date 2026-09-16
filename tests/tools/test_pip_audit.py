@@ -530,5 +530,57 @@ class TestInvokeNeverPassesTheRepoFile(unittest.TestCase):
         self.assertFalse(os.path.exists(seen["req"]))
 
 
+class TestSanitizationReport(unittest.TestCase):
+    """The DISCLOSE half of ruling D5: the adapter->manifest channel.
+
+    Shaped exactly like `excluded_scope`: the runner queries the adapter
+    IN-PROCESS, on the host, and hands the answer to `write_manifest`. The
+    method is pure (it reads files, launches nothing), so asking it is safe on
+    the docker-absent path too.
+    """
+
+    def _target(self, files):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        for name, text in files.items():
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write(text)
+        return d
+
+    def test_report_names_the_source_the_count_and_every_dropped_line(self):
+        d = self._target({"requirements.txt": HOSTILE_REQUIREMENTS})
+        report = pa.PipAuditAdapter().sanitization_report(d)
+        self.assertEqual(report["source"], "requirements.txt")
+        self.assertEqual(report["kept"], 2)
+        self.assertEqual([x["reason"] for x in report["dropped"]],
+                         ["editable", "local path", "vcs url", "direct url",
+                          "option line", "option line"])
+        self.assertTrue(report["hashes_stripped"])
+
+    def test_source_is_repo_relative_never_an_absolute_host_path(self):
+        d = self._target({"requirements.txt": "ok==1\n"})
+        report = pa.PipAuditAdapter().sanitization_report(d)
+        self.assertEqual(report["source"], "requirements.txt")
+        self.assertNotIn(d, json.dumps(report))
+
+    def test_report_covers_the_pyproject_branch_too(self):
+        d = self._target({"pyproject.toml": '[project]\nname = "x"\n'
+                                            'dependencies = ["a==1", "b @ https://x/y.whl"]\n'})
+        report = pa.PipAuditAdapter().sanitization_report(d)
+        self.assertEqual(report["source"], "pyproject.toml")
+        self.assertEqual(report["kept"], 1)
+        self.assertEqual(only(report["dropped"]),
+                         {"line": "b @ https://x/y.whl", "reason": "direct url"})
+
+    def test_no_report_when_the_adapter_is_not_applicable(self):
+        self.assertIsNone(pa.PipAuditAdapter().sanitization_report(self._target({})))
+
+    def test_report_is_pure_and_launches_nothing(self):
+        d = self._target({"requirements.txt": HOSTILE_REQUIREMENTS})
+        with mock.patch.object(pa, "run_tool") as rt_mock:
+            pa.PipAuditAdapter().sanitization_report(d)
+        rt_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
