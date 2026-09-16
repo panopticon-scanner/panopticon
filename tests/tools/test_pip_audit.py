@@ -10,7 +10,7 @@ from unittest import mock
 
 import pytest
 
-from _test_helpers import FakePopen, first
+from _test_helpers import FakePopen, first, only
 import scripts.tools.pip_audit as pa
 
 
@@ -186,7 +186,11 @@ class TestPipAuditAdapter(unittest.TestCase):
         self.assertEqual(first(findings)["provenance"]["discovered_by"], "tool:pip-audit")
         self.assertEqual(first(findings)["provenance"]["confirmation_status"], "TOOL")
 
-    def test_invoke_uses_requirements_txt_when_present(self):
+    def test_invoke_uses_a_generated_file_not_the_found_requirements_txt(self):
+        # #1646: this test used to PIN the defect -- it asserted the argv
+        # carried `/tmp/fake/requirements.txt`, the repo's own file. The
+        # adapter now always names a generated temp file; the repo path it
+        # found survives only in the argv's ABSENCE of it.
         adapter = pa.PipAuditAdapter()
         fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
         with mock.patch("scripts.tools.base.subprocess.Popen",
@@ -195,11 +199,11 @@ class TestPipAuditAdapter(unittest.TestCase):
                 stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"[]")
         self.assertEqual(rc, 0)
-        popen_mock.assert_called_once_with(
-            ["pip-audit", "--format=json", "--desc=on", "--progress-spinner=off", "--requirement", "/tmp/fake/requirements.txt"],
-            stdout=mock.ANY,
-            stderr=mock.ANY,
-        )
+        argv = popen_mock.call_args[0][0]
+        self.assertEqual(argv[:5], ["pip-audit", "--format=json", "--desc=on",
+                                    "--progress-spinner=off", "--requirement"])
+        self.assertNotIn("/tmp/fake/requirements.txt", argv)
+        self.assertFalse(argv[5].startswith("/tmp/fake/"))
 
     def test_invoke_falls_back_to_pyproject_toml(self):
         adapter = pa.PipAuditAdapter()
@@ -299,6 +303,231 @@ class TestStaticPyproject(unittest.TestCase):
         deps = pa._deps_from_pyproject(
             self._target(b'\xff\xfe[project]\nname = "x"\n'))
         self.assertIsNone(deps)
+
+
+# #1646 (SEC-E3A): the adapter used to hand pip-audit the REPOSITORY'S OWN
+# requirements file. Requirements syntax admits `-e .`, `./local/path`,
+# `git+https://...`, `https://.../x.tar.gz` and `--index-url`; resolving the
+# first four invokes the reviewed repo's PEP 517 build backend, so a hostile
+# target ran code under the scanner account, online. Owner ruling D5 is
+# sanitize-and-disclose: pip-audit is always handed a GENERATED file holding
+# only bare PEP 508 requirement lines, and every dropped line is recorded.
+HOSTILE_REQUIREMENTS = (
+    "# a comment\n"
+    "\n"
+    "-e .\n"
+    "./vendor/pkg\n"
+    "git+https://x/y.git#egg=z\n"
+    "https://x/z.tar.gz\n"
+    "--index-url https://evil\n"
+    "pkg==1.0 --hash=sha256:abc\n"
+    'good>=1,<2 ; python_version<"3.13"\n'
+    "--extra\\\n"
+    "-index-url https://evil2\n"
+)
+
+SAFE_LINES = ["pkg==1.0", 'good>=1,<2 ; python_version<"3.13"']
+
+
+class TestSanitizeRequirements(unittest.TestCase):
+    """The grammar: a kept line is a bare PEP 508 requirement and nothing else."""
+
+    def test_the_hostile_fixture_keeps_only_the_two_safe_lines(self):
+        kept, dropped = pa.sanitize_requirements(HOSTILE_REQUIREMENTS)
+        self.assertEqual(kept, SAFE_LINES)
+        self.assertEqual(
+            dropped,
+            [{"line": "-e .", "reason": "editable"},
+             {"line": "./vendor/pkg", "reason": "local path"},
+             {"line": "git+https://x/y.git#egg=z", "reason": "vcs url"},
+             {"line": "https://x/z.tar.gz", "reason": "direct url"},
+             {"line": "--index-url https://evil", "reason": "option line"},
+             {"line": "--extra-index-url https://evil2", "reason": "option line"}])
+
+    def test_comments_and_blanks_are_skipped_not_dropped(self):
+        kept, dropped = pa.sanitize_requirements("\n# note\n\n  \nreq==1\n")
+        self.assertEqual(kept, ["req==1"])
+        self.assertEqual(dropped, [])
+
+    def test_version_grammar_passes_through_byte_for_byte(self):
+        text = ('name==1.2.3\n'
+                'name>=1,<2\n'
+                'name[extra]~=1.4 ; python_version < "3.12"\n')
+        kept, dropped = pa.sanitize_requirements(text)
+        self.assertEqual(kept, text.splitlines())
+        self.assertEqual(dropped, [])
+
+    def test_direct_url_reference_is_dropped_not_kept(self):
+        kept, dropped = pa.sanitize_requirements("name @ https://x/y.whl\n")
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped, [{"line": "name @ https://x/y.whl",
+                                    "reason": "direct url"}])
+
+    def test_vcs_direct_reference_is_dropped_as_vcs(self):
+        kept, dropped = pa.sanitize_requirements("name @ git+ssh://x/y.git\n")
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped, [{"line": "name @ git+ssh://x/y.git",
+                                    "reason": "vcs url"}])
+
+    def test_unparseable_line_is_dropped_with_that_reason(self):
+        kept, dropped = pa.sanitize_requirements("not a requirement!!\n")
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped, [{"line": "not a requirement!!",
+                                    "reason": "unparseable"}])
+
+    def test_include_lines_are_dropped_by_the_pure_grammar(self):
+        # The pure function never reads the filesystem: it classifies -r/-c as
+        # `include` and the include-following wrapper decides what to do.
+        kept, dropped = pa.sanitize_requirements("-r base.txt\n-c pins.txt\n")
+        self.assertEqual(kept, [])
+        self.assertEqual([d["reason"] for d in dropped], ["include", "include"])
+
+    def test_a_dropped_line_never_carries_url_credentials(self):
+        # tools-manifest.json is an artifact operators copy into CI; a dropped
+        # option line is target-authored text and can carry a private-index
+        # password. Mask it at the producer, not at the sink.
+        _kept, dropped = pa.sanitize_requirements(
+            "--index-url https://bob:hunter2@pypi.internal/simple\n")
+        entry = only(dropped)
+        self.assertEqual(entry["reason"], "option line")
+        self.assertNotIn("hunter2", entry["line"])
+
+    def test_hashes_are_stripped_from_a_kept_line(self):
+        kept, dropped = pa.sanitize_requirements(
+            "pkg==1.0 --hash=sha256:abc --hash=sha256:def\n")
+        self.assertEqual(kept, ["pkg==1.0"])
+        self.assertEqual(dropped, [])
+
+
+class TestSanitizeRequirementsFile(unittest.TestCase):
+    """Includes: followed ONE level, confined to the target root."""
+
+    def _target(self, files):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        for name, text in files.items():
+            path = os.path.join(d, name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        return d
+
+    def test_include_is_followed_once_and_sanitized(self):
+        d = self._target({"requirements.txt": "-r base.txt\ntop==1\n",
+                          "base.txt": "-e .\nbase==2\n"})
+        kept, dropped, hashes = pa.sanitize_requirements_file(
+            os.path.join(d, "requirements.txt"), d)
+        self.assertEqual(kept, ["base==2", "top==1"])
+        self.assertEqual(dropped, [{"line": "-e .", "reason": "editable"}])
+        self.assertFalse(hashes)
+
+    def test_include_outside_the_target_is_dropped(self):
+        d = self._target({"requirements.txt": "-r ../outside.txt\nok==1\n"})
+        kept, dropped, _h = pa.sanitize_requirements_file(
+            os.path.join(d, "requirements.txt"), d)
+        self.assertEqual(kept, ["ok==1"])
+        self.assertEqual(dropped, [{"line": "-r ../outside.txt",
+                                    "reason": "include outside target"}])
+
+    def test_include_cycle_is_dropped_as_nested_include(self):
+        d = self._target({"requirements.txt": "-r self.txt\n",
+                          "self.txt": "-r self.txt\nok==1\n"})
+        kept, dropped, _h = pa.sanitize_requirements_file(
+            os.path.join(d, "requirements.txt"), d)
+        self.assertEqual(kept, ["ok==1"])
+        self.assertEqual(dropped, [{"line": "-r self.txt",
+                                    "reason": "nested include"}])
+
+    def test_second_level_include_is_dropped_as_nested_include(self):
+        d = self._target({"requirements.txt": "-r a.txt\n",
+                          "a.txt": "-r b.txt\na==1\n",
+                          "b.txt": "b==2\n"})
+        kept, dropped, _h = pa.sanitize_requirements_file(
+            os.path.join(d, "requirements.txt"), d)
+        self.assertEqual(kept, ["a==1"])
+        self.assertEqual(dropped, [{"line": "-r b.txt",
+                                    "reason": "nested include"}])
+
+    def test_unreadable_include_is_disclosed(self):
+        d = self._target({"requirements.txt": "-r gone.txt\nok==1\n"})
+        kept, dropped, _h = pa.sanitize_requirements_file(
+            os.path.join(d, "requirements.txt"), d)
+        self.assertEqual(kept, ["ok==1"])
+        self.assertEqual(dropped, [{"line": "-r gone.txt",
+                                    "reason": "include unreadable"}])
+
+    def test_hashes_stripped_is_reported_once_for_the_whole_tree(self):
+        d = self._target({"requirements.txt": "pkg==1 --hash=sha256:abc\n"})
+        kept, dropped, hashes = pa.sanitize_requirements_file(
+            os.path.join(d, "requirements.txt"), d)
+        self.assertEqual((kept, dropped, hashes), (["pkg==1"], [], True))
+
+
+class TestInvokeNeverPassesTheRepoFile(unittest.TestCase):
+    """Ruling 1: the repo's own requirements file is never an argv value."""
+
+    def _target(self, text=HOSTILE_REQUIREMENTS):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return d
+
+    def _invoke(self, target):
+        seen = {}
+
+        def fake_run_tool(cmd, timeout=0):
+            seen["cmd"] = list(cmd)
+            idx = cmd.index("--requirement")
+            seen["req"] = cmd[idx + 1]
+            with open(cmd[idx + 1], encoding="utf-8") as fh:
+                seen["content"] = fh.read()
+            return b"{}", 0
+
+        with mock.patch.object(pa, "run_tool", fake_run_tool):
+            pa.PipAuditAdapter().invoke(target)
+        return seen
+
+    def test_requirement_names_a_temp_file_not_the_repo_path(self):
+        target = self._target()
+        seen = self._invoke(target)
+        self.assertNotIn(os.path.join(target, "requirements.txt"), seen["cmd"])
+        self.assertFalse(seen["req"].startswith(target),
+                         "pip-audit was handed a path inside the reviewed repo: %s"
+                         % seen["req"])
+
+    def test_the_generated_file_holds_exactly_the_safe_lines(self):
+        seen = self._invoke(self._target())
+        self.assertEqual(seen["content"].splitlines(), SAFE_LINES)
+
+    def test_the_generated_file_is_deleted_after_the_run(self):
+        seen = self._invoke(self._target())
+        self.assertFalse(os.path.exists(seen["req"]),
+                         "the generated requirements file outlived the run")
+
+    def test_location_still_points_at_the_repo_manifest(self):
+        target = self._target()
+        with mock.patch.object(pa, "run_tool",
+                               return_value=(PIP_AUDIT_SAMPLE, 0)):
+            ctx = contextvars.copy_context()
+            raw, _rc = ctx.run(pa.PipAuditAdapter().invoke, target)
+            findings = ctx.run(pa.PipAuditAdapter().parse, raw, "g1")
+        self.assertEqual(first(findings)["location"]["file"],
+                         os.path.join(target, "requirements.txt"))
+
+    def test_pyproject_branch_is_sanitized_too_and_its_temp_file_removed(self):
+        # `_deps_from_pyproject` is a STATIC read, but PEP 621 dependencies may
+        # themselves carry `name @ git+https://...` -- the same build-backend
+        # door through a second file. The generated file is the control on both
+        # branches (ruling 1).
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "pyproject.toml"), "w", encoding="utf-8") as fh:
+            fh.write('[project]\nname = "x"\n'
+                     'dependencies = ["requests==2.25.1", "evil @ git+https://x/y.git"]\n')
+        seen = self._invoke(d)
+        self.assertEqual(seen["content"].splitlines(), ["requests==2.25.1"])
+        self.assertFalse(os.path.exists(seen["req"]))
 
 
 if __name__ == "__main__":
