@@ -96,6 +96,13 @@ def tools_execute(review_root, manifest):
                 {"schema_version": 1, "ran": produced, "skipped": not produced, "crashed": crashed,
                  "note": note, "returncode": proc.returncode,
                  "run_id": manifest["run_id"],
+                 # #1639 P11: every raw capture this scan wrote went through
+                 # run_tools' redaction choke point, so a reader about to copy
+                 # `.panopticon/tools/` into a CI artifact learns that from the
+                 # run's own marker. Additive, and claimed only by the branch
+                 # that ran a scan -- the `--no-tools` marker above writes no
+                 # capture and so says nothing about files it did not produce.
+                 "redacted": True,
                  # F1: which INVOCATION attempted this scan. `tools_done` reads
                  # it back to decide whether an environmental skip has already
                  # been retried on this pass.

@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts.tools.base import drain_stderr_async
 from scripts import plan_contract
+from scripts import redact
 from scripts.progress import NullProgress, make_progress
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
@@ -484,7 +485,7 @@ def _write_completed(label, tool, res, out_path):
         print("%s %s produced no output on a selected target; recording as "
               "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
         return None
-    return _atomic_write(out_path, out_bytes)
+    return _atomic_write(out_path, _redact_capture(tool, out_bytes))
 
 
 # #1335: semgrep's SARIF carries NO scanned-files signal -- `invocations` is
@@ -661,6 +662,12 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                 return None
 
             if truncated:
+                # Both numbers describe RAW bytes: the cap is measured on the
+                # stream as it arrives (above), which is the only count that
+                # bounds memory. `_redact_capture` runs after, and masking can
+                # change the retained prefix's length either way, so the marker
+                # is a statement about what the child produced and what was
+                # kept -- not about the size of the file on disk (#1639 P11).
                 marker = (
                     "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
                     "only the first %d bytes were retained]\n" % (
@@ -669,17 +676,60 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                 print("%s %s output exceeded %d byte limit; truncated and retained "
                       "with marker" % (label, tool, MAX_TOOL_OUTPUT_BYTES),
                       file=sys.stderr)
-                # Write only up to the cap, then append the marker for the tail.
+                # Write only up to the cap, redacted, then append the marker for
+                # the tail -- appended AFTER the pass so panopticon's own text
+                # is never rewritten by it.
                 spool.seek(0)
-                payload = spool.read(MAX_TOOL_OUTPUT_BYTES)
-                payload += marker
-                return _atomic_write(out_path, payload)
+                return _atomic_write(
+                    out_path,
+                    _redact_capture(tool, spool.read(MAX_TOOL_OUTPUT_BYTES)) + marker)
 
             spool.seek(0)
+            # Redaction is LAST: the semgrep annotator rewrites the payload on
+            # its way out, so a choke point ahead of it could be reopened by it.
             return _atomic_write(
-                out_path, _annotate_from_stderr(tool, spool.read(), stderr))
+                out_path,
+                _redact_capture(tool,
+                                _annotate_from_stderr(tool, spool.read(), stderr)))
     finally:
         timer.cancel()
+
+
+def _redact_capture(tool, data):
+    """The ONE redaction choke point for a raw scanner capture (#1639 P11).
+
+    `.panopticon/tools/<tool>.sarif|json` is what an operator copies into a CI
+    job's artifacts, and nothing masked it: the report's pass
+    (`redact.redact_tree`, #1634) walks the REPORT tree, which these files are
+    not part of, and a secret scanner's output is a file full of other people's
+    credentials by construction. Every write path calls this immediately before
+    `_atomic_write`, and `TestRawCaptureRedaction` reads run_tools' own AST to
+    keep it that way for the next path somebody adds.
+
+    Deliberately `redact.redact` -- the SAME pattern set the report uses, never
+    a second copy: two redactors drift, and the one reached only by raw captures
+    would drift silently. Those patterns are anchored to well-formed secret
+    formats and mask token-shaped substrings INSIDE strings, so they cannot
+    change a SARIF document's STRUCTURE: `ruleId`, `locations`, `region` line
+    numbers and `level` survive, ingest is unchanged, and all fifteen committed
+    real-scanner goldens come back byte-identical through this function.
+
+    Bytes in, bytes out, because bytes are what the writer holds. The masked
+    text is encoded only when redaction actually FIRED; a capture with nothing
+    to mask is returned as the exact bytes the scanner produced, so a payload
+    that is not valid UTF-8 (decoded here with errors="replace") is never
+    rewritten by a pass that had nothing to do.
+    """
+    text = data.decode("utf-8", errors="replace")
+    masked = redact.redact(text)
+    if masked == text:
+        return data
+    # Disclosed, not silent: for most scanners a secret in the capture means the
+    # scan surface was wrong. Only ever reached when a capture is being written,
+    # so it cannot crowd out the driver's no-output failure note (#1317).
+    print("%s capture carried secret-shaped values; masked before writing"
+          % tool, file=sys.stderr)
+    return masked.encode("utf-8")
 
 
 def _atomic_write(out_path, data):
