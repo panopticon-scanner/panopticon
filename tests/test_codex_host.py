@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 import scripts.codex_host as codex_host
-import scripts.codex_read_tools as codex_read_tools
 
 
 MODEL = {"slug": "gpt-test", "base_instructions": "same model instructions",
@@ -219,7 +218,14 @@ def test_prompt_tool_policy_names_exactly_the_launched_tools(tmp_path, role_file
     it CAN call is the `enabled_tools` allowlist this module puts on the argv,
     read back off that argv by `validate_command`. Run-13 proved the two had
     drifted -- the paragraph offered a shell the broker never exposed -- so the
-    two lists are compared here rather than maintained in parallel by hand."""
+    two lists are compared here rather than maintained in parallel by hand.
+
+    Compared as SETS, matching what `validate_command` accepts off the argv
+    (codex_host.py I-2: a role's allowlist is a non-empty subset in any order).
+    The paragraph is role-blind today because every shipped template grants
+    Read+Grep+Glob; if one ever narrows, the remedy is to map that role's
+    `tool_policy.allowed` through the emitter's vocabulary table rather than to
+    loosen this assertion -- #1677."""
     from scripts import dispatch
 
     root, entry, env = _case(tmp_path)
@@ -232,8 +238,7 @@ def test_prompt_tool_policy_names_exactly_the_launched_tools(tmp_path, role_file
     launched = codex_host.validate_command(argv, env, root)["mcp_servers"]["panopticon_scope"]
     meta, _body = dispatch.load_template(role_file)
     named = re.findall(r"`([a-z_]+)` \(", dispatch._tool_policy_line(meta, "codex"))
-    assert named == launched["enabled_tools"]
-    assert named == [tool["name"] for tool in codex_read_tools.TOOLS]
+    assert set(named) == set(launched["enabled_tools"])
 
 
 @pytest.mark.parametrize("agent", ["../panopticon-scout", "/panopticon-scout", "panopticon-scout.toml", "other"])

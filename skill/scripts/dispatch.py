@@ -124,10 +124,15 @@ _CHARTER = (
     "you may use only %s and must never attempt %s.\n"
     "Return your result as the task message instructs.\n")
 
+# Two %s slots: the role, then the broker's tool names. The list is NOT
+# written out here -- F1 of #1639 P14's review: a second hard-coded copy of
+# `codex_read_tools.TOOLS` in this file is the same defect the epic is closing,
+# one string over. Rendered by `_codex_charter`, pinned by
+# tests/test_dispatch.py::TestCodexToolPolicyMatchesTheBrokerSurface.
 _CODEX_CHARTER = (
     "You are panopticon's `%s` reviewer. Follow the dispatched task message "
     "exactly; it contains your full instructions for this run. Use only the "
-    "scope-bound read_file, search, and list_files MCP tools. Read/Grep/Glob "
+    "scope-bound %s MCP tools. Read/Grep/Glob "
     "in the task refer to these tools; search is literal substring matching. "
     "For a file-scoped review, search must name one granted file and listing "
     "is unavailable; never execute target code or access the network. "
@@ -135,6 +140,19 @@ _CODEX_CHARTER = (
     "template says Write: the controller persists it. Include the task's "
     "`_panopticon` block verbatim in that JSON -- a reply without it is "
     "DISCARDED and the cell is treated as not done. Do not write artifacts.\n")
+
+
+def _codex_charter(role):
+    """The registered Codex shell's standing instruction, tool names included.
+
+    `developer_instructions` outlives the prompt: it is what the shell says the
+    reviewer may call, every launch. It named the three broker tools by hand,
+    so adding or retiring one in `codex_read_tools.TOOLS` moved the argv's
+    `enabled_tools` and the task message's tool policy while leaving the
+    standing instruction enumerating yesterday's surface -- P14 again, at a
+    second site. One join off the same list closes it.
+    """
+    return _CODEX_CHARTER % (role, ", ".join(t["name"] for t in codex_read_tools.TOOLS))
 
 
 def registered_agent_name(role_file):
@@ -215,7 +233,7 @@ def emit_host_agents(host, out_dir):
             cfg = model_resolver.registration_config("codex", role)
             policy = codex_host.safety_config()
             policy.update(name=agent, description=meta["description"],
-                          sandbox_mode="read-only", developer_instructions=_CODEX_CHARTER % role)
+                          sandbox_mode="read-only", developer_instructions=_codex_charter(role))
             policy.update({key: cfg[key] for key in ("model", "model_reasoning_effort") if cfg.get(key)})
             # Host vocabulary belongs here, not in the neutral role templates.
             # Write is deliberately omitted: every Codex role is return-persist.
@@ -305,9 +323,15 @@ def _prune_retired_shells(host, out_dir, written):
 
 
 def _codex_tool_gloss(tool):
-    """One broker tool as prose: its own name, its own one-line description."""
+    """One broker tool as prose: its own name, its own one-line description.
+
+    The description becomes a mid-sentence fragment: leading capital lowered
+    (so the paragraph never spells a Claude tool name like `Read` at the head
+    of a gloss) and exactly ONE trailing period dropped -- `removesuffix`, not
+    `rstrip`, which would eat a whole run and swallow an ellipsis.
+    """
     text = tool["description"]
-    return "`%s` (%s)" % (tool["name"], text[:1].lower() + text[1:].rstrip("."))
+    return "`%s` (%s)" % (tool["name"], (text[:1].lower() + text[1:]).removesuffix("."))
 
 
 def _tool_policy_line(meta, host=None):
@@ -326,7 +350,11 @@ def _tool_policy_line(meta, host=None):
         # TOOLS, tests/test_codex_host.py against the `enabled_tools` that
         # reach the argv). Delivery -- the return-JSON contract and the
         # `_panopticon` stamp -- belongs to the prompt body and the registered
-        # charter and is deliberately not repeated here.
+        # charter and is deliberately not repeated here. The paragraph is
+        # role-BLIND while the argv's `enabled_tools` is role-narrowed from the
+        # same template's `tool_policy.allowed`; every shipped role grants all
+        # three today, so the two agree -- #1677 covers the narrowing case (and
+        # the setup-scan/advisor sites that never thread `host` at all).
         return ("\n## Tool policy\n\nYour only tools are the `panopticon_scope`"
                 " MCP tools %s. There is no shell. Never execute target code, "
                 "run builds or tests, access the network, spawn agents, or "

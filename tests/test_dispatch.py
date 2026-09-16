@@ -117,7 +117,11 @@ class TestCodexToolPolicyMatchesTheBrokerSurface(unittest.TestCase):
     # Case-sensitive on purpose: the broker's own names are lowercase
     # (`read_file`), so a case-insensitive "read" would match the surface
     # this paragraph is supposed to name.
-    ABSENT = ("shell command", "Bash", "Read", "Grep", "Glob", "Write", "Edit", "Agent")
+    # `bash` lowercase as well as `Bash`: the capitalised token is Claude's
+    # tool name, the lowercase one is how a regression would word a shell
+    # ("run bash to grep"), and only the second slipped past this list.
+    ABSENT = ("shell command", "bash", "Bash", "Read", "Grep", "Glob", "Write",
+              "Edit", "Agent")
 
     def _policy(self, role_file="domain-panel.md"):
         meta, _body = dispatch.load_template(role_file)
@@ -130,10 +134,13 @@ class TestCodexToolPolicyMatchesTheBrokerSurface(unittest.TestCase):
                 self.assertIn("panopticon_scope", policy)
                 self.assertIn("There is no shell.", policy)
                 for tool in codex_read_tools.TOOLS:
-                    self.assertIn("`%s`" % tool["name"], policy)
-                    # The gloss is the tool's own one-line description, minus
-                    # its leading capital and trailing period.
-                    self.assertIn(tool["description"][1:].rstrip("."), policy)
+                    # The gloss is the tool's own one-line description with its
+                    # initial LOWERED (not dropped) and one trailing period
+                    # removed. Re-derived here rather than borrowed from
+                    # _codex_tool_gloss, so the format is pinned by the test.
+                    text = tool["description"]
+                    gloss = (text[0].lower() + text[1:]).removesuffix(".")
+                    self.assertIn("`%s` (%s)" % (tool["name"], gloss), policy)
                 for word in self.ABSENT:
                     self.assertNotIn(word, policy, word)
 
@@ -146,6 +153,29 @@ class TestCodexToolPolicyMatchesTheBrokerSurface(unittest.TestCase):
         self.assertIn("`read_file`", policy)          # the surviving tool stays
         self.assertNotIn("`search`", policy)          # a removed tool goes
         self.assertNotIn("`list_files`", policy)
+
+    def test_the_registered_charter_names_the_same_tools(self):
+        # F1: `developer_instructions` carried a SECOND hand-written copy of
+        # the broker's tool list -- the standing instruction every Codex launch
+        # runs under. A TOOLS edit moved the argv allowlist and the task
+        # message while leaving that copy naming yesterday's surface.
+        charter = dispatch._codex_charter("domain_panel")
+        self.assertIn("domain_panel", charter)
+        for tool in codex_read_tools.TOOLS:
+            self.assertIn(tool["name"], charter)
+        fixture = [dict(codex_read_tools.TOOLS[0]),
+                   {"name": "count_lines", "description": "Count lines in one granted file."}]
+        import tomllib
+        with mock.patch.object(codex_read_tools, "TOOLS", fixture):
+            mutated = dispatch._codex_charter("domain_panel")
+            with tempfile.TemporaryDirectory() as d:
+                with open(dispatch.emit_host_agents("codex", d)[0], encoding="utf-8") as fh:
+                    emitted = tomllib.loads(fh.read())
+        self.assertIn("count_lines", mutated)
+        self.assertNotIn("list_files", mutated)
+        # and the rendered charter is what the registered shell carries
+        self.assertIn("count_lines", emitted["developer_instructions"])
+        self.assertNotIn("list_files", emitted["developer_instructions"])
 
     def test_the_claude_branch_is_untouched(self):
         meta, _body = dispatch.load_template("domain-panel.md")
