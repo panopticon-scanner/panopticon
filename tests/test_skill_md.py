@@ -358,6 +358,22 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("Before any paid dispatch", loop)
         self.assertNotIn("arms a guard or launches anything", loop)
 
+    def test_the_test_inventory_diagnostic_is_documented(self):
+        # #1638 P13: an operator who meets `Test inventory: X: empty` in a
+        # report, or a `TST-X0X` INFO finding in the JSON, has to be able to
+        # find out what it means and what fixes it -- which is the matrix,
+        # not the target's test suite.
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        review = _section(loop, "`review`**", "`synthesize`**")
+        self.assertIn("meta.coverage.test_inventory", review)
+        self.assertIn("groups.yml", review)
+        # Fix round 1, F1: the state is DRIVER-computed and already published;
+        # no agent files a finding for it, so the guide must not promise one
+        # (an X0X from a non-TST cell was rewritten to that cell's domain and
+        # clustered as a bogus OCRDb candidate).
+        self.assertNotIn("TST-X0X", review)
+        self.assertIn("no finding", review)
+
     def test_an_environmental_tool_skip_is_documented_as_retried(self):
         loop = _section(self.text, "## Driver run-loop", "## Driver setup")
         tools = _section(loop, "`tools`**", "`review`**")

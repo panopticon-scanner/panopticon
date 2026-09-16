@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 import scripts.synthesize as syn
+import scripts.dispatch as dispatch_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.codes as codes_mod
 import scripts.synth.delta as delta_mod
@@ -4024,3 +4025,140 @@ class TestAMidRunToolsDowngradeIsDisclosed(unittest.TestCase):
             schema = json.load(fh)
         block = schema["properties"]["meta"]["properties"]["tools"]
         self.assertIn("disabled_mid_run", block["properties"])
+
+
+class TestTestInventoryCoverage(unittest.TestCase):
+    """#1638 P13: an operator reading run-13's report saw a TST panel claim a
+    module had no automated coverage. Nothing in the report said the claim had
+    been derived from an EMPTY inventory rather than from the tree, so nothing
+    in the report distinguished a real coverage gap from a matrix defect.
+    `meta.coverage.test_inventory` is that distinction, counted per group off
+    the tally the review phase persists as it renders each prompt.
+    """
+
+    def _coverage(self, inventory):
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(test_inventory=inventory)))
+        return report["meta"]["coverage"]
+
+    def test_the_states_reach_the_report_per_group(self):
+        self.assertEqual({"Code": "split", "Other": "complete"},
+                         self._coverage({"Code": "split",
+                                         "Other": "complete"})["test_inventory"])
+
+    def test_a_run_that_measured_nothing_reports_an_empty_map(self):
+        # Stated on every report, `{}` included: an absent key would make
+        # "nobody measured" and "every group is fine" the same document.
+        self.assertEqual({}, self._coverage(None)["test_inventory"])
+
+    def test_the_tally_is_loaded_from_the_run_folder(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panel-test-inventory.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"schema_version": 1,
+                           "groups": {"A": "complete", "B": "empty"}}, fh)
+            self.assertEqual({"A": "complete", "B": "empty"},
+                             plan_mod.load_test_inventory(d))
+
+    def test_an_absent_or_corrupt_tally_reads_as_nothing_measured(self):
+        # Fail-closed like its sibling: `.panopticon` is a directory a hostile
+        # target can pre-commit, and a state this run did not measure must not
+        # be invented from one it did not write.
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual({}, plan_mod.load_test_inventory(d))
+            with open(os.path.join(d, "panel-test-inventory.json"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("{ not json")
+            self.assertEqual({}, plan_mod.load_test_inventory(d))
+
+    def test_an_unknown_state_is_dropped_rather_than_carried(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panel-test-inventory.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"groups": {"A": "complete", "B": "sideways",
+                                      "C": {"nested": 1}}}, fh)
+            self.assertEqual({"A": "complete"}, plan_mod.load_test_inventory(d))
+
+    def test_the_schema_declares_the_field(self):
+        with open(os.path.join(SKILL_ROOT, "reference",
+                               "report-schema.json"), encoding="utf-8") as fh:
+            schema = json.load(fh)
+        block = schema["properties"]["meta"]["properties"]["coverage"]
+        self.assertIn("test_inventory", block["properties"])
+
+
+class TestTheInventoryStateFilesNothingAndGatesNothing(unittest.TestCase):
+    """#1638 P13 ruling 4, as amended by fix round 1 (F1).
+
+    The inventory state is DRIVER-computed and published twice already -- on
+    the dispatch entry and in `meta.coverage.test_inventory`. No agent files a
+    finding for it, so the invariant is stronger than "the diagnostic is
+    weightless": an empty/split matrix must change nothing in the report
+    except `meta.coverage.test_inventory` itself. In particular it must emit
+    no `-X0X` code, because an X0X from a non-TST cell is rewritten to that
+    cell's domain, counts as a cross-domain finding, and clusters into
+    `report-x0x.json` as a target-specific OCRDb candidate nobody can adjudicate.
+    """
+
+    GROUPS = [{"name": "g1", "files": ["a.py"]}]
+    FLAGGED = {"g1": "empty", "g2": "split"}
+
+    def _report(self, inventory):
+        real = _agentic(sev="HIGH", location={"file": "a.py", "line_start": 5,
+                                              "line_end": 8})
+        verdicts = {evidence_mod.finding_fingerprint(real): {
+            "finding_id": real["id"], "verdict": "CONFIRMED", "reasoning": "v"}}
+        with _target_with_files(self.GROUPS, lines=200) as tgt:
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=tgt, fail_on="high",
+                                         timestamp=DEFAULT_TIMESTAMP),
+                findings=findings_mod.FindingSet(findings=[real],
+                                                 verdicts=verdicts),
+                plan=plan_mod.PlanInputs(groups_meta=self.GROUPS,
+                                         test_inventory=inventory)))
+
+    def test_a_flagged_matrix_changes_nothing_but_the_disclosure(self):
+        clean = self._report({"g1": "complete"})
+        flagged = self._report(self.FLAGGED)
+        self.assertNotEqual(clean["meta"]["coverage"]["test_inventory"],
+                            flagged["meta"]["coverage"]["test_inventory"])
+        self.assertEqual(clean["summary"], flagged["summary"])
+        self.assertEqual(clean["findings"], flagged["findings"])
+        self.assertEqual(clean["discarded_claims"], flagged["discarded_claims"])
+
+    def test_a_flagged_matrix_manufactures_no_x0x_candidate(self):
+        report = self._report(self.FLAGGED)
+        codes = [f.get("code") for f in report["findings"]
+                 + report["discarded_claims"]]
+        self.assertEqual([], [c for c in codes if c and str(c).endswith("-X0X")])
+        ocrdb_cov = report["meta"]["coverage"]["ocrdb"]
+        self.assertEqual(0, ocrdb_cov["invalid_codes"])
+        self.assertEqual({}, ocrdb_cov["fallbacks"])
+        self.assertEqual(0, ocrdb_cov["code_domain_mismatch"])
+
+    def test_the_x0x_assertion_has_teeth(self):
+        # Guards the guard. The assertion above is over a fixture with no
+        # agent findings, so it would hold vacuously. This is the shape fix
+        # round 1 removed -- a `TST-X0X` filed from a SEC cell -- proving the
+        # counters it reads actually move when it happens: the code is
+        # rewritten to the CELL's domain, the mismatch is counted, and the
+        # candidate pool gains a fallback under a domain that never saw it.
+        bogus = _agentic(fid="AG-X0X", sev="INFO", panel="security",
+                         domain="SEC", code="TST-X0X",
+                         title="Test inventory for g1 is empty or incomplete")
+        cov = codes_mod.validate_finding_codes([bogus], ocrdb.load_bundle())
+        self.assertEqual("SEC-X0X", bogus["code"])
+        self.assertEqual(1, cov["invalid_codes"])
+        self.assertEqual(1, cov["code_domain_mismatch"])
+        self.assertEqual({"SEC": 1}, cov["fallbacks"])
+
+    def test_the_prompt_asks_for_no_such_finding(self):
+        # The end of the chain the two assertions above measure: nothing files
+        # it because the template no longer names a code or a title for it.
+        _meta, body = dispatch_mod.load_template("domain-panel.md")
+        self.assertNotIn("TST-X0X", body)
+        self.assertNotIn("Test inventory for {group} is empty or incomplete",
+                         body)

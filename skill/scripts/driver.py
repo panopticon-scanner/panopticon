@@ -57,6 +57,10 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 # scanner-context tally are both run-scoped facts -- a --reset
                 # must not resume on the previous run's answer to either.
                 "readiness.json", "panel-tools-context.json",
+                # #1638 P13: the per-group test-inventory verdict is derived
+                # from THIS run's assignment, so a --reset that re-discovers
+                # must not resume on the previous run's answer either.
+                "panel-test-inventory.json",
                 # #1513: the per-cell retry budget is run-scoped -- a --reset
                 # must not start with a cell already exhausted.
                 "cell-attempts.json")

@@ -15,6 +15,7 @@ import scripts.findings_contract as findings_contract
 
 from . import runio
 from . import coverage
+from . import inventory as inventory_mod
 from . import requests
 from . import verify
 
@@ -38,6 +39,12 @@ _ATTEMPTS_FILE = "cell-attempts.json"
 # resumes, a `tools` phase that only succeeded on the second invocation) and
 # the report has to count every panel the run dispatched, not the last batch.
 _TOOLS_CONTEXT_FILE = "panel-tools-context.json"
+
+# #1638 P13: the per-GROUP verdict on the test inventory the cell's prompt was
+# built from -- keyed by group, not by cell, because the inventory is a fact
+# about the matrix entry every one of the group's domains shares. Read back at
+# synthesis as meta.coverage.test_inventory.
+_TEST_INVENTORY_FILE = "panel-test-inventory.json"
 
 
 def _cell_key(group, domain):
@@ -84,6 +91,29 @@ def _record_tools_context(review_root, entries):
         cells[_cell_key(entry["group"], entry["domain"])] = bool(
             entry.get("tools_context"))
     runio._write_json(path, {"schema_version": 1, "cells": cells})
+
+
+def _record_test_inventory(review_root, entries):
+    """Merge this batch's per-group `inventory_note` into the run's durable
+    tally (#1638 P13).
+
+    Merged, not rewritten, for the same reason the tools tally is: a run
+    dispatches its cells in several batches, and a later batch that carries
+    only two groups must not erase the twenty the first batch recorded.
+    Every domain of a group -- and every CHUNK of an oversize one -- answers
+    identically (the state is a property of the matrix entry), so a repeat
+    write is a no-op rather than a conflict.
+    """
+    path = runio._pano(review_root, _TEST_INVENTORY_FILE)
+    body = runio._load_json(path)
+    prior = body.get("groups") if isinstance(body, dict) else None
+    groups = dict(prior) if isinstance(prior, dict) else {}
+    for entry in entries:
+        note = entry.get("inventory_note")
+        unit = entry.get("inventory_unit") or entry.get("group")
+        if unit and note:
+            groups[unit] = note
+    runio._write_json(path, {"schema_version": 1, "groups": groups})
 
 
 def _cell_exhausted(review_root, group, domain):
@@ -252,13 +282,27 @@ def _tool_hits_for_cell(review_root, manifest, domain, files):
     return _format_tool_hits(hits)
 
 def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle,
-                tools_context=False):
+                tools_context=False, inventory=None, unit=None):
     file_list = runio._abs_file_list(review_root, files)
-    test_list = "\n".join("- " + t for t in tests) or "- (no tests)"
+    # #1190 AGT-A1A, via fix round 3: prompt-sanitized like `file_list`, with
+    # the SAME function. Since fix round 2 (N1) a chunk's list is built from
+    # RESOLVED target-tree paths rather than the operator's authored globs, so
+    # a hostile filename reaches this bullet list -- the exact channel #1190
+    # closed for the file list.
+    test_list = "\n".join(
+        "- " + runio._prompt_safe(str(t)) for t in tests) or "- (no tests)"
+    # #1638 P13: the reviewer is fenced to this cell, so the driver -- which
+    # assigned every file in the tree to a group -- is the only party that can
+    # tell it whether the inventory above is the whole story.
+    if inventory is None:
+        inventory = inventory_mod.note(review_root, group, files, tests)
+    inventory_state, inventory_line = inventory
     out_file = os.path.abspath(runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))
     prompt = dispatch.render_prompt("domain-panel.md", {
         "domain": domain, "group": group, "file_list": file_list,
-        "tests": test_list, "security_mode": manifest.get("security_mode", "standard"),
+        "tests": test_list,
+        "tst_guidance": inventory_mod.render_tst_guidance(domain, inventory_line),
+        "security_mode": manifest.get("security_mode", "standard"),
         "menu": _render_menu(bundle, domain),
         "criteria": _render_criteria(bundle, domain), "run_id": manifest["run_id"],
         "tool_hits": _tool_hits_for_cell(review_root, manifest, domain, files),
@@ -290,6 +334,16 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
             # was shown scanner evidence. Read back off the persisted tally at
             # synthesis as meta.tools.panels_with_scanner_context.
             "tools_context": bool(tools_context),
+            # #1638 P13: stamped beside it and for the same reason -- what THIS
+            # reviewer was told about its own test inventory, recorded as the
+            # prompt is rendered rather than reconstructed afterwards. Read
+            # back at synthesis as meta.coverage.test_inventory.
+            "inventory_note": inventory_state,
+            # The groups.yml entry this cell's inventory verdict belongs to --
+            # `group` itself unless the run chunked it. The durable tally is
+            # keyed by THIS, so the report names a group the operator can find
+            # in their own matrix (#1638 P13 fix round 1, F3).
+            "inventory_unit": unit or group,
             "scope": requests.scope(files=abs_files, reads=_cell_reads(domain))}
     if mode:
         entry["delivery"] = mode
@@ -365,6 +419,21 @@ def review_execute(review_root, manifest):
     # (_write_driver_plan above already declared them all for reconcile).
     all_entries, ngroups = [], 0
     tools_context = _tools_context(review_root)
+    # Read once for the whole batch: the inventory verdict for any one unit is
+    # computed against every OTHER unit's assigned files (#1638 P13). `units`
+    # folds run-time chunks back onto the groups.yml entry they came from, so
+    # the matrix lookup, the "who holds this test" comparison and the report
+    # key all name a group the operator authored (fix round 1, F3).
+    units, unit_of = coverage._discovered_units(review_root)
+    # One classify_files pass per unit, not one per (unit, other) pair -- the
+    # comparison below is over every other unit's files (#1638 P13 fix round 2,
+    # N2).
+    stems_of = inventory_mod.unit_stems_map(units)
+    unit_tests, inventory_of = {}, {}
+    for unit, unit_files in sorted(units.items()):
+        unit_tests[unit] = sorted((matrix.get(unit) or {}).get("tests") or [])
+        inventory_of[unit] = inventory_mod.note(
+            review_root, unit, unit_files, unit_tests[unit], units, stems_of)
     for group, files in coverage._discovered_groups(review_root):
         domains = coverage._effective_domains(review_root, group)
         pending = [d for d in domains
@@ -373,16 +442,26 @@ def review_execute(review_root, manifest):
         if not pending:
             continue
         ngroups += 1
-        tests = sorted((matrix.get(group) or {}).get("tests") or [])
+        unit = unit_of.get(group, group)
+        # The VERDICT is the unit's; the `Tests:` LINE is this cell's, because
+        # the read guard is built from `files`. Listing the parent's whole
+        # axis handed a chunk paths its own scope fence denies (fix round 2,
+        # N1). An unchunked group is its own unit, so it keeps the authored
+        # axis verbatim -- globs included.
+        tests = (unit_tests.get(unit) or [] if unit == group
+                 else inventory_mod.readable_tests(unit_tests.get(unit), files))
         all_entries.extend(
             _cell_entry(review_root, manifest, group, d, files, tests, host, bundle,
-                        tools_context=tools_context)
+                        tools_context=tools_context,
+                        inventory=inventory_of.get(unit),
+                        unit=unit)
             for d in pending)
     if all_entries:
         _record_attempts(review_root, [_cell_key(e["group"], e["domain"])
                                        for e in all_entries
                                        if e.get("group") and e.get("domain")])
         _record_tools_context(review_root, all_entries)
+        _record_test_inventory(review_root, all_entries)
         req = requests.write_dispatch_request(review_root, manifest["run_id"], "review",
                                      None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="review", group=None,

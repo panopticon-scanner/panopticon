@@ -20,6 +20,33 @@ def _discovered_groups(review_root):
             for g in (data.get("groups") or [])
             if isinstance(g, dict) and g.get("name")]
 
+def _discovered_units(review_root):
+    """`({unit: files}, {group: unit})` -- discovery's groups folded onto the
+    REVIEW UNIT the operator actually authored (#1638 P13 fix round 1, F3).
+
+    A leaf over `--max-per-group` is split into `Big_1`, `Big_2`, ... at run
+    time, and the committed matrix has no entry for either name -- chunking
+    is, in discovery's own words, "an internal performance decision that
+    means nothing to whoever wrote groups.yml". Every `groups.json` entry
+    already carries `chunk_of` (self-referencing when the group was never
+    split), so the fold is one field: a matrix lookup, a "who holds this
+    test" comparison, and a report key that names a group the operator can
+    find in their own groups.yml all read the unit, not the chunk.
+
+    `parent` -- the AUTHORED roll-up axis -- is deliberately NOT folded here:
+    `Auth:Core` and `Auth:API` are two matrix entries with two `tests:` axes,
+    and merging them would hide a real split between sibling subgroups.
+    """
+    data = runio._load_json(runio._pano(review_root, "groups.json")) or {}
+    units, unit_of = {}, {}
+    for g in (data.get("groups") or []):
+        if not (isinstance(g, dict) and g.get("name")):
+            continue
+        unit = g.get("chunk_of") or g["name"]
+        unit_of[g["name"]] = unit
+        units.setdefault(unit, []).extend(g.get("files") or [])
+    return ({u: sorted(set(fs)) for u, fs in units.items()}, unit_of)
+
 def group_files_containing(review_root, rel_file):
     """Absolute file list of the discovered group containing `rel_file`
     (repo-relative), for the tool-advisor's scope (R-P5-2): tool findings

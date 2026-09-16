@@ -71,6 +71,7 @@ class TestRenderPrompt(unittest.TestCase):
             "domain": "SEC", "group": "g1",
             "file_list": "a.py, b.py", "security_mode": "standard",
             "tests": "t.py", "menu": "SEC-A1A x", "criteria": "c",
+            "tst_guidance": "",
             "tool_hits": "", "security_checklist": "", "run_id": "R",
             "out_file": ".panopticon/findings-g1-SEC.json",
         }

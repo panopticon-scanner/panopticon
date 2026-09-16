@@ -31,6 +31,11 @@ class PlanInputs:
     coverages: list | None = None
     integrity: dict | None = None
     resume: dict | None = None
+    # #1638 P13: {unit: "complete"|"empty"|"split"} -- whether each cell's
+    # reviewers could believe their own test inventory. {} / None when this
+    # run did not measure it (a direct synthesize.py call over hand-collected
+    # findings had no driver to write the tally).
+    test_inventory: dict | None = None
 
     @classmethod
     def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts):
@@ -63,7 +68,8 @@ class PlanInputs:
         return cls(groups_meta=groups_meta, fan_out=fan_out,
                    scout_requested=sorted(scout_requested),
                    scout_profiles_seen=scout_profiles_seen, out_of_scope=out_of_scope,
-                   coverages=coverages, integrity=integrity, resume=resume)
+                   coverages=coverages, integrity=integrity, resume=resume,
+                   test_inventory=load_test_inventory(run_dir))
 
 
 @dataclass(frozen=True)
@@ -523,6 +529,11 @@ def reconcile(plan, tools, resolved):
         # disclosure -- {"missing_floor": [[group, domain], ...]}. A
         # non-empty list is what forces the gate to INCONCLUSIVE.
         "cells": cell_audit,
+        # #1638 P13: which review units were shown a test inventory their
+        # reviewers could believe. An empty/split entry is why a `TST`
+        # no-coverage claim here may be about the MATRIX, not the target.
+        # Driver-computed; no agent files a finding for it.
+        "test_inventory": dict(plan.test_inventory or {}),
         "resume": plan.resume,
         "delta": resolved.delta_meta,
     }
@@ -597,6 +608,40 @@ def load_panel_tools_context(run_dir):
     for saw_tools in cells.values():
         counts["with" if saw_tools is True else "without"] += 1
     return counts
+
+
+TEST_INVENTORY = "panel-test-inventory.json"
+
+INVENTORY_STATES = ("complete", "empty", "split")
+
+
+def load_test_inventory(run_dir):
+    """`{unit: state}` over <run_dir>/panel-test-inventory.json (#1638 P13).
+
+    The review phase records, per REVIEW UNIT (the groups.yml entry a chunked
+    `<name>_N` was split out of, so the key names a group the operator can
+    find), whether that unit's prompts were built from a `complete`, `empty`
+    or `split` inventory; this reads it back so `meta.coverage.test_inventory`
+    can say which `TST` coverage claims rest on one nobody could trust.
+
+    Fail-closed to `{}` on an absent or unreadable file, and any state outside
+    `INVENTORY_STATES` is DROPPED rather than carried: this lives under
+    `.panopticon`, which a hostile target can pre-commit, and an invented
+    state in the artifact is worse than a missing group.
+    """
+    out = {}
+    try:
+        with open(os.path.join(run_dir, TEST_INVENTORY), encoding="utf-8") as fh:
+            body = json.load(fh)
+    except (OSError, ValueError):
+        return out
+    groups = body.get("groups") if isinstance(body, dict) else None
+    if not isinstance(groups, dict):
+        return out
+    for name, state in groups.items():
+        if isinstance(name, str) and state in INVENTORY_STATES:
+            out[name] = state
+    return out
 
 
 def load_scout_requests(run_dir):

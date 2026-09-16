@@ -1219,3 +1219,40 @@ class TestAMidRunToolsDowngradeIsVisible(unittest.TestCase):
             "panels_with_scanner_context": {"with": 1, "without": 4},
             "disabled_mid_run": False}
         self.assertNotIn("disabled mid-run", hr.render(report))
+
+
+class TestTestInventoryLine(unittest.TestCase):
+    """#1638 P13: the groups whose test inventory was empty or split, printed
+    next to coverage, so an operator meets the MATRIX defect before they meet
+    the TST finding it induced. Run-13's report showed a confident-looking
+    "no automated coverage" claim and no way to tell it apart from a real one.
+    """
+
+    def _report(self, inventory):
+        report = _minimal_report()
+        report["meta"].setdefault("coverage", {})["test_inventory"] = inventory
+        return report
+
+    def test_the_header_names_the_groups_whose_inventory_is_unusable(self):
+        out = hr.render(self._report({"Code": "split", "Hosts": "empty",
+                                      "Other": "complete"}))
+        self.assertIn("Test inventory:", out)
+        self.assertIn("Code", out)
+        self.assertIn("Hosts", out)
+        self.assertIn("split", out)
+        self.assertIn("empty", out)
+
+    def test_an_all_complete_matrix_renders_no_line(self):
+        self.assertNotIn("Test inventory:",
+                         hr.render(self._report({"Other": "complete"})))
+
+    def test_a_report_that_measured_nothing_renders_no_line(self):
+        # Absent (a pre-#1638 report, or one fed to --compare) is not the same
+        # claim as "every group is fine", and must not be rendered as one.
+        self.assertNotIn("Test inventory:", hr.render(_minimal_report()))
+
+    def test_a_hostile_group_name_is_escaped(self):
+        # Group names come from a committed groups.yml in the REVIEWED tree.
+        out = hr.render(self._report({"<script>alert(1)</script>": "empty"}))
+        self.assertNotIn("<script>alert(1)</script>", out)
+        self.assertIn("&lt;script&gt;", out)

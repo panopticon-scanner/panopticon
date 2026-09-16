@@ -566,6 +566,7 @@ def _render_header(report):
         % (" &middot; ".join(coverage_parts), policy)
     )
     parts.append(_render_scanner_context(meta))
+    parts.append(_render_test_inventory(meta))
     return "\n".join(parts)
 
 
@@ -602,6 +603,37 @@ def _render_scanner_context(meta):
         return ""
     return ("<div class='coverage'>Scanner context: %s</div>"
             % " &mdash; ".join(parts))
+
+
+def _render_test_inventory(meta):
+    """#1638 P13: the groups whose reviewers could not believe their own test
+    inventory, next to the coverage line.
+
+    A `TST` finding that says a module has no automated coverage reads the
+    same whether the reviewer checked the tests or was handed an empty list --
+    run-13 published the second kind. Naming the groups here puts the MATRIX
+    defect in front of the operator before the finding it induced, so the two
+    readings stop looking alike.
+
+    Only `empty` and `split` are printed: `complete` is the ordinary case and
+    listing it would bury the two that are not. Silent when the whole matrix
+    is complete, and silent on a report that never measured this (pre-#1638,
+    or a foreign report on the --compare path) -- "nobody looked" must not
+    render as "every group is fine".
+    """
+    inventory = (meta.get("coverage") or {}).get("test_inventory")
+    if not isinstance(inventory, dict):
+        return ""
+    flagged = sorted((g, st) for g, st in inventory.items()
+                     if st in ("empty", "split"))
+    if not flagged:
+        return ""
+    return ("<div class='coverage'>Test inventory: %s &mdash; a TST "
+            "no-coverage finding from %s may be a gap in the review matrix, "
+            "not in the target</div>"
+            % (" &middot; ".join("%s: %s" % (_escape(str(g)), _escape(str(st)))
+                                 for g, st in flagged),
+               "one of these groups" if len(flagged) > 1 else "this group"))
 
 
 def _render_compare_summary(label, report):
