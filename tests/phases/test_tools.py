@@ -41,7 +41,10 @@ class TestToolsPhase(unittest.TestCase):
             if redacted is not None:
                 runio._write_json(cmd[cmd.index("--manifest") + 1],
                                   {"schema_version": 1, "selected": ["trivy"],
-                                   "produced": ["trivy"], "redacted": redacted})
+                                   "produced": ["trivy"], "redacted": redacted,
+                                   # THIS run's id: the phase refuses a claim
+                                   # carried by another run's manifest (N2).
+                                   "run_id": self.manifest["run_id"]})
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run):
             tools_phase.tools_execute(self.root, self.manifest)
@@ -58,6 +61,28 @@ class TestToolsPhase(unittest.TestCase):
 
     def test_marker_does_not_upgrade_a_runner_that_reported_no_pass(self):
         self.assertIs(self._run_with_manifest(False)["redacted"], False)
+
+    def test_marker_ignores_a_previous_runs_manifest(self):
+        # Round 2 N2: run_tools.main() writes the manifest only after the scan
+        # returns, so a runner that lands captures and then dies leaves the
+        # PREVIOUS invocation's manifest in place -- and the phase would copy
+        # its `redacted: true` for captures this run never passed. That is F5's
+        # own failure mode one level up, in the overstatement direction.
+        runio._write_json(runio._pano(self.root, "tools-manifest.json"),
+                          {"schema_version": 1, "run_id": "OLD-RUN",
+                           "produced": ["trivy"], "redacted": True})
+
+        def fake_run(cmd, **kw):     # writes a capture, never the manifest
+            out = cmd[cmd.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            open(os.path.join(out, "trivy.json"), "w").close()
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            tools_phase.tools_execute(self.root, self.manifest)
+        marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
+        self.assertEqual(marker["run_id"], "R")
+        self.assertTrue(marker["ran"])          # the scan really did produce
+        self.assertIs(marker["redacted"], False)
 
     def test_marker_claims_nothing_when_the_runner_left_no_manifest(self):
         # A crash before the manifest was written leaves no claim to copy, and

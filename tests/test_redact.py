@@ -49,16 +49,56 @@ class TestRedact(unittest.TestCase):
         self.assertIn("[REDACTED_PRIVATE_KEY]", out)
         self.assertNotIn("MIIBrealkey", out)
 
-    def test_a_pem_cannot_span_a_json_string_boundary(self):
-        """The same rule applied FLAT to a JSON document (a raw scanner capture)
-        could run from a snippet in one result into a snippet in another,
-        collapsing every field in between. Nothing may match across a `"`."""
-        doc = ('{"a": "-----BEGIN RSA PRIVATE KEY-----\nMIIBone", '
-               '"b": "keep-me", '
-               '"c": "MIIBtwo\n-----END RSA PRIVATE KEY-----"}')
-        out = redact.redact(doc)
-        self.assertIn('"b": "keep-me"', out)
-        self.assertIn('"c":', out)
+    # A PEM as it is embedded in C/C++/Java/older-Python source: one
+    # double-quoted literal per line, concatenated. Quotes sit INSIDE the block,
+    # which is why a `[^"]`-bounded body could not match it.
+    QUOTED_SOURCE_PEM = (
+        'KEY = ("-----BEGIN RSA PRIVATE KEY-----\\n"\n'
+        '       "MIIEpAIBAAKCAQEAxLEAKEDKEYBODY0123456789abcdef\\n"\n'
+        '       "-----END RSA PRIVATE KEY-----")')
+
+    def test_masks_a_pem_quoted_from_source_as_adjacent_string_literals(self):
+        """#1639 P11 round 2 N1: the round-1 `[^"]` bound silently stopped
+        masking this shape -- a real private key published into report.json and
+        written unmasked into `.panopticon/tools/`. The body is bounded by
+        LENGTH now, not by a character class, so the quotes are irrelevant."""
+        out = redact.redact("app/crypto.py embeds it:\n" + self.QUOTED_SOURCE_PEM)
+        self.assertIn("[REDACTED_PRIVATE_KEY]", out)
+        self.assertNotIn("MIIEpAIBAAKCAQEAxLEAKEDKEYBODY", out)
+
+    def test_masks_that_same_shape_in_a_report_leaf(self):
+        """The report path is per-leaf (`redact_tree`), which is where the
+        reviewer found it published: the finding text is one string, so the
+        leaf walk offers no protection the pattern does not provide itself."""
+        out = redact.redact_tree({"findings": [
+            {"id": "SEC-1", "location": {"file": "app/crypto.py", "line_start": 4},
+             "description": "committed key:\n" + self.QUOTED_SOURCE_PEM}]})
+        f = out["findings"][0]
+        self.assertIn("[REDACTED_PRIVATE_KEY]", f["description"])
+        self.assertNotIn("MIIEpAIBAAKCAQEAxLEAKEDKEYBODY", f["description"])
+        # Structure and non-secret leaves untouched.
+        self.assertEqual(f["location"], {"file": "app/crypto.py", "line_start": 4})
+        self.assertEqual(f["id"], "SEC-1")
+
+    def test_a_pem_body_is_length_bounded_so_a_flat_pass_cannot_run_away(self):
+        """What replaces the `"` bound: a body over 16 KiB does not match AT
+        ALL -- not the header, not the filler, not the END. A real private key
+        is a couple of KiB, so the bound costs nothing on the shapes that
+        matter, and it is what keeps a flat pass over a structured document
+        from swallowing an unbounded run of fields between two blocks."""
+        far = ("-----BEGIN RSA PRIVATE KEY-----\n" + "A" * 20000 +
+               "\n-----END RSA PRIVATE KEY-----")
+        out = redact.redact("before " + far + " after")
+        self.assertNotIn("[REDACTED_PRIVATE_KEY]", out)
+        self.assertEqual(out, "before " + far + " after")
+
+    def test_an_unterminated_pem_over_the_bound_is_not_a_runaway(self):
+        """The same bound from the other side: a BEGIN with no END anywhere
+        leaves the document exactly as it was (nothing masked), rather than the
+        engine scanning to EOF for a close that never comes."""
+        text = ("-----BEGIN RSA PRIVATE KEY-----\n" + "B" * 20000 +
+                "\nTRAILING EVIDENCE\n")
+        self.assertEqual(redact.redact(text), text)
 
     def test_preserves_prose_that_only_mentions_a_format(self):
         # anchored to prefix+length -> a bare mention is NOT a well-formed token

@@ -84,8 +84,16 @@ def tools_execute(review_root, manifest):
     # The runner's own report of what it did with the captures it wrote (#1639
     # P11 F5). Tolerant: a crash before the manifest was written leaves nothing
     # to copy, and the marker then claims nothing.
+    #
+    # THIS run's manifest, or none (N2). `run_tools.main()` writes the manifest
+    # only after the scan returns, so a runner that lands captures and then dies
+    # leaves the PREVIOUS invocation's file in place -- and copying its claim
+    # would vouch for captures this run never passed through the choke point,
+    # which is the overstatement F5 exists to kill. Same `run_id` rule #17
+    # already applies to the manifest's coverage numbers.
     tool_manifest = runio._load_json(manifest_path)
-    if not isinstance(tool_manifest, dict):
+    if (not isinstance(tool_manifest, dict)
+            or tool_manifest.get("run_id") != manifest.get("run_id")):
         tool_manifest = {}
     produced = os.path.isdir(out_dir) and bool(os.listdir(out_dir))
     # #1033: a real scanner/runner CRASH (non-zero exit + no output) is NOT a

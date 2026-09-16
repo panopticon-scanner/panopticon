@@ -976,6 +976,21 @@ class TestCaptureRedactionKeepsEveryFinding(unittest.TestCase):
         self.assertIn(b"[REDACTED_PRIVATE_KEY]", out)
         self.assertNotIn(b"MIIBrealkey", out)
 
+    def test_a_non_json_capture_masks_a_pem_quoted_from_source(self):
+        """Round 2 N1: a scanner snippet that quotes a key out of C/Java/older-
+        Python source -- one double-quoted literal per PEM line -- is the shape
+        the round-1 `[^"]` bound stopped masking. The flat pass is what an XML
+        capture gets, so the pattern itself has to cover it."""
+        raw = (b'<BugInstance type="HARDCODED_KEY" file="app/Crypto.java"/>\n'
+               b'<Snippet>KEY = ("-----BEGIN RSA PRIVATE KEY-----\\n"\n'
+               b'       "MIIEpAIBAAKCAQEAxLEAKEDKEYBODY0123456789abcdef\\n"\n'
+               b'       "-----END RSA PRIVATE KEY-----");</Snippet>\n')
+        out = rt._redact_capture("spotbugs", raw)
+        self.assertIn(b"[REDACTED_PRIVATE_KEY]", out)
+        self.assertNotIn(b"MIIEpAIBAAKCAQEAxLEAKEDKEYBODY", out)
+        self.assertIn(b'<BugInstance type="HARDCODED_KEY" file="app/Crypto.java"/>',
+                      out)
+
     def test_a_json_capture_keeps_its_own_formatting(self):
         """Re-serialization is only reached when redaction fired, and it keeps
         the producer's own layout where that is recognisable -- so a capture

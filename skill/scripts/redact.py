@@ -47,19 +47,31 @@ _PATTERNS = [
     # first two starting eyJ (base64 of '{"'). Distinctive enough to be safe.
     (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
      "[REDACTED_JWT]"),
-    # PEM private key. The body is BOUNDED (#1639 P11): `[^"]` so a match can
-    # never cross a JSON string boundary, and `(?!-----BEGIN)` so an
-    # unterminated key cannot run on until some LATER block supplies an END.
-    # It was `.*?` under DOTALL -- the one rule here with no character class to
-    # stop it -- and a raw scanner capture is where that bit: gitleaks quotes a
-    # truncated `-----BEGIN RSA PRIVATE KEY-----` snippet with no END of its
-    # own (the committed golden has one), so a flat pass over the document ran
-    # from that snippet into the next result's END and collapsed every result,
-    # rule id and location in between into one token -- still valid JSON, so
-    # nothing downstream noticed. `[^"]` matches newlines, so a real multi-line
-    # block is still masked.
+    # PEM private key. The body is BOUNDED two ways (#1639 P11), because it was
+    # `.*?` under DOTALL -- the one rule here with nothing to stop it -- and a
+    # raw scanner capture is where that bit: gitleaks quotes a truncated
+    # `-----BEGIN RSA PRIVATE KEY-----` snippet with no END of its own (the
+    # committed golden has one), so a flat pass over a document ran from that
+    # snippet into a LATER result's END and collapsed every result, rule id and
+    # location in between into one token -- still valid JSON, so nothing
+    # downstream noticed.
+    #   `(?!-----BEGIN)` -- a match can never span two blocks, which is what
+    #     that defect actually needed: an unterminated key stops at the next
+    #     BEGIN instead of borrowing its END.
+    #   `{1,16384}?`     -- and it can never run more than 16 KiB, so what a
+    #     flat pass over a STRUCTURED document could swallow between two blocks
+    #     is bounded. An RSA-4096 key is ~3.2 KiB; a body LONGER than the bound
+    #     is not masked by this rule at all (no match, header included), which
+    #     is the completeness limit this rule does have.
+    # `[\s\S]` is DOTALL semantics without the flag, so the body crosses
+    # newlines AND quotes. It must: a PEM embedded in C/Java/older-Python source
+    # is written one double-quoted literal per line, and a `[^"]` bound (round 1
+    # of this issue) silently stopped masking exactly that shape, publishing a
+    # real key into report.json. Structure safety for a JSON capture comes from
+    # PARSING (run_tools._redact_capture) and for the report from the per-leaf
+    # walk below -- never from this character class.
     (re.compile(
-        r"-----BEGIN[A-Z ]*PRIVATE KEY-----(?:(?!-----BEGIN)[^\"])*?"
+        r"-----BEGIN[A-Z ]*PRIVATE KEY-----(?:(?!-----BEGIN)[\s\S]){1,16384}?"
         r"-----END[A-Z ]*PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
     # Shape-only, and last: every rule above needs a prefix or an assignment to
     # anchor on, but a secret SCANNER reports the secret with that context

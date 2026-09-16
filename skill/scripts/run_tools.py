@@ -784,9 +784,13 @@ def _redact_capture(tool, data):
     walk never sees them as text. The flat pass had no such guarantee, and the
     PEM rule broke it -- an unterminated `-----BEGIN` in one snippet closed on a
     later result's `-----END` and swallowed every result in between. Non-JSON
-    captures still take the flat pass, which is now safe for a different reason:
-    every pattern, the bounded PEM rule included, is anchored to a character
-    class that cannot cross a `"`.
+    captures (spotbugs' XML) still take the flat pass, where every pattern but
+    the PEM body is anchored to a character class that cannot cross a `"`, and
+    the PEM body -- which has to cross quotes, since source code embeds a key
+    one quoted literal per line -- is bounded to 16 KiB and cannot span two
+    `-----BEGIN` blocks. So a flat-pass match over a structured document is
+    bounded rather than open-ended; it is not the guarantee parsing gives, which
+    is why JSON never takes this path.
 
     Whichever path runs, it is `scripts/redact.py`'s pattern set -- never a
     second copy: two redactors drift, and the one reached only by raw captures
