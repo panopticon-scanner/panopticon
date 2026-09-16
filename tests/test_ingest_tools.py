@@ -799,3 +799,14 @@ class TestVirtualenvExclusion(unittest.TestCase):
                 out = it.ingest_dir(tools_dir, "g1")
             self.assertEqual([(f.get("location") or {}).get("file") for f in out],
                              ["src/app.py"])
+
+    def test_the_root_is_the_nearest_artifact_dir_not_the_outermost(self):
+        # A target that itself lives under a `.panopticon` path (a checkout at
+        # `/x/.panopticon/repo`) must still resolve to the target, not to `/x`:
+        # the tools dir is always `<target>/.panopticon/...`, so the LAST
+        # segment is the run's, and an earlier one belongs to the path above it.
+        self.assertEqual(
+            it._target_root_for("/x/.panopticon/repo/.panopticon/runs/t/tools"),
+            "/x/.panopticon/repo")
+        self.assertEqual(it._target_root_for("/repo/.panopticon/tools"), "/repo")
+        self.assertIsNone(it._target_root_for("/tmp/ci-artifacts/tools"))

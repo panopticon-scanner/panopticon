@@ -138,11 +138,16 @@ def _target_root_for(tools_dir):
     differed between them would split that identity. None when there is no
     `.panopticon` ancestor (the CI gate scans a temp dir) -- the name fallback
     alone decides then.
+
+    The NEAREST `.panopticon` segment is the run's: a checkout that itself sits
+    under a `.panopticon` path would otherwise resolve to the directory above
+    that path and stat markers against the wrong tree.
     """
     parts = os.path.abspath(tools_dir).split(os.sep)
     if _ARTIFACT_DIR not in parts:
         return None
-    return os.sep.join(parts[:parts.index(_ARTIFACT_DIR)]) or os.sep
+    cut = len(parts) - 1 - parts[::-1].index(_ARTIFACT_DIR)
+    return os.sep.join(parts[:cut]) or os.sep
 
 
 def _is_run_artifact_path(fpath, target_root=None, venv_cache=None):
