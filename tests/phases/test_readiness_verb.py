@@ -32,11 +32,13 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
 from unittest import mock
 
+from conftest import REPO_ROOT
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
 import scripts.phases.runio as _runio
@@ -193,14 +195,67 @@ class TestTheUnreadyMachine(_VerbCase):
         d = self._repo()
         code, text = self._run(d, image=1, which=READY_CLI)
         self.assertEqual(1, code)
-        for row in ("guide", "sub-skills", "matrix", "existing-run", "cli",
-                    "tools-image", "capabilities"):
+        for row in ("guide", "dependencies", "sub-skills", "matrix",
+                    "existing-run", "cli", "tools-image", "capabilities"):
             with self.subTest(row=row):
                 self.assertIn(row, text)
         self.assertIn("NOT READY", text)
         # One document, not a wall: one line per row plus a header and a
-        # verdict.
-        self.assertLessEqual(len(text.strip().splitlines()), 9)
+        # verdict. (#1639 P15 I2 added the `dependencies` row, hence 10.)
+        self.assertLessEqual(len(text.strip().splitlines()), 10)
+
+
+class TestTheDependenciesRow(_VerbCase):
+    """#1639 P15 I2: the Python packages a RUN needs, checked before the spend.
+
+    `jsonschema` is a declared runtime dependency and the completion path's
+    validation is deliberately fail-closed, so an install without it does not
+    quietly stop validating -- it exits `artifact invalid` AFTER the whole
+    review has been paid for. PyYAML is a hard import in discovery and dies
+    with a traceback. Neither had a preflight row, and `SKILL.md` told the
+    operator the three sub-skills were the only external things this skill
+    asks for.
+    """
+
+    def test_a_missing_package_is_gating_and_names_the_install(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with mock.patch(_READINESS + "._installed",
+                        side_effect=lambda name: name != "jsonschema"):
+            code, body = self._json(d, which=READY_CLI)
+        self.assertEqual(1, code)
+        self.assertIn("dependencies", body["failed"])
+        self.assertIs(False, body["dependencies"]["ok"])
+        self.assertEqual(["jsonschema"], body["dependencies"]["missing"])
+        self.assertIn("pip install", body["dependencies"]["detail"])
+        self.assertIn("jsonschema", body["dependencies"]["detail"])
+
+    def test_a_complete_install_passes_and_says_what_it_checked(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        with mock.patch(_READINESS + "._installed", return_value=True):
+            code, body = self._json(d, which=READY_CLI)
+        self.assertEqual(0, code, json.dumps(body, indent=2))
+        self.assertIs(True, body["dependencies"]["ok"])
+        self.assertEqual([], body["dependencies"]["missing"])
+        for pip_name in ("jsonschema", "pyyaml"):
+            self.assertIn(pip_name, body["dependencies"]["detail"])
+
+    def test_the_row_matches_what_pyproject_declares(self):
+        # Drift guard: the row is only useful if it names the packages the
+        # package metadata actually requires. Read, never restated.
+        import tomllib
+        with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as fh:
+            declared = tomllib.load(fh)["project"]["dependencies"]
+        names = {re.split(r"[<>=!~ ]", d, maxsplit=1)[0].lower() for d in declared}
+        self.assertEqual(
+            names, {pip for _mod, pip in readiness.RUNTIME_PACKAGES},
+            "readiness.RUNTIME_PACKAGES and pyproject's [project] dependencies "
+            "disagree -- a run needs what the package declares")
+
+    def test_the_row_reaches_the_real_interpreter_by_default(self):
+        # The seam exists for the tests; the production answer must come from
+        # the interpreter, not from a constant that can go stale.
+        self.assertTrue(readiness._installed("json"))
+        self.assertFalse(readiness._installed("no_such_module_anywhere_12345"))
 
 
 class TestTheReadyMachine(_VerbCase):

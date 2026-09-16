@@ -41,6 +41,7 @@ deliberately not among the checks reused below; the artifact it writes is
 recorded here as one INFORMATIONAL row and nothing more.
 """
 import glob as _glob
+import importlib.util
 import json
 import os
 import shutil
@@ -327,6 +328,42 @@ def _find_sub_skill(leaf):
     return None
 
 
+# #1639 P15 I2: the Python packages a RUN needs, as (import name, pip name).
+# Both are declared in `pyproject.toml`'s `[project] dependencies` and
+# `tests/phases/test_readiness_verb.py` holds this tuple to that list, so the
+# two cannot drift. Checked HERE, before the first paid dispatch, because
+# neither failure is cheap where it actually lands: `jsonschema` is imported by
+# the completion path's artifact validation, which is deliberately fail-closed,
+# so an install without it does not quietly stop validating -- it exits
+# `artifact invalid` after the whole review has been paid for. PyYAML is a hard
+# import in discovery and takes the run down with a traceback.
+RUNTIME_PACKAGES = (("yaml", "pyyaml"), ("jsonschema", "jsonschema"))
+
+PACKAGES_REMEDY = "pip install %s (or `pip install -e .` in a checkout)"
+
+
+def _installed(module):
+    """Is `module` importable? A seam, so a test can state the machine.
+
+    `find_spec` rather than `import`: this is a preflight, and importing a
+    package for its side effects is not a read. It can raise on a broken
+    parent package, which is itself a "not usable" answer.
+    """
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _dependencies_row():
+    """Gating: every package the run itself imports, by pip name."""
+    missing = [pip for module, pip in RUNTIME_PACKAGES if not _installed(module)]
+    checked = ", ".join(pip for _module, pip in RUNTIME_PACKAGES)
+    return {"missing": missing, "ok": not missing,
+            "detail": (PACKAGES_REMEDY % " ".join(missing)) if missing
+                      else "%s installed" % checked}
+
+
 def _sub_skill_rows():
     """[{name, found_at}] -- never gating (SKILL.md ruling: a missing sub-skill
     is a documented default plus a disclosure, not a stop)."""
@@ -555,7 +592,9 @@ def preflight(target=".", host=None):
     # Tri-state: True passes, False gates, None is INFORMATIONAL and passes.
     # `all(...)` would have read None as a failure, which is why this is a
     # `is False` filter and not a truthiness test.
-    gating = (("guide", guide["ok"]), ("matrix", matrix["ok"]),
+    dependencies = _dependencies_row()
+    gating = (("guide", guide["ok"]), ("dependencies", dependencies["ok"]),
+              ("matrix", matrix["ok"]),
               ("cli", _cli_gate(cli)), ("tools-image", tools_image["ok"]))
     failed = [name for name, ok in gating if ok is False]
     return {"schema_version": PREFLIGHT_SCHEMA_VERSION,
@@ -566,6 +605,7 @@ def preflight(target=".", host=None):
             "ready": not failed,
             "failed": failed,
             "guide": guide,
+            "dependencies": dependencies,
             "sub_skills": _sub_skill_rows(),
             "matrix": matrix,
             "existing_run": existing,
@@ -582,6 +622,8 @@ def _row_lines(document):
         "%s: %s" % (row["name"].split(":", 1)[-1], row["found_at"] or "not found")
         for row in document["sub_skills"])
     return (("guide", document["guide"]["ok"], document["guide"]["detail"]),
+            ("dependencies", document["dependencies"]["ok"],
+             document["dependencies"]["detail"]),
             ("sub-skills", None, sub_skills),
             ("matrix", document["matrix"]["ok"], document["matrix"]["detail"]),
             ("existing-run", None, document["existing_run"]["detail"]),
