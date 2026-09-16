@@ -74,7 +74,7 @@
         },
         "schema_errors": {
           "type": "integer",
-          "description": "#1639 P15: how many validation errors `synth.report.validate_report` raised against THIS document -- the published schema plus the domain rules the schema cannot express. Stamped after validation, so it is in the artifact on disk but was not in the document that was validated. A non-zero count on a report that still exists means the domain rules fired: a schema failure aborts the completion path with exit 4 instead."
+          "description": "#1639 P15: how many validation errors the PRE-WRITE pass (`synth.report.validate_report`: the published schema plus the domain rules the schema cannot express) raised against this report. Stamped after that pass, so it is in the artifact on disk but was not in the document that was validated. It is not the run's whole answer and must not be read as one: the artifact pass that follows re-validates the hydrated split union and the X0X sibling, which this count cannot include, and the `artifact invalid: N schema errors` status line carries that full count. Every artifact is still written either way -- a report that failed validation is on disk, with this count in it, precisely so it can be inspected."
         },
         "models_used": {
           "type": "array",

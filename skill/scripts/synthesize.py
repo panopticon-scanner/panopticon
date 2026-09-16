@@ -311,7 +311,12 @@ def main(argv=None):
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)
     for e in errors:
-        print("SCHEMA: %s" % e, file=sys.stderr)
+        # Labelled: this pass and the artifact pass below validate different
+        # documents (attach_schema_status and the split writer both add keys
+        # between them), so an unlabelled line left a reader guessing which
+        # document a message was about -- and, on the common case, seeing the
+        # same defect twice as if it were two.
+        print("SCHEMA pre-write: %s" % e, file=sys.stderr)
 
     paths = render_mod.write_report(report, out)
     # §5.1: emit the X0X catalog-gap report — the <DOM>-X0X / ZZZ-X0X findings as
@@ -343,8 +348,18 @@ def main(argv=None):
     # grade/gate text a run always prints is unchanged by it.
     artifact_errors = validate_artifacts(paths[0], x0x_path)
     if artifact_errors:
+        # An artifact error that the pre-write pass already printed is counted
+        # but not reprinted: the two passes agree about it, which is not two
+        # problems. The status line below is the source of truth for the count.
+        already, repeats = set(errors), 0
         for e in artifact_errors:
-            print("SCHEMA: %s" % e, file=sys.stderr)
+            if (e.split(": ", 1)[-1] if ": " in e else e) in already:
+                repeats += 1
+                continue
+            print("SCHEMA artifact: %s" % e, file=sys.stderr)
+        if repeats:
+            print("SCHEMA artifact: %d error(s) already listed above as pre-write"
+                  % repeats, file=sys.stderr)
         print("synthesize: artifact invalid: %d schema errors (see %s)"
               % (len(artifact_errors), ", ".join([paths[0], x0x_path])),
               file=sys.stderr)

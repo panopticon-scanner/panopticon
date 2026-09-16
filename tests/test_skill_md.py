@@ -283,6 +283,12 @@ class TestSkillMd(unittest.TestCase):
             "hydrated",
             "artifact invalid: N schema errors",
             "fail-closed",
+            # Fix round 1: the principle that makes a terminal schema failure
+            # safe to have at all.
+            "The schema pins the *controller's* output",
+            "never a lever a reviewed repository or a reviewer can pull",
+            "SCHEMA pre-write:",
+            "SCHEMA artifact:",
         ):
             self.assertIn(token, out, token)
         # The exit code is stated with the others, not only in prose.
