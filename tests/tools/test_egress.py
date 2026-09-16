@@ -141,8 +141,9 @@ class TestRenderedConfig(unittest.TestCase):
 
     def test_no_directive_is_indented_or_duplicated(self):
         conf, _filt = self._render()
-        directives = [line.split()[0] for line in conf.splitlines()
-                      if line and not line.startswith("#")]
+        directives = [name for name, _sep, _rest in
+                      (line.partition(" ") for line in conf.splitlines())
+                      if name and not name.startswith("#")]
         self.assertEqual(sorted(directives), sorted(set(directives)),
                          "a repeated directive: tinyproxy takes the last one")
         self.assertEqual([d for d in directives if d != d.lstrip()], [])

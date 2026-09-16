@@ -19,6 +19,7 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS, ONLINE_ONLY
+from scripts.tools import egress
 from scripts.tools.base import drain_stderr_async
 from scripts import plan_contract
 from scripts import redact
@@ -761,6 +762,15 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
 # would put plumbing in five signatures to carry one bit.
 _REDACTED_CAPTURES = set()
 
+# What egress each tool was granted this run, keyed by tool name (#1645). Same
+# construction and the same reason as the ledger above: `run_tools()` clears it
+# and fills it WHERE THE ARGV IS BUILT, so the manifest reports what the runner
+# observed itself doing -- take the flags away and the claim goes with them,
+# rather than a `proxied:` string surviving as an intention nothing enforces.
+# Values are `"none"`, `"proxied:<allowlist>"` or the fail-closed
+# `"excluded:online egress unavailable"` (scripts.tools.egress).
+_NETWORK_POSTURE = {}
+
 # Above this size a capture is re-serialized in json.dumps' default layout
 # instead of the producer's own: matching the layout costs one extra
 # serialization of the ORIGINAL document to verify the guess, which is free on a
@@ -913,7 +923,8 @@ def _atomic_write(out_path, data):
 
 
 def run_tools(target, tools, out_dir, image="panopticon-tools",
-              runner=None, online=False, progress=None, venv_dirs=None):
+              runner=None, online=False, progress=None, venv_dirs=None,
+              run_id=None):
     """Run selected security tools and adapters in Docker against target.
 
     Legacy SARIF tools use their hard-coded ``TOOL_CMD`` invocation. New Phase 1
@@ -924,6 +935,12 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     exclusion knob are told to skip; None detects them here, so a direct caller
     gets the exclusion without asking. main() passes its own list so the walk is
     done once and the manifest discloses exactly what the scan was told to skip.
+
+    `run_id` (#1645) names this run's egress network and proxy sidecar, so a
+    leftover from a crashed run is recognisable. The whole loop runs inside one
+    `scripts.tools.egress.session`: with an ONLINE_ONLY adapter selected that
+    session is a `--internal` network plus an allowlisting proxy, and with none
+    selected it is inert and every argv below is byte-identical to before.
     """
     runner = runner or _popen_runner   # #run7 COD-A2A: stream by default, don't buffer-then-drop
     # This run's redaction ledger starts empty, so `write_manifest` reports what
@@ -942,7 +959,34 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     progress = progress or NullProgress()
     total = len(tools)
     progress.header(target, total)
+    # #1645: what the runner OBSERVED itself granting each tool, the same
+    # construction as `_REDACTED_CAPTURES` above -- cleared here, filled where
+    # the argv is built, read back by `write_manifest`. A claim written from
+    # intent would survive the flags going away; this one does not.
+    _NETWORK_POSTURE.clear()
+    with egress.session(docker_bin, tools, runner, run_id=run_id,
+                        max_seconds=TOOL_TIMEOUT * total
+                        + egress.SIDECAR_SLACK) as online_egress:
+        _run_selected(target, tools, out_dir, image, runner, progress, total,
+                      venv_dirs, written, docker_bin, online_egress)
+    progress.footer(len(written), total)
+    return written
+
+
+def _run_selected(target, tools, out_dir, image, runner, progress, total,
+                  venv_dirs, written, docker_bin, online_egress):
+    """The dispatch loop, one docker invocation per selected tool."""
     for index, tool in enumerate(tools, 1):
+        # #1645 ruling 2: an online adapter whose egress could not be
+        # established does NOT fall back to Docker's default bridge. It is
+        # skipped, and `write_manifest` turns this posture into an
+        # `excluded_scope` entry carrying the reason -- so the gap is
+        # certified against, exactly like an absent scanner.
+        if online_egress.refuses(tool):
+            _NETWORK_POSTURE[tool] = egress.UNAVAILABLE
+            progress.note("[%d/%d] %s skipped: online egress unavailable"
+                          % (index, total, tool))
+            continue
         # Legacy SARIF path (kept for backward compatibility).
         cmd = TOOL_CMD.get(tool)
         if cmd:
@@ -965,6 +1009,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
                       + _privilege_drop_flags()
                       + ["--network", "none",
                          "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd)
+            _NETWORK_POSTURE[tool] = egress.NO_NETWORK
             with progress.tool(tool, index, total) as step:
                 done = step.finish(
                     _capture_run("tool", tool, docker, out_path, runner))
@@ -979,8 +1024,12 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
             out_path = os.path.join(out_dir, "%s.%s" % (tool, ext))
             docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
                       + _privilege_drop_flags())
-            if tool not in ONLINE_ONLY:
+            if online_egress.serves(tool):
+                docker.extend(online_egress.flags_for(tool))
+                _NETWORK_POSTURE[tool] = online_egress.posture_for(tool)
+            else:
                 docker.extend(["--network", "none"])
+                _NETWORK_POSTURE[tool] = egress.NO_NETWORK
             if tool in ADAPTERS_NEEDING_EMPTY_CWD:
                 docker.extend(["-w", ADAPTER_EMPTY_CWD])
             # Mount the checkout's adapter code over the image's baked-in copy
@@ -1005,8 +1054,6 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
         # not a new control.
         progress.note("[%d/%d] %s skipped: no runner registered"
                       % (index, total, tool))
-    progress.footer(len(written), total)
-    return written
 
 
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
@@ -1140,7 +1187,8 @@ def main(argv=None):
                            sanitized=sanitized)
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
-                      progress=make_progress(a.progress), venv_dirs=venv_dirs)
+                      progress=make_progress(a.progress), venv_dirs=venv_dirs,
+                      run_id=a.run_id)
     if a.manifest:
         write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
                        run_id=a.run_id, excluded_dirs=venv_dirs,

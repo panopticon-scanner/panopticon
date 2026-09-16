@@ -1,12 +1,15 @@
 """Containment and environment tests for scripts.run_tools."""
+import contextlib
+import io
 import os
 import tempfile
 import unittest
 from unittest import mock
 
 import scripts.run_tools as rt
+import scripts.tools.egress as rt_egress
 
-from run_tools_test_helpers import _FakeResult
+from run_tools_test_helpers import _DockerStub, _FakeResult, _Interrupted
 
 
 class TestContainment(unittest.TestCase):
@@ -41,9 +44,13 @@ class TestContainment(unittest.TestCase):
         self.assertIn("cargo-audit", joined[0])
 
     def test_online_flag_dispatches_online_only_with_network(self):
+        # #1645: the online adapter is no longer given Docker's default bridge.
+        # With no egress session established (this helper's stub answers the
+        # control plane with an empty capture, so the network cannot come up)
+        # it is not dispatched at all -- fail closed, never onto the bridge.
         calls = self._calls(["pip-audit"], online=True)
-        self.assertEqual(len(calls), 1)
-        self.assertNotIn("--network", calls[0])
+        self.assertEqual([c for c in calls if c[1] == "run" and "-d" not in c[:5]],
+                         [])
 
     def test_roslyn_never_gets_network_even_online(self):
         calls = self._calls(["roslyn-secguard"], online=True)
@@ -64,3 +71,172 @@ class TestContainment(unittest.TestCase):
         original = dict(os.environ)
         self.test_nvd_api_key_never_forwarded()
         self.assertEqual(dict(os.environ), original)
+
+
+class TestOnlineEgress(unittest.TestCase):
+    """#1645 (SEC-C1A): an ONLINE_ONLY adapter reaches its advisory endpoints
+    through a per-run proxy on a `--internal` network, never Docker's default
+    bridge."""
+
+    def _run(self, tools, stub=None, online=True, raise_on=None):
+        stub = stub or _DockerStub()
+        runner = stub
+        if raise_on:
+            def runner(cmd, **kw):                      # noqa: ANN001
+                out = stub(cmd, **kw)
+                if cmd[-1] == raise_on:
+                    raise _Interrupted("the operator stopped the scan")
+                return out
+        with tempfile.TemporaryDirectory() as d:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                with contextlib.ExitStack() as stack:
+                    if raise_on:
+                        stack.enter_context(self.assertRaises(_Interrupted))
+                    rt.run_tools(d, tools, os.path.join(d, "out"),
+                                 runner=runner, online=online, run_id="r1645")
+        self.stderr = err.getvalue()
+        return stub
+
+    def _names(self, stub):
+        create = [c for c in stub.calls if _DockerStub.verb(c) == "network create"]
+        self.assertEqual(len(create), 1, stub.calls)
+        network = create[0][-1]
+        return network, network.replace(rt_egress.NETWORK_PREFIX,
+                                        rt_egress.PROXY_PREFIX)
+
+    def test_the_control_plane_sequence_is_create_start_connect_teardown(self):
+        stub = self._run(["pip-audit"])
+        network, proxy = self._names(stub)
+        docker = stub.calls[0][0]
+        conf = [c for c in stub.calls if _DockerStub.verb(c) == "run -d"][0]
+        mounts = [conf[i + 1] for i, tok in enumerate(conf) if tok == "-v"]
+        self.assertEqual([[docker] + c[1:] for c in stub.control()], [
+            [docker, "container", "prune", "--force",
+             "--filter", "label=%s" % rt_egress.EGRESS_LABEL,
+             "--filter", "until=%s" % rt_egress.SWEEP_AGE],
+            [docker, "network", "prune", "--force",
+             "--filter", "label=%s" % rt_egress.EGRESS_LABEL,
+             "--filter", "until=%s" % rt_egress.SWEEP_AGE],
+            [docker, "network", "create", "--internal",
+             "--label", rt_egress.EGRESS_LABEL, network],
+            [docker, "network", "inspect", network],
+            [docker, "run", "-d", "--rm", "--name", proxy,
+             "--label", rt_egress.EGRESS_LABEL, "--network", "bridge",
+             "--cap-drop=ALL", "--security-opt=no-new-privileges",
+             "--memory", "256m", "--memory-swap", "256m",
+             "--cpus", "1", "--pids-limit", "64",
+             "-v", mounts[0], "-v", mounts[1], rt_egress.PROXY_IMAGE,
+             "timeout", str(rt.TOOL_TIMEOUT + rt_egress.SIDECAR_SLACK),
+             "/usr/bin/tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"],
+            [docker, "network", "connect", "--ip", "172.28.0.2", network, proxy],
+            [docker, "inspect", "--format", "{{.State.Running}}", proxy],
+            [docker, "rm", "-f", proxy],
+            [docker, "network", "rm", network],
+        ])
+
+    def test_the_sidecar_config_is_mounted_read_only(self):
+        stub = self._run(["pip-audit"])
+        conf = [c for c in stub.calls if _DockerStub.verb(c) == "run -d"][0]
+        mounts = [conf[i + 1] for i, tok in enumerate(conf) if tok == "-v"]
+        self.assertEqual([m.rsplit(":", 2)[1:] for m in mounts],
+                         [["/etc/tinyproxy/tinyproxy.conf", "ro"],
+                          ["/etc/tinyproxy/filter", "ro"]])
+
+    def test_the_generated_config_is_deleted_when_the_scan_ends(self):
+        stub = self._run(["pip-audit"])
+        conf = [c for c in stub.calls if _DockerStub.verb(c) == "run -d"][0]
+        for token in (conf[i + 1] for i, t in enumerate(conf) if t == "-v"):
+            host_path = token.rsplit(":", 2)[0]
+            self.assertFalse(os.path.exists(host_path), host_path)
+
+    def test_the_online_adapter_runs_on_the_internal_network(self):
+        stub = self._run(["pip-audit"])
+        network, _proxy = self._names(stub)
+        argv = stub.dispatches()["pip-audit"]
+        self.assertEqual(argv[argv.index("--network") + 1], network)
+        self.assertNotIn("bridge", argv)
+
+    def test_the_online_adapter_is_pointed_at_the_sidecar(self):
+        stub = self._run(["pip-audit"])
+        argv = stub.dispatches()["pip-audit"]
+        env = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-e"]
+        self.assertEqual(env, ["HTTP_PROXY=http://172.28.0.2:8888",
+                               "HTTPS_PROXY=http://172.28.0.2:8888",
+                               "NO_PROXY="])
+
+    def test_no_other_environment_variable_reaches_a_tool_container(self):
+        # The docker construction passed NO host environment into a scanner
+        # container before this change, and the three proxy variables above are
+        # the first -- set by the controller from the sidecar's address, never
+        # read from the host. `-e NAME` (no `=`) is what forwards a host value;
+        # every one of ours carries its own.
+        stub = self._run(["pip-audit", "npm-audit", "osv-scanner",
+                          "semgrep", "roslyn-secguard"])
+        allowed = {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"}
+        for name, argv in sorted(stub.dispatches().items()):
+            passed = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-e"]
+            self.assertTrue(all("=" in v for v in passed), (name, passed))
+            self.assertLessEqual({v.split("=", 1)[0] for v in passed}, allowed,
+                                 "%s: %s" % (name, passed))
+            if name not in ("pip-audit", "npm-audit"):
+                self.assertEqual(passed, [], name)
+
+    def test_an_offline_adapter_still_gets_no_network_at_all(self):
+        stub = self._run(["pip-audit", "osv-scanner"])
+        argv = stub.dispatches()["osv-scanner"]
+        self.assertEqual(argv[argv.index("--network") + 1], "none")
+
+    def test_a_run_with_no_online_adapter_touches_no_control_plane(self):
+        stub = self._run(["semgrep", "osv-scanner"], online=True)
+        self.assertEqual(stub.control(), [])
+
+    def test_teardown_runs_when_an_adapter_dispatch_raises(self):
+        stub = self._run(["pip-audit"], raise_on="pip-audit")
+        network, proxy = self._names(stub)
+        self.assertEqual([c[1:] for c in stub.control()[-2:]],
+                         [["rm", "-f", proxy], ["network", "rm", network]])
+
+    def test_a_network_that_cannot_be_created_keeps_the_adapter_off_the_bridge(self):
+        stub = self._run(["pip-audit", "osv-scanner"],
+                         stub=_DockerStub(fail=["network create"]))
+        self.assertNotIn("pip-audit", stub.dispatches())
+        self.assertIn("osv-scanner", stub.dispatches())
+        self.assertIn("online egress unavailable", self.stderr)
+
+    def test_a_sidecar_that_did_not_come_up_keeps_the_adapter_off_the_bridge(self):
+        stub = self._run(["pip-audit"], stub=_DockerStub(running=b"false\n"))
+        self.assertNotIn("pip-audit", stub.dispatches())
+        self.assertIn("online egress unavailable", self.stderr)
+
+    def test_a_failed_setup_still_removes_what_it_managed_to_create(self):
+        stub = self._run(["pip-audit"], stub=_DockerStub(fail=["network connect"]))
+        network, proxy = self._names(stub)
+        self.assertEqual([c[1:] for c in stub.control()[-2:]],
+                         [["rm", "-f", proxy], ["network", "rm", network]])
+
+    def test_a_stale_sweep_can_never_reach_a_live_run(self):
+        # `container prune` removes only STOPPED containers and `network prune`
+        # only networks with nothing attached, both scoped to this label and to
+        # things older than the sweep age -- so a concurrent scan's sidecar and
+        # network are out of reach by construction, not by luck.
+        stub = self._run(["pip-audit"])
+        for cmd in stub.control()[:2]:
+            self.assertIn("prune", cmd)
+            self.assertIn("label=%s" % rt_egress.EGRESS_LABEL, cmd)
+            self.assertIn("until=%s" % rt_egress.SWEEP_AGE, cmd)
+            self.assertNotIn("-f", cmd[2:])
+
+    def test_the_sidecar_cannot_outlive_the_scan_it_serves(self):
+        # Started under `timeout`, so a controller that dies before its
+        # teardown leaves a proxy that stops on its own rather than one running
+        # until the host reboots. The ceiling is the LOOP's worst case -- every
+        # selected tool hitting TOOL_TIMEOUT -- so it can never cut a scan that
+        # is still running short.
+        for tools in (["pip-audit"], ["pip-audit", "semgrep", "osv-scanner"]):
+            with self.subTest(tools=tools):
+                stub = self._run(tools)
+                argv = [c for c in stub.calls
+                        if _DockerStub.verb(c) == "run -d"][0]
+                self.assertEqual(
+                    argv[argv.index("timeout") + 1],
+                    str(rt.TOOL_TIMEOUT * len(tools) + rt_egress.SIDECAR_SLACK))
