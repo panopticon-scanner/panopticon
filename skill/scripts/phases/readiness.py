@@ -165,6 +165,14 @@ def _checks(review_root, manifest):
     checks.append(_git_root_row(review_root))
     checks.append(setup_flow._check_groups_manifest(review_root))
     checks.append(_host_row(review_root))
+    # #1639 P15 fix round 2, F7. GATING, and here rather than only in the
+    # `preflight` verb: this phase is the pre-spend checkpoint `driver loop`
+    # actually runs, and an operator who never types `driver readiness` gets
+    # every check from it. A missing `jsonschema` does not surface until
+    # synthesize refuses to publish an unvalidated artifact -- after the whole
+    # review has been paid for -- so it belongs before the first dispatch.
+    dependencies = _dependencies_row()
+    checks.append(("dependencies", dependencies["ok"], dependencies["detail"]))
     return checks
 
 

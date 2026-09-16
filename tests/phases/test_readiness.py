@@ -129,6 +129,36 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
         self.assertIs(rows["tools-image"]["ok"], False)
         self.assertIn(PULL_REMEDY, rows["tools-image"]["detail"])
 
+    def test_a_missing_python_dependency_refuses_before_the_scout(self):
+        # #1639 P15 fix round 2, F7: the dependencies row existed only in the
+        # `driver readiness` VERB. `driver loop` goes through this PHASE, which
+        # exists precisely to stop a run before the first paid dispatch, and it
+        # had the answer available and did not ask -- so a machine without
+        # `jsonschema` paid for the whole review and then exited `artifact
+        # invalid`, because the completion path's validation is (correctly)
+        # fail-closed.
+        d = self._repo()
+        with mock.patch(_READINESS + ".DOCKER_RUNNER",
+                        _docker_runner(daemon=0, image=0)), \
+                mock.patch(_READINESS + "._installed",
+                           side_effect=lambda name: name != "jsonschema"):
+            status = driver.run(self._args(d))
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("pip install jsonschema", status["message"])
+        self.assertFalse(os.path.exists(runio._pano(d, "dispatch-request.json")))
+        rows = self._rows(d)
+        self.assertIs(rows["dependencies"]["ok"], False)
+        self.assertIn("pip install", rows["dependencies"]["detail"])
+
+    def test_a_complete_install_leaves_the_row_green(self):
+        d = self._repo()
+        with mock.patch(_READINESS + ".DOCKER_RUNNER",
+                        _docker_runner(daemon=0, image=0)):
+            driver.run(self._args(d))
+        rows = self._rows(d)
+        self.assertIs(rows["dependencies"]["ok"], True)
+        self.assertIn("installed", rows["dependencies"]["detail"])
+
     def test_a_dead_daemon_refuses_too_and_names_its_own_remedy(self):
         d = self._repo()
         with mock.patch(_READINESS + ".DOCKER_RUNNER",
