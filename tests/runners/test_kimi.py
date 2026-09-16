@@ -1010,15 +1010,28 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
                 kimi_toml.mediated_mcp(source, disclose=stream)
                 self.assertEqual("", stream.getvalue())
 
-    def test_the_inert_block_it_returns_is_never_the_shared_constant(self):
+    def test_the_inert_block_is_a_value_no_importer_can_move(self):
         # Every armed config gets its OWN dict and its OWN list: one config
         # mutating the block it was handed must not reach the next.
-        first = kimi_toml.mediated_mcp()
-        second = kimi_toml.mediated_mcp()
-        self.assertEqual(kimi_toml.INERT_MCP, first)
-        self.assertIsNot(kimi_toml.INERT_MCP, first)
+        #
+        # Fix round 2 (N3): this used to be a module-level dict, and the guard
+        # probes compare the armed file against it. A shared mutable bar is
+        # one any importer could move for the rest of the process without
+        # touching the probe or the runner -- so it is a function now. A
+        # MappingProxyType would not have been enough: the `servers` list
+        # inside it stays mutable, which is the same hazard one level down,
+        # and it is exactly the key a planted server would go into.
+        first, second = kimi_toml.inert_mcp(), kimi_toml.inert_mcp()
+        self.assertEqual(first, second)
+        self.assertIsNot(first, second)
         self.assertIsNot(first["servers"], second["servers"])
-        self.assertIsNot(first["servers"], kimi_toml.INERT_MCP["servers"])
+        first["enabled"] = True
+        first["servers"].append("planted")
+        first["extra"] = "planted"
+        self.assertEqual({"enabled": False, "servers": []}, kimi_toml.inert_mcp())
+        self.assertEqual(kimi_toml.inert_mcp(), kimi_toml.mediated_mcp())
+        self.assertIsNot(kimi_toml.mediated_mcp()["servers"],
+                         kimi_toml.mediated_mcp()["servers"])
 
     def test_the_block_is_constructed_not_filtered(self):
         # Whatever the operator's `[mcp]` holds -- a scalar, a table this

@@ -403,12 +403,12 @@ def _kimi_hooks_are_armed(sandbox, mode):
     # absence of evidence, and they are exactly the shape a refactor that
     # dropped the `merged["mcp"]` assignment would leave behind. Compared
     # against the one definition, so probe and runner cannot drift.
-    mcp = config.get("mcp")
-    if mcp != kimi_toml.INERT_MCP:
+    mcp, inert = config.get("mcp"), kimi_toml.inert_mcp()
+    if mcp != inert:
         faults.append("the armed `mcp` block is %.120r, not the inert %r the runner writes: "
                       "MCP tools are served by another process under names neither guard "
                       "adjudicates, so a home that does not say they are off is not proof "
-                      "that they are" % (mcp, kimi_toml.INERT_MCP))
+                      "that they are" % (mcp, inert))
     if faults:
         return False, ("the config.toml the runner generates does not arm the %s "
                        "guard: %s" % (mode, "; ".join(faults)))

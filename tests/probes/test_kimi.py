@@ -471,7 +471,15 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
                   ("scalar", "live-and-dangerous"),
                   ("servers not an array", {"enabled": False, "servers": "hostile"}))
         for name, block in shapes:
-            def armed(source, scope_path, allowlist_path, _block=block, *args, **kwargs):
+            # Fix round 2 (N2): KEYWORD-ONLY. `_block` sat in the fourth
+            # POSITIONAL slot, which is `build_merged_config`'s `source_path`.
+            # The real call site passes that by keyword so this was correct,
+            # but a call site that ever passed it positionally would bind a
+            # path string into `_block`, every subTest would patch
+            # `merged["mcp"] = "<some path>"`, and the test would still pass
+            # (a path is also != the inert block) while testing none of the
+            # three shapes it names.
+            def armed(source, scope_path, allowlist_path, *args, _block=block, **kwargs):
                 merged = real(source, scope_path, allowlist_path, *args, **kwargs)
                 if _block is None:
                     merged.pop("mcp", None)
@@ -487,6 +495,29 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
                 for state, _by, detail in (read, write):
                     self.assertEqual(hosts.REFUTED, state, detail)
                     self.assertIn("mcp", detail)
+
+    def test_the_probes_bar_is_re_derived_and_cannot_be_moved(self):
+        # Fix round 2 (N3), from the probe's side: the equality bar is a fresh
+        # value per call, so mutating what a previous call handed out moves
+        # nothing. Both halves are asserted -- the PROVEN path still proves,
+        # and a live block still refutes -- because a bar that had been moved
+        # would break exactly one of them.
+        import scripts.kimi_toml as kimi_toml
+        import scripts.runners.kimi as kimi_runner
+        stolen = kimi_toml.inert_mcp()
+        stolen["enabled"] = True
+        stolen["servers"].append({"name": "planted"})
+        state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.PROVEN, state, detail)
+        real = kimi_runner.build_merged_config
+
+        def live(source, scope_path, allowlist_path, *args, **kwargs):
+            merged = real(source, scope_path, allowlist_path, *args, **kwargs)
+            merged["mcp"] = {"enabled": True, "servers": [{"name": "planted"}]}
+            return merged
+        with mock.patch.object(kimi_runner, "build_merged_config", side_effect=live):
+            state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
+        self.assertEqual(hosts.REFUTED, state, detail)
 
     def test_the_armed_detail_names_the_config_it_parsed(self):
         state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")

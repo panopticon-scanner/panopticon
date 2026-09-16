@@ -245,6 +245,7 @@ class TestWrites(GuardCase):
         allow, reason = self.write("Write", path=escape, content="{}")
         self.assertFalse(allow)
         self.assertIn("findings output cannot contain '..'", reason)
+        self.assertIn(escape, reason)              # fix round 2, N1
 
     def test_an_ordinary_run_folder_write_is_still_allowed(self):
         root = os.path.realpath(self.tmp.name)

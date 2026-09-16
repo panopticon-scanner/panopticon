@@ -374,10 +374,15 @@ class TestNestedSymlinkComponents(unittest.TestCase):
                               "..", "..", "..", "src", "x.json")
         with self.assertRaises(ValueError) as caught:
             wg.allowlist_from_plan([{"id": "A-SEC", "out_file": escape}])
-        self.assertEqual("findings output cannot contain '..'", str(caught.exception))
+        self.assertIn("findings output cannot contain '..'", str(caught.exception))
+        # Fix round 2 (N1): and it names WHICH out_file. `install` raises with
+        # no context of its own, so a 200-entry fan-out aborting on one bad
+        # path used to tell the operator only that a `..` existed somewhere.
+        self.assertIn(escape, str(caught.exception))
         target, reason = wg._resolve_target(escape)
         self.assertIsNone(target)
         self.assertIn("findings output cannot contain '..'", reason)
+        self.assertIn(escape, reason)
 
     def test_a_parent_component_that_stays_inside_is_refused_too(self):
         # The rule is the COMPONENT, not where it lands: `runs/r1/../r2/f.json`
@@ -389,7 +394,8 @@ class TestNestedSymlinkComponents(unittest.TestCase):
         inside = os.path.join(root, ".panopticon", "runs", "r1", "..", "r2", "f.json")
         with self.assertRaises(ValueError) as caught:
             wg.allowlist_from_plan([{"out_file": inside}])
-        self.assertEqual("findings output cannot contain '..'", str(caught.exception))
+        self.assertIn("findings output cannot contain '..'", str(caught.exception))
+        self.assertIn(inside, str(caught.exception))
 
     def test_a_dotted_name_that_is_not_a_component_is_fine(self):
         # `..` as part of a NAME is not a parent component. Refusing it would
@@ -1433,6 +1439,14 @@ class TestBindingHelpersAreACopy(unittest.TestCase):
         self.assertEqual(wg.UNMEASURABLE_COMPONENT, kg.UNMEASURABLE_COMPONENT)
         self.assertEqual(wg.ESCAPED_ARTIFACT_TREE, kg.ESCAPED_ARTIFACT_TREE)
         self.assertEqual(wg.PARENT_COMPONENT, kg.PARENT_COMPONENT)
+        # Fix round 2 (N1): all four carry a `%s`. A refusal that cannot say
+        # WHICH path or component it is about sends its reader to grep the
+        # plan -- and `allowlist_from_plan` re-raises these with no context of
+        # its own, so the constant is the only place the context can come from.
+        for name in ("SYMLINKED_COMPONENT", "UNMEASURABLE_COMPONENT",
+                     "ESCAPED_ARTIFACT_TREE", "PARENT_COMPONENT"):
+            with self.subTest(constant=name):
+                self.assertIn("%s", getattr(wg, name))
 
     def test_the_binding_constants_match_too(self):
         # The names the three hooks agree on by copy rather than by import:

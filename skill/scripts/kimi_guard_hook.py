@@ -213,8 +213,11 @@ ESCAPED_ARTIFACT_TREE = ("findings output resolves outside the review artifact t
 # The rule is the COMPONENT, not where it lands: a `..` that stays inside the
 # tree is refused too, because a declared findings path has no business
 # carrying one and deciding from the destination would have to be re-decided
-# at every enforcement.
-PARENT_COMPONENT = "findings output cannot contain '..'"
+# at every enforcement. It names the offending out_file like its three
+# siblings name theirs: `allowlist_from_plan` re-raises these with no context
+# of its own, so a fan-out aborting on one bad path out of two hundred would
+# otherwise say only that a `..` exists somewhere in it.
+PARENT_COMPONENT = "findings output cannot contain '..': %s"
 
 
 def _components(path):
@@ -274,7 +277,7 @@ def _escaped_component(path):
     resolved review root the declared path named.
     """
     if os.pardir in str(path).split(os.sep):
-        return PARENT_COMPONENT
+        return PARENT_COMPONENT % (path,)
     root, components = _components(path)
     if root is None:
         return ""

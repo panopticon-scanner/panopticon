@@ -34,12 +34,26 @@ import json
 # to refute (the guard probes read two keys), where disabling servers
 # individually is a list to keep correct as the operator's config changes.
 MCP = "mcp"
-# What every per-run config carries, and what the guard probes must FIND in the
-# armed file (fix round 1, F2). One definition, so the runner and the probe
-# cannot drift about what "MCP is off in this home" looks like -- and so the
-# probe can demand the block EXPLICITLY rather than reading an absent or
-# unparseable one as "nothing live here", which is the absence of evidence.
-INERT_MCP = {"enabled": False, "servers": []}
+
+
+def inert_mcp():
+    """What every per-run config carries, and what the guard probes must FIND
+    in the armed file (fix round 1, F2). One definition, so the runner and the
+    probe cannot drift about what "MCP is off in this home" looks like -- and
+    so the probe can demand the block EXPLICITLY rather than reading an absent
+    or unparseable one as "nothing live here", which is the absence of
+    evidence.
+
+    A FUNCTION returning a fresh dict with a fresh list, not a module-level
+    value (fix round 2, N3). Two modules share this as an equality bar, and a
+    shared mutable one is a bar any importer could move for the rest of the
+    process without touching either of them. A `MappingProxyType` would not
+    have been enough: the `servers` list inside it stays mutable, which is the
+    same hazard one level down and exactly the key a planted server goes into.
+    """
+    return {"enabled": False, "servers": []}
+
+
 # One line, and a COUNT rather than the names: this shares the operator's
 # stderr with the run's own progress output, so a disclosure that grew with
 # their config would crowd out the thing they are watching. The trailing
@@ -84,12 +98,12 @@ def mediated_mcp(source=None, disclose=None):
     that matter; silence about a block that WAS removed is worse.
     """
     block = source.get(MCP, _ABSENT) if isinstance(source, dict) else _ABSENT
-    if disclose is not None and block is not _ABSENT and block != INERT_MCP:
+    if disclose is not None and block is not _ABSENT and block != inert_mcp():
         dropped, shape = _mcp_shape(block)
         print(MCP_DISCLOSURE % (dropped, "" if dropped == 1 else "s",
                                 " (%s; replaced with an inert block)" % shape if shape else ""),
               file=disclose, flush=True)
-    return {"enabled": False, "servers": []}
+    return inert_mcp()
 
 
 def _toml_key(key):
