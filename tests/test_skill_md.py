@@ -760,8 +760,12 @@ class TestCodexHostDocs(unittest.TestCase):
         # parity with a broker that has no such gap.
         self.assertIn("#1683", doc)
         self.assertNotIn("apply the same rule to their own directory grants", doc)
-        sentence = next(line for line in doc.splitlines() if "#1683" in line)
-        for phrase in ("traversed by the host", "Grep", "Glob", "Codex has no such gap"):
+        # Fix round 2 (N4): anchored on the phrase that STATES the limit, not
+        # on the first line mentioning the issue -- a second #1683 reference
+        # added above this one would silently move the checks to that paragraph.
+        sentence = next(line for line in doc.splitlines()
+                        if "traversed by the host's own tool" in line)
+        for phrase in ("#1683", "Grep", "Glob", "Codex has no such gap"):
             self.assertIn(phrase, sentence)
 
     def test_the_headless_runner_sentence_has_its_antecedent(self):
