@@ -25,6 +25,7 @@ import scripts.discovery as discovery
 import scripts.grouping_engine as grouping_engine
 
 from . import coverage
+from . import runio
 
 # How many foreign test paths -- and foreign group names -- the `split` note
 # lists before it says "and N more". Five is enough for a reviewer to
@@ -206,9 +207,17 @@ def note(review_root, unit, files, tests, units=None, stems_of=None):
     stems, tested, own_tests = stems_of.get(unit) or unit_stems(files)
     foreign = foreign_tests(unit, stems - tested, units, stems_of)
     if foreign:
-        paths = sorted(p for hits in foreign.values() for p in hits)
+        # #1190 AGT-A1A, via fix round 3: these are TARGET-tree paths and
+        # group names from the run's own `groups.json`, pasted into a single
+        # prompt line. A filename carrying a newline would otherwise start
+        # attacker-controlled lines in a reviewer's prompt -- the same defect
+        # `_abs_file_list` was hardened against, through a channel P13 opened.
+        # The SAME function, not a copy: one escaping rule for every path this
+        # prompt shows.
+        paths = sorted(runio._prompt_safe(p)
+                       for hits in foreign.values() for p in hits)
         shown = paths[:PATHS_SHOWN]
-        names = sorted(foreign)
+        names = sorted(runio._prompt_safe(str(n)) for n in foreign)
         named = names[:PATHS_SHOWN]
         return "split", (
             "split — %d test file(s) matching this group's modules are "

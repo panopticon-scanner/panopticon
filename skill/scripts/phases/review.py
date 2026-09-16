@@ -284,7 +284,13 @@ def _tool_hits_for_cell(review_root, manifest, domain, files):
 def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle,
                 tools_context=False, inventory=None, unit=None):
     file_list = runio._abs_file_list(review_root, files)
-    test_list = "\n".join("- " + t for t in tests) or "- (no tests)"
+    # #1190 AGT-A1A, via fix round 3: prompt-sanitized like `file_list`, with
+    # the SAME function. Since fix round 2 (N1) a chunk's list is built from
+    # RESOLVED target-tree paths rather than the operator's authored globs, so
+    # a hostile filename reaches this bullet list -- the exact channel #1190
+    # closed for the file list.
+    test_list = "\n".join(
+        "- " + runio._prompt_safe(str(t)) for t in tests) or "- (no tests)"
     # #1638 P13: the reviewer is fenced to this cell, so the driver -- which
     # assigned every file in the tree to a group -- is the only party that can
     # tell it whether the inventory above is the whole story.
