@@ -13,6 +13,7 @@ import scripts.phases.persist as persist
 import scripts.phases.evidence_scope as evidence_scope
 
 import scripts.ocrdb as ocrdb
+import scripts.evidence as evidence
 
 
 class TestVerifyCreatesDir(unittest.TestCase):
@@ -31,15 +32,32 @@ class TestVerifyCreatesDir(unittest.TestCase):
 class TestVerifyBackupNarrowing(unittest.TestCase):
     """#1029: the backup adversary re-reads only the files its scoped
     (advisor-confirmed, >= F_b) claims cite, not the whole cell -- a
-    coverage-preserving cost cut (the advisor is claim-driven, reads unconfined)."""
+    coverage-preserving cost cut (the advisor is claim-driven, reads unconfined).
+
+    The fixture builds a REAL tree (it used to pass the string "/repo"): since
+    #1638 P16 fix round 3 D2 a claim file must resolve to an EXISTING in-root
+    file to bound the grant, because a grant of one path the advisor cannot open
+    is a deny-all fence in everything but name. The narrowing semantics these
+    tests are about are unchanged."""
 
     RUN_ID = "run-backup-narrow"
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(os.path.join(self.root, "src"))
+        for name in ("a.py", "b.py", "c.py"):
+            with open(os.path.join(self.root, "src", name), "w",
+                      encoding="utf-8") as fh:
+                fh.write("import os\n")
 
     def test_backup_scope_files_narrows_to_cited_files(self):
         scope = [{"location": {"file": "src/a.py", "line_start": 3}},
                  {"location": {"file": "src/b.py", "line_start": 9}}]
         self.assertEqual(
-            verify._backup_scope_files("/repo", ["src/a.py", "src/b.py", "src/c.py"], scope),
+            verify._backup_scope_files(self.root,
+                                       ["src/a.py", "src/b.py", "src/c.py"], scope),
             ["src/a.py", "src/b.py"])   # c.py (uncited) dropped
 
     def test_backup_scope_files_dedups_preserving_order(self):
@@ -47,17 +65,21 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
                  {"location": {"file": "src/a.py"}},
                  {"location": {"file": "src/b.py"}}]
         self.assertEqual(
-            verify._backup_scope_files("/repo", ["src/a.py", "src/b.py"], scope),
+            verify._backup_scope_files(self.root, ["src/a.py", "src/b.py"], scope),
             ["src/a.py", "src/b.py"])
 
     def test_backup_scope_files_falls_back_when_location_missing(self):
         # a scoped claim with no resolvable file -> the full group list; never
-        # refute blind.
+        # refute blind. `src/ghost.py` is the D2 addition: in-root and confined,
+        # but not there to be read.
         full = ["src/a.py", "src/b.py", "src/c.py"]
         for bad in ({"location": {"file": ""}}, {"location": None}, {},
-                    {"location": {}}):
+                    {"location": {}}, {"location": {"file": "./"}},
+                    {"location": {"file": "  "}},
+                    {"location": {"file": "src/ghost.py"}}):
             scope = [{"location": {"file": "src/a.py"}}, bad]
-            self.assertEqual(verify._backup_scope_files("/repo", full, scope), full)
+            self.assertEqual(verify._backup_scope_files(self.root, full, scope),
+                             full, bad)
 
     def test_backup_scope_files_falls_back_on_escaping_claim_path(self):
         # #1096: an LLM/panel-supplied location.file that escapes review_root
@@ -69,11 +91,11 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
             scope = [{"location": {"file": "src/a.py"}},
                      {"location": {"file": evil}}]
             self.assertEqual(
-                verify._backup_scope_files("/repo", full, scope), full, evil)
+                verify._backup_scope_files(self.root, full, scope), full, evil)
         # a confined relative path is still used verbatim
         self.assertEqual(
             verify._backup_scope_files(
-                "/repo", full, [{"location": {"file": "src/a.py"}}]),
+                self.root, full, [{"location": {"file": "src/a.py"}}]),
             ["src/a.py"])
 
     def test_confined_to_root_rejects_symlink_escape(self):
@@ -161,6 +183,11 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
             os.makedirs(runio._pano(d, "verdicts"), exist_ok=True)
             manifest = self._manifest()
             # group G spans 3 files; two CONFIRMED CRIT claims cite a.py + b.py.
+            os.makedirs(os.path.join(d, "src"), exist_ok=True)
+            for name in ("a.py", "b.py", "c.py"):    # D2: claim files must exist
+                with open(os.path.join(d, "src", name), "w",
+                          encoding="utf-8") as fh:
+                    fh.write("import os\n")
             runio._write_json(runio._pano(d, "groups.json"),
                 {"groups": [{"name": "G",
                              "files": ["src/a.py", "src/b.py", "src/c.py"]}]})
@@ -248,7 +275,7 @@ class TestBackupEvidenceClosure(unittest.TestCase):
                          "synthesize.py"],
              "cap": evidence_scope.CAP, "truncated": False,
              "entry_cap": evidence_scope.ENTRY_CAP, "entry_truncated": False,
-             "omitted": 0})
+             "omitted": 0, "floor_count": 1})
 
     def test_backup_entry_prompt_lists_the_granted_evidence(self):
         files = self._run13_repo()
@@ -424,3 +451,111 @@ class TestPlantedCarrierCannotSuppressTheBackupRound(unittest.TestCase):
             self.assertEqual(len(got), 3)
             for v in got:
                 self.assertEqual([k for k in v if k.startswith("_")], [], v)
+
+
+class TestBackupCellFixture(unittest.TestCase):
+    """Shared fixture: one cell whose primary bundle this test decides."""
+
+    RUN_ID = "run-fix3"
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(runio._pano(self.root, "verdicts"), exist_ok=True)
+        self.manifest = {"run_id": self.RUN_ID, "host": "claude",
+                         "security_mode": "standard", "flags": {}}
+
+    def _cell(self, loc_file="src/a.py", verdicts_for=None, files=None):
+        files = files or ["src/a.py", "src/b.py"]
+        for rel in files:
+            path = os.path.join(self.root, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("import os\n")
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [{"name": "G", "files": files}]})
+        runio._write_json(runio._pano(self.root, "coverage-G.json"),
+                          {"effective": ["SEC"]})
+        runio._write_json(runio._pano(self.root, "findings-G-SEC.json"), {
+            "findings": [{"title": "injection %d" % i, "severity": "CRITICAL",
+                          "domain": "SEC", "code": "SEC-A3A",
+                          "category": "injection",
+                          "location": {"file": loc_file, "line_start": 10 + i}}
+                         for i in range(3)],
+            "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                            "domain": "SEC", "group": "G"}})
+        cell = review._load_cell_findings(self.root, self.manifest, "G", "SEC")
+        verdicts = []
+        for f in cell:
+            verdicts.extend((verdicts_for or (lambda fid: [
+                {"finding_id": fid, "verdict": "CONFIRMED",
+                 "reasoning": "real"}]))(f["id"]))
+        runio._write_json(
+            verify._verify_out_file(self.root, "G", "SEC", "primary"),
+            {"verdicts": verdicts,
+             "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
+                             "domain": "SEC", "group": "G",
+                             "stage": "primary"}})
+        return cell
+
+
+class TestDuplicatePrimariesResolveTheSameWayEverywhere(TestBackupCellFixture):
+    """Fix round 3, D1. `_cell_backup_findings` built its finding_id map with a
+    dict comprehension -- LAST-wins -- while `evidence.match_verdict_by_id` is
+    FIRST-wins. A primary bundle emitting CONFIRMED then REJECTED for one
+    finding therefore made the DRIVER see `rejected` (scope 0, no adversarial
+    round dispatched) while SYNTHESIS saw `advisor_confirmed` (factor 1.5,
+    gate-eligible) -- the N1 outcome with no private key and no `stage`, and a
+    direct contradiction of this PR's own stated policy."""
+
+    def _dupes(self, fid):
+        return [{"finding_id": fid, "verdict": "CONFIRMED", "reasoning": "yes"},
+                {"finding_id": fid, "verdict": "REJECTED", "reasoning": "no"}]
+
+    def test_the_driver_keeps_the_first_verdict_like_synthesis_does(self):
+        self._cell(verdicts_for=self._dupes)
+        scope = verify._cell_backup_findings(self.root, self.manifest, "G", "SEC")
+        self.assertEqual(len(scope), 3)
+        self.assertEqual({f["evidence"]["status"] for f in scope},
+                         {"advisor_confirmed"})
+
+    def test_the_backup_round_is_still_dispatched(self):
+        self._cell(verdicts_for=self._dupes)
+        res = verify._verify_backup_execute(self.root, self.manifest, "claude",
+                                            ocrdb.load_bundle())
+        self.assertIsNotNone(res, "no adversarial backup entry dispatched")
+
+    def test_driver_and_synthesis_agree_on_the_winner(self):
+        cell = self._cell(verdicts_for=self._dupes)
+        verdicts = verify._cell_verdicts(self.root, "G", "SEC", "primary")
+        by_fid = {}
+        for v in verdicts:
+            by_fid.setdefault(str(v["finding_id"]), []).append(v)
+        for f in cell:
+            # run_id=None: `_cell_verdicts` reads a per-cell FILE, so it never
+            # stamps one, and the driver path passes none either.
+            synthesis = evidence.match_verdict_by_id(f, by_fid)
+            driver = evidence.by_finding_id(verdicts, "primary")[str(f["id"])]
+            self.assertEqual(driver["verdict"], synthesis["verdict"])
+            self.assertEqual(driver["verdict"], "CONFIRMED")
+
+
+class TestNoBackupEntryIsEverDispatchedWithAnEmptyGrant(TestBackupCellFixture):
+    """Fix round 3, D2, at the layer the invariant is about: the dispatch
+    REQUEST. An empty `files` list is a deny-all read fence (the guard refuses
+    every Read, Grep and Glob), so an entry carrying one asks an advisor to
+    adjudicate with nothing."""
+
+    def _entries(self, loc_file):
+        self._cell(loc_file=loc_file)
+        res = verify._verify_backup_execute(self.root, self.manifest, "claude",
+                                            ocrdb.load_bundle())
+        self.assertIsNotNone(res)
+        return requests.load_dispatch_request(self.root)["entries"]
+
+    def test_every_dispatched_entry_has_a_non_empty_read_grant(self):
+        for loc in ("src/a.py", "./", " ", "", "."):
+            for entry in self._entries(loc):
+                self.assertTrue(entry["files"], (loc, entry["id"]))
+                self.assertTrue(entry["scope"]["files"], (loc, entry["id"]))

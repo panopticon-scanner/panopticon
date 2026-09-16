@@ -159,13 +159,17 @@ def test_advisor_verdict_schema_carries_the_evidence_scope_fields():
     schema = _load("advisor-verdict-schema.json")
     props = schema["properties"]
     assert set(props["evidence_scope"]["properties"]) == {
-        "granted", "cap", "truncated", "entry_cap", "entry_truncated"}
+        "granted", "cap", "truncated", "entry_cap", "entry_truncated",
+        "floor_count"}
     assert props["evidence_scope"]["properties"]["granted"]["items"]["type"] == "string"
     assert props["evidence_scope"]["properties"]["cap"]["type"] == "integer"
     assert props["evidence_scope"]["properties"]["truncated"]["type"] == "boolean"
     # Fix round 1, F3: the per-ENTRY ceiling on the union, and whether it bit.
     assert props["evidence_scope"]["properties"]["entry_cap"]["type"] == "integer"
     assert props["evidence_scope"]["properties"]["entry_truncated"]["type"] == "boolean"
+    # Fix round 3, D5: how much of the grant is claim files, which no cap bounds
+    # -- the number that explains a grant larger than its own `entry_cap`.
+    assert props["evidence_scope"]["properties"]["floor_count"]["type"] == "integer"
     assert props["missing_evidence"]["items"]["type"] == "string"
     assert "evidence_scope" not in schema["required"]
     assert "missing_evidence" not in schema["required"]
@@ -182,7 +186,7 @@ def test_a_scope_limited_verdict_validates_against_both_published_schemas():
         "citations": {"cwe": [], "owasp": [], "cve": []},
         "evidence_scope": {"granted": ["synth/render.py"], "cap": 12,
                            "truncated": False, "entry_cap": 48,
-                           "entry_truncated": False},
+                           "entry_truncated": False, "floor_count": 1},
         "missing_evidence": ["synth/grading.py", "synthesize.py"],
     }
     assert jsonschema.validate(verdict, _load("advisor-verdict-schema.json")) is None

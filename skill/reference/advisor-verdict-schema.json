@@ -40,13 +40,14 @@
     "schema_version": {"type": "integer", "description": "Format/schema version of the advisor verdict."},
     "evidence_scope": {
       "type": "object",
-      "description": "Backup round only (#1638 P16): the bounded evidence closure this advisor was granted -- the claim files, the producers their evidence named, and their one-hop in-repo imports -- copied verbatim from the prompt's \"Evidence granted for this check (bounded closure)\" section. It records what the advisor could actually read, so a thin verdict can be told from a thin grant. `cap`/`truncated` bound ONE claim's closure; `entry_cap`/`entry_truncated` bound the union across every claim in this check. Optional: the primary and tool rounds are granted no closure and record none.",
+      "description": "Backup round only (#1638 P16): the bounded evidence closure this advisor was granted -- the claim files, the producers their evidence named, and their one-hop in-repo imports -- copied verbatim from the prompt's \"Evidence granted for this check (bounded closure)\" section. It records what the advisor could actually read, so a thin verdict can be told from a thin grant. `cap`/`truncated` bound ONE claim's closure; `entry_cap`/`entry_truncated` bound the closure EXTRAS across every claim in this check. `floor_count` is how many of the granted files are claim files, which no cap bounds -- so a grant larger than `entry_cap` with `entry_truncated: false` is a large floor, not an inconsistency. Optional: the primary and tool rounds are granted no closure and record none.",
       "properties": {
         "granted": {"type": "array", "items": {"type": "string"}},
         "cap": {"type": "integer"},
         "truncated": {"type": "boolean"},
         "entry_cap": {"type": "integer"},
-        "entry_truncated": {"type": "boolean"}
+        "entry_truncated": {"type": "boolean"},
+        "floor_count": {"type": "integer"}
       }
     },
     "missing_evidence": {"type": "array", "items": {"type": "string"},

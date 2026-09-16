@@ -147,7 +147,7 @@ class TestGrant(_Repo):
             evidence_scope.grant(self.root, files, scope),
             {"granted": ["a.py", "b.py"], "cap": evidence_scope.CAP,
              "truncated": False, "entry_cap": evidence_scope.ENTRY_CAP,
-             "entry_truncated": False, "omitted": 0})
+             "entry_truncated": False, "omitted": 0, "floor_count": 2})
 
     def test_grant_flags_truncation_when_any_claim_overflows(self):
         named = ["mod%02d.py" % i for i in range(30)]
@@ -207,7 +207,8 @@ class TestGrant(_Repo):
                          {"granted": files, "cap": evidence_scope.CAP,
                           "truncated": False,
                           "entry_cap": evidence_scope.ENTRY_CAP,
-                          "entry_truncated": False, "omitted": 0})
+                          "entry_truncated": False, "omitted": 0,
+                          "floor_count": 0})
 
 
 if __name__ == "__main__":
@@ -277,3 +278,79 @@ class TestEntryCeilingNeverStarvesAClaim(_Repo):
             entry_cap=0)
         self.assertEqual(got["granted"], ["a.py"])
         self.assertTrue(got["entry_truncated"])
+
+
+class TestAClaimFileThatResolvesToNothing(_Repo):
+    """Fix round 3, D2 -- a REGRESSION introduced by the entry-ceiling commit.
+    `_claim_floor` confined BEFORE it normalized, so a `location.file` of `"./"`
+    or whitespace passed confinement, normalized to None, and dropped out of the
+    floor without triggering the fallback -- and the same commit had removed
+    `granted or list(files)`. The result was `granted: []`: a backup entry
+    dispatched with a deny-all read fence, so the advisor could open nothing and
+    the only answer left was NEEDS_MORE_INFO -> `backup_scope_limited`,
+    gate-eligible at 1.5, permanently unrefutable. Exactly what `_claim_floor`'s
+    own docstring says it exists to prevent, through a field its confinement
+    docstring calls "LLM/panel-supplied (steerable by injection)"."""
+
+    UNRESOLVABLE = ("./", " ", "  ", "", None, ".", "./.", "\t")
+
+    def test_a_claim_file_that_normalizes_to_nothing_falls_back(self):
+        _write(self.root, "a.py", "import os\n")
+        files = ["a.py", "b.py", "c.py"]
+        for bad in self.UNRESOLVABLE:
+            got = evidence_scope.grant(
+                self.root, files,
+                [{"location": {"file": "a.py"}}, {"location": {"file": bad}}])
+            self.assertEqual(got["granted"], files, repr(bad))
+
+    def test_a_claim_file_that_does_not_exist_falls_back(self):
+        # The same failure by another route: a grant of one path the advisor
+        # cannot open is an empty fence in everything but name.
+        _write(self.root, "a.py", "import os\n")
+        files = ["a.py", "b.py"]
+        got = evidence_scope.grant(
+            self.root, files, [{"location": {"file": "ghost.py"}}])
+        self.assertEqual(got["granted"], files)
+
+    def test_a_grant_is_never_empty(self):
+        # The invariant, stated once: whatever the claims say, the backup is
+        # given something to read or the whole group.
+        _write(self.root, "a.py", "import os\n")
+        for bad in self.UNRESOLVABLE:
+            for cap in (0, 12):
+                got = evidence_scope.grant(
+                    self.root, ["a.py", "b.py"],
+                    [{"location": {"file": bad}}], entry_cap=cap)
+                self.assertTrue(got["granted"], (bad, cap))
+
+
+class TestTheGrantRecordsItsFloor(_Repo):
+    """Fix round 3, D5. `entry_truncated` means "closure EXTRAS were omitted",
+    which is why a 60-file floor under a 48-file ceiling reports `false` -- but
+    the advisor's echoed `evidence_scope` then read `entry_cap: 48,
+    entry_truncated: false` next to 60 granted files, which is internally
+    incoherent. `floor_count` is the missing number: how much of the grant is
+    claim files, which the ceiling never bounds."""
+
+    def test_floor_count_explains_a_grant_larger_than_its_cap(self):
+        scope = []
+        for i in range(60):
+            own = "c%03d.py" % i
+            _write(self.root, own, "import os\n")
+            scope.append({"location": {"file": own}})
+        got = evidence_scope.grant(self.root, ["c000.py"], scope)
+        self.assertEqual(len(got["granted"]), 60)
+        self.assertEqual(got["floor_count"], 60)
+        self.assertGreater(got["floor_count"], got["entry_cap"])
+        self.assertFalse(got["entry_truncated"])     # no EXTRA was omitted
+        self.assertEqual(got["omitted"], 0)
+
+    def test_floor_count_is_the_distinct_claim_files(self):
+        for rel in ("a.py", "b.py", "x.py"):
+            _write(self.root, rel, "import os\n")
+        got = evidence_scope.grant(
+            self.root, ["a.py", "b.py", "x.py"],
+            [{"location": {"file": "a.py"}, "description": "x.py"},
+             {"location": {"file": "a.py"}},
+             {"location": {"file": "b.py"}}])
+        self.assertEqual(got["floor_count"], 2)      # a.py, b.py -- not x.py

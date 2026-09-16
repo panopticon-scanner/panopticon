@@ -11,8 +11,16 @@ was dispatched at all. Per-reader discipline is what failed, so this file does
 not name readers. It finds them.
 
 A function is a verdict-read site when it either
-  * iterates the `verdicts` list of a parsed bundle, or
+  * NAMES the `verdicts` key of a parsed bundle anywhere but inside an
+    `isinstance` shape check (which extracts nothing), or
   * enumerates verdict FILES through `evidence._iter_verdict_files`,
+
+Naming the key rather than consuming it in one of the recognised ways is the
+rule on purpose (fix round 3, D3): the round-2 walk enumerated ITERATION shapes
+and caught three of the eleven ordinary ways a reader is written -- `vs =
+data["verdicts"]` then a loop passed silently. `TestTheDetectorSeesEveryOrdinary
+ReaderShape` below pins all eleven, plus the two shape-check forms that must NOT
+be flagged.
 and every such function must pass what it read through
 `evidence._agent_verdict`, which is the single place that
   (a) strips every `_`-prefixed key -- the pipeline's own carriers, which an
@@ -69,39 +77,90 @@ def _module_name(path):
     return "scripts." + relative[:-3].replace(os.sep, ".")
 
 
-def _reads_the_bundle_list(node):
-    """`for v in data["verdicts"]` / `data.get("verdicts") or []` used as an
-    ITERABLE -- not the `isinstance(data.get("verdicts"), list)` shape checks,
-    which extract nothing and are how three of these functions start."""
-    for sub in ast.walk(node):
-        if isinstance(sub, (ast.For, ast.comprehension, ast.ListComp,
-                            ast.GeneratorExp, ast.SetComp)):
-            targets = ([sub.iter] if isinstance(sub, (ast.For, ast.comprehension))
-                       else [g.iter for g in sub.generators])
-        elif isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
-                and sub.func.attr == "extend":
-            targets = list(sub.args)
+def _bundle_key_names(tree):
+    """Module-level names bound to the literal `"verdicts"`, so `data[KEY]`
+    reads as `data["verdicts"]`. Without this the walk is defeated by one
+    perfectly ordinary constant."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets, value = [node.target], node.value
         else:
             continue
-        for target in targets:
-            if _names_the_bundle_key(target):
-                return True
-    return False
+        if isinstance(value, ast.Constant) and value.value == BUNDLE_KEY:
+            names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return names
 
 
-def _names_the_bundle_key(node):
-    """`x["verdicts"]`, `x.get("verdicts")`, or either with an `or []` around
-    it -- anywhere inside the expression being iterated."""
+def _key_nodes(node, key_names):
+    """Every place in this function that names the bundle key:
+    `x["verdicts"]`, `x[KEY]`, `x.get("verdicts")`, `x.get(KEY)`.
+
+    Naming it is the signal -- NOT one of the eleven ways to then consume it.
+    Round 2 enumerated iteration shapes and caught three of eleven: `vs =
+    data["verdicts"]` followed by a loop, the most obvious way anyone would
+    write the fourth reader, passed silently. A rule about what a reader DOES
+    has a tail of shapes; a rule about what it NAMES does not."""
+    def _is_key(value):
+        return ((isinstance(value, ast.Constant) and value.value == BUNDLE_KEY)
+                or (isinstance(value, ast.Name) and value.id in key_names))
+
+    def _is_document(value):
+        """A bundle is a document you HAVE -- a name you loaded a file into --
+        not a field dug out of another object. `meta.coverage.verdicts` in the
+        report is the same word about a different thing
+        (`html_report._render_header`), and its receiver is a computed
+        expression rather than a bound document, which is what tells them apart.
+
+        KNOWN LIMIT, stated rather than hidden (as `test_host_launch_guard`
+        states its own): an inline `json.load(fh)["verdicts"]`, with no name
+        bound first, is not seen. Bind the document -- which all four real
+        readers, and every ordinary way of writing a fifth, already do."""
+        return isinstance(value, (ast.Name, ast.Attribute))
+
+    found = []
     for sub in ast.walk(node):
-        if isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Constant) \
-                and sub.slice.value == BUNDLE_KEY:
-            return True
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
-                and sub.func.attr == "get" and sub.args \
-                and isinstance(sub.args[0], ast.Constant) \
-                and sub.args[0].value == BUNDLE_KEY:
-            return True
-    return False
+        if (isinstance(sub, ast.Subscript) and _is_key(sub.slice)
+                and _is_document(sub.value)):
+            found.append(sub)
+        elif (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr == "get" and sub.args and _is_key(sub.args[0])
+                and _is_document(sub.func.value)):
+            found.append(sub)
+    return found
+
+
+def _shape_check_nodes(node, key_names):
+    """Key-naming nodes whose only role is `isinstance(x.get("verdicts"), list)`.
+
+    A shape check extracts nothing, and two live ones are written exactly that
+    way (`persist._accepts`, `verify._verify_bundle_labeled`); demanding a
+    sanitizer from them would be a demand for meaningless code with no correct
+    way to a green suite -- the same trap `test_host_launch_guard`'s
+    `subprocess` gate exists to avoid."""
+    inside = []
+    for sub in ast.walk(node):
+        if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                and sub.func.id == "isinstance"):
+            inside.extend(id(n) for n in _key_nodes(sub, key_names))
+    return set(inside)
+
+
+def _read_reasons(node, key_names):
+    """Why this function is a verdict-read site, or [] if it is not one."""
+    shape_only = _shape_check_nodes(node, key_names)
+    extracting = [n for n in _key_nodes(node, key_names)
+                  if id(n) not in shape_only]
+    reasons = []
+    if extracting:
+        reasons.append("names the `%s` key at line(s) %s"
+                       % (BUNDLE_KEY,
+                          ", ".join(str(n.lineno) for n in extracting)))
+    if _calls(node, FILE_ITERATOR):
+        reasons.append("enumerates verdict files via `%s`" % FILE_ITERATOR)
+    return reasons
 
 
 def _calls(node, name):
@@ -116,19 +175,16 @@ def _calls(node, name):
 
 
 def _read_sites():
-    """[(module::function, path, why)] for every verdict-read site in the tree."""
+    """[(module::function, path, why, node)] for every verdict-read site."""
     found = []
     for path in _py_files(SCRIPTS):
         with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read(), path)
+        key_names = _bundle_key_names(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            why = []
-            if _reads_the_bundle_list(node):
-                why.append("iterates a bundle's `%s` list" % BUNDLE_KEY)
-            if _calls(node, FILE_ITERATOR):
-                why.append("enumerates verdict files via `%s`" % FILE_ITERATOR)
+            why = _read_reasons(node, key_names)
             if why:
                 found.append(("%s::%s" % (_module_name(path), node.name),
                               path, ", ".join(why), node))
@@ -195,3 +251,61 @@ class TestTheSanitizerItself(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# Fix round 3, D3. The round-2 detector enumerated ITERATION shapes, and caught
+# three of the eleven ordinary ways a reader is written -- `vs =
+# data["verdicts"]` followed by a loop, the most obvious of them, passed
+# silently. Enumerating shapes is the wrong shape of rule: naming the bundle key
+# at all, anywhere but a shape check, is what makes a function a reader. These
+# are the eleven, as source, so the claim "a fourth reader turns this file red"
+# is tested rather than asserted.
+READER_SHAPES = {
+    "for_loop": "    for v in data['verdicts']:\n        out.append(v)\n",
+    "extend": "    out.extend(data['verdicts'])\n",
+    "listcomp": "    out = [v for v in data['verdicts']]\n",
+    "local_alias": "    vs = data['verdicts']\n    for v in vs:\n        out.append(v)\n",
+    "augassign": "    out += data['verdicts']\n",
+    "list_call": "    out = list(data['verdicts'])\n",
+    "get_or_empty": "    out = data.get('verdicts') or []\n",
+    "slice": "    out = data['verdicts'][:]\n",
+    "index": "    out.append(data['verdicts'][0])\n",
+    "passed_to_helper": "    helper(data['verdicts'])\n",
+    "module_constant": "    for v in data[KEY]:\n        out.append(v)\n",
+}
+
+# A shape check extracts nothing and must NOT be called a reader -- two live
+# ones (`persist.py`, `verify.py`) are written exactly this way, and demanding a
+# sanitizer from them would be a demand for meaningless code.
+SHAPE_CHECKS = {
+    "isinstance_get": "    if not isinstance(data.get('verdicts'), list):\n        return None\n",
+    "isinstance_subscript": "    if isinstance(data['verdicts'], list):\n        return None\n",
+}
+
+_MODULE = ('KEY = "verdicts"\n\n\ndef reader(data, out, helper):\n%s    return out\n')
+
+
+def _detects(body):
+    tree = ast.parse(_MODULE % body)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "reader")
+    return bool(_read_reasons(fn, _bundle_key_names(tree)))
+
+
+class TestTheDetectorSeesEveryOrdinaryReaderShape(unittest.TestCase):
+
+    def test_every_reader_shape_is_detected(self):
+        missed = sorted(name for name, body in READER_SHAPES.items()
+                        if not _detects(body))
+        self.assertEqual(missed, [], "these ways of reading a bundle would pass "
+                         "the guard silently: %s" % missed)
+
+    def test_a_shape_check_is_not_a_reader(self):
+        flagged = sorted(name for name, body in SHAPE_CHECKS.items()
+                         if _detects(body))
+        self.assertEqual(flagged, [], "an `isinstance` shape check extracts "
+                         "nothing and must not be told to sanitize: %s" % flagged)
+
+    def test_a_function_that_never_names_the_key_is_not_a_reader(self):
+        self.assertFalse(_detects("    out.append(data['findings'])\n"))
+        self.assertFalse(_detects("    out = data.get('verdict')\n"))

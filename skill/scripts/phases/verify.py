@@ -346,8 +346,13 @@ def _cell_backup_findings(review_root, manifest, group, domain):
                               parts=len(_cell_chunks(cell)))
     if not verdicts:
         return []
-    by_fid = {str(v.get("finding_id")): v for v in verdicts
-              if v.get("finding_id")}
+    # #1638 P16 fix round 3, D1: the SHARED duplicate rule, not a dict
+    # comprehension. That comprehension was last-wins while
+    # `evidence.match_verdict_by_id` is first-wins, so one primary bundle with
+    # two verdicts for a finding made this function see `rejected` (scope
+    # emptied, no adversarial round dispatched) and synthesis see
+    # `advisor_confirmed` -- N1's outcome with no private key involved.
+    by_fid = evidence.by_finding_id(verdicts, "primary")
     for f in cell:
         f["evidence"] = evidence.derive_evidence(f, by_fid.get(str(f["id"])))
     by_cat = {}
@@ -392,13 +397,14 @@ _GRANT_BLOCK = (
     "%s\n"
     "These files are the WHOLE of what your Read and Grep may reach this round: "
     "each claim's own file, the files its evidence names, and their one-hop "
-    "in-repo imports, capped at %d per claim (truncated: %s) and at %d for this "
-    "check as a whole (entry_truncated: %s).%s Copy this list verbatim into "
-    "every verdict's `evidence_scope.granted`, with the same `cap`, "
-    "`truncated`, `entry_cap` and `entry_truncated`. If you needed a file that "
-    "is NOT listed here, return NEEDS_MORE_INFO and name the files you could "
-    "not reach in `missing_evidence` -- a scope failure is recorded as one, and "
-    "never counted as a refutation.\n\n%s\n\n")
+    "in-repo imports, capped at %d per claim (truncated: %s) and, for the "
+    "IMPORT/NAMED extras across this whole check, at %d (entry_truncated: %s); "
+    "%d of the files below are claim files, which no cap bounds.%s Copy this "
+    "list verbatim into every verdict's `evidence_scope.granted`, with the same "
+    "`cap`, `truncated`, `entry_cap`, `entry_truncated` and `floor_count`. If "
+    "you needed a file that is NOT listed here, return NEEDS_MORE_INFO and name "
+    "the files you could not reach in `missing_evidence` -- a scope failure is "
+    "recorded as one, and never counted as a refutation.\n\n%s\n\n")
 
 # Fix round 1, F3: when the entry ceiling bit, SAY SO with a number. An advisor
 # told only "truncated: no" reads its scope as complete, which is the same
@@ -423,16 +429,18 @@ def _grant_block(review_root, grant):
         "yes" if grant.get("truncated") else "no",
         int(grant.get("entry_cap") or 0),
         "yes" if grant.get("entry_truncated") else "no",
+        int(grant.get("floor_count") or 0),
         _GRANT_OMITTED % omitted if omitted else "",
         runio._abs_file_list(review_root, grant.get("granted") or []))
 
 
 def _backup_grant(review_root, files, scope):
     """The bounded EVIDENCE CLOSURE this backup entry is granted, recorded:
-    `{granted, cap, truncated, entry_cap, entry_truncated, omitted}` -- the
-    files, the per-claim and per-entry ceilings, whether each bit, and how many
-    distinct files the entry ceiling cost. `evidence_scope.grant` is the one
-    place that shape is defined.
+    `{granted, cap, truncated, entry_cap, entry_truncated, omitted,
+    floor_count}` -- the files, the per-claim and per-entry ceilings, whether
+    each bit, how many distinct EXTRA files the entry ceiling cost, and how many
+    of the granted files are claim files (which no cap bounds).
+    `evidence_scope.grant` is the one place that shape is defined.
 
     #1029 granted each scoped claim's `location.file` alone, when an advisor's
     Read/Grep were still unconfined and the list was only a cost cut. Plan 5/6

@@ -270,7 +270,7 @@ def closure(review_root, claim, group_files, cap=CAP):
     return _closure_paths(review_root, claim, group_files)[:max(0, cap)]
 
 
-def _fallback(files, cap, entry_cap):
+def _fallback(files, cap, entry_cap, floor_count=0):
     """The whole-group grant, in the same recorded shape (#1029/#1096).
 
     Deliberately NOT subject to `entry_cap`: the group is already bounded -- the
@@ -282,12 +282,13 @@ def _fallback(files, cap, entry_cap):
     cell covers."""
     return {"granted": list(files), "cap": cap, "truncated": False,
             "entry_cap": entry_cap, "entry_truncated": False,
-            "omitted": 0}
+            "omitted": 0, "floor_count": floor_count}
 
 
 def _claim_floor(review_root, scope):
     """Every scoped claim's own `location.file`, in claim order, or None if one
-    of them has no resolvable, confined path (the whole-group fallback case).
+    of them does not resolve to an existing in-root file (the whole-group
+    fallback case).
 
     The #1029 floor, and the reason it is computed FIRST (fix round 2, N3): the
     grant is a read fence the guard enforces, so a claim denied its own file
@@ -295,15 +296,25 @@ def _claim_floor(review_root, scope):
     NEEDS_MORE_INFO, which is now `backup_scope_limited`: gate-eligible at 1.5
     and permanently unrefutable. A ceiling that manufactures those is worse than
     no ceiling. So the floor is exempt from both caps and `entry_cap` bounds the
-    closure EXTRAS alone."""
+    closure EXTRAS alone.
+
+    Resolution is `_usable`: NORMALIZE, then confine, then require the file to
+    exist. Order and existence are both load-bearing (fix round 3, D2). Confining
+    before normalizing let `"./"` and whitespace-only paths pass the fence test,
+    normalize to None and drop out of the floor with no fallback -- an EMPTY
+    grant, which is a deny-all fence and the very outcome above. Existence closes
+    the same hole by its other door: a grant of one path the advisor cannot open
+    is an empty fence in everything but name. `location.file` is panel-supplied
+    and steerable by injection (`runio._confined_to_root`), so "unresolvable"
+    must mean every way of being unusable, not one of them."""
     floor = []
     for claim in scope or []:
         loc = claim.get("location") if isinstance(claim, dict) else None
-        path = loc.get("file") if isinstance(loc, dict) else None
-        if not path or not runio._confined_to_root(review_root, path):
+        path = _usable(review_root, loc.get("file") if isinstance(loc, dict)
+                       else None)
+        if not path:
             return None
-        path = _norm(path)
-        if path and path not in floor:
+        if path not in floor:
             floor.append(path)
     return floor
 
@@ -320,9 +331,18 @@ def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP):
     `max(entry_cap, len(floor))`.
 
     `truncated` says a single claim's closure hit `cap`; `entry_truncated` says
-    the extras hit `entry_cap`, with `omitted` counting the DISTINCT files it
-    cost. Both are stated in the prompt and echoed in the verdict, so "my scope
-    was complete" is never something the advisor has to assume.
+    the EXTRAS hit `entry_cap` -- it is a statement about extras only, so a floor
+    larger than `entry_cap` reports `false` and `floor_count` is what tells the
+    reader why the grant exceeds its own ceiling (fix round 3, D5). `omitted`
+    counts the DISTINCT extra files the ceiling cost. All of it is stated in the
+    prompt and echoed in the verdict, so "my scope was complete" is never
+    something the advisor has to assume.
+
+    The grant is NEVER empty (fix round 3, D2): an empty `files` list is a
+    deny-all read fence -- the guard refuses every Read, Grep and Glob -- so an
+    entry carrying one asks an advisor to adjudicate with nothing, and the only
+    answer left to it manufactures an unrefutable `backup_scope_limited`.
+    Whatever the claims say, the backup is handed the closure or the whole group.
 
     Falls back to the whole group `files` when a scoped claim has no resolvable,
     confined `location.file` (unchanged from #1029/#1096): a backup must never
@@ -331,7 +351,9 @@ def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP):
     """
     entry_cap = max(0, entry_cap)
     floor = _claim_floor(review_root, scope)
-    if floor is None or not scope:
+    if not floor:
+        # `None` (a claim whose file does not resolve) and `[]` (no claims at
+        # all) both mean "nothing here bounds the grant" -- fall back.
         return _fallback(files, cap, entry_cap)
     granted, truncated, omitted = list(floor), False, set()
     budget = max(0, entry_cap - len(floor))
@@ -346,10 +368,10 @@ def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP):
                 omitted.add(entry)
                 continue
             granted.append(entry)
-    # No `or list(files)`: the floor is non-empty whenever `scope` is, so an
-    # emptied grant can only come from a zero ceiling -- and a ceiling of zero
-    # handing back the whole group would be the one direction a ceiling must
-    # never fail (fix round 2, N4).
+    # `granted` is non-empty by construction here (it starts as the floor, and
+    # the floor is non-empty or we fell back above), so an `or list(files)` net
+    # would only hide a future bug: a ceiling of zero must fail CLOSED to the
+    # floor, never open to the whole group (fix round 2, N4).
     return {"granted": granted, "cap": cap, "truncated": truncated,
             "entry_cap": entry_cap, "entry_truncated": bool(omitted),
-            "omitted": len(omitted)}
+            "omitted": len(omitted), "floor_count": len(floor)}
