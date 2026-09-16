@@ -202,6 +202,11 @@ class TestOnlineEgress(unittest.TestCase):
         self.assertNotIn("pip-audit", stub.dispatches())
         self.assertIn("osv-scanner", stub.dispatches())
         self.assertIn("online egress unavailable", self.stderr)
+        # The remedy has to be runnable from the line it is printed on: this is
+        # the first scan-time image pull panopticon has ever needed, so the
+        # likeliest cause of a sidecar that would not start is a host that has
+        # never pulled it.
+        self.assertIn("docker pull %s" % rt_egress.PROXY_IMAGE, self.stderr)
 
     def test_a_sidecar_that_did_not_come_up_keeps_the_adapter_off_the_bridge(self):
         stub = self._run(["pip-audit"], stub=_DockerStub(running=b"false\n"))

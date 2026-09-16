@@ -317,9 +317,14 @@ def session(docker_bin, tools, runner, run_id=None, max_seconds=None):
                 docker_bin, runner, _name_token(run_id), online, scratch, made,
                 max_seconds or DEFAULT_SIDECAR_SECONDS)
         except _Unavailable as exc:
+            # The remedy has to be runnable from the line it is printed on:
+            # this is the first scan-time image pull panopticon has ever
+            # needed, so "the sidecar would not start" on a host that has
+            # never seen it is a missing 6 MB image, not a broken daemon.
             print("online egress unavailable: %s; %s did not run and is "
-                  "recorded in the tools manifest as excluded_scope"
-                  % (exc, ", ".join(online)), file=sys.stderr)
+                  "recorded in the tools manifest as excluded_scope. If the "
+                  "sidecar image is absent, pull it: `docker pull %s`."
+                  % (exc, ", ".join(online), PROXY_IMAGE), file=sys.stderr)
             established = Session(refused=online)
         yield established
     finally:
