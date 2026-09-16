@@ -552,7 +552,8 @@ def repair_groups_json(gj, warn=None):
     return gj
 
 
-_SANITIZED_ROW = ("source", "kept", "dropped", "hashes_stripped")
+_SANITIZED_ROW = ("source", "kept", "dropped", "hashes_stripped",
+                  "truncated", "dropped_truncated")
 
 
 def repair_tools_sanitized(value, warn=None):
@@ -596,7 +597,10 @@ def repair_tools_sanitized(value, warn=None):
                 kept_row[field] = got
             elif field == "kept" and isinstance(got, int) and not isinstance(got, bool):
                 kept_row[field] = got
-            elif field == "hashes_stripped" and isinstance(got, bool):
+            elif field in ("hashes_stripped", "truncated") and isinstance(got, bool):
+                kept_row[field] = got
+            elif field == "dropped_truncated" and isinstance(got, int) \
+                    and not isinstance(got, bool):
                 kept_row[field] = got
             elif field == "dropped" and isinstance(got, list):
                 kept_row[field] = [

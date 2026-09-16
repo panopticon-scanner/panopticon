@@ -471,7 +471,14 @@ class TestSkillMd(unittest.TestCase):
         tools = _section(loop, "`tools`**", "`review`**")
         for token in ["generated", "sanitized", "PEP 517", "PEP 508",
                       "tools-manifest.json", "meta.tools.sanitized",
-                      "requirement lines not audited", "one level"]:
+                      "requirement lines not audited", "one level",
+                      # Fix round 1: the two controls the first cut lacked and
+                      # the bounds on what it publishes. An operator reading
+                      # "no URL, no path" has to learn that pip decides a name
+                      # is an archive on a SUFFIX, and that the disclosure is
+                      # capped rather than complete.
+                      "ARCHIVE_EXTENSIONS", "archive name", "working directory",
+                      "outside target", "1 MiB", "200"]:
             self.assertIn(token, tools, token)
 
     def test_tools_dir_is_wired_into_synthesize_passes(self):

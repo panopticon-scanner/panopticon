@@ -663,6 +663,14 @@ class TestPartialDependencyAuditReachesTheAdvisor(unittest.TestCase):
         self.assertIn("pip-audit: 2 requirement lines not audited "
                       "(editable/local/VCS)", prompt)
 
+    def test_the_count_is_the_true_total_not_the_listed_rows(self):
+        root = self._root({"pip-audit": {
+            "source": "requirements.txt", "kept": 0,
+            "dropped": [{"line": "-e .", "reason": "editable"}],
+            "dropped_truncated": 299}})
+        self.assertIn("pip-audit: 300 requirement lines not audited",
+                      self._prompt(root))
+
     def test_another_tools_claim_is_not(self):
         prompt = self._prompt(self._root(self._BLOCK), source="tool:bandit")
         self.assertNotIn("requirement lines not audited", prompt)

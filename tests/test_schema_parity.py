@@ -204,7 +204,8 @@ def _build_report(tmpdir):
                              sanitized={"pip-audit": {
                                  "source": "requirements.txt", "kept": 2,
                                  "dropped": [{"line": "-e .", "reason": "editable"}],
-                                 "hashes_stripped": True}})
+                                 "hashes_stripped": True,
+                                 "truncated": False, "dropped_truncated": 0}})
 
     # The 5.2 host posture, in the artifact's own shape (state/by/detail).
     with open(os.path.join(run_dir, "host-capabilities.json"), "w",

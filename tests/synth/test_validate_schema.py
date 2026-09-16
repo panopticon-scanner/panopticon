@@ -389,6 +389,24 @@ class TestRepairToolsSanitized(unittest.TestCase):
         got, _err = self._repair({"pip-audit": {"kept": 1, "surprise": "x"}})
         self.assertEqual(got, {"pip-audit": {"kept": 1}})
 
+    def test_the_two_bound_disclosures_survive_the_repair(self):
+        # #1646 fix round 1: `truncated` and `dropped_truncated` say the
+        # disclosure itself was capped. Dropping them would turn a bounded
+        # answer back into one that reads as complete.
+        block = {"pip-audit": {"source": "requirements.txt", "kept": 1,
+                               "dropped": [], "hashes_stripped": False,
+                               "truncated": True, "dropped_truncated": 300}}
+        got, err = self._repair(block)
+        self.assertEqual(got, block)
+        self.assertEqual(err, "")
+
+    def test_wrongly_typed_bound_disclosures_are_dropped(self):
+        got, err = self._repair({"pip-audit": {"truncated": "yes",
+                                               "dropped_truncated": True}})
+        self.assertEqual(got, {"pip-audit": {}})
+        self.assertIn("truncated", err)
+        self.assertIn("dropped_truncated", err)
+
     def test_a_hostile_manifest_never_makes_the_artifact_invalid(self):
         report = _minimal_report()
         report["meta"]["tools"]["sanitized"] = validate_schema_mod.\

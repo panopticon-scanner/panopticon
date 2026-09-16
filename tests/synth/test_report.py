@@ -4100,7 +4100,16 @@ class TestSanitizedRequirementLinesReachTheReport(unittest.TestCase):
         self.assertIn("sanitized", block["properties"])
         row = block["properties"]["sanitized"]["additionalProperties"]
         self.assertEqual(sorted(row["properties"]),
-                         ["dropped", "hashes_stripped", "kept", "source"])
+                         ["dropped", "dropped_truncated", "hashes_stripped",
+                          "kept", "source", "truncated"])
+        # N8: every reason the sanitizer can emit is named in the description,
+        # `include` and `archive name` included -- both reach the manifest.
+        reason = row["properties"]["dropped"]["items"]["properties"]["reason"]
+        for token in ("editable", "local path", "archive name", "vcs url",
+                      "direct url", "option line", "include",
+                      "include outside target", "nested include",
+                      "include unreadable", "unparseable"):
+            self.assertIn(token, reason["description"], token)
 
 
 class TestAMidRunToolsDowngradeIsDisclosed(unittest.TestCase):

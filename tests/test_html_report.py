@@ -1221,6 +1221,22 @@ class TestPartialDependencyAuditLine(unittest.TestCase):
         self.assertIn("pip-audit: 3 requirement lines not audited "
                       "(editable/local/VCS)", html_out)
 
+    def test_the_count_is_the_true_total_not_the_listed_rows(self):
+        # #1646 fix round 1 C2(c): `dropped` is capped at 200 rows and the
+        # remainder counted. Printing len(dropped) would understate a partial
+        # audit by exactly the amount the cap hid.
+        html_out = hr.render(self._report({"pip-audit": {
+            "source": "requirements.txt", "kept": 0,
+            "dropped": [{"line": "-e .", "reason": "editable"}],
+            "dropped_truncated": 299}}))
+        self.assertIn("pip-audit: 300 requirement lines not audited", html_out)
+
+    def test_a_malformed_remainder_does_not_inflate_the_count(self):
+        html_out = hr.render(self._report({"pip-audit": {
+            "dropped": [{"line": "-e .", "reason": "editable"}],
+            "dropped_truncated": "lots"}}))
+        self.assertIn("pip-audit: 1 requirement lines not audited", html_out)
+
     def test_a_fully_audited_run_says_nothing(self):
         html_out = hr.render(self._report({"pip-audit": {
             "source": "requirements.txt", "kept": 5, "dropped": []}}))

@@ -637,8 +637,20 @@ def _partial_audit_notes(sanitized):
         dropped = row.get("dropped") if isinstance(row, dict) else None
         if isinstance(dropped, list) and dropped:
             notes.append("%s: %d requirement lines not audited "
-                         "(editable/local/VCS)" % (_escape(name), len(dropped)))
+                         "(editable/local/VCS)"
+                         % (_escape(name), len(dropped) + _more(row)))
     return notes
+
+
+def _more(row):
+    """`dropped_truncated` as a count, 0 on anything that is not one.
+
+    `dropped` is capped at 200 rows and the remainder counted, so the LISTED
+    rows understate a large partial audit by exactly what the cap hid. The
+    sentence states the true total; the list is the sample.
+    """
+    more = row.get("dropped_truncated")
+    return more if isinstance(more, int) and not isinstance(more, bool) else 0
 
 
 def _render_test_inventory(meta):

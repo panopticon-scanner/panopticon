@@ -822,5 +822,138 @@ class TestIncludeResolutionUsesTheRawLine(unittest.TestCase):
         self.assertNotIn("123e4567-e89b-12d3-a456-426614174000", entry["line"])
 
 
+class TestTheRootFileIsConfinedToo(unittest.TestCase):
+    """C2(a): `_within` guarded every `-r`/`-c` include but not the file the
+    follower STARTS from.
+
+    `os.path.isfile` follows symlinks, so a repo whose `requirements.txt` is a
+    symlink to an arbitrary host path was opened and read -- and on this branch
+    every line that does not parse is copied into `dropped[]`, which reaches
+    `tools-manifest.json` and `report.json`. Line-by-line publication also
+    defeats the one redaction rule that would have caught a private key: the
+    multiline PEM pattern never fires on one base64 line at a time. That is a
+    host-file exfiltration channel into an artifact operators copy into CI, and
+    it runs ON THE HOST, outside the container, because `sanitization_report`
+    is called in-process so the disclosure survives the docker-absent path.
+    """
+
+    def _repo_with_symlinked_requirements(self, secret_text):
+        outside = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        host_file = os.path.join(outside, "credentials")
+        with open(host_file, "w", encoding="utf-8") as fh:
+            fh.write(secret_text)
+        os.symlink(host_file, os.path.join(d, "requirements.txt"))
+        return d
+
+    def test_a_symlinked_root_manifest_is_treated_as_absent(self):
+        d = self._repo_with_symlinked_requirements("aws_secret = hunter2\n")
+        self.assertIsNone(pa.PipAuditAdapter()._find_requirement(d))
+
+    def test_its_contents_are_never_published(self):
+        d = self._repo_with_symlinked_requirements(
+            "aws_secret_access_key = wJalrXUtnFEMIsecretvalue\nhostname=internal.corp\n")
+        report = pa.PipAuditAdapter().sanitization_report(d)
+        blob = json.dumps(report)
+        self.assertNotIn("wJalrXUtnFEMIsecretvalue", blob)
+        self.assertNotIn("internal.corp", blob)
+
+    def test_the_source_says_why_the_pyproject_branch_ran(self):
+        d = self._repo_with_symlinked_requirements("junk\n")
+        with open(os.path.join(d, "pyproject.toml"), "w", encoding="utf-8") as fh:
+            fh.write('[project]\nname = "x"\ndependencies = ["ok==1"]\n')
+        report = pa.PipAuditAdapter().sanitization_report(d)
+        self.assertIn("pyproject.toml", report["source"])
+        self.assertIn("outside target", report["source"])
+        self.assertEqual(report["kept"], 1)
+
+    def test_the_rejection_is_disclosed_even_with_no_fallback(self):
+        d = self._repo_with_symlinked_requirements("junk\n")
+        report = pa.PipAuditAdapter().sanitization_report(d)
+        self.assertIn("outside target", report["source"])
+        self.assertEqual(report["kept"], 0)
+
+    def test_a_confined_sibling_is_audited_when_the_canonical_one_escapes(self):
+        d = self._repo_with_symlinked_requirements("junk\n")
+        with open(os.path.join(d, "requirements-dev.txt"), "w", encoding="utf-8") as fh:
+            fh.write("dev==1\n")
+        self.assertEqual(pa.PipAuditAdapter()._find_requirement(d),
+                         os.path.join(d, "requirements-dev.txt"))
+
+    def test_invoke_never_reads_the_escaping_file(self):
+        d = self._repo_with_symlinked_requirements("secretline\n")
+        with open(os.path.join(d, "pyproject.toml"), "w", encoding="utf-8") as fh:
+            fh.write('[project]\nname = "x"\ndependencies = ["ok==1"]\n')
+        seen = {}
+
+        def fake_run_tool(cmd, timeout=0, **kw):
+            with open(cmd[cmd.index("--requirement") + 1], encoding="utf-8") as fh:
+                seen["content"] = fh.read()
+            return b"{}", 0
+        with mock.patch.object(pa, "run_tool", fake_run_tool), \
+                contextlib.redirect_stderr(io.StringIO()):
+            pa.PipAuditAdapter().invoke(d)
+        self.assertEqual(seen["content"], "ok==1\n")
+        self.assertNotIn("secretline", seen["content"])
+
+
+class TestPublishedLinesAreBounded(unittest.TestCase):
+    """C2(b)/(c) and I1: `dropped` is target-authored text on its way into two
+    published artifacts, and every sibling path in this module is bounded
+    (`MAX_TOOL_OUTPUT_BYTES`, the PEM 16 KiB bound). This one was not."""
+
+    def _target(self, text):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return d
+
+    def test_a_secret_on_a_dropped_line_is_published_redacted(self):
+        _kept, dropped = pa.sanitize_requirements(
+            "--index-url https://AKIAIOSFODNN7EXAMPLE@evil\n")
+        entry = only(dropped)
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", entry["line"])
+        self.assertIn("[REDACTED_AWS_KEY]", entry["line"])
+
+    def test_a_long_dropped_line_is_truncated_with_a_marker(self):
+        _kept, dropped = pa.sanitize_requirements("!" * 5000 + "\n")
+        line = only(dropped)["line"]
+        self.assertEqual(len(line), pa._MAX_PUBLISHED_CHARS + 1)
+        self.assertTrue(line.endswith("\u2026"))
+
+    def test_a_short_dropped_line_is_untouched(self):
+        _kept, dropped = pa.sanitize_requirements("-e .\n")
+        self.assertEqual(only(dropped)["line"], "-e .")
+
+    def test_dropped_rows_are_capped_and_the_remainder_counted(self):
+        report = pa.PipAuditAdapter().sanitization_report(
+            self._target("".join("junk line %d !!\n" % n for n in range(500))))
+        self.assertEqual(len(report["dropped"]), pa._MAX_DROPPED_ROWS)
+        self.assertEqual(report["dropped_truncated"],
+                         500 - pa._MAX_DROPPED_ROWS)
+
+    def test_an_uncapped_file_reports_no_remainder(self):
+        report = pa.PipAuditAdapter().sanitization_report(self._target("-e .\n"))
+        self.assertEqual(report["dropped_truncated"], 0)
+        self.assertFalse(report["truncated"])
+
+    def test_a_ten_megabyte_single_line_is_truncated_not_read_whole(self):
+        report = pa.PipAuditAdapter().sanitization_report(
+            self._target("x" * (10 * 1024 * 1024)))
+        self.assertTrue(report["truncated"])
+        self.assertLessEqual(
+            sum(len(r["line"]) for r in report["dropped"]),
+            pa._MAX_DROPPED_ROWS * (pa._MAX_PUBLISHED_CHARS + 1))
+
+    def test_a_file_with_too_many_lines_is_truncated(self):
+        report = pa.PipAuditAdapter().sanitization_report(
+            self._target("ok==1\n" * (pa._MAX_READ_LINES + 10)))
+        self.assertTrue(report["truncated"])
+        self.assertLessEqual(report["kept"], pa._MAX_READ_LINES)
+
+
 if __name__ == "__main__":
     unittest.main()

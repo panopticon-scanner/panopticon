@@ -92,11 +92,17 @@ def partial_audit_note(review_root, finding):
     dropped = row.get("dropped") if isinstance(row, dict) else None
     if not isinstance(dropped, list) or not dropped:
         return ""
+    # The published `dropped` list is capped at 200 rows with the remainder
+    # counted, so the LISTED rows understate a large partial audit. State the
+    # true total; the list is the sample.
+    more = row.get("dropped_truncated")
+    total = len(dropped) + (more if isinstance(more, int)
+                            and not isinstance(more, bool) else 0)
     return ("Scanner coverage: %s audited a GENERATED dependency list, not this "
             "repository's own file -- %s: %d requirement lines not audited "
             "(editable/local/VCS). A package's ABSENCE from that audit is not "
             "evidence the repository does not require it; `tools-manifest.json` "
-            "lists every line under `sanitized`.\n\n" % (tool, tool, len(dropped)))
+            "lists every line under `sanitized`.\n\n" % (tool, tool, total))
 
 
 def tools_execute(review_root, manifest):

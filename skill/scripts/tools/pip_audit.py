@@ -83,6 +83,22 @@ _SCHEME = re.compile(r"(?:^|@\s*)[A-Za-z][A-Za-z0-9+.-]*://")
 _USERINFO = re.compile(r"(://)[^/\s@]*:[^/\s@]*@")
 _MAX_INCLUDE_DEPTH = 1
 
+# Bounds. `dropped` is TARGET-AUTHORED text on its way into two published
+# artifacts (`tools-manifest.json`, then `report.json`), and every sibling path
+# in this module is already bounded -- `run_tools.MAX_TOOL_OUTPUT_BYTES` on tool
+# stdout, `redact`'s 16 KiB PEM bound. A 50 MB junk requirements file would
+# otherwise be read whole (twice: once in the container, once on the host) and
+# copied wholesale into both. The read is capped FIRST, so the cost is bounded
+# before anything is parsed; the row count and each row's length are capped at
+# publication. Every cap is disclosed -- a silent truncation would be a second
+# "the audit was partial" nobody is told about.
+_MAX_READ_BYTES = 1024 * 1024
+_MAX_READ_LINES = 20000
+_MAX_DROPPED_ROWS = 200
+_MAX_PUBLISHED_CHARS = 200
+_ELLIPSIS = "\u2026"
+_OUTSIDE = "outside target"
+
 # pip's `ARCHIVE_EXTENSIONS` (`pip._internal.utils.filetypes`, verified against
 # pip 26.2.1), hard-coded rather than imported -- importing `pip` would put the
 # resolver this module fences off back in-process.
@@ -135,9 +151,60 @@ def _joined(text):
 
 
 def _safe_to_publish(line):
-    """A dropped line as the manifest may carry it: URL credentials masked, then
-    the shared secret-pattern pass every other published artifact gets."""
-    return redact.redact(_USERINFO.sub(r"\1[REDACTED]@", line))
+    """A dropped line as the manifest may carry it: URL credentials masked, the
+    shared secret-pattern pass every other published artifact gets, then a
+    length bound.
+
+    Redact BEFORE truncating: cutting first could split a token into a fragment
+    no length-anchored pattern matches, which is the same trap
+    `run_tools._redact_capture` names for its own byte cap.
+    """
+    out = redact.redact(_USERINFO.sub(r"\1[REDACTED]@", line))
+    if len(out) > _MAX_PUBLISHED_CHARS:
+        out = out[:_MAX_PUBLISHED_CHARS] + _ELLIPSIS
+    return out
+
+
+def _read_bounded(path):
+    """`(text, truncated)` -- at most `_MAX_READ_BYTES` and `_MAX_READ_LINES`,
+    whichever bites first.
+
+    Bytes are read with an explicit size, so a 10 MB single line never reaches
+    memory whole; a byte-truncated tail is dropped back to its last line break,
+    because a half-line is not a requirement and publishing one as
+    `unparseable` would be noise.
+    """
+    with open(path, "rb") as fh:
+        raw = fh.read(_MAX_READ_BYTES + 1)
+    truncated = len(raw) > _MAX_READ_BYTES
+    if truncated:
+        raw = raw[:_MAX_READ_BYTES]
+        cut = raw.rfind(b"\n")
+        raw = raw[:cut] if cut > 0 else raw
+    text = raw.decode("utf-8", "replace")
+    lines = text.splitlines()
+    if len(lines) > _MAX_READ_LINES:
+        return "\n".join(lines[:_MAX_READ_LINES]), True
+    return text, truncated
+
+
+def _capped(rows):
+    """`(rows, n_more)` -- the published rows, bounded, and how many were left
+    out. The count is disclosed rather than the list silently shortened."""
+    return rows[:_MAX_DROPPED_ROWS], max(0, len(rows) - _MAX_DROPPED_ROWS)
+
+
+def _source_label(used, rejected):
+    """The manifest's `source`, naming any manifest REJECTED for confinement.
+
+    Without it a repo whose `requirements.txt` escapes the tree reads exactly
+    like a repo that has none, and the operator cannot tell why the pyproject
+    branch ran (C2a).
+    """
+    if not rejected:
+        return used
+    note = "%s %s" % (", ".join(rejected), _OUTSIDE)
+    return "%s (%s)" % (used, note) if used else note
 
 
 def _classify(text):
@@ -210,6 +277,37 @@ def sanitize_requirements(text):
     return kept, _published(dropped)
 
 
+def _requirement_candidate(target):
+    """`(path, rejected)` -- the requirements manifest to audit, and the
+    repo-relative names of any that were REJECTED for confinement.
+
+    Prefer the canonical requirements.txt (#707). The glob fallback returns the
+    lexicographically-first match, and '-' (0x2D) sorts before '.' (0x2E), so
+    requirements-dev.txt would otherwise win over requirements.txt and the
+    PRIMARY manifest would go unaudited.
+
+    C2(a): every candidate must resolve INSIDE the target. `os.path.isfile`
+    follows symlinks, so a repo whose `requirements.txt` points at
+    `/home/scanner/.aws/credentials` was opened and read -- and since this
+    change publishes every non-conforming line, that read became a host-file
+    exfiltration channel into `tools-manifest.json` and `report.json`. It is
+    also the one read that happens ON THE HOST, outside the container, because
+    the disclosure must survive the docker-absent path. An escaping candidate is
+    treated as absent and the NEXT one is considered, so a repo with a symlinked
+    `requirements.txt` beside a real `requirements-dev.txt` still gets audited.
+    """
+    exact = os.path.join(target, "requirements.txt")
+    candidates = [exact] if os.path.isfile(exact) else []
+    candidates += sorted(glob.glob(os.path.join(target, "requirements*.txt")))
+    candidates = list(dict.fromkeys(candidates))   # exact first, no duplicate
+    rejected = []
+    for candidate in candidates:
+        if _within(target, candidate):
+            return candidate, rejected
+        rejected.append(os.path.relpath(candidate, target))
+    return None, rejected
+
+
 def _is_archive_name(name):
     """True when pip would read `name` as a local archive rather than a project
     name -- a suffix match, case-insensitive, exactly as `is_archive_file` does."""
@@ -247,13 +345,13 @@ def sanitize_requirements_file(path, root):
     redacted copy would make the redactor's pattern set load-bearing for
     confinement.
     """
-    seen, hashes = set(), False
+    seen, hashes, truncated = set(), False, False
 
     def read(p):
-        nonlocal hashes
-        with open(p, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
+        nonlocal hashes, truncated
+        text, cut = _read_bounded(p)
         hashes = hashes or _hashes_present(text)
+        truncated = truncated or cut
         return text
 
     def walk(p, depth):
@@ -284,8 +382,9 @@ def sanitize_requirements_file(path, root):
         return resolved_kept + kept, resolved_dropped
 
     kept, dropped = walk(path, 0)
-    return {"kept": kept, "dropped": _published(dropped),
-            "hashes_stripped": hashes}
+    rows, more = _capped(_published(dropped))
+    return {"kept": kept, "dropped": rows, "hashes_stripped": hashes,
+            "truncated": truncated, "dropped_truncated": more}
 
 
 class PipAuditAdapter:
@@ -369,32 +468,29 @@ class PipAuditAdapter:
         `source` is repo-relative: the manifest is published, and an absolute
         path would leak the scanner host's directory layout into it.
         """
-        req = self._find_requirement(target)
+        req, rejected = _requirement_candidate(target)
         if req:
             report = sanitize_requirements_file(req, target)
-            kept, dropped = report["kept"], report["dropped"]
-            hashes = report["hashes_stripped"]
+            kept_n = len(report["kept"])
             source = os.path.relpath(req, target)
         else:
             deps = _deps_from_pyproject(target)
-            if not deps:
+            if not deps and not rejected:
                 return None
-            kept, dropped = sanitize_requirements("\n".join(deps))
-            hashes = False
-            source = "pyproject.toml"
-        return {"source": source, "kept": len(kept), "dropped": dropped,
-                "hashes_stripped": hashes}
+            kept, dropped = sanitize_requirements("\n".join(deps or [])[:_MAX_READ_BYTES])
+            rows, more = _capped(dropped)
+            report = {"dropped": rows, "hashes_stripped": False,
+                      "truncated": False, "dropped_truncated": more}
+            kept_n = len(kept)
+            source = "pyproject.toml" if deps else ""
+        return {"source": _source_label(source, rejected), "kept": kept_n,
+                "dropped": report["dropped"],
+                "hashes_stripped": report["hashes_stripped"],
+                "truncated": report["truncated"],
+                "dropped_truncated": report["dropped_truncated"]}
 
     def _find_requirement(self, target: str) -> str | None:
-        # Prefer the canonical requirements.txt (#707). The glob fallback
-        # returns the lexicographically-first match, and '-' (0x2D) sorts
-        # before '.' (0x2E), so requirements-dev.txt would otherwise win over
-        # requirements.txt and the PRIMARY manifest would go unaudited.
-        exact = os.path.join(target, "requirements.txt")
-        if os.path.isfile(exact):
-            return exact
-        matches = sorted(glob.glob(os.path.join(target, "requirements*.txt")))
-        return matches[0] if matches else None
+        return _requirement_candidate(target)[0]
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)
