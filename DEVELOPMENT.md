@@ -195,6 +195,52 @@ The `panopticon-fixtures` image contains vulnerable-by-design applications used 
 
 Rebuild cadence: monthly, or whenever a new adapter is added. The same monthly cadence applies to the `panopticon-tools` image: adapter CODE is mounted from the checkout at run time (never stale), but the scanner BINARIES and their rule/advisory databases age with the image. The image pulls public fixtures at build time, so test runs require no network.
 
+## Pinned dependencies
+
+Dependabot covers this repo's `pip` and `github-actions` dependencies. Two families sit outside it
+and are maintained by `scripts/bump_pins.py <family> [--write]`, which never writes a checksum it
+has not recomputed from the downloaded artifact:
+
+| Family | What it pins | Who bumps it |
+|---|---|---|
+| `rustup` | `Dockerfile`'s `ARG RUSTUP_VERSION` + its two init SHA256s | `pin-freshness.yml`, Mondays, opens a PR |
+| `requirements` | the `--hash=sha256:` lines in `.github/requirements-gate.txt` and `requirements-fixtures.txt` | you, beside the version bump |
+
+### Regenerating the pinned dependency hashes
+
+The two requirements files are what the repo's **privileged** builds install (#1641): the
+`pull_request_target` security gate, which holds `security-events: write` and is reachable from a
+fork PR, and the fixture image, which installs as root at image build. Both use `--require-hashes`,
+so pip refuses any artifact whose sha256 is not written in the file — which also means a version
+bump with stale digests fails the build rather than installing something unpinned.
+
+The versions are the input and yours to choose; the digests are not. After changing a
+`name==version` line (or adding a package), run:
+
+```bash
+python3 scripts/bump_pins.py requirements --write      # both files
+python3 scripts/bump_pins.py requirements --file .github/requirements-gate.txt --write
+```
+
+It reads every artifact PyPI publishes for that release, keeps the ones a linux x86_64 build may
+install (the `any` wheels plus the linux x86_64 ones), verifies each published digest against the
+downloaded wheel, and rewrites the hash block. It refuses to write anything it could not verify, and
+refuses a release that offers no installable wheel rather than letting pip fall back to building an
+sdist. It needs the network, so it is an **operator** tool — the suite never runs it against the
+live index (`tests/test_bump_pins.py` drives it off a canned PyPI document).
+
+Two differences between the files are deliberate:
+
+- `.github/requirements-gate.txt` is installed with `--no-deps`, so it must list the COMPLETE
+  closure (hence jsonschema's four runtime dependencies). A missing one fails loudly at import.
+- `requirements-fixtures.txt` is installed without `--no-deps`, so pip resolves pytest's graph and
+  `--require-hashes` turns a missing dependency into a loud install-time failure instead.
+
+`tests/test_workflow_pins.py` holds the rule: every `pip install` in `.github/workflows/*.yml` and
+`Dockerfile*` either installs from a `--require-hashes` file or is on that module's
+`EXEMPT_INSTALLS` list with a reason, every pin in such a file carries a `--hash=` (a `TODO-hash`
+placeholder is refused), and the pinned pip may not be older than the one the runner ships.
+
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking
 changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.version`,
