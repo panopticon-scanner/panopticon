@@ -671,3 +671,131 @@ class TestAdapterFindingCap(unittest.TestCase):
     def test_the_default_cap_is_not_reachable_by_an_ordinary_scan(self):
         # A bound that fires on a normal repo would silently degrade every run.
         self.assertGreaterEqual(it.MAX_ADAPTER_FINDINGS, 1000)
+
+
+class TestVirtualenvExclusion(unittest.TestCase):
+    """#1638 P09 (D8): a virtualenv is vendored code -- drop it on the tool axis.
+
+    Run-13: 58 bandit findings under `.venv/` survived ingestion and bought 46
+    of 128 tool-advisor dispatches (35.9%), returning 2 confirmations against 32
+    rejections and 12 not-material. Metadata first (`pyvenv.cfg`, which every
+    creator writes -- venv, virtualenv, uv, pipenv, poetry-in-project), the
+    conventional names second.
+    """
+
+    def _venv(self, root, rel):
+        """Plant a real venv marker at <root>/<rel>/pyvenv.cfg."""
+        os.makedirs(os.path.join(root, rel), exist_ok=True)
+        with open(os.path.join(root, rel, "pyvenv.cfg"), "w", encoding="utf-8") as fh:
+            fh.write("home = /usr/bin\nversion = 3.12.0\n")
+
+    def test_conventional_venv_paths_drop_without_any_tree_to_stat(self):
+        # The name fallback: ingest reads SARIF paths and may have no target
+        # root at all (the CI gate points at a temp dir of artifacts).
+        for p in (".venv/lib/python3.12/site-packages/x.py",
+                  "venv/lib/python3.11/site-packages/requests/api.py",
+                  "venv/bin/rst2html.py",
+                  "tools/.venv/lib/python3.12/site-packages/y.py",
+                  "build/site-packages/z.py"):
+            self.assertTrue(it._is_run_artifact_path(p), p)
+
+    def test_metadata_marks_a_venv_with_an_unconventional_name(self):
+        # `python -m venv env` is as common as `.venv`; only pyvenv.cfg knows.
+        with tempfile.TemporaryDirectory() as root:
+            self._venv(root, "env")
+            p = "env/lib/python3.12/parser.py"
+            self.assertFalse(it._is_run_artifact_path(p))          # no root: no claim
+            self.assertTrue(it._is_run_artifact_path(p, root))     # marker: venv
+
+    def test_name_fallback_applies_even_when_the_tree_says_nothing(self):
+        # D8's accepted trade-off: a `venv/` with no marker is excluded anyway.
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "venv"))
+            self.assertTrue(it._is_run_artifact_path("venv/app.py", root))
+
+    def test_the_name_matches_a_segment_never_a_substring(self):
+        with tempfile.TemporaryDirectory() as root:
+            for p in ("src/venvutils.py", "app/environments/prod.py",
+                      "convenience/helpers.py", "venv_tools/build.py",
+                      "docs/venv.md", "scripts/make-venv.sh"):
+                self.assertFalse(it._is_run_artifact_path(p, root), p)
+                self.assertFalse(it._is_run_artifact_path(p), p)
+
+    def test_a_planted_marker_does_not_poison_the_whole_tree(self):
+        # The marker is <dir>/pyvenv.cfg and <dir> must be an ANCESTOR of the
+        # finding: a fixture file elsewhere cannot mark a sibling as vendored.
+        with tempfile.TemporaryDirectory() as root:
+            self._venv(root, os.path.join("tests", "fixtures"))
+            for p in ("src/app.py", "tests/test_app.py", "skill/scripts/x.py"):
+                self.assertFalse(it._is_run_artifact_path(p, root), p)
+
+    def test_the_marker_lookup_never_resolves_outside_the_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache = {}
+            self.assertFalse(it._is_run_artifact_path("../outside/x.py", root, cache))
+            self.assertEqual(cache, {})   # refused before any stat
+
+    def test_marker_lookups_are_cached_per_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            cache = {"lib": True}          # seeded; nothing on disk
+            self.assertTrue(it._is_run_artifact_path("lib/x.py", root, cache))
+            fresh = {}
+            self._venv(root, "env")
+            self.assertTrue(it._is_run_artifact_path("env/a/b.py", root, fresh))
+            self.assertEqual(fresh, {"env": True})   # short-circuits at the hit
+
+    def test_both_virtualenv_layouts_drop_on_their_marker(self):
+        # stdlib `python -m venv venv` and pipenv/poetry in-project `.venv`.
+        with tempfile.TemporaryDirectory() as root:
+            self._venv(root, "venv")
+            self._venv(root, ".venv")
+            self.assertTrue(it._is_run_artifact_path(
+                "venv/lib/python3.12/site-packages/urllib3/util/ssl_.py", root))
+            self.assertTrue(it._is_run_artifact_path(
+                ".venv/lib/python3.12/site-packages/urllib3/util/ssl_.py", root))
+
+    def test_venv_findings_are_dropped_at_ingest_in_every_mode(self):
+        # End-to-end: the target root is the parent of the `.panopticon` tree
+        # the tools dir lives in, so every ingest site resolves the same root.
+        for kw in ({}, {"include_fixtures": True}):
+            with tempfile.TemporaryDirectory() as root:
+                self._venv(root, "env")
+                tools_dir = os.path.join(root, ".panopticon", "runs", "t", "tools")
+                os.makedirs(tools_dir)
+                with open(os.path.join(tools_dir, "bandit.sarif"), "w") as fh:
+                    json.dump(_sarif_fixture("env/lib/python3.12/site.py"), fh)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    out = it.ingest_dir(tools_dir, "g1", **kw)
+                self.assertEqual(out, [], "kw=%r" % kw)
+                self.assertIn("virtualenv", err.getvalue())
+
+    def test_an_explicit_target_root_is_honored(self):
+        with tempfile.TemporaryDirectory() as root, \
+                tempfile.TemporaryDirectory() as tools_dir:
+            self._venv(root, "env")
+            with open(os.path.join(tools_dir, "bandit.sarif"), "w") as fh:
+                json.dump(_sarif_fixture("env/lib/python3.12/site.py"), fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(it.ingest_dir(tools_dir, "g1", target_root=root), [])
+                kept = it.ingest_dir(tools_dir, "g1")   # no root anywhere: kept
+            self.assertEqual([(f.get("location") or {}).get("file") for f in kept],
+                             ["env/lib/python3.12/site.py"])
+
+    def test_project_source_beside_a_venv_survives_ingest(self):
+        with tempfile.TemporaryDirectory() as root:
+            self._venv(root, ".venv")
+            tools_dir = os.path.join(root, ".panopticon", "tools")
+            os.makedirs(tools_dir)
+            sarif = _sarif_fixture(".venv/lib/python3.12/site-packages/dep.py")
+            sarif["runs"][0]["results"].append(
+                {"ruleId": "r1", "level": "error", "message": {"text": "ours"},
+                 "locations": [{"physicalLocation": {
+                     "artifactLocation": {"uri": "src/app.py"},
+                     "region": {"startLine": 2}}}]})
+            with open(os.path.join(tools_dir, "bandit.sarif"), "w") as fh:
+                json.dump(sarif, fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                out = it.ingest_dir(tools_dir, "g1")
+            self.assertEqual([(f.get("location") or {}).get("file") for f in out],
+                             ["src/app.py"])
