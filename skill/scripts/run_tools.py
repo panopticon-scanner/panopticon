@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts.tools.base import drain_stderr_async
 from scripts import plan_contract
+from scripts import redact
 from scripts.progress import NullProgress, make_progress
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
@@ -484,7 +485,7 @@ def _write_completed(label, tool, res, out_path):
         print("%s %s produced no output on a selected target; recording as "
               "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
         return None
-    return _atomic_write(out_path, out_bytes)
+    return _atomic_write(out_path, _redact_capture(tool, out_bytes))
 
 
 # #1335: semgrep's SARIF carries NO scanned-files signal -- `invocations` is
@@ -661,6 +662,19 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                 return None
 
             if truncated:
+                # Both numbers describe RAW bytes: the cap is measured on the
+                # stream as it arrives (above), which is the only count that
+                # bounds memory. `_whole_lines` and `_redact_capture` run after,
+                # and either can change the retained prefix's length, so the
+                # marker is a statement about what the child produced and what
+                # was kept -- not about the size of the file on disk (#1639 P11).
+                # Cutting on a raw byte count can also split a token in half,
+                # and a fragment matches none of the length-anchored patterns:
+                # `_whole_lines` drops the partial last line so the fragment
+                # goes with it, EXCEPT on output with no line breaks (a compact
+                # single-line SARIF) or a last line over `_TRUNCATE_TRIM_MAX`,
+                # where the prefix is kept as cut and a split value can survive
+                # as an unmatched fragment.
                 marker = (
                     "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
                     "only the first %d bytes were retained]\n" % (
@@ -669,17 +683,166 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                 print("%s %s output exceeded %d byte limit; truncated and retained "
                       "with marker" % (label, tool, MAX_TOOL_OUTPUT_BYTES),
                       file=sys.stderr)
-                # Write only up to the cap, then append the marker for the tail.
+                # Write only up to the cap, redacted, then append the marker for
+                # the tail -- appended AFTER the pass so panopticon's own text
+                # is never rewritten by it.
                 spool.seek(0)
-                payload = spool.read(MAX_TOOL_OUTPUT_BYTES)
-                payload += marker
-                return _atomic_write(out_path, payload)
+                return _atomic_write(
+                    out_path,
+                    _redact_capture(
+                        tool, _whole_lines(spool.read(MAX_TOOL_OUTPUT_BYTES)))
+                    + marker)
 
             spool.seek(0)
+            # Redaction is LAST: the semgrep annotator rewrites the payload on
+            # its way out, so a choke point ahead of it could be reopened by it.
             return _atomic_write(
-                out_path, _annotate_from_stderr(tool, spool.read(), stderr))
+                out_path,
+                _redact_capture(tool,
+                                _annotate_from_stderr(tool, spool.read(), stderr)))
     finally:
         timer.cancel()
+
+
+# Which tools' captures this run put through `_redact_capture`. A run_tools()
+# call clears it and `write_manifest` reads it back, so the artifact reports what
+# the runner OBSERVED itself doing rather than restating an intention (#1639 P11
+# F5): replace the choke point with identity and the manifest's claim goes false.
+# Module-level because the pass runs three call frames below the run loop --
+# threading a ledger through _capture_run/_write_completed/_stream_and_write
+# would put plumbing in five signatures to carry one bit.
+_REDACTED_CAPTURES = set()
+
+# Above this size a capture is re-serialized in json.dumps' default layout
+# instead of the producer's own: matching the layout costs one extra
+# serialization of the ORIGINAL document to verify the guess, which is free on a
+# normal capture and not worth it on a huge one (only reached when redaction
+# fired, and every consumer parses the file rather than reading it).
+_STYLE_PROBE_MAX_BYTES = 4 * 1024 * 1024
+# The producer's indentation, read off the head of the document.
+_JSON_INDENT = re.compile(r"[\[{]\n(\x20+)\S")
+
+
+def _json_style(text):
+    """`json.dumps` kwargs guessed from how `text` itself is laid out.
+
+    A guess: the caller VERIFIES it reproduces the original before using it, so
+    being wrong costs one comparison rather than a reformatted file.
+    """
+    head = text[:4096]
+    m = _JSON_INDENT.search(head)
+    if m:
+        return {"indent": len(m.group(1))}
+    return {} if '": ' in head or '", "' in head else {"separators": (",", ":")}
+
+
+# How much of a retained prefix `_whole_lines` may give up to end on a line
+# boundary. A last line longer than this is not line-oriented output, and the
+# evidence in it is worth more than the fragment risk.
+_TRUNCATE_TRIM_MAX = 64 * 1024
+
+
+def _whole_lines(prefix):
+    """Drop a trailing partial line from a capture the byte cap cut (#1639 P11
+    F2).
+
+    The cap is measured on the RAW stream -- the only count that bounds memory
+    (ruling 4) -- so it can land in the middle of a token, and the length-
+    anchored patterns do not match a fragment: `ghp_QQQQQQQQQQ` is not a
+    credential but it is not masked either. Scanner output is line-oriented, so
+    ending on the last newline drops the split value instead of keeping half of
+    it.
+
+    Bounded both ways: a capture with no newline at all (a compact single-line
+    SARIF), or whose last line is longer than `_TRUNCATE_TRIM_MAX`, keeps its
+    prefix exactly as cut -- the trim must never empty a file or throw away
+    megabytes of retained evidence to tidy one line, and for those shapes the
+    fragment risk is what the marker comment documents.
+    """
+    cut = prefix.rfind(b"\n")
+    if cut == -1 or len(prefix) - (cut + 1) > _TRUNCATE_TRIM_MAX:
+        return prefix
+    return prefix[:cut + 1]
+
+
+def _redact_capture(tool, data):
+    """The ONE redaction choke point for a raw scanner capture (#1639 P11).
+
+    `.panopticon/tools/<tool>.sarif|json` is what an operator copies into a CI
+    job's artifacts, and nothing masked it: the report's pass
+    (`redact.redact_tree`, #1634) walks the REPORT tree, which these files are
+    not part of, and a secret scanner's output is a file full of other people's
+    credentials by construction. Every write path calls this immediately before
+    `_atomic_write`, and `TestRawCaptureRedaction` reads run_tools' own AST to
+    keep it that way for the next path somebody adds.
+
+    Structure is preserved by PARSING, not by trusting the patterns to stay
+    inside a string (fix round 1 F1). A JSON capture -- which is every capture
+    but spotbugs' XML -- goes through `redact.redact_tree`, the same per-leaf
+    walk the report uses since #1661, so a pattern can never span two fields:
+    `ruleId`, `locations`, `region` line numbers and `level` survive because the
+    walk never sees them as text. The flat pass had no such guarantee, and the
+    PEM rule broke it -- an unterminated `-----BEGIN` in one snippet closed on a
+    later result's `-----END` and swallowed every result in between. Non-JSON
+    captures (spotbugs' XML) still take the flat pass, where every pattern but
+    the PEM body is anchored to a character class that cannot cross a `"`, and
+    the PEM body -- which has to cross quotes, since source code embeds a key
+    one quoted literal per line -- is bounded to 16 KiB and cannot span two
+    `-----BEGIN` blocks. So a flat-pass match over a structured document is
+    bounded rather than open-ended; it is not the guarantee parsing gives, which
+    is why JSON never takes this path. That length bound has a cost worth
+    knowing before you publish a capture: a PEM block whose body runs longer
+    than 16 KiB is not masked AT ALL -- header included -- so a capture quoting
+    one very large key can still carry it verbatim.
+
+    Whichever path runs, it is `scripts/redact.py`'s pattern set -- never a
+    second copy: two redactors drift, and the one reached only by raw captures
+    would drift silently.
+
+    The tree walk masks string LEAVES, not dict KEYS -- the report's contract
+    since #1661, and the right one here: a SARIF key comes from the tool's own
+    schema, and the target-derived keys that do exist (npm-audit's per-package
+    objects) are identifiers, not quoted secrets. The flat pass did mask a key,
+    but only as a side effect of not knowing what a key was, which is the same
+    blindness that let it eat three results.
+
+    Bytes in, bytes out, because bytes are what the writer holds. The document
+    is re-serialized ONLY when redaction actually fired, in the producer's own
+    layout where that is recognisable; a capture with nothing to mask is
+    returned as the exact bytes the scanner produced, so all fifteen committed
+    real-scanner goldens are byte-identical through this function and a payload
+    that is not valid UTF-8 (decoded here with errors="replace") is never
+    rewritten by a pass that had nothing to do. When the pass DOES fire on such
+    a payload its bytes are not preserved: it was decoded with replacement, so
+    every byte that was not valid UTF-8 comes back as U+FFFD alongside the
+    masked secret.
+    """
+    _REDACTED_CAPTURES.add(tool)
+    text = data.decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        masked = redact.redact(text)        # XML/plain-text captures
+    else:
+        # The parse is bounded by MAX_TOOL_OUTPUT_BYTES, and ingest already
+        # parses this same file, so it adds no ceiling the pipeline lacked.
+        scrubbed = redact.redact_tree(parsed)
+        if scrubbed == parsed:
+            return data
+        style = {}
+        if len(text) <= _STYLE_PROBE_MAX_BYTES:
+            probe = _json_style(text)
+            if json.dumps(parsed, **probe) == text:
+                style = probe
+        masked = json.dumps(scrubbed, **style)
+    if masked == text:
+        return data
+    # Disclosed, not silent: for most scanners a secret in the capture means the
+    # scan surface was wrong. Only ever reached when a capture is being written,
+    # so it cannot crowd out the driver's no-output failure note (#1317).
+    print("%s capture carried secret-shaped values; masked before writing"
+          % tool, file=sys.stderr)
+    return masked.encode("utf-8")
 
 
 def _atomic_write(out_path, data):
@@ -715,6 +878,10 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     done once and the manifest discloses exactly what the scan was told to skip.
     """
     runner = runner or _popen_runner   # #run7 COD-A2A: stream by default, don't buffer-then-drop
+    # This run's redaction ledger starts empty, so `write_manifest` reports what
+    # THIS scan's captures went through and never inherits a previous one's
+    # (#1639 P11 F5).
+    _REDACTED_CAPTURES.clear()
     venv_dirs = find_virtualenvs(target) if venv_dirs is None else venv_dirs
     validate_output_dir(target, out_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -810,12 +977,26 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     the list is bounded rather than exhaustive. Additive: both fields are new in
     this schema version and every consumer reads them optionally, so an older
     manifest without them still loads.
+
+    `redacted` (#1639 P11) says whether every capture this run wrote went
+    through the redaction choke point, read off the ledger `_redact_capture`
+    keeps -- an observation, so replacing the choke point with identity makes
+    the claim go false rather than leaving a stale `true` behind. The tools
+    phase copies it into `tools-ran.json`.
     """
     selected = list(dict.fromkeys(str(tool) for tool in selected))
     produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
     payload = {"schema_version": 1, "run_id": run_id,
                "selected": selected, "produced": produced,
                "missing": sorted(set(selected) - set(produced)),
+               # #1639 P11 F5: what the runner OBSERVED, not what it intends --
+               # every capture written this run passed `_redact_capture`. False
+               # when nothing was written (there is nothing to vouch for) and
+               # false if any capture reached disk without the pass, so the
+               # phase can copy the answer into `tools-ran.json` instead of
+               # asserting another module's behaviour with a literal.
+               "redacted": bool(produced) and all(
+                   tool in _REDACTED_CAPTURES for tool in produced),
                "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope)),
                "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"])}
                                  for d in excluded_dirs or ()],

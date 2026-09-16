@@ -2,7 +2,7 @@ import contextlib, io, os, json, tempfile, unittest
 from unittest.mock import patch
 
 import scripts.ingest_tools as it
-from _test_helpers import first
+from _test_helpers import first, only
 import json as _json
 import scripts.evidence as ev
 import scripts.tools as tools_mod
@@ -830,3 +830,87 @@ class TestVirtualenvExclusion(unittest.TestCase):
             "/x/.panopticon/repo")
         self.assertEqual(it._target_root_for("/repo/.panopticon/tools"), "/repo")
         self.assertIsNone(it._target_root_for("/tmp/ci-artifacts/tools"))
+
+
+class TestRedactedCaptureStillIngests(unittest.TestCase):
+    """#1639 P11 ruling 3: the capture-time redaction pass must cost the tool
+    axis nothing it uses. Ingest reads `message.text` (title), `ruleId` and
+    `locations[].physicalLocation` (rule + location) -- the tool-advisor round
+    needs those, never the secret -- so a redacted gitleaks SARIF has to ingest
+    exactly as the unredacted one did, minus the credential.
+
+    Gitleaks' OWN sarif writer puts the secret in `region.snippet.text` and
+    builds the message from the rule id and the file, but the fixture plants it
+    in BOTH: the choke point must not depend on which field a scanner chose,
+    and no adapter reads `snippet` today (so this pins the masking, not a
+    parse).
+    """
+
+    MARKER = "ghp_" + "INGEST" + "B" * 30
+
+    def _sarif(self, secret):
+        return {"runs": [{
+            "tool": {"driver": {"name": "gitleaks", "rules": [
+                {"id": "github-pat", "properties": {"tags": ["CWE-798"]}}]}},
+            "results": [{
+                "ruleId": "github-pat", "level": "error",
+                "message": {"text": "github-pat has detected secret %s" % secret},
+                "locations": [{"physicalLocation": {
+                    "artifactLocation": {"uri": "app/settings.py"},
+                    "region": {"startLine": 7, "endLine": 7,
+                               "snippet": {"text": "TOKEN = '%s'" % secret}}}}],
+            }]}]}
+
+    def test_rule_and_location_survive_the_capture_redaction(self):
+        import scripts.run_tools as rt
+        raw = _json.dumps(self._sarif(self.MARKER)).encode("utf-8")
+        redacted = rt._redact_capture("gitleaks", raw)
+        self.assertNotIn(self.MARKER.encode(), redacted)
+
+        doc = _json.loads(redacted)
+        res = only(first(doc["runs"], "run")["results"], "result")
+        phys = only(res["locations"], "location")["physicalLocation"]
+        # Structure is untouched: only token-shaped substrings inside strings move.
+        self.assertEqual(res["ruleId"], "github-pat")
+        self.assertEqual(res["level"], "error")
+        self.assertEqual(phys["artifactLocation"]["uri"], "app/settings.py")
+        self.assertEqual(phys["region"]["startLine"], 7)
+        # Both secret-bearing fields are masked, snippet included.
+        self.assertIn("[REDACTED_TOKEN]", res["message"]["text"])
+        self.assertIn("[REDACTED_TOKEN]", phys["region"]["snippet"]["text"])
+
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "gitleaks.sarif"), "wb") as fh:
+                fh.write(redacted)
+            with contextlib.redirect_stderr(io.StringIO()):
+                out = it.ingest_dir(d, "g1")
+        self.assertEqual(len(out), 1, out)
+        f = first(out)
+        self.assertEqual(f["tool_evidence"]["rule_id"], "github-pat")
+        self.assertEqual(f["location"], {"file": "app/settings.py", "line_start": 7})
+        self.assertEqual(f["source"], "tool:gitleaks")
+        self.assertEqual(f["severity"], "HIGH")
+        self.assertIn("CWE-798", f["citations"]["cwe"])
+        self.assertIn("[REDACTED_TOKEN]", f["title"])
+        self.assertNotIn(self.MARKER, f["title"])
+
+    def test_the_same_finding_ingests_identically_before_redaction(self):
+        """Non-vacuity: rule, location, severity and citations above are what
+        the UNREDACTED capture yields too, so the assertions pin survival
+        rather than describing a finding redaction happened to reshape."""
+        import scripts.run_tools as rt
+        raw = _json.dumps(self._sarif(self.MARKER)).encode("utf-8")
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "gitleaks.sarif"), "wb") as fh:
+                fh.write(raw)
+            with contextlib.redirect_stderr(io.StringIO()):
+                plain = first(it.ingest_dir(d, "g1"))
+            with open(os.path.join(d, "gitleaks.sarif"), "wb") as fh:
+                fh.write(rt._redact_capture("gitleaks", raw))
+            with contextlib.redirect_stderr(io.StringIO()):
+                masked = first(it.ingest_dir(d, "g1"))
+        for key in ("tool_evidence", "location", "source", "severity",
+                    "citations", "category", "confidence"):
+            self.assertEqual(plain[key], masked[key], key)
+        self.assertIn(self.MARKER, plain["title"])       # the hole this closes
+        self.assertNotIn(self.MARKER, masked["title"])

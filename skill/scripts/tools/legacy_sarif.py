@@ -21,8 +21,30 @@ TOOL_CMD = {
     # 35s without.
     "semgrep": ["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off",
                 "--disable-version-check", "--sarif", "--quiet", "/src"],
+    # `--redact` is scanner-native redaction (#1639 P11): the one tool here
+    # whose output is a list of other people's credentials masks them itself,
+    # so the secret never leaves the container -- and it keeps every field
+    # panopticon ingests. Read off the pinned version, gitleaks v8.18.4
+    # (Dockerfile `ARG GITLEAKS_VERSION=8.18.4`):
+    #   cmd/root.go   `rootCmd.PersistentFlags().Uint("redact", 0, "redact
+    #                 secrets from logs and stdout. To redact only parts of the
+    #                 secret just apply a percent value from 0..100...")` with
+    #                 `rootCmd.Flag("redact").NoOptDefVal = "100"`, read back as
+    #                 `detector.Redact, err = cmd.Flags().GetUint("redact")`.
+    #                 PERSISTENT, so `detect` inherits it; the BARE form (no
+    #                 `=value`) is what NoOptDefVal is for and is the spelling
+    #                 that also survives a pin moved back to the older bool.
+    #   report/finding.go  `func (f *Finding) Redact(percent uint)` rewrites
+    #                 Line, Match and Secret and nothing else -- RuleID, File,
+    #                 StartLine/EndLine, Tags and Fingerprint are untouched.
+    #   report/sarif.go    maps Secret -> `region.snippet.text`, and RuleID/File
+    #                 -> `ruleId`, `message.text`, `physicalLocation`; so the
+    #                 masked field is exactly the snippet, and the rule and
+    #                 location the tool axis reads come through intact.
+    # Defence in depth, not a substitute: run_tools._redact_capture still runs
+    # over this capture like every other.
     "gitleaks": ["gitleaks", "detect", "--no-git", "--source", "/src", "--report-format", "sarif",
-                 "--report-path", "/dev/stdout", "--no-banner"],
+                 "--report-path", "/dev/stdout", "--no-banner", "--redact"],
     "trivy": ["trivy", "fs", "--skip-db-update", "--offline-scan", "--format", "sarif", "/src"],
     "bandit": ["bandit", "-q", "-r", "/src", "-s", "B101,B404,B110,B112", "-f", "sarif"],
     "gosec": ["gosec", "-fmt=sarif", "./..."],

@@ -75,11 +75,26 @@ def tools_execute(review_root, manifest):
     # #1031: --manifest records the deterministic adapter set (selected/produced/
     # missing) so synthesize can certify tool coverage against what the runner
     # actually resolved, not the scout's advisory tool list.
+    manifest_path = runio._pano(review_root, "tools-manifest.json")
     cmd = [sys.executable, runio._script("run_tools.py"), "--target", review_root,
            "--out", out_dir, "--deps",
            "--run-id", manifest.get("run_id") or "",   # #17: manifest self-identifies
-           "--manifest", runio._pano(review_root, "tools-manifest.json")]
+           "--manifest", manifest_path]
     proc = runio._run_child(cmd, review_root, "tools")
+    # The runner's own report of what it did with the captures it wrote (#1639
+    # P11 F5). Tolerant: a crash before the manifest was written leaves nothing
+    # to copy, and the marker then claims nothing.
+    #
+    # THIS run's manifest, or none (N2). `run_tools.main()` writes the manifest
+    # only after the scan returns, so a runner that lands captures and then dies
+    # leaves the PREVIOUS invocation's file in place -- and copying its claim
+    # would vouch for captures this run never passed through the choke point,
+    # which is the overstatement F5 exists to kill. Same `run_id` rule #17
+    # already applies to the manifest's coverage numbers.
+    tool_manifest = runio._load_json(manifest_path)
+    if (not isinstance(tool_manifest, dict)
+            or tool_manifest.get("run_id") != manifest.get("run_id")):
+        tool_manifest = {}
     produced = os.path.isdir(out_dir) and bool(os.listdir(out_dir))
     # #1033: a real scanner/runner CRASH (non-zero exit + no output) is NOT a
     # benign Docker-absent skip (exit 0 + no output). Distinguish them: record a
@@ -96,6 +111,17 @@ def tools_execute(review_root, manifest):
                 {"schema_version": 1, "ran": produced, "skipped": not produced, "crashed": crashed,
                  "note": note, "returncode": proc.returncode,
                  "run_id": manifest["run_id"],
+                 # #1639 P11: whether the raw captures under `.panopticon/tools/`
+                 # went through run_tools' redaction choke point, so a reader
+                 # about to copy that directory into a CI artifact learns it from
+                 # the run's own marker. COPIED from the runner's manifest, never
+                 # asserted here (F5): the runner is what observed the pass, and
+                 # a literal in this module would keep claiming it after the
+                 # choke point was removed. No manifest, no claim. Additive, and
+                 # only on the branch that ran a scan -- the `--no-tools` marker
+                 # above writes no capture and so says nothing about files it did
+                 # not produce.
+                 "redacted": bool(tool_manifest.get("redacted")),
                  # F1: which INVOCATION attempted this scan. `tools_done` reads
                  # it back to decide whether an environmental skip has already
                  # been retried on this pass.

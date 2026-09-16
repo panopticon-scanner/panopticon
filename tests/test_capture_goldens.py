@@ -291,6 +291,21 @@ class TestRedactBytes(unittest.TestCase):
         self.assertFalse(hit)
         self.assertIs(out, src)
 
+    def test_it_is_the_production_capture_pass_not_a_second_flat_one(self):
+        """Round 2 N4: this helper writes the committed goldens, so it must mask
+        them exactly as a real run masks a real capture -- one pass, one set of
+        semantics. A flat regex sweep over a JSON document is a different pass:
+        it cannot tell a key from a value, and it silently RENAMED a bandit
+        metrics key that happened to hold a UUID-shaped directory. The parsing
+        pass leaves keys alone (and, because nothing in the values matched,
+        returns the original object)."""
+        payload = json.dumps({"runs": [{"properties": {"metrics": {
+            "/src/build/3fa85f64-5717-4562-b3fc-2c963f66afa6/app.py": {"loc": 3}}}}]}
+        ).encode("utf-8")
+        out, hit = cg.redact_bytes(payload)
+        self.assertFalse(hit)
+        self.assertIs(out, payload)
+
     def test_undecodable_bytes_do_not_raise(self):
         src = b"\xff\xfe binary"
         out, hit = cg.redact_bytes(src)

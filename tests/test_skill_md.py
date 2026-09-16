@@ -406,6 +406,21 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("non-destructive rescue", tools)
         self.assertIn("meta.tools.disabled_mid_run", tools)
 
+    def test_raw_captures_are_documented_as_redacted_before_they_are_written(self):
+        # #1639 P11: `.panopticon/tools/` is what an operator copies into a CI
+        # artifact, and the report's redaction never reached it. The guide has
+        # to name the choke point, the pattern set it shares with the report,
+        # the scanner-native half, and the two things a reader would otherwise
+        # assume wrong -- that structure survives, and that the byte cap is
+        # still measured on the RAW stream.
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        tools = _section(loop, "`tools`**", "`review`**")
+        for token in ["_redact_capture", "redact.redact_tree", "string-leaf",
+                      "before they are written", "gitleaks", "--redact",
+                      "ruleId", "byte-identical", "RAW stream",
+                      "`redacted: true`", "last line break"]:
+            self.assertIn(token, tools, token)
+
     def test_tools_dir_is_wired_into_synthesize_passes(self):
         # F-2: a scan that runs but is never ingested reads as clean. 5.0:
         # the tool scan is a driver PHASE now, wired into the driver's own

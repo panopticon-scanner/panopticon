@@ -102,6 +102,36 @@ class TestLegacySarifAdapter(unittest.TestCase):
                     "--format", "sarif", "/src"]
         self.assertEqual(legacy.TOOL_CMD["trivy"], expected)
 
+    def test_gitleaks_argv_redacts_in_the_scanner(self):
+        # #1639 P11 ruling 2: scanner-native redaction where it exists. gitleaks
+        # masks the matched secret in its OWN report, so the credential never
+        # leaves the container -- and it keeps the evidence panopticon actually
+        # ingests. v8.18.4 (the Dockerfile pin, ARG GITLEAKS_VERSION=8.18.4):
+        #   cmd/root.go   rootCmd.PersistentFlags().Uint("redact", 0, "redact
+        #                 secrets from logs and stdout...") with
+        #                 rootCmd.Flag("redact").NoOptDefVal = "100", read back
+        #                 as `detector.Redact, err = cmd.Flags().GetUint("redact")`
+        #                 -- a persistent flag, so `detect` inherits it, and the
+        #                 bare form means 100%% (no `=value`, which an older
+        #                 Bool spelling would reject).
+        #   report/finding.go  func (f *Finding) Redact(percent uint) rewrites
+        #                 Line, Match and Secret ONLY; RuleID, File, StartLine
+        #                 and the rest are untouched.
+        #   report/sarif.go    maps Secret -> region.snippet.text and
+        #                 RuleID/File -> ruleId, message.text, physicalLocation,
+        #                 so what is masked is exactly the snippet.
+        # This is defence in depth, not a replacement: _redact_capture still
+        # runs over every capture, including gitleaks'.
+        argv = legacy.TOOL_CMD["gitleaks"]
+        self.assertIn("--redact", argv)
+        self.assertNotIn("--redact=100", argv)   # bare form: NoOptDefVal is 100
+
+    def test_gitleaks_argv_is_pinned_whole(self):
+        expected = ["gitleaks", "detect", "--no-git", "--source", "/src",
+                    "--report-format", "sarif", "--report-path", "/dev/stdout",
+                    "--no-banner", "--redact"]
+        self.assertEqual(legacy.TOOL_CMD["gitleaks"], expected)
+
     def test_bandit_argv_has_noise_suppression_flags(self):
         argv = legacy.TOOL_CMD["bandit"]
         self.assertIn("-s", argv)

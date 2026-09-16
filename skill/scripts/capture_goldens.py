@@ -11,7 +11,7 @@ import sys
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, "/opt/panopticon")
-from scripts import redact  # noqa: E402
+from scripts.run_tools import _redact_capture  # noqa: E402
 from scripts.tools import ADAPTERS  # noqa: E402
 
 F = "/opt/panopticon-fixtures"
@@ -132,19 +132,20 @@ def redact_bytes(raw: bytes):
     where a secret can be stopped before it enters git history, where removing
     it costs a rewrite rather than an edit.
 
-    Returns the ORIGINAL object when nothing matched, so a clean payload is
-    never round-tripped through a lossy decode/encode: goldens are byte-compared
-    against what the tool really emitted, and "replace" would silently rewrite
-    any undecodable byte a tool happened to produce.
+    Delegates to `run_tools._redact_capture` -- the PRODUCTION capture pass
+    (#1639 P11) -- rather than running a second flat sweep of its own. These
+    files are the goldens a real capture is tested against, so they have to be
+    masked with the same semantics a real capture gets: parse a JSON payload and
+    walk its string leaves (a flat sweep cannot tell a key from a value, and
+    silently renamed a bandit metrics key that held a UUID-shaped path), flat
+    pass for XML, original bytes back when nothing fired.
+
+    `fired` is a byte comparison for the same reason the pass short-circuits:
+    a clean payload is never round-tripped through a lossy decode/encode, so a
+    golden stays byte-identical to what the tool really emitted.
     """
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw, False
-    masked = redact.redact(text)
-    if masked == text:
-        return raw, False
-    return masked.encode("utf-8"), True
+    masked = _redact_capture("golden", raw)
+    return masked, masked != raw
 
 
 def main():
