@@ -185,6 +185,12 @@ def test_an_unplantable_hard_link_fixture_only_unproves_the_read_scope_row(tmp_p
     read_row = artifact["capabilities"][hosts.READ_SCOPE_CONFINED]
     assert read_row["state"] == hosts.UNKNOWN
     assert "cross-device link" in read_row["detail"]
+    # Fix round 2 (N3): the plant is attempted ONCE and fails machine-wide, so
+    # the detail is not one arbitrary role's problem. It used to arrive as
+    # "<whichever shell the loop reached first>.toml: ...", which an operator
+    # reads as "the advisor role is broken".
+    assert read_row["detail"].startswith("the hard-link refutation fixture could not be planted")
+    assert ".toml" not in read_row["detail"]
     # Measured ONCE for both probes, and with no probe paths at all: a
     # two-read measurement must not stand in for the three-read one.
     assert seen == [None] * (len(probes_common.DRIVER_ROLES) + 1)

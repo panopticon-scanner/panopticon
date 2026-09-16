@@ -188,8 +188,11 @@ def probe_codex_read_scope(host, registration_dir=None, settings_path=None, meas
             return hosts.REFUTED, CODEX_READ_SCOPE, "%s: %s" % (path, problem)
         fixture_error = surface.get("hard_link_fixture")
         if fixture_error:
-            # F3: this row's fixture, and only this row's verdict.
-            return hosts.UNKNOWN, CODEX_READ_SCOPE, "%s: %s" % (path, fixture_error)
+            # F3: this row's fixture, and only this row's verdict. N3: reported
+            # WITHOUT a role prefix -- the plant is attempted once per
+            # inspection and fails machine-wide, so naming whichever shell this
+            # loop reached first reads as "that role is broken".
+            return hosts.UNKNOWN, CODEX_READ_SCOPE, fixture_error
         reads = surface.get("reads")
         if not isinstance(reads, list) or len(reads) != 3:
             return (hosts.UNKNOWN, CODEX_READ_SCOPE, "%s: runtime returned no three-read measurement" % path)
