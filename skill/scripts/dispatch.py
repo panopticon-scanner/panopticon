@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(                    # skill
     os.path.abspath(__file__))))
 import model_resolver
 
-from scripts import hosts
+from scripts import codex_read_tools, hosts
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -304,14 +304,35 @@ def _prune_retired_shells(host, out_dir, written):
     return removed
 
 
+def _codex_tool_gloss(tool):
+    """One broker tool as prose: its own name, its own one-line description."""
+    text = tool["description"]
+    return "`%s` (%s)" % (tool["name"], text[:1].lower() + text[1:].rstrip("."))
+
+
 def _tool_policy_line(meta, host=None):
     tp = meta["tool_policy"]
     if host == "codex":
-        return ("\n## Tool policy\n\nThe Codex runner enforces a read-only "
-                "sandbox and captures your final JSON itself. You may use shell "
-                "commands only to read or search files. Never execute target "
-                "code, run builds or tests, access the network, spawn agents, "
-                "or attempt any filesystem mutation.\n")
+        # P14 (run-13): this paragraph promised "shell commands only to read or
+        # search files" to a launch that has no shell at all -- codex_host.
+        # safety_config() disables shell_tool/unified_exec, and the only
+        # callable tools are the scoped `panopticon_scope` MCP ones whose
+        # allowlist IS the list rendered here. The runtime always enforced the
+        # narrower surface, so the cost was a reviewer told to use tools it did
+        # not have, in the one document it is supposed to trust. Render the
+        # sentence FROM that surface rather than asserting a second copy of it
+        # beside it: names and glosses come from codex_read_tools.TOOLS, and
+        # parity is pinned in both directions (tests/test_dispatch.py against
+        # TOOLS, tests/test_codex_host.py against the `enabled_tools` that
+        # reach the argv). Delivery -- the return-JSON contract and the
+        # `_panopticon` stamp -- belongs to the prompt body and the registered
+        # charter and is deliberately not repeated here.
+        return ("\n## Tool policy\n\nYour only tools are the `panopticon_scope`"
+                " MCP tools %s. There is no shell. Never execute target code, "
+                "run builds or tests, access the network, spawn agents, or "
+                "attempt any filesystem mutation. The runner captures your "
+                "final JSON itself.\n"
+                % ", ".join(_codex_tool_gloss(t) for t in codex_read_tools.TOOLS))
     return ("\n## Tool policy\n\nYour only tools are %s. "
              "You must not use %s under any circumstances.\n"
              % (", ".join(tp["allowed"]), ", ".join(tp["forbidden"])))
