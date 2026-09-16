@@ -281,8 +281,9 @@ if __name__ == "__main__":
 # data["verdicts"]` followed by a loop, the most obvious of them, passed
 # silently. Enumerating shapes is the wrong shape of rule: naming the bundle key
 # at all, anywhere but a shape check, is what makes a function a reader. These
-# are the eleven, as source, so the claim "a fourth reader turns this file red"
-# is tested rather than asserted.
+# are those eleven plus the receiver shapes round 4 added (sixteen entries), as
+# source, so the claim "a new reader turns this file red" is tested rather than
+# asserted.
 READER_SHAPES = {
     "for_loop": "    for v in data['verdicts']:\n        out.append(v)\n",
     "extend": "    out.extend(data['verdicts'])\n",
