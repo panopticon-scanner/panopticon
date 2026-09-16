@@ -133,6 +133,40 @@ class TestResolveReviewRoot(unittest.TestCase):
             self.assertIsNone(wt)
             self.assertIsNone(pr_base)
 
+    def test_a_non_git_target_reached_through_a_symlink_is_resolved(self):
+        # #1640 fix round 1, the reviewer's extra. The git branch already
+        # returns `realpath(rev-parse --show-toplevel)`, and the --pr branch a
+        # path under that resolved repo; only this fallback handed back the
+        # root AS GIVEN. #1640's write guard refuses a findings path whose
+        # review-root component is itself a symlink, so a non-git directory
+        # reviewed through a link (`~/work/proj -> /Volumes/x/proj`) met a loud
+        # refusal from the guard for what is the operator's own path, not an
+        # attack. Resolve at the root instead, where the git branch already
+        # does, and the guard's rule and the driver's path derivation agree.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        real = os.path.join(d, "proj")
+        os.makedirs(real)
+        link = os.path.join(d, "via-link")
+        os.symlink(real, link)
+        root, wt, pr_base = runio.resolve_review_root(link)
+        self.assertEqual(real, root)
+        self.assertIsNone(wt)
+        self.assertIsNone(pr_base)
+
+    def test_a_non_git_file_target_still_returns_its_directory(self):
+        # The fallback's other shape: a FILE target resolves to the directory
+        # holding it, and that too comes back resolved.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        real = os.path.join(d, "proj")
+        os.makedirs(real)
+        open(os.path.join(real, "a.py"), "w").close()
+        link = os.path.join(d, "via-link")
+        os.symlink(real, link)
+        root, _wt, _pr = runio.resolve_review_root(os.path.join(link, "a.py"))
+        self.assertEqual(real, root)
+
     def test_pr_uses_diff_map_worktree(self):
         with mock.patch("scripts.diff_map.acquire_pr",
                         return_value={"worktree": "/tmp/pr-wt", "base": "main",
