@@ -243,6 +243,13 @@ class TestPanelsRecordWhetherTheySawScannerEvidence(unittest.TestCase):
         self.assertEqual(cells, {"Auth/SEC": True, "Auth/DAT": True})
 
 
+def _inventory_line(prompt):
+    """The rendered `Inventory:` line of a cell prompt, or "" when it carries
+    none (every non-TST cell, by design)."""
+    return next((ln for ln in prompt.splitlines()
+                 if ln.startswith("Inventory:")), "")
+
+
 class TestTestInventoryNote(unittest.TestCase):
     """#1638 P13: the cell's `Tests:` inventory comes from the CLAIMING
     group's `tests:` axis, and a reviewer's reads are confined to its own
@@ -339,3 +346,126 @@ class TestTestInventoryNote(unittest.TestCase):
             runio._pano(self.root, "panel-test-inventory.json"))
         self.assertEqual({"Code": "split", "Other": "complete",
                           "Lonely": "empty"}, body["groups"])
+
+    def test_a_group_holding_its_own_tests_is_complete_without_a_tests_axis(self):
+        # Fix round 1, F2. `tests` is the committed `tests:` axis; `files` is
+        # what the cell was actually GRANTED. A group that claims its tests
+        # through `match:` (or the auto-formed `Tests` sweep) has them in its
+        # own read scope, so "tests may exist outside your scope" is false and
+        # "make no coverage claim" suppresses findings it can legitimately make.
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [
+                              {"name": "Solo",
+                               "files": ["solo/widget.py",
+                                         "solo/tests/test_widget.py"]}]})
+        runio._write_json(runio._pano(self.root, "coverage-Solo.json"),
+                          {"group": "Solo", "effective": ["TST"], "run_id": "R"})
+        entry = self._prompts()["Solo"]
+        self.assertEqual("complete", entry["inventory_note"])
+
+    def test_docs_and_config_are_not_modules(self):
+        # Fix round 1, F4. `_module_stem` counted anything that was not itself
+        # a test, so `pyproject.toml` + `tests/test_pyproject.py` in another
+        # group read as a split on this repo's own tree.
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [
+                              {"name": "Commons", "files": ["pyproject.toml",
+                                                            "README.md"]},
+                              {"name": "CI", "files": ["tests/test_pyproject.py",
+                                                       "ci/run.py"]}]})
+        for g in ("Commons", "CI"):
+            runio._write_json(runio._pano(self.root, "coverage-%s.json" % g),
+                              {"group": g, "effective": ["TST"], "run_id": "R"})
+        self.assertEqual("empty",
+                         self._prompts()["Commons"]["inventory_note"])
+
+    def test_the_split_line_caps_the_group_names_it_lists(self):
+        # Fix round 1, F5. The paths were capped and the group names were not,
+        # so a badly-split group in a 30-group matrix put thirty names in the
+        # prompt beside five paths.
+        groups = [{"name": "Code",
+                   "files": ["src/m%d.py" % i for i in range(9)]}]
+        groups += [{"name": "G%d" % i, "files": ["tests/test_m%d.py" % i]}
+                   for i in range(9)]
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": groups})
+        line = _inventory_line(self._prompts()["Code"]["prompt"])
+        self.assertIn("9 test file(s)", line)
+        self.assertIn("(and 4 more group(s))", line)
+        self.assertNotIn("G8", line)
+
+    def test_a_non_tst_cell_gets_no_inventory_guidance(self):
+        # Fix round 1, F1: the state still rides the ENTRY (synthesis needs it
+        # for every group, and most groups have no TST cell at all), but the
+        # prompt paragraph is TST-only.
+        runio._write_json(runio._pano(self.root, "coverage-Code.json"),
+                          {"group": "Code", "effective": ["TST", "SEC"],
+                           "run_id": "R"})
+        review.review_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        cells = {(e["group"], e["domain"]): e for e in req["entries"]}
+        sec = cells[("Code", "SEC")]
+        self.assertEqual("split", sec["inventory_note"])
+        self.assertNotIn("Inventory:", sec["prompt"])
+        self.assertIn("Inventory: split", cells[("Code", "TST")]["prompt"])
+
+
+class TestChunkedGroupsFoldToTheirParent(unittest.TestCase):
+    """Fix round 1, F3. A leaf over `--max-per-group` is split into `Big_1`,
+    `Big_2`, ... at run time, and the committed matrix has no entry for either
+    name. Looking the inventory up by the CHUNK name therefore found no
+    `tests:` axis for a perfectly-configured group, and -- worse -- each chunk
+    saw its own sibling as "another group" holding its tests, so `Big_1` read
+    `split` and blamed `Big_2`. Chunking is discovery's own internal
+    performance decision; `chunk_of` is on every `groups.json` entry, and the
+    inventory is a fact about the authored unit, not about the chunk.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard",
+                         "host": "claude"}
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [
+                              {"name": "Big_1", "chunk_of": "Big",
+                               "parent": "Big",
+                               "files": ["src/m0.py", "src/m1.py"]},
+                              {"name": "Big_2", "chunk_of": "Big",
+                               "parent": "Big",
+                               "files": ["tests/test_m0.py",
+                                         "tests/test_m1.py"]}]})
+        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+            fh.write("groups:\n  Big:\n    match: ['src/**']\n"
+                     "    tests: ['tests/test_m0.py', 'tests/test_m1.py']\n")
+        for g in ("Big_1", "Big_2"):
+            runio._write_json(runio._pano(self.root, "coverage-%s.json" % g),
+                              {"group": g, "effective": ["TST"], "run_id": "R"})
+
+    def _entries(self):
+        review.review_execute(self.root, self.manifest)
+        req = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        return {e["group"]: e for e in req["entries"]}
+
+    def test_every_chunk_reads_the_parents_state(self):
+        entries = self._entries()
+        self.assertEqual("complete", entries["Big_1"]["inventory_note"])
+        self.assertEqual("complete", entries["Big_2"]["inventory_note"])
+
+    def test_no_chunk_blames_its_own_sibling(self):
+        for group, entry in self._entries().items():
+            with self.subTest(group=group):
+                line = _inventory_line(entry["prompt"])
+                self.assertNotIn("Big_1", line)
+                self.assertNotIn("Big_2", line)
+
+    def test_the_tally_is_keyed_by_the_group_the_operator_authored(self):
+        # The HTML tells an operator to go fix their groups.yml. A key that is
+        # not in their groups.yml is advice they cannot act on.
+        self._entries()
+        body = runio._load_json(
+            runio._pano(self.root, "panel-test-inventory.json"))
+        self.assertEqual({"Big": "complete"}, body["groups"])

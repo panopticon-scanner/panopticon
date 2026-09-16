@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 import scripts.synthesize as syn
+import scripts.dispatch as dispatch_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.codes as codes_mod
 import scripts.synth.delta as delta_mod
@@ -4089,53 +4090,75 @@ class TestTestInventoryCoverage(unittest.TestCase):
         self.assertIn("test_inventory", block["properties"])
 
 
-class TestTheInventoryDiagnosticNeverGates(unittest.TestCase):
-    """#1638 P13 ruling 4: the coverage diagnostic is a note about the MATRIX,
-    so it must not move the target's gate or grade. `score_gate` and the
-    health weights already treat INFO as weightless -- asserted here rather
-    than assumed, because a diagnostic every empty-inventory cell emits would
-    otherwise be a self-inflicted grade change on every run that has one.
+class TestTheInventoryStateFilesNothingAndGatesNothing(unittest.TestCase):
+    """#1638 P13 ruling 4, as amended by fix round 1 (F1).
 
-    Non-vacuous by construction: the diagnostic is CONFIRMED, so it IS in the
-    gate-eligible set and its severity is the only thing keeping it out.
+    The inventory state is DRIVER-computed and published twice already -- on
+    the dispatch entry and in `meta.coverage.test_inventory`. No agent files a
+    finding for it, so the invariant is stronger than "the diagnostic is
+    weightless": an empty/split matrix must change nothing in the report
+    except `meta.coverage.test_inventory` itself. In particular it must emit
+    no `-X0X` code, because an X0X from a non-TST cell is rewritten to that
+    cell's domain, counts as a cross-domain finding, and clusters into
+    `report-x0x.json` as a target-specific OCRDb candidate nobody can adjudicate.
     """
 
     GROUPS = [{"name": "g1", "files": ["a.py"]}]
+    FLAGGED = {"g1": "empty", "g2": "split"}
 
-    def _diagnostic(self):
-        return _agentic(fid="AG-INV", sev="INFO", panel="test",
-                        code="TST-X0X", category="coverage",
-                        title="Test inventory for g1 is empty or incomplete",
-                        location={"file": "a.py", "line_start": 1, "line_end": 1})
-
-    def _report(self, extra):
+    def _report(self, inventory):
         real = _agentic(sev="HIGH", location={"file": "a.py", "line_start": 5,
                                               "line_end": 8})
-        findings = [real] + extra
-        verdicts = {evidence_mod.finding_fingerprint(f): {
-            "finding_id": f["id"], "verdict": "CONFIRMED", "reasoning": "v"}
-            for f in findings}
+        verdicts = {evidence_mod.finding_fingerprint(real): {
+            "finding_id": real["id"], "verdict": "CONFIRMED", "reasoning": "v"}}
         with _target_with_files(self.GROUPS, lines=200) as tgt:
             return report_mod.build_report(report_mod.ReportInputs(
                 run=report_mod.RunConfig(target=tgt, fail_on="high",
                                          timestamp=DEFAULT_TIMESTAMP),
-                findings=findings_mod.FindingSet(findings=findings,
+                findings=findings_mod.FindingSet(findings=[real],
                                                  verdicts=verdicts),
-                plan=plan_mod.PlanInputs(groups_meta=self.GROUPS)))
+                plan=plan_mod.PlanInputs(groups_meta=self.GROUPS,
+                                         test_inventory=inventory)))
 
-    def test_the_diagnostic_is_confirmed_and_therefore_gate_eligible(self):
-        # Guards the two assertions below from passing vacuously on a finding
-        # that never reached the gate-eligible set at all.
-        report = self._report([self._diagnostic()])
-        diag = [f for f in report["findings"] if f["id"] == "AG-INV"]
-        self.assertEqual(1, len(diag))
-        self.assertEqual("advisor_confirmed", diag[0]["evidence"]["status"])
+    def test_a_flagged_matrix_changes_nothing_but_the_disclosure(self):
+        clean = self._report({"g1": "complete"})
+        flagged = self._report(self.FLAGGED)
+        self.assertNotEqual(clean["meta"]["coverage"]["test_inventory"],
+                            flagged["meta"]["coverage"]["test_inventory"])
+        self.assertEqual(clean["summary"], flagged["summary"])
+        self.assertEqual(clean["findings"], flagged["findings"])
+        self.assertEqual(clean["discarded_claims"], flagged["discarded_claims"])
 
-    def test_it_changes_neither_the_gate_nor_the_grade(self):
-        without = self._report([])["summary"]
-        with_diag = self._report([self._diagnostic()])["summary"]
-        self.assertEqual(without["gate"], with_diag["gate"])
-        self.assertEqual(without["overall_grade"], with_diag["overall_grade"])
-        self.assertEqual(without["health"], with_diag["health"])
-        self.assertEqual(without["risk_level"], with_diag["risk_level"])
-        self.assertEqual(without["gate_severities"], with_diag["gate_severities"])
+    def test_a_flagged_matrix_manufactures_no_x0x_candidate(self):
+        report = self._report(self.FLAGGED)
+        codes = [f.get("code") for f in report["findings"]
+                 + report["discarded_claims"]]
+        self.assertEqual([], [c for c in codes if c and str(c).endswith("-X0X")])
+        ocrdb_cov = report["meta"]["coverage"]["ocrdb"]
+        self.assertEqual(0, ocrdb_cov["invalid_codes"])
+        self.assertEqual({}, ocrdb_cov["fallbacks"])
+        self.assertEqual(0, ocrdb_cov["code_domain_mismatch"])
+
+    def test_the_x0x_assertion_has_teeth(self):
+        # Guards the guard. The assertion above is over a fixture with no
+        # agent findings, so it would hold vacuously. This is the shape fix
+        # round 1 removed -- a `TST-X0X` filed from a SEC cell -- proving the
+        # counters it reads actually move when it happens: the code is
+        # rewritten to the CELL's domain, the mismatch is counted, and the
+        # candidate pool gains a fallback under a domain that never saw it.
+        bogus = _agentic(fid="AG-X0X", sev="INFO", panel="security",
+                         domain="SEC", code="TST-X0X",
+                         title="Test inventory for g1 is empty or incomplete")
+        cov = codes_mod.validate_finding_codes([bogus], ocrdb.load_bundle())
+        self.assertEqual("SEC-X0X", bogus["code"])
+        self.assertEqual(1, cov["invalid_codes"])
+        self.assertEqual(1, cov["code_domain_mismatch"])
+        self.assertEqual({"SEC": 1}, cov["fallbacks"])
+
+    def test_the_prompt_asks_for_no_such_finding(self):
+        # The end of the chain the two assertions above measure: nothing files
+        # it because the template no longer names a code or a title for it.
+        _meta, body = dispatch_mod.load_template("domain-panel.md")
+        self.assertNotIn("TST-X0X", body)
+        self.assertNotIn("Test inventory for {group} is empty or incomplete",
+                         body)

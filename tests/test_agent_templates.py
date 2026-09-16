@@ -3,6 +3,7 @@ import os
 import unittest
 
 import scripts.dispatch as dispatch
+import scripts.phases.review as review_phase
 
 
 ROLES = ["scout.md", "advisor.md", "setup-scan.md",
@@ -259,14 +260,29 @@ class TestTestInventoryFraming(unittest.TestCase):
     obeyed. The claim was not merely wrong, it was UNADJUDICABLE: the primary
     advisor returned NEEDS_MORE_INFO naming the absent test grants.
 
-    So the template must separate the two claims. "This inventory lists no
-    test" is a fact about the matrix; "no automated coverage exists" is a
+    So the template must separate the two claims -- "this inventory lists no
+    test" is a fact about the matrix, "no automated coverage exists" is a
     fact about the repository, and only the first is inside a confined
-    reviewer's reach.
+    reviewer's reach -- and it must do so WITHOUT asking for a finding. Fix
+    round 1, F1: the inventory state is computed by the driver and already
+    published in the dispatch entry, `meta.coverage.test_inventory` and the
+    HTML. An agent-authored record of it would be a `TST-*` code filed from
+    SEC/ARC/COD cells (rewritten to `<domain>-X0X`, counted as a cross-domain
+    finding, clustered as bogus OCRDb candidates) -- and on the groups most
+    likely to flag, there is no TST cell at all.
     """
 
     def _body(self):
         return dispatch.load_template("domain-panel.md")[1]
+
+    def _render(self, domain, note="empty — no test file is listed"):
+        return dispatch.render_prompt("domain-panel.md", {
+            "domain": domain, "group": "Auth", "file_list": "- a.py",
+            "tests": "- (no tests)", "security_mode": "standard",
+            "menu": "%s-A1A x (HIGH)" % domain, "run_id": "R",
+            "criteria": "c", "tool_hits": "", "security_checklist": "",
+            "tst_guidance": review_phase._render_tst_guidance(domain, note),
+            "out_file": "/abs/findings-Auth-%s.json" % domain}, "claude")
 
     def test_the_unconditional_coverage_gap_sentence_is_gone(self):
         # The exact instruction run-13's panel followed. Its defect is the
@@ -276,34 +292,40 @@ class TestTestInventoryFraming(unittest.TestCase):
             "a group with code but no tests is itself a `TST` coverage gap "
             "you must report", self._body())
 
-    def test_the_tst_paragraph_names_all_three_inventory_states(self):
+    def test_no_finding_is_mandated_for_the_inventory_state(self):
         body = self._body()
-        self.assertIn("{inventory_note}", body)
-        for state in ("`complete`", "`empty`", "`split`"):
-            self.assertIn(state, body, state)
+        self.assertNotIn("TST-X0X", body)
+        self.assertNotIn("Test inventory for {group} is empty or incomplete",
+                         body)
+        self.assertIn("file no finding", body.lower())
+        self.assertIn("meta.coverage.test_inventory", body)
 
-    def test_an_unknown_inventory_routes_to_an_info_coverage_diagnostic(self):
-        body = self._body()
-        self.assertIn("coverage diagnostic", body)
-        self.assertIn("`TST-X0X`", body)
-        self.assertIn("`INFO`", body)
-        self.assertIn("Test inventory for {group} is empty or incomplete", body)
+    def test_only_the_tst_cell_is_given_the_inventory_guidance(self):
+        # The guidance is TST-shaped: it governs coverage claims and cites TST
+        # codes. Rendered into a SEC/ARC/COD cell it produced findings whose
+        # code was rewritten and whose domain did not match their cell.
+        tst = self._render("TST")
+        self.assertIn("Inventory: empty", tst)
+        self.assertIn("The inventory is not the repository", tst)
+        for domain in ("SEC", "ARC", "COD", "DAT"):
+            with self.subTest(domain=domain):
+                out = self._render(domain)
+                self.assertNotIn("Inventory:", out)
+                self.assertNotIn("The inventory is not the repository", out)
+
+    def test_the_tst_block_names_all_three_states(self):
+        tst = self._render("TST")
+        for state in ("`complete`", "`empty`", "`split`"):
+            self.assertIn(state, tst, state)
 
     def test_the_substantive_claim_is_gated_on_a_complete_inventory(self):
-        body = self._body()
-        self.assertIn("no automated coverage exists", body)
-        self.assertIn("outside this review's scope", body)
+        tst = self._render("TST")
+        self.assertIn("no automated coverage exists", tst)
+        self.assertIn("outside this review's scope", tst)
 
     def test_the_note_survives_rendering(self):
-        out = dispatch.render_prompt("domain-panel.md", {
-            "domain": "TST", "group": "Auth", "file_list": "- a.py",
-            "tests": "- (no tests)", "security_mode": "standard",
-            "menu": "TST-A1A zero-coverage-script (HIGH)", "run_id": "R",
-            "criteria": "c", "tool_hits": "", "security_checklist": "",
-            "inventory_note": "empty — INVENTORY-SENTINEL",
-            "out_file": "/abs/findings-Auth-TST.json"}, "claude")
+        out = self._render("TST", note="empty — INVENTORY-SENTINEL")
         self.assertIn("Inventory: empty — INVENTORY-SENTINEL", out)
-        self.assertIn("Test inventory for Auth is empty or incomplete", out)
 
 
 if __name__ == "__main__":
