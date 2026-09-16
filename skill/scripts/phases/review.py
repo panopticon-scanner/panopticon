@@ -197,7 +197,8 @@ def _ingested_tool_findings(review_root, include_fixtures):
         return ()
     try:
         findings, _disp = ingest_tools.ingest_dir_detailed(
-            tools_dir, None, include_fixtures=include_fixtures)
+            tools_dir, None, include_fixtures=include_fixtures,
+            target_root=review_root)
     except Exception:  # noqa: BLE001 - advisory input; never break review on it
         return ()
     return tuple(findings)

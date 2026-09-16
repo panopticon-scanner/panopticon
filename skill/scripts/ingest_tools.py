@@ -69,9 +69,95 @@ _GENERATED_SUFFIXES = (".pyc", ".pyo")
 # legitimate `app/vendors/` model is untouched.
 _VENDORED_DIRS = {"vendor", "node_modules", "bower_components", "third_party",
                   "vendored", ".bundle", ".yarn"}
+# VIRTUALENVS, at any depth -- #1638 P09 (owner ruling D8). A virtualenv is
+# vendored code that happens to live in the checkout: run-13 ingested 58 bandit
+# findings from `.venv/` and they bought 46 of 128 tool-advisor dispatches
+# (35.9%), returning 2 confirmations against 32 rejections and 12 not-material.
+# METADATA FIRST: `pyvenv.cfg` is the marker every creator writes (venv,
+# virtualenv, uv, pipenv, poetry-in-project), so it catches the ones named
+# `env/` or `.direnv/` that no name list would.
+_VENV_MARKER = "pyvenv.cfg"
+_VENV_DIR_NAMES = {".venv", "venv"}
+# NAMES SECOND, and unconditionally: ingest reads SARIF paths and often has no
+# tree to stat (the CI gate points at a temp directory of artifacts). D8's
+# accepted trade-off is that a `venv/` holding real tracked source is excluded
+# anyway -- the name is reserved by convention. `site-packages` joins them: it
+# is a virtualenv or a vendored install either way, and neither is ours to fix.
+_VENV_NAME_SEGMENTS = _VENV_DIR_NAMES | {"site-packages"}
+# Where a tools directory sits inside the scanned repo, used to derive the
+# target root when no caller passes one.
+_ARTIFACT_DIR = ".panopticon"
+# The venv cache's slot for the RESOLVED root. A tuple, so it can never collide
+# with the relative-directory strings that are the cache's other keys.
+_REAL_ROOT_KEY = ("__realpath__",)
 
 
-def _is_run_artifact_path(fpath):
+def _has_venv_marker(root, rel):
+    """True when `<root>/<rel>` holds a `pyvenv.cfg` AND really is inside root.
+
+    The realpath check is the confinement: a symlinked directory in the target
+    that resolves outside it is not a tree we let mark anything.
+    """
+    directory = os.path.join(root, *rel.split("/"))
+    if not os.path.isfile(os.path.join(directory, _VENV_MARKER)):
+        return False
+    real = os.path.realpath(directory)
+    return real == root or real.startswith(root + os.sep)
+
+
+def _under_a_virtualenv(dirs, target_root, cache=None):
+    """True when some ancestor DIRECTORY of a finding carries a `pyvenv.cfg`.
+
+    `dirs` is the finding's ancestor segments (no basename), so the marker is
+    always `<ancestor>/pyvenv.cfg` -- a `pyvenv.cfg` planted anywhere else (a
+    test fixture, say) marks its own directory and nothing above or beside it.
+    A segment that could climb out of the root refuses before any stat. Lookups
+    are memoized per directory for the whole ingest run: a venv holds thousands
+    of files that would otherwise re-stat the same handful of directories. The
+    ROOT's own resolution is memoized in the same cache (#1638 P09 F6) -- it was
+    recomputed for every finding, and `realpath` is a syscall per path segment.
+    """
+    cache = {} if cache is None else cache
+    root = cache.get(_REAL_ROOT_KEY)
+    if root is None:
+        root = cache[_REAL_ROOT_KEY] = os.path.realpath(target_root)
+    rel = ""
+    for seg in dirs:
+        if seg in ("", ".", ".."):
+            return False
+        rel = "%s/%s" % (rel, seg) if rel else seg
+        hit = cache.get(rel)
+        if hit is None:
+            hit = cache[rel] = _has_venv_marker(root, rel)
+        if hit:
+            return True
+    return False
+
+
+def _target_root_for(tools_dir):
+    """The scanned repo root implied by a tools directory, or None.
+
+    Every ingest site points at `<target>/.panopticon/[runs/<tag>/]tools`, so
+    the root is the parent of that `.panopticon`. Derived rather than demanded
+    of each caller because the four ingest sites must resolve the SAME root for
+    the same directory: phases/verify pins its ingest to synthesize's so the
+    tool-verify queue and the report agree on every finding id, and a root that
+    differed between them would split that identity. None when there is no
+    `.panopticon` ancestor (the CI gate scans a temp dir) -- the name fallback
+    alone decides then.
+
+    The NEAREST `.panopticon` segment is the run's: a checkout that itself sits
+    under a `.panopticon` path would otherwise resolve to the directory above
+    that path and stat markers against the wrong tree.
+    """
+    parts = os.path.abspath(tools_dir).split(os.sep)
+    if _ARTIFACT_DIR not in parts:
+        return None
+    cut = len(parts) - 1 - parts[::-1].index(_ARTIFACT_DIR)
+    return os.sep.join(parts[:cut]) or os.sep
+
+
+def _is_run_artifact_path(fpath, target_root=None, venv_cache=None):
     """True for a tool finding located in something that is not project source.
 
     run_tools mounts the whole target read-only and the scanners walk ALL of it,
@@ -95,29 +181,44 @@ def _is_run_artifact_path(fpath):
       scanners (osv-scanner, trivy, bundler-audit) already cover that surface by
       VERSION, which is the actionable form. eslint-security emitted 623
       messages on solidus and 592 of them (95%) were in `vendor/`.
+    - a PYTHON VIRTUALENV (#1638 P09, ruling D8) -- the same class, installed
+      rather than committed. Metadata first: any ancestor directory carrying a
+      `pyvenv.cfg` (needs *target_root*; without one there is no tree to stat).
+      Names second, always: a `.venv`, `venv` or `site-packages` segment. The
+      trade-off D8 accepts is that a `venv/` with no marker that holds real
+      tracked source is excluded anyway -- the name is reserved by convention,
+      and a substring (`src/venvutils.py`, `app/environments/`) never matches.
+      Dependency AUDITING is untouched: pip-audit/osv-scanner/trivy read
+      `requirements*.txt` / `pyproject.toml` / lockfiles, not the venv tree.
 
     Together the first three were 16 of run-10's 54 rejected tool findings
     (30%), each one costing a tool-advisor dispatch to reject.
     """
     norm = str(fpath).replace(os.sep, "/").lstrip("/")
     parts = norm.split("/")
+    dirs = parts[:-1]
     if parts[0] in _RUN_ARTIFACT_DIRS:
         return True
-    if any(p in _GENERATED_DIRS for p in parts[:-1]):
+    if any(p in _GENERATED_DIRS for p in dirs):
         return True
-    if any(p in _VENDORED_DIRS for p in parts[:-1]):
+    if any(p in _VENDORED_DIRS for p in dirs):
+        return True
+    if any(p in _VENV_NAME_SEGMENTS for p in dirs):
+        return True
+    if target_root and _under_a_virtualenv(dirs, target_root, venv_cache):
         return True
     return norm.endswith(_GENERATED_SUFFIXES)
 
 
-def _filter_parsed_findings(parsed, include_fixtures, exclude_globs):
+def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
+                            target_root=None, venv_cache=None):
     kept, fx_count, gl_count, ra_count = [], 0, 0, 0
     for f in parsed:
         # #run7 QAL-D1A: normalize os.sep -> "/" before matching, mirroring
         # run_tools._is_excluded, so an exclude_glob behaves identically on both
         # the ingest and the scan path (a no-op on POSIX; correct on Windows).
         fpath = str((f.get("location") or {}).get("file", "")).replace(os.sep, "/")
-        if _is_run_artifact_path(fpath):      # run-9 E3 / run-10 D1: not project source
+        if _is_run_artifact_path(fpath, target_root, venv_cache):   # not project source
             ra_count += 1
         elif not include_fixtures and _is_fixture_path(fpath):
             fx_count += 1
@@ -211,7 +312,8 @@ def _cap_findings(parsed, tool):
     return ordered[:MAX_ADAPTER_FINDINGS], dropped
 
 
-def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False):
+def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False,
+                        target_root=None):
     """Ingest raw tool-output files and report each adapter's disposition.
 
     Returns (findings, dispositions). dispositions maps each output file's
@@ -237,9 +339,17 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     exclude_globs (F-CAL-2): additional fnmatch patterns matched against each
     finding's location.file; matches are dropped too. Both filters share one
     aggregate stderr note.
+
+    target_root (#1638 P09): the scanned repo, against which a finding's
+    ancestor directories are checked for a `pyvenv.cfg` virtualenv marker. It
+    defaults to the root the tools directory itself implies, so every ingest
+    site answers identically for the same directory whether or not it passed
+    one; a caller that holds the root (the driver's phases do) passes it.
     """
     out = []
     dispositions = {}
+    root = target_root or _target_root_for(tools_dir)
+    venv_cache = {}   # per-run memo of the pyvenv.cfg lookups
     fx_excluded = 0   # dropped by the default fixture-corpus prune
     gl_excluded = 0   # dropped by an explicit exclude_glob
     ra_excluded = 0   # dropped as not-project-source (run-9 E3 / run-10 D1)
@@ -304,7 +414,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         parsed, truncated = _cap_findings(parsed, tool)
         scanned = _scanned_files(raw)
         parsed, fx_cnt, gl_cnt, ra_cnt = _filter_parsed_findings(
-            parsed, include_fixtures, exclude_globs)
+            parsed, include_fixtures, exclude_globs, root, venv_cache)
         fx_excluded += fx_cnt
         gl_excluded += gl_cnt
         ra_excluded += ra_cnt
@@ -332,7 +442,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         if ra_excluded:
             reasons.append("not project source (nested checkout / git dir / "
                            ".panopticon artifacts / generated bytecode / "
-                           "vendored dependencies)")
+                           "vendored dependencies / virtualenvs)")
         if gl_excluded:
             reasons.append(", ".join(exclude_globs))
         print("ingest: excluded %d finding(s) (%s)"
@@ -341,7 +451,8 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     return out, dispositions
 
 
-def ingest_dir(tools_dir, group, exclude_globs=None, include_fixtures=False):
+def ingest_dir(tools_dir, group, exclude_globs=None, include_fixtures=False,
+               target_root=None):
     """Ingest raw tool-output files from a directory and route them to the
     registered adapter for parsing. Files without a registered adapter or that
     fail to parse are skipped with a stderr diagnostic.
@@ -349,5 +460,5 @@ def ingest_dir(tools_dir, group, exclude_globs=None, include_fixtures=False):
     Findings-only wrapper over ingest_dir_detailed (unchanged contract).
     """
     findings, _dispositions = ingest_dir_detailed(
-        tools_dir, group, exclude_globs, include_fixtures)
+        tools_dir, group, exclude_globs, include_fixtures, target_root)
     return findings

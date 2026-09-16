@@ -476,7 +476,11 @@ def _tool_verify_queue(review_root, manifest):
     prepare_for_queue and evidence.build_verify_queue; it changes none of them.
     include_fixtures/group/exclude are pinned to synthesize's main() tool-ingest
     call (group=None, exclude_globs=None) for identity; _tools_include_fixtures
-    is the value synthesize_execute forwards."""
+    is the value synthesize_execute forwards. `target_root` is passed rather
+    than derived, and stays identical for the same reason: `ingest_dir_detailed`
+    derives exactly this root from the tools directory when a caller omits it
+    (#1638 P09), so synthesize's own ingest of the same directory drops the same
+    virtualenv findings this queue does."""
     ran = (runio._load_json(runio._pano(review_root, "tools-ran.json")) or {}).get("ran")
     tools_dir = runio._pano(review_root, "tools")
     if not ran or not os.path.isdir(tools_dir):
@@ -484,7 +488,8 @@ def _tool_verify_queue(review_root, manifest):
     findings = findings_mod.load_findings(
         sorted(_glob.glob(runio._pano(review_root, "findings-*.json"))))
     tool_findings, _disp = ingest_tools.ingest_dir_detailed(
-        tools_dir, None, include_fixtures=_tools_include_fixtures(manifest))
+        tools_dir, None, include_fixtures=_tools_include_fixtures(manifest),
+        target_root=review_root)
     for tf in tool_findings:
         findings.append(findings_mod.normalize_finding(tf))
     prepared, _integration = findings_mod.prepare_for_queue(findings)
