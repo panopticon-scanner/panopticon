@@ -209,6 +209,77 @@ def detect_languages(target):
     return sorted(found)
 
 
+# #1638 P09 (owner ruling D8): virtualenvs are vendored code, so the scanners
+# are kept out of them rather than only having their findings dropped at ingest.
+# `pyvenv.cfg` is the marker every creator writes (venv, virtualenv, uv, pipenv,
+# in-project poetry); the conventional names are the fallback for a venv built
+# by something that wrote no marker. Depth-bounded: venvs live near the root,
+# and this walk is paid on every scan.
+VENV_MARKER = "pyvenv.cfg"
+VENV_DIR_NAMES = ("venv", ".venv")
+VENV_MAX_DEPTH = 3
+_VENV_WALK_PRUNE = {".git", "node_modules", "__pycache__"}
+
+
+def find_virtualenvs(target, max_depth=VENV_MAX_DEPTH):
+    """Virtualenv directories under *target*, repo-relative, with their reason.
+
+    Returns ``[{"path": ".venv", "reason": "pyvenv.cfg" | "name"}, ...]`` sorted
+    by path. A flagged directory is never descended into (a venv inside a venv
+    is the same exclusion), and `reason` is what the tools manifest discloses so
+    a report can say what was pruned and on what evidence.
+    """
+    root = os.path.abspath(target)
+    found = {}
+    for dirpath, dirnames, _files in os.walk(root):
+        rel = os.path.relpath(dirpath, root)
+        depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
+        dirnames[:] = [d for d in sorted(dirnames) if d not in _VENV_WALK_PRUNE]
+        if depth >= max_depth:
+            dirnames[:] = []
+            continue
+        keep = []
+        for name in dirnames:
+            child = os.path.join(dirpath, name)
+            if os.path.isfile(os.path.join(child, VENV_MARKER)):
+                reason = "pyvenv.cfg"
+            elif name in VENV_DIR_NAMES:
+                reason = "name"
+            else:
+                keep.append(name)
+                continue
+            found[os.path.relpath(child, root).replace(os.sep, "/")] = reason
+        dirnames[:] = keep   # never walk into a directory already excluded
+    return [{"path": p, "reason": found[p]} for p in sorted(found)]
+
+
+# The exclusion knob each legacy SARIF scanner already exposes, for the
+# directories above. NOT listed, deliberately: `gitleaks` (v8 has no path-
+# exclusion flag -- its allowlist is a config file, and inventing one would just
+# make the tool exit 2), `bandit` (excluded through the target's `.bandit`
+# config, which is where its other excludes live) and `gosec` (Go surface; a
+# Python virtualenv is not in it). Whatever a scanner still reports from a venv
+# is dropped by ingest_tools anyway -- this half only saves the walk.
+_VENV_EXCLUDE_FLAG = {"semgrep": "--exclude", "trivy": "--skip-dirs"}
+
+
+def _with_venv_excludes(tool, cmd, venv_dirs):
+    """`cmd` with this tool's own exclusion flag repeated for each venv dir.
+
+    The flags go BEFORE the trailing `/src` positional so the scan target stays
+    last, and the paths are root-relative because that is what both tools match
+    against (trivy cleans `--skip-dirs` and compares it to the path relative to
+    the scan root, so a container-absolute `/src/.venv` would silently match
+    nothing).
+    """
+    flag = _VENV_EXCLUDE_FLAG.get(tool)
+    if not (flag and venv_dirs):
+        return cmd
+    extra = [arg for d in venv_dirs for arg in (flag, d["path"])]
+    at = cmd.index("/src") if "/src" in cmd else len(cmd)
+    return cmd[:at] + extra + cmd[at:]
+
+
 def select_tools(languages, has_deps):
     """Select security scanners based on detected languages and dependency status."""
     tools = ["semgrep", "gitleaks"]
@@ -565,14 +636,20 @@ def _atomic_write(out_path, data):
 
 
 def run_tools(target, tools, out_dir, image="panopticon-tools",
-              runner=None, online=False, progress=None):
+              runner=None, online=False, progress=None, venv_dirs=None):
     """Run selected security tools and adapters in Docker against target.
 
     Legacy SARIF tools use their hard-coded ``TOOL_CMD`` invocation. New Phase 1
     adapters are dispatched through ``scripts/_run_adapter.py`` inside the
     container so the same fat image is used for local and CI runs.
+
+    `venv_dirs` (#1638 P09) are the virtualenvs the scanners that expose an
+    exclusion knob are told to skip; None detects them here, so a direct caller
+    gets the exclusion without asking. main() passes its own list so the walk is
+    done once and the manifest discloses exactly what the scan was told to skip.
     """
     runner = runner or _popen_runner   # #run7 COD-A2A: stream by default, don't buffer-then-drop
+    venv_dirs = find_virtualenvs(target) if venv_dirs is None else venv_dirs
     validate_output_dir(target, out_dir)
     os.makedirs(out_dir, exist_ok=True)
     tools = filter_online(tools, online)
@@ -601,6 +678,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
             # .bandit -- otherwise bandit runs with its built-in defaults.
             if tool == "bandit" and os.path.isfile(os.path.join(target, ".bandit")):
                 cmd = cmd[:1] + ["--ini", "/src/.bandit"] + cmd[1:]
+            cmd = _with_venv_excludes(tool, cmd, venv_dirs)   # #1638 P09
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
             docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
                       + _privilege_drop_flags()
@@ -648,20 +726,30 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     return written
 
 
-def write_manifest(path, selected, written, excluded_scope=(), run_id=None):
+def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
+                   excluded_dirs=()):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
     surface fell under the gate's --exclude globs; they are disclosed (never
     required), and are kept out of `selected` so the missing-set invariant
     holds.
+
+    `excluded_dirs` (#1638 P09) are the virtualenv directories the scan was told
+    to skip, as ``{"path", "reason"}`` rows -- so a report can say what was
+    pruned and on what evidence (`pyvenv.cfg` or the conventional name) rather
+    than leaving a silent hole in the scanned surface. Additive: the field is
+    new in this schema version and every consumer reads it optionally, so an
+    older manifest without it still loads.
     """
     selected = list(dict.fromkeys(str(tool) for tool in selected))
     produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
     payload = {"schema_version": 1, "run_id": run_id,
                "selected": selected, "produced": produced,
                "missing": sorted(set(selected) - set(produced)),
-               "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope))}
+               "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope)),
+               "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"])}
+                                 for d in excluded_dirs or ()]}
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
@@ -717,6 +805,7 @@ def main(argv=None):
         languages = a.languages or detect_languages(a.target)
         chosen = select_tools(languages, a.deps) + phase1 + phase2
     effective = filter_online(chosen, a.online)
+    venv_dirs = find_virtualenvs(a.target)   # #1638 P09: one walk, two consumers
     if not docker_available():
         print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
         # Still disclose the skip through the coverage manifest. Without this,
@@ -730,13 +819,13 @@ def main(argv=None):
         # no docker, so `effective` is a faithful record of what WOULD have run.
         if a.manifest:
             write_manifest(a.manifest, effective, [], excluded_scope=excluded_scope,
-                           run_id=a.run_id)
+                           run_id=a.run_id, excluded_dirs=venv_dirs)
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
-                      progress=make_progress(a.progress))
+                      progress=make_progress(a.progress), venv_dirs=venv_dirs)
     if a.manifest:
         write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
-                       run_id=a.run_id)
+                       run_id=a.run_id, excluded_dirs=venv_dirs)
     print("\n".join(paths))
     return 0
 

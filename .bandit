@@ -2,5 +2,8 @@
 # #run7: also exclude nested checkouts/VCS so a self-scan run from a dev checkout
 # with git worktrees doesn't scan (or duplicate-find in) the worktree copies.
 # bandit is not .gitignore-aware, so unlike semgrep/trivy it walks .worktrees/.git.
-exclude = /tests,tests,/.worktrees,.worktrees,/.git,.git
+# #1638 P09 (D8): a virtualenv is vendored code. Both spellings, each in the
+# root-anchored and bare form the entries above use; run_tools also passes
+# semgrep/trivy their own exclusion flags for venvs found by `pyvenv.cfg`.
+exclude = /tests,tests,/.worktrees,.worktrees,/.git,.git,/.venv,.venv,/venv,venv
 skips = B101,B404,B110,B112
