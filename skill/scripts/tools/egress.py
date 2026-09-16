@@ -136,7 +136,15 @@ def render_config(subnet, hosts):
       clients are allowed. Otherwise, the default action is to deny access." So
       this one line denies the bridge side.
     `ConnectPort 443` -- "If no ConnectPort line is found, then all ports are
-      allowed", i.e. CONNECT could tunnel to any port on an allowlisted host.
+      allowed", i.e. CONNECT could tunnel to ANY port on an allowlisted host.
+      It bounds CONNECT and only CONNECT: `check_allowed_connect_ports` is
+      called inside the CONNECT branch of `process_request()`, while the filter
+      block that runs for every method consults no port at all. So a plain-HTTP
+      proxied request to `http://pypi.org:22/` is bounded by the hostname
+      allowlist alone -- narrow (the destination must still be an allowlisted
+      public host) but not a general port bound, and tinyproxy 1.11.3 has no
+      directive that would make it one: `ConnectPort` is the only
+      destination-port directive in its whole config vocabulary.
     `FilterDefaultDeny Yes` -- "if set to No the Filter list acts as a
       blacklist, if set to Yes as a whitelist". `src/filter.c` at 1.11.3
       returns "filtered" for an unmatched host under this flag, and
@@ -172,7 +180,9 @@ def render_config(subnet, hosts):
         "# Only this run's internal subnet may use the proxy at all; the",
         "# sidecar's bridge side (and the host) are denied by the same line.",
         "Allow %s" % subnet,
-        "# CONNECT -- every HTTPS fetch -- reaches 443 and nothing else.",
+        "# CONNECT -- so every HTTPS fetch -- reaches 443 and nothing else.",
+        "# Plain HTTP is not port-bounded: tinyproxy has no such directive, so",
+        "# it is bounded by the hostname allowlist below alone.",
         "ConnectPort %d" % HTTPS_PORT,
         "# Deny by default; the filter file below is the whole allowlist.",
         "FilterDefaultDeny Yes",
@@ -343,10 +353,11 @@ def _establish(docker_bin, runner, token, online, scratch, made, max_seconds):
     """Bring up the network and the sidecar, or raise `_Unavailable`.
 
     Order matters. The sidecar is started on the BRIDGE and attached to the
-    internal network second: a container's default route comes from a network
-    that has one, and an `--internal` network deliberately does not, so
-    starting there first and adding the bridge afterwards leaves the proxy's
-    own egress to libnetwork's gateway election rather than to this code.
+    internal network second. Docker documents that an internal network
+    configures no default route, so bridge-first is what guarantees the proxy
+    has one to the internet; starting on the internal network and adding the
+    bridge afterwards would leave the sidecar's own egress to libnetwork's
+    gateway election rather than to this code.
     """
     _sweep(docker_bin, runner)
     network, proxy = NETWORK_PREFIX + token, PROXY_PREFIX + token
