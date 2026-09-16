@@ -29,12 +29,19 @@ behaviour below is anchored to upstream documentation with a version rather
 than to an observation: tinyproxy 1.11.3 (the Alpine v3.24 package inside the
 pinned image), directives per `tinyproxy.conf(5)` at that tag.
 
-OUT OF SCOPE, stated rather than assumed: rootless Docker and podman implement
-`--internal` differently (podman's `--internal` historically blocked the
-gateway rather than routing, and a rootless daemon's bridge is namespaced), so
-this module's guarantee is stated for a standard rootful Docker daemon. On any
-other runtime the disclosure still holds -- the manifest says what was done --
-but the containment is that runtime's, not this one's.
+WHAT THIS DOES NOT FENCE, stated rather than assumed. Docker's own reference
+for `--internal` says communication with the network's GATEWAY IP "(and thus
+appropriately configured host services)" is still possible, so an online
+adapter reaches its advisory endpoints only through the proxy but can still
+open a socket to a service the operator bound on the docker host at that
+gateway address -- no CONNECT, no filter, no allowlist consulted, because such
+a request is not proxied at all; fencing it is host firewalling and out of
+scope here. And rootless Docker and podman implement `--internal` differently
+(podman's historically blocked the gateway rather than routing, and a rootless
+daemon's bridge is namespaced), so this module's guarantee is stated for a
+standard rootful Docker daemon; on any other runtime the disclosure still
+holds -- the manifest says what was done -- but the containment is that
+runtime's, not this one's.
 """
 from __future__ import annotations
 
