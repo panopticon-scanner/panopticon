@@ -1004,3 +1004,113 @@ class MainLoaderOrderTest(unittest.TestCase):
             # And the deletion is real: a fresh read after main() returns sees
             # no queue at all, exactly like a run with no leftover file.
             self.assertEqual(plan_mod.load_verify_queue(panopticon_dir), (None, None))
+
+
+class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
+    """#1639 P15 ruling 2: the artifacts AS WRITTEN are validated, and an
+    invalid one is a terminal status of its own.
+
+    Three facts a consumer must be able to tell apart, and each now has its own
+    channel: terminal completion (this exit status), artifact validity (this
+    exit status too, distinctly -- code 4, "artifact invalid"), and coverage
+    certification (`summary.gate` / `summary.coverage_certified`, codes 1 and
+    2, both of them VALID reports about a coverage question). Validating the
+    in-memory report only would miss the two artifacts a consumer actually
+    reads: the HYDRATED union of the split parts, and the X0X sibling.
+    """
+
+    def _fixture(self, d):
+        fp = os.path.join(d, "findings-g1-security.json")
+        with open(fp, "w") as fh:
+            json.dump({"findings": [_agentic("SE-001")]}, fh)
+        return fp, os.path.join(d, "report.json")
+
+    def _run(self, args):
+        buf, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = syn.main(args)
+        return rc, buf.getvalue(), err.getvalue()
+
+    def test_a_valid_run_is_unaffected(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("artifact invalid", stderr)
+        self.assertIn("Grade:", stdout)
+
+    def test_an_invalid_part_is_caught_through_the_hydrated_union(self):
+        # The MAIN report stays valid; the defect is in a `_partN.json`, which
+        # is exactly the artifact a consumer hydrates and validates and which
+        # nothing on this path had ever read back.
+        real_write = render_mod.write_report
+
+        def _corrupting_write(report, out_path, max_bytes=None):
+            paths = real_write(report, out_path)
+            part = out_path.replace(".json", "_part2.json")
+            with open(part, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [{"id": "SE-002", "title": "t",
+                                         "severity": "SEVERE",   # not a severity
+                                         "confidence": "LIKELY", "panel": "security",
+                                         "category": "injection",
+                                         "evidence": {"status": "unverified"}}]}, fh)
+            report["meta"]["parts"] = [os.path.basename(part)]
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(report, fh)
+            return paths
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(render_mod, "write_report",
+                                   side_effect=_corrupting_write):
+                rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertEqual(rc, 4)
+        self.assertIn("artifact invalid: 1 schema errors", stderr)
+        self.assertIn("SEVERE", stderr)
+        # The gate/certification story is untouched: a different question,
+        # separately answered, still printed.
+        self.assertIn("Grade:", stdout)
+        self.assertIn("Gate:", stdout)
+
+    def test_an_invalid_x0x_artifact_fails_the_run(self):
+        import scripts.x0x_report as x0x_report
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(x0x_report, "build_report",
+                                   return_value={"candidates": []}):   # no schema_version
+                rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertEqual(rc, 4)
+        self.assertIn("artifact invalid:", stderr)
+        self.assertIn("report-x0x.json", stderr)
+        self.assertIn("Grade:", stdout)
+
+    def test_an_unhydratable_part_is_an_invalid_artifact_not_a_silent_pass(self):
+        # A `meta.parts` pointer at a file that cannot be read makes the union
+        # unknowable. Fail closed: the run cannot claim its artifact is valid.
+        real_write = render_mod.write_report
+
+        def _dangling_write(report, out_path, max_bytes=None):
+            paths = real_write(report, out_path)
+            report["meta"]["parts"] = ["report_part2.json"]   # never written
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(report, fh)
+            return paths
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(render_mod, "write_report",
+                                   side_effect=_dangling_write):
+                rc, _stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertEqual(rc, 4)
+        self.assertIn("artifact invalid:", stderr)
+
+    def test_the_gate_still_owns_codes_1_and_2(self):
+        # Artifact validity must not shadow the gate's own verdicts.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            rc, _stdout, stderr = self._run(
+                ["--target", "src", "--fail-on", "high", "--gate-unverified",
+                 "--out", out, fp])
+        self.assertEqual(rc, 1)
+        self.assertNotIn("artifact invalid", stderr)
