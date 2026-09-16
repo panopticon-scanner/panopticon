@@ -866,19 +866,19 @@ class TestTheRootFileIsConfinedToo(unittest.TestCase):
     is called in-process so the disclosure survives the docker-absent path.
     """
 
-    def _repo_with_symlinked_requirements(self, secret_text):
+    def _repo_with_symlinked_requirements(self, host_contents):
         outside = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         host_file = os.path.join(outside, "credentials")
         with open(host_file, "w", encoding="utf-8") as fh:
-            fh.write(secret_text)
+            fh.write(host_contents)
         os.symlink(host_file, os.path.join(d, "requirements.txt"))
         return d
 
     def test_a_symlinked_root_manifest_is_treated_as_absent(self):
-        d = self._repo_with_symlinked_requirements("aws_secret = hunter2\n")
+        d = self._repo_with_symlinked_requirements("host-only-marker = 1\n")
         self.assertIsNone(pa.PipAuditAdapter()._find_requirement(d))
 
     def test_its_contents_are_never_published(self):
