@@ -151,9 +151,17 @@ def _spawns_a_host_cli(tree, host_names):
     read off an attribute (`spec.cli`), or returned by a call is not followed
     -- one hop, no imports, no attributes, no calls -- because following any
     of those means resolving another module and parsing it, which is a
-    dataflow analysis, and this file is a tripwire. Declare the binary as a
-    literal, as a module-level string constant, or as a `CLI` constant and the
-    guard sees it; all three real families already do.
+    dataflow analysis, and this file is a tripwire. Two narrower shapes are
+    out for the same reason and are named here so nobody has to rediscover
+    them: a constant assigned inside a module-level `if` (`if os.name ==
+    "posix": _BINARY = "kimi"`) is not in `tree.body` directly and is not
+    read, and an f-string head (`runner([f"kimi", ...])`) is an
+    `ast.JoinedStr`, not a `Constant`, however much it looks like a literal.
+    A name assigned twice resolves LAST-wins, which is what the module would
+    really run: `"kimi"` then `"echo"` is not a seam, `"echo"` then `"kimi"`
+    is. Declare the binary as a plain literal, as an unconditional
+    module-level string constant, or as a `CLI` constant and the guard sees
+    it; all three real families already do.
     """
     if not _imports_subprocess(tree):
         return []
@@ -364,6 +372,63 @@ class TestTheWalkRecognisesSeamsAndOnlySeams(unittest.TestCase):
                 return runner([spec.cli, "--version"]) or runner([name_of(), "-p"])
             ''')
         self.assertEqual(_seams(root), [])
+
+    def test_a_constant_assigned_inside_an_if_is_out_of_scope(self):
+        """Named in the docstring's limit, and pinned here so the naming
+        cannot drift from the behaviour. `_module_constants` reads `tree.body`
+        directly; a name bound inside a module-level `if` is one statement
+        deeper, and walking into branches means deciding which one runs."""
+        root = self._module("conditional.py", '''
+            import os
+            import subprocess
+
+            if os.name == "posix":
+                _BINARY = "kimi"
+            else:
+                _BINARY = "kimi.exe"
+
+            def launch(runner=subprocess.run):
+                return runner([_BINARY, "-p"])
+            ''')
+        self.assertEqual(_seams(root), [])
+
+    def test_an_f_string_argv_head_is_out_of_scope(self):
+        """The other named limit. `f"kimi"` parses to `ast.JoinedStr`, not
+        `ast.Constant` -- a human reader calls it a string literal and the
+        walk does not, which is exactly the kind of gap worth writing down."""
+        root = self._module("fstring.py", '''
+            import subprocess
+
+            def launch(runner=subprocess.run):
+                return runner([f"kimi", "-p"])
+            ''')
+        self.assertEqual(_seams(root), [])
+
+    def test_a_rebound_constant_resolves_last_wins(self):
+        """Not a limit but a rule, and undocumented rules are how a tripwire
+        gets quietly narrowed: the LAST module-level assignment is what the
+        module would really run, so it is what the walk reads."""
+        shadowed = self._module("shadowed.py", '''
+            import subprocess
+
+            _BINARY = "kimi"
+            _BINARY = "echo"
+
+            def launch(runner=subprocess.run):
+                return runner([_BINARY, "-p"])
+            ''')
+        self.assertEqual(_seams(shadowed), [])
+        promoted = self._module("promoted.py", '''
+            import subprocess
+
+            _BINARY = "echo"
+            _BINARY = "kimi"
+
+            def launch(runner=subprocess.run):
+                return runner([_BINARY, "-p"])
+            ''')
+        self.assertEqual([relative for _, relative, _ in _seams(promoted)],
+                         ["promoted.py"])
 
     def test_a_module_that_only_names_hosts_is_not_a_seam(self):
         """A data module listing the families launches nothing. Flagging it
