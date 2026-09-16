@@ -306,3 +306,96 @@ class TestUuidIdentityKeysAreNotSecrets(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOnlyThePemRuleMayCrossAQuote(unittest.TestCase):
+    """#1639 P11 round 3 NF2: the flat pass is what a NON-JSON capture gets
+    (spotbugs' XML) and what a stderr excerpt gets, and its safety argument --
+    stated in `redact.py`, in `run_tools._redact_capture` and in PANOPTICON.md --
+    is that a match cannot run out of one field and into the next, because every
+    pattern is anchored to a character class that excludes `"`.
+
+    Exactly one rule is exempt: the PEM body, which MUST cross quotes (source
+    code embeds a key one double-quoted literal per line) and is bounded by
+    length instead. Nothing pinned any of that until now, so a future rule
+    written with `[\\s\\S]`, a DOTALL `.`, or a class containing `"` could
+    silently re-open #1639's structure defect on the one path that has no parse.
+
+    The pattern list comes from the module, never a copy, and the corpus below
+    must exercise every entry in it -- so a new rule that no sample matches
+    fails `test_every_pattern_is_exercised_by_the_corpus` rather than slipping
+    through this guard untested.
+    """
+
+    # One well-formed sample per rule in `redact._PATTERNS`. Not credentials:
+    # every body is filler of the right shape and length.
+    SAMPLES = (
+        "ghp_" + "A" * 36,
+        "github_pat_" + "b" * 40,
+        "sk-" + "C" * 32,
+        "Authorization: Bearer " + "D" * 24,
+        "AKIA1234567890ABCDEF",
+        "xoxb-1234567890-abcdefghij",
+        "AIza" + "E" * 35,
+        "xapp-1-" + "F" * 20,
+        "glpat-" + "G" * 24,
+        "npm_" + "H" * 36,
+        "hf_" + "I" * 34,
+        "pypi-" + "J" * 40,
+        "SG." + "K" * 22 + "." + "L" * 43,
+        "dop_v1_" + "a1b2c3d4" * 8,
+        "sk_live_" + "M" * 24,
+        "eyJ" + "N" * 12 + ".eyJ" + "O" * 12 + "." + "P" * 20,
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIBfiller\n-----END RSA PRIVATE KEY-----",
+        "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+    )
+
+    def _pem_rule(self):
+        """The one exempt rule, identified by its own source rather than by
+        position, so reordering `_PATTERNS` cannot silently exempt another."""
+        pem = [pat for pat, _repl in redact._PATTERNS
+               if "PRIVATE KEY" in pat.pattern]
+        self.assertEqual(len(pem), 1, "expected exactly one PEM rule: %s" % pem)
+        return pem[0]
+
+    def _probes(self, sample):
+        """A quote INSIDE a token, and a quote between two of them -- the two
+        shapes a JSON/XML field boundary actually takes."""
+        mid = len(sample) // 2
+        return (sample[:mid] + '"' + sample[mid:],
+                sample + '", "' + sample)
+
+    def test_no_rule_but_the_pem_body_matches_across_a_quote(self):
+        pem = self._pem_rule()
+        offenders = []
+        for pat, _repl in redact._PATTERNS:
+            if pat is pem:
+                continue
+            for sample in self.SAMPLES:
+                for probe in self._probes(sample):
+                    for m in pat.finditer(probe):
+                        if '"' in m.group(0):
+                            offenders.append((pat.pattern, m.group(0)[:80]))
+        self.assertEqual(offenders, [],
+                         "a rule other than the PEM body spans a quote: %s"
+                         % offenders)
+
+    def test_the_pem_rule_really_does_cross_a_quote(self):
+        """Non-vacuity: the probe shape CAN express a crossing, so the guard
+        above is capable of failing. This is also the behaviour round 2 restored
+        -- a key quoted out of C/Java source one literal per line."""
+        probe = ('KEY = ("-----BEGIN RSA PRIVATE KEY-----\\n"\n'
+                 '       "MIIBfiller\\n"\n'
+                 '       "-----END RSA PRIVATE KEY-----")')
+        m = self._pem_rule().search(probe)
+        self.assertIsNotNone(m)
+        self.assertIn('"', m.group(0))
+
+    def test_every_pattern_is_exercised_by_the_corpus(self):
+        """The guard above is only as good as its corpus: a rule that matches
+        nothing here would be checked vacuously. Add a sample when you add a
+        rule."""
+        unexercised = [pat.pattern for pat, _repl in redact._PATTERNS
+                       if not any(pat.search(s) for s in self.SAMPLES)]
+        self.assertEqual(unexercised, [],
+                         "add a well-formed sample for: %s" % unexercised)

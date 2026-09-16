@@ -790,7 +790,10 @@ def _redact_capture(tool, data):
     one quoted literal per line -- is bounded to 16 KiB and cannot span two
     `-----BEGIN` blocks. So a flat-pass match over a structured document is
     bounded rather than open-ended; it is not the guarantee parsing gives, which
-    is why JSON never takes this path.
+    is why JSON never takes this path. That length bound has a cost worth
+    knowing before you publish a capture: a PEM block whose body runs longer
+    than 16 KiB is not masked AT ALL -- header included -- so a capture quoting
+    one very large key can still carry it verbatim.
 
     Whichever path runs, it is `scripts/redact.py`'s pattern set -- never a
     second copy: two redactors drift, and the one reached only by raw captures
@@ -809,7 +812,10 @@ def _redact_capture(tool, data):
     returned as the exact bytes the scanner produced, so all fifteen committed
     real-scanner goldens are byte-identical through this function and a payload
     that is not valid UTF-8 (decoded here with errors="replace") is never
-    rewritten by a pass that had nothing to do.
+    rewritten by a pass that had nothing to do. When the pass DOES fire on such
+    a payload its bytes are not preserved: it was decoded with replacement, so
+    every byte that was not valid UTF-8 comes back as U+FFFD alongside the
+    masked secret.
     """
     _REDACTED_CAPTURES.add(tool)
     text = data.decode("utf-8", errors="replace")
