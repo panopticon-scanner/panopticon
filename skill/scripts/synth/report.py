@@ -258,7 +258,16 @@ def assemble(run, resolved, reconciled, graded, cost):
                 # F2: stated on EVERY report, `false` included -- the absence
                 # of a warning has to mean "measured and did not happen", the
                 # same rule surface 3 applies to the host posture.
-                "disabled_mid_run": bool(run.tools_disabled_mid_run)},
+                "disabled_mid_run": bool(run.tools_disabled_mid_run),
+                # #1646: the dependency audit is PARTIAL by construction now --
+                # pip-audit is handed a generated requirements list, because
+                # resolving an editable/local/VCS/URL requirement runs the
+                # reviewed repo's build backend. Which lines were left out
+                # rides here, off the runner's manifest (repaired at that read),
+                # so "pip-audit: produced" cannot be read as "every declared
+                # dependency was checked". `{}` means no manifest -- nothing
+                # measured, not nothing dropped.
+                "sanitized": reconciled.tools_sanitized},
             "integrity": reconciled.integrity,
             "cost": cost,
             # 5.1 surface 2: the verified host posture, verbatim off the

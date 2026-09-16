@@ -394,6 +394,41 @@ def partition_by_exclusion(adapters, target, exclude_globs):
     return required, excluded_scope
 
 
+def collect_sanitization(adapters, target):
+    """`{adapter: report}` for every adapter that discloses what it did NOT scan.
+
+    The sibling of `partition_by_exclusion` and the same shape of channel: the
+    runner asks the adapter a question ON THE HOST, in process, and hands the
+    answer to `write_manifest`. An adapter answers by exposing
+    `sanitization_report(target)`; today only pip-audit does (#1646), where the
+    answer is "these requirement lines were not audited, because auditing them
+    would have run the target's build backend".
+
+    A parallel field, never an overload of `excluded_scope`: that one names
+    adapters whose whole surface fell outside the gate's scope, and folding a
+    PARTIAL audit into it would read as "this adapter was not required".
+
+    Tolerant: the method reads target-controlled files, so a crash inside it
+    must cost the disclosure, never the scan. The failure is announced --
+    silently dropping the disclosure is the same species of hole the field
+    exists to close.
+    """
+    out = {}
+    for name, adapter in sorted(adapters.items()):
+        reporter = getattr(adapter, "sanitization_report", None)
+        if not callable(reporter):
+            continue
+        try:
+            report = reporter(target)
+        except Exception as exc:   # noqa: BLE001 -- disclosure must not sink the scan
+            print("adapter %s could not report what it sanitized: %s" % (name, exc),
+                  file=sys.stderr)
+            continue
+        if isinstance(report, dict):
+            out[name] = report
+    return out
+
+
 def filter_online(chosen, online):
     """Drop ONLINE_ONLY adapters unless --online was given, with a notice."""
     if online:
@@ -406,6 +441,19 @@ def filter_online(chosen, online):
                   file=sys.stderr)
     return kept
 
+
+# #1646 C1(b): the container working directory for adapters that must NOT
+# resolve a relative name against the reviewed repository. The image ends
+# `WORKDIR /src` and `/src` is the target mount, so pip -- which decides a
+# requirement is a local archive on a bare SUFFIX match, before it considers
+# whether the string looks like a path -- would find a committed `evil.tar.gz`
+# and run its build backend. Docker CREATES a `-w` directory that does not
+# exist, so this one is empty by construction and needs nothing in the image.
+# Scoped to the adapters that need it, not applied globally: every other
+# adapter's argv stays byte-identical, and a tool that legitimately reads the
+# tree relative to `/src` must not be moved out from under itself.
+ADAPTER_EMPTY_CWD = "/panopticon-empty-cwd"
+ADAPTERS_NEEDING_EMPTY_CWD = ("pip-audit",)
 
 MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 
@@ -933,6 +981,8 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
                       + _privilege_drop_flags())
             if tool not in ONLINE_ONLY:
                 docker.extend(["--network", "none"])
+            if tool in ADAPTERS_NEEDING_EMPTY_CWD:
+                docker.extend(["-w", ADAPTER_EMPTY_CWD])
             # Mount the checkout's adapter code over the image's baked-in copy
             # so local adapter fixes take effect without an image rebuild
             # (calibration 2026-08-03: fixed adapters silently kept failing
@@ -960,7 +1010,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
 
 
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
-                   excluded_dirs=(), depth_bound=VENV_MAX_DEPTH):
+                   excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
@@ -977,6 +1027,15 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     the list is bounded rather than exhaustive. Additive: both fields are new in
     this schema version and every consumer reads them optionally, so an older
     manifest without them still loads.
+
+    `sanitized` (#1646) is what an adapter refused to hand its scanner, per
+    adapter: `{"pip-audit": {"source", "kept", "dropped": [{"line", "reason"}],
+    "hashes_stripped"}}`. pip-audit is now given a GENERATED requirements file
+    holding only bare PEP 508 lines, because resolving an editable/local/VCS/URL
+    requirement runs the reviewed repo's build backend -- so the dependency
+    audit can be PARTIAL, and this is where it says by how much and which lines.
+    Stated on every manifest, `{}` included, so its absence cannot be read as
+    "nothing was dropped" on a run that never measured.
 
     `redacted` (#1639 P11) says whether every capture this run wrote went
     through the redaction choke point, read off the ledger `_redact_capture`
@@ -998,6 +1057,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "redacted": bool(produced) and all(
                    tool in _REDACTED_CAPTURES for tool in produced),
                "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope)),
+               "sanitized": dict(sanitized or {}),
                "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"])}
                                  for d in excluded_dirs or ()],
                "depth_bound": depth_bound}
@@ -1056,6 +1116,12 @@ def main(argv=None):
         languages = a.languages or detect_languages(a.target)
         chosen = select_tools(languages, a.deps) + phase1 + phase2
     effective = filter_online(chosen, a.online)
+    # #1646: what the adapters refused to hand their scanners. Computed from the
+    # EFFECTIVE set (an adapter filtered out offline audited nothing, so it has
+    # nothing to disclose) and before the docker check, because the answer is a
+    # filesystem read that holds on the skip path too.
+    sanitized = collect_sanitization(
+        {t: ADAPTERS[t] for t in effective if t in ADAPTERS}, a.target)
     venv_dirs = find_virtualenvs(a.target)   # #1638 P09: one walk, two consumers
     if not docker_available():
         print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
@@ -1070,13 +1136,15 @@ def main(argv=None):
         # no docker, so `effective` is a faithful record of what WOULD have run.
         if a.manifest:
             write_manifest(a.manifest, effective, [], excluded_scope=excluded_scope,
-                           run_id=a.run_id, excluded_dirs=venv_dirs)
+                           run_id=a.run_id, excluded_dirs=venv_dirs,
+                           sanitized=sanitized)
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
                       progress=make_progress(a.progress), venv_dirs=venv_dirs)
     if a.manifest:
         write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
-                       run_id=a.run_id, excluded_dirs=venv_dirs)
+                       run_id=a.run_id, excluded_dirs=venv_dirs,
+                       sanitized=sanitized)
     print("\n".join(paths))
     return 0
 

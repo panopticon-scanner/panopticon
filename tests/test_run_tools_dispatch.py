@@ -216,6 +216,27 @@ class TestAdapterSelection(unittest.TestCase):
             self.assertEqual(payload["produced"], [])
             self.assertEqual(payload["missing"], ["fake"])
 
+    def test_pip_audit_container_works_outside_the_target_mount(self):
+        # #1646 C1(b): the image ends `WORKDIR /src` and /src IS the target
+        # mount, so pip resolves a cwd-relative archive name inside the
+        # reviewed repo. pip-audit gets an explicit empty working directory;
+        # no other adapter's argv is touched.
+        calls = {}
+        fake = _FakeResult(returncode=0, stdout=b'{"dependencies":[]}', stderr=b'')
+
+        def runner(cmd, **kw):
+            calls[cmd[-1]] = cmd     # the adapter name is the last argv token
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            out_dir = os.path.join(d, "out")
+            rt.run_tools(d, ["pip-audit", "osv-scanner"], out_dir,
+                         image="panopticon-tools", runner=runner, online=True)
+        pip_argv = calls["pip-audit"]
+        self.assertIn("-w", pip_argv)
+        self.assertEqual(pip_argv[pip_argv.index("-w") + 1], rt.ADAPTER_EMPTY_CWD)
+        self.assertNotIn("/src", [pip_argv[pip_argv.index("-w") + 1]])
+        self.assertNotIn("-w", calls["osv-scanner"])
+
     def test_run_tools_uses_readonly_src_mount_for_phase2_build_adapters(self):
         calls = []
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')

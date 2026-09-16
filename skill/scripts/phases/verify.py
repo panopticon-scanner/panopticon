@@ -17,6 +17,7 @@ from . import runio
 from . import coverage
 from . import requests
 from . import review
+from . import tools
 
 
 # #1521 (OPS-D1A): `_render_findings` embedded a whole cell into the advisor
@@ -317,9 +318,9 @@ def verify_execute(review_root, manifest):
         return backup
     # TOOL round (#5.0-03): dispatch a per-finding advisor for each tool finding
     # so synthesize can promote tool_confirmed and stop counting them unanswered.
-    tools = _verify_tools_execute(review_root, manifest, host)
-    if tools is not None:
-        return tools
+    tool_round = _verify_tools_execute(review_root, manifest, host)
+    if tool_round is not None:
+        return tool_round
     return engine.PhaseResult(kind="advanced", message="verify: all cells verified")
 
 def verify_done(review_root, manifest):
@@ -645,6 +646,7 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
     prompt = ("Repo root: %s\nEvery relative path in the claim below resolves "
               "against this root -- read files THERE, never in your session's "
               "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
+    prompt = tools.partial_audit_note(review_root, safe_finding) + prompt
     host_ev = runio.host_evidence(review_root)
     enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
     # #1344 F4 (a): derived, not a literal -- advisor.md grants no Write, so

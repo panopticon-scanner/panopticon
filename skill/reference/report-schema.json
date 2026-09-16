@@ -112,6 +112,52 @@
             "disabled_mid_run": {
               "type": "boolean",
               "description": "True when this run started with the tool scan enabled and had it switched off with --no-tools while in flight (#1637 P08) -- the non-destructive rescue from a scanner environment that moved after the scouts were paid for. Distinct from a run that never had tools at all, and stated on every report (false included) so its absence cannot be read as its not having been measured."
+            },
+            "sanitized": {
+              "type": "object",
+              "description": "What an adapter refused to hand its scanner, per adapter, copied off `tools-manifest.json` (#1646). pip-audit is given a GENERATED requirements file holding only bare PEP 508 lines, because resolving an editable/local/VCS/URL requirement runs the reviewed repository's PEP 517 build backend -- so the dependency audit can be PARTIAL, and this says by how much and which lines. `{}` on a run with no tools manifest: nothing was measured, which is not the same claim as nothing was dropped. The manifest is target-writable, so `synth.validate_schema.repair_tools_sanitized` normalizes it to the types pinned here at the read (a malformed row costs a warning and the row, never the run).",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "description": "The repo-relative manifest the lines came from (`requirements.txt`, `pyproject.toml`). Relative, never absolute: the report is published and an absolute path would carry the scanner host's layout into it. A candidate manifest that resolved OUTSIDE the target -- a symlinked `requirements.txt` -- is treated as absent and named here as `<name> outside target`, so a repo whose manifest escapes the tree cannot read like a repo that has none."
+                  },
+                  "kept": {
+                    "type": "integer",
+                    "description": "How many lines were audited -- the size of the generated file the scanner was actually given."
+                  },
+                  "dropped": {
+                    "type": "array",
+                    "description": "One row per line that was NOT audited. URL credentials are masked at the producer (scripts.tools.pip_audit), because these lines are target-authored text.",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "line": {
+                          "type": "string",
+                          "description": "The line as evaluated: `\\` continuations joined, comments and `--hash=` tokens removed, credentials masked."
+                        },
+                        "reason": {
+                          "type": "string",
+                          "description": "Why it could not be audited. One of: `editable`; `local path`; `archive name` (a bare name pip resolves as a local archive on a suffix match -- `evil.tar.gz` -- before it considers whether the string looks like a path at all); `vcs url`; `direct url`; `option line`; `include` (a `-r`/`-c` the pure grammar classified but did not resolve -- the pyproject branch never resolves includes, so this reaches the manifest there); `include outside target`; `nested include`; `include unreadable`; `unparseable`."
+                        }
+                      }
+                    }
+                  },
+                  "hashes_stripped": {
+                    "type": "boolean",
+                    "description": "True when at least one `--hash=` token was removed from a kept line. pip-audit does not need them, and one left in would impose `--require-hashes` semantics the generated file cannot satisfy."
+                  },
+                  "truncated": {
+                    "type": "boolean",
+                    "description": "True when the source manifest was larger than the adapter would read (1 MiB or 20,000 lines, whichever bit first), so lines beyond the bound were neither audited nor disclosed. The read is capped because this text is target-authored and lands in two published artifacts; the cap is stated rather than applied silently, which would be a second partial audit nobody was told about."
+                  },
+                  "dropped_truncated": {
+                    "type": "integer",
+                    "description": "How many further dropped lines exist beyond the 200 listed in `dropped`. 0 when the list is complete. The rows are capped for the same reason the read is; the COUNT is always exact."
+                  }
+                }
+              }
             }
           }
         },

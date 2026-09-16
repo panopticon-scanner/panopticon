@@ -63,6 +63,48 @@ def tools_done(review_root, manifest):
     attempt = marker.get("attempt_invocation")
     return attempt is not None and attempt == manifest.get("invocation")
 
+def partial_audit_note(review_root, finding):
+    """The prompt preamble telling a tool advisor that its scanner's coverage
+    was PARTIAL, or "" when it was not (#1646).
+
+    pip-audit is handed a GENERATED requirements list -- resolving an editable,
+    local, VCS or URL requirement would run the reviewed repository's PEP 517
+    build backend -- so the dependency audit can be incomplete. advisor.md tells
+    the advisor to "verify the package and version are actually present" before
+    confirming a dependency claim, and an advisor reasoning from an audit it
+    believes to be complete will read a package's absence from it as evidence.
+    It is not. This says so, with the count off THIS run's manifest.
+
+    Scoped to the adapter the claim came from: a bandit advisor has no use for
+    pip-audit's coverage, and a prompt that tells every advisor everything is a
+    prompt nobody reads. Silent when nothing was dropped, when there is no
+    manifest, and on every shape that is not the one the field promises -- the
+    file is target-writable, so a malformed block costs the note, never the
+    dispatch.
+    """
+    source = finding.get("source") if isinstance(finding, dict) else None
+    if not isinstance(source, str) or not source.startswith("tool:"):
+        return ""
+    tool = source[len("tool:"):]
+    sanitized = (runio._load_json(runio._pano(review_root, "tools-manifest.json"))
+                 or {}).get("sanitized")
+    row = sanitized.get(tool) if isinstance(sanitized, dict) else None
+    dropped = row.get("dropped") if isinstance(row, dict) else None
+    if not isinstance(dropped, list) or not dropped:
+        return ""
+    # The published `dropped` list is capped at 200 rows with the remainder
+    # counted, so the LISTED rows understate a large partial audit. State the
+    # true total; the list is the sample.
+    more = row.get("dropped_truncated")
+    total = len(dropped) + (more if isinstance(more, int)
+                            and not isinstance(more, bool) else 0)
+    return ("Scanner coverage: %s audited a GENERATED dependency list, not this "
+            "repository's own file -- %s: %d requirement lines not audited "
+            "(editable/local/VCS). A package's ABSENCE from that audit is not "
+            "evidence the repository does not require it; `tools-manifest.json` "
+            "lists every line under `sanitized`.\n\n" % (tool, tool, total))
+
+
 def tools_execute(review_root, manifest):
     if (manifest.get("flags") or {}).get("tools") is False:
         runio._write_json(runio._pano(review_root, "tools-ran.json"),

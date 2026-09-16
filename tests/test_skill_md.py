@@ -460,6 +460,27 @@ class TestSkillMd(unittest.TestCase):
                       "`redacted: true`", "last line break"]:
             self.assertIn(token, tools, token)
 
+    def test_pip_audit_is_documented_as_auditing_a_generated_list(self):
+        # #1646 (SEC-E3A): pip-audit RESOLVES what a requirements file names,
+        # and an editable/local/VCS/URL requirement makes that run the reviewed
+        # repo's build backend. The guide has to say that the file it is given
+        # is GENERATED, that the audit is therefore partial, and where an
+        # operator finds out by how much -- otherwise "pip-audit: produced"
+        # keeps reading as "every declared dependency was checked".
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        tools = _section(loop, "`tools`**", "`review`**")
+        for token in ["generated", "sanitized", "PEP 517", "PEP 508",
+                      "tools-manifest.json", "meta.tools.sanitized",
+                      "requirement lines not audited", "one level",
+                      # Fix round 1: the two controls the first cut lacked and
+                      # the bounds on what it publishes. An operator reading
+                      # "no URL, no path" has to learn that pip decides a name
+                      # is an archive on a SUFFIX, and that the disclosure is
+                      # capped rather than complete.
+                      "ARCHIVE_EXTENSIONS", "archive name", "working directory",
+                      "outside target", "1 MiB", "200"]:
+            self.assertIn(token, tools, token)
+
     def test_tools_dir_is_wired_into_synthesize_passes(self):
         # F-2: a scan that runs but is never ingested reads as clean. 5.0:
         # the tool scan is a driver PHASE now, wired into the driver's own

@@ -1200,6 +1200,59 @@ class TestScannerContextLine(unittest.TestCase):
         self.assertNotIn("Scanner context:", hr.render(_minimal_report()))
 
 
+class TestPartialDependencyAuditLine(unittest.TestCase):
+    """#1646 ruling 3: pip-audit now audits a GENERATED requirements list, so
+    the dependency audit can be partial. A person reading the report must meet
+    that beside the tool coverage -- "pip-audit: produced" otherwise reads as
+    "every declared dependency was checked"."""
+
+    def _report(self, sanitized):
+        report = _minimal_report()
+        report["meta"]["tools"] = {"sanitized": sanitized}
+        return report
+
+    def test_the_header_names_the_tool_and_the_count(self):
+        html_out = hr.render(self._report({"pip-audit": {
+            "source": "requirements.txt", "kept": 2,
+            "dropped": [{"line": "-e .", "reason": "editable"},
+                        {"line": "./v/p", "reason": "local path"},
+                        {"line": "git+https://x/y", "reason": "vcs url"}]}}))
+        self.assertIn("Scanner context:", html_out)
+        self.assertIn("pip-audit: 3 requirement lines not audited "
+                      "(editable/local/VCS)", html_out)
+
+    def test_the_count_is_the_true_total_not_the_listed_rows(self):
+        # #1646 fix round 1 C2(c): `dropped` is capped at 200 rows and the
+        # remainder counted. Printing len(dropped) would understate a partial
+        # audit by exactly the amount the cap hid.
+        html_out = hr.render(self._report({"pip-audit": {
+            "source": "requirements.txt", "kept": 0,
+            "dropped": [{"line": "-e .", "reason": "editable"}],
+            "dropped_truncated": 299}}))
+        self.assertIn("pip-audit: 300 requirement lines not audited", html_out)
+
+    def test_a_malformed_remainder_does_not_inflate_the_count(self):
+        html_out = hr.render(self._report({"pip-audit": {
+            "dropped": [{"line": "-e .", "reason": "editable"}],
+            "dropped_truncated": "lots"}}))
+        self.assertIn("pip-audit: 1 requirement lines not audited", html_out)
+
+    def test_a_fully_audited_run_says_nothing(self):
+        html_out = hr.render(self._report({"pip-audit": {
+            "source": "requirements.txt", "kept": 5, "dropped": []}}))
+        self.assertNotIn("requirement lines not audited", html_out)
+
+    def test_a_report_that_never_measured_this_says_nothing(self):
+        self.assertNotIn("requirement lines not audited",
+                         hr.render(_minimal_report()))
+
+    def test_a_malformed_block_renders_no_line_rather_than_a_traceback(self):
+        for bad in ("nope", {"pip-audit": "nope"}, {"pip-audit": {"dropped": 7}}):
+            with self.subTest(value=repr(bad)):
+                self.assertNotIn("requirement lines not audited",
+                                 hr.render(self._report(bad)))
+
+
 class TestAMidRunToolsDowngradeIsVisible(unittest.TestCase):
     """#1637 P08 F2: a person reading the report must meet the downgrade
     without opening JSON -- it changed what every panel after it was shown."""

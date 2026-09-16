@@ -196,8 +196,16 @@ def _build_report(tmpdir):
     sarif_path = os.path.join(tools, "bandit.sarif")
     with open(sarif_path, "w", encoding="utf-8") as fh:
         json.dump(sarif, fh)
+    # M3/#1646: a NON-EMPTY `sanitized` block, so the walk descends into the
+    # per-tool row and its `dropped[]` item shape rather than stopping at an
+    # empty map. It is written through the real writer, like everything else here.
     run_tools.write_manifest(os.path.join(run_dir, "tools-manifest.json"),
-                             ["bandit"], [sarif_path], run_id="parity-run")
+                             ["bandit"], [sarif_path], run_id="parity-run",
+                             sanitized={"pip-audit": {
+                                 "source": "requirements.txt", "kept": 2,
+                                 "dropped": [{"line": "-e .", "reason": "editable"}],
+                                 "hashes_stripped": True,
+                                 "truncated": False, "dropped_truncated": 0}})
 
     # The 5.2 host posture, in the artifact's own shape (state/by/detail).
     with open(os.path.join(run_dir, "host-capabilities.json"), "w",
@@ -336,6 +344,10 @@ class TestSchemaParity(unittest.TestCase):
                         "no missing floor cell: that section's item shape is unwalked")
         self.assertTrue(meta["host_capabilities"]["capabilities"],
                         "no capability row: the state/by/detail triple is unwalked")
+        # #1646: same reason -- an empty `sanitized` map leaves the per-tool row
+        # and its `dropped[]` item shape unwalked.
+        self.assertTrue(meta["tools"]["sanitized"]["pip-audit"]["dropped"],
+                        "no dropped requirement line: that item shape is unwalked")
 
     def test_no_report_key_is_undescribed_by_the_schema(self):
         drift = _drift(self.report)
