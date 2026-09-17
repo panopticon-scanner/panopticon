@@ -142,8 +142,11 @@ class TestRunChildCapture(_ChildCase):
         self.assertNotIn("LAST", proc.stdout)
 
     def test_one_enormous_line_is_still_bounded(self):
-        # The byte ceiling has to hold on a stream with no newline in it at all;
-        # a line-based reader would have held the whole thing to find one.
+        # The byte ceiling has to hold on a stream with no newline in it at
+        # all. `readline(_CAPTURE_CHUNK)` is bounded BY that chunk as well as by
+        # the newline, so this arrives in 64 KiB slices; an unbounded
+        # `readline()` would have held the whole 8 MiB looking for a newline
+        # that is not there.
         proc = self._child("import sys\n"
                            "sys.stdout.write('y' * 8 * 1024 * 1024)\n")
         self.assertLess(len(proc.stdout), child.CAPTURE_BYTES_MAX + 200)
@@ -226,3 +229,65 @@ class TestATimeoutReachesTheWholeProcessTree(_ChildCase):
                                       start_new_session=True)
         proc.wait()
         child._kill_group(proc, grace=0.1)     # must not raise
+
+
+class TestTheHeadSurvivesAReaderThatIsCutOff(_ChildCase):
+    """Item 24 R1-2: the head was published only at EOF, so a reader joined out
+    at `_READER_JOIN_GRACE` yielded NOTHING.
+
+    Measured: a child writes a diagnostic line, spawns a worker that inherits
+    its stdout/stderr, and exits non-zero. `proc.wait()` returns at once, but
+    the worker holds the write ends, so no EOF ever arrives -- and the reader
+    was blocked inside `stream.read(_CAPTURE_CHUNK)`, which returns only when
+    the full chunk or EOF is available. Both readers were joined out in turn,
+    `into[name]` had never been assigned, and `_run_child` returned
+    `stdout == stderr == ""` ten seconds later. `phases/tools.py` then recorded
+    "tool scan crashed" with the reason it had been handed deleted.
+
+    The reason a child gives for dying is the single most valuable thing it
+    produces. It has to survive a reader that never reaches EOF.
+    """
+
+    def _worker_holder(self, pidfile):
+        return ("import subprocess, sys\n"
+                "sys.stdout.write('DIAGNOSTIC: adapter exploded\\n')\n"
+                "sys.stderr.write('Traceback: the reason\\n')\n"
+                "sys.stdout.flush(); sys.stderr.flush()\n"
+                "p = subprocess.Popen([sys.executable, '-c',"
+                " 'import time; time.sleep(30)'])\n"
+                "open(%r, 'w').write(str(p.pid))\n"
+                "sys.exit(4)\n" % pidfile)
+
+    def _reap(self, pidfile):
+        try:
+            pid = int(open(pidfile, encoding="utf-8").read())
+        except (OSError, ValueError):       # pragma: no cover - never written
+            return
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    def test_the_diagnostic_survives_and_the_join_is_bounded(self):
+        pidfile = os.path.join(self.root, "worker.pid")
+        self.addCleanup(self._reap, pidfile)
+        started = time.monotonic()
+        proc = self._child(self._worker_holder(pidfile), timeout=60)
+        elapsed = time.monotonic() - started
+        self.assertEqual(proc.returncode, 4)
+        self.assertIn("DIAGNOSTIC: adapter exploded", proc.stdout)
+        self.assertIn("Traceback: the reason", proc.stderr)
+        # Both readers are cut off, and the two joins share ONE deadline --
+        # otherwise the bound is per-reader and the driver stalls for twice it.
+        self.assertLess(elapsed, child._READER_JOIN_GRACE + 4,
+                        "the join grace is per-reader, not shared")
+
+    def test_a_cut_off_head_says_so(self):
+        # A head that stops early must never read as a complete one -- the same
+        # rule the `[cut N characters]` marker exists for.
+        pidfile = os.path.join(self.root, "worker.pid")
+        self.addCleanup(self._reap, pidfile)
+        proc = self._child(self._worker_holder(pidfile), timeout=60)
+        self.assertIn("… [", proc.stdout)
+        self.assertNotIn("… [", self._child(
+            "import sys\nsys.stdout.write('done\\n')\n").stdout)

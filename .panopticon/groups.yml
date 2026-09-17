@@ -99,7 +99,9 @@ groups:
       # `Orchestration:Phases_1`, a name the matrix has no entry for, and that
       # cell is then reviewed with an empty test inventory (the #1638 P13
       # defect). The negation is how the glob above stops claiming it first;
-      # `match:`/`tests:` are one gitignore-style last-match-wins list.
+      # `match:`/`tests:` are one gitignore-style last-match-wins list. This is
+      # the FIRST `!` entry in this file -- nothing above it is a precedent to
+      # read off, so it is spelled out here rather than assumed.
       - '!skill/scripts/phases/child.py'
       - skill/scripts/orchestrate.py
       - skill/scripts/progress.py
@@ -151,9 +153,14 @@ groups:
       - skill/scripts/ledger.py
       # item 24: the driver's phase children (spawn, timeout, bounded capture,
       # process-group kill), moved out of `phases/runio.py`. Parked here for the
-      # reason money.py and ledger.py above are -- `Orchestration:Phases`, where
-      # it belongs, is full at 48/48 -- and `Phases` negates it so this claim
-      # wins. It moves back when the Phases split lands.
+      # same REASON money.py and ledger.py above are -- `Orchestration:Phases`,
+      # where it belongs, is full at 48/48 -- but by a different MECHANISM, and
+      # the difference matters to whoever edits this next: those two live
+      # outside `phases/`, so no glob ever claimed them and parking them here
+      # took nothing but this line. `phases/child.py` IS under `phases/**`, so
+      # `Phases` has to be made to stop claiming it first. The `!` negation
+      # above is the only one in this file; there is no precedent above it to
+      # copy. It goes away when the Phases split lands.
       - skill/scripts/phases/child.py
       - skill/scripts/group_runner.py
       - skill/scripts/model_resolver.py

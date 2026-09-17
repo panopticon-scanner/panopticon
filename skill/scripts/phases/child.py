@@ -15,6 +15,7 @@ import os
 import signal
 import subprocess
 import threading
+import time
 
 import scripts.phases.runio as runio
 
@@ -60,30 +61,77 @@ _CHILD_TIMEOUT_DEFAULT = 600
 # lines, or one 50 MB line with no newline in it at all.
 CAPTURE_BYTES_MAX = 1 * 1024 * 1024
 CAPTURE_LINES_MAX = 20000
+# One read. `readline(n)` returns at the first newline OR after n characters,
+# whichever comes first -- NOT `read(n)`, which returns only once it has the
+# whole n or EOF. That distinction is the whole of R1-2: a child that writes a
+# diagnostic and exits leaves a worker holding the write end of the pipe, EOF
+# never arrives, and a `read(n)` reader sits inside one call with the
+# diagnostic already in its hands and no way to publish it.
 _CAPTURE_CHUNK = 65536
-# How long `_run_child` waits for a reader thread after the child is gone.
+# How long `_run_child` waits for its reader threads after the child is gone --
+# ONE deadline for both of them, not one each.
 _READER_JOIN_GRACE = 5
 
-def _capture(stream, into, name):
-    """Drain `stream` to EOF, leaving its bounded head in `into[name]`.
 
-    The marker names how many characters were dropped rather than merely that
-    something was, so a truncated diagnostic can never read as a complete one."""
-    kept, size, lines, cut = [], 0, 0, 0
-    while True:
-        chunk = stream.read(_CAPTURE_CHUNK)
-        if not chunk:
-            break
-        room = CAPTURE_LINES_MAX - lines
-        take = chunk[:max(0, CAPTURE_BYTES_MAX - size)] if room > 0 else ""
-        if take.count("\n") > room:
-            take = "".join(part + "\n" for part in take.split("\n")[:room])
-        kept.append(take)
-        size += len(take)
-        lines += take.count("\n")
-        cut += len(chunk) - len(take)
-    stream.close()
-    into[name] = "".join(kept) + ("\n\u2026 [cut %d bytes]" % cut if cut else "")
+class _Head:
+    """A child stream's bounded head, readable WHILE it is still being filled.
+
+    A reader thread can be cut off (joined out at `_READER_JOIN_GRACE` because a
+    descendant still holds the pipe, so EOF never comes). Publishing only at the
+    end of the drain therefore publishes nothing at all in exactly the case
+    where the child's own account of why it died is the only evidence there is.
+    So the head is live: the reader appends to `parts` and `_run_child` renders
+    whatever is there when it asks.
+
+    `parts` is appended to by one thread and joined by another. Under CPython
+    both are atomic, and the only race is whether the very last line read makes
+    it into a render happening at that instant -- harmless, and strictly better
+    than the empty string this replaces.
+    """
+
+    def __init__(self):
+        self.parts = []
+        self.chars = self.lines = self.cut = 0
+        self.complete = False
+
+    def text(self):
+        """What was kept, plus a marker for anything the reader did not keep.
+
+        Both facts are recorded, because they are different: `cut` is output the
+        CEILING dropped, `complete` is whether the stream was read to its end. A
+        truncated diagnostic must never read as a whole one either way."""
+        note = ""
+        if self.cut:
+            note += "\n\u2026 [cut %d bytes]" % self.cut
+        if not self.complete:
+            note += "\n\u2026 [reader cut off: the stream never reached EOF]"
+        return "".join(self.parts) + note
+
+
+def _capture(stream, head):
+    """Drain `stream` to EOF, keeping its bounded head in `head` as it arrives."""
+    try:
+        while True:
+            chunk = stream.readline(_CAPTURE_CHUNK)
+            if not chunk:
+                head.complete = True
+                return
+            room = CAPTURE_LINES_MAX - head.lines
+            take = chunk[:max(0, CAPTURE_BYTES_MAX - head.chars)] if room > 0 else ""
+            if take.count("\n") > room:
+                take = "".join(part + "\n" for part in take.split("\n")[:room])
+            head.parts.append(take)
+            head.chars += len(take)
+            head.lines += take.count("\n")
+            head.cut += len(chunk) - len(take)
+    finally:
+        # Whatever happens -- EOF, a decode error, the interpreter tearing the
+        # thread down -- the pipe is released. The head needs no publishing
+        # step here: it has been live since before this thread started.
+        try:
+            stream.close()
+        except OSError:                    # pragma: no cover - already closed
+            pass
 
 # #1575 (OPS-A1A): how long a timed-out group is given to exit on SIGTERM
 # before SIGKILL. Short on purpose -- the phase deadline has already passed.
@@ -143,8 +191,8 @@ def _run_child(cmd, review_root, phase, timeout=None):
                                 env=_child_env(), start_new_session=True)
     except OSError as exc:
         raise runio.DriverError("%s: could not spawn %s: %s" % (phase, name, exc))
-    out = {}
-    readers = [threading.Thread(target=_capture, args=(pipe, out, key), daemon=True)
+    out = {"stdout": _Head(), "stderr": _Head()}
+    readers = [threading.Thread(target=_capture, args=(pipe, out[key]), daemon=True)
                for key, pipe in (("stdout", proc.stdout), ("stderr", proc.stderr))]
     for reader in readers:
         reader.start()
@@ -154,11 +202,15 @@ def _run_child(cmd, review_root, phase, timeout=None):
         _kill_group(proc)              # #1575: the whole tree, not the direct PID
         raise runio.DriverError("%s: %s timed out after %ss" % (phase, name, timeout))
     finally:
-        # Bounded, and the readers are daemons. `_kill_group` ends everything
-        # that inherited the pipes, so EOF normally arrives at once -- but a
-        # descendant that escaped its group (one that called setsid itself)
-        # must not be able to make the driver join on it for ever.
+        # ONE deadline across both readers, and the readers are daemons.
+        # `_kill_group` ends everything that inherited the pipes, so EOF normally
+        # arrives at once -- but a descendant that escaped its group (or simply
+        # outlived a child that exited on its own) must not be able to make the
+        # driver wait `_READER_JOIN_GRACE` once per stream, which is the 10 s
+        # stall R1-2 measured. Whatever each reader has kept by then is already
+        # published; the grace buys the tail, never the head.
+        deadline = time.monotonic() + _READER_JOIN_GRACE
         for reader in readers:
-            reader.join(timeout=_READER_JOIN_GRACE)
+            reader.join(timeout=max(0.0, deadline - time.monotonic()))
     return subprocess.CompletedProcess(cmd, proc.returncode,
-                                       out.get("stdout", ""), out.get("stderr", ""))
+                                       out["stdout"].text(), out["stderr"].text())
