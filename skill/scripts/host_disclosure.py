@@ -11,6 +11,8 @@ the fix for it.
 5.1's wording rule, verbatim: "name the capability, the host, the probe, and
 the remedy. 'unenforced' alone is not a disclosure; it is a mood."
 """
+import hashlib
+
 # This repo has two directories named `scripts` with no __init__.py (repo-root
 # scripts/ and skill/scripts/). When imported flat (skill/scripts on
 # sys.path -- the standalone-script shape), the try arm raises
@@ -276,6 +278,51 @@ def _output_schema_line(envelope, host):
             "every reply either way"
             % (host, CLI_FLAGS_PROBE, row.get("detail") or "no detail recorded",
                row.get("flag") or "its")]
+
+
+def disclosure_digest(envelope):
+    """A stable fingerprint of everything the full block would SAY (#1596).
+
+    Over the rendered TEXT, not over the posture map, because the question a
+    caller asks it is "has the operator already been told this?" -- and the
+    `detail`, the remedies and the operational notes are all part of the
+    answer. A capability that stayed refuted for a NEW reason is a changed
+    disclosure even though its state did not move, and `driver` already
+    refreshes the artifact for exactly that case.
+
+    `probed_at` is excluded by construction: it is stamped fresh on every
+    probe and appears in no line, so an unchanged posture digests identically
+    on every invocation of a resumable loop.
+    """
+    body = "\n".join([headline(envelope)] + lines(envelope) + notes(envelope))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def unchanged_headline(envelope, since):
+    """The ONE line an invocation prints when it has said all this already.
+
+    Spec 5.1 says the posture is disclosed once per run; `driver run` is a
+    resumable loop, so the full block ran on every invocation -- ~120 KB of
+    byte-identical stderr across a self-scan (#1596). It is deliberately not
+    silence: a resumer must see the posture they are resuming under, and
+    "absence of warnings must mean measured and proven" forbids saying
+    nothing. So it names the host, BOTH counts (a headline that reported only
+    the unproven could go quiet by counting nothing), and when the full block
+    was printed.
+
+    Falls back to NO_EVIDENCE on an unreadable envelope for the same reason
+    `headline` does: a count of nothing must never render as the all-proven
+    case.
+    """
+    caps = _capabilities(envelope)
+    host = host_of(envelope)
+    if caps is None or host is None:
+        return NO_EVIDENCE
+    unproven_count = len(unproven_rows(envelope))
+    return ("host %r: %d of %d capabilities proven, %d not -- unchanged since "
+            "%s, when the full disclosure was printed (spec 5.1)"
+            % (host, len(hosts.CAPABILITIES) - unproven_count,
+               len(hosts.CAPABILITIES), unproven_count, since))
 
 
 def headline(envelope):
