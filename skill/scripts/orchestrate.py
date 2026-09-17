@@ -20,6 +20,7 @@ import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as runners_base
+import scripts.runners.batch as batch_mod
 import scripts.write_guard_hook as write_guard_hook
 
 DEFAULT_MAX_ITERATIONS = 50
@@ -27,6 +28,13 @@ DEFAULT_MAX_ITERATIONS = 50
 # a CLI flag: it is a safety rail, not a tuning knob -- an operator who wants a fourth attempt
 # re-runs, which resumes from disk and starts every streak at zero.
 MAX_ENTRY_FAILURES = 3
+# #1662: the two sentences a Ctrl-C ends a run with. Constants because
+# docs/PANOPTICON.md quotes the first one back and the guide test reads it.
+INTERRUPTED = ("interrupted: %d of %d entries were completed and have been rolled "
+               "back; the phase will re-run from its checkpoint on the next "
+               "`driver loop`; use `--reset` to discard the whole run")
+INTERRUPTED_IDLE = ("interrupted: no batch was in flight, so nothing was rolled back; "
+                    "re-run to resume, or use `--reset` to discard the whole run")
 
 
 def _after_first_run(review_root):
@@ -313,6 +321,9 @@ def loop(args):
     # fourth honest attempt at a cell.
     failures, last_error = {}, {}
     done, total = 0, 0        # this batch's progress, read by the handlers below
+    # #1662: what a Ctrl-C has to take back. Bound BEFORE the try, because the
+    # interrupt can land before the first batch ever opens one.
+    batch, pending, handled, req = None, [], [], {}
     try:
         # M8: the pre-loop setup lives INSIDE the try. `loop` never raises (review round 1, item
         # 3), but every line of it touches the filesystem -- resolving the run folder, writing
@@ -397,14 +408,21 @@ def loop(args):
                 runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
                 return _dispatch_exit(review_root, req, pending, namespace)
             done, total = 0, len(pending)
+            handled = []
+            # #1662: the list the rollback deletes, written BEFORE the first
+            # submit -- taking a cancelled batch back must never be a glob
+            # over the run folder, which would reach a prior phase's outputs
+            # and, on a redteam target, whatever the tree planted next to them.
+            batch = batch_mod.Batch(run_dir, iterations,
+                                    req.get("checkpoint"), pending).open()
             # P07 (#1636): persisted, ledgered and counted into usage.json the moment EACH entry
             # finishes, so an interrupt keeps everything already yielded and `done`/`total` say
             # how much that was. `closing` because an exception here abandons the generator: it
             # drains the pool now, before `_finish` tears the guards and the runner's scratch area
             # down, rather than at GC's convenience.
             with contextlib.closing(runner.iter_batch(
-                    pending, getattr(args, "concurrency", None), guards.env_for)) as batch:
-                for entry, result, timing in batch:
+                    pending, getattr(args, "concurrency", None), guards.env_for)) as stream:
+                for entry, result, timing in stream:
                     eid = entry.get("id")
                     # The reply is persisted BEFORE the ledger row is written, so
                     # the row can record a refusal as the failed launch it is.
@@ -429,8 +447,14 @@ def loop(args):
                                                           kind=persist.LAUNCH_FAILURE)
                         print("driver loop: entry %s failed: %s" % (eid, result.error),
                               file=sys.stderr, flush=True)
+                    if rejected:
+                        # #1662: not knowable at `open` (retain_rejected names
+                        # the record only once it has written it), and it is
+                        # this batch's output like any other.
+                        batch.add_artifact(eid, rejected)
                     ledger.record(entry, req.get("checkpoint"), result, mode, runner.host,
                                   refusal=refusal, timing=timing, rejected_file=rejected)
+                    handled.append(eid)
                     if result.ok and refusal is None:
                         failures.pop(eid, None)           # clean launch: streak cleared
                     else:
@@ -451,18 +475,64 @@ def loop(args):
                     print("driver loop: %s done (%s ms, %d/%d)"
                           % (eid, timing.get("duration_ms"), done, total),
                           file=sys.stderr, flush=True)
+            for note in batch.close():        # a clean batch leaves no manifest
+                print("driver loop: batch manifest not removed: %s" % note,
+                      file=sys.stderr, flush=True)
+            batch = None
             guards.disarm(pending)                    # armed per batch, dropped per batch
             status = _run(args, namespace)
     except KeyboardInterrupt:
-        # Everything already yielded is on disk and in the ledger (P07). "handled", not
-        # "persisted": a counted entry always got its ledger row and, where there was a
-        # reply, its out_file -- a failed launch is ledgered as the failure it was. The
-        # REST of the batch is drained, kept nowhere and re-launched (iter_batch's docs).
-        status = _status("error", "interrupted (Ctrl-C) after %d of %d entries handled; "
-                         "guards disarmed; re-run to resume from disk" % (done, total))
+        status = _rolled_back(review_root, batch, pending, handled, req, ledger,
+                              mode, runner, done, total)
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
     return _finish(status, args, guards, ledger, namespace, mode, runner)
+
+
+def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
+                 done, total):
+    """The Ctrl-C path (#1662): cancel, roll back to the checkpoint, and say so.
+
+    `iter_batch` has already stopped the batch by the time this runs -- nothing
+    queued was launched and what was running has been terminated -- and the
+    guards come down after it, in `_finish`. What is left is the bookkeeping:
+
+    * every entry that did NOT complete gets a `cancelled` ledger row, so the
+      run's history names what was cut instead of leaving a gap. Through
+      `Ledger.record`, which is the ledger's only writer; the rows the batch
+      already wrote stand exactly as they are, because the spend they record
+      is a fact and a fact is not rolled back.
+    * the batch's artifacts go, as a unit and by the list the manifest holds.
+    * the interrupted phase's per-dispatch marker is given back
+      (`persist.rollback_markers`), so the re-run starts from the checkpoint
+      with the retry budget it had rather than one interrupt poorer.
+
+    Every step is wrapped: `loop` never raises (review round 1, item 3), and a
+    bookkeeping failure on the way out must be REPORTED in the message rather
+    than replace the interrupt that caused it.
+    """
+    if batch is None:
+        return _status("error", INTERRUPTED_IDLE)
+    notes, checkpoint, finished = [], req.get("checkpoint"), set(handled)
+    try:
+        for entry in pending:
+            if entry.get("id") in finished:
+                continue
+            ledger.record(entry, checkpoint,
+                          runners_base.RunResult.failed(
+                              entry.get("id"), "cancelled (Ctrl-C) before it completed"),
+                          mode, runner.host, status=ledger_mod.CANCELLED,
+                          rolled_back=True)
+    except Exception as exc:              # noqa: BLE001 -- `loop` never raises
+        notes.append("cancelled rows not written: %s: %s" % (type(exc).__name__, exc))
+    try:
+        _removed, problems = batch.roll_back()
+        notes += problems
+        persist.rollback_markers(review_root, checkpoint, pending)
+    except Exception as exc:              # noqa: BLE001 -- `loop` never raises
+        notes.append("rollback incomplete: %s: %s" % (type(exc).__name__, exc))
+    return _status("error", INTERRUPTED % (done, total)
+                   + ("; " + "; ".join(notes) if notes else ""))
 
 
 def _review_root(args):

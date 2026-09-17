@@ -499,6 +499,61 @@ def is_done(entry):
     return data is not None and accepts(entry, data)[0]
 
 
+def rollback_markers(review_root, checkpoint, entries):
+    """Undo the PER-DISPATCH marker a cancelled checkpoint charged, and return
+    the keys it cleared (#1662).
+
+    Deleting a batch's artifacts is only half of "the phase re-runs from its
+    checkpoint". The other half is the retry budget: `review_execute` charges
+    `cell-attempts.json` at DISPATCH time -- "the whole point is to bound
+    cells that never complete" -- and a cell that has spent its three
+    attempts is skipped for the rest of the run
+    (`review._cell_exhausted`). An operator's Ctrl-C is not the host failing
+    to answer, so leaving the charge standing means three interrupts silently
+    drop a cell from the review, with no line anywhere saying so. The charge
+    is exactly one per dispatched cell per checkpoint, so undoing it is a
+    decrement of one; a key already at zero is left alone, and earlier real
+    failures keep their own charges.
+
+    The other two counters are deliberately NOT rolled back, because neither
+    is a charge against THIS dispatch: `coverage._bump_scout_attempts` fires
+    when a scout reply already on disk fails shape validation, and
+    `verify._bump_verify_attempts` when a verdict bundle already on disk came
+    back short. Both are facts about a PREVIOUS reply that this checkpoint
+    merely noticed, and erasing them would return a budget something really
+    did spend.
+    """
+    if checkpoint != "review":
+        return []
+    keys = [review._cell_key(e.get("group"), e.get("domain"))
+            for e in entries or [] if isinstance(e, dict)
+            and e.get("group") and e.get("domain")]
+    return _give_back_attempts(runio._pano(review_root, review._ATTEMPTS_FILE), keys)
+
+
+def _give_back_attempts(path, keys):
+    """Decrement each of `keys` by one in the attempts document at `path`,
+    skipping what is absent or already zero; returns the keys changed."""
+    data = runio._load_json(path)
+    if not isinstance(data, dict):
+        return []
+    cleared = []
+    for key in keys:
+        if key in cleared:
+            continue                      # one charge per cell, one give-back
+        try:
+            used = int(data.get(key, 0))
+        except (TypeError, ValueError):
+            continue
+        if used <= 0:
+            continue
+        data[key] = used - 1
+        cleared.append(key)
+    if cleared:
+        runio._write_json(path, data)
+    return cleared
+
+
 def _parse_reply(text):
     """Tolerant parse of a reply, through the SAME reader the phases use
     (runio._load_return_json reads a path, so spool the text first)."""

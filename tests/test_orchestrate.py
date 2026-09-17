@@ -15,6 +15,7 @@ import scripts.driver as driver
 import scripts.ledger as ledger_mod
 import scripts.orchestrate as orchestrate
 import scripts.phases.review as review
+import scripts.runners.batch as batch_mod
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
@@ -544,30 +545,139 @@ class TestHeadlessLoop(LoopCase):
         # ...and usage.json is live during the batch, not only after it
         self.assertEqual({"reply": True, "ledger": True, "usage": True}, seen)
 
-    def test_an_interrupt_keeps_every_entry_that_already_finished(self):
-        # One entry done, one still running when the Ctrl-C lands: what
-        # finished stays on disk and in the ledger, and the message says how
-        # much of the batch that was.
-        d, floor = self._repo(floor=("SEC", "ACC"))
-        runner = FakeRunner()
+    # ---- #1662: a Ctrl-C stops, cancels, and rolls back to the checkpoint ----
+    #
+    # P07's per-entry persistence still stands for a crash or a compaction --
+    # it is what keeps a batch's completed work while the batch is running.
+    # What the owner ruled is that a Ctrl-C is not a crash: it means complete
+    # stoppage, and the interrupted PHASE is re-run from scratch rather than
+    # recovered from disk. Whole-run rollback stays `--reset`.
 
+    def _manifests(self, run_dir):
+        return sorted(f for f in os.listdir(run_dir)
+                      if f.startswith(batch_mod.MANIFEST_PREFIX) and f.endswith(".json"))
+
+    def _interrupt_mid_batch(self, d, floor, runner):
+        """Interrupt the review batch the moment its first entry has landed."""
         def interrupt():
             raise KeyboardInterrupt
 
-        seen = self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC", then=interrupt)
-        status = self._return_persist(d, floor, runner)
+        seen = self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC",
+                                  then=interrupt)
+        return self._return_persist(d, floor, runner), seen
+
+    def test_an_interrupt_rolls_the_batch_back_to_its_checkpoint(self):
+        # One entry done, one still running when the Ctrl-C lands. While the
+        # batch was live the finished entry really was on disk (P07, `seen`) --
+        # and the interrupt then takes it back, because the phase re-runs from
+        # its checkpoint rather than resuming half-done.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        status, seen = self._interrupt_mid_batch(d, floor, runner)
         self.assertEqual(status["status"], "error", status)
-        self.assertIn("interrupted", status["message"])
-        # "handled", not "persisted": a failed launch is counted too, and it is
-        # ledgered as the failure it was rather than persisted (F2).
-        self.assertIn("1 of 2 entries handled", status["message"])
-        self.assertIn("re-run to resume from disk", status["message"])
         self.assertEqual({"reply": True, "ledger": True, "usage": True}, seen)
-        self.assertEqual(["review-app-SEC"],
-                         [row["entry_id"] for row in ledger_mod.Ledger(runner.run_dir).lines()])
+        self.assertIn("interrupted: 1 of 2 entries were completed and have been "
+                      "rolled back", status["message"])
+        self.assertIn("the phase will re-run from its checkpoint on the next "
+                      "`driver loop`", status["message"])
+        self.assertIn("use `--reset` to discard the whole run", status["message"])
+        # the reply the loop had persisted is gone, and the entry is pending again
+        req = orchestrate.requests.load_dispatch_request(d) or {}
+        entries = {e["id"]: e for e in req.get("entries") or []}
+        for eid in ("review-app-SEC", "review-app-ACC"):
+            self.assertFalse(os.path.exists(entries[eid]["out_file"]), eid)
+            self.assertFalse(orchestrate.persist.is_done(entries[eid]), eid)
+        # the manifest that listed what to take back is gone with it
+        self.assertEqual([], self._manifests(runner.run_dir))
         settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
         self.assertFalse(write_guard_hook.is_armed(
             settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+
+    def test_the_interrupt_ledgers_what_it_cut_and_keeps_what_was_spent(self):
+        # Spend is a fact and is never rolled back: the completed entry's row
+        # stands, with its real cost. The entry that never completed gets a
+        # `cancelled` row so the run's history says what was cut.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        self._interrupt_mid_batch(d, floor, runner)
+        rows = {row["entry_id"]: row for row in ledger_mod.Ledger(runner.run_dir).lines()}
+        self.assertEqual({"review-app-SEC", "review-app-ACC"}, set(rows))
+        self.assertEqual(0.01, rows["review-app-SEC"]["cost_usd"])
+        self.assertNotIn("status", rows["review-app-SEC"])
+        cut = rows["review-app-ACC"]
+        self.assertEqual(ledger_mod.CANCELLED, cut["status"])
+        self.assertIs(True, cut["rolled_back"])
+        self.assertIsNone(cut["cost_usd"])
+        self.assertFalse(cut["ok"])
+        # ...and usage.json still counts the tokens that were really spent
+        usage = runio._load_json(os.path.join(runner.run_dir, "usage.json"))
+        self.assertEqual(110, usage["total"])
+        self.assertEqual(0, usage["corrupt_rows"])
+
+    def test_the_rollback_returns_the_cells_retry_budget(self):
+        # `cell-attempts.json` is charged at DISPATCH time, to bound a cell
+        # that never completes. An operator's Ctrl-C is not the host failing,
+        # so charging it would silently drop the cell from the review after
+        # three interrupts.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        self._interrupt_mid_batch(d, floor, runner)
+        self.assertEqual({}, {k: v for k, v in review._cell_attempts(d).items() if v})
+
+    def test_a_prior_phases_artifacts_survive_the_rollback(self):
+        # Ruling: phases completed BEFORE the interrupted one are untouched.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        def snapshot():
+            # resolved lazily: `_pano` is per-run, and the run tag does not
+            # exist until the first driver.run has minted the manifest
+            with open(runio._pano(d, "coverage-app.json"), "rb") as fh:
+                return fh.read()
+
+        before = {}
+
+        def interrupt():
+            # read from INSIDE the batch, so the comparison is against what
+            # the completed `coverage` phase had on disk while the review
+            # batch this Ctrl-C rolls back was still running
+            before["bytes"] = snapshot()
+            raise KeyboardInterrupt
+
+        self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC", then=interrupt)
+        status = self._return_persist(d, floor, runner)
+        self.assertEqual(status["status"], "error", status)
+        self.assertEqual(before["bytes"], snapshot())
+
+    def test_the_next_loop_re_dispatches_the_rolled_back_entries(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        self._interrupt_mid_batch(d, floor, FakeRunner())
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual({"review-app-SEC", "review-app-ACC"},
+                         {eid for eid in resumed.launched if eid.startswith("review-")})
+
+    def test_a_batch_that_completes_normally_leaves_no_manifest(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        status = self._return_persist(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual([], self._manifests(runner.run_dir))
+
+    def test_driver_run_alone_writes_no_batch_manifest(self):
+        # `driver run` is the non-loop path: it stops AT a checkpoint and
+        # writes nothing between checkpoints, so an interrupt there has
+        # nothing to roll back and no manifest is ever opened for it.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        args = self._args(d)
+        args.mode = "headless"
+        with contextlib.redirect_stdout(io.StringIO()):
+            driver.run(args)
+            self._seed_coverage(d, floor)
+            status = driver.run(args)
+        self.assertEqual("checkpoint", status["status"], status)
+        run_dir = orchestrate.persist.run_dir(d)
+        self.assertEqual([], self._manifests(run_dir))
 
     def test_the_ledger_row_records_when_the_entry_ran(self):
         # `duration_ms` was passed as a literal None at the one call site, so
