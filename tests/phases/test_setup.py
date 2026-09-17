@@ -18,6 +18,7 @@ import scripts.phases.requests as requests
 import scripts.driver as driver
 import scripts.coverage_model as coverage_model
 import scripts.host_disclosure as host_disclosure
+import scripts.host_probes as host_probes
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
 import scripts.model_resolver as model_resolver
@@ -581,7 +582,28 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
     # fact about that row. The setup RUN that carries these answers below is
     # driven under `generic`, because `driver setup --host gemini` is now an
     # argparse error -- the rows are the subject, the driven host is scaffold.
-    GEMINI_CHECKS = setup_flow._check_host_shells("gemini", None)
+    #
+    # #1598/#1599: a METHOD, not a module-level constant. As a constant it was
+    # evaluated at COLLECTION time -- before any mock could be in place -- so
+    # it reached the live probes with no repo_root and read whatever
+    # `~/.claude/agents` held on the machine running the suite. It was also
+    # the reason `repo_root` could not simply be made required. The posture is
+    # pinned to a deterministic shell-less envelope and a real tree is named;
+    # the REGISTRY rows above it are what these tests are about.
+    GEMINI_POSTURE = {
+        "schema_version": 1, "host": "gemini", "probed_at": "T",
+        "capabilities": {
+            capability: {"state": hosts.UNKNOWN, "by": None,
+                         "detail": "no probe: gemini does not claim this "
+                                   "capability, so there is nothing to prove"}
+            for capability in hosts.CAPABILITIES},
+    }
+
+    @property
+    def GEMINI_CHECKS(self):
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=self.GEMINI_POSTURE):
+            return setup_flow._check_host_shells("gemini", None, ".")
 
     def test_the_gemini_limitation_reaches_the_operator(self):
         rows = {c[0]: c for c in self.GEMINI_CHECKS}

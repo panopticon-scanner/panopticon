@@ -314,16 +314,28 @@ def _check_host_shells(host, runner, repo_root=None):
     `ok=None` means NOT APPLICABLE, not "failed". setup's renderer already
     distinguishes the three.
 
-    `repo_root` defaults to None on purpose: `_check_host_shells` has call
-    sites that cannot supply it (a module-level fixture in
-    tests/phases/test_setup.py evaluates this at collection time, before any
-    mock is in place) and the brief's own fixture-driven tests call this with
-    just (host, runner). A missing repo_root is not a silent guess -- it is
-    handed straight to `host_probes.run_probes` as `review_root`, and a probe
-    that cannot resolve a real tree (`probe_shadow_shells` joins it with a
-    relative path) raises, which the try/except below turns into an honest
-    "could not be probed" rather than a crash. The one production caller,
-    `setup_readiness`, always has a real repo and passes it.
+    `repo_root` still defaults to None, and a caller that omits it now gets a
+    SHORT-CIRCUIT with a remedy rather than a probe (#1598/#1599). It used to
+    be handed straight to `host_probes.run_probes` as `review_root`, where
+    `probe_shadow_shells` joins it with a relative path and raises -- which the
+    try/except below turned into
+
+        ('host-capabilities', None, "posture could not be probed: expected
+         str, bytes or os.PathLike object, not NoneType")
+
+    Honest, non-gating and useless: an internal type error is not a remedy,
+    and 5.1's rule is "name the capability, the host, the probe, and the
+    remedy". Worse, the probes it reached read `~/.claude/agents`,
+    `~/.codex/agents` and `.claude/settings.local.json`, so unit tests that
+    omitted the argument were measuring the developer's home directory rather
+    than the code (#1599; `tests/test_setup_flow.py` now has an AST guard over
+    every call site).
+
+    The parameter is kept optional rather than made required because the
+    checks ABOVE this point -- the registry row, the codex CLI, the registered
+    shells -- need no tree at all, and a caller with no repo to offer is still
+    entitled to those. The one production caller, `setup_readiness`, always
+    has a real repo and passes it.
     """
     import dispatch  # noqa: E402
     resolved_host = host or dispatch._detect_host()
@@ -378,6 +390,20 @@ def _check_host_shells(host, runner, repo_root=None):
     # artifact to read -- readiness PROBES. That is the point: this is where
     # an operator looks before a run to find out what to fix, and the remedy
     # is the reason the line exists at all.
+    #
+    # ...but only with a tree to probe (#1598). Named explicitly, BEFORE the
+    # probes, so the row carries something a caller can act on and no probe
+    # reaches the filesystem on a call that was never going to produce a
+    # posture. `ok=None`, because a caller's omission is not a fault of the
+    # host's.
+    if repo_root is None:
+        checks.append(("host-capabilities", None,
+                       "posture not probed: _check_host_shells was called "
+                       "without repo_root, the tree whose posture is being "
+                       "measured. Pass the reviewed repository root (as "
+                       "setup_readiness does); there is no default, because "
+                       "guessing one would measure a tree nobody asked about"))
+        return checks
     try:
         fresh = host_probes.run_probes(resolved_host, repo_root)
     except codex_host.LaunchRefused:
