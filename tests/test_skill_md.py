@@ -831,13 +831,14 @@ class TestInstalledFlowDocs(unittest.TestCase):
 
 class TestCodexHostDocs(unittest.TestCase):
     """4.3.0's per-host Codex fan-out (`codex_runner.py`/`--advisor-queue`/
-    `--advisor-model`) was manual-pipeline-only. `driver run --host` accepts
-    only claude|generic today -- Codex isn't yet a first-class driver host,
-    so it falls back to the generic/portable path; dispatch.py's legacy shell
-    registration still covers it (`--emit-host-agents codex`, still true, is
-    what this re-anchors to instead of the retired fan-out mechanism)."""
+    `--advisor-model`) was manual-pipeline-only and was retired with the
+    roles it dispatched. Codex and Kimi are first-class headless driver
+    hosts since #1619/#1620 (`driver loop --host codex|kimi`); the skill's
+    own front matter still has to name them, name `generic` as the session
+    fallback, and keep the `--emit-host-agents` registration step that
+    every family shares (#1573 pins the README half of the same account)."""
 
-    def test_codex_documented_as_generic_fallback_with_legacy_registration(self):
+    def test_codex_and_kimi_named_alongside_the_generic_fallback_and_registration(self):
         skill = _read_doc()
         self.assertIn("--emit-host-agents", skill)
         self.assertIn("codex", skill.lower())
