@@ -195,6 +195,8 @@ def trusted_path(home=None):
     always wins over a per-user one.
     """
     home = home if home is not None else os.path.expanduser("~")
+    if not home:
+        return TRUSTED_PATH          # never a CWD-relative `.local/bin`
     return os.pathsep.join([TRUSTED_PATH, os.path.join(home, ".local", "bin")])
 
 
@@ -267,20 +269,24 @@ def gh_env(config_path=None):
     it leaves gh on `$HOME/.config/gh`, the DEFAULT credential, which is the
     wrong account for this project -- exactly the incident #486 exists to
     prevent, reintroduced by the hardening meant to protect it. So:
-    GH_CONFIG_DIR is declared-in-config first, ambient second, unset last, and
-    gh's own `GH_TOKEN` is carried through when the shell sets one.
+    GH_CONFIG_DIR is declared-in-config first, ambient second, unset last.
+    gh's own `GH_TOKEN` is carried through ONLY when no directory is in
+    effect: gh lets an ambient token override stored credentials, so carrying
+    it beside a declared directory would let the shell's account beat the
+    declared one -- the precedence #486 forbids.
 
     Everything else is built: HOME (gh's own state) and the trusted PATH.
     """
     home = os.path.expanduser("~")
     env = {"HOME": home, "PATH": trusted_path(home)}
+    directory = declared_gh_config_dir(config_path) or os.environ.get("GH_CONFIG_DIR")
+    if directory:
+        env["GH_CONFIG_DIR"] = os.path.expanduser(directory)
+        return env
     for name in _GH_AUTH_PASSTHROUGH:
         value = os.environ.get(name)
         if value:
             env[name] = value
-    directory = declared_gh_config_dir(config_path) or os.environ.get("GH_CONFIG_DIR")
-    if directory:
-        env["GH_CONFIG_DIR"] = os.path.expanduser(directory)
     return env
 
 

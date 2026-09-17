@@ -332,7 +332,7 @@ def _gh_bin():
     hardened against -- and it left the odd halfway state of a built env
     beside an unhardened argv[0] in the same `subprocess.run`.
     """
-    return triage.gh_bin((triage.gh_env() or {}).get("HOME"))
+    return triage.gh_bin()
 
 
 def find_existing_issue(title, runner):

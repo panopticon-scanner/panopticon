@@ -11,6 +11,7 @@ import pytest
 from _test_helpers import FakePopen, first, only
 import scripts.ingest_tools as ingest_tools
 import scripts.tools.npm_audit as na
+import scripts.tools.base as base
 
 
 @pytest.fixture(autouse=True)
@@ -351,6 +352,24 @@ class TestNpmAuditAdapter(unittest.TestCase):
     def test_a_host_side_ingest_still_locates_a_lockfile_project_at_its_lockfile(self):
         self.assertEqual("package-lock.json",
                          self._ingested(self._target("package-lock.json")))
+
+    def test_the_target_root_is_unset_again_after_the_parse_even_when_it_raises(self):
+        # The ContextVar is scoped to ONE parse: a later parse for another
+        # target must not inherit this root, and a raising parse must not leak
+        # it. Named here so the reset is not pinned only by test ordering.
+        target = self._target("npm-shrinkwrap.json")
+        tools_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tools_dir, ignore_errors=True))
+        with open(os.path.join(tools_dir, "npm-audit.json"), "wb") as fh:
+            fh.write(NPM_AUDIT_SAMPLE)
+        with mock.patch.object(na.NpmAuditAdapter, "parse",
+                               side_effect=RuntimeError("boom")):
+            _findings, dispositions = ingest_tools.ingest_dir_detailed(
+                tools_dir, "g1", target_root=target)
+        self.assertEqual("failed", only(list(dispositions.values()))["status"])
+        self.assertIsNone(base.target_root_cv.get())
+        ingest_tools.ingest_dir_detailed(tools_dir, "g1", target_root=target)
+        self.assertIsNone(base.target_root_cv.get())
 
     def test_the_located_file_really_is_in_the_target(self):
         # The whole point of #1649: `location.file` drives source navigation,

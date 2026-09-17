@@ -47,6 +47,32 @@ FINDING = {
 }
 
 
+class TestGhBinIsTriagesResolution(unittest.TestCase):
+    """#1650 R1 residual: `_gh_bin` must BE `triage.gh_bin()`, not a lookalike.
+
+    The re-review reverted it to `shutil.which("gh") or "gh"` and the suite
+    stayed green -- so the hardening this module claims was unpinned. An
+    ambient-only gh (first on PATH, absent from the trusted path) is the
+    CWE-427 substitute the resolution exists to refuse.
+    """
+
+    def test_an_ambient_only_gh_is_refused(self):
+        with tempfile.TemporaryDirectory() as ambient, \
+                tempfile.TemporaryDirectory() as empty, \
+                tempfile.TemporaryDirectory() as home:
+            fake = os.path.join(ambient, "gh")
+            with open(fake, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 98\n")
+            os.chmod(fake, 0o755)
+            with mock.patch.object(triage, "TRUSTED_PATH", empty), \
+                    mock.patch.dict(os.environ, {"PATH": ambient, "HOME": home}):
+                with self.assertRaises(RuntimeError):
+                    file_issues._gh_bin()
+
+    def test_a_trusted_gh_is_the_one_triage_resolves(self):
+        self.assertEqual(triage.gh_bin(), file_issues._gh_bin())
+
+
 class TestBodyProvenance(unittest.TestCase):
     def test_defaults_preserve_run2_footer(self):
         """body_for() with no run overrides must still describe run 2, so the

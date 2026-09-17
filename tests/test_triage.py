@@ -1,4 +1,4 @@
-import json, os, tempfile, unittest
+import json, os, shutil, tempfile, unittest
 from unittest import mock
 
 import pytest
@@ -393,10 +393,35 @@ class TestGhRealBoundary(unittest.TestCase):
                 env = m.call_args.kwargs["env"]
                 # inside the patch: TRUSTED_PATH is the stub dir here
                 expected_path = triage.trusted_path(env["HOME"])
-        self.assertEqual({"HOME", "PATH", "GH_CONFIG_DIR", "GH_TOKEN"}, set(env))
+        # A DECLARED directory names the account; gh lets an ambient GH_TOKEN
+        # override stored credentials, so carrying the token here would let
+        # the shell's account beat the declared one -- exactly the wrong-way
+        # precedence #486 is about. The token travels only when NO directory
+        # is in effect (next test).
+        self.assertEqual({"HOME", "PATH", "GH_CONFIG_DIR"}, set(env))
         self.assertEqual(expected_path, env["PATH"])
         self.assertEqual(d, env["GH_CONFIG_DIR"])
-        self.assertEqual("ambient-token", env["GH_TOKEN"])
+
+    def test_an_ambient_token_travels_only_when_no_directory_names_the_account(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config.json")
+            with open(cfg, "w", encoding="utf-8") as fh:
+                json.dump({"gh_config_dir": None}, fh)     # the repo's own shape
+            if True:
+                with mock.patch.dict(os.environ, {"GH_TOKEN": "ambient-token"}, clear=False):
+                    os.environ.pop("GH_CONFIG_DIR", None)
+                    env = triage.gh_env(config_path=cfg)
+                    self.assertEqual("ambient-token", env["GH_TOKEN"])
+                    self.assertNotIn("GH_CONFIG_DIR", env)
+                with mock.patch.dict(os.environ, {"GH_TOKEN": "ambient-token",
+                                                  "GH_CONFIG_DIR": "/tmp/gh-x"}):
+                    env = triage.gh_env(config_path=cfg)
+                    self.assertEqual("/tmp/gh-x", env["GH_CONFIG_DIR"])
+                    self.assertNotIn("GH_TOKEN", env)
+
+    def test_an_empty_home_does_not_put_a_relative_dir_on_the_trusted_path(self):
+        # trusted_path("") would otherwise yield a CWD-relative `.local/bin`.
+        self.assertEqual(triage.TRUSTED_PATH, triage.trusted_path(""))
 
     def test_the_operators_own_bin_dir_is_on_the_trusted_path(self):
         # #1650 R1/M2: gh is commonly installed under ~/.local/bin (pip --user,
@@ -449,7 +474,7 @@ class TestGhEnv(unittest.TestCase):
     def _undeclared_configs(self):
         """Every way the config can decline to name a directory."""
         d = tempfile.mkdtemp()
-        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         paths = ["/nonexistent/c.json"]
         for name, body in (("no-field.json", {"other": 1}),
                            ("null-field.json", {"gh_config_dir": None})):
