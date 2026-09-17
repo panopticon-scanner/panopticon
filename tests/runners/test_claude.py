@@ -220,45 +220,54 @@ class TestRunEntry(unittest.TestCase):
 
 
 class TestPrepare(unittest.TestCase):
-    def test_prepare_writes_both_guard_hooks_with_absolute_paths_and_nothing_else(self):
+    """#1616 item 5: `prepare` resolves the run folder's three paths and
+    creates the folder. It does NOT write host-settings.json -- `Guards.arm`
+    rewrites that file, through the hooks' own installers, before the first
+    launch of every batch, so the content `prepare` used to put there was
+    never read by anything."""
+
+    def _run_dir(self, d):
+        run_dir = os.path.join(d, ".panopticon", "runs", "t")
+        os.makedirs(os.path.dirname(run_dir), exist_ok=True)
+        return run_dir
+
+    def test_prepare_resolves_the_paths_and_creates_the_run_folder(self):
         with tempfile.TemporaryDirectory() as d:
+            run_dir = self._run_dir(d)
             r = claude_runner.Runner("claude")
-            r.prepare(d, review_root=d)
-            path = os.path.join(d, base.SETTINGS_FILE)
-            with open(path, encoding="utf-8") as fh:
+            r.prepare(run_dir, review_root=d)
+            self.assertTrue(os.path.isdir(run_dir))
+            self.assertEqual(r.settings_path, os.path.join(run_dir, base.SETTINGS_FILE))
+            self.assertEqual(r.allowlist_path, os.path.join(run_dir, "write-allowlist.json"))
+            self.assertEqual(r.scope_path, os.path.join(run_dir, "read-scope.json"))
+            self.assertEqual(r.review_root, os.path.abspath(d))
+            self.assertFalse(
+                os.path.exists(r.settings_path),
+                "prepare wrote a settings file that Guards.arm immediately rewrites")
+            r.prepare(run_dir, review_root=d)                        # idempotent
+
+    def test_arming_writes_the_settings_file_the_launch_is_pointed_at(self):
+        # The contract itself, where it really lives. Both PreToolUse entries,
+        # with the absolute allowlist/scope paths baked into the commands, and
+        # `command()` pointing `claude -p --settings` at that same file.
+        import scripts.orchestrate as orchestrate
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = self._run_dir(d)
+            r = claude_runner.Runner("claude")
+            r.prepare(run_dir, review_root=d)
+            entry = dict(_entry(True),
+                         out_file=os.path.join(run_dir, "findings-app-SEC.json"),
+                         scope={"files": [], "dirs": [os.path.abspath(d)]})
+            orchestrate.Guards("headless", run_dir=run_dir).arm([entry])
+            with open(r.settings_path, encoding="utf-8") as fh:
                 settings = json.load(fh)
             self.assertEqual(sorted(settings), ["hooks"])
             pre = settings["hooks"]["PreToolUse"]
             self.assertEqual(len(pre), 2)
-            self.assertIn(write_guard_hook._hook_entry(os.path.join(d, "write-allowlist.json")), pre)
-            self.assertIn(read_guard_hook._hook_entry(os.path.join(d, "read-scope.json")), pre)
-            self.assertEqual(r.settings_path, path)
-            self.assertEqual(r.allowlist_path, os.path.join(d, "write-allowlist.json"))
-            self.assertEqual(r.scope_path, os.path.join(d, "read-scope.json"))
-            r.prepare(d, review_root=d)                              # idempotent
-            with open(path, encoding="utf-8") as fh:
-                self.assertEqual(settings, json.load(fh))
-
-    def test_prepare_never_writes_through_a_symlinked_tmp(self):
-        # I7 (plan 6 final review): `prepare` staged host-settings.json at
-        # `<path>.tmp` with a plain open(), INSIDE the scanned tree. A redteam
-        # target can commit that exact name as a symlink to anything the
-        # invoking user can write, and the runner would have written the
-        # settings JSON straight through it.
-        with tempfile.TemporaryDirectory() as d:
-            outside = os.path.join(d, "outside.txt")
-            with open(outside, "w", encoding="utf-8") as fh:
-                fh.write("PRECIOUS")
-            settings = os.path.join(d, base.SETTINGS_FILE)
-            os.symlink(outside, settings + ".tmp")
-            claude_runner.Runner("claude").prepare(d, review_root=d)
-            with open(outside, encoding="utf-8") as fh:
-                self.assertEqual(fh.read(), "PRECIOUS")
-            self.assertFalse(os.path.islink(settings))
-            self.assertTrue(os.path.isfile(settings))
-            with open(settings, encoding="utf-8") as fh:
-                self.assertEqual(len(json.load(fh)["hooks"]["PreToolUse"]), 2)
-            self.assertFalse(os.path.exists(settings + ".tmp"))
+            self.assertIn(write_guard_hook._hook_entry(r.allowlist_path), pre)
+            self.assertIn(read_guard_hook._hook_entry(r.scope_path), pre)
+            self.assertIn(r.settings_path,
+                          r.command(entry, r.settings_path, max_turns=40))
 
 
 class TestTheSuiteNeverLaunchesTheRealCli(unittest.TestCase):
