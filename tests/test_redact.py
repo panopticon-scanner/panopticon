@@ -275,6 +275,37 @@ class TestRedactUrlCredentials(unittest.TestCase):
         probe = '{"a": "postgres://u:", "b": "pw@host/db"}'
         self.assertEqual(redact.redact(probe), probe)
 
+    # Item 24 R1-5. Two shapes the first cut of this rule let through, both of
+    # them the NORMAL form for what they carry rather than an edge case.
+    EMPTY_USER = (
+        # redis and AMQP put the password in a userinfo with NO user at all --
+        # that is the documented form, not a malformed one. `[^\s/:@"\']+` on
+        # the user required at least one character, so the whole shape missed.
+        ("redis://:s3cr3tpw@cache.internal:6379/0",
+         "redis://:[REDACTED]@cache.internal:6379/0"),
+        ("amqp://:guest@rabbit:5672/%2f",
+         "amqp://:[REDACTED]@rabbit:5672/%2f"),
+    )
+
+    def test_an_empty_user_still_masks_the_password(self):
+        for raw, expected in self.EMPTY_USER:
+            self.assertEqual(redact.redact("url=%s end" % raw),
+                             "url=%s end" % expected, raw)
+
+    def test_a_json_escaped_url_is_masked_too(self):
+        # This pass runs FLAT over raw captures, and a SARIF/JSON capture
+        # escapes every forward slash it was given that way: the literal text
+        # the redactor sees is `postgres:\/\/u:pw@h`. The credential is no less
+        # live for having been escaped on the way in.
+        raw = r'{"message": "connect postgres:\/\/svc:s3cr3t@db.internal\/app"}'
+        out = redact.redact(raw)
+        self.assertNotIn("s3cr3t", out)
+        self.assertIn(r"postgres:\/\/svc:[REDACTED]@db.internal", out)
+
+    def test_the_escaped_form_still_cannot_cross_a_quote(self):
+        probe = r'{"a": "postgres:\/\/u:", "b": "pw@host\/db"}'
+        self.assertEqual(redact.redact(probe), probe)
+
 
 class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
     """The measurement #1572's rule was admitted on, pinned so it stays true.
@@ -286,6 +317,10 @@ class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
     as the shape it is about, and the test that pins pip-audit's own
     producer-side userinfo mask. Neither is an identifier anything depends on,
     and both are precisely what the rule is for.
+
+    RE-MEASURED after item 24 R1-5 widened the rule (empty user, JSON-escaped
+    separator): 404 tracked text files, 5 matches, 4 distinct, the same four
+    below -- widening the shape added no new match anywhere in the tree.
 
     FALSE POSITIVES: zero. That is the number this class exists to hold at zero
     -- a new match on a git SHA, a path, a fingerprint or a URL without
@@ -312,10 +347,16 @@ class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
     # a third file quietly joining this list would be the measurement decaying.
     SELF = ("skill/scripts/redact.py", "tests/test_redact.py")
 
-    @staticmethod
-    def _rule():
-        rules = [pat for pat, _repl in redact._PATTERNS
-                 if "://" in pat.pattern]
+    PROBE = "postgres://u:pw@h/db"
+
+    @classmethod
+    def _rule(cls):
+        # Selected by BEHAVIOUR, not by a substring of the pattern source: the
+        # separator stopped being the literal `://` when R1-5 taught it the
+        # JSON-escaped form, and a selector that reads the regex text goes
+        # quietly empty when the regex is edited -- which would leave the whole
+        # measurement below passing over an empty match set.
+        rules = [pat for pat, _repl in redact._PATTERNS if pat.search(cls.PROBE)]
         assert len(rules) == 1, "expected one URL-credential rule: %s" % rules
         return rules[0]
 
@@ -346,8 +387,11 @@ class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
 
     def test_the_rule_fires_on_a_well_formed_specimen(self):
         # Non-vacuity: a rule that matched nothing at all would also pass the
-        # assertion above.
-        self.assertRegex("postgres://u:pw@h/db", self._rule())
+        # assertion above. The two R1-5 shapes are here too, because the FP set
+        # is only meaningful for a rule that still catches what it is for.
+        for specimen in (self.PROBE, "redis://:pw@cache:6379/0",
+                         r"postgres:\/\/u:pw@h"):
+            self.assertRegex(specimen, self._rule())
 
 
 class TestRedactRejectsGenericDetection(unittest.TestCase):

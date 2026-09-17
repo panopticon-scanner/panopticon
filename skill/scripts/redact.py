@@ -68,7 +68,19 @@ _PATTERNS = [
     # (see TestOnlyThePemRuleMayCrossAQuote); `/` is what stops
     # `http://host:8080/u@v` -- a port and a path that happens to contain an `@`
     # -- from reading as a credential. FP-measured at zero over the whole repo
-    # listing before it was added; see TestUrlCredentialShapeIsFpMeasured.
+    # listing before it was added, and re-measured at zero after each widening;
+    # see TestUrlCredentialShapeIsFpMeasured.
+    #
+    # The USER may be empty (R1-5). `redis://:pw@host` and `amqp://:guest@host`
+    # are the documented forms for those two, not malformed ones, and a `+` on
+    # the user class missed the whole shape -- the password is no less live for
+    # having no account name beside it.
+    #
+    # The separator accepts `:\/\/` as well as `://` (R1-5), because this pass
+    # runs FLAT over raw captures and a SARIF/JSON capture escapes the slashes
+    # it was handed: the text reaching the redactor is literally
+    # `postgres:\/\/u:pw@h`. Matching only the unescaped form left every
+    # credential that arrived through a JSON tool report unmasked.
     #
     # The scheme is LENGTH-BOUNDED, and that is not cosmetic. `[A-Za-z0-9+.-]*`
     # before a literal `://` backtracks once per character of every alphanumeric
@@ -77,7 +89,7 @@ _PATTERNS = [
     # cost 0.2s on a 20 KB run of one letter and grows with the square; bounded,
     # the same input is 0.001s. 30 is above every scheme in the IANA registry;
     # a longer one simply does not match, which is the completeness limit.
-    (re.compile(r"""([A-Za-z][A-Za-z0-9+.\-]{0,30}://[^\s/:@"']+:)[^\s/@"']+(@)"""),
+    (re.compile(r"""([A-Za-z][A-Za-z0-9+.\-]{0,30}:(?:\\?/){2}[^\s/:@"']*:)[^\s/@"']+(@)"""),
      r"\1[REDACTED]\2"),
     # PEM private key. The body is BOUNDED two ways (#1639 P11), because it was
     # `.*?` under DOTALL -- the one rule here with nothing to stop it -- and a
