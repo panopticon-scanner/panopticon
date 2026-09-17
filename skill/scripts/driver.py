@@ -502,7 +502,16 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # folder's host-settings.json, never the session root -- so that file,
     # not the session's, is what the guard probes must prove. `mode` is a
     # `driver loop` flag; `driver run` has none and probes the session root.
-    settings_path = (probes_common.headless_settings_path(review_root)
+    #
+    # #1616 item 10: WITH the namespace. Without it this resolves through
+    # whatever run-manifest.json is on the review root, so `driver loop
+    # --setup` on a repo that already holds a review run's manifest measured
+    # `runs/<tag>/host-settings.json` while `orchestrate.Guards` armed the flat
+    # `.panopticon/host-settings.json`. Both are writable directories, so the
+    # VERDICT was unaffected -- but the evidence's detail names the path ("the
+    # runner will arm at %s"), F3b renders it on three disclosure surfaces, and
+    # it named a file this invocation never touches.
+    settings_path = (probes_common.headless_settings_path(review_root, namespace)
                      if getattr(args, "mode", None) == "headless" else None)
     # N2: the live runner's scratch home, when the loop has one. `driver run`
     # on its own never does, and neither does the first invocation of a loop

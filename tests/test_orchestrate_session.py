@@ -374,6 +374,36 @@ class TestSetupEstablishesHostPosture(LoopCase):
                              "setup overwrote the review run's own evidence")
 
 
+    def test_the_guard_probes_measure_the_file_setup_really_arms(self):
+        # #1616 item 10: `headless_settings_path(review_root)` without the
+        # namespace resolves THROUGH the run-manifest, so on a repo that
+        # already holds a review run's manifest the guard probes measured
+        # `runs/<tag>/host-settings.json` while the runner armed the flat
+        # `.panopticon/host-settings.json`. The verdict is unaffected (the
+        # probe measures the directory's writability), and the path the
+        # evidence NAMES -- rendered on three disclosure surfaces -- was a
+        # file this invocation never touches.
+        d, floor = self._repo()
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=FakeRunner()), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(orchestrate.loop(self._args(d))["status"], "complete")
+        seen = []
+
+        def _probes(host, target, **kw):
+            seen.append(kw.get("settings_path"))
+            return _all_proven_artifact(host)
+
+        status = self._setup_loop(d, **{"scripts.host_probes.run_probes":
+                                        {"side_effect": _probes}})
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(set(seen), {probes_common.headless_settings_path(d, "setup")})
+        self.assertEqual(set(seen),
+                         {os.path.abspath(os.path.join(d, ".panopticon",
+                                                       base.SETTINGS_FILE))})
+
+
 class TestSetupOnRails(LoopCase):
     def test_setup_scan_is_run_through_the_runner_and_the_loop_stops_at_the_draft(self):
         d, _ = self._repo()
