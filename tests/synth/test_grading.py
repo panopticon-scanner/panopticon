@@ -82,15 +82,26 @@ class TestCertify(unittest.TestCase):
         self.assertEqual(r["gate"], "INCONCLUSIVE")
         self.assertFalse(r["coverage_certified"])
 
-    def test_an_unreadable_manifest_sinks_certification_and_not_the_gate(self):
-        # #1644: every other input above is a measured gap, and gaps move the
-        # gate. This one is the measurement being impossible, which is a
-        # statement about the review rather than about the findings.
-        r = grading_mod.certify("A", [], "high", set(), [],
+    def test_an_unreadable_manifest_sinks_certification_on_its_own(self):
+        # A UNIT contract of this parameter, deliberately called with
+        # integrity_ok=True: the reason alone is enough to refuse certification
+        # and it is what supplies the note. In PRODUCTION the same fact also
+        # rides in meta.integrity, so integrity_ok is False and the gate goes
+        # INCONCLUSIVE -- see
+        # test_synthesize.TestACorruptToolsManifestCannotCertify, which is
+        # where the gate is pinned end to end.
+        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=True,
                                 tools_manifest_invalid="tools-manifest.json is "
                                                        "unreadable: x")
-        self.assertEqual(r["gate"], "PASS")
-        self.assertEqual(r["overall_grade"], "A")     # not provisional
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("tools manifest unreadable", r["coverage_note"])
+
+    def test_the_same_reason_through_integrity_ok_is_inconclusive(self):
+        # How reconcile actually calls it (fix round 1 F1).
+        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=False,
+                                tools_manifest_invalid="tools-manifest.json is "
+                                                       "unreadable: x")
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
         self.assertFalse(r["coverage_certified"])
         self.assertIn("tools manifest unreadable", r["coverage_note"])
 

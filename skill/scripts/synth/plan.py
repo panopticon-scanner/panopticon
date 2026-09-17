@@ -44,8 +44,8 @@ class PlanInputs:
         """main()'s plan stage (WS-0 S3), in its original order: lane
         discipline (#441), fan-out accounting, resume stats, the integrity
         section, scout requests, coverage files. `plans` is the
-        load_dispatch_plans_detailed triple and `queue` the load_verify_queue
-        pair -- both read once by main() because ToolAxis.load / FindingSet.load
+        load_dispatch_plans_detailed triple and `queue` the
+        `integrity.load_verify_queue` pair -- both read once by main() because ToolAxis.load / FindingSet.load
         need a piece of each first (#146/C1: never load the plans twice).
         `verdicts` is the FindingSet's dict, threaded through resume_stats so
         the verdicts dir is read once."""
@@ -475,7 +475,14 @@ def reconcile(plan, tools, resolved):
                                      or integrity.get("malformed_findings_files")
                                      or integrity.get("empty_dispatch_plans")
                                      or integrity.get("invalid_dispatch_plans")
-                                     or integrity.get("invalid_verify_queue"))
+                                     or integrity.get("invalid_verify_queue")
+                                     # Fix round 1 F1: an unreadable manifest
+                                     # is an integrity failure like the rest of
+                                     # this list, so it forces INCONCLUSIVE.
+                                     # Exempting it made corrupting one byte of
+                                     # a target-writable file the cheapest way
+                                     # to turn an INCONCLUSIVE gate into PASS.
+                                     or integrity.get("tools_manifest_invalid"))
     # 5.0 (matrix Sec5.1): certifiable coverage over the review matrix's FLOOR
     # cells, alongside the requested-absent-TOOL check above. `coverages` is
     # the raw list of coverage-<group>.json dicts the caller read (main()
@@ -561,23 +568,6 @@ def load_groups_json(path):
         print("synthesize: %s is not a JSON object; ignoring" % path, file=sys.stderr)
         return {}
     return repair_mod.repair_groups_json(gj)
-
-
-def load_verify_queue(run_dir):
-    """(queue, invalid_reason) for <run_dir>/verify-queue.json: the parsed
-    queue when it is a dict with an `entries` list, else None plus the reason
-    meta.integrity.invalid_verify_queue reports; (None, None) with no file."""
-    path = os.path.join(run_dir, "verify-queue.json")
-    if not os.path.isfile(path):
-        return None, None
-    try:
-        with open(path, encoding="utf-8") as fh:
-            loaded = json.load(fh)
-    except (OSError, ValueError) as exc:
-        return None, "cannot read verify queue: %s" % exc
-    if isinstance(loaded, dict) and isinstance(loaded.get("entries"), list):
-        return loaded, None
-    return None, "verify queue has no entries list"
 
 
 PANEL_TOOLS_CONTEXT = "panel-tools-context.json"

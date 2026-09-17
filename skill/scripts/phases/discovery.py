@@ -1,4 +1,5 @@
 """Phase 1 -- discovery: profile the repo and write the file/group inventory."""
+import os
 import sys
 
 from . import engine
@@ -6,9 +7,14 @@ from . import runio
 
 # Scope modes whose file set is SELECTED rather than enumerated, so selecting
 # nothing is a real answer: `-c`/`--pr` review a diff, and a diff with no
-# reviewable file in it is a legitimately empty run. Every other mode names a
-# target that exists (`discovery.py` exits 2 when `--scope-file`/`--scope-group`
-# does not resolve), so zero groups there is a broken artifact, not an empty one.
+# reviewable file in it is a legitimately empty run; `--files` is an explicit
+# list that fixture/exclude pruning can empty. Every other mode names a target
+# that must resolve, and `discovery.py` exits 2 when it does not -- unknown or
+# unmatched `--scope-group`, unmatched `--scope-dir`, untracked `--scope-file`
+# (the scope-group case was added in this issue's fix round: it used to exit 0
+# with `groups: []`, which arrived here as a broken artifact and blamed the
+# artifact for the flag's mistake). So an empty review under any other mode is
+# a broken artifact rather than an empty run.
 _MAY_SELECT_NOTHING = ("changed", "files")
 
 # One free re-run -- a truncated write is worth retrying -- and no more: a child
@@ -58,9 +64,14 @@ def groups_artifact_errors(doc, manifest=None):
             errors.append("group %r has no `files` list of strings"
                           % (name if isinstance(name, str) else i))
     mode = (manifest.get("scope") or {}).get("mode") or "repo"
-    if not groups and mode not in _MAY_SELECT_NOTHING:
-        errors.append("no groups at all, and this run's scope (%s) enumerates a "
-                      "target that cannot legitimately be empty" % mode)
+    # A record with an empty `files` list is as empty a success as no record at
+    # all -- discovery does emit an empty leaf beside real ones, so the test is
+    # on the WHOLE artifact reviewing nothing, not on each record.
+    if mode not in _MAY_SELECT_NOTHING and not any(
+            isinstance(g, dict) and g.get("files") for g in groups):
+        errors.append("no group with any file in it, and this run's scope (%s) "
+                      "enumerates a target that cannot legitimately be empty"
+                      % mode)
     return errors
 
 
@@ -114,6 +125,16 @@ def discovery_execute(review_root, manifest):
     _mpg = (manifest.get("flags") or {}).get("max_per_group")
     if _mpg is not None:
         cmd += ["--max-per-group", str(_mpg)]
+    # Fix round 1 F2: clear the target BEFORE the child runs. The run-id stamp
+    # below is applied to whatever is on disk afterwards, so a child that exits
+    # without writing (a crash, a bad flag, an unresolvable scope) would have
+    # had the PREVIOUS run's inventory stamped for this one and accepted as its
+    # discovery -- laundering exactly the stale artifact the stamp exists to
+    # catch. Nothing else reads groups.json between here and the write.
+    try:
+        os.remove(out)
+    except FileNotFoundError:
+        pass
     proc = runio._run_child(cmd, review_root, "discovery")
     doc = runio._load_json(out)
     if doc is None:

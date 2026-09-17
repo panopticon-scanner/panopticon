@@ -15,7 +15,7 @@ import scripts.run_tools as run_tools
 import scripts.synth.findings as findings_mod
 import scripts.phases.coverage as coverage_phase
 import scripts.synth.coverage_io as coverage_io
-import scripts.synth.plan as plan_mod
+import scripts.synth.integrity as integrity_mod
 import scripts.synth.verdicts as verdicts_mod
 import scripts.synth.render as render_mod
 import scripts.synth.report as report_mod
@@ -962,7 +962,7 @@ class TestRunDirArtifactResolution(unittest.TestCase):
 
 class MainLoaderOrderTest(unittest.TestCase):
     """WS-0 S3 fix #1: main() must run FindingSet.prepare()/the
-    --emit-verify-queue branch BEFORE plan_mod.load_verify_queue() (and
+    --emit-verify-queue branch BEFORE integrity_mod.load_verify_queue() (and
     FindingSet.load()'s verdicts read) -- the old main() prepared findings,
     branched on --emit-verify-queue (which can DELETE a stale
     verify-queue.json left by a PREVIOUS run), and only THEN read the queue
@@ -974,7 +974,7 @@ class MainLoaderOrderTest(unittest.TestCase):
     def test_verify_queue_is_read_after_the_emit_branch_runs(self):
         calls = []
         real_emit = verdicts_mod.emit_verify_queue
-        real_load_queue = plan_mod.load_verify_queue
+        real_load_queue = integrity_mod.load_verify_queue
 
         def spy_emit(findings, run_dir, max_verify):
             calls.append("emit")
@@ -998,7 +998,8 @@ class MainLoaderOrderTest(unittest.TestCase):
                 json.dump({"run_id": "stale-run", "entries": [{"queue_id": "STALE"}]}, fh)
             out = os.path.join(d, "report.json")
             with mock.patch.object(verdicts_mod, "emit_verify_queue", side_effect=spy_emit), \
-                    mock.patch.object(plan_mod, "load_verify_queue", side_effect=spy_load_queue):
+                    mock.patch.object(integrity_mod, "load_verify_queue",
+                                      side_effect=spy_load_queue):
                 rc = syn.main(["--emit-verify-queue", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertTrue(os.path.exists(out))
@@ -1007,7 +1008,8 @@ class MainLoaderOrderTest(unittest.TestCase):
             self.assertEqual(calls, ["emit", "load_queue"])
             # And the deletion is real: a fresh read after main() returns sees
             # no queue at all, exactly like a run with no leftover file.
-            self.assertEqual(plan_mod.load_verify_queue(panopticon_dir), (None, None))
+            self.assertEqual(integrity_mod.load_verify_queue(panopticon_dir),
+                             (None, None))
 
 
 class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
@@ -1578,10 +1580,14 @@ class TestACorruptToolsManifestCannotCertify(unittest.TestCase):
         # manifest the required set is unknown, so `tools_absent` is not
         # invented from the scout's advisory list.
         self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"], {})
-        # The three-way distinction: certification fails, the GATE still says
-        # what the findings say (no finding, `--fail-on critical` -> PASS).
-        self.assertEqual(report["summary"]["gate"], "PASS")
-        self.assertEqual(rc, 0)
+        # Fix round 1 F1: it is an INTEGRITY failure, and every integrity
+        # failure forces INCONCLUSIVE (`invalid_verify_queue`,
+        # `content_snapshot_unreadable`, ...). Anything softer is a lever: the
+        # same inputs gated INCONCLUSIVE before the manifest was corrupted, so
+        # a PASS here would mean one byte of a target-writable file buys a
+        # clean CI gate.
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertEqual(rc, 2)
         self.assertIn("tools-manifest", err)
 
     def test_a_scanner_the_scout_never_asked_for_no_longer_vanishes(self):

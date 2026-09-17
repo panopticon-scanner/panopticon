@@ -242,6 +242,28 @@ def _owes_a_snapshot(run_dir):
     return isinstance(entries, list) and any(isinstance(e, dict) for e in entries)
 
 
+def load_verify_queue(run_dir):
+    """(queue, invalid_reason) for <run_dir>/verify-queue.json: the parsed
+    queue when it is a dict with an `entries` list, else None plus the reason
+    meta.integrity.invalid_verify_queue reports; (None, None) with no file.
+
+    Lives here, beside the section it feeds, rather than in `plan`: it exists
+    only to produce `invalid_verify_queue`, and `plan` needed the ten lines back
+    (#1644 put it at its 700-line ceiling). Behaviour is unchanged.
+    """
+    path = os.path.join(run_dir, "verify-queue.json")
+    if not os.path.isfile(path):
+        return None, None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, "cannot read verify queue: %s" % exc
+    if isinstance(loaded, dict) and isinstance(loaded.get("entries"), list):
+        return loaded, None
+    return None, "verify queue has no entries list"
+
+
 def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                       invalid_verify_queue):
     """`meta.integrity` as main() assembled it (WS-0 S3): planned-vs-ingested

@@ -1605,6 +1605,15 @@ def main(argv=None):
             allf, {args.scope_group: catalog[args.scope_group]},
             prefixes=tests_axis.distinguishing_prefixes(catalog))
         scoped = assigned.get(args.scope_group, [])
+        if not scoped:
+            # The third member of --scope-file/--scope-dir's family: a group
+            # that EXISTS in the committed matrix but whose `match` assigns no
+            # tracked file. Exiting 0 with `groups: []` made the scope's own
+            # mistake look like a finished scan -- and, since #1643, made the
+            # driver end the run blaming the artifact instead of the flag.
+            print("--scope-group %r matched no tracked files"
+                  % args.scope_group, file=sys.stderr)
+            return 2
     elif args.scope_dir:
         d = args.scope_dir.strip("/") + "/"
         scoped = [f for f in allf if f.startswith(d)]

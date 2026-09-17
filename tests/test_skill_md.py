@@ -84,9 +84,13 @@ class TestSkillMd(unittest.TestCase):
         # absent, unreadable, and parseable-but-malformed are three different
         # facts with three different outcomes, and only the middle one is an
         # integrity failure.
-        for token in ["unreadable tools manifest fails certification",
+        for token in ["unreadable tools manifest is an integrity failure",
                       "meta.integrity.tools_manifest_invalid",
                       "not computed from the scout's advisory list",
+                      # Fix round 1 F1: the gate consequence is the half a
+                      # reader must not have to infer.
+                      "fails `integrity_ok` like every other entry",
+                      "INCONCLUSIVE",
                       "ABSENT manifest", "malformed FIELDS"]:
             self.assertIn(token, self.text, token)
 
@@ -465,6 +469,8 @@ class TestSkillMd(unittest.TestCase):
         disco = _section(loop, "`discovery`**", "`coverage`**")
         for token in ["well-formed groups artifact", "`run_id`",
                       "at least one group", "empty delta",
+                      # F6: `--files` selects a set too, so it may select none.
+                      "`--files` whose list pruned to nothing",
                       "discovery produced no usable groups"]:
             self.assertIn(token, disco, token)
         # Ruling 3: the audit of the other parse-only predicates is part of the

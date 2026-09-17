@@ -3118,6 +3118,31 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
         self.assertIs(r["summary"]["coverage_certified"], False)
 
+    # Fix round 1 F8: the PUBLISHED key order, which is the report contract a
+    # consumer diffing two runs reads. `integrity_section`'s own order is pinned
+    # in tests/synth/test_integrity.py; this is that order as it reaches the
+    # artifact, plus the key reconcile appends.
+    PUBLISHED_KEYS = [
+        "unexpected_findings_files", "missing_planned_files",
+        "malformed_findings_files", "duplicate_out_files",
+        "mislabeled_findings_files", "cross_domain_findings",
+        "unenforced_acknowledged", "ack_stale", "content_hashes_checked",
+        "content_mismatched_files", "content_snapshot_unreadable",
+        "content_snapshot_missing", "empty_dispatch_plans",
+        "invalid_dispatch_plans", "invalid_verify_queue", "plans_seen",
+        "tools_manifest_invalid",
+    ]
+
+    def test_the_published_integrity_key_order_is_the_contract(self):
+        with tempfile.TemporaryDirectory() as d:
+            section = integrity_mod.integrity_section([], [], d, 0, 0, None)
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=self.G, integrity=section),
+        ))
+        self.assertEqual(list(r["meta"]["integrity"]), self.PUBLISHED_KEYS)
+
     def test_build_report_integrity_defaults_empty(self):
         r = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),

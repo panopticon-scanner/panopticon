@@ -17,6 +17,7 @@ import scripts.x0x_report as x0x_report
 import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
+import scripts.synth.integrity as integrity_mod
 import scripts.synth.cost as cost_mod
 import scripts.synth.report as report_mod
 import scripts.synth.render as render_mod
@@ -281,7 +282,7 @@ def main(argv=None):
     if args.emit_verify_queue and verdicts_mod.emit_verify_queue(
             prepared[0], run_dir, args.max_verify):
         return 0
-    queue = plan_mod.load_verify_queue(run_dir)
+    queue = integrity_mod.load_verify_queue(run_dir)
     fs = findings_mod.FindingSet.load(args, tool_findings, run.security_mode,
                                       verdict_run_id=(queue[0] or {}).get("run_id"),
                                       prepared=prepared)

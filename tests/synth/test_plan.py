@@ -342,25 +342,6 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertEqual(loaded["groups"], [{"name": "g1", "files": []}])
             self.assertIn("groups.json:", err.getvalue())
 
-    def test_load_verify_queue_three_outcomes(self):
-        with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(plan_mod.load_verify_queue(d), (None, None))
-            qp = os.path.join(d, "verify-queue.json")
-            with open(qp, "w") as fh:
-                json.dump({"run_id": "r1", "entries": []}, fh)
-            queue, invalid = plan_mod.load_verify_queue(d)
-            self.assertEqual(queue["run_id"], "r1")
-            self.assertIsNone(invalid)
-            with open(qp, "w") as fh:
-                json.dump({"entries": "nope"}, fh)
-            self.assertEqual(plan_mod.load_verify_queue(d),
-                             (None, "verify queue has no entries list"))
-            with open(qp, "w") as fh:
-                fh.write("{")
-            queue, invalid = plan_mod.load_verify_queue(d)
-            self.assertIsNone(queue)
-            self.assertTrue(invalid.startswith("cannot read verify queue: "))
-
     def test_load_scout_requests_unions_tools_and_counts_profiles(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(plan_mod.load_scout_requests(d), (set(), 0))

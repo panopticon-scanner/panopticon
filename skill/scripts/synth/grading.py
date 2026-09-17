@@ -92,16 +92,15 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     holistic overall_grade to provisional -- the same asymmetry a
     requested-absent tool already gets.
 
-    `tools_manifest_invalid` (#1644) is the one input that sinks certification
-    WITHOUT touching the gate. Every other gap above is a measurement: this one
-    is the measurement being impossible -- an existing `tools-manifest.json`
-    that cannot be read leaves the runner's selected set unknown, so
-    `tools_absent` is empty because nothing could be computed, not because
-    nothing was lost. Certification means "enough of the review demonstrably
-    happened", and it plainly cannot be claimed; the gate means "here is what
-    the findings say", which is unaffected by a file the findings never came
-    from. Keeping them apart is the three-way distinction the guide states
-    (terminal completion / artifact validity / coverage certification).
+    `tools_manifest_invalid` (#1644) is the REASON an unreadable
+    `tools-manifest.json` sank certification, and it is what `coverage_note`
+    reports. It is not the channel that moves the gate: the same fact rides in
+    `meta.integrity`, so `integrity_ok` is false and the gate goes INCONCLUSIVE
+    with every other integrity failure. Fix round 1 reversed an earlier ruling
+    here -- exempting it from the gate made corrupting one byte of a
+    target-writable file the cheapest way to turn an INCONCLUSIVE run into a
+    PASS, on identical findings. It stays in `coverage_certified` too, so a
+    caller that passes only the reason still cannot certify.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & findings_mod.HIGH_VALUE_PANELS
@@ -127,6 +126,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     if tools_manifest_invalid:
         # First: it is the reason the tool axis reports nothing, so a note about
         # what the tool axis found would read as a smaller problem than it is.
+        # It is also the only channel that NAMES the file -- `integrity_ok`,
+        # which is what moves the gate, is a bare bool.
         note = ("tools manifest unreadable — tool coverage could not be "
                 "computed: %s" % tools_manifest_invalid)
     elif any_incomplete and not gate_relevant_gap:

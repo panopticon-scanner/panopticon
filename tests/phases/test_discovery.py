@@ -217,6 +217,26 @@ class TestGroupsArtifactShape(unittest.TestCase):
         self.assertEqual(discovery.groups_artifact_errors(doc, manifest), [])
         self.assertTrue(discovery.discovery_done(self.root, manifest))
 
+    def test_a_group_with_an_EMPTY_file_list_is_not_done(self):
+        # Fix round 1 F4: `groups: [{"name": "A", "files": []}]` is the same
+        # empty success one level down -- the artifact has a record, the run
+        # has no file under review, and every per-group `all(...)` is again
+        # true over nothing. Only the scopes that may select nothing are
+        # allowed to land here.
+        doc = dict(self.REAL, groups=[{"name": "A", "files": []}])
+        self._write(doc)
+        self.assertFalse(discovery.discovery_done(self.root, self.MANIFEST))
+        manifest = dict(self.MANIFEST, scope={"mode": "changed", "target": None})
+        self.assertEqual(discovery.groups_artifact_errors(doc, manifest), [])
+
+    def test_one_empty_group_beside_a_real_one_is_fine(self):
+        # Discovery legitimately emits an empty leaf beside real ones; the rule
+        # is about the WHOLE artifact reviewing nothing, not about each record.
+        doc = dict(self.REAL, groups=[{"name": "A", "files": []},
+                                      {"name": "B", "files": ["src/b.py"]}])
+        self._write(doc)
+        self.assertTrue(discovery.discovery_done(self.root, self.MANIFEST))
+
     def test_a_record_without_files_is_not_done(self):
         doc = dict(self.REAL, groups=[{"name": "Auth"}])
         self._write(doc)
@@ -270,6 +290,30 @@ class TestMalformedProducerOutput(unittest.TestCase):
                 discovery.discovery_execute(self.root, self.manifest)
         self.assertIn("discovery produced no usable groups", str(cm.exception))
         self.assertEqual(runio._error_status(str(cm.exception))["status"], "error")
+
+    def test_a_child_that_writes_NOTHING_cannot_launder_a_previous_inventory(self):
+        """Fix round 1 F2: the stamp is applied to whatever is on disk.
+
+        A previous run's `groups.json` is still in the folder, the child exits
+        non-zero without writing, and the driver stamped THIS run's `run_id`
+        onto the stale artifact -- which then passed the shape check, reported
+        "groups.json written" and read as done. The artifact must be removed
+        before the child runs, so "the child produced nothing" cannot be
+        answered by someone else's inventory.
+        """
+        stale = {"run_id": "PREVIOUS", "mode": "repo",
+                 "groups": [{"name": "Old", "files": ["gone/a.py"]}]}
+        with open(runio._pano(self.root, "groups.json"), "w") as fh:
+            json.dump(stale, fh)
+
+        def writes_nothing(cmd, **kw):
+            return mock.Mock(returncode=1, stdout="", stderr="boom")
+
+        with mock.patch("subprocess.run", side_effect=writes_nothing):
+            with self.assertRaises(runio.DriverError) as cm:
+                discovery.discovery_execute(self.root, self.manifest)
+        self.assertIn("produced no groups.json", str(cm.exception))
+        self.assertFalse(discovery.discovery_done(self.root, self.manifest))
 
     def test_a_good_round_after_a_malformed_one_is_accepted(self):
         with mock.patch("subprocess.run", side_effect=self._writes({})):
