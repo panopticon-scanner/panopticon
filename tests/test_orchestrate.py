@@ -765,6 +765,34 @@ class TestHeadlessLoop(LoopCase):
                 self.assertEqual(["error"], runner.torn_down)
                 self.assertEqual((False, False), self._guards_armed(runner))
 
+    def test_a_straggler_write_is_denied_inside_the_rollback_window(self):
+        # The rollback deletes the batch's artifacts. If the write guard is
+        # still armed while it does, a child that outlived the termination can
+        # re-create the file it was just handed back -- and the resume then
+        # reads that cell as done and never re-dispatches it, which is the one
+        # outcome the whole rollback exists to prevent. Disarming first closes
+        # the window: the guard is fail-closed the moment its allowlist is
+        # unlinked, so the straggler's own Write is denied.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        seen, real = {}, batch_mod.Batch.roll_back
+
+        def rolling(batch_self):
+            req = orchestrate.requests.load_dispatch_request(d) or {}
+            entry = next(e for e in req["entries"] if e["id"] == "review-app-ACC")
+            seen["verdict"] = write_guard_hook.adjudicate(
+                {"tool_name": "Write", "tool_input": {"file_path": entry["out_file"]}},
+                os.path.join(runner.run_dir, "write-allowlist.json"),
+                env={base.ENV_ENTRY_ID: "review-app-ACC"})
+            return real(batch_self)
+
+        with mock.patch.object(batch_mod.Batch, "roll_back", rolling):
+            status, _s = self._interrupt_mid_batch(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        allowed, reason = seen["verdict"]
+        self.assertFalse(allowed, "the guard was still armed during the rollback")
+        self.assertTrue(reason, "a denial must say why")
+
     def test_driver_run_alone_writes_no_batch_manifest(self):
         # `driver run` is the non-loop path: it stops AT a checkpoint and
         # writes nothing between checkpoints, so an interrupt there has

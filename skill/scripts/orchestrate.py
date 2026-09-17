@@ -483,20 +483,29 @@ def loop(args):
             status = _run(args, namespace)
     except KeyboardInterrupt:
         status = _rolled_back(review_root, batch, pending, handled, req, ledger,
-                              mode, runner, done, total)
+                              mode, runner, guards, done, total)
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
     return _finish(status, args, guards, ledger, namespace, mode, runner)
 
 
 def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
-                 done, total):
+                 guards, done, total):
     """The Ctrl-C path (#1662): cancel, roll back to the checkpoint, and say so.
 
-    `iter_batch` has already stopped the batch by the time this runs -- nothing
-    queued was launched and what was running has been terminated -- and the
-    guards come down after it, in `_finish`. What is left is the bookkeeping:
+    `iter_batch` has already stopped the batch by the time this runs: nothing
+    queued was launched, and what was running has been terminated. What is
+    left, in this order:
 
+    * this batch's write and read grants come down FIRST, before a single
+      artifact is deleted. A child that outlived the termination -- no shipped
+      family holds a handle on its children, so "terminated" is the terminal's
+      process-group SIGINT for them -- would otherwise re-create the very file
+      the rollback had just handed back, and the resume would read that cell
+      as done and never dispatch it again: the one outcome the rollback exists
+      to prevent. The guard is fail-closed the moment its allowlist is
+      unlinked, so disarming first denies the straggler's Write. `_finish`
+      still disarms what this invocation armed, which after this is a no-op.
     * every entry that did NOT complete gets a `cancelled` ledger row, so the
       run's history names what was cut instead of leaving a gap. Through
       `Ledger.record`, which is the ledger's only writer; the rows the batch
@@ -520,6 +529,11 @@ def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner
     if batch is None:
         return _status("error", INTERRUPTED_IDLE)
     notes, checkpoint, finished = [], req.get("checkpoint"), set(handled)
+    try:
+        if guards is not None:
+            guards.disarm(pending)
+    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
+        notes.append("guards not disarmed: %s: %s" % (type(exc).__name__, exc))
     try:
         for entry in pending:
             if entry.get("id") in finished:
