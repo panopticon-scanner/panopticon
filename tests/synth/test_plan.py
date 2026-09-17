@@ -435,7 +435,10 @@ class PlanLoadersTest(unittest.TestCase):
                 tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIn("lacks schema_version", str(cm.exception))
             with open(tm, "w") as fh:
-                json.dump({"schema_version": "1", "run_id": "other"}, fh)
+                # #1692: `selected` is required of a manifest that is accepted
+                # at all, so every shape below that IS accepted carries one.
+                json.dump({"schema_version": "1", "run_id": "other",
+                           "selected": []}, fh)
             with self.assertRaises(SystemExit) as cm:
                 tool_axis_mod.ToolAxis.load(_cli_args(run_id="this"), d, [], {}, None)
             self.assertIn("run_id 'other' != this run 'this'", str(cm.exception))
@@ -498,3 +501,79 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertEqual(pi.coverages, coverage_io.load_coverage_files(d))
             self.assertEqual(pi.resume, group_runner_mod.resume_stats([], None, None, _verdicts={}))
             self.assertEqual(pi.out_of_scope, plan_mod.out_of_scope_findings([], []))
+
+
+class TestManifestMustDeclareSelected(unittest.TestCase):
+    """#1692: a `tools-manifest.json` carrying only `{"schema_version": 1}`
+    certified a run on which no scanner ran at all.
+
+    The file is target-writable by the code's own account, and this shape needs
+    no corruption -- only OMISSION. It passed both #17 FATAL checks, and then
+    `reconcile`'s present-manifest branch read `selected` as the empty set: no
+    `missing`, so nothing absent; every scout request demoted to the non-gating
+    `requested_unavailable`; `tools_absent == []`; gate PASS, certified, rc 0.
+
+    A manifest the runner writes ALWAYS carries `selected`, even when it
+    selected nothing, so its absence is the read failing -- the #1644 treatment,
+    not a repair. Same for any non-list `selected`: the item-20 round-1 comment
+    on #1692 measured `"selected": "semgrep"` publishing six one-letter tool
+    names into `divergence.tools`, because `lost_required_coverage` iterates a
+    string character by character.
+
+    No second gate lever: `manifest_invalid` rides in `meta.integrity`, which is
+    what `integrity_ok` already reads, so the gate goes INCONCLUSIVE with every
+    other integrity failure.
+    """
+
+    TS = "2026-09-17T00:00:00Z"
+
+    def _run(self, manifest, dispositions=None, tools_ran=None):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "tools-manifest.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(manifest, fh)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                axis = tool_axis_mod.ToolAxis.load(
+                    _cli_args(), d, [], dispositions or {}, tools_ran)
+                report = report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(target=d, fail_on="high",
+                                             timestamp=self.TS),
+                    findings=findings_mod.FindingSet(findings=[]),
+                    plan=plan_mod.PlanInputs(scout_requested=["semgrep"]),
+                    tools=axis))
+            return axis, report, err.getvalue()
+
+    def test_schema_version_only_manifest_is_unreadable_not_empty(self):
+        axis, report, err = self._run({"schema_version": 1})
+        self.assertIsNone(axis.manifest)
+        self.assertIn("selected", axis.manifest_invalid)
+        self.assertIn("NOT certified", err)
+        self.assertEqual(report["meta"]["integrity"]["tools_manifest_invalid"],
+                         axis.manifest_invalid)
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertIn("selected", report["summary"]["coverage_note"])
+        # And it claims nothing about the tool axis it could not read.
+        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"], {})
+
+    def test_a_string_selected_never_becomes_one_letter_tool_names(self):
+        axis, report, _err = self._run(
+            {"schema_version": 1, "selected": "semgrep", "produced": [],
+             "missing": []},
+            dispositions={}, tools_ran=set())
+        self.assertIsNone(axis.manifest)
+        self.assertIn("selected", axis.manifest_invalid)
+        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"], {})
+        self.assertFalse(report["summary"]["coverage_certified"])
+
+    def test_an_empty_selected_list_is_a_manifest_not_a_failure(self):
+        # The shape this fix must NOT reject: the runner ran and honestly
+        # selected nothing. `selected: []` is a measurement; a missing key is
+        # the absence of one.
+        axis, report, _err = self._run(
+            {"schema_version": 1, "selected": [], "produced": [], "missing": []})
+        self.assertIsNotNone(axis.manifest)
+        self.assertIsNone(axis.manifest_invalid)
+        self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertTrue(report["summary"]["coverage_certified"])

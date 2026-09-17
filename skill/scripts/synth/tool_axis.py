@@ -88,11 +88,6 @@ class ToolAxis:
                 else:
                     manifest_invalid = ("tools-manifest.json is not a JSON object "
                                         "(%s)" % type(tm).__name__)
-            if manifest_invalid:
-                print("synthesize: %s -- the runner's selected/missing set is "
-                      "unknown, so tool coverage is NOT certified (the scout's "
-                      "advisory list is not a substitute for it)."
-                      % manifest_invalid, file=sys.stderr)
         if manifest is not None:
             # #17: never certify against a foreign/stale manifest. A 5.1 manifest
             # carries schema_version; its run_id (when the runner stamps it) must
@@ -106,6 +101,32 @@ class ToolAxis:
                 sys.exit("FATAL (#17): tools-manifest run_id %r != this run %r (at %s) — "
                          "refusing to certify against another run's manifest."
                          % (mrid, args.run_id, tm_path))
+            # #1692: `selected` is the whole of what this manifest is FOR --
+            # reconcile derives `tools_absent` from it, and certification from
+            # that. A manifest with no `selected` key at all read as "the runner
+            # selected nothing", so `{"schema_version": 1}` -- a shape needing no
+            # corruption, only omission, in a target-writable file -- certified a
+            # run on which zero scanners ran: nothing missing, every scout request
+            # demoted to non-gating `requested_unavailable`, gate PASS, rc 0. A
+            # manifest the runner writes always carries the key, even when it
+            # selected nothing, so its absence is the READ failing, which is
+            # #1644's case and gets #1644's treatment.
+            #
+            # A non-list `selected` is the same failure with a louder symptom:
+            # `ingest_tools.lost_required_coverage` iterates it, so
+            # `"selected": "semgrep"` published six one-letter tool names into
+            # `divergence.tools`. Nothing here repairs the value -- a selection
+            # nobody can read has no honest repair, and inventing one would be
+            # certifying against a set the runner never wrote.
+            if not isinstance(manifest.get("selected"), list):
+                manifest_invalid = ("tools-manifest.json declares no `selected` "
+                                    "list (%s)" % type(manifest.get("selected")).__name__)
+                manifest = None
+        if manifest_invalid:
+            print("synthesize: %s -- the runner's selected/missing set is "
+                  "unknown, so tool coverage is NOT certified (the scout's "
+                  "advisory list is not a substitute for it)."
+                  % manifest_invalid, file=sys.stderr)
         return cls(policy_mode=plan_mod.derive_tool_policy_mode(plans=plan_lists),
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
                    ingested_paths=args.files, manifest_invalid=manifest_invalid,
