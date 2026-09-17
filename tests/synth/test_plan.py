@@ -342,25 +342,6 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertEqual(loaded["groups"], [{"name": "g1", "files": []}])
             self.assertIn("groups.json:", err.getvalue())
 
-    def test_load_verify_queue_three_outcomes(self):
-        with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(plan_mod.load_verify_queue(d), (None, None))
-            qp = os.path.join(d, "verify-queue.json")
-            with open(qp, "w") as fh:
-                json.dump({"run_id": "r1", "entries": []}, fh)
-            queue, invalid = plan_mod.load_verify_queue(d)
-            self.assertEqual(queue["run_id"], "r1")
-            self.assertIsNone(invalid)
-            with open(qp, "w") as fh:
-                json.dump({"entries": "nope"}, fh)
-            self.assertEqual(plan_mod.load_verify_queue(d),
-                             (None, "verify queue has no entries list"))
-            with open(qp, "w") as fh:
-                fh.write("{")
-            queue, invalid = plan_mod.load_verify_queue(d)
-            self.assertIsNone(queue)
-            self.assertTrue(invalid.startswith("cannot read verify queue: "))
-
     def test_load_scout_requests_unions_tools_and_counts_profiles(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(plan_mod.load_scout_requests(d), (set(), 0))
@@ -425,10 +406,22 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertIsNone(axis.manifest)
             self.assertEqual(axis.policy_mode, "unknown")
             self.assertEqual(axis.ingested_paths, ["f.json"])
+            self.assertIsNone(axis.manifest_invalid)   # no file is not a failure
             tm = os.path.join(d, "tools-manifest.json")
             with open(tm, "w") as fh:
                 fh.write("{corrupt")
-            self.assertIsNone(plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None).manifest)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                corrupt = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIsNone(corrupt.manifest)
+            # #1644: and the reason is RECORDED, not swallowed into "no manifest".
+            self.assertIn("unreadable", corrupt.manifest_invalid)
+            self.assertIn("NOT certified", err.getvalue())
+            with open(tm, "w") as fh:
+                json.dump(["semgrep"], fh)                 # parses, not an object
+            with contextlib.redirect_stderr(io.StringIO()):
+                notdict = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIsNone(notdict.manifest)
+            self.assertIn("not a JSON object", notdict.manifest_invalid)
             with open(tm, "w") as fh:
                 json.dump({"selected": ["semgrep"]}, fh)   # pre-5.1: no schema_version
             with self.assertRaises(SystemExit) as cm:
@@ -445,7 +438,32 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertEqual(axis.manifest["run_id"], "other")
             self.assertEqual(axis.tools_ran, {"semgrep"})
             self.assertEqual(axis.dispositions, {"semgrep": "ok"})
-            self.assertIsNotNone(plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None).manifest)
+            clean = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIsNotNone(clean.manifest)
+            self.assertIsNone(clean.manifest_invalid)
+
+    def test_a_manifest_that_is_not_a_regular_file_is_unreadable_not_absent(self):
+        """Fix round 2 L1: `os.path.isfile` answers "is a regular file", and
+        anything else at that path took the ABSENT branch -- the permissive
+        scout-derived fallback, certified -- which is the carve-out fix round 1
+        closed for regular files. A directory, a dangling symlink and a symlink
+        to /dev/null are all things a hostile or broken target can leave at a
+        `.panopticon` path; none of them is "no manifest".
+        """
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "tools-manifest.json"))
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                axis = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIsNone(axis.manifest)
+            self.assertIn("unreadable", axis.manifest_invalid)
+            self.assertIn("NOT certified", err.getvalue())
+        with tempfile.TemporaryDirectory() as d:
+            os.symlink(os.path.join(d, "nowhere.json"),
+                       os.path.join(d, "tools-manifest.json"))   # dangling
+            with contextlib.redirect_stderr(io.StringIO()):
+                axis = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIsNone(axis.manifest)
+            self.assertIn("unreadable", axis.manifest_invalid)
 
     def test_tool_axis_load_derives_policy_mode_from_the_plans(self):
         plans = [[{"group": "g1", "domain": "code", "tool_policy": "enforced"}]]

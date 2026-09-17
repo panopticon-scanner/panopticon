@@ -969,6 +969,19 @@ class TestCoverageHonesty(unittest.TestCase):
         self.assertIn("tool layer incomplete: semgrep absent", out)
         self.assertIn("(provisional)", out)
 
+    def test_an_unreadable_tools_manifest_is_named_in_the_html(self):
+        # #1644: the gate is what the findings say (PASS here), so the banner
+        # is the ONLY place a reader of the HTML meets the fact that tool
+        # coverage could not be computed. It must carry the reason, not just
+        # the word.
+        out = hr.render(self._report(
+            gate="PASS", coverage_certified=False,
+            coverage_note=("tools manifest unreadable — tool coverage could not "
+                           "be computed: tools-manifest.json is unreadable: x")))
+        self.assertIn("NOT CERTIFIED", out)
+        self.assertIn("tools manifest unreadable", out)
+        self.assertIn("tools-manifest.json is unreadable", out)
+
     def test_grade_none_never_renders_literal_none(self):
         out = hr.render(self._report(overall_grade=None, coverage_certified=False))
         self.assertNotIn("Grade: None", out)

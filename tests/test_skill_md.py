@@ -79,6 +79,21 @@ class TestSkillMd(unittest.TestCase):
         # claim that's the key on disk.
         self.assertIn("denials", self.text)
 
+    def test_an_unreadable_tools_manifest_is_documented_as_failing_certification(self):
+        # #1644: the three levels have to stay separable in prose too --
+        # absent, unreadable, and parseable-but-malformed are three different
+        # facts with three different outcomes, and only the middle one is an
+        # integrity failure.
+        for token in ["unreadable tools manifest is an integrity failure",
+                      "meta.integrity.tools_manifest_invalid",
+                      "not computed from the scout's advisory list",
+                      # Fix round 1 F1: the gate consequence is the half a
+                      # reader must not have to infer.
+                      "fails `integrity_ok` like every other entry",
+                      "INCONCLUSIVE",
+                      "ABSENT manifest", "malformed FIELDS"]:
+            self.assertIn(token, self.text, token)
+
     def test_documents_the_host_capability_disclosure_and_that_it_does_not_gate(self):
         # #1344 F3b. This file is the operator-facing contract: it already
         # documents meta.cost, meta.coverage, meta.integrity and even the
@@ -444,6 +459,25 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("scoped to the **invocation**", tools)
         self.assertIn("non-destructive rescue", tools)
         self.assertIn("meta.tools.disabled_mid_run", tools)
+
+    def test_discovery_is_documented_as_completing_only_on_a_valid_artifact(self):
+        # #1643: the phase that "succeeds emptily" is the one an operator will
+        # never think to check, so the guide has to say what completion
+        # REQUIRES, that an empty delta scope is still a legitimate answer, and
+        # what a second malformed round does.
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        disco = _section(loop, "`discovery`**", "`coverage`**")
+        for token in ["well-formed groups artifact", "`run_id`",
+                      "at least one group", "empty delta",
+                      # F6: `--files` selects a set too, so it may select none.
+                      "`--files` whose list pruned to nothing",
+                      "discovery produced no usable groups"]:
+            self.assertIn(token, disco, token)
+        # Ruling 3: the audit of the other parse-only predicates is part of the
+        # same statement -- a reader must not conclude discovery was the only one.
+        for token in ["`coverage` counts a group covered only when",
+                      "`effective` list", "carrying a `summary`"]:
+            self.assertIn(token, disco, token)
 
     def test_raw_captures_are_documented_as_redacted_before_they_are_written(self):
         # #1639 P11: `.panopticon/tools/` is what an operator copies into a CI

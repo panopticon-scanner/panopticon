@@ -15,7 +15,7 @@ import scripts.run_tools as run_tools
 import scripts.synth.findings as findings_mod
 import scripts.phases.coverage as coverage_phase
 import scripts.synth.coverage_io as coverage_io
-import scripts.synth.plan as plan_mod
+import scripts.synth.integrity as integrity_mod
 import scripts.synth.verdicts as verdicts_mod
 import scripts.synth.render as render_mod
 import scripts.synth.report as report_mod
@@ -962,7 +962,7 @@ class TestRunDirArtifactResolution(unittest.TestCase):
 
 class MainLoaderOrderTest(unittest.TestCase):
     """WS-0 S3 fix #1: main() must run FindingSet.prepare()/the
-    --emit-verify-queue branch BEFORE plan_mod.load_verify_queue() (and
+    --emit-verify-queue branch BEFORE integrity_mod.load_verify_queue() (and
     FindingSet.load()'s verdicts read) -- the old main() prepared findings,
     branched on --emit-verify-queue (which can DELETE a stale
     verify-queue.json left by a PREVIOUS run), and only THEN read the queue
@@ -974,7 +974,7 @@ class MainLoaderOrderTest(unittest.TestCase):
     def test_verify_queue_is_read_after_the_emit_branch_runs(self):
         calls = []
         real_emit = verdicts_mod.emit_verify_queue
-        real_load_queue = plan_mod.load_verify_queue
+        real_load_queue = integrity_mod.load_verify_queue
 
         def spy_emit(findings, run_dir, max_verify):
             calls.append("emit")
@@ -998,7 +998,8 @@ class MainLoaderOrderTest(unittest.TestCase):
                 json.dump({"run_id": "stale-run", "entries": [{"queue_id": "STALE"}]}, fh)
             out = os.path.join(d, "report.json")
             with mock.patch.object(verdicts_mod, "emit_verify_queue", side_effect=spy_emit), \
-                    mock.patch.object(plan_mod, "load_verify_queue", side_effect=spy_load_queue):
+                    mock.patch.object(integrity_mod, "load_verify_queue",
+                                      side_effect=spy_load_queue):
                 rc = syn.main(["--emit-verify-queue", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertTrue(os.path.exists(out))
@@ -1007,7 +1008,8 @@ class MainLoaderOrderTest(unittest.TestCase):
             self.assertEqual(calls, ["emit", "load_queue"])
             # And the deletion is real: a fresh read after main() returns sees
             # no queue at all, exactly like a run with no leftover file.
-            self.assertEqual(plan_mod.load_verify_queue(panopticon_dir), (None, None))
+            self.assertEqual(integrity_mod.load_verify_queue(panopticon_dir),
+                             (None, None))
 
 
 class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
@@ -1525,3 +1527,98 @@ def test_no_run_artifact_a_target_can_write_ends_the_run(tmp_path, name, body):
     # counts the advisory domain checks, which this fixture deliberately trips.
     assert "schema: $." not in err.getvalue()
     json.loads(out.read_text(encoding="utf-8"))
+
+
+class TestACorruptToolsManifestCannotCertify(unittest.TestCase):
+    """#1644: corruption was treated as absence, and absence chose the
+    permissive path.
+
+    `ToolAxis.load` turned an unreadable / invalid-JSON / non-object
+    `tools-manifest.json` into `manifest=None` without recording anything, and
+    `reconcile` then took the NO-manifest branch: `tools_absent` =
+    scout_requested - produced. A scanner the runner SELECTED but the scout
+    never requested therefore vanished from `tools_absent`, and the
+    certification input looked complete.
+
+    End to end on real artifacts, like #1512's neighbour above: the defect is in
+    what a read does with a file on disk, and a hand-built `build_report` input
+    closes that gap by construction.
+    """
+
+    def _run(self, d, manifest_bytes=None, scout_tools=("semgrep",)):
+        run_dir = os.path.join(d, "run")
+        tools_dir = os.path.join(run_dir, "tools")
+        os.makedirs(tools_dir)
+        # A scout that asked for semgrep, and no tool output at all: on the
+        # no-manifest path that is one lost tool and an INCONCLUSIVE gate.
+        with open(os.path.join(run_dir, "scout-g1.json"), "w") as fh:
+            json.dump({"group": "g1", "tools": list(scout_tools), "domains": []}, fh)
+        if manifest_bytes is not None:
+            with open(os.path.join(run_dir, "tools-manifest.json"), "wb") as fh:
+                fh.write(manifest_bytes)
+        fp = os.path.join(run_dir, "findings-g1-code.json")
+        with open(fp, "w") as fh:
+            json.dump({"findings": []}, fh)
+        out = os.path.join(d, "r.json")
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = syn.main(["--target", "src", "--run-dir", run_dir,
+                           "--tools-dir", tools_dir, "--fail-on", "critical",
+                           "--out", out, fp])
+        with open(out, encoding="utf-8") as fh:
+            return rc, json.load(fh), err.getvalue()
+
+    def test_an_unparseable_manifest_is_an_integrity_failure_not_a_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, err = self._run(d, b"not json")
+        reason = report["meta"]["integrity"]["tools_manifest_invalid"]
+        self.assertTrue(reason, "the corrupt manifest was not recorded anywhere")
+        self.assertIn("tools-manifest", reason)
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertIn("tools manifest unreadable", report["summary"]["coverage_note"])
+        # The permissive fallback is what #1644 is about: with no readable
+        # manifest the required set is unknown, so `tools_absent` is not
+        # invented from the scout's advisory list.
+        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"], {})
+        # Fix round 1 F1: it is an INTEGRITY failure, and every integrity
+        # failure forces INCONCLUSIVE (`invalid_verify_queue`,
+        # `content_snapshot_unreadable`, ...). Anything softer is a lever: the
+        # same inputs gated INCONCLUSIVE before the manifest was corrupted, so
+        # a PASS here would mean one byte of a target-writable file buys a
+        # clean CI gate.
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertEqual(rc, 2)
+        self.assertIn("tools-manifest", err)
+
+    def test_a_scanner_the_scout_never_asked_for_no_longer_vanishes(self):
+        """The exact mechanism, with nothing else able to fail the run.
+
+        The runner selected a scanner and wrote no output; the scout never
+        requested it. With the manifest readable that is one lost tool. Corrupt
+        the manifest and the scout-derived fallback computes
+        `[] - produced == []` -- no gap, certification complete, and the only
+        record that a scanner was ever selected is the file that cannot be read.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            _rc, report, _err = self._run(d, b"not json", scout_tools=())
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertTrue(report["meta"]["integrity"]["tools_manifest_invalid"])
+
+    def test_a_non_object_manifest_is_the_same_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            _rc, report, _err = self._run(d, b'["semgrep"]')
+        self.assertIn("not a JSON object",
+                      report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assertFalse(report["summary"]["coverage_certified"])
+
+    def test_an_ABSENT_manifest_keeps_the_scout_derived_gate(self):
+        # A pre-#1031 run, or `--no-tools`: nothing was corrupted, so the 4.x
+        # scout-derived path stands exactly as it did.
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(d, None)
+        self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"],
+                         {"semgrep": "requested_absent"})
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertEqual(rc, 2)

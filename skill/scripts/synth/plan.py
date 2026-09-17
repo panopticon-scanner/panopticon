@@ -44,9 +44,10 @@ class PlanInputs:
         """main()'s plan stage (WS-0 S3), in its original order: lane
         discipline (#441), fan-out accounting, resume stats, the integrity
         section, scout requests, coverage files. `plans` is the
-        load_dispatch_plans_detailed triple and `queue` the load_verify_queue
-        pair -- both read once by main() because ToolAxis.load / FindingSet.load
-        need a piece of each first (#146/C1: never load the plans twice).
+        load_dispatch_plans_detailed triple and `queue` the
+        `integrity.load_verify_queue` pair -- both read once by main() because
+        ToolAxis.load / FindingSet.load need a piece of each first (#146/C1:
+        never load the plans twice).
         `verdicts` is the FindingSet's dict, threaded through resume_stats so
         the verdicts dir is read once."""
         plan_lists, plans_seen, invalid_plans = plans
@@ -88,6 +89,9 @@ class ToolAxis:
     dispositions: dict | None = None
     manifest: dict | None = None
     ingested_paths: list | None = None
+    # #1644: why an EXISTING manifest could not be read, or None. Absent and
+    # corrupt are different facts and only one of them is an integrity failure.
+    manifest_invalid: str | None = None
 
     @classmethod
     def load(cls, args, run_dir, plan_lists, dispositions, tools_ran):
@@ -95,17 +99,45 @@ class ToolAxis:
         tools-manifest with its two FATAL (#17) checks, the policy mode the
         dispatch plans declare, and the ingest results `ingest_tool_findings`
         produced. #1031: a present manifest makes reconcile gate on its
-        `missing`, not the scout's advisory list; a corrupt/absent one just
-        falls back to the 4.x scout-derived gate (tolerant read)."""
-        manifest = None
+        `missing`, not the scout's advisory list; an ABSENT one falls back to
+        the 4.x scout-derived gate.
+
+        #1644: a manifest that EXISTS and cannot be read is neither. Corruption
+        used to be folded into absence -- `manifest = None`, silently -- and
+        absence selects the permissive path, so a scanner the runner selected
+        and never produced dropped out of `tools_absent` entirely. The reason is
+        recorded here and reconcile refuses to invent the required set from it.
+        This is the read failing, not a field being malformed: a manifest that
+        parses to an object with rubbish IN it is repaired at the boundary by
+        `synth/repair.py` (#1645/#1646), where a bad row costs a warning and the
+        row, never the run.
+        """
+        manifest, manifest_invalid = None, None
         tm_path = os.path.join(run_dir, "tools-manifest.json")
-        if os.path.isfile(tm_path):
+        # `lexists`, not `isfile` (fix round 2 L1): `isfile` asks "is a REGULAR
+        # file", so a directory, a dangling symlink or a link to /dev/null at
+        # this target-writable path answered "no manifest" and took the
+        # permissive scout-derived branch -- the carve-out F1 closed for regular
+        # files, reachable again by leaving something that is not one. `lexists`
+        # asks the question this branch means ("is there anything here"), and
+        # the open() below fails these with an OSError the reason names.
+        if os.path.lexists(tm_path):
             try:
                 with open(tm_path, encoding="utf-8") as fh:
                     tm = json.load(fh)
-                manifest = tm if isinstance(tm, dict) else None
-            except (OSError, ValueError):
-                manifest = None
+            except (OSError, ValueError) as exc:
+                manifest_invalid = "tools-manifest.json is unreadable: %s" % exc
+            else:
+                if isinstance(tm, dict):
+                    manifest = tm
+                else:
+                    manifest_invalid = ("tools-manifest.json is not a JSON object "
+                                        "(%s)" % type(tm).__name__)
+            if manifest_invalid:
+                print("synthesize: %s -- the runner's selected/missing set is "
+                      "unknown, so tool coverage is NOT certified (the scout's "
+                      "advisory list is not a substitute for it)."
+                      % manifest_invalid, file=sys.stderr)
         if manifest is not None:
             # #17: never certify against a foreign/stale manifest. A 5.1 manifest
             # carries schema_version; its run_id (when the runner stamps it) must
@@ -121,7 +153,7 @@ class ToolAxis:
                          % (mrid, args.run_id, tm_path))
         return cls(policy_mode=derive_tool_policy_mode(plans=plan_lists),
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
-                   ingested_paths=args.files)
+                   ingested_paths=args.files, manifest_invalid=manifest_invalid)
 
 
 @dataclass(frozen=True)
@@ -146,6 +178,10 @@ class Reconciled:
     # `tools_sanitized`: coverage says which adapters PRODUCED output, and this
     # says what one of them could reach while doing it.
     tools_network: dict = field(default_factory=dict)
+    # #1644: why this run's tools-manifest could not be read, or None. Carried
+    # beside `integrity` (which also publishes it) the way `integrity_ok` is:
+    # certification takes it as an input, and must not have to read a section.
+    tools_manifest_invalid: str | None = None
 
 
 # One source for the per-group dispatch-plan filename glob (#681): synthesize
@@ -362,7 +398,17 @@ def reconcile(plan, tools, resolved):
     # the artifact and the HTML.
     network = (repair_mod.repair_tools_network(
         tools.manifest.get("network")) if isinstance(tools.manifest, dict) else {})
-    if isinstance(tools.manifest, dict):
+    if tools.manifest_invalid:
+        # #1644: corruption is not absence, and the scout-derived fallback below
+        # is only honest when nothing WAS corrupted. With the manifest
+        # unreadable the runner's selected set is unknown, so `tools_absent`
+        # cannot be computed at all -- the scout's advisory list answers a
+        # different question, and every selected-but-unproduced scanner silently
+        # drops out of it. Claim nothing here: the reason is recorded in
+        # `meta.integrity` below, and `integrity_ok` is false, so the gate goes
+        # INCONCLUSIVE with every other integrity failure (fix round 1 F1).
+        tools_absent, tool_divergence = [], {}
+    elif isinstance(tools.manifest, dict):
         selected = set(validate_schema_mod.string_list(tools.manifest.get("selected")))
         produced_m = set(validate_schema_mod.string_list(tools.manifest.get("produced")))
         missing = tools.manifest.get("missing")
@@ -422,6 +468,11 @@ def reconcile(plan, tools, resolved):
                               "invalid_verify_queue": None,
                               "unenforced_acknowledged": False,
                               "plans_seen": 0}
+    # #1644: recorded beside the other "this artifact exists and cannot be
+    # trusted" reasons, and always present (None on a clean read AND on a run
+    # with no manifest at all), exactly like `invalid_verify_queue`.
+    integrity = dict(integrity)
+    integrity["tools_manifest_invalid"] = tools.manifest_invalid
     scope_ok = not ((plan.out_of_scope or {}).get("count")
                     if isinstance(plan.out_of_scope, dict) else False)
     integrity_ok = scope_ok and not (integrity.get("unexpected_findings_files")
@@ -433,7 +484,14 @@ def reconcile(plan, tools, resolved):
                                      or integrity.get("malformed_findings_files")
                                      or integrity.get("empty_dispatch_plans")
                                      or integrity.get("invalid_dispatch_plans")
-                                     or integrity.get("invalid_verify_queue"))
+                                     or integrity.get("invalid_verify_queue")
+                                     # Fix round 1 F1: an unreadable manifest
+                                     # is an integrity failure like the rest of
+                                     # this list, so it forces INCONCLUSIVE.
+                                     # Exempting it made corrupting one byte of
+                                     # a target-writable file the cheapest way
+                                     # to turn an INCONCLUSIVE gate into PASS.
+                                     or integrity.get("tools_manifest_invalid"))
     # 5.0 (matrix Sec5.1): certifiable coverage over the review matrix's FLOOR
     # cells, alongside the requested-absent-TOOL check above. `coverages` is
     # the raw list of coverage-<group>.json dicts the caller read (main()
@@ -492,7 +550,8 @@ def reconcile(plan, tools, resolved):
     return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
-                      tools_sanitized=sanitized, tools_network=network)
+                      tools_sanitized=sanitized, tools_network=network,
+                      tools_manifest_invalid=tools.manifest_invalid)
 
 
 def load_groups_json(path):
@@ -518,23 +577,6 @@ def load_groups_json(path):
         print("synthesize: %s is not a JSON object; ignoring" % path, file=sys.stderr)
         return {}
     return repair_mod.repair_groups_json(gj)
-
-
-def load_verify_queue(run_dir):
-    """(queue, invalid_reason) for <run_dir>/verify-queue.json: the parsed
-    queue when it is a dict with an `entries` list, else None plus the reason
-    meta.integrity.invalid_verify_queue reports; (None, None) with no file."""
-    path = os.path.join(run_dir, "verify-queue.json")
-    if not os.path.isfile(path):
-        return None, None
-    try:
-        with open(path, encoding="utf-8") as fh:
-            loaded = json.load(fh)
-    except (OSError, ValueError) as exc:
-        return None, "cannot read verify queue: %s" % exc
-    if isinstance(loaded, dict) and isinstance(loaded.get("entries"), list):
-        return loaded, None
-    return None, "verify queue has no entries list"
 
 
 PANEL_TOOLS_CONTEXT = "panel-tools-context.json"

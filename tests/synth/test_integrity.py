@@ -251,6 +251,33 @@ class TestReconcileRealpath(unittest.TestCase):
             unexpected, missing = integrity_mod.reconcile_findings_files(plan, ingested)
         self.assertEqual((unexpected, missing), ([], []))
 
+class LoadVerifyQueueTest(unittest.TestCase):
+    """Moved from tests/synth/test_plan.py with the function it covers (fix
+    round 1 F1): it produces `meta.integrity.invalid_verify_queue`, so it
+    belongs beside the section that publishes it, and `plan` was at its
+    700-line ceiling. Behaviour is unchanged -- the three outcomes are the
+    same three."""
+
+    def test_load_verify_queue_three_outcomes(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(integrity_mod.load_verify_queue(d), (None, None))
+            qp = os.path.join(d, "verify-queue.json")
+            with open(qp, "w") as fh:
+                json.dump({"run_id": "r1", "entries": []}, fh)
+            queue, invalid = integrity_mod.load_verify_queue(d)
+            self.assertEqual(queue["run_id"], "r1")
+            self.assertIsNone(invalid)
+            with open(qp, "w") as fh:
+                json.dump({"entries": "nope"}, fh)
+            self.assertEqual(integrity_mod.load_verify_queue(d),
+                             (None, "verify queue has no entries list"))
+            with open(qp, "w") as fh:
+                fh.write("{")
+            queue, invalid = integrity_mod.load_verify_queue(d)
+            self.assertIsNone(queue)
+            self.assertTrue(invalid.startswith("cannot read verify queue: "))
+
+
 class IntegritySectionTest(unittest.TestCase):
     """WS-0 S3: meta.integrity assembled from the plan lists and ingested files."""
 
@@ -261,6 +288,10 @@ class IntegritySectionTest(unittest.TestCase):
             "content_snapshot_unreadable", "content_snapshot_missing",
             "empty_dispatch_plans", "invalid_dispatch_plans",
             "invalid_verify_queue", "plans_seen"]
+    # #1644 lands `tools_manifest_invalid` on the section, but from reconcile
+    # (which is the only caller that holds the tool axis), not from
+    # integrity_section -- so the KEY ORDER pinned here is deliberately
+    # unchanged and the new key is asserted where it is added.
 
     def test_key_order_is_the_report_contract(self):
         with tempfile.TemporaryDirectory() as d:

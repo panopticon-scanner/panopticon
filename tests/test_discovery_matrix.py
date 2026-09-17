@@ -183,18 +183,24 @@ def test_repo_scan_bare_scalar_match_group_does_not_swallow_whole_repo(tmp_path)
     assert [f for g in leftover for f in g["files"]] == ["src/bad/thing.py"]
 
 
-def test_repo_scan_scope_group_scalar_match_does_not_claim_whole_repo(tmp_path):
+def test_repo_scan_scope_group_scalar_match_does_not_claim_whole_repo(tmp_path, capsys):
     # Scoping directly to the corrupted group must NOT fall back to "every
     # file in the repo" (the old char-split bug) -- a well-formed OTHER
     # group's files must never leak into this scope.
+    #
+    # Fix round 1 F3: the no-leak outcome is now the loud one. `Bad`'s match is
+    # invalid, so it assigns nothing, and a scope that assigns nothing exits 2
+    # without writing an artifact instead of writing an empty "successful"
+    # scan. The guard is unchanged in force -- the char-split bug would assign
+    # the whole repo, which is a non-empty scope and would exit 0 with
+    # Auth's file in the artifact.
     repo = repo_with_scalar_match_group(tmp_path)
     out = repo / "groups.json"
-    orchestrator.main(["--repo-scan", "--scope-group", "Bad",
-                       str(repo), "--out", str(out)])
-    data = json.loads(out.read_text())
-    files = sorted(f for g in data["groups"] for f in g["files"])
-    assert "src/auth/login.py" not in files          # Auth's file never leaks in
-    assert files == []                               # Bad's own match is invalid -> nothing
+    rc = orchestrator.main(["--repo-scan", "--scope-group", "Bad",
+                            str(repo), "--out", str(out)])
+    assert rc == 2
+    assert not out.exists()                          # nothing claimed at all
+    assert "matched no tracked files" in capsys.readouterr().err
 
 
 def test_repo_scan_bare_well_formed_matrix_groups_unchanged(tmp_path):
@@ -295,6 +301,27 @@ def test_repo_scan_scope_file_untracked_target_errors(tmp_path, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "src/ghost.py" in err
+
+
+def test_repo_scan_scope_group_no_tracked_files_errors(tmp_path, capsys):
+    # Fix round 1 F3: the third member of this family, and the one that was
+    # missing. A KNOWN group whose `match` assigns no tracked file exited 0
+    # with `groups: []` -- which the driver's new done-predicate (#1643) reads
+    # as a broken artifact and, after a second identical round, ends the run
+    # `error` blaming the artifact. The scope is what is wrong, and only
+    # discovery.py can say so.
+    repo = repo_with_matrix(tmp_path)
+    (repo / ".panopticon" / "groups.yml").write_text(
+        "groups:\n"
+        "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
+        "  Ghost:\n    match: ['src/ghost/**']\n")
+    out = repo / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-group", "Ghost",
+                            str(repo), "--out", str(out)])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Ghost" in err
+    assert "matched no tracked files" in err
 
 
 def test_repo_scan_scope_dir_no_tracked_files_errors(tmp_path, capsys):

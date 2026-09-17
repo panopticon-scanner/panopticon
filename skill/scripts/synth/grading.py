@@ -72,7 +72,7 @@ def gate_severity_roles(gate_eligible, fail_on):
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
             integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
-            missing_floor=0):
+            missing_floor=0, tools_manifest_invalid=None):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -91,6 +91,16 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     missing floor cell forces the gate to INCONCLUSIVE without downgrading the
     holistic overall_grade to provisional -- the same asymmetry a
     requested-absent tool already gets.
+
+    `tools_manifest_invalid` (#1644) is the REASON an unreadable
+    `tools-manifest.json` sank certification, and it is what `coverage_note`
+    reports. It is not the channel that moves the gate: the same fact rides in
+    `meta.integrity`, so `integrity_ok` is false and the gate goes INCONCLUSIVE
+    with every other integrity failure. Fix round 1 reversed an earlier ruling
+    here -- exempting it from the gate made corrupting one byte of a
+    target-writable file the cheapest way to turn an INCONCLUSIVE run into a
+    PASS, on identical findings. It stays in `coverage_certified` too, so a
+    caller that passes only the reason still cannot certify.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & findings_mod.HIGH_VALUE_PANELS
@@ -109,10 +119,18 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     else:
         cert_grade, provisional = overall_grade, None
 
-    coverage_certified = not (gate_relevant_gap or any_incomplete)
+    coverage_certified = not (gate_relevant_gap or any_incomplete
+                              or tools_manifest_invalid)
 
     note = None
-    if any_incomplete and not gate_relevant_gap:
+    if tools_manifest_invalid:
+        # First: it is the reason the tool axis reports nothing, so a note about
+        # what the tool axis found would read as a smaller problem than it is.
+        # It is also the only channel that NAMES the file -- `integrity_ok`,
+        # which is what moves the gate, is a bare bool.
+        note = ("tools manifest unreadable — tool coverage could not be "
+                "computed: %s" % tools_manifest_invalid)
+    elif any_incomplete and not gate_relevant_gap:
         tail = sorted(p for p in panels_incomplete if p not in findings_mod.HIGH_VALUE_PANELS)
         note = ("gate certified; grade provisional — low-value panel(s) incomplete: %s"
                 % ", ".join(tail))
@@ -402,7 +420,8 @@ def grade_report(run, resolved, reconciled):
                    integrity_ok=reconciled.integrity_ok,
                    verdicts_unloadable=len(resolved.verdict_unloadable),
                    verdicts_unanswered=resolved.unanswered_gate,
-                   missing_floor=len(reconciled.cell_audit["missing_floor"]))
+                   missing_floor=len(reconciled.cell_audit["missing_floor"]),
+                   tools_manifest_invalid=reconciled.tools_manifest_invalid)
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],

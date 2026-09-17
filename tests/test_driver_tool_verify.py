@@ -370,7 +370,7 @@ class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
                 return mock.Mock(returncode=0, stdout="", stderr="")
             captured["cmd"] = cmd
             with open(_out_path(cmd), "w") as fh:
-                json.dump({"findings": []}, fh)
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         d = self._repo([_result("r1", "src/app.py", 1)])
