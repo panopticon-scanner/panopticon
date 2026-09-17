@@ -37,12 +37,17 @@ class LedgerCorrupt(Exception):
 
     Carries the 1-based line number so the operator is told WHICH line to look
     at: the remedy is to inspect (or delete) that row, and a message that only
-    said "the ledger is unreadable" would send them through the whole file."""
+    said "the ledger is unreadable" would send them through the whole file.
+
+    `line_no` 0 is the file-level fault -- the ledger is there and could not be
+    opened at all -- and says so instead of naming a line nobody can go and
+    look at (fix round 1, M2)."""
 
     def __init__(self, line_no, reason):
         self.line_no = line_no
         self.reason = reason
-        super().__init__("ledger corrupt at line %s: %s" % (line_no, reason))
+        where = "ledger corrupt at line %s" % line_no if line_no else "ledger corrupt"
+        super().__init__("%s: %s" % (where, reason))
 
 
 def _money(value):
@@ -106,11 +111,15 @@ def scrub_non_finite(value):
     return value
 
 
-def dumps(obj):
+def dumps(obj, default=None):
     """The ledger's serializer. `allow_nan=False` is the point: the default
     emits bare `NaN`/`Infinity` tokens, which are not JSON, which every other
-    reader of this file would either reject or silently accept as a number."""
-    return json.dumps(obj, sort_keys=True, allow_nan=False)
+    reader of this file would either reject or silently accept as a number.
+
+    `default` is for `ledger_text`'s last resort only (fix round 1, L3): a row
+    is evidence of a launch that was paid for, and a field json cannot encode
+    must not be what loses it."""
+    return json.dumps(obj, sort_keys=True, allow_nan=False, default=default)
 
 
 def _reject_constant(name):
@@ -138,13 +147,17 @@ def ledger_text(line):
         line["error"] = note_error(line.get("error"), note)
     try:
         return dumps(line), note
-    except ValueError as exc:
-        # The backstop fired: something that is not money is non-finite. Keep
-        # the row (it is evidence of a real launch) and say so in it.
-        extra = "non-finite value dropped (%s)" % exc
+    except (ValueError, TypeError) as exc:
+        # The backstop fired. ValueError is `allow_nan=False` -- something that
+        # is not money is non-finite; TypeError is a field json cannot encode at
+        # all (a set, an object, whatever a host envelope puts in `denials`).
+        # Neither may cost the row: it is evidence of a launch already paid for,
+        # so the value is repaired, the row says which, and the line is written.
+        extra = ("non-finite value dropped (%s)" % exc if isinstance(exc, ValueError)
+                 else "unserializable value stored as text (%s)" % exc)
         scrubbed = scrub_non_finite(line)
         scrubbed["error"] = note_error(scrubbed.get("error"), extra)
-        return dumps(scrubbed), note_error(note, extra)
+        return dumps(scrubbed, default=repr), note_error(note, extra)
 
 
 def read_rows(handle):
@@ -176,8 +189,15 @@ def cost_fault(row, reason):
     if row is None:
         return reason or "unreadable line"
     value = row.get("cost_usd")
-    if value is not None and _money(value) is None:
-        return "cost_usd is not finite money: %r" % (value,)
+    if value is None:
+        return None
+    amount = _money(value)
+    # Negative is a fault, not a credit (fix round 1, M1): a ledger row saying
+    # -1000 subtracts a thousand dollars the run never got back, putting the
+    # total below every budget for the rest of the run -- the #1648 fail-open
+    # reached by arithmetic instead of by NaN. No host reports a refund.
+    if amount is None or amount < 0:
+        return "cost_usd is not a non-negative finite amount: %r" % (value,)
     return None
 
 
@@ -194,8 +214,17 @@ def sum_costs(rows):
         if fault:
             raise LedgerCorrupt(line_no, fault)
         value = row.get("cost_usd")
-        if value is not None:
+        if value is None:
+            continue
+        try:
             total += _money(value)
+        except decimal.DecimalException:
+            # `Decimal("1E+999999999")` is finite, so it passes `_money` and
+            # overflows on the `+` (fix round 1, L2). Reported as the ledger
+            # fault it is, so the run ends with the gate's own refusal rather
+            # than with the loop catch-all's `Overflow` (spend past an
+            # unreadable cost is the thing being refused either way).
+            raise LedgerCorrupt(line_no, "cost_usd out of range: %r" % (value,)) from None
     return total
 
 
@@ -205,8 +234,10 @@ def budget_arg(text):
 
     `type=float` accepted `nan` (every `spent >= budget` comparison False -- the
     gate silently off, which is the #1648 failure spelled on the command line),
-    `inf` (a budget that can never be reached) and `-1` (a run stopped before it
-    began). All three are typos or a shell variable that did not expand."""
+    `inf` and `-1`. None of the three is an amount of money, which is the whole
+    of the reason: a huge budget is refused by nothing here (`1e400` parses, and
+    is just as unreachable), because a number IS what the flag takes. All three
+    are a typo or a shell variable that did not expand."""
     value = _money(text)
     if value is None or value < 0:
         raise argparse.ArgumentTypeError(

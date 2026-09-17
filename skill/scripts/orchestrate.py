@@ -156,19 +156,30 @@ class Ledger:
             fh.write(text + "\n")
 
     def _rows(self):
-        """`(line_no, row, reason)` per ledger line (money.read_rows). An absent
-        file is not an error: a run that launched nothing has spent nothing."""
+        """`(line_no, row, reason)` per ledger line (money.read_rows).
+
+        An ABSENT ledger is not an error: a run that launched nothing spent
+        nothing. A ledger that is THERE and cannot be opened is the opposite --
+        "nothing spent" is the one answer that is certainly wrong -- so it
+        becomes a file-level fault at line 0 (fix round 1, M2): `total_cost`
+        refuses the run over it, `lines()` still answers `[]`, and
+        `usage_document` counts it as the one corrupt row it is."""
         try:
             with open(self.path, encoding="utf-8") as fh:
                 return list(money.read_rows(fh))
-        except OSError:
+        except FileNotFoundError:
             return []
+        except OSError as exc:
+            return [(0, None, "ledger unreadable: %s" % exc)]
 
     def lines(self):
-        """Every row that could be read -- tolerant, for the readers that want the
-        launches. #1648: the old whole-file `except ValueError` was tolerant the
-        other way round, returning `[]` for ONE unreadable line and blanking the
-        whole ledger for every reader of it."""
+        """Every row that could be read, SILENTLY DROPPING the rest -- for the
+        readers that want the launches, not the money. Any reader of the cost
+        must go through `_rows()` (via `total_cost`/`money.cost_fault`), which
+        reports what this one discards.
+
+        #1648: the old whole-file `except ValueError` was intolerant instead --
+        ONE unreadable line returned `[]` and blanked the ledger for everyone."""
         return [row for _line_no, row, _reason in self._rows() if row is not None]
 
     def total_cost(self):
@@ -480,6 +491,8 @@ def loop(args):
                 except money.LedgerCorrupt as exc:
                     return _finish(_status("error", "driver loop: %s; refusing to spend past "
                                            "an unreadable cost; ledger at %s; still pending: %s"
+                                           "; delete or repair that line, or re-run with "
+                                           "`--reset`"
                                            % (exc, ledger.path, pending_ids)),
                                    args, guards, ledger, namespace, mode, runner)
                 if spent >= budget:

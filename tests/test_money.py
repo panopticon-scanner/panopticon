@@ -99,6 +99,19 @@ class TestLedgerJson(unittest.TestCase):
         self.assertIsNone(json.loads(text)["usage"]["input_tokens"])
         self.assertIn("non-finite", note)
 
+    def test_ledger_text_still_writes_a_row_with_an_unserializable_field(self):
+        # Fix round 1, L3: the backstop caught ValueError only, so a field json
+        # cannot encode at all (a set -- `denials` comes off a host envelope)
+        # raised TypeError out of `record` and lost the row for a launch that
+        # had already been paid for.
+        text, note = money.ledger_text({"cost_usd": 0.15, "error": None,
+                                        "denials": {"Write"}})
+        row = json.loads(text)
+        self.assertEqual(0.15, row["cost_usd"])          # the money is untouched
+        self.assertIn("Write", row["denials"])           # ...and the field is kept as text
+        self.assertIn("unserializable", note)
+        self.assertIn("unserializable", row["error"])
+
     def test_read_rows_reports_the_line_number_it_could_not_read(self):
         rows = list(money.read_rows(iter(['{"a": 1}\n', "\n", "not json\n",
                                           '{"cost_usd": NaN}\n', "[]\n"])))
@@ -130,6 +143,26 @@ class TestSummingTheLedger(unittest.TestCase):
         for value in ("NaN", "inf", "abc", {}, True):
             with self.subTest(value=value), self.assertRaises(money.LedgerCorrupt):
                 money.sum_costs([(1, {"cost_usd": value}, None)])
+
+    def test_it_refuses_a_negative_cost_instead_of_crediting_it(self):
+        # Fix round 1, M1: a negative cost was SUBTRACTED from the total, so one
+        # `{"cost_usd": -1000}` row buys an unbounded number of paid entries --
+        # the #1648 fail-open again, with arithmetic instead of NaN.
+        with self.assertRaises(money.LedgerCorrupt) as caught:
+            money.sum_costs([(1, {"cost_usd": 0.15}, None), (2, {"cost_usd": -1000}, None)])
+        self.assertEqual(2, caught.exception.line_no)
+        self.assertIn("non-negative", str(caught.exception))
+        self.assertIsNotNone(money.cost_fault({"cost_usd": -0.01}, None))
+        self.assertIsNone(money.cost_fault({"cost_usd": 0}, None))
+
+    def test_it_refuses_a_cost_the_decimal_context_cannot_add(self):
+        # Fix round 1, L2: `Decimal("1E+999999999")` is finite, so it passes
+        # `_money` and overflows on the `+`. Unwrapped, that reached the loop's
+        # catch-all as `driver loop: Overflow: [<class 'decimal.Overflow'>]`
+        # instead of the budget gate's own refusal.
+        with self.assertRaises(money.LedgerCorrupt) as caught:
+            money.sum_costs([(1, {"cost_usd": "1E+999999999"}, None)])
+        self.assertIn("out of range", str(caught.exception))
 
     def test_cost_fault_is_the_one_definition_both_readers_use(self):
         self.assertIsNone(money.cost_fault({"cost_usd": 0.1}, None))

@@ -158,6 +158,12 @@ class PoisonedLedger(SeededLedger):
              '"ok": true, "phase": "review", "usage": {}}',)
 
 
+class ACreditedLedger(SeededLedger):
+    # Fix round 1, M1: one negative cost, which a plain sum treats as a credit.
+    LINES = ('{"cost_usd": -1000, "entry_id": "e0", "error": null, '
+             '"ok": true, "phase": "review", "usage": {}}',)
+
+
 class FifteenCentRows(SeededLedger):
     LINES = tuple('{"cost_usd": 0.15, "entry_id": "e%d", "error": null, '
                   '"ok": true, "phase": "review", "usage": {}}' % i for i in range(3))
@@ -426,6 +432,8 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(status["status"], "error", status)
         self.assertIn("ledger corrupt at line 1", status["message"])
         self.assertIn("refusing to spend past an unreadable cost", status["message"])
+        self.assertIn("delete or repair that line, or re-run with `--reset`",
+                      status["message"])               # fix round 1, N1: say what to do
         self.assertEqual(runner.launched, [])            # nothing further was paid for
         # ...and the terminal teardown still ran over that same ledger: the
         # tokens half of `_finish`'s final write_usage must not fall over the
@@ -433,6 +441,17 @@ class TestHeadlessLoop(LoopCase):
         self.assertNotIn("usage.json not written", status["message"])
         self.assertEqual(1, runio._load_json(
             os.path.join(runner.run_dir, "usage.json"))["corrupt_rows"])
+
+    def test_a_negative_ledger_cost_is_not_spendable_credit(self):
+        # Fix round 1, M1. A `-1000` cost summed as a credit puts the total a
+        # thousand dollars below any budget, so the gate never fires again --
+        # the #1648 fail-open reached by arithmetic rather than by NaN.
+        d, floor = self._repo()
+        runner = ACreditedLedger()
+        status = self._run(d, floor, runner, "--max-budget-usd", "0.45")
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("non-negative", status["message"])
+        self.assertEqual(runner.launched, [])
 
     def test_the_budget_boundary_is_exact_where_float_missed_it(self):
         # #1648, the mundane half. Three ledgered $0.15 rows against a $0.45
@@ -1446,6 +1465,30 @@ class TestLedgerMoney(LoopCase):
         with self.assertRaises(money.LedgerCorrupt) as caught:
             ledger.total_cost()
         self.assertEqual(2, caught.exception.line_no)
+
+    def test_a_ledger_that_is_there_but_unreadable_is_a_fault_not_a_zero(self):
+        # Fix round 1, M2: `except OSError: return []` answered "nothing spent"
+        # for a ledger that EXISTS and cannot be read -- the one answer that is
+        # certainly wrong, and the gate went on launching. A directory in its
+        # place is the portable way to make the read fail (a chmod 000 file is
+        # vacuous for root); a permission change mid-run is the real case.
+        ledger = self._ledger()
+        os.makedirs(ledger.path)
+        with self.assertRaises(money.LedgerCorrupt) as caught:
+            ledger.total_cost()
+        self.assertIn("ledger unreadable", str(caught.exception))
+        self.assertNotIn("line 0", str(caught.exception))   # file-level, not a line
+        self.assertEqual([], ledger.lines())                # other readers: still tolerant
+        self.assertEqual(1, ledger.usage_document()["corrupt_rows"])
+
+    def test_an_absent_ledger_is_still_nothing_spent(self):
+        # The other half of the M2 split: a run that has launched nothing has a
+        # ledger that is not there, and that is not a fault.
+        ledger = self._ledger()
+        self.assertFalse(os.path.exists(ledger.path))
+        self.assertEqual(money.ZERO, ledger.total_cost())
+        self.assertEqual([], ledger.lines())
+        self.assertEqual(0, ledger.usage_document()["corrupt_rows"])
 
     def test_lines_still_tolerates_a_bad_line_for_every_other_reader(self):
         ledger = self._ledger()
