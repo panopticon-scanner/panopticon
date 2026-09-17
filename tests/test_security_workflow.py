@@ -3,6 +3,8 @@ import unittest
 
 import yaml
 
+from test_workflow_pins import _without_comments
+
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "security.yml")
@@ -22,12 +24,22 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         ]
 
     def _run_text(self, workflow):
-        return "\n".join(
+        """Every `run:` script in the workflow, WITHOUT its comments.
+
+        The prose in this workflow quotes the commands it explains -- the
+        dependency step's own comment names the flags it passes and the shape
+        it replaced. Reading comments as script made two assertions here
+        satisfiable by documentation: `--require-hashes` stayed "present" with
+        the flag deleted from the command, and a reinstated `pip install
+        --upgrade pip` would have been hidden by a comment mentioning it. What
+        this file asserts is what the gate RUNS.
+        """
+        return _without_comments("\n".join(
             step.get("run", "")
             for job in workflow.get("jobs", {}).values()
             for step in job.get("steps", [])
             if "run" in step
-        )
+        ))
 
     def test_controller_and_target_are_separate_checkouts(self):
         wf = self._workflow()
@@ -103,6 +115,21 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertIn("python controller/skill/scripts/security_gate.py", runs)
         self.assertNotIn("python skill/scripts/run_tools.py", runs)
         self.assertNotIn("import scripts.ingest_tools as it", runs)
+
+    def test_gate_deps_are_installed_by_digest_from_the_trusted_checkout(self):
+        # #1641 (SEC-E2A). Two halves, and the second is the one only this file
+        # can state: the gate's dependency digests must come from `controller/`
+        # -- on a fork PR the BASE checkout -- because a requirements file read
+        # out of `target/` would let the PR choose what the gate installs, which
+        # is the same door `test_only_trusted_controller_runs_gate_and_scanners`
+        # closes for the scanner code itself.
+        runs = self._run_text(self._workflow())
+        self.assertIn("--require-hashes", runs)
+        self.assertIn("-r controller/.github/requirements-gate.txt", runs)
+        self.assertNotIn("target/.github/requirements", runs)
+        # The finding itself: the tool that installs the pinned things was not
+        # pinned. Nothing may reintroduce an unconstrained upgrade.
+        self.assertNotIn("pip install --upgrade pip", runs)
 
     def test_pr_dockerfile_is_never_built(self):
         runs = self._run_text(self._workflow())

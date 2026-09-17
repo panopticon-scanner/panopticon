@@ -115,6 +115,7 @@ kimi /panopticon --pr 217              # review PR 217 in an isolated worktree
 | `tests/` | pytest suite |
 | `Dockerfile` | `panopticon-tools` scanner image |
 | `Dockerfile.fixtures` | Test fixture image definition |
+| `requirements-fixtures.txt` | Hash-pinned dependencies the fixture image installs (see DEVELOPMENT.md) |
 
 ## Development
 

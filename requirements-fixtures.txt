@@ -1,0 +1,31 @@
+# What the fixture image is allowed to install, by version AND by bytes (#1641,
+# SEC-E2A). `Dockerfile.fixtures` installs this as root at image build, so an
+# unpinned resolve here runs an attacker-chosen package's install-time code with
+# full privileges inside the image the scanner adapters are validated against.
+#
+# `pip install --require-hashes -r` this file: no --no-deps, unlike the gate's
+# list, so pip resolves pytest's dependency graph and --require-hashes makes any
+# dependency missing from this file a LOUD install-time failure rather than an
+# unpinned download. pytest's remaining requirements (colorama, exceptiongroup,
+# tomli) are markered for win32 and python < 3.11; this image is linux on the
+# tools base image's python 3.12, so they are never selected.
+#
+# The digests are not written by hand. `python3 scripts/bump_pins.py
+# requirements --write` reads each one from PyPI's JSON API and recomputes it
+# from the downloaded wheel; see DEVELOPMENT.md, "Regenerating the pinned
+# dependency hashes".
+
+# The integration-test harness that runs inside the image. Floor: pyproject.toml
+# asks for pytest>=9.1.1 and this must not contradict it.
+pytest==9.1.1 \
+    --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
+
+# pytest's runtime dependencies, on this platform.
+iniconfig==2.3.0 \
+    --hash=sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12
+packaging==26.3 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+pluggy==1.6.0 \
+    --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
+pygments==2.21.0 \
+    --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9

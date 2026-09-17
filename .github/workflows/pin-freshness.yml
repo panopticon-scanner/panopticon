@@ -20,6 +20,11 @@ on:
 permissions:
   contents: read
 
+# One job per pin family (`bump_pins.py <family>`). The requirements family
+# (#1641) is deliberately NOT on this schedule: its VERSIONS are Dependabot's to
+# bump, and its digests only move when a version does, so a weekly rewrite would
+# be a no-op PR every Monday. The operator refreshes it beside the version bump
+# -- DEVELOPMENT.md, "Regenerating the pinned dependency hashes".
 jobs:
   rustup:
     runs-on: ubuntu-latest
@@ -37,7 +42,7 @@ jobs:
       - name: Check the pin
         id: check
         run: |
-          python3 scripts/bump_pins.py | tee /tmp/pins.txt
+          python3 scripts/bump_pins.py rustup | tee /tmp/pins.txt
           if grep -q "available (re-run with --write)" /tmp/pins.txt; then
             echo "stale=true" >> "$GITHUB_OUTPUT"
           fi
@@ -46,7 +51,7 @@ jobs:
       # downloaded artifact, so a failure here means "do not pin", not "retry".
       - name: Apply the bump
         if: steps.check.outputs.stale == 'true'
-        run: python3 scripts/bump_pins.py --write
+        run: python3 scripts/bump_pins.py rustup --write
 
       - name: Open a PR
         if: steps.check.outputs.stale == 'true'
