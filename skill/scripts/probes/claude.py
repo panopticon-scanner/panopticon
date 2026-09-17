@@ -77,7 +77,7 @@ def probe_entry_model_bound(host, registration_dir=None):
     can prove the host honours the entry's model, and a vacuous PROVEN is the
     fail-open this epic exists to remove.
 
-    A missing REGISTRATION DIRECTORY is also UNKNOWN, not REFUTED, even
+    A REGISTRATION DIRECTORY the probe cannot use is also UNKNOWN, not REFUTED, even
     though `common.probe_registered_shell_tools` refutes on the same
     condition: that probe's question is "did the host register its shells at
     all", where an absent directory IS the answer (never registered, REFUTE).
@@ -97,11 +97,26 @@ def probe_entry_model_bound(host, registration_dir=None):
                 "host %r registers no enforcement shells, so no shell binds a model"
                 % host)
     directory = registration_dir or row.registration_dir
-    if not directory or not os.path.isdir(directory):
+    # #1610: the same three cases `common.probe_registered_shell_tools` splits,
+    # in the same words. They used to be two, and the first rendered as "no
+    # registration directory at None"; the third did not exist at all, so an
+    # unreadable directory reported "no role is registered in <dir>" -- the one
+    # reading the operator could act on wrongly. The STATE is `unknown` in all
+    # three (see above on why an absent directory is not THIS probe's
+    # refutation), and `by` stays this probe's id throughout: it ran, it looked
+    # at the registry, and what it reports is what it found there.
+    if not directory:
+        return (hosts.UNKNOWN, ENTRY_MODEL_BOUND,
+                "host %r has no registration directory, so nothing registered "
+                "binds a model" % host)
+    if not os.path.isdir(directory):
         return (hosts.UNKNOWN, ENTRY_MODEL_BOUND,
                 "no registration directory at %s: nothing registered binds a model, "
                 "and nothing here proves the host honours the entry's model"
                 % directory)
+    if not os.access(directory, os.R_OK):
+        return (hosts.UNKNOWN, ENTRY_MODEL_BOUND,
+                "cannot read %s, so nothing could be checked" % directory)
     faults, matched, absent = [], [], []
     for role, role_file in sorted(dispatch.ROLE_FILES.items()):
         path = os.path.join(directory,
