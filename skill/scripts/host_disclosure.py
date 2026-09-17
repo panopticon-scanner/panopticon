@@ -135,6 +135,39 @@ def remedy(capability, host):
     return text % {"host": host or "this host"}
 
 
+# What the line says INSTEAD of the probe and the detail when the two
+# disagree (#1597). It names the disagreement rather than the measurement:
+# printing "probe write-guard-armed: round-trip denied" beside "is unknown"
+# asserts two things that cannot both be true of one measurement, and the one
+# the operator is entitled to is the masked state -- `hosts.posture` is the
+# fail-closed answer every other surface renders.
+_MASKED = ("the artifact records %r, which is not the state this run reports; "
+           "its probe and detail describe that other measurement and are not "
+           "shown")
+
+
+def _probe_clause(row, state):
+    """What replaces `probe <by>: <detail>` for one capability's row.
+
+    Three shapes, and the third is #1597. A row that AGREES with the masked
+    state renders the measurement it made. A row that recorded no state at all
+    claims nothing, so "no probe ran" stays exactly as it was -- an absent
+    entry is silence, not a contradiction. A row whose OWN state is not the
+    masked one (a stale artifact, or a foreign one fed through `--compare`:
+    `posture()` masks a PROVEN row for a capability the host does not claim,
+    and normalises an unreadable state to UNKNOWN) has its `by` and `detail`
+    withheld. They are not wrong so much as about something else, and a
+    disclosure that contradicts itself in the same sentence teaches the
+    operator to read past all four surfaces.
+    """
+    recorded = row.get("state")
+    if recorded is not None and recorded != state:
+        return _MASKED % (recorded,)
+    by = row.get("by")
+    probe_clause = ("probe %s" % by) if by else "no probe ran"
+    return "%s: %s" % (probe_clause, row.get("detail") or "no detail recorded")
+
+
 def lines(envelope):
     """One line per capability that is not PROVEN, in a stable order.
 
@@ -150,12 +183,10 @@ def lines(envelope):
     for capability in hosts.unproven(posture):
         row = caps.get(capability)
         row = row if isinstance(row, dict) else {}
-        by = row.get("by")
-        probe_clause = ("probe %s" % by) if by else "no probe ran"
-        detail = row.get("detail") or "no detail recorded"
-        out.append("%s is %s on host %r -- %s: %s. fix: %s"
-                   % (capability, posture[capability], host, probe_clause,
-                      detail, remedy(capability, host)))
+        out.append("%s is %s on host %r -- %s. fix: %s"
+                   % (capability, posture[capability], host,
+                      _probe_clause(row, posture[capability]),
+                      remedy(capability, host)))
     return out
 
 

@@ -5,6 +5,7 @@ import subprocess
 import unittest
 from unittest import mock
 
+from _test_helpers import only
 from scripts import host_disclosure, hosts
 import scripts.driver as driver
 import scripts.host_probes as host_probes
@@ -175,6 +176,75 @@ class TestTheWordingRule(unittest.TestCase):
             self.assertIn(token, text, token)
         self.assertNotIn("removed once every remaining host", text)
         self.assertLess(len(text), 400, "one line, not a paragraph")
+
+
+class TestALineNeverContradictsItself(unittest.TestCase):
+    """#1597: the masked state and the raw row's `by`/`detail` came from two
+    different places, and a stale or foreign artifact makes them disagree:
+
+        artifact_write_guard is unknown on host 'gemini' -- probe
+        write-guard-armed: round-trip denied
+
+    "unknown" and "round-trip denied" cannot both be true of the same
+    measurement. The status is the masked one (`hosts.posture` is the
+    fail-closed answer every surface renders); the probe and the detail
+    describe a state the operator is NOT being shown, so they are dropped
+    rather than printed beside a status that refutes them.
+    """
+
+    def _masked_line(self, host, capability, state, by, detail):
+        env = envelope(host, **{capability: (state, by, detail)})
+        return only([x for x in host_disclosure.lines(env) if capability in x],
+                    "line for " + capability)
+
+    def test_a_proven_row_a_host_does_not_claim_drops_its_probe_and_detail(self):
+        # gemini claims nothing, so `posture()` masks this PROVEN row to
+        # UNKNOWN (a stale artifact must not GRANT anything).
+        self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, hosts.spec("gemini").claims)
+        line = self._masked_line("gemini", hosts.ARTIFACT_WRITE_GUARD,
+                                 hosts.PROVEN, "write-guard-armed",
+                                 "round-trip denied")
+        self.assertIn(hosts.UNKNOWN, line)
+        self.assertNotIn("write-guard-armed", line)
+        self.assertNotIn("round-trip denied", line)
+        # #1597's second sanctioned half -- "say plainly that the artifact
+        # claims something the host cannot". Naming the recorded state
+        # EXPLAINS the suppression; it is the by/detail, which assert a
+        # measurement beside a status that refutes it, that may not be shown.
+        self.assertIn("the artifact records %r" % hosts.PROVEN, line)
+        # Still a disclosure, not a mood: capability, host and remedy survive.
+        self.assertIn(hosts.ARTIFACT_WRITE_GUARD, line)
+        self.assertIn("gemini", line)
+        self.assertIn(host_disclosure.remedy(hosts.ARTIFACT_WRITE_GUARD, "gemini"),
+                      line)
+
+    def test_an_unparseable_state_drops_them_too(self):
+        # `noscan`-became-`empty` (#1335) in this shape: the row records a
+        # state this module cannot read, `posture()` answers UNKNOWN, and the
+        # row's own by/detail describe whatever `banana` was supposed to mean.
+        line = self._masked_line("claude", hosts.USAGE_LEDGER, "banana",
+                                 "usage-source", "envelope carried `usage`")
+        self.assertIn(hosts.UNKNOWN, line)
+        self.assertNotIn("usage-source", line)
+        self.assertNotIn("envelope carried", line)
+
+    def test_a_row_that_agrees_with_the_mask_keeps_its_probe_and_detail(self):
+        # The other direction, so the fix cannot be "drop by/detail always".
+        # REFUTED passes the claim mask untouched (hosts.posture, I5).
+        line = self._masked_line("claude", hosts.TOOL_POLICY_ENFORCED,
+                                 hosts.REFUTED, "shadow-shell-scan",
+                                 "the reviewed tree ships panopticon-scout.md")
+        self.assertIn("shadow-shell-scan", line)
+        self.assertIn("panopticon-scout.md", line)
+
+    def test_a_row_that_records_no_state_still_says_nobody_looked(self):
+        # An ABSENT state is not a contradiction -- the row claims nothing --
+        # so the "no probe ran" wording it already had must survive.
+        env = {"schema_version": 1, "host": "claude", "probed_at": "T",
+               "capabilities": {hosts.USAGE_LEDGER: {}}}
+        line = only([x for x in host_disclosure.lines(env)
+                     if hosts.USAGE_LEDGER in x], "usage_ledger line")
+        self.assertIn("no probe ran", line)
 
 
 class TestTheInverseCarriesEqualWeight(unittest.TestCase):
