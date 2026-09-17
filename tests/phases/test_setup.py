@@ -664,3 +664,38 @@ class TestSetupConvertsAStalledEngine(unittest.TestCase):
         self.assertEqual(status["status"], "error", status)
         self.assertIn("without satisfying its done() predicate",
                       status["message"])
+
+
+class TestSetupConvertsAConfinementRefusal(unittest.TestCase):
+    """Item 24 R1-1: #1577 routed the five `--setup` artifact writes through the
+    confined no-follow writers, and the whole-path confinement refuses a planted
+    component with a `ValueError` -- not a `DriverError`. `run_setup_flow`
+    converted only `(DriverError, EngineStalled)`, so the refusal escaped
+    `driver setup` as a traceback: the host asking for a status got no JSON at
+    all, and the operator got a stack trace naming a file instead of a message
+    naming the plant.
+
+    A refusal is a RESULT of this verb -- the guard working -- so it speaks the
+    same status protocol as every other outcome. `driver run` had the same gap
+    around the engine's own artifact writes and is closed with it.
+    """
+
+    def _planted(self, root, victim_dir):
+        victim = os.path.join(victim_dir, "loot")
+        with open(victim, "w", encoding="utf-8") as fh:
+            fh.write("KEEP")
+        os.makedirs(runio._pano(root), exist_ok=True)
+        os.symlink(victim, runio._pano(root, "setup-spine.json"))
+        return victim
+
+    def test_a_planted_spine_is_an_error_status_not_a_traceback(self):
+        d = make_git_repo(test_case=self, files={"src/checkout/pay.py": "x = 1\n"},
+                          branch="main", user_email="t@t", user_name="t")
+        with tempfile.TemporaryDirectory() as out:
+            victim = self._planted(d, os.path.realpath(out))
+            args = driver.build_parser().parse_args(["setup", d])
+            status = setup_phase.run_setup_flow(args)
+            self.assertEqual(status["status"], "error", status)
+            self.assertIn("setup-spine.json", status["message"])
+            with open(victim, encoding="utf-8") as fh:
+                self.assertEqual("KEEP", fh.read())
