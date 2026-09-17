@@ -736,6 +736,33 @@ class TestTheLimitationsClauseStaysReadable(unittest.TestCase):
         clause = setup_phase._limitations_clause(self._rows(setup_phase._LIMITATION_MAX))
         self.assertNotIn("more", clause)
 
+    def test_a_name_longer_than_the_bar_survives_intact(self):
+        # R1 Minor 4. The docstring promised "the NAME is never what gets cut"
+        # while `_limitation_line` sliced the whole rendered line: a 156-char
+        # name came back truncated mid-name, losing the one field
+        # `setup-complete.json` keys the untruncated detail under and the one
+        # an operator greps the readiness rows for. Unreachable with today's
+        # check names (the longest is `host-capability:tool_policy_enforced`,
+        # 36 characters) -- which is exactly why it was a comment claiming a
+        # guarantee the code did not make.
+        name = "host-capability:" + ("x" * 140)
+        line = self._lines(setup_phase._limitations_clause(
+            [(name, self.REMEDY)]))[1]
+        self.assertIn(name, line)
+        self.assertNotIn(self.REMEDY, line, "the detail must still be cut")
+
+    def test_the_detail_is_the_only_field_ever_cut(self):
+        name = "host-capability:model_binding"
+        line = self._lines(setup_phase._limitations_clause(
+            [(name, self.REMEDY)]))[1]
+        self.assertIn(name, line)
+        self.assertTrue(line.endswith(setup_phase._TRUNCATED + ")"), line)
+        # ...and what survives of the detail is a PREFIX of the real one, not
+        # a slice of something else.
+        cut = line[len("  - %s (" % name):-len(setup_phase._TRUNCATED + ")")]
+        self.assertTrue(self.REMEDY.startswith(cut), line)
+        self.assertTrue(cut, "the detail was cut away entirely")
+
     def test_the_name_survives_truncation(self):
         # The check's NAME is what an operator greps for and what
         # setup-complete.json keys on; only the detail may be cut.

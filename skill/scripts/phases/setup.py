@@ -138,16 +138,27 @@ _TRUNCATED = "..."
 
 
 def _limitation_line(name, detail):
-    """One limitation on one line, no longer than `_LIMITATION_LINE`.
+    """One limitation on one line, no longer than `_LIMITATION_LINE` -- unless
+    the NAME alone is longer than that, in which case the name wins.
 
-    The NAME is never what gets cut: it is the key `setup-complete.json`
+    The name is never what gets cut: it is the key `setup-complete.json`
     stores the untruncated detail under, and the string an operator greps the
-    readiness rows for. Only the detail is trimmed, and it says so.
+    readiness rows for. A line whose name has been sliced in half identifies
+    nothing and points at nothing. Only the detail is trimmed, and it says so.
+
+    R1 Minor 4: this used to slice the whole rendered line, so the docstring
+    above asserted a guarantee the code did not make -- measured, a 156-char
+    name came back cut mid-name. Every check name this repo emits is
+    code-controlled and far under the bar (the longest,
+    `host-capability:tool_policy_enforced`, is 36 characters), so the
+    name-wins branch is a promise kept rather than a trade-off anyone meets.
     """
     line = "  - %s (%s)" % (name, detail)
     if len(line) <= _LIMITATION_LINE:
         return line
-    return line[:_LIMITATION_LINE - len(_TRUNCATED)] + _TRUNCATED
+    head = "  - %s (" % name
+    room = _LIMITATION_LINE - len(head) - len(_TRUNCATED) - 1   # the ")"
+    return head + (detail[:room] if room > 0 else "") + _TRUNCATED + ")"
 
 
 def _limitations_clause(limitations):
