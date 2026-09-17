@@ -29,8 +29,11 @@ DEFAULT_MAX_ITERATIONS = 50
 # re-runs, which resumes from disk and starts every streak at zero.
 MAX_ENTRY_FAILURES = 3
 # #1662: the two sentences a Ctrl-C ends a run with. Constants because
-# docs/PANOPTICON.md quotes the first one back and the guide test reads it.
-INTERRUPTED = ("interrupted: %d of %d entries were completed and have been rolled "
+# docs/PANOPTICON.md quotes the first one back and the guide test reads it off
+# here. "had been HANDLED", not completed: the count is every entry the loop
+# got back, a failed launch included -- ledgered as the failure it was rather
+# than persisted (F2), and rolled back either way.
+INTERRUPTED = ("interrupted: %d of %d entries had been handled and have been rolled "
                "back; the phase will re-run from its checkpoint on the next "
                "`driver loop`; use `--reset` to discard the whole run")
 INTERRUPTED_IDLE = ("interrupted: no batch was in flight, so nothing was rolled back; "
@@ -493,38 +496,35 @@ def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner
                  guards, done, total):
     """The Ctrl-C path (#1662): cancel, roll back to the checkpoint, and say so.
 
-    `iter_batch` has already stopped the batch by the time this runs: nothing
-    queued was launched, and what was running has been terminated. What is
-    left, in this order:
+    `iter_batch` has already stopped the batch: nothing queued was launched,
+    and what was running has been terminated. What is left, in this order:
 
-    * this batch's write and read grants come down FIRST, before a single
-      artifact is deleted. A child that outlived the termination -- no shipped
-      family holds a handle on its children, so "terminated" is the terminal's
-      process-group SIGINT for them -- would otherwise re-create the very file
-      the rollback had just handed back, and the resume would read that cell
-      as done and never dispatch it again: the one outcome the rollback exists
-      to prevent. The guard is fail-closed the moment its allowlist is
-      unlinked, so disarming first denies the straggler's Write. `_finish`
-      still disarms what this invocation armed, which after this is a no-op.
-    * every entry that did NOT complete gets a `cancelled` ledger row, so the
-      run's history names what was cut instead of leaving a gap. Through
-      `Ledger.record`, which is the ledger's only writer; the rows the batch
-      already wrote stand exactly as they are, because the spend they record
-      is a fact and a fact is not rolled back.
+    * this batch's grants come down FIRST, before a single artifact is deleted.
+      A child that outlived the termination (no shipped family holds a handle
+      on its children, so "terminated" means the terminal's process-group
+      SIGINT) would otherwise re-create the very file the rollback had handed
+      back, and the resume would read that cell as done and never dispatch it
+      again -- the one outcome the rollback exists to prevent. The guard is
+      fail-closed the moment its allowlist is unlinked, so disarming first
+      denies the straggler's Write; `_finish`'s own disarm is then a no-op.
+    * every entry that did NOT complete gets a `cancelled` ledger row -- through
+      `Ledger.record`, the ledger's only writer -- so the run's history names
+      what was cut. The rows the batch already wrote stand: spend is a fact.
     * the batch's artifacts go, as a unit and by the list the manifest holds.
-    * the interrupted phase's per-dispatch marker is given back
-      (`persist.rollback_markers`), so the re-run starts from the checkpoint
-      with the retry budget it had rather than one interrupt poorer.
+    * the interrupted phase's per-dispatch marker is given back, so the re-run
+      starts with the retry budget it had rather than one interrupt poorer.
+      Only `review` has one today (`persist.rollback_markers`: one charge per
+      dispatched cell in `cell-attempts.json`); scout's and verify's counters
+      are charges against a PREVIOUS reply and are left standing.
 
-    Every step is wrapped, and wrapped in `except BaseException` rather than
-    `except Exception`: the operator who held the key down, or hit it again
-    because the first Ctrl-C did not seem to do anything, raises a SECOND
-    KeyboardInterrupt in the middle of this -- and a KeyboardInterrupt is a
-    BaseException, so an `except Exception` here did not hold it. Escaping
-    skipped `_finish` entirely: the guards stayed armed over the whole session
-    and the kimi run home kept its config.toml and its credential links. So
-    every failure on the way out is REPORTED under one `rollback incomplete`
-    note and the interrupt's own status is what the operator gets back.
+    Every step is wrapped in `except BaseException`, not `except Exception`: an
+    operator who holds the key down -- or presses it again because the first
+    Ctrl-C did not look like it had done anything -- raises a SECOND
+    KeyboardInterrupt in the middle of this, and that is a BaseException, so an
+    `except Exception` did not hold it. Escaping skipped `_finish` entirely:
+    both guards stayed armed over the whole session and the kimi run home kept
+    its config.toml and its credential symlinks. Every failure on the way out
+    is reported under one `rollback incomplete:` clause instead.
     """
     if batch is None:
         return _status("error", INTERRUPTED_IDLE)

@@ -576,7 +576,11 @@ class TestHeadlessLoop(LoopCase):
         status, seen = self._interrupt_mid_batch(d, floor, runner)
         self.assertEqual(status["status"], "error", status)
         self.assertEqual({"reply": True, "ledger": True, "usage": True}, seen)
-        self.assertIn("interrupted: 1 of 2 entries were completed and have been "
+        # "handled", not "completed": `done` counts every entry the loop got
+        # back, a failed launch included -- it is ledgered as the failure it
+        # was rather than persisted (F2), and the rollback takes back what it
+        # did write either way.
+        self.assertIn("interrupted: 1 of 2 entries had been handled and have been "
                       "rolled back", status["message"])
         self.assertIn("the phase will re-run from its checkpoint on the next "
                       "`driver loop`", status["message"])
