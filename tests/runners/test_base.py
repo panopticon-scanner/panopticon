@@ -1,15 +1,19 @@
 import contextlib
 import importlib
+import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
 from unittest import mock
 
 import scripts.runners.base as base
+import scripts.runners.batch as batch_mod
 import scripts._version as version
 import scripts.runners.session as session_runner
 
@@ -468,3 +472,108 @@ class TestAnInterruptStopsTheBatch(unittest.TestCase):
             r, [{"id": "e%d" % i} for i in range(4)])
         self.assertEqual(before, {s: signal.getsignal(s)
                                   for s in (signal.SIGINT, signal.SIGTERM)})
+
+
+class TestTheBatchManifest(unittest.TestCase):
+    """#1662: the list a Ctrl-C rolls back, written before the batch's first
+    launch. Its own module (`runners/batch.py`) but not its own test file:
+    `Orchestration:Hosts` is at 47 of its 48-file cap, and a 49th file chunks
+    the leaf into a name the review matrix has no entry for (the #1638 P13
+    defect). Same parking reasoning as `money.py`/`ledger.py` in groups.yml."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def _artifact(self, name, body="{}"):
+        path = os.path.join(self.dir, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path
+
+    def _batch(self, *names):
+        entries = [{"id": n, "out_file": self._artifact(n + ".json")} for n in names]
+        return batch_mod.Batch(self.dir, 3, "review", entries).open(), entries
+
+    def test_the_manifest_lists_the_entry_ids_and_the_files_they_will_write(self):
+        batch, entries = self._batch("review-app-SEC", "review-app-ACC")
+        self.assertEqual(batch.path,
+                         os.path.join(self.dir, "batch-3.json"))
+        with open(batch.path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual(1, doc["schema_version"])
+        self.assertEqual((3, "review"), (doc["batch"], doc["checkpoint"]))
+        self.assertRegex(doc["opened_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual(["review-app-SEC", "review-app-ACC"],
+                         [row["id"] for row in doc["entries"]])
+        self.assertEqual([[e["out_file"]] for e in entries],
+                         [row["artifacts"] for row in doc["entries"]])
+
+    def test_roll_back_deletes_what_it_lists_and_nothing_else(self):
+        # The "never a glob" rule: a prior phase's output sits in the same
+        # folder, and on a redteam target so does whatever the tree planted
+        # with a matching name.
+        batch, entries = self._batch("review-app-SEC")
+        bystander = self._artifact("coverage-app.json")
+        removed, problems = batch.roll_back()
+        self.assertEqual(([entries[0]["out_file"]], []), (removed, problems))
+        self.assertFalse(os.path.exists(entries[0]["out_file"]))
+        self.assertTrue(os.path.isfile(bystander))
+        self.assertFalse(os.path.exists(batch.path), "the manifest goes with it")
+
+    def test_an_artifact_that_was_never_written_is_not_a_problem(self):
+        # Most of a cancelled batch never got that far.
+        batch, entries = self._batch("review-app-SEC")
+        os.remove(entries[0]["out_file"])
+        self.assertEqual(([], []), batch.roll_back())
+
+    def test_a_record_the_batch_wrote_later_is_rolled_back_too(self):
+        # `persist.retain_rejected` names the file only once it has written
+        # it, so the manifest gains it mid-batch rather than at open.
+        batch, entries = self._batch("review-app-SEC")
+        kept = self._artifact("rejected-review-app-SEC-1.json")
+        batch.add_artifact("review-app-SEC", kept)
+        batch.add_artifact("review-app-SEC", kept)          # idempotent
+        with open(batch.path, encoding="utf-8") as fh:
+            self.assertEqual([entries[0]["out_file"], kept],
+                             json.load(fh)["entries"][0]["artifacts"])
+        removed, _problems = batch.roll_back()
+        self.assertEqual({entries[0]["out_file"], kept}, set(removed))
+
+    def test_a_record_for_an_entry_not_in_the_batch_is_ignored(self):
+        batch, _entries = self._batch("review-app-SEC")
+        batch.add_artifact("review-app-ACC", self._artifact("stray.json"))
+        batch.add_artifact("review-app-SEC", None)
+        self.assertEqual(1, len(batch.artifacts()))
+
+    def test_an_artifact_planted_as_a_symlink_loses_the_link_not_the_target(self):
+        batch, entries = self._batch("review-app-SEC")
+        target = self._artifact("elsewhere.json", "precious")
+        os.remove(entries[0]["out_file"])
+        os.symlink(target, entries[0]["out_file"])
+        batch.roll_back()
+        self.assertFalse(os.path.lexists(entries[0]["out_file"]))
+        self.assertTrue(os.path.isfile(target))
+
+    def test_a_path_that_cannot_be_removed_is_reported_not_raised(self):
+        # The loop is already on its way out with an interrupt to explain; a
+        # rollback that could not finish is something the operator is TOLD,
+        # not something that replaces the interrupt's own message.
+        batch, entries = self._batch("review-app-SEC")
+        os.remove(entries[0]["out_file"])
+        os.makedirs(os.path.join(entries[0]["out_file"], "child"))
+        removed, problems = batch.roll_back()
+        self.assertEqual([], removed)
+        self.assertEqual(1, len(problems))
+        self.assertIn(entries[0]["out_file"], problems[0])
+
+    def test_close_removes_the_manifest_and_a_second_close_is_quiet(self):
+        batch, _entries = self._batch("review-app-SEC")
+        self.assertEqual([], batch.close())
+        self.assertFalse(os.path.exists(batch.path))
+        self.assertEqual([], batch.close())
+
+    def test_an_empty_batch_lists_nothing(self):
+        batch = batch_mod.Batch(self.dir, 1, "scout", []).open()
+        self.assertEqual(([], []), (batch.entry_ids(), batch.artifacts()))
+        self.assertEqual(([], []), batch.roll_back())

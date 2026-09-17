@@ -664,6 +664,60 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(status["status"], "complete", status)
         self.assertEqual([], self._manifests(runner.run_dir))
 
+    def test_an_interrupt_before_any_batch_rolls_nothing_back(self):
+        # A Ctrl-C can land before the loop ever opens a batch -- while the
+        # runner is preparing, or inside a deterministic phase between
+        # checkpoints. There is nothing to take back then, and the message
+        # must not claim "0 of 0 entries were completed and have been rolled
+        # back", which reads like a rollback that found nothing.
+        d, floor = self._repo()
+        runner = FakeRunner()
+
+        def prepare(run_dir, review_root):
+            raise KeyboardInterrupt
+
+        runner.prepare = prepare
+        status = self._run(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertEqual(orchestrate.INTERRUPTED_IDLE, status["message"])
+        self.assertIn("no batch was in flight", status["message"])
+        self.assertIn("`--reset`", status["message"])
+
+    def _rejected(self, runner):
+        folder = os.path.join(runner.run_dir, orchestrate.persist.REJECTED_DIR)
+        return sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+
+    def test_a_rejected_reply_from_the_interrupted_batch_is_rolled_back_too(self):
+        # D10 ruling 5 keeps what a failed launch printed, and ruling 2 reads
+        # it back into the next attempt's prompt -- but a rolled-back phase
+        # re-runs from scratch, so a record of an attempt that is being taken
+        # back must not steer the one that replaces it. It is not knowable at
+        # the manifest's open (retain_rejected names the file only once it has
+        # written it), so the batch gains it mid-flight.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        runner.fail_once.add("review-app-SEC")     # a launch failure, with output
+        inner, during = runner.run_entry, {}
+
+        def gated(entry, env):
+            if entry["id"] == "review-app-SEC":
+                result = inner(entry, env)
+                result.text = "half a reply"
+                return result
+            if entry["id"] == "review-app-ACC" and not during:
+                deadline = time.monotonic() + 10
+                while not self._rejected(runner) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                during["kept"] = self._rejected(runner)
+                raise KeyboardInterrupt
+            return inner(entry, env)
+
+        runner.run_entry = gated
+        status = self._return_persist(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertEqual(1, len(during["kept"]), during)   # it really was kept...
+        self.assertEqual([], self._rejected(runner))       # ...and taken back
+
     def test_driver_run_alone_writes_no_batch_manifest(self):
         # `driver run` is the non-loop path: it stops AT a checkpoint and
         # writes nothing between checkpoints, so an interrupt there has
