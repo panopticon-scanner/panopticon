@@ -410,23 +410,24 @@ def _check_host_shells(host, runner, repo_root=None):
         # yielded no posture would print five lines that name a capability and
         # nothing else -- "unenforced" alone, which 5.1 calls a mood.
         return checks
-    # Past the NO_EVIDENCE branch `fresh` is necessarily a dict with a string
-    # host and a dict `capabilities` -- headline() would have returned
-    # NO_EVIDENCE otherwise -- so this read cannot raise.
-    posture = hosts.posture(resolved_host, fresh.get("capabilities"))
-    for capability in hosts.unproven(posture):
-        # The state comes off the POSTURE map, not off raw `capabilities`: the
-        # masked posture is the one every other surface renders, and a second
-        # derivation of one fact is free to drift from it.
-        #
-        # refuted is a fault the operator can act on; unknown is NOT
-        # APPLICABLE -- read_scope_confined is proven on claude (read-guard-
-        # armed) and unknown on every other host, and an unknown must not
-        # report as a failure nobody can clear.
-        ok = False if posture[capability] == hosts.REFUTED else None
-        line = [g for g in gaps if g.startswith(capability)]
-        checks.append(("host-capability:" + capability, ok,
-                       line[0] if line else capability))
+    # #1600: the SELECTION is host_disclosure's, not a second copy of it.
+    # This used to write the `hosts.posture()` -> `hosts.unproven()` chain
+    # itself and then look each row's text up in `gaps` by prefix match --
+    # `lines()` computes the identical chain internally, so a bug confined to
+    # its own filtering was invisible here, and the cross-surface consistency
+    # guard failed on 2 surfaces of 3 rather than 3 of 3. One selection, made
+    # once, rendered by `lines()` and consumed here in the SAME ORDER, so the
+    # row carries the whole disclosed sentence rather than whatever a prefix
+    # search happened to find (and never the bare capability name, which is
+    # "unenforced" alone -- a mood, not a disclosure).
+    #
+    # refuted is a fault the operator can act on; unknown is NOT APPLICABLE --
+    # read_scope_confined is proven on claude (read-guard-armed) and unknown on
+    # every other host, and an unknown must not report as a failure nobody can
+    # clear.
+    for (capability, state), line in zip(host_disclosure.unproven_rows(fresh), gaps):
+        ok = False if state == hosts.REFUTED else None
+        checks.append(("host-capability:" + capability, ok, line))
     return checks
 
 

@@ -333,6 +333,69 @@ def _runner_ok(cmd, **kwargs):
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
+class TestReadinessConsumesTheSelectionLinesMakes(unittest.TestCase):
+    """#1600: readiness wrote the `hosts.posture()` -> `hosts.unproven()`
+    chain itself and then pulled the TEXT for each row out of `lines()` by
+    prefix match. `lines()` computed the identical chain internally, so a bug
+    confined to its own FILTERING was invisible to readiness -- measured:
+    mutating `lines()` to emit a row per capability failed the cross-surface
+    guard on stderr and body but not on readiness, 2 of 3 rather than 3 of 3.
+
+    One selection, made once, consumed by both. These tests move it and
+    require both surfaces to follow.
+    """
+
+    def _selection(self, envelope_):
+        posture = hosts.posture("claude", envelope_["capabilities"])
+        return [(capability, posture[capability])
+                for capability in hosts.CAPABILITIES]
+
+    def _readiness(self, envelope_):
+        with mock.patch.object(host_probes, "run_probes", return_value=envelope_):
+            return setup_flow._check_host_shells("claude", _runner_ok, ".")
+
+    def test_moving_the_selection_moves_readiness_with_it(self):
+        # The drift the old comment admitted, made concrete: a selection that
+        # includes the PROVEN capability. `lines()` discloses five; readiness
+        # re-derived four and never noticed.
+        selection = self._selection(MIXED)
+        with mock.patch.object(host_disclosure, "unproven_rows",
+                               return_value=selection):
+            gaps = host_disclosure.lines(MIXED)
+            rows = self._readiness(MIXED)
+        named = [c[0] for c in rows if c[0].startswith("host-capability:")]
+        self.assertEqual(len(hosts.CAPABILITIES), len(gaps))
+        self.assertEqual(len(gaps), len(named),
+                         "readiness re-derived its own selection")
+        self.assertIn("host-capability:" + hosts.ARTIFACT_WRITE_GUARD, named)
+
+    def test_one_readiness_row_per_disclosure_line_on_the_real_posture(self):
+        # The unpatched half: the two surfaces agree row-for-row, in order,
+        # on the posture a real probe produces -- so the row carries the whole
+        # sentence rather than a prefix match that can miss.
+        gaps = host_disclosure.lines(MIXED)
+        rows = [c for c in self._readiness(MIXED)
+                if c[0].startswith("host-capability:")]
+        self.assertEqual(len(gaps), len(rows))
+        for (name, _ok, detail), line in zip(rows, gaps):
+            with self.subTest(row=name):
+                self.assertEqual(line, detail)
+                self.assertTrue(line.startswith(name.split(":", 1)[1]))
+
+    def test_readiness_no_longer_writes_the_posture_chain_itself(self):
+        # The structural half (memory: a text guard must read the AST). The
+        # re-derivation is deleted, not merely shadowed: `_check_host_shells`
+        # may not call `hosts.unproven` or `hosts.posture` at all.
+        import ast
+        import inspect
+        tree = ast.parse(inspect.getsource(setup_flow._check_host_shells))
+        called = {ast.unparse(node.func) for node in ast.walk(tree)
+                  if isinstance(node, ast.Call)}
+        self.assertNotIn("hosts.unproven", called)
+        self.assertNotIn("hosts.posture", called)
+        self.assertIn("host_disclosure.unproven_rows", called)
+
+
 class TestTheFourSurfacesSayTheSameThing(unittest.TestCase):
     """§5.1 mandates four surfaces. Four hand-written copies of the wording
     rule drift, and each surface's own test keeps passing while they do. This

@@ -168,24 +168,55 @@ def _probe_clause(row, state):
     return "%s: %s" % (probe_clause, row.get("detail") or "no detail recorded")
 
 
-def lines(envelope):
-    """One line per capability that is not PROVEN, in a stable order.
+def unproven_rows(envelope):
+    """THE selection: [(capability, masked state)] this envelope does not prove.
 
-    Stable because a reader diffs these across runs; `hosts.unproven` sorts for
-    exactly that reason.
+    Pure, and the ONLY place the `hosts.posture()` -> `hosts.unproven()` chain
+    is written for disclosure (#1600). `lines()` renders it and
+    `setup_flow._check_host_shells` (5.1 surface 4) consumes it; before this
+    existed, readiness wrote the same chain itself and then pulled each row's
+    TEXT out of `lines()` by prefix match. Two derivations of one fact, and
+    only one of them observable from the other: mutating `lines()` to emit a
+    row per capability broke the cross-surface guard on the stderr and body
+    surfaces and NOT on readiness -- 2 of 3, from a test written to catch
+    exactly that.
+
+    It returns the STATE beside the name rather than the bare name
+    `hosts.unproven` gives, because that is the other half readiness was
+    re-deriving: `refuted` is a fault an operator can clear and `unknown` is
+    NOT APPLICABLE, and the two must be told apart by the same answer that
+    chose the row. Sorted by `hosts.unproven`, because a reader diffs these
+    across runs.
+
+    An unreadable envelope selects nothing -- `headline()` is where that case
+    is SAID (NO_EVIDENCE); an empty list here would read as all-proven, which
+    is the inversion its docstring forbids, so no caller may take [] from this
+    as an answer on its own.
     """
     caps = _capabilities(envelope)
     host = host_of(envelope)
     if caps is None or host is None:
         return []
     posture = hosts.posture(host, caps)
+    return [(capability, posture[capability])
+            for capability in hosts.unproven(posture)]
+
+
+def lines(envelope):
+    """One line per capability that is not PROVEN, in a stable order.
+
+    Stable because a reader diffs these across runs; `hosts.unproven` sorts for
+    exactly that reason. One line per `unproven_rows` entry, in that order, so
+    the two surfaces that consume this can be zipped rather than prefix-matched.
+    """
+    caps = _capabilities(envelope) or {}
+    host = host_of(envelope)
     out = []
-    for capability in hosts.unproven(posture):
+    for capability, state in unproven_rows(envelope):
         row = caps.get(capability)
         row = row if isinstance(row, dict) else {}
         out.append("%s is %s on host %r -- %s. fix: %s"
-                   % (capability, posture[capability], host,
-                      _probe_clause(row, posture[capability]),
+                   % (capability, state, host, _probe_clause(row, state),
                       remedy(capability, host)))
     return out
 
