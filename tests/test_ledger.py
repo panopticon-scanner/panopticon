@@ -12,6 +12,8 @@ import contextlib
 import io
 import json
 import os
+import time
+from unittest import mock
 
 import scripts.ledger as ledger_mod
 import scripts.money as money
@@ -224,3 +226,46 @@ class TestCancelledRows(LoopCase):
         row = ledger.lines()[0]
         self.assertNotIn("status", row)
         self.assertNotIn("rolled_back", row)
+
+
+class TestLedgerRowTime(LoopCase):
+    """#1685: when the row says it was written, and why that is the entry's own
+    finish rather than a second clock read.
+
+    The per-entry row carries `ts` (the row's write time) and `started_at` /
+    `finished_at` (measured inside the worker around `run_entry`). All three
+    are second-resolution ISO strings, and `ts` came from its own
+    `time.gmtime()`. Two reads that straddle a second boundary truncate to
+    different seconds, so a row could -- and on CI did -- say it was written
+    one second BEFORE the entry it records started. The ordering the test
+    asserted was not one the code guaranteed; now `ts` IS `finished_at`, so it
+    holds by construction rather than by luck.
+    """
+
+    TIMING = {"started_at": "2026-09-16T18:27:42Z",
+              "finished_at": "2026-09-16T18:27:43Z", "duration_ms": 900}
+
+    def _record(self, timing=None, frozen=None):
+        ledger = ledger_mod.Ledger(self._repo()[0])
+        with contextlib.ExitStack() as stack:
+            if frozen is not None:
+                stack.enter_context(mock.patch.object(ledger_mod.time, "gmtime",
+                                                      return_value=frozen))
+            ledger.record({"id": "review-app-SEC"}, "review",
+                          base.RunResult.failed("review-app-SEC", "x"),
+                          "headless", "claude", timing=timing)
+        return ledger.lines()[0]
+
+    def test_the_row_time_is_the_entry_s_finish_whatever_the_wall_clock_says(self):
+        # The clock is frozen at the epoch across the record call: any row that
+        # read it again would stamp 1970 and land before its own start.
+        row = self._record(timing=self.TIMING, frozen=time.gmtime(0))
+        self.assertEqual(self.TIMING["finished_at"], row["ts"])
+        self.assertLessEqual(row["started_at"], row["ts"])
+
+    def test_a_row_with_no_timing_still_stamps_the_write_time(self):
+        # The interrupt's rows (`rollback_rows`) pass no timing, and `ts` there
+        # is the interrupt's own moment. That path is deliberately unchanged.
+        row = self._record(timing=None, frozen=time.gmtime(0))
+        self.assertEqual("1970-01-01T00:00:00Z", row["ts"])
+        self.assertIsNone(row["started_at"])

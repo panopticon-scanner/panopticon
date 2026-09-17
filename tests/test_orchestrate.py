@@ -856,6 +856,10 @@ class TestHeadlessLoop(LoopCase):
             self.assertIsInstance(row["duration_ms"], int)
             self.assertGreaterEqual(row["duration_ms"], 0)
             self.assertLessEqual(row["started_at"], row["finished_at"])
+            # #1685: `ts` IS the entry's finish, so the ordering below holds by
+            # construction instead of by two clock reads landing in the same
+            # second (it was flaky on CI when they did not).
+            self.assertEqual(row["finished_at"], row["ts"])
             self.assertLessEqual(row["started_at"], row["ts"])
 
     def test_every_completed_entry_prints_one_progress_line(self):
