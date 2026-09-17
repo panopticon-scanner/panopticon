@@ -825,18 +825,27 @@ CONTAINMENT_PROBE_ENV = "PANOPTICON_CONTAINMENT_PROBE"
 # the same fact.
 EXPECTED_CONTAINMENT_LANES = ()
 
-# `docker run -e VAR=VALUE` / `-e VAR value`. A step's env is not only its
-# `env:` block: this job passes the flags into the container on the command
-# line, so a reader that looked only at `env:` would find nothing.
-_DOCKER_ENV = re.compile(r"(?:^|\s)-e\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)")
+# `docker run` env flags, in every spelling docker accepts: `-e VAR=VALUE`,
+# `-eVAR=VALUE`, `--env VAR=VALUE`, `--env=VAR=VALUE`. A step's env is not only
+# its `env:` block -- this job passes the flags into the container on the
+# command line, so a reader that looked only at `env:` would find nothing.
+#
+# R1 Minor 6: this matched `-e VAR=VALUE` alone. A lane added in any of the
+# other three spellings would have left `EXPECTED_CONTAINMENT_LANES = ()`
+# passing while a lane HAD opted in -- the false-negative direction the pin
+# exists to close. The leading `(?:^|\s)` is what keeps `--entrypoint` and
+# `--env-file` out: neither has whitespace immediately before its `-e`/`--env`,
+# and `--env-file` is followed by `-`, which is neither a space nor `=`.
+_DOCKER_ENV = re.compile(
+    r"(?:^|\s)(?:-e\s*|--env[\s=])([A-Za-z_][A-Za-z0-9_]*)=(\S+)")
 
 
 def step_env(doc, job, step_name, script):
     """Every variable this step's command ends up seeing.
 
     Workflow `env:`, then the job's, then the step's, then anything the step
-    passes into a container with `-e`. Later wins, which is the order Actions
-    and docker apply them in.
+    passes into a container with `-e`/`--env`, in any of docker's four
+    spellings. Later wins, which is the order Actions and docker apply them in.
     """
     env = {}
     for block in ((doc.get("env") or {}),
@@ -893,6 +902,32 @@ class TestContainmentLaneRule(unittest.TestCase):
                                         "steps": [{"name": "Run", "run": "pytest x"}]}}}
         self.assertEqual((("scratch.yml", "integration", "Run"),),
                          containment_lanes(self._rows(doc)))
+
+    # R1 Minor 6. All four are valid docker; the reader saw only the first, so
+    # a lane added in any of the other three would leave
+    # EXPECTED_CONTAINMENT_LANES = () passing while a lane HAD opted in -- the
+    # false-negative direction this pin exists to close -- and the `_NO_LANE`
+    # skip reason beside the containment test would silently stop being true.
+    # `test_the_env_reader_actually_reads_the_fleet` cannot catch it: it only
+    # proves the reader finds PANOPTICON_REQUIRE_INTEGRATION=1, which the
+    # current fleet happens to spell `-e VAR=VALUE`.
+    SPELLINGS = ("-e %s=1", "--env %s=1", "--env=%s=1", "-e%s=1")
+
+    def test_every_docker_spelling_of_the_opt_in_is_found(self):
+        for spelling in self.SPELLINGS:
+            with self.subTest(spelling=spelling):
+                run = ('docker run --rm --entrypoint sh %s image -c "pytest x"'
+                       % (spelling % CONTAINMENT_PROBE_ENV))
+                doc = {"jobs": {"j": {"steps": [{"name": "R", "run": run}]}}}
+                self.assertEqual((("scratch.yml", "j", "R"),),
+                                 containment_lanes(self._rows(doc)), run)
+
+    def test_neighbouring_docker_flags_are_not_read_as_env(self):
+        # The other direction: `--entrypoint` and `--env-file` must not be
+        # mistaken for `-e`/`--env`, or the reader invents lanes.
+        doc = {"jobs": {"j": {"steps": [{"name": "R", "run":
+               "docker run --entrypoint sh --env-file ci.env image"}]}}}
+        self.assertEqual({}, self._rows(doc)[0][3])
 
     def test_a_lane_that_does_not_opt_in_is_not_found(self):
         self.assertEqual((), containment_lanes(self._rows(self.DOC)))
