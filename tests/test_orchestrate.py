@@ -774,6 +774,24 @@ class TestHeadlessLoop(LoopCase):
                 self.assertEqual(["error"], runner.torn_down)
                 self.assertEqual((False, False), self._guards_armed(runner))
 
+    def test_an_interrupt_inside_the_teardown_is_reported_not_raised(self):
+        # A THIRD Ctrl-C, landing inside the runner's own teardown: `loop`
+        # never raises, so it must come back as a status the operator can read
+        # ("teardown interrupted") with the guards already down -- not as a
+        # traceback out of driver.main with no JSON status at all.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+
+        def teardown(status):
+            raise KeyboardInterrupt
+
+        runner.teardown = teardown
+        status, _seen = self._interrupt_mid_batch(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("interrupted:", status["message"])
+        self.assertIn("teardown interrupted: KeyboardInterrupt", status["message"])
+        self.assertEqual((False, False), self._guards_armed(runner))
+
     def test_a_straggler_write_is_denied_inside_the_rollback_window(self):
         # The rollback deletes the batch's artifacts. If the write guard is
         # still armed while it does, a child that outlived the termination can

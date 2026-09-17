@@ -608,10 +608,12 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
     if runner is not None:
         try:
             runner.teardown(status.get("status"))
-        except Exception as exc:      # noqa: BLE001 -- never mask the status
+        except (Exception, KeyboardInterrupt) as exc:      # noqa: BLE001 -- never mask the status
             print("driver loop: %s teardown failed: %s: %s"
                   % (getattr(runner, "host", "?"), type(exc).__name__, exc),
                   file=sys.stderr, flush=True)
+            if isinstance(exc, KeyboardInterrupt):     # a THIRD Ctrl-C: `loop` still never raises
+                status["message"] = "%s; teardown interrupted: KeyboardInterrupt" % status.get("message")
     if guards is not None:
         if status.get("status") == "complete":
             guards.disarm()                          # total (spec 5.1)
