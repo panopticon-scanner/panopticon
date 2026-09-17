@@ -579,7 +579,43 @@ class TestCoveragePhase(unittest.TestCase):
         self._groups_yml("groups:\n  A:\n    match: ['*']\n  B:\n    match: ['*']\n")
         self.assertFalse(coverage.coverage_done(self.root, self.manifest))
         for g in ("A", "B"):
-            runio._write_json(runio._pano(self.root, "coverage-%s.json" % g), {"g": g})
+            runio._write_json(runio._pano(self.root, "coverage-%s.json" % g),
+                              {"group": g, "effective": ["COD"], "run_id": "R"})
+        self.assertTrue(coverage.coverage_done(self.root, self.manifest))
+
+    def test_a_coverage_file_that_only_parses_is_not_done(self):
+        """#1643 ruling 3: the SAME empty-success shape, one phase later.
+
+        `coverage_done` was `_json_parses` per group, so a `{}` coverage file
+        completed the phase, `_effective_domains` returned no domain for that
+        group, and `review_done`/`verify_done` -- both `all(...)` over the
+        cells that coverage named -- were true over nothing.
+        """
+        self._groups_json([{"name": "A", "files": []}])
+        self._groups_yml("groups:\n  A:\n    match: ['*']\n")
+        path = runio._pano(self.root, "coverage-A.json")
+        runio._write_json(path, {})
+        self.assertFalse(coverage.coverage_done(self.root, self.manifest))
+        runio._write_json(path, {"group": "A", "effective": ["COD"], "run_id": "OTHER"})
+        self.assertFalse(coverage.coverage_done(self.root, self.manifest))
+        runio._write_json(path, {"group": "A", "run_id": "R"})   # no `effective`
+        self.assertFalse(coverage.coverage_done(self.root, self.manifest))
+        runio._write_json(path, {"group": "A", "effective": [], "run_id": "R"})
+        self.assertTrue(coverage.coverage_done(self.root, self.manifest))
+
+    def test_a_malformed_coverage_file_is_RECOMPUTED_not_wedged(self):
+        """A stricter done-predicate must not out-strip the execute side: if the
+        phase skipped a group whose file it refuses to accept, the engine would
+        re-select coverage for ever and spend the run's step budget."""
+        self._groups_json([{"name": "Auth", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
+        runio._write_json(runio._pano(self.root, "scout-Auth.json"),
+                          {"group": "Auth", "domains": ["COD"]})
+        runio._write_json(runio._pano(self.root, "coverage-Auth.json"), {})
+        coverage.coverage_execute(self.root, self.manifest)
+        cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
+        self.assertEqual(cov["run_id"], "R")
+        self.assertIn("SEC", cov["effective"])
         self.assertTrue(coverage.coverage_done(self.root, self.manifest))
 
 class TestCoverageBridge(unittest.TestCase):

@@ -16,7 +16,15 @@ from . import verify
 def synthesize_done(review_root, manifest):
     # §5.1: gate on the durable tag-named report, not the convenience symlink, so
     # resume never depends on symlink creation having succeeded.
-    return runio._json_parses(runio._report_out(review_root))
+    #
+    # #1643 ruling 3: and on the report SHAPE, not merely on JSON. This phase
+    # validates its own artifact against the published schema and turns a
+    # failure into `error` -- but only when it RUNS, and a parse-only predicate
+    # let any parseable file at that path skip it entirely. `summary` is the
+    # minimum: it is what the gate, certification and every CI consumer read,
+    # and build_report writes it on every report it has ever produced.
+    report = runio._load_json(runio._report_out(review_root))
+    return isinstance(report, dict) and isinstance(report.get("summary"), dict)
 
 def _collect_host_usage(review_root, manifest):
     """Write `<run_dir>/usage.json` just before synthesize, so meta.cost.tokens
@@ -159,8 +167,14 @@ def synthesize_execute(review_root, manifest):
     proc = runio._run_child(cmd, review_root, "synthesize")
     # A failing gate exits non-zero but still writes the report — that is a valid
     # outcome, not a driver error. Only an ABSENT report is a failure.
-    if not runio._json_parses(report):
-        raise runio.DriverError("synthesize produced no report.json (rc=%s): %s"
+    #
+    # #1643 ruling 3: the SAME test the done-predicate applies, so the two can
+    # never disagree. A predicate stricter than this guard would leave the
+    # engine re-selecting the most expensive phase in the run -- one full
+    # synthesize child per step, up to the step guard -- instead of failing here
+    # with the reason.
+    if not synthesize_done(review_root, manifest):
+        raise runio.DriverError("synthesize produced no usable report.json (rc=%s): %s"
                           % (proc.returncode, runio._redact_output((proc.stderr or proc.stdout)[:400])))
     # §5.1: point the flat compat paths at the latest tag-named report, so every
     # existing reader of report.json / report.json.html resolves it unchanged, and

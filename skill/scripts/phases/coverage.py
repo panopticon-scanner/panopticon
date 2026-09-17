@@ -111,11 +111,34 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
         entry["delivery"] = mode
     return entry
 
+def _coverage_ready(review_root, group, manifest=None):
+    """This group's coverage cell exists AND says what every consumer reads off
+    it: this run's `run_id`, and an `effective` LIST of domains.
+
+    #1643 ruling 3: the same empty-success shape `discovery_done` carried, one
+    phase later. The check was `_json_parses`, so a `{}` coverage file counted
+    as coverage computed -- `_effective_domains` then returned no domain for
+    that group, and `review_done` / `verify_done`, both `all(...)` over the
+    cells coverage named, were true over nothing. An EMPTY `effective` list is
+    legitimate (every domain excluded) and stays accepted; an absent one is the
+    file not having been computed.
+
+    Shared with `coverage_execute`'s two already-computed skips on purpose: a
+    predicate stricter than the writer that feeds it would refuse a file the
+    phase then declines to recompute, and the engine would re-select coverage
+    until the step guard fired.
+    """
+    cov = runio._load_json(runio._pano(review_root, "coverage-%s.json" % group))
+    if not (isinstance(cov, dict) and isinstance(cov.get("effective"), list)):
+        return False
+    return not manifest or cov.get("run_id") == manifest.get("run_id")
+
 def coverage_done(review_root, manifest):
     # Vacuously done when discovery produced no groups (empty target); otherwise
-    # done once every discovered group has a coverage file. (Evaluated only after
-    # discovery, an earlier phase, so groups.json is already present.)
-    return all(runio._json_parses(runio._pano(review_root, "coverage-%s.json" % g))
+    # done once every discovered group has a WELL-FORMED coverage file (#1643
+    # ruling 3 -- see _coverage_ready). (Evaluated only after discovery, an
+    # earlier phase, so groups.json is already present.)
+    return all(_coverage_ready(review_root, g, manifest)
                for g, _ in _discovered_groups(review_root))
 
 def _chunk_of_map(review_root):
@@ -218,7 +241,7 @@ def coverage_execute(review_root, manifest):
     # scouts that still have no output (durable state = the entries' out_files).
     pending_scouts = []
     for g, f in groups:
-        if runio._json_parses(runio._pano(review_root, "coverage-%s.json" % g)):
+        if _coverage_ready(review_root, g, manifest):
             continue
         sp = runio._pano(review_root, "scout-%s.json" % g)
         # A scout is a RETURN-PERSIST file: read it tolerantly, or a fence-wrapped
@@ -281,7 +304,7 @@ def coverage_execute(review_root, manifest):
     # local work, no dispatch, so the cadence is unchanged and cheap).
     chunk_of = _chunk_of_map(review_root)
     for group, files in groups:
-        if runio._json_parses(runio._pano(review_root, "coverage-%s.json" % group)):
+        if _coverage_ready(review_root, group, manifest):
             continue
         scout_path = runio._pano(review_root, "scout-%s.json" % group)
         # #5.0-12: a scout that returns a non-object (e.g. a JSON array) parses as

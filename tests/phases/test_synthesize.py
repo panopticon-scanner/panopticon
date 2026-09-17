@@ -213,7 +213,7 @@ class TestSynthesizePhase(unittest.TestCase):
         def fake_run(cmd, **kw):
             captured["cmd"] = cmd
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"grade": "A", "findings": []}, fh)
+                json.dump({"grade": "A", "findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run):
             result = synthesize.synthesize_execute(self.root, self.manifest)
@@ -232,7 +232,7 @@ class TestSynthesizePhase(unittest.TestCase):
                            {"ran": True, "run_id": "R"})
         def fake_run(cmd, **kw):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"findings": []}, fh)
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run) as rm_:
             synthesize.synthesize_execute(self.root, self.manifest)
@@ -241,7 +241,7 @@ class TestSynthesizePhase(unittest.TestCase):
     def test_gate_fail_nonzero_still_advances_when_report_present(self):
         def fake_run(cmd, **kw):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"grade": "F", "findings": []}, fh)
+                json.dump({"grade": "F", "findings": [], "summary": {"gate": "FAIL"}}, fh)
             return mock.Mock(returncode=2, stdout="", stderr="gate failed")  # non-zero
         with mock.patch("subprocess.run", side_effect=fake_run):
             result = synthesize.synthesize_execute(self.root, self.manifest)
@@ -256,7 +256,7 @@ class TestSynthesizePhase(unittest.TestCase):
         # "report absent" guard cannot catch it.
         def fake_run(cmd, **kw):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"grade": "A", "findings": []}, fh)
+                json.dump({"grade": "A", "findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=validate_schema_mod.ARTIFACT_INVALID,
                              stdout="", stderr="artifact invalid: 3 schema errors")
         with mock.patch("subprocess.run", side_effect=fake_run):
@@ -286,7 +286,7 @@ class TestSynthesizePhase(unittest.TestCase):
 
         def fake_run(cmd, **kw):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"grade": "A", "findings": [],
+                json.dump({"grade": "A", "findings": [], "summary": {"gate": "PASS"},
                            "meta": {"schema_errors": 1}}, fh)
             return mock.Mock(returncode=validate_schema_mod.ARTIFACT_INVALID,
                              stdout="", stderr="artifact invalid: 1 schema errors")
@@ -313,7 +313,7 @@ class TestSynthesizePhase(unittest.TestCase):
         def fake_run(cmd, **kw):
             captured["cmd"] = cmd
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"grade": "A", "findings": []}, fh)
+                json.dump({"grade": "A", "findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run):
             synthesize.synthesize_execute(self.root, manifest)
@@ -324,7 +324,7 @@ class TestSynthesizePhase(unittest.TestCase):
     def test_diff_context_absent_when_unset(self):
         def fake_run(cmd, **kw):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"grade": "A", "findings": []}, fh)
+                json.dump({"grade": "A", "findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run) as run:
             synthesize.synthesize_execute(self.root, self.manifest)
@@ -352,7 +352,7 @@ class TestAMidRunToolsDowngradeReachesSynthesize(unittest.TestCase):
         def fake_run(cmd, **kw):
             captured["cmd"] = cmd
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"findings": []}, fh)
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("subprocess.run", side_effect=fake_run):
             synthesize.synthesize_execute(self.root, manifest)
@@ -388,7 +388,7 @@ class TestTheMidRunFlagParitiesWithSynthesizesParser(unittest.TestCase):
         def fake_run(cmd, **kw):
             captured["cmd"] = cmd
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"findings": []}, fh)
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
         with tempfile.TemporaryDirectory() as d:
             root = os.path.realpath(d)
@@ -405,3 +405,44 @@ class TestTheMidRunFlagParitiesWithSynthesizesParser(unittest.TestCase):
         # option here is a SystemExit(2), which is what the real child does.
         parsed = syn.build_parser().parse_args(flags)
         self.assertIs(parsed.tools_disabled_mid_run, True)
+
+
+class TestSynthesizeDonePredicate(unittest.TestCase):
+    """#1643 ruling 3: the last parse-only done predicate in the run loop.
+
+    Nothing downstream reads the report into an `all(...)`, so there is no
+    vacuous-completion chain here -- but the phase's own schema validation (the
+    `error` on ARTIFACT_INVALID) only runs when the phase RUNS, and a report
+    artifact that merely parses used to skip it.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard"}
+
+    def _write(self, doc):
+        runio._write_json(runio._report_out(self.root), doc)
+
+    def test_an_empty_report_object_is_not_done(self):
+        self._write({})
+        self.assertFalse(synthesize.synthesize_done(self.root, self.manifest))
+
+    def test_a_report_with_a_summary_is_done(self):
+        self._write({"schema_version": 1, "summary": {"gate": "PASS"}, "findings": []})
+        self.assertTrue(synthesize.synthesize_done(self.root, self.manifest))
+
+    def test_the_execute_side_fails_loudly_rather_than_letting_the_engine_spin(self):
+        # The guard and the predicate are the same test: a report this phase
+        # would refuse to call done must not be returned as "advanced", or the
+        # engine re-selects the run's most expensive phase every step.
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": []}, fh)          # parses; no summary
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            with self.assertRaises(runio.DriverError) as cm:
+                synthesize.synthesize_execute(self.root, self.manifest)
+        self.assertIn("no usable report.json", str(cm.exception))

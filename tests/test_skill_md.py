@@ -456,6 +456,11 @@ class TestSkillMd(unittest.TestCase):
                       "at least one group", "empty delta",
                       "discovery produced no usable groups"]:
             self.assertIn(token, disco, token)
+        # Ruling 3: the audit of the other parse-only predicates is part of the
+        # same statement -- a reader must not conclude discovery was the only one.
+        for token in ["`coverage` counts a group covered only when",
+                      "`effective` list", "carrying a `summary`"]:
+            self.assertIn(token, disco, token)
 
     def test_raw_captures_are_documented_as_redacted_before_they_are_written(self):
         # #1639 P11: `.panopticon/tools/` is what an operator copies into a CI
