@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 
 import scripts.driver as driver
+import scripts.money as money
 import scripts.orchestrate as orchestrate
 import scripts.phases.review as review
 import scripts.phases.runio as runio
@@ -133,6 +134,33 @@ class FakeRunner(base.HostRunner):
                                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
                               cost_usd=0.01, model="claude-sonnet-5", session_id="s-" + eid,
                               denials=[], error=None)
+
+
+class SeededLedger(FakeRunner):
+    """A runner that leaves ledger lines on disk before the loop's first budget
+    check -- `prepare` is the last thing the loop does before it constructs the
+    Ledger and enters the while loop, so this is the seam for a ledger the
+    process did not write itself (a resumed run, or a host that reported a
+    cost this repo would now refuse to store)."""
+
+    LINES = ()
+
+    def prepare(self, run_dir, review_root):
+        super().prepare(run_dir, review_root)
+        os.makedirs(run_dir, exist_ok=True)
+        with open(os.path.join(run_dir, base.LEDGER_FILE), "w", encoding="utf-8") as fh:
+            fh.write("".join(x + "\n" for x in self.LINES))
+
+
+class PoisonedLedger(SeededLedger):
+    # Written by hand, exactly as `json.dumps` with its defaults emits it.
+    LINES = ('{"cost_usd": NaN, "entry_id": "review-app-SEC", "error": null, '
+             '"ok": true, "phase": "review", "usage": {}}',)
+
+
+class FifteenCentRows(SeededLedger):
+    LINES = tuple('{"cost_usd": 0.15, "entry_id": "e%d", "error": null, '
+                  '"ok": true, "phase": "review", "usage": {}}' % i for i in range(3))
 
 
 class LoopCase(unittest.TestCase):
@@ -386,6 +414,45 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(status["status"], "error")
         self.assertIn("dispatch-ledger.jsonl", status["message"])
         self.assertEqual(runner.launched, ["review-app-SEC"])      # one launch crossed the budget
+
+    def test_a_non_finite_ledger_cost_stops_the_loop_instead_of_failing_open(self):
+        # #1648, the sharp half: Python's JSON decoder ACCEPTS `NaN`, one such
+        # cost poisons the sum, and `NaN >= budget` is False -- so the control
+        # whose whole job is to stop spending kept launching paid entries. The
+        # gate now fails CLOSED on a ledger line it cannot read.
+        d, floor = self._repo()
+        runner = PoisonedLedger()
+        status = self._run(d, floor, runner, "--max-budget-usd", "1")
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("ledger corrupt at line 1", status["message"])
+        self.assertIn("refusing to spend past an unreadable cost", status["message"])
+        self.assertEqual(runner.launched, [])            # nothing further was paid for
+        # ...and the terminal teardown still ran over that same ledger: the
+        # tokens half of `_finish`'s final write_usage must not fall over the
+        # row the money half just refused the run for.
+        self.assertNotIn("usage.json not written", status["message"])
+        self.assertEqual(1, runio._load_json(
+            os.path.join(runner.run_dir, "usage.json"))["corrupt_rows"])
+
+    def test_the_budget_boundary_is_exact_where_float_missed_it(self):
+        # #1648, the mundane half. Three ledgered $0.15 rows against a $0.45
+        # budget: as floats they sum to 0.44999999999999996, so the old gate
+        # said the budget had NOT been reached and launched the next entry; the
+        # exact sum is 0.45 and reaches it. The float fact is asserted rather
+        # than assumed, and both ways of summing it -- `sum()` is compensated
+        # from CPython 3.12, `+=` never is, and this suite runs on 3.11 too.
+        running = 0.0
+        for value in [0.15] * 3:
+            running += value
+        self.assertLess(sum([0.15] * 3), 0.45)
+        self.assertLess(running, 0.45)
+        d, floor = self._repo()
+        runner = FifteenCentRows()
+        status = self._run(d, floor, runner, "--max-budget-usd", "0.45")
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("--max-budget-usd 0.45 reached", status["message"])
+        self.assertIn("dispatch-ledger.jsonl", status["message"])
+        self.assertEqual(runner.launched, [])
 
     def test_an_interrupt_disarms_and_reports(self):
         d, floor = self._repo()
@@ -1325,3 +1392,87 @@ class TestATimedOutEntryKeepsItsEvidence(LoopCase):
         self.assertFalse(os.path.exists(os.path.join(runner.run_dir, "rejected")))
         row = next(r for r in orchestrate.Ledger(runner.run_dir).lines() if not r["ok"])
         self.assertIsNone(row["rejected_file"])
+
+
+
+class TestLedgerMoney(LoopCase):
+    """#1648: the ledger is the budget gate's only evidence, so it stores
+    nothing it cannot read back as money, and refuses to sum past a line it
+    cannot read at all."""
+
+    def _ledger(self):
+        d, _floor = self._repo()
+        return orchestrate.Ledger(d)
+
+    def _result(self, cost, error=None):
+        return base.RunResult(entry_id="e", ok=True, text="", usage={}, cost_usd=cost,
+                              model=None, session_id=None, denials=[], error=error)
+
+    def test_a_non_finite_cost_never_enters_the_ledger(self):
+        ledger = self._ledger()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            ledger.record({"id": "e"}, "review", self._result(float("inf")),
+                          "headless", "claude")
+        row = ledger.lines()[0]
+        self.assertIsNone(row["cost_usd"])
+        self.assertIn("cost_usd non-finite (inf) dropped", row["error"])
+        with open(ledger.path, encoding="utf-8") as fh:
+            self.assertNotIn("Infinity", fh.read())
+        self.assertIn("cost_usd non-finite", err.getvalue())
+        self.assertEqual(money.ZERO, ledger.total_cost())
+
+    def test_a_dropped_cost_keeps_the_launch_error_it_was_written_with(self):
+        ledger = self._ledger()
+        with contextlib.redirect_stderr(io.StringIO()):
+            ledger.record({"id": "e"}, "review", self._result(float("nan"), "is_error"),
+                          "headless", "claude")
+        row = ledger.lines()[0]
+        self.assertIn("is_error", row["error"])
+        self.assertIn("cost_usd non-finite (nan) dropped", row["error"])
+
+    def test_a_good_cost_is_ledgered_and_summed_unchanged(self):
+        ledger = self._ledger()
+        for _ in range(3):
+            ledger.record({"id": "e"}, "review", self._result(0.15), "headless", "claude")
+        self.assertEqual([0.15] * 3, [row["cost_usd"] for row in ledger.lines()])
+        self.assertEqual(money._money("0.45"), ledger.total_cost())
+
+    def test_total_cost_refuses_a_ledger_line_it_cannot_read(self):
+        ledger = self._ledger()
+        with open(ledger.path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"cost_usd": 0.1, "phase": "review", "usage": {}}) + "\n")
+            fh.write('{"cost_usd": NaN, "phase": "review", "usage": {}}\n')
+        with self.assertRaises(money.LedgerCorrupt) as caught:
+            ledger.total_cost()
+        self.assertEqual(2, caught.exception.line_no)
+
+    def test_lines_still_tolerates_a_bad_line_for_every_other_reader(self):
+        ledger = self._ledger()
+        with open(ledger.path, "w", encoding="utf-8") as fh:
+            fh.write("not json\n")
+            fh.write(json.dumps({"entry_id": "e", "cost_usd": 0.1}) + "\n")
+        self.assertEqual(["e"], [row["entry_id"] for row in ledger.lines()])
+
+    def test_usage_document_counts_the_corrupt_rows_it_tolerated(self):
+        # The tokens were really spent (M2), so a row whose MONEY is unreadable
+        # still contributes its usage -- and the document says how many such
+        # rows it read, rather than quietly under-reporting the run.
+        ledger = self._ledger()
+        with open(ledger.path, "w", encoding="utf-8") as fh:
+            fh.write('{"cost_usd": NaN, "phase": "review", "usage": {"input_tokens": 9}}\n')
+            fh.write(json.dumps({"phase": "review", "cost_usd": "NaN",
+                                 "usage": {"input_tokens": 5}}) + "\n")
+            fh.write(json.dumps({"phase": "verify", "cost_usd": 0.1,
+                                 "usage": {"input_tokens": 3}}) + "\n")
+        doc = ledger.usage_document()
+        self.assertEqual(2, doc["corrupt_rows"])     # the unparseable line and the string NaN
+        self.assertEqual(8, doc["total"])            # the readable rows' tokens, both of them
+        self.assertEqual(5, doc["by_phase"]["review"])
+        with self.assertRaises(money.LedgerCorrupt):
+            ledger.total_cost()
+
+    def test_a_clean_run_reports_no_corrupt_rows(self):
+        ledger = self._ledger()
+        ledger.record({"id": "e"}, "review", self._result(0.1), "headless", "claude")
+        self.assertEqual(0, ledger.usage_document()["corrupt_rows"])

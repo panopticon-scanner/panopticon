@@ -29,6 +29,7 @@ import scripts.run_manifest as run_manifest  # noqa: E402
 from scripts import hosts  # noqa: E402
 import scripts.host_disclosure as host_disclosure  # noqa: E402
 import scripts.host_probes as host_probes  # noqa: E402
+import scripts.money as money  # noqa: E402
 import scripts.probes.common as probes_common  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
@@ -256,7 +257,10 @@ def build_parser():
             p.add_argument("--mode", default=None, choices=list(hosts_runner_modes()))
             p.add_argument("--concurrency", type=_positive_int, default=None)
             p.add_argument("--max-iterations", type=_positive_int, default=None)
-            p.add_argument("--max-budget-usd", type=float, default=None)
+            # #1648: an exact Decimal, and `nan`/`inf`/a negative amount refused
+            # HERE. `type=float` accepted all three, and a NaN budget made every
+            # `spent >= budget` comparison False -- the gate accepted, then off.
+            p.add_argument("--max-budget-usd", type=money.budget_arg, default=None)
             p.add_argument("--max-turns", type=_positive_int, default=None)
             p.add_argument("--entry-timeout", type=_positive_int, default=None)
             # `setup`'s own leaf-ceiling knob (see the `setup` verb below),
