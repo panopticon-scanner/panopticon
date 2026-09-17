@@ -56,6 +56,7 @@ _KINDS = (
     # The provider's own 403 still arrives as a status beside its reason, or
     # as `permission_error` below.
     r"permission_denied",
+    r"permission_error",              # Anthropic's own type for the same refusal
     r"insufficient{s}quota",
     r"quota{s}(?:exceeded|exhausted)",
     r"exceeded{s}your{s}current{s}quota",
@@ -76,13 +77,21 @@ _KINDS = (
     r"internal{s}server{s}error",
 )
 # The reason phrases a status is allowed to sit beside. Short on purpose: this
-# half only qualifies a status that is already there.
+# half only qualifies a status that is already there. The KEY NAMES are in here
+# too (N3) -- `code`, `status`, `http_status`, `error_code` -- because a
+# provider error object is flattened to `key: value` pairs and `code: 403` has
+# to qualify its own number: `message` is always last, so a status under `code`
+# and its reason in `message` are never adjacent, which is what the rule needs.
 _REASONS = (r"forbidden", r"unauthori[sz]ed", r"unauthenticated", r"too{s}many{s}requests",
             r"payment{s}required", r"service{s}unavailable", r"bad{s}gateway",
             r"gateway{s}time-?out", r"internal{s}server{s}error", r"quota",
             r"rate{s}limit", r"overloaded", r"error", r"(?:resource{s})?exhausted",
-            r"status(?:{s}code)?")
-_STATUS = r"(?:401|402|403|429|502|503|504|529)"
+            r"(?:http{s})?status(?:{s}code)?", r"(?:error{s})?code")
+# 500 is here for the `api_error` shape, which is a host failure only WITH a
+# 5xx beside it -- the adjacency rule is what makes that safe to read, since a
+# bare 500 in a sentence ("expected 200, got 500 in test_gateway.py") touches
+# no reason.
+_STATUS = r"(?:401|402|403|429|500|502|503|504|529)"
 
 
 def _alt(patterns):
@@ -117,18 +126,28 @@ _CLI_ERROR = re.compile(
     r"|(?:api error|invalid api key|overloaded)(?=\s*(?:[:\u00b7,-]|$)))", re.I)
 
 
+# The keys a provider error object carries its own verdict in, across the
+# spellings the vendors use (N3). A fixed list, not "every key": an error
+# payload can also carry the request that produced it, and reading that back
+# would be the C1 door again in a different shape.
+_SURFACE_KEYS = ("type", "kind", "code", "error_code", "errorCode", "status",
+                 "status_code", "statusCode", "http_status", "httpStatus",
+                 "reason", "error", "message")
+
+
 def _surface(host_error):
     """The text to match, out of whatever shape a family recorded.
 
     A provider error arrives either as a line (`provider.auth_error: 403`) or
     as the error OBJECT the API returned. The object is flattened key by key,
-    so `{"status": 429}` reads as `status: 429` -- a status beside its reason,
-    which is exactly the anchoring rule -- and a nested `{"error": {...}}`
+    so `{"code": 403}` reads as `code: 403` -- a status beside its own key,
+    which is what the anchoring rule needs, because `message` is always last
+    and a reason there would never touch the number. A nested `{"error": {...}}`
     envelope is followed one level at a time.
     """
     if isinstance(host_error, dict):
         parts = []
-        for key in ("type", "code", "status", "status_code", "reason", "error", "message"):
+        for key in _SURFACE_KEYS:
             value = host_error.get(key)
             if isinstance(value, dict):
                 parts.append(_surface(value))

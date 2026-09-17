@@ -93,14 +93,35 @@ class TestTheHostOutageClassifier(unittest.TestCase):
                 self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
 
     def test_a_provider_error_object_is_read_by_its_structure(self):
+        # N3: the flattener joins key by key and `message` comes last, so a
+        # status under `code`/`statusCode` and its reason in `message` were
+        # never adjacent -- which is exactly what the status rule requires.
+        # Each status key now qualifies its own number, and the camelCase and
+        # `http_` spellings are read rather than dropped. These are the
+        # CANONICAL shapes, not exotic ones, and missing them is the old
+        # #1623 behaviour: the cells burn.
         for surface in ({"type": "authentication_error", "message": "invalid x-api-key"},
                         {"error": {"type": "rate_limit_error", "message": "slow down"}},
                         {"status": 429, "message": "please retry"},
-                        {"code": "insufficient_quota"}):
+                        {"code": "insufficient_quota"},
+                        {"code": 403, "message": "Forbidden"},
+                        {"code": 401, "message": "Unauthorized"},
+                        {"error": {"code": 403, "message": "Forbidden"}},
+                        {"statusCode": 429, "message": "slow down"},
+                        {"status_code": 429},
+                        {"http_status": 503},
+                        {"error_code": 500, "message": "internal"},
+                        {"type": "permission_error"},
+                        {"type": "api_error", "status": 500}):
             with self.subTest(surface=surface):
                 self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(surface))
-        self.assertEqual(outage.ENTRY_FAILURE,
-                         outage.classify_failure({"message": "the cell found a 403 handler"}))
+        # ...and a bare message from the agent's side of the world still is not
+        for surface in ({"message": "the cell found a 403 handler"},
+                        {"message": "src/billing/quota.py is missing"},
+                        {"type": "api_error"},
+                        {"file": "/repo/src/login.py", "line": 403}):
+            with self.subTest(surface=surface):
+                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(surface))
 
     def test_no_surface_at_all_is_an_entry_failure(self):
         # A family that recorded no host error said nothing about the host, and
