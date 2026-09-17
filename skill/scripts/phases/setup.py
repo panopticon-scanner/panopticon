@@ -234,11 +234,27 @@ def _drop_stale_fallback_marker(review_root):
         except OSError:
             pass
 
-def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
+def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=None):
     """The `driver setup` entrypoint: a separate two-phase flow (NOT a run
     phase). Resolves the review root, pins a minimal setup-manifest once, and
     advances scan->ingest through run_engine. Writes a draft; the owner reviews
-    and commits it."""
+    and commits it.
+
+    `posture` (#1616 item 3) is the capability step `driver run` performs on
+    every invocation -- `driver._establish_host_posture` -- passed IN rather
+    than imported: `phases/*` may never reach an entry script
+    (tests/test_layout.py rule 3), and this flow is driven by two of them.
+    Called with this flow's own namespace, so the guard probes measure the
+    settings file `driver loop --setup` really arms (the flat
+    `.panopticon/host-settings.json`) and the evidence lands beside setup's
+    other artifacts rather than in some earlier review run's folder.
+
+    `driver loop --setup` passes it, because that is the path that ARMS both
+    guards headlessly and therefore the one whose subject a probe has to have
+    proven. `driver setup` on its own arms nothing and passes None, which
+    leaves it exactly as it was. Its refusal -- a posture that moved, a
+    planted shadow shell -- is this verb's `error` status, the same one every
+    other refusal here speaks."""
     review_root, _wt, _pr = runio.resolve_review_root(args.target, runner=runner)
     if getattr(args, "reset", False):
         _clear_setup_artifacts(review_root)               # Task 3
@@ -282,6 +298,10 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
         # `host == "generic"`) because tests/test_host_posture_wiring.py's
         # AST guard forbids phases/ deciding anything from a host's NAME.
         print(host_disclosure.GENERIC_DEPRECATION, file=sys.stderr)
+    if posture is not None:
+        error = posture(review_root, manifest, args, namespace="setup")
+        if error:
+            return runio._error_status(error)
     try:
         result = engine.run_engine(review_root, manifest, phases)
     except (runio.DriverError, engine.EngineStalled, ValueError) as exc:

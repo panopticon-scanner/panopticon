@@ -293,6 +293,87 @@ class TestSetupSessionMode(LoopCase):
         self.assertIn("--setup", printed[0]["persist"])
 
 
+class _ProposalRunner(FakeRunner):
+    """Answers the single `setup-scan` entry with a valid proposal."""
+
+    def run_entry(self, entry, env):
+        self.launched.append(entry["id"])
+        proposal = {"groups": [{"capability": "custom:App", "match": ["src/**"],
+                                "tests": []}]}
+        return base.RunResult(entry_id=entry["id"], ok=True, text=json.dumps(proposal),
+                              usage={}, cost_usd=0.0, model=None, session_id=None,
+                              denials=[], error=None)
+
+
+class TestSetupEstablishesHostPosture(LoopCase):
+    """#1616 item 3: `driver loop --setup --mode headless` arms both guards
+    into `.panopticon/host-settings.json`, and `run_setup_flow` never ran the
+    posture step -- so nothing had probed the file the runner was about to arm,
+    and the evidence a review run left behind (or the absence of any) stood in
+    for a measurement of this invocation."""
+
+    def _setup_loop(self, d, runner=None, **patches):
+        args = driver.build_parser().parse_args(["loop", d, "--setup"])
+        with contextlib.ExitStack() as es:
+            for target, patch in patches.items():
+                es.enter_context(mock.patch(target, **patch))
+            es.enter_context(mock.patch("scripts.runners.base.runner_for",
+                                        return_value=runner or _ProposalRunner()))
+            es.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            es.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            return orchestrate.loop(args)
+
+    def test_the_setup_flow_probes_before_the_runner_arms_anything(self):
+        d, _ = self._repo()
+        seen = []
+
+        def _probes(host, target, **kw):
+            seen.append(host)
+            return _all_proven_artifact(host)
+
+        status = self._setup_loop(d, **{"scripts.host_probes.run_probes":
+                                        {"side_effect": _probes}})
+        self.assertEqual(status["status"], "complete", status)
+        # Once per INVOCATION, exactly as `driver run` probes -- this flow is
+        # re-entered after the batch, and posture is not a once-per-run fact
+        # (spec 5.2: a hook uninstalled mid-run would read `proven` for ever).
+        self.assertEqual(seen, ["claude"] * len(seen))
+        self.assertTrue(seen, "driver loop --setup armed its guards without a probe")
+
+    def test_a_posture_refusal_stops_the_setup_flow(self):
+        # The refusal is the point of probing at all: a posture that moved
+        # mid-run, a planted shadow shell. Before this it could not reach the
+        # setup flow to stop anything.
+        d, _ = self._repo()
+        status = self._setup_loop(d, **{"scripts.driver._establish_host_posture":
+                                        {"return_value": "posture drift: nope"}})
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("posture drift: nope", status["message"])
+
+    def test_setup_writes_its_evidence_flat_and_leaves_a_review_runs_alone(self):
+        # The sibling of `test_setup_never_writes_into_a_stale_review_runs_folder`
+        # below, for the artifact this step writes: `host-capabilities.json`
+        # resolves per-RUN, so a repo that already holds a review run-manifest
+        # would have had setup's own probe overwrite that run's evidence.
+        d, floor = self._repo()
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=FakeRunner()), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(orchestrate.loop(self._args(d))["status"], "complete")
+        per_run = runio._pano(d, runio.HOST_CAPABILITIES)       # runs/<tag>/...
+        flat = os.path.join(d, ".panopticon", runio.HOST_CAPABILITIES)
+        self.assertNotEqual(os.path.realpath(per_run), os.path.realpath(flat))
+        with open(per_run, encoding="utf-8") as fh:
+            before = fh.read()
+        os.remove(flat)                       # the fixture's; setup must write its own
+        self.assertEqual(self._setup_loop(d)["status"], "complete")
+        self.assertTrue(os.path.isfile(flat), "setup wrote no evidence of its own")
+        with open(per_run, encoding="utf-8") as fh:
+            self.assertEqual(before, fh.read(),
+                             "setup overwrote the review run's own evidence")
+
+
 class TestSetupOnRails(LoopCase):
     def test_setup_scan_is_run_through_the_runner_and_the_loop_stops_at_the_draft(self):
         d, _ = self._repo()

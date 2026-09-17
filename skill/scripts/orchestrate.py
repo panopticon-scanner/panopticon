@@ -557,7 +557,9 @@ def _review_root(args):
 def _run(args, namespace):
     if namespace == "setup":
         import scripts.phases.setup as setup
-        return setup.run_setup_flow(args)
+        # #1616 item 3: the posture step `driver.run` does on every invocation,
+        # handed in because `phases/*` may not import an entry script.
+        return setup.run_setup_flow(args, posture=driver._establish_host_posture)
     return driver.run(args)
 
 

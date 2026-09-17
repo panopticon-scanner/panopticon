@@ -35,6 +35,7 @@ import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 import scripts.phases.discovery as discovery
+import scripts.phases.persist as persist
 import scripts.phases.readiness as readiness
 import scripts.phases.tools as tools
 import scripts.phases.review as review
@@ -350,7 +351,7 @@ def _emit_posture_disclosure(envelope, since=None):
         sys.stderr.write("driver:   %s\n" % line)
 
 
-def _disclose_posture(review_root, manifest, fresh):
+def _disclose_posture(review_root, manifest, fresh, namespace=None):
     """Surface 1, in full once per posture and as a headline thereafter (#1596).
 
     `driver run` is a resumable loop and this runs on every invocation, so a
@@ -372,11 +373,21 @@ def _disclose_posture(review_root, manifest, fresh):
     and MINTING one here would be worse than not recording: `runio._pano`
     resolves the per-run folder off the manifest, so creating one mid-flow
     would move `host-capabilities.json` out from under this very function.
+
+    ...and never in the setup namespace (#1616 item 3), for the mirror-image
+    reason. `record_posture_disclosure` writes `run-manifest.json` -- that
+    path is unconditional -- while `driver loop --setup` is driving its OWN
+    `setup-manifest.json`, so stamping there would overwrite a prior review
+    run's manifest with setup's body: a new run_id, a new tag, and every
+    `_pano` path of that run pointing somewhere else. The cost of not
+    stamping is that setup prints the full block on each of its two
+    invocations instead of once, which is the cheap half of the trade.
     """
     digest = host_disclosure.disclosure_digest(fresh)
     since = run_manifest.posture_disclosed_at(manifest, digest)
     _emit_posture_disclosure(fresh, since=since)
-    if since is None and os.path.isfile(run_manifest.manifest_path(review_root)):
+    if (since is None and namespace is None
+            and os.path.isfile(run_manifest.manifest_path(review_root))):
         try:
             run_manifest.record_posture_disclosure(review_root, manifest, digest,
                                                    fresh.get("probed_at"))
@@ -396,7 +407,8 @@ def _disclose_posture(review_root, manifest, fresh):
                 % (type(exc).__name__, exc))
 
 
-def _establish_host_posture(review_root, manifest, args, *, registration_dir=None):
+def _establish_host_posture(review_root, manifest, args, *, registration_dir=None,
+                            namespace=None):
     """Probe this host now; write the evidence, or refuse if it moved.
 
     Spec 5.2. Runs on EVERY invocation, not once per run: `driver run` is a
@@ -408,6 +420,18 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     directions: a posture that degraded is alarming, and one that improved
     still leaves the entries already dispatched under the weaker posture, so
     the honest answer to both is a fresh run.
+
+    `namespace` is the artifact namespace this invocation belongs to (#1616
+    item 3): None for a review run, `"setup"` for `driver loop --setup`, which
+    is the one caller that is not a run. `host-capabilities.json` resolves
+    per-RUN, so on a repo that already holds a review run-manifest the flat
+    `driver loop --setup` would otherwise probe and then overwrite THAT run's
+    evidence -- the hazard `phases/persist.run_dir` exists to resolve, and the
+    one `test_setup_never_writes_into_a_stale_review_runs_folder` already pins
+    for setup's other artifacts. Nothing reads host evidence in the setup
+    namespace (`phases/setup._setup_scan_entry` passes the all-unknown posture
+    explicitly, because setup is what runs BEFORE a run exists), so this
+    writes a record rather than feeding a gate.
 
     `registration_dir` (#1609) is a TEST SEAM: None -- the default, and what
     every production caller passes -- keeps the registration probes reading the
@@ -500,7 +524,7 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # thing for this posture (#1596). Emitted even when the shadow refusal
     # below is about to stop the run, so the operator sees the posture the
     # refusal is about.
-    _disclose_posture(review_root, manifest, fresh)
+    _disclose_posture(review_root, manifest, fresh, namespace)
     # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
     # tool_policy_enforced is already REFUTED for an unrelated reason -- no
     # registration directory, i.e. every machine that has not run `driver
@@ -510,7 +534,7 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     refusal = _shadow_refusal(shadow, manifest)
     if refusal:
         return refusal
-    path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+    path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
     stored = runio._load_json(path)
     if stored is None:
         runio._write_json(path, fresh)
