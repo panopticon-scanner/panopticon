@@ -53,6 +53,7 @@ import hashlib
 import os
 import re
 
+import scripts.run_manifest as run_manifest
 from . import runio
 
 # How many files one claim's closure may grant. Twelve is the smallest number
@@ -168,21 +169,33 @@ def _repo_files(review_root, cache):
     would be a second, slower and DIFFERENT surface, and an `os.walk` would
     descend `.git` and vendored virtualenvs the review itself never looks at.
 
-    No artifact (a `closure()` call outside a run) means no repo-wide step: the
-    name stays unresolved, which is exactly today's behaviour. This resolver
-    may widen a grant only from evidence the run already holds, never by
-    discovering a tree of its own.
+    It must be THIS RUN's listing, and that is checked, not assumed (fix round
+    1, R1-3): `discovery_execute` stamps `groups.json` with the run binding, and
+    this applies the same test the discovery done-predicate does. It matters
+    because with no manifest `_pano` falls back to the TOP-LEVEL
+    `.panopticon/groups.json` -- a path the reviewed target can commit -- and a
+    planted listing steers the grant: the claim names `config.py`, the listing
+    says the repo's only `config.py` is `secrets/config.py`, and the read fence
+    is pointed there. A foreign stamp, a missing stamp and a missing manifest
+    are all "no listing".
 
-    `cache` is one dict per claim, so a claim naming thirty paths loads the
+    No listing (that, or a `closure()` call outside a run) means no repo-wide
+    step: the name stays unresolved, which is exactly today's behaviour. This
+    resolver may widen a grant only from evidence the run already holds, never
+    by discovering -- or being handed -- a tree of its own.
+
+    `cache` is one dict per entry, so a chunk naming thirty paths loads the
     listing once rather than thirty times.
     """
     if "files" not in cache:
-        data = runio._load_json(runio._pano(review_root, "groups.json")) or {}
+        doc = runio._load_json(runio._pano(review_root, "groups.json")) or {}
+        run_id = (run_manifest.load_manifest(review_root) or {}).get("run_id")
         out = set()
-        for group in data.get("groups") or []:
-            if isinstance(group, dict):
-                out.update(p for p in (_norm(f) for f in group.get("files") or [])
-                           if p)
+        if run_id and doc.get("run_id") == run_id:
+            for group in doc.get("groups") or []:
+                if isinstance(group, dict):
+                    out.update(p for p in (_norm(f) for f in group.get("files")
+                                           or []) if p)
         cache["files"] = sorted(out)
     return cache["files"]
 

@@ -17,6 +17,7 @@ from unittest import mock
 
 import scripts.phases.evidence_scope as evidence_scope
 import scripts.phases.runio as runio
+import scripts.run_manifest as run_manifest
 
 
 def _write(root, rel, text=""):
@@ -409,10 +410,22 @@ class TestNamedPathResolution(_Repo):
     FENCE at evidence the claim was not about, and the advisor cannot tell.
     """
 
-    def _groups_json(self, groups):
-        """Discovery's own listing -- the repo-wide tree step 3 searches."""
-        runio._write_json(runio._pano(self.root, "groups.json"),
-                          {"groups": groups})
+    RUN_ID = "run-1688"
+
+    def _manifest(self, run_id=None):
+        """The run binding `_repo_files` checks the listing against."""
+        runio._write_json(run_manifest.manifest_path(self.root),
+                          {"run_id": run_id or self.RUN_ID, "host": "claude"})
+
+    def _groups_json(self, groups, stamp=None, manifest=True):
+        """Discovery's own listing -- the repo-wide tree step 3 searches --
+        stamped for THIS run, exactly as `discovery_execute` stamps it."""
+        if manifest:
+            self._manifest()
+        doc = {"groups": groups}
+        if stamp is not False:
+            doc["run_id"] = stamp or self.RUN_ID
+        runio._write_json(runio._pano(self.root, "groups.json"), doc)
 
     def _claim(self, text):
         return {"location": {"file": "claim.py"}, "description": text}
@@ -654,6 +667,70 @@ class TestNamedPathResolution(_Repo):
         self.assertEqual(sorted(got), ["cap", "entry_cap", "entry_truncated",
                                        "floor_count", "granted", "omitted",
                                        "truncated"])
+
+
+class TestTheRepoWideListingMustBeThisRunsOwn(_Repo):
+    """Fix round 1, R1-3. `_repo_files` trusted whatever `_pano` routed it to
+    and never re-checked the run binding `discovery_execute` stamps on
+    `groups.json` -- and with no manifest `_pano` falls back to the TOP-LEVEL
+    `.panopticon/groups.json`, which the reviewed target can commit. A hostile
+    listing therefore steers the grant: claim names `config.py`, listing says
+    the repo's only `config.py` is `secrets/config.py`, and the read fence is
+    pointed there. Latent (the backup dispatch always has a manifest), closed
+    with the same stamp test the discovery done-predicate uses: a foreign or
+    missing stamp is NOT a listing, so step 3 contributes nothing."""
+
+    RUN_ID = "run-1688"
+
+    def _claim(self):
+        return {"location": {"file": "claim.py"},
+                "description": "the secret comes from config.py"}
+
+    def _tree(self):
+        _write(self.root, "claim.py", "import os\n")
+        _write(self.root, "secrets/config.py", "KEY = 1\n")
+        return ["claim.py"]
+
+    def _listing(self, run_id, manifest_run_id=RUN_ID):
+        if manifest_run_id is not None:
+            runio._write_json(run_manifest.manifest_path(self.root),
+                              {"run_id": manifest_run_id, "host": "claude"})
+        doc = {"groups": [{"name": "S", "files": ["secrets/config.py"]}]}
+        if run_id is not None:
+            doc["run_id"] = run_id
+        runio._write_json(runio._pano(self.root, "groups.json"), doc)
+
+    def test_a_listing_stamped_for_this_run_is_the_tree(self):
+        files = self._tree()
+        self._listing(self.RUN_ID)
+        self.assertEqual(
+            evidence_scope.closure(self.root, self._claim(), files),
+            ["claim.py", "secrets/config.py"])
+
+    def test_a_listing_stamped_for_another_run_is_not_a_listing(self):
+        files = self._tree()
+        self._listing("some-other-run")
+        self.assertEqual(
+            evidence_scope.closure(self.root, self._claim(), files),
+            ["claim.py"])
+
+    def test_an_unstamped_listing_is_not_a_listing(self):
+        # The target-committed shape: a `groups.json` that was never written by
+        # a run at all.
+        files = self._tree()
+        self._listing(None)
+        self.assertEqual(
+            evidence_scope.closure(self.root, self._claim(), files),
+            ["claim.py"])
+
+    def test_no_manifest_means_no_listing(self):
+        # `_pano` falls back to the flat top-level path when no run anchors a
+        # tag; with nothing to check the stamp against, there is no listing.
+        files = self._tree()
+        self._listing(self.RUN_ID, manifest_run_id=None)
+        self.assertEqual(
+            evidence_scope.closure(self.root, self._claim(), files),
+            ["claim.py"])
 
 
 class TestTheAmbiguityDisclosure(unittest.TestCase):
