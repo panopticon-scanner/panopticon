@@ -166,10 +166,12 @@ groups:
       # classifier, the per-entry failure tally and the `paused` message --
       # moved out of `runners/base.py`, which had 32 lines of headroom under
       # the 700-line ceiling and needed them. Parked here for the same REASON
-      # as the three above (`Orchestration:Hosts`, where a runners/ module
-      # belongs, is FULL at 48/48 and a 49th file chunks it into
-      # `Orchestration:Hosts_1`, a name the matrix has no entry for -- the
-      # #1638 P13 defect) and by a THIRD mechanism: `Hosts` claims it by a
+      # as the three above, measured rather than assumed: `Orchestration:Hosts`,
+      # where a runners/ module belongs, is at 47/48, and THESE TWO FILES --
+      # the module and its tests -- would take it to 49, over the cap, chunking
+      # it into `Orchestration:Hosts_1`, a name the matrix has no entry for
+      # (the #1638 P13 defect). One headroom, two files. And by a THIRD
+      # mechanism: `Hosts` claims it by a
       # `skill/scripts/runners/**` glob, but `Hosts` is listed AFTER this
       # group and groups claim in catalog order, so this literal wins on its
       # own -- no negation needed, unlike `phases/child.py` above. It is also
