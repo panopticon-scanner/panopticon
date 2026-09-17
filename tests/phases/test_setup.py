@@ -632,6 +632,20 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         self.assertEqual([], marker["gaps"])
         self.assertEqual([], marker["limitations"])
 
+    def test_the_operator_message_lists_one_limitation_per_bounded_line(self):
+        # #1601, end to end on the shipped gemini posture: seven limitations,
+        # each carrying a full remedy, rendered as ONE 1847-character line on
+        # the message the operator actually reads. One per line now, each
+        # under the column bar, and one line per stored limitation -- so the
+        # message and `setup-complete.json` still agree on the count.
+        msg, marker = self._fallback(self.GEMINI_CHECKS, host="generic")
+        body = msg.splitlines()
+        self.assertIn("limitations:", body)
+        head = body.index("limitations:")
+        self.assertEqual(len(marker["limitations"]), len(body) - head - 1)
+        over = ["%d: %s" % (len(ln), ln) for ln in body[head:] if len(ln) > 119]
+        self.assertEqual([], over, "\n".join(over))
+
     def test_a_real_gap_is_still_reported_as_a_gap(self):
         checks = [("docker", False, "docker unavailable -- install/start Docker"),
                   ("enforced-shells", None, "gemini registers no enforcement "
@@ -642,6 +656,70 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         self.assertIn("readiness gaps: docker", msg)
         self.assertIn("limitations", msg)
         self.assertIn("enforced-shells", msg)
+
+
+class TestTheLimitationsClauseStaysReadable(unittest.TestCase):
+    """#1601: `_limitations_clause` joined every limitation into ONE line.
+    For `gemini` -- which claims nothing, so five-of-five-unproven plus two
+    shell rows is its entire story, seven limitations each carrying a full
+    remedy -- that line went from ~110 characters to 1847, and the same text
+    is stored in `setup-complete.json`'s `limitations` array.
+
+    Nothing gating changed (shell-less hosts produce 7 rows and 0 gaps), which
+    is exactly why it needs a test: a completion message nobody can read is a
+    disclosure in the letter and not in the fact, and 5.1's "LOUDLY declare
+    them" is about being READ.
+    """
+
+    # A real remedy, verbatim from host_disclosure, so the fixture cannot be
+    # quietly short enough to pass a length bar the shipped text fails.
+    REMEDY = host_disclosure.remedy(hosts.MODEL_BINDING, "gemini")
+
+    def _rows(self, n):
+        return [("host-capability:capability_%02d" % i, self.REMEDY)
+                for i in range(n)]
+
+    def _lines(self, clause):
+        return clause.splitlines()
+
+    def test_twenty_remedies_render_as_twelve_lines_and_a_tail(self):
+        body = self._lines(setup_phase._limitations_clause(self._rows(20)))
+        self.assertEqual("limitations:", body[0])
+        self.assertEqual(1 + setup_phase._LIMITATION_MAX + 1, len(body),
+                         "expected a header, 12 remedies and one tail:\n"
+                         + "\n".join(body))
+        self.assertIn("and 8 more", body[-1])
+
+    def test_no_rendered_line_is_over_the_column_bar(self):
+        for count in (1, 7, 12, 20):
+            with self.subTest(limitations=count):
+                clause = setup_phase._limitations_clause(self._rows(count))
+                over = [ln for ln in self._lines(clause) if len(ln) > 119]
+                self.assertEqual([], over, "line over 119 characters:\n"
+                                 + "\n".join("%d: %s" % (len(ln), ln)
+                                              for ln in over))
+
+    def test_every_line_carries_exactly_one_remedy(self):
+        body = self._lines(setup_phase._limitations_clause(self._rows(3)))
+        self.assertEqual(4, len(body))
+        for name, line in zip(("capability_00", "capability_01", "capability_02"),
+                              body[1:]):
+            self.assertIn(name, line)
+            # ...and only its own: the 1847-character line was every remedy
+            # joined by ", ".
+            self.assertEqual(1, sum(1 for c in ("capability_00", "capability_01",
+                                                "capability_02") if c in line))
+
+    def test_a_short_list_gets_no_tail(self):
+        clause = setup_phase._limitations_clause(self._rows(setup_phase._LIMITATION_MAX))
+        self.assertNotIn("more", clause)
+
+    def test_the_name_survives_truncation(self):
+        # The check's NAME is what an operator greps for and what
+        # setup-complete.json keys on; only the detail may be cut.
+        line = self._lines(setup_phase._limitations_clause(
+            [("host-capability:model_binding", self.REMEDY)]))[1]
+        self.assertIn("host-capability:model_binding", line)
 
 
 class TestSetupConvertsAStalledEngine(unittest.TestCase):
