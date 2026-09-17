@@ -1,6 +1,7 @@
 """Shared base utilities for tool adapters."""
 from __future__ import annotations
 import collections
+import contextvars
 import json
 import math
 import os
@@ -11,6 +12,18 @@ import threading
 from typing import Any, Protocol
 
 from scripts.provenance import tool_provenance
+
+
+# The scanned repo root, set by the INGEST side around the parse it performs
+# (#1649). `invoke` and `parse` never run in the same process on a real scan:
+# run_tools dispatches each adapter as
+# `docker run ... _run_adapter.py <tool>`, which calls only `invoke` and writes
+# the raw bytes out, and `ingest_tools` later calls only `parse` on the host.
+# So an adapter whose finding LOCATION depends on which manifest it audited
+# cannot carry that answer across -- it has to resolve it a second time, from
+# the tree, on the side that parses. `ingest_tools` is the one place that both
+# parses and holds the root, so it is the one place that sets this.
+target_root_cv = contextvars.ContextVar("panopticon_target_root", default=None)
 
 
 # Adapters may drop results with no actionable location, or synthesize one.

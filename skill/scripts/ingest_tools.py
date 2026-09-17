@@ -13,7 +13,7 @@ import os
 import sys
 
 from scripts.tools import ADAPTERS
-from scripts.tools.base import strip_ansi
+from scripts.tools.base import strip_ansi, target_root_cv
 from scripts.tools.sarif_utils import (
     CWE_TAG,
     CVE_TAG,
@@ -457,6 +457,11 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
             print("ingest note %s: stripped %d bytes of non-JSON prefix"
                   % (path, first), file=sys.stderr)
             raw = raw[first:]
+        # #1649: name the tree this parse is about. `invoke` ran in another
+        # process (the tools container), so an adapter whose finding location
+        # depends on WHICH manifest it audited resolves that here instead --
+        # against the root this function already holds.
+        token = target_root_cv.set(root)
         try:
             parsed = adapter.parse(raw, group)
         except Exception as e:  # noqa: BLE001 - tolerant by design
@@ -465,6 +470,8 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
                                   "reason": "unparseable: %s"
                                   % (str(e).splitlines() or [""])[0]}
             continue
+        finally:
+            target_root_cv.reset(token)
         raw_count = len(parsed)
         parsed, truncated = _cap_findings(parsed, tool)
         scanned = _scanned_files(raw)

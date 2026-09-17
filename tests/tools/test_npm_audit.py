@@ -9,6 +9,7 @@ from unittest import mock
 import pytest
 
 from _test_helpers import FakePopen, first, only
+import scripts.ingest_tools as ingest_tools
 import scripts.tools.npm_audit as na
 
 
@@ -318,11 +319,53 @@ class TestNpmAuditAdapter(unittest.TestCase):
         self.assertEqual("npm-shrinkwrap.json",
                          self._audit(self._target("npm-shrinkwrap.json"), sample))
 
-    def test_parse_without_an_invoke_keeps_the_documented_default(self):
-        # The ingest path parses a captured output file with no invoke in this
-        # process, so there is no selected manifest to thread.
+    # ---- the route a real scan actually takes --------------------------------
+    #
+    # `invoke` and `parse` NEVER run in the same process: run_tools dispatches
+    # each adapter as `docker run ... _run_adapter.py <tool>`, which calls only
+    # `invoke` and writes the raw bytes out, and the host's `ingest_tools`
+    # later calls only `parse`. Anything the adapter learned at invoke time is
+    # gone by then -- which is why the location is resolved a second time on
+    # the ingest side, from the target root ingest already holds.
+
+    def _ingested(self, target, sample=None):
+        """That sequence: invoke inside a context that is THROWN AWAY (stands
+        in for the container process), then the host's real ingest over the
+        bytes that came back."""
+        tools_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tools_dir, ignore_errors=True))
+        adapter = na.NpmAuditAdapter()
+        with mock.patch.object(na, "run_tool",
+                               return_value=(sample or NPM_AUDIT_SAMPLE, 0)):
+            raw, _rc = contextvars.copy_context().run(adapter.invoke, target)
+        with open(os.path.join(tools_dir, "npm-audit.json"), "wb") as fh:
+            fh.write(raw)
+        findings, _dispositions = ingest_tools.ingest_dir_detailed(
+            tools_dir, "g1", target_root=target)
+        return only(findings)["location"]["file"]
+
+    def test_a_host_side_ingest_locates_the_finding_at_the_audited_manifest(self):
+        self.assertEqual("npm-shrinkwrap.json",
+                         self._ingested(self._target("npm-shrinkwrap.json")))
+
+    def test_a_host_side_ingest_still_locates_a_lockfile_project_at_its_lockfile(self):
+        self.assertEqual("package-lock.json",
+                         self._ingested(self._target("package-lock.json")))
+
+    def test_the_located_file_really_is_in_the_target(self):
+        # The whole point of #1649: `location.file` drives source navigation,
+        # the advisor's backup scope grant and path-based matching, so a path
+        # that is not in the tree degrades verification.
+        target = self._target("npm-shrinkwrap.json")
+        self.assertTrue(os.path.isfile(os.path.join(target, self._ingested(target))))
+
+    def test_only_a_parse_that_names_no_tree_falls_back_to_a_lockfile_name(self):
+        # NOT the production shape, and not an answer to rely on: ingest always
+        # names the target root, and the in-process route (capture_goldens)
+        # names it through invoke. This is the last resort for a caller that
+        # hands over bytes and no tree at all (#1649).
         findings = na.NpmAuditAdapter().parse(NPM_AUDIT_SAMPLE, "g1")
-        self.assertEqual("package-lock.json", only(findings)["location"]["file"])
+        self.assertEqual(na.DEFAULT_MANIFEST, only(findings)["location"]["file"])
 
     def test_the_manifest_is_per_invocation_not_singleton_state(self):
         # ADAPTERS holds ONE shared adapter object, so instance state would let
