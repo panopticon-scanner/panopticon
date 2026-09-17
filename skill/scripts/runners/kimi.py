@@ -504,10 +504,11 @@ class Runner(base.HostRunner):
         exception; SIGTERM goes on top, CHAINING to whatever was there -- safe
         on this side of the drain because its chain ends in SIG_DFL, which ends
         the process: nothing launches after it. SIGINT is deliberately NOT here
-        (R3-1): KeyboardInterrupt is already routed by orchestrate.loop to
-        teardown("error") AFTER run_batch's pool has drained, and a handler
-        strips BEFORE the drain -- every entry still queued would then launch
-        against a home with no config.toml, i.e. no guard hooks. SIGKILL nobody
+        (R3-1, as amended by #1662): KeyboardInterrupt is already routed by
+        orchestrate.loop to teardown("error") AFTER `iter_batch` has cancelled
+        the queue and terminated what was running, and a handler would strip
+        BEFORE that -- the entries the interrupt catches mid-flight would
+        finish against a home with no config.toml, i.e. no guard hooks. SIGKILL nobody
         can catch: that residual is in docs/PANOPTICON.md."""
         if self._crash_strip is not None:
             return
@@ -568,20 +569,19 @@ class Runner(base.HostRunner):
         its config.toml (`api_key` verbatim) and its OAuth symlinks would
         otherwise accumulate under a path every process of that uid can see.
         The debugging value is in the transcripts, not the credential surface."""
-        self._disarm_crash_strippers()
         home = self.kimi_home
-        if not home or not is_temp_home(home):
-            return
-        if status == "complete":
-            shutil.rmtree(home, ignore_errors=True)
-            self._drop_pointer()
-            self.kimi_home = self.run_home = None
-            return
-        removed = strip_secrets(home)     # R3-6: fixed text below, never the names it returned
-        note = ("its config.toml and credential links were removed, so nothing left "
-                "there carries a credential" if removed else "it held no credential files")
-        print("driver loop: the kimi run home is kept for debugging at %s; %s"
-              % (home, note), file=sys.stderr, flush=True)
+        if home and is_temp_home(home):
+            if status == "complete":
+                shutil.rmtree(home, ignore_errors=True)
+                self._drop_pointer()
+                self.kimi_home = self.run_home = None
+            else:
+                removed = strip_secrets(home)     # R3-6: fixed text below, never the names it returned
+                note = ("its config.toml and credential links were removed, so nothing left "
+                        "there carries a credential" if removed else "it held no credential files")
+                print("driver loop: the kimi run home is kept for debugging at %s; %s"
+                      % (home, note), file=sys.stderr, flush=True)
+        self._disarm_crash_strippers()    # LAST (#1662): a Ctrl-C above leaves the exit stripper armed
 
     def _drop_pointer(self):
         """A pointer that outlives the home it names is a lie in the run

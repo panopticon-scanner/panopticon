@@ -186,6 +186,13 @@ groups:
       - skill/scripts/kimi_toml.py
       - skill/scripts/kimi_guard_hook.py
       - skill/scripts/read_guard_hook.py
+      # #1662 adds `runners/batch.py` (the interrupt's rollback manifest); the
+      # glob already claims it and this leaf is at 47/48. Its home rather than
+      # `Phases` for two reasons: it IS a runners/ module, and `Phases` is full
+      # at 48/48 -- a 49th file chunks that leaf into `Orchestration:Phases_1`,
+      # a name the matrix has no entry for, which is the #1638 P13 defect. The
+      # rollback's other half needed no new file: it went into the existing
+      # `phases/persist.py`, which already owns the loop's disk contract.
       - skill/scripts/runners/**
       - skill/scripts/probes/**
       - skill/workflows/**

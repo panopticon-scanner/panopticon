@@ -599,6 +599,19 @@ class TestSkillMd(unittest.TestCase):
         # entry is already safe on disk -- the run-13 batch persisted nothing
         # for 42 minutes and an interruption lost all of it.
         self.assertIn("as each entry completes", loop)
+        # #1662: the interrupt paragraph is pinned to the CODE's own sentence.
+        # Nothing tied the two together before, which is how the guide came to
+        # promise that every running child gets SIGTERM/SIGKILL -- true of the
+        # seam, false of all three shipped runners. Read off the constant, not
+        # re-typed: the `%d of %d` is the only part a prose sentence cannot
+        # carry, so it is the only part dropped.
+        import scripts.orchestrate as orchestrate
+        clause = orchestrate.INTERRUPTED.split(";")[0].split("%d of %d ")[-1]
+        self.assertEqual("entries had been handled and have been rolled back", clause)
+        self.assertIn(clause, loop)
+        # ...and the termination claim says whose children it can actually reach
+        self.assertIn("registered a handle", loop)
+        self.assertIn("process-group SIGINT", loop)
 
     def test_driver_run_loop_documents_scout_return_persist(self):
         # The scout checkpoint is read-only + return-persist (the scout agent

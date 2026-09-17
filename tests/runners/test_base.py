@@ -1,13 +1,20 @@
+import contextlib
 import importlib
+import io
+import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
 from unittest import mock
 
 import scripts.runners.base as base
+import scripts.runners.batch as batch_mod
 import scripts._version as version
 import scripts.runners.session as session_runner
 
@@ -129,9 +136,17 @@ class TestIterBatch(unittest.TestCase):
         # Discovered from the package directory, the way
         # tests/test_layout.py::_package_dirs does, so the NEXT family is
         # enrolled by existing rather than by being listed here.
+        #
+        # `base.py` is the seam itself and `batch.py` (#1662) the loop's
+        # rollback manifest: neither is a family, neither launches anything,
+        # and neither has a Runner. A shared module added to this package
+        # costs one line here, which is the visible decision it should be --
+        # the alternative, skipping any module that happens to have no
+        # `Runner`, would silently excuse the family that forgot one.
         pkg_dir = os.path.dirname(os.path.abspath(base.__file__))
         names = sorted(f[:-3] for f in os.listdir(pkg_dir)
-                       if f.endswith(".py") and f not in ("__init__.py", "base.py"))
+                       if f.endswith(".py")
+                       and f not in ("__init__.py", "base.py", "batch.py"))
         self.assertIn("claude", names)                  # the directory really was read
         for name in names:
             mod = importlib.import_module("scripts.runners.%s" % name)
@@ -335,3 +350,289 @@ class TestAFailedResultKeepsWhatTheLaunchProduced(unittest.TestCase):
             with self.subTest(stdout=stdout):
                 exc = subprocess.TimeoutExpired(["x"], 1, output=stdout)
                 self.assertEqual(expected, base.partial_output(exc))
+
+
+class FakeChild:
+    """A `subprocess.Popen`-shaped handle for `terminate_children` (#1662):
+    `terminate` then, for one that will not die, `kill`. No real process: the
+    suite never launches a host binary, and this path is about what the runner
+    SENDS, not about what a child does with it."""
+
+    def __init__(self, stubborn=False):
+        self.stubborn = stubborn
+        self.sent = []
+
+    def terminate(self):
+        self.sent.append("TERM")
+
+    def kill(self):
+        self.sent.append("KILL")
+
+    def wait(self, timeout=None):
+        if self.stubborn:
+            raise subprocess.TimeoutExpired(["child"], timeout or 0)
+        return 0
+
+
+class TestAnInterruptStopsTheBatch(unittest.TestCase):
+    """#1662: Ctrl-C means complete stoppage. `shutdown(wait=True)` queued its
+    stop sentinel BEHIND every work item, so every entry the batch had queued
+    -- running or not yet started -- was still launched and allowed to finish,
+    none of them persisted, and the interrupt did not return until the last
+    child exited. On a wide batch of slow entries that is minutes of work paid
+    for and thrown away."""
+
+    def _stoppable(self, terminate_releases=True):
+        """A runner whose entries (bar the first) block until the interrupt
+        path terminates them -- which is what a SIGTERM does to a real child:
+        the worker holding it stops blocking and returns."""
+        released, started, terminated = threading.Event(), [], []
+
+        class Stoppable(base.HostRunner):
+            host = "fake"; mode = "headless"; default_concurrency = 2
+            INTERRUPT_GRACE = 0.25
+
+            def run_entry(self, entry, env):
+                started.append(entry["id"])
+                if entry["id"] != "e0":
+                    released.wait(10)
+                return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                      cost_usd=None, model=None, session_id=None,
+                                      denials=[], error=None)
+
+            def terminate_children(self, grace=None):
+                terminated.append(grace)
+                if terminate_releases:
+                    released.set()
+
+        self.addCleanup(released.set)
+        return Stoppable(), started, terminated
+
+    def _interrupt_after_the_first_completion(self, runner, entries, width=2):
+        stream = runner.iter_batch(entries, width, lambda e: {})
+        began = time.monotonic()
+        with self.assertRaises(KeyboardInterrupt):
+            with contextlib.closing(stream):
+                for _entry, _result, _timing in stream:
+                    raise KeyboardInterrupt          # the operator's Ctrl-C
+        return time.monotonic() - began
+
+    def test_the_entries_still_queued_are_never_launched(self):
+        # Six entries, concurrency two, interrupted after the first
+        # completion. A worker that finishes an entry takes the next queued
+        # item straight away and nothing the consumer does can beat it, so up
+        # to `width` entries can still launch after the interrupt -- here only
+        # `e0` completes, so exactly one slot turns over and `e1` plus at most
+        # `e2` run. e3..e5 were queued and must never launch; the test above
+        # pins the general bound. On the base every one of the six ran.
+        r, started, _terminated = self._stoppable()
+        entries = [{"id": "e%d" % i} for i in range(6)]
+        self._interrupt_after_the_first_completion(r, entries)
+        self.assertIn("e0", started)
+        self.assertEqual([], [x for x in ("e3", "e4", "e5") if x in started],
+                         "queued entries launched after the interrupt: %r" % started)
+        self.assertLessEqual(len(started), 3, started)
+
+    def test_the_launches_after_the_interrupt_are_bounded_by_the_pool_width(self):
+        # "One worker slot turns over" is only true when ONE entry completes.
+        # Every worker that finishes an entry pulls the next queued item
+        # before the consumer's interrupt can reach the generator, so the real
+        # bound is the POOL, not a single slot: with four fast entries at
+        # width four, four workers each start one more -- eight launches out
+        # of twenty, and never a ninth. The test above is what pins the
+        # cancellation itself; this one pins how much can still get out, which
+        # is the number the seam's docstring now quotes. On the base, whose
+        # `shutdown(wait=True)` queued its sentinel behind every work item, all
+        # twenty ran.
+        released, started = threading.Event(), []
+        self.addCleanup(released.set)
+
+        class Wide(base.HostRunner):
+            host = "fake"; INTERRUPT_GRACE = 0.25
+
+            def run_entry(self, entry, env):
+                started.append(entry["id"])
+                if int(entry["id"][1:]) >= 4:          # only the first four are fast
+                    released.wait(10)
+                return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                      cost_usd=None, model=None, session_id=None,
+                                      denials=[], error=None)
+
+        self._interrupt_after_the_first_completion(
+            Wide(), [{"id": "e%d" % i} for i in range(20)], width=4)
+        self.assertLessEqual(len(started), 8, started)     # 2 x width, exactly
+        self.assertEqual([], [x for x in started if int(x[1:]) >= 8], started)
+
+    def test_the_in_flight_entry_is_terminated_rather_than_awaited(self):
+        r, _started, terminated = self._stoppable()
+        self._interrupt_after_the_first_completion(
+            r, [{"id": "e%d" % i} for i in range(6)])
+        self.assertEqual(1, len(terminated), "terminate_children was not called once")
+
+    def test_a_child_that_ignores_the_terminate_is_not_waited_out(self):
+        # The grace is a BOUND, not a promise: a runner whose terminate does
+        # not end the child still returns from the interrupt, instead of
+        # blocking for the entry's full 10s.
+        r, _started, terminated = self._stoppable(terminate_releases=False)
+        elapsed = self._interrupt_after_the_first_completion(
+            r, [{"id": "e%d" % i} for i in range(6)])
+        self.assertEqual(1, len(terminated))
+        self.assertLess(elapsed, 5, "the interrupt waited the blocked entry out")
+
+    def test_a_terminate_that_raises_does_not_replace_the_interrupt(self):
+        # A family's teardown must never become the exception the operator
+        # sees instead of their own Ctrl-C.
+        released = threading.Event()
+        self.addCleanup(released.set)
+
+        class Angry(base.HostRunner):
+            host = "angry"; INTERRUPT_GRACE = 0.05
+
+            def run_entry(self, entry, env):
+                if entry["id"] != "e0":
+                    released.wait(10)
+                return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                      cost_usd=None, model=None, session_id=None,
+                                      denials=[], error=None)
+
+            def terminate_children(self, grace=None):
+                raise RuntimeError("teardown exploded")
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._interrupt_after_the_first_completion(
+                Angry(), [{"id": "e%d" % i} for i in range(4)])
+        self.assertIn("teardown exploded", err.getvalue())
+        self.assertIn("angry", err.getvalue())
+
+    def test_terminate_children_sends_sigterm_then_sigkill(self):
+        r = base.HostRunner()
+        quick, stubborn = FakeChild(), FakeChild(stubborn=True)
+        r.register_child(quick)
+        r.register_child(stubborn)
+        self.assertEqual([quick, stubborn], r.terminate_children(grace=0))
+        self.assertEqual(["TERM"], quick.sent)
+        self.assertEqual(["TERM", "KILL"], stubborn.sent)
+        # ...and the registry is emptied, so a second call is a no-op rather
+        # than a second SIGKILL at a pid the OS has since reused.
+        self.assertEqual([], r.terminate_children(grace=0))
+
+    def test_a_runner_that_registered_nothing_terminates_nothing(self):
+        self.assertEqual([], base.HostRunner().terminate_children(grace=0))
+
+    def test_the_interrupt_path_installs_no_signal_handler(self):
+        # The rollback must CALL THROUGH a family's handler, never replace it:
+        # runners/kimi.py chains a SIGTERM secret-stripper onto whatever was
+        # there, and an interrupt path that installed its own would unlink it.
+        before = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+        r, _started, _terminated = self._stoppable()
+        self._interrupt_after_the_first_completion(
+            r, [{"id": "e%d" % i} for i in range(4)])
+        self.assertEqual(before, {s: signal.getsignal(s)
+                                  for s in (signal.SIGINT, signal.SIGTERM)})
+
+
+class TestTheBatchManifest(unittest.TestCase):
+    """#1662: the list a Ctrl-C rolls back, written before the batch's first
+    launch. Its own module (`runners/batch.py`) but not its own test file:
+    `Orchestration:Hosts` is at 47 of its 48-file cap, and a 49th file chunks
+    the leaf into a name the review matrix has no entry for (the #1638 P13
+    defect). Same parking reasoning as `money.py`/`ledger.py` in groups.yml."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def _artifact(self, name, body="{}"):
+        path = os.path.join(self.dir, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path
+
+    def _batch(self, *names):
+        entries = [{"id": n, "out_file": self._artifact(n + ".json")} for n in names]
+        return batch_mod.Batch(self.dir, 3, "review", entries).open(), entries
+
+    def test_the_manifest_lists_the_entry_ids_and_the_files_they_will_write(self):
+        batch, entries = self._batch("review-app-SEC", "review-app-ACC")
+        self.assertEqual(batch.path,
+                         os.path.join(self.dir, "batch-3.json"))
+        with open(batch.path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual(1, doc["schema_version"])
+        self.assertEqual((3, "review"), (doc["batch"], doc["checkpoint"]))
+        self.assertRegex(doc["opened_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertEqual(["review-app-SEC", "review-app-ACC"],
+                         [row["id"] for row in doc["entries"]])
+        self.assertEqual([[e["out_file"]] for e in entries],
+                         [row["artifacts"] for row in doc["entries"]])
+
+    def test_roll_back_deletes_what_it_lists_and_nothing_else(self):
+        # The "never a glob" rule: a prior phase's output sits in the same
+        # folder, and on a redteam target so does whatever the tree planted
+        # with a matching name.
+        batch, entries = self._batch("review-app-SEC")
+        bystander = self._artifact("coverage-app.json")
+        removed, problems = batch.roll_back()
+        self.assertEqual(([entries[0]["out_file"]], []), (removed, problems))
+        self.assertFalse(os.path.exists(entries[0]["out_file"]))
+        self.assertTrue(os.path.isfile(bystander))
+        self.assertFalse(os.path.exists(batch.path), "the manifest goes with it")
+
+    def test_an_artifact_that_was_never_written_is_not_a_problem(self):
+        # Most of a cancelled batch never got that far.
+        batch, entries = self._batch("review-app-SEC")
+        os.remove(entries[0]["out_file"])
+        self.assertEqual(([], []), batch.roll_back())
+
+    def test_a_record_the_batch_wrote_later_is_rolled_back_too(self):
+        # `persist.retain_rejected` names the file only once it has written
+        # it, so the manifest gains it mid-batch rather than at open.
+        batch, entries = self._batch("review-app-SEC")
+        kept = self._artifact("rejected-review-app-SEC-1.json")
+        batch.add_artifact("review-app-SEC", kept)
+        batch.add_artifact("review-app-SEC", kept)          # idempotent
+        with open(batch.path, encoding="utf-8") as fh:
+            self.assertEqual([entries[0]["out_file"], kept],
+                             json.load(fh)["entries"][0]["artifacts"])
+        removed, _problems = batch.roll_back()
+        self.assertEqual({entries[0]["out_file"], kept}, set(removed))
+
+    def test_a_record_for_an_entry_not_in_the_batch_is_ignored(self):
+        batch, _entries = self._batch("review-app-SEC")
+        batch.add_artifact("review-app-ACC", self._artifact("stray.json"))
+        batch.add_artifact("review-app-SEC", None)
+        self.assertEqual(1, len(batch.artifacts()))
+
+    def test_an_artifact_planted_as_a_symlink_loses_the_link_not_the_target(self):
+        batch, entries = self._batch("review-app-SEC")
+        target = self._artifact("elsewhere.json", "precious")
+        os.remove(entries[0]["out_file"])
+        os.symlink(target, entries[0]["out_file"])
+        batch.roll_back()
+        self.assertFalse(os.path.lexists(entries[0]["out_file"]))
+        self.assertTrue(os.path.isfile(target))
+
+    def test_a_path_that_cannot_be_removed_is_reported_not_raised(self):
+        # The loop is already on its way out with an interrupt to explain; a
+        # rollback that could not finish is something the operator is TOLD,
+        # not something that replaces the interrupt's own message.
+        batch, entries = self._batch("review-app-SEC")
+        os.remove(entries[0]["out_file"])
+        os.makedirs(os.path.join(entries[0]["out_file"], "child"))
+        removed, problems = batch.roll_back()
+        self.assertEqual([], removed)
+        self.assertEqual(1, len(problems))
+        self.assertIn(entries[0]["out_file"], problems[0])
+
+    def test_close_removes_the_manifest_and_a_second_close_is_quiet(self):
+        batch, _entries = self._batch("review-app-SEC")
+        self.assertEqual([], batch.close())
+        self.assertFalse(os.path.exists(batch.path))
+        self.assertEqual([], batch.close())
+
+    def test_an_empty_batch_lists_nothing(self):
+        batch = batch_mod.Batch(self.dir, 1, "scout", []).open()
+        self.assertEqual(([], []), (batch.entry_ids(), batch.artifacts()))
+        self.assertEqual(([], []), batch.roll_back())
+
