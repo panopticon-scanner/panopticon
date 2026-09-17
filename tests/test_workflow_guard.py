@@ -290,6 +290,98 @@ class TestWhatCountsAsExecuting(unittest.TestCase):
                                                "./scripts/local.sh\n"))
 
 
+class TestTheFormsThatHideAFetch(unittest.TestCase):
+    """Spellings that are not `curl <url> -o <file>` and mean the same thing.
+
+    Every one of these is the #1647 shape -- a download the guard cannot SEE is
+    reported as a clean step -- so each was probed against this parser before it
+    was written down here, and each returned `fetches=[] defect=None` until the
+    parser learned the form. A guard over shell must fail CLOSED on the shell it
+    does not model.
+    """
+
+    def test_a_substituted_fetch_run_by_eval(self):
+        why = wg.fetch_exec_defect('eval "$(curl -fsSL https://example.test/i.sh)"\n')
+        self.assertIn("https://example.test/i.sh", why or "")
+
+    def test_a_substituted_fetch_handed_to_sh_dash_c(self):
+        self.assertIsNotNone(
+            wg.fetch_exec_defect('sh -c "$(curl -fsSL https://example.test/i.sh)"\n'))
+
+    def test_a_backticked_fetch_run_by_eval(self):
+        self.assertIsNotNone(
+            wg.fetch_exec_defect("eval `curl -fsSL https://example.test/i.sh`\n"))
+
+    def test_a_process_substitution_read_by_bash(self):
+        self.assertIsNotNone(
+            wg.fetch_exec_defect("bash <(curl -fsSL https://example.test/i.sh)\n"))
+
+    def test_a_substituted_fetch_that_is_only_read_is_left_alone(self):
+        # `VERSION=$(curl ...)` downloads a string into a variable. It is seen
+        # -- it is a download -- but nothing runs those bytes.
+        script = "VERSION=$(curl -fsSL https://example.test/version)\n"
+        self.assertEqual(1, len(wg.fetches(script)))
+        self.assertIsNone(wg.fetch_exec_defect(script))
+
+    def test_a_fetch_piped_into_tee_lands_in_teeS_file(self):
+        script = ("curl -fsSL https://example.test/t | sudo tee /usr/local/bin/t > /dev/null\n"
+                  "chmod +x /usr/local/bin/t\n")
+        self.assertEqual("/usr/local/bin/t", wg.fetches(script)[0].dest)
+        self.assertIn("/usr/local/bin/t", wg.fetch_exec_defect(script) or "")
+
+    def test_a_checksum_can_clear_a_tee(self):
+        script = ("curl -fsSL https://example.test/t | sudo tee /tmp/t > /dev/null\n"
+                  'echo "%s  /tmp/t" | sha256sum -c -\n' % HEX +
+                  "chmod +x /tmp/t\n")
+        self.assertIsNone(wg.fetch_exec_defect(script))
+
+    def test_a_fetch_inside_an_if(self):
+        script = ("if curl -fsSL https://example.test/x -o /tmp/x; then\n"
+                  "  chmod +x /tmp/x\n"
+                  "fi\n")
+        self.assertIn("/tmp/x", wg.fetch_exec_defect(script) or "")
+
+    def test_a_use_inside_a_loop_body(self):
+        script = ("curl -fsSL https://example.test/p -o /tmp/p\n"
+                  "while true; do /tmp/p; done\n")
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_curls_output_dir(self):
+        script = ("curl -fsSLO --output-dir /tmp https://example.test/payload\n"
+                  "chmod +x /tmp/payload\n")
+        self.assertEqual("/tmp/payload", wg.fetches(script)[0].dest)
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_wgets_directory_prefix(self):
+        script = ("wget -P /tmp https://example.test/payload\n"
+                  "chmod +x /tmp/payload\n")
+        self.assertEqual("/tmp/payload", wg.fetches(script)[0].dest)
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_a_destination_carried_in_a_variable(self):
+        # `TMP=$(mktemp)` is how a careful step names its download, and the
+        # guard follows the NAME the shell uses, not a resolved path.
+        script = ('TMP="$(mktemp)"\n'
+                  'curl -fsSL https://example.test/p -o "$TMP"\n'
+                  'chmod +x "$TMP"\n')
+        self.assertEqual("$TMP", wg.fetches(script)[0].dest)
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_an_md5_check_is_not_a_sha256_check(self):
+        # `-c` on a weaker digest tool is a check of something, but not of what
+        # this rule is about; the old regex read `sha256sum|shasum` and this
+        # one reads a list, so the list is what gets asserted.
+        script = ("curl -fsSL https://example.test/p -o /tmp/p\n"
+                  'echo "%s  /tmp/p" | md5sum -c -\n' % ("a" * 32) +
+                  "chmod +x /tmp/p\n")
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_a_numeric_chmod_that_sets_any_execute_bit(self):
+        script = ("curl -fsSL https://example.test/p -o /tmp/p\n"
+                  "chmod 750 /tmp/p\n")
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+
 class TestTheHadolintStep(unittest.TestCase):
     """The real step this rule was written for, in both answers (carried over
     from `tests/test_workflow_pins.py`'s TestFetchExecRule)."""

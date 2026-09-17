@@ -245,6 +245,19 @@ Two differences between the files are deliberate:
 `EXEMPT_INSTALLS` list with a reason, every pin in such a file carries a `--hash=` (a `TODO-hash`
 placeholder is refused), and the pinned pip may not be older than the one the runner ships.
 
+The third door is what a workflow **downloads and then runs**. `scripts/workflow_guard.py` parses
+every `run:` step's shell — statements split quote-aware on `;`, `&&`, `||` and `|`, argv from
+`shlex`, heredocs and `\`-continuations joined first — and fails the suite when a `curl`/`wget`
+download is made executable, interpreted, unpacked or moved onto `PATH` without a checksum **bound
+to that path**: a `sha256sum -c` (or `shasum -a 256 -c`) whose sums list — piped in, heredoc'd, or a
+file the same step wrote — names the file that was fetched, and runs before the first use of it. A
+fetch piped straight into a shell (`curl … | sh`) can never satisfy it: there is no file to hash, so
+download to a file, check it, then run it. Exemptions are `(workflow, step name, reason)` tuples on
+`tests/test_workflow_pins.py`'s `EXEMPT_FETCHES`, held to the same staleness and posture checks as
+the install list. Run it by hand with `python3 scripts/workflow_guard.py .github/workflows/*.yml`;
+CI gets **no separate lint step**, because `tests/test_workflow_pins.py` already applies it to the
+whole fleet on every PR.
+
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking
 changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.version`,

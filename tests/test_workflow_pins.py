@@ -17,6 +17,13 @@ import unittest
 import yaml
 
 from conftest import REPO_ROOT
+from workflow_guard import fetch_exec_defect, fetches, run_steps
+# #1641's comment-stripper, now shared with the fetch rule's parser: half
+# this repo's workflow and Dockerfile prose QUOTES the commands it explains
+# -- including the two the install rule was written for -- and a guard that
+# reads a comment as an act flags the explanation. `tests/test_security_
+# workflow.py` imports this name from this module.
+from workflow_guard import without_comments as _without_comments
 
 WORKFLOW_DIR = os.path.join(REPO_ROOT, ".github", "workflows")
 
@@ -85,111 +92,102 @@ def _workflow_files():
         if n.endswith((".yml", ".yaml")))
 
 
-# --- #1529: fetch-and-exec inside a `run:` step -------------------------------
+# --- #1529 / #1647: fetch-and-exec inside a `run:` step ----------------------
 # A workflow can reach outside the supply chain the pin rule above governs, by
 # curling a binary and running it. The Dockerfile was hardened for exactly this
 # (10 artifact fetches, all `sha256sum -c`'d) and `tests/test_dockerfile.py`
 # guards it; nothing guarded the workflows, where the same act is written in
 # shell instead of Dockerfile syntax.
-_FETCH_TO_FILE = re.compile(r"\b(?:curl|wget)\b[^|;&\n]*?\s-[oO]\s+(\S+)")
-_VERIFIES = re.compile(r"\b(?:sha256sum|shasum)\b[^\n]*\s-c\b")
-_INTERPRETERS = ("python3", "python", "bash", "dash", "perl", "ruby", "node",
-                 "zsh", "ksh", "sh")
+#
+# The RULE now lives in `scripts/workflow_guard.py`, and its unit spec in
+# `tests/test_workflow_guard.py`. #1647 moved it: what stood here were two
+# regexes that could not see `curl ... | sh` or `--output` as downloads at all,
+# and accepted any `sha256sum -c` anywhere in the step as verification of every
+# download in it -- both failing open, over every workflow in the fleet. What
+# remains here is the fleet APPLICATION of that rule, beside the two sibling
+# supply-chain rules (`uses:` pins above, `pip install` below) it shares a
+# workflow reader and a posture check with.
+#
+# (workflow, step name, why it may fetch and execute unverified). EMPTY, and
+# the shape is here so it cannot be filled in silently: an exemption is a named
+# step carrying a written reason, and it is checked in both directions below --
+# one that stops firing is stale and fails, and a workflow that has become
+# privileged may not hold one.
+EXEMPT_FETCHES = ()
 
 
-def _join_continuations(script):
-    return re.sub(r"\\\n\s*", " ", script)
+def fetch_exemption(workflow, step_name, entries=EXEMPT_FETCHES):
+    """The entry excusing this step from the fetch rule, or None."""
+    return next((e for e in entries if e[0] == workflow and e[1] == step_name),
+                None)
 
 
-def fetch_exec_defect(script):
-    """Why this `run:` script fetches and executes without verifying, or None.
-
-    Scoped to the shape that actually occurs: a fetch landing in a file which
-    the same script then makes executable or hands to an interpreter. A fetch
-    that is only read (a key piped to `gpg`, a tarball unpacked) is a different
-    act and is not this rule's business.
-    """
-    joined = _join_continuations(script)
-    fetched = set(_FETCH_TO_FILE.findall(joined))
-    if not fetched:
-        return None
-    executed = {}
-    for path in fetched:
-        m = (re.search(r"chmod\s+\+x\s+%s\b" % re.escape(path), joined)
-             or re.search(r"\b(?:%s)\s+%s\b"
-                          % ("|".join(_INTERPRETERS), re.escape(path)), joined))
-        if m:
-            executed[path] = m.start()
-    if not executed:
-        return None
-    verify = _VERIFIES.search(joined)
-    if not verify:
-        return ("fetches and executes %s with nothing verifying what arrived"
-                % ", ".join(sorted(executed)))
-    # Ordering is the substance: a checksum that runs after the bytes are made
-    # runnable is theatre. Nothing unverified may become executable.
-    late = sorted(p for p, at in executed.items() if at < verify.start())
-    if late:
-        return ("verifies %s only AFTER making it executable"
-                % ", ".join(late))
-    return None
-
-
-class TestFetchExecRule(unittest.TestCase):
-    """Both answers, on the real script this rule was written for."""
-
-    HADOLINT = ("curl -sfL --connect-timeout 5 --max-time 60 --retry 3 \\\n"
-                "  -o /tmp/hadolint \\\n"
-                "  https://example.test/hadolint-Linux-x86_64\n"
-                "chmod +x /tmp/hadolint\n"
-                "sudo mv /tmp/hadolint /usr/local/bin/hadolint\n")
-
-    def test_the_unverified_fetch_and_exec_is_a_defect(self):
-        self.assertIn("/tmp/hadolint", fetch_exec_defect(self.HADOLINT))
-
-    def test_a_checksum_clears_it(self):
-        verified = self.HADOLINT.replace(
-            "chmod +x", 'echo "$SHA  /tmp/hadolint" | sha256sum -c -\nchmod +x')
-        self.assertIsNone(fetch_exec_defect(verified))
-
-    def test_a_checksum_after_the_chmod_is_still_a_defect(self):
-        late = self.HADOLINT.replace(
-            "sudo mv", 'echo "$SHA  /tmp/hadolint" | sha256sum -c -\nsudo mv')
-        self.assertIn("only AFTER", fetch_exec_defect(late))
-
-    def test_an_interpreter_invocation_counts_as_executing(self):
-        script = ("curl -sfL https://example.test/i.py -o /tmp/i.py\n"
-                  "python3 /tmp/i.py\n")
-        self.assertIn("/tmp/i.py", fetch_exec_defect(script))
-
-    def test_a_fetch_that_is_never_executed_is_left_alone(self):
-        script = ("curl -sfL https://example.test/data.json -o /tmp/d.json\n"
-                  "jq . /tmp/d.json\n")
-        self.assertIsNone(fetch_exec_defect(script))
-
-    def test_a_script_with_no_fetch_is_left_alone(self):
-        self.assertIsNone(fetch_exec_defect("make test\nchmod +x ./run.sh\n"))
+def _run_steps_in_repo():
+    """[(workflow basename, step name, run script)] for the whole fleet."""
+    steps = []
+    for path in _workflow_files():
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh.read()) or {}
+        for name, script in run_steps(doc):
+            steps.append((os.path.basename(path), name, script))
+    return steps
 
 
 class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
     def test_every_run_step_verifies_what_it_executes(self):
         defects = []
-        for path in _workflow_files():
-            with open(path, encoding="utf-8") as fh:
-                doc = yaml.safe_load(fh.read()) or {}
-            for job in (doc.get("jobs") or {}).values():
-                if not isinstance(job, dict):
-                    continue
-                for step in job.get("steps") or []:
-                    if not isinstance(step, dict) or not step.get("run"):
-                        continue
-                    why = fetch_exec_defect(step["run"])
-                    if why:
-                        defects.append("%s / %s -- %s" % (
-                            os.path.basename(path),
-                            step.get("name") or "<unnamed step>", why))
+        for workflow, name, script in _run_steps_in_repo():
+            why = fetch_exec_defect(script)
+            if why and not fetch_exemption(workflow, name):
+                defects.append("%s / %s -- %s" % (workflow, name, why))
         self.assertEqual([], defects, "unverified fetch-and-exec:\n" +
                          "\n".join(defects))
+
+    def test_the_fetch_scan_is_actually_seeing_the_downloads(self):
+        # Guards the guard, and it is the #1647 defect itself: a parser that
+        # returns an EMPTY fetch set reports a clean pass over every workflow
+        # in the fleet. "No defects" is evidence only while the scan still
+        # sees the two artifact downloads this repo has (hadolint in
+        # docker-build-pr.yml, the DependencyCheck release in nvd-cache.yml).
+        found = [(w, f) for w, _n, s in _run_steps_in_repo() for f in fetches(s)]
+        self.assertGreaterEqual(
+            len(found), 2, "workflow fetch scan found almost nothing; the "
+                           "scanner is broken, not the tree")
+        self.assertTrue(all(f.url for _w, f in found),
+                        "a fetch was seen with no URL parsed out of it: %s" % found)
+
+    def test_no_fetch_exemption_outlives_the_step_it_was_written_for(self):
+        fired = set()
+        for workflow, name, script in _run_steps_in_repo():
+            if fetch_exec_defect(script) and fetch_exemption(workflow, name):
+                fired.add((workflow, name))
+        stale = [e[:2] for e in EXEMPT_FETCHES if e[:2] not in fired]
+        self.assertEqual([], stale, "fetch exemptions that no longer excuse "
+                                    "anything; delete them:\n%s" % stale)
+
+    def test_no_exempted_workflow_has_become_privileged(self):
+        # Same posture rule the install exemptions are held to
+        # (`privilege_defect`, exercised on both answers in
+        # TestExemptionPosture): an exemption is written against an
+        # unprivileged trigger and a read-only token, and neither is assumed.
+        defects = []
+        for name in sorted({e[0] for e in EXEMPT_FETCHES}):
+            with open(os.path.join(WORKFLOW_DIR, name), encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh.read()) or {}
+            why = privilege_defect(doc)
+            if why:
+                defects.append("%s -- %s" % (name, why))
+        self.assertEqual([], defects, "a workflow carrying a fetch exemption "
+                         "has become privileged:\n" + "\n".join(defects))
+
+    def test_the_exemption_matcher_answers_on_both_sides(self):
+        # EXEMPT_FETCHES is empty, so the three checks above pass vacuously
+        # today; the matcher they depend on is proved here instead, on scratch
+        # entries, so an exemption added later lands on tested machinery.
+        entries = (("ci.yml", "fetch the thing", "a reason"),)
+        self.assertIsNotNone(fetch_exemption("ci.yml", "fetch the thing", entries))
+        self.assertIsNone(fetch_exemption("ci.yml", "another step", entries))
+        self.assertIsNone(fetch_exemption("other.yml", "fetch the thing", entries))
 
 
 class TestPinDefectRule(unittest.TestCase):
@@ -377,15 +375,6 @@ def _join_lines(script):
     """`\\`-continuations folded in, so an install written across five lines
     reads as the one command it is."""
     return re.sub(r"\\\s*\n\s*", " ", script)
-
-
-def _without_comments(script):
-    """The script with whole-line comments dropped. Half this repo's workflow
-    and Dockerfile prose QUOTES the commands it is explaining -- including the
-    two this rule was written for -- and a guard that reads a comment as an
-    install flags the explanation instead of the act."""
-    return "\n".join(line for line in script.splitlines()
-                     if not line.lstrip().startswith("#"))
 
 
 def pip_install_commands(script):
