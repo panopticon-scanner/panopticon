@@ -9,10 +9,17 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# PACKAGE first, flat fallback -- the order host_disclosure.py and
+# model_resolver.py already use, and the one tests/test_layout.py rule 2
+# explains: skill/scripts is on sys.path as well as its parent, so a flat-first
+# import builds a SECOND `evidence` module object with its own module-level
+# state, and every real run (the driver puts both directories on PYTHONPATH)
+# held both at once. Nothing in `evidence` is stateful today; the split would
+# be silent when something is (#1679).
 try:
-    import evidence
-except ImportError:
     from scripts import evidence
+except ImportError:
+    import evidence
 
 SEVERITY_WEIGHT = {"CRITICAL": 20, "HIGH": 5, "MEDIUM": 2, "LOW": 0, "INFO": 0}
 CONFIDENCE_MULT = {"CERTAIN": 1.0, "LIKELY": 0.9, "POSSIBLE": 0.8, "NOTE": 0.4}

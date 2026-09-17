@@ -60,6 +60,18 @@ def only(seq, what="finding"):
     return seq[0]
 
 
+def last(seq, what="finding"):
+    """seq[-1], asserting the sequence is non-empty first.
+
+    The same guard as `first`, for the sites whose premise is that something
+    happened LAST -- the final payload a recorder saw, the most recent call.
+    `first` cannot stand in for those: it would read a different element and
+    silently assert the wrong thing rather than fail.
+    """
+    assert len(seq) >= 1, "expected at least 1 %s, got none: %r" % (what, seq)
+    return seq[-1]
+
+
 class FakeStream:
     """Iterable-chunk fake stdout/stderr for FakePopen."""
 

@@ -1,11 +1,35 @@
 import os
+import shutil
 import tempfile
 import types
 import unittest
 from unittest import mock
 
+import pytest
+
 import file_issues
 import triage
+
+
+@pytest.fixture(autouse=True)
+def _resolvable_gh():
+    """A `gh` on the TRUSTED path, so `_gh_bin()` can resolve one.
+
+    #1650 R1: `file_issues._gh_bin` now goes through `triage.gh_bin`, which
+    REFUSES rather than falling back to a bare `gh` -- this module creates
+    public issues as the automation account, so an unresolvable CLI must stop
+    it. Every test here injects a fake runner, so the stub is resolved and
+    never launched; it exists to let argv construction be exercised on a
+    machine (CI included) that has no gh installed.
+    """
+    directory = tempfile.mkdtemp(prefix="trusted-bin-")
+    path = os.path.join(directory, "gh")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\nexit 97\n")       # resolved, never run
+    os.chmod(path, 0o755)
+    with mock.patch.object(triage, "TRUSTED_PATH", directory):
+        yield path
+    shutil.rmtree(directory, ignore_errors=True)
 
 
 def _completed(returncode=0, stdout="", stderr=""):
@@ -21,6 +45,32 @@ FINDING = {
     "confidence": "LIKELY",
     "description": "example",
 }
+
+
+class TestGhBinIsTriagesResolution(unittest.TestCase):
+    """#1650 R1 residual: `_gh_bin` must BE `triage.gh_bin()`, not a lookalike.
+
+    The re-review reverted it to `shutil.which("gh") or "gh"` and the suite
+    stayed green -- so the hardening this module claims was unpinned. An
+    ambient-only gh (first on PATH, absent from the trusted path) is the
+    CWE-427 substitute the resolution exists to refuse.
+    """
+
+    def test_an_ambient_only_gh_is_refused(self):
+        with tempfile.TemporaryDirectory() as ambient, \
+                tempfile.TemporaryDirectory() as empty, \
+                tempfile.TemporaryDirectory() as home:
+            fake = os.path.join(ambient, "gh")
+            with open(fake, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 98\n")
+            os.chmod(fake, 0o755)
+            with mock.patch.object(triage, "TRUSTED_PATH", empty), \
+                    mock.patch.dict(os.environ, {"PATH": ambient, "HOME": home}):
+                with self.assertRaises(RuntimeError):
+                    file_issues._gh_bin()
+
+    def test_a_trusted_gh_is_the_one_triage_resolves(self):
+        self.assertEqual(triage.gh_bin(), file_issues._gh_bin())
 
 
 class TestBodyProvenance(unittest.TestCase):

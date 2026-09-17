@@ -47,6 +47,7 @@ import unittest
 from conftest import SKILL_ROOT
 
 import scripts.evidence as evidence
+import scripts.synth.codes as codes_mod
 import scripts.synth.validate_schema as validate_schema_mod
 
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
@@ -365,7 +366,30 @@ ADJUDICATION_FUNCTIONS = (
                              "scope_limited_paths", "resolve_duplicates")),
     ("scripts/synth/verdicts.py", ("resolve_findings",)),
     ("scripts/group_runner.py", ("verdict_is_done", "pending_verdicts")),
+    # #1679: reads the winning verdict's `code` and can rewrite a finding's
+    # `code` and `severity`. `matched` comes from `match_verdict` /
+    # `match_verdict_by_id` above, so what reaches it is already sanitized --
+    # this entry closes the gap in the FUNCTION list, which is what would have
+    # named a future key.
+    ("scripts/synth/codes.py", ("apply_verdict_quality",)),
 )
+
+# The one (module, key) pair an adjudication function reads DESPITE the repair.
+# The assertion below offers exactly two resolutions -- the key leaves
+# REPAIRABLE_VERDICT_FIELDS, or the reading is a product decision with a test
+# that pins the new outcome -- and this is the second, so the reason and the
+# test that holds it are written down here rather than inferred from an absence.
+# `test_every_repair_exemption_is_still_load_bearing` fails if an entry stops
+# being either read or repairable, so this cannot rot into a blanket.
+REPAIR_EXEMPT = {
+    ("scripts/synth/codes.py", "code"):
+        "apply_verdict_quality gates the advisor's `code` through "
+        "ocrdb.validate_code before it can replace a finding's, and the only "
+        "values the repair can PRODUCE are the string spelling of a number "
+        "(every other shape is dropped) -- no catalog contains one, so the "
+        "repair cannot change which code is applied. Pinned by "
+        "TestARepairedCodeCannotChangeAFinding.",
+}
 
 
 def _keys_read(path, names):
@@ -402,14 +426,71 @@ class TestRepairTouchesPresentationOnly(unittest.TestCase):
                              "%s: these adjudication functions were not found, so "
                              "the guard read nothing: %s"
                              % (path, sorted(set(names) - seen)))
-            overlap = sorted(repairable & keys)
+            overlap = sorted(k for k in repairable & keys
+                             if (path, k) not in REPAIR_EXEMPT)
             self.assertEqual(overlap, [], (
                 "%s reads %s, and the verdict repair rewrites it. A field the "
                 "adjudication reads is not a presentation field: repairing it "
                 "changes which findings are published and gate-eligible, always "
                 "in the same direction. Either the key leaves "
                 "REPAIRABLE_VERDICT_FIELDS, or the change is a product decision "
-                "with a test that pins the new outcome." % (path, overlap)))
+                "with a test that pins the new outcome and a REPAIR_EXEMPT entry "
+                "naming that test." % (path, overlap)))
+
+    def test_every_repair_exemption_is_still_load_bearing(self):
+        names = dict(ADJUDICATION_FUNCTIONS)
+        for (path, key), why in REPAIR_EXEMPT.items():
+            with self.subTest(path=path, key=key):
+                self.assertIn(path, names, "%s is exempt but is no longer an "
+                                           "adjudication module" % path)
+                keys, _seen = _keys_read(path, names[path])
+                self.assertIn(key, keys, "%s no longer reads %r, so the exemption "
+                                         "is dead weight" % (path, key))
+                self.assertIn(key, validate_schema_mod.REPAIRABLE_VERDICT_FIELDS,
+                              "%r is no longer repairable, so the exemption is "
+                              "dead weight" % key)
+                self.assertTrue(why.strip(), "an exemption without a reason")
+
+
+class TestARepairedCodeCannotChangeAFinding(unittest.TestCase):
+    """The outcome REPAIR_EXEMPT's one entry claims, measured rather than argued.
+
+    `apply_verdict_quality` reads the winning verdict's `code`, and `code` is
+    repairable -- so the repair could in principle decide which OCRDb code a
+    finding is published under, and through that code's default severity, its
+    severity. It cannot: the repair's output is gated by `ocrdb.validate_code`,
+    and every shape the repair can produce is either dropped or the string
+    spelling of a number. No catalog entry is named `7`.
+    """
+
+    BUNDLE = {"domains": {"SEC": {"entries": {
+        "SEC-A1A": {"name": "n1", "default_severity": "MEDIUM"},
+        "SEC-B2B": {"name": "n2", "default_severity": "HIGH"}}}}}
+
+    def _applied(self, raw_code):
+        """A finding after a verdict carrying `raw_code` is repaired and applied."""
+        verdict = validate_schema_mod.repair_verdict(
+            {"code": raw_code, "verdict": "CONFIRMED", "stage": "primary"},
+            warn=lambda _message: None)
+        finding = {"id": "SEC-1", "code": "SEC-A1A", "severity": "HIGH",
+                   "domain": "SEC"}
+        codes_mod.apply_verdict_quality([finding], {id(finding): verdict},
+                                        self.BUNDLE)
+        return finding
+
+    def test_no_repairable_shape_of_code_reaches_the_finding(self):
+        for raw in (["SEC-B2B"], ["SEC-B2B", "SEC-A1A"], 7, 7.5, True,
+                    {"code": "SEC-B2B"}, None, ""):
+            with self.subTest(raw=raw):
+                finding = self._applied(raw)
+                self.assertEqual("SEC-A1A", finding["code"])
+                self.assertNotIn("code_corrected_by", finding)
+                self.assertEqual("HIGH", finding["severity"])
+
+    def test_the_pin_is_not_vacuous_a_real_catalog_code_still_applies(self):
+        finding = self._applied("SEC-B2B")
+        self.assertEqual("SEC-B2B", finding["code"])
+        self.assertEqual("agent:advisor", finding["code_corrected_by"])
 
     def test_the_presentation_path_is_deliberately_not_guarded(self):
         # `derive_evidence` reads `reasoning` and the controller carrier: it is

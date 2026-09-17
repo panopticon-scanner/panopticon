@@ -10,9 +10,15 @@ import tempfile
 import tomllib
 
 import scripts.redact as redact
-from .base import cve_ids, make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
+from .base import (cve_ids, make_finding, normalize_severity, omit_none,
+                   parse_json_bytes, run_tool, target_root_cv)
 
 _manifest_path_cv = contextvars.ContextVar("pip_audit_manifest_path", default=None)
+
+# The last resort, for a caller that hands over bytes and NO tree (#1649).
+# Every real route names one: ingest through `target_root_cv`, the in-process
+# one through `invoke`.
+DEFAULT_MANIFEST = "requirements.txt"
 
 
 def _deps_from_pyproject(target: str) -> list[str] | None:
@@ -544,8 +550,37 @@ class PipAuditAdapter:
     def _find_requirement(self, target: str) -> str | None:
         return _requirement_candidate(target)[0]
 
+    def _located_at(self) -> str:
+        """The manifest this parse's findings are located at.
+
+        Two routes, because a real scan runs `invoke` and `parse` in DIFFERENT
+        PROCESSES (#1649): run_tools dispatches the adapter as
+        `docker run ... _run_adapter.py`, which only invokes, and `ingest_tools`
+        parses the captured bytes back on the host. `invoke`'s own choice is
+        used when the two share a process; otherwise the same choice is made
+        again from the target root ingest names around its parse -- and
+        repo-RELATIVE there, which is the shape `location.file` carries
+        everywhere downstream (the fixture prune and every exclude glob match
+        against it).
+        """
+        chosen = _manifest_path_cv.get()
+        if chosen:
+            return chosen
+        root = target_root_cv.get()
+        if not root:
+            return DEFAULT_MANIFEST
+        req = self._find_requirement(root)
+        if req:
+            return os.path.relpath(req, root)
+        # `invoke`'s other branch: no requirements file, audit the PEP 621 deps.
+        if os.path.isfile(os.path.join(root, "pyproject.toml")):
+            return "pyproject.toml"
+        return DEFAULT_MANIFEST
+
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)
+        # Resolved ONCE per parse, not per finding: it stats the target root.
+        manifest = self._located_at()
         out = []
         n = 1
         for dep in data.get("dependencies", []):
@@ -557,7 +592,7 @@ class PipAuditAdapter:
                     title=f"{dep_name} {dep_version}: {vuln.get('id', 'vulnerability')}".strip(),
                     severity=normalize_severity(vuln.get("severity") or "MEDIUM"),
                     category="dependency_vulnerability",
-                    location={"file": _manifest_path_cv.get() or "requirements.txt", "line_start": 1},
+                    location={"file": manifest, "line_start": 1},
                     description=vuln.get("description", "No description provided."),
                     impact=f"Vulnerable dependency {dep_name}=={dep_version} is used.",
                     remediation=f"Upgrade to a fixed version: {', '.join(vuln.get('fix_versions', [])) or 'see advisory'}",

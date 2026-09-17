@@ -52,10 +52,20 @@ class Ledger:
         `timing` (P07, #1636) is the runner's `{started_at, finished_at, duration_ms}`
         for this entry, measured around `run_entry` itself. The row GAINS two keys and
         loses none: every reader of the older shape -- `usage_document`'s
-        `phase`/`usage`, `total_cost`'s `cost_usd` -- reads exactly what it always did,
-        and `ts` still means when the LINE was written, which is now when the loop
-        persisted that one entry. `duration_ms` defaults from it too, rather than being
-        spelled twice at the call site, where the two could drift apart (F5).
+        `phase`/`usage`, `total_cost`'s `cost_usd` -- reads exactly what it always did.
+        `duration_ms` defaults from it too, rather than being spelled twice at the call
+        site, where the two could drift apart (F5).
+
+        `ts` comes from that SAME dict (#1685). It used to be its own
+        `time.gmtime()` read, and all three stamps are second-resolution ISO strings,
+        so two reads straddling a second boundary truncate to different seconds: CI
+        produced a row whose write time was one second EARLIER than the start of the
+        entry it records. Reading the loop's persist moment off a second clock bought
+        nothing -- the loop persists each entry as it arrives, so the entry's own
+        finish IS when the row is written, to the resolution the row carries -- and it
+        made an ordering the code never guaranteed look like one it did. A row with NO
+        timing (the interrupt's, from `rollback_rows`) still stamps the clock: there
+        the write time is the interrupt's own moment, which is the fact wanted.
 
         `status` and `rolled_back` (#1662) are the interrupt's. A Ctrl-C writes one
         row per entry of the batch it CUT -- `status: CANCELLED`, `rolled_back: true`,
@@ -74,7 +84,8 @@ class Ledger:
         message."""
         timing = timing or {}
         duration_ms = timing.get("duration_ms") if duration_ms is None else duration_ms
-        line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        line = {"ts": (timing.get("finished_at")
+                       or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
                 "entry_id": entry.get("id"), "checkpoint": checkpoint,
                 "phase": PHASE_OF_CHECKPOINT.get(checkpoint, "unattributed"),
                 "mode": mode, "host": host, "model": result.model,

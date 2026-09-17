@@ -57,7 +57,7 @@ def group_files_containing(review_root, rel_file):
         return []
     target = os.path.abspath(os.path.join(review_root, rel_file))
     for _name, files in _discovered_groups(review_root):
-        abs_files = [os.path.abspath(os.path.join(review_root, f)) for f in files]
+        abs_files = runio._abs_files(review_root, files)
         if target in abs_files:
             return abs_files
     return [target]
@@ -97,7 +97,7 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
     entry_id = "scout-%s" % group
     # raw paths, deliberately not _prompt_safe'd: the read guard matches them
     # byte-for-byte after realpath (spec 7.2); never paste them into a prompt.
-    abs_files = [os.path.abspath(os.path.join(review_root, f)) for f in files]
+    abs_files = runio._abs_files(review_root, files)
     entry = {"id": entry_id,
              "agent": dispatch.registered_agent_name("scout.md") if enforced else None,
              "enforced": enforced,

@@ -2,6 +2,7 @@
 committed groups and review-root resolution. The child-process helper moved to
 scripts.phases.child; its tests moved with it (tests/test_phases_child.py).
 """
+import ast
 import json
 import os
 import shutil
@@ -562,3 +563,87 @@ class TestRelinkConfinement(unittest.TestCase):
             runio._relink(os.path.join(runs, "latest"), "tag-1")
             self.assertEqual(os.readlink(os.path.join(runs, "latest")), "tag-1")
             self.assertEqual(os.listdir(runs), ["latest"])
+
+
+class TestOneAbsolutePathExpression(unittest.TestCase):
+    """#1607: the cell's absolute file list is written ONCE.
+
+    The resolution was inlined at four sites as
+    `[os.path.abspath(os.path.join(review_root, f)) for f in files]`, beside
+    `runio._abs_file_list`, which applies the same expression per line plus
+    `_prompt_safe`. The F4 tests assert the entry's `files` use "the same
+    resolution the prose list uses, so the two cannot name different trees" --
+    true by inspection, not by construction, and plan 3 prescribed the literal
+    expression against its own rule that no path expression is written twice
+    (the rule that came out of plan 2b's `args.groups` CRITICAL).
+
+    AST, never a text grep: this docstring writes the expression out, and a
+    text scan would flag it.
+    """
+
+    HOME = ("runio.py", "_abs_files")      # the one function allowed to spell it
+
+    def _tree(self, name):
+        path = os.path.join(os.path.dirname(runio.__file__), name)
+        with open(path, encoding="utf-8") as fh:
+            return ast.parse(fh.read(), path)
+
+    @staticmethod
+    def _is_abs_join_of_root(node):
+        """`os.path.abspath(os.path.join(review_root, <anything>))`."""
+        def attr(call, name):
+            return (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == name and call.args)
+        if not attr(node, "abspath"):
+            return False
+        inner = node.args[0]
+        return (attr(inner, "join") and isinstance(inner.args[0], ast.Name)
+                and inner.args[0].id == "review_root")
+
+    def _sites(self, name):
+        """`(function, lineno)` for every list comprehension of that shape."""
+        out = []
+        for func in ast.walk(self._tree(name)):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(func):
+                if isinstance(node, ast.ListComp) and self._is_abs_join_of_root(node.elt):
+                    out.append((func.name, node.lineno))
+        return out
+
+    def test_no_phase_module_spells_the_expression_itself(self):
+        offenders = []
+        for name in sorted(os.listdir(os.path.dirname(runio.__file__))):
+            if not name.endswith(".py"):
+                continue
+            offenders += ["%s:%s:%d" % (name, func, line)
+                          for func, line in self._sites(name)
+                          if (name, func) != self.HOME]
+        self.assertEqual([], offenders,
+                         "the cell abs-path resolution is inlined instead of "
+                         "calling runio._abs_files; a confinement primitive must "
+                         "match these byte-for-byte (spec 7.2), so a second "
+                         "spelling is a second answer:\n" + "\n".join(offenders))
+
+    def test_the_guard_is_not_vacuous(self):
+        # If _abs_files is renamed or stops being a comprehension, the scan
+        # above would pass over a tree that no longer has the shape at all.
+        self.assertEqual([self.HOME[1]],
+                         [func for func, _line in self._sites(self.HOME[0])])
+
+    def test_the_prose_list_and_the_entry_files_come_from_one_function(self):
+        # The issue's own check: patch the helper with a sentinel and see BOTH
+        # the prose the prompt carries and the entry's raw `files` change.
+        with mock.patch.object(runio, "_abs_files", return_value=["/sentinel.py"]):
+            prose = runio._abs_file_list("/repo", ["src/app.py"])
+        self.assertEqual("- /sentinel.py", prose)
+        for module, builder in ((coverage, "_scout_entry"), (review, "_cell_entry")):
+            with self.subTest(builder=builder):
+                source = ast.parse(open(module.__file__, encoding="utf-8").read())
+                calls = [n for f in ast.walk(source)
+                         if isinstance(f, ast.FunctionDef) and f.name == builder
+                         for n in ast.walk(f)
+                         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                         and n.func.attr in ("_abs_files", "_abs_file_list")]
+                self.assertEqual({"_abs_files", "_abs_file_list"},
+                                 {c.func.attr for c in calls})

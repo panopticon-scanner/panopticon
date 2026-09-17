@@ -14,7 +14,6 @@ import contextlib
 import functools
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -326,7 +325,14 @@ GH_CREATE_TIMEOUT = 60
 
 
 def _gh_bin():
-    return shutil.which("gh") or "gh"
+    """The same trusted resolution `scripts/triage.py` uses (#1650 R1).
+
+    This module CREATES public issues as the automation account, so resolving
+    its `gh` off the ambient PATH was the same CWE-427 shape triage was
+    hardened against -- and it left the odd halfway state of a built env
+    beside an unhardened argv[0] in the same `subprocess.run`.
+    """
+    return triage.gh_bin()
 
 
 def find_existing_issue(title, runner):

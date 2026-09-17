@@ -12,6 +12,7 @@ from unittest import mock
 import pytest
 
 from _test_helpers import FakePopen, first, only
+import scripts.ingest_tools as ingest_tools
 import scripts.tools.pip_audit as pa
 
 try:
@@ -126,11 +127,55 @@ class TestPipAuditAdapter(unittest.TestCase):
         finally:
             pa._manifest_path_cv.reset(token)
 
-    def test_parse_defaults_location_file_when_no_manifest(self):
+    def test_parse_defaults_location_file_when_nothing_names_a_tree(self):
+        # Last resort only -- see the ingest tests below for the route a real
+        # scan takes (#1649).
         adapter = pa.PipAuditAdapter()
         findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")
         self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["location"]["file"], "requirements.txt")
+        self.assertEqual(findings[0]["location"]["file"], pa.DEFAULT_MANIFEST)
+
+    # ---- the route a real scan actually takes (#1649) -----------------------
+    #
+    # `invoke` runs inside the tools container and `parse` on the host, so the
+    # manifest ContextVar `invoke` sets is gone by parse time and every
+    # production finding used to be located at a flat "requirements.txt" -- a
+    # file a pyproject-only or requirements-dev-only project does not have.
+
+    def _target(self, *names):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        for name in names:
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write("")
+        return d
+
+    def _ingested(self, target):
+        """The host half, through the real ingest: the container's bytes on
+        disk, `ingest_dir_detailed` over them, the target root named."""
+        tools_dir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tools_dir, ignore_errors=True))
+        with open(os.path.join(tools_dir, "pip-audit.json"), "wb") as fh:
+            fh.write(PIP_AUDIT_SAMPLE)
+        findings, _dispositions = ingest_tools.ingest_dir_detailed(
+            tools_dir, "g1", target_root=target)
+        return only(findings)["location"]["file"]
+
+    def test_a_host_side_ingest_locates_the_finding_at_the_manifest_in_the_tree(self):
+        # The glob fallback is what pip-audit would have audited here; the
+        # canonical requirements.txt is not in this tree at all.
+        target = self._target("requirements-dev.txt")
+        located = self._ingested(target)
+        self.assertEqual("requirements-dev.txt", located)
+        self.assertTrue(os.path.isfile(os.path.join(target, located)))
+
+    def test_a_pyproject_only_tree_is_located_at_its_pyproject(self):
+        target = self._target("pyproject.toml")
+        self.assertEqual("pyproject.toml", self._ingested(target))
+
+    def test_the_canonical_requirements_file_still_wins_when_present(self):
+        target = self._target("requirements.txt", "requirements-dev.txt")
+        self.assertEqual("requirements.txt", self._ingested(target))
 
     def test_manifest_path_is_per_invocation_not_singleton_state(self):
         # Regression: _manifest_path used to be stored on the singleton

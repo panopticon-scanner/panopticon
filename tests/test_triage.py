@@ -1,4 +1,4 @@
-import json, os, tempfile, unittest
+import json, os, shutil, tempfile, unittest
 from unittest import mock
 
 import pytest
@@ -304,13 +304,18 @@ class TestGhRetry(unittest.TestCase):
 
 
 class TestGhRealBoundary(unittest.TestCase):
-    """#run7 TST-A3A: every other gh test injects a fake runner. These two
-    exercises use an actual subprocess.run via default_gh_runner() with a
-    PATH-shimmed fake `gh` executable, so the integration boundary is exercised
-    end-to-end (argv construction, env inheritance, capture, timeout wiring)."""
+    """#run7 TST-A3A: every other gh test injects a fake runner. These
+    exercises use an actual subprocess.run via default_gh_runner() with a fake
+    `gh` executable, so the integration boundary is exercised end-to-end (argv
+    construction, env wiring, capture, timeout wiring).
 
-    def _make_fake_gh(self, tmpdir, script):
-        path = os.path.join(tmpdir, "gh")
+    #1650: the stub is found on the TRUSTED path, by absolute path -- never by
+    a directory prepended to the ambient PATH, which is the substitution this
+    module now refuses.
+    """
+
+    def _make_fake_gh(self, tmpdir, script, name="gh"):
+        path = os.path.join(tmpdir, name)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("#!/bin/sh\n%s\n" % script)
         os.chmod(path, 0o755)
@@ -319,19 +324,144 @@ class TestGhRealBoundary(unittest.TestCase):
     def test_default_runner_invokes_real_gh_process(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._make_fake_gh(tmpdir, 'echo "{\\"login\\":\\"fake-user\\"}"')
-            env_path = tmpdir + os.pathsep + os.environ.get("PATH", "")
-            with mock.patch.dict(os.environ, {"PATH": env_path}):
+            with mock.patch.object(triage, "TRUSTED_PATH", tmpdir):
                 result = triage.gh(["gh", "api", "user"])
             self.assertIn("fake-user", result)
 
     def test_default_runner_surfaces_nonzero_exit(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._make_fake_gh(tmpdir, 'echo "not found" >&2; exit 1')
-            env_path = tmpdir + os.pathsep + os.environ.get("PATH", "")
-            with mock.patch.dict(os.environ, {"PATH": env_path}):
+            with mock.patch.object(triage, "TRUSTED_PATH", tmpdir):
                 with self.assertRaises(RuntimeError) as ctx:
                     triage.gh(["gh", "issue", "view", "123"])
             self.assertIn("not found", str(ctx.exception))
+
+    # ---- #1650 / SEC-D1B / CWE-427 --------------------------------------
+    #
+    # `gh` here performs authenticated issue comments, edits, closures, label
+    # creation and milestone mutation as the automation account. Which binary
+    # that is may not be decided by whoever controls the ambient PATH.
+
+    def test_a_fake_gh_first_on_the_ambient_path_is_never_launched(self):
+        with tempfile.TemporaryDirectory() as trusted, \
+                tempfile.TemporaryDirectory() as hostile:
+            log = os.path.join(hostile, "launched.log")
+            self._make_fake_gh(hostile, 'echo launched >> "%s"; echo "{}"' % log)
+            self._make_fake_gh(trusted, 'echo "{\\"login\\":\\"trusted\\"}"')
+            ambient = hostile + os.pathsep + os.environ.get("PATH", "")
+            with mock.patch.object(triage, "TRUSTED_PATH", trusted), \
+                    mock.patch.dict(os.environ, {"PATH": ambient}):
+                result = triage.gh(["gh", "api", "user"])
+            self.assertIn("trusted", result)
+            self.assertFalse(os.path.exists(log),
+                             "the ambient PATH's `gh` was launched")
+
+    def test_the_resolved_gh_is_launched_by_absolute_path(self):
+        with tempfile.TemporaryDirectory() as trusted:
+            stub = self._make_fake_gh(trusted, 'echo ok')
+            with mock.patch.object(triage, "TRUSTED_PATH", trusted), \
+                    mock.patch.object(triage.subprocess, "run") as m:
+                m.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+                triage.gh(["gh", "api", "x"])
+        self.assertEqual([stub, "api", "x"], list(m.call_args.args[0]))
+
+    def test_a_gh_absent_from_the_trusted_path_refuses_with_a_clear_message(self):
+        with tempfile.TemporaryDirectory() as empty:
+            with mock.patch.object(triage, "TRUSTED_PATH", empty):
+                with self.assertRaises(RuntimeError) as ctx:
+                    triage.gh(["gh", "api", "user"])
+        self.assertIn("gh", str(ctx.exception))
+        self.assertIn(empty, str(ctx.exception))
+
+    def test_the_child_env_carries_only_what_gh_needs_to_pick_the_account(self):
+        # gh's OWN auth variables and nothing else. A hardened env that drops
+        # GH_CONFIG_DIR/GH_TOKEN picks the default credential -- the
+        # wrong-account incident #486 exists to prevent -- and one that copies
+        # os.environ hands an authenticated mutation whatever the shell carried.
+        with tempfile.TemporaryDirectory() as trusted, tempfile.TemporaryDirectory() as d:
+            self._make_fake_gh(trusted, 'echo ok')
+            cfg = os.path.join(d, "config.json")
+            with open(cfg, "w", encoding="utf-8") as fh:
+                json.dump({"gh_config_dir": d}, fh)
+            with mock.patch.object(triage, "TRUSTED_PATH", trusted), \
+                    mock.patch.object(triage, "CONFIG_PATH", cfg), \
+                    mock.patch.dict(os.environ, {"GH_TOKEN": "ambient-token",
+                                                 "AWS_SECRET_ACCESS_KEY": "nope"}), \
+                    mock.patch.object(triage.subprocess, "run") as m:
+                m.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
+                triage.gh(["gh", "api", "x"])
+                env = m.call_args.kwargs["env"]
+                # inside the patch: TRUSTED_PATH is the stub dir here
+                expected_path = triage.trusted_path(env["HOME"])
+        # A DECLARED directory names the account; gh lets an ambient GH_TOKEN
+        # override stored credentials, so carrying the token here would let
+        # the shell's account beat the declared one -- exactly the wrong-way
+        # precedence #486 is about. The token travels only when NO directory
+        # is in effect (next test).
+        self.assertEqual({"HOME", "PATH", "GH_CONFIG_DIR"}, set(env))
+        self.assertEqual(expected_path, env["PATH"])
+        self.assertEqual(d, env["GH_CONFIG_DIR"])
+
+    def test_an_ambient_token_travels_only_when_no_directory_names_the_account(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config.json")
+            with open(cfg, "w", encoding="utf-8") as fh:
+                json.dump({"gh_config_dir": None}, fh)     # the repo's own shape
+            if True:
+                with mock.patch.dict(os.environ, {"GH_TOKEN": "ambient-token"}, clear=False):
+                    os.environ.pop("GH_CONFIG_DIR", None)
+                    env = triage.gh_env(config_path=cfg)
+                    self.assertEqual("ambient-token", env["GH_TOKEN"])
+                    self.assertNotIn("GH_CONFIG_DIR", env)
+                with mock.patch.dict(os.environ, {"GH_TOKEN": "ambient-token",
+                                                  "GH_CONFIG_DIR": "/tmp/gh-x"}):
+                    env = triage.gh_env(config_path=cfg)
+                    self.assertEqual("/tmp/gh-x", env["GH_CONFIG_DIR"])
+                    self.assertNotIn("GH_TOKEN", env)
+
+    def test_an_empty_home_does_not_put_a_relative_dir_on_the_trusted_path(self):
+        # trusted_path("") would otherwise yield a CWD-relative `.local/bin`.
+        self.assertEqual(triage.TRUSTED_PATH, triage.trusted_path(""))
+
+    def test_the_operators_own_bin_dir_is_on_the_trusted_path(self):
+        # #1650 R1/M2: gh is commonly installed under ~/.local/bin (pip --user,
+        # a release tarball). Resolving only the four system directories made
+        # `triage.py apply` and reconcile_apply refuse outright on the owner's
+        # own workstation. It is still not PATH-controlled: both halves are
+        # fixed strings over a HOME this process chose.
+        # The system half is pinned to an EMPTY dir: CI runners ship a real
+        # /usr/bin/gh, which would (correctly) win and turn this into a test
+        # of the runner image.
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as empty:
+            local_bin = os.path.join(home, ".local", "bin")
+            os.makedirs(local_bin)
+            self._make_fake_gh(local_bin, 'echo ok')
+            with mock.patch.dict(os.environ, {"HOME": home}), \
+                    mock.patch.object(triage, "TRUSTED_PATH", empty):
+                self.assertEqual(os.path.join(local_bin, "gh"), triage.gh_bin())
+
+    def test_the_operators_bin_dir_is_searched_after_the_system_ones(self):
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as system:
+            local_bin = os.path.join(home, ".local", "bin")
+            os.makedirs(local_bin)
+            self._make_fake_gh(local_bin, 'echo local')
+            self._make_fake_gh(system, 'echo system')
+            with mock.patch.object(triage, "TRUSTED_PATH", system):
+                self.assertEqual(os.path.join(system, "gh"), triage.gh_bin(home))
+
+    def test_a_gh_only_on_the_ambient_path_is_still_not_resolved(self):
+        # The whole point of M2's widening is that it must not widen to PATH.
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as hostile, \
+                tempfile.TemporaryDirectory() as empty:
+            os.makedirs(os.path.join(home, ".local", "bin"))
+            self._make_fake_gh(hostile, 'echo hostile')
+            with mock.patch.dict(os.environ, {"HOME": home,
+                                              "PATH": hostile + os.pathsep
+                                              + os.environ.get("PATH", "")}), \
+                    mock.patch.object(triage, "TRUSTED_PATH", empty):
+                with self.assertRaises(RuntimeError):
+                    triage.gh_bin()
 
 
 class TestGhEnv(unittest.TestCase):
@@ -346,22 +476,69 @@ class TestGhEnv(unittest.TestCase):
         self.assertIsNotNone(env)
         self.assertEqual(env["GH_CONFIG_DIR"],
                          os.path.expanduser("~/gh-panopticon"))
-        self.assertIn("PATH", env)          # inherits the rest of the env
+        self.assertEqual(triage.trusted_path(env["HOME"]), env["PATH"])   # #1650, never ambient
 
-    def test_absent_config_or_field_inherits_ambient(self):
-        self.assertIsNone(triage.gh_env(config_path="/nonexistent/c.json"))
+    def _undeclared_configs(self):
+        """Every way the config can decline to name a directory."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        paths = ["/nonexistent/c.json"]
+        for name, body in (("no-field.json", {"other": 1}),
+                           ("null-field.json", {"gh_config_dir": None})):
+            path = os.path.join(d, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(body, fh)
+            paths.append(path)
+        return paths
+
+    def test_an_undeclared_config_carries_no_config_dir_when_none_is_ambient(self):
+        # #1650: no longer None-meaning-inherit. The env is always BUILT, so
+        # PATH cannot pass through; GH_CONFIG_DIR is simply absent when nothing
+        # names one.
+        for path in self._undeclared_configs():
+            with self.subTest(config=path):
+                with mock.patch.dict(os.environ, {}, clear=False) as _env:
+                    os.environ.pop("GH_CONFIG_DIR", None)
+                    env = triage.gh_env(config_path=path)
+                self.assertNotIn("GH_CONFIG_DIR", env)
+                self.assertEqual(triage.trusted_path(env["HOME"]), env["PATH"])
+
+    def test_an_undeclared_config_carries_the_ambient_config_dir_through(self):
+        # R1/M3. The repo's own .panopticon/config.json holds
+        # {"gh_config_dir": null}, so before the hardening an operator's
+        # GH_CONFIG_DIR=~/.config/gh-psyberone reached gh by inheritance.
+        # Building the env from scratch dropped it -- and gh with no
+        # GH_CONFIG_DIR uses $HOME/.config/gh, the DEFAULT credential, which is
+        # the wrong account for this project: the thebeamishsociety incident
+        # #486 exists to prevent, reintroduced by the hardening meant to
+        # protect it.
+        for path in self._undeclared_configs():
+            with self.subTest(config=path):
+                with mock.patch.dict(os.environ,
+                                     {"GH_CONFIG_DIR": "/tmp/ambient-gh-config"}):
+                    env = triage.gh_env(config_path=path)
+                self.assertEqual("/tmp/ambient-gh-config", env["GH_CONFIG_DIR"])
+
+    def test_a_declared_config_dir_beats_an_ambient_one(self):
         with tempfile.TemporaryDirectory() as d:
             cfg = os.path.join(d, "config.json")
-            with open(cfg, "w") as fh:
-                json.dump({"other": 1}, fh)
-            self.assertIsNone(triage.gh_env(config_path=cfg))
+            with open(cfg, "w", encoding="utf-8") as fh:
+                json.dump({"gh_config_dir": d}, fh)
+            with mock.patch.dict(os.environ,
+                                 {"GH_CONFIG_DIR": "/tmp/ambient-gh-config"}):
+                env = triage.gh_env(config_path=cfg)
+        self.assertEqual(d, env["GH_CONFIG_DIR"])
 
     def test_default_runner_carries_declared_env(self):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as trusted, tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(trusted, "gh"), "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\necho ok\n")
+            os.chmod(os.path.join(trusted, "gh"), 0o755)
             cfg = os.path.join(d, "config.json")
             with open(cfg, "w") as fh:
                 json.dump({"gh_config_dir": d}, fh)
-            with mock.patch.object(triage, "CONFIG_PATH", cfg), \
+            with mock.patch.object(triage, "TRUSTED_PATH", trusted), \
+                    mock.patch.object(triage, "CONFIG_PATH", cfg), \
                     mock.patch.object(triage.subprocess, "run") as m:
                 m.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
                 triage.gh(["gh", "api", "x"])

@@ -1,6 +1,7 @@
 """The claude family's probes: `scripts.probes.claude` (#1627 split these out
 of tests/test_host_probes.py; the tests themselves are unchanged)."""
 import contextlib
+import dataclasses
 import json
 import os
 import tempfile
@@ -120,8 +121,41 @@ class TestEntryModelBoundProbe(unittest.TestCase):
 
     def test_a_missing_registration_directory_is_unknown(self):
         nonexistent = os.path.join(tempfile.gettempdir(), "no-such-dir-%d" % os.getpid())
-        state, _by, _detail = claude_probes.probe_entry_model_bound("claude", nonexistent)
+        state, _by, detail = claude_probes.probe_entry_model_bound("claude", nonexistent)
         self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn(nonexistent, detail)
+
+    # ---- #1610: three cases, three sentences -------------------------------
+    #
+    # `probe_registered_shell_tools` splits "the registry row configures no
+    # directory" / "the directory is absent" / "the directory cannot be read";
+    # this probe collapsed the first two into the second's wording and had no
+    # third at all. The STATE is right in every case (unknown -- see this
+    # probe's docstring on why an absent directory is not this probe's
+    # refutation); only the sentence the operator reads was wrong.
+
+    def test_a_row_that_configures_no_directory_does_not_say_at_none(self):
+        rowless = dataclasses.replace(hosts.HOSTS["claude"], registration_dir=None)
+        with mock.patch.dict(hosts.HOSTS, {"claude": rowless}):
+            state, by, detail = claude_probes.probe_entry_model_bound("claude")
+        self.assertEqual((hosts.UNKNOWN, claude_probes.ENTRY_MODEL_BOUND), (state, by))
+        self.assertNotIn("None", detail)
+        self.assertIn("no registration directory", detail)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "root reads an unreadable directory anyway")
+    def test_an_unreadable_registration_directory_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._register_all(d)
+            os.chmod(d, 0o000)
+            try:
+                state, by, detail = claude_probes.probe_entry_model_bound("claude", d)
+            finally:
+                os.chmod(d, 0o700)
+        self.assertEqual((hosts.UNKNOWN, claude_probes.ENTRY_MODEL_BOUND), (state, by))
+        self.assertIn("cannot read %s" % d, detail)
+        # NOT the no-role sentence: the roles ARE registered, they could not be read
+        self.assertNotIn("no role is registered", detail)
 
     def test_a_partially_registered_host_is_proven_on_what_is_registered(self):
         # An unregistered role dispatches general-purpose and carries its model

@@ -145,14 +145,51 @@ class TestCodexToolPolicyMatchesTheBrokerSurface(unittest.TestCase):
                     self.assertNotIn(word, policy, word)
 
     def test_the_paragraph_follows_the_broker_tool_list(self):
+        # #1677: the paragraph is now the broker's tool list narrowed to what
+        # this ROLE grants, so the fixture moves both halves -- a broker tool
+        # no role's `tool_policy.allowed` maps to is not on the argv either,
+        # and naming it would be the drift this class exists to catch.
         fixture = [dict(codex_read_tools.TOOLS[0]),
                    {"name": "count_lines", "description": "Count lines in one granted file."}]
-        with mock.patch.object(codex_read_tools, "TOOLS", fixture):
+        grants = {"Read": "read_file", "Grep": "count_lines", "Glob": "list_files"}
+        with mock.patch.object(codex_read_tools, "TOOLS", fixture), \
+                mock.patch.object(dispatch, "CODEX_TOOL_FOR", grants):
             policy = self._policy()
         self.assertIn("`count_lines` (count lines in one granted file)", policy)
         self.assertIn("`read_file`", policy)          # the surviving tool stays
         self.assertNotIn("`search`", policy)          # a removed tool goes
+        self.assertNotIn("`list_files`", policy)      # granted, but not a broker tool
+
+    def test_a_role_granting_no_broker_tool_does_not_render_a_dangling_sentence(self):
+        # R1 minor (iii): narrowing by role introduced an empty case. No
+        # shipped role hits it (and such a role's `enabled_tools` would be
+        # empty too, which Codex rejects as an invalid transport), but a
+        # prompt must never ship "Your only tools are the ... MCP tools ."
+        meta, _body = dispatch.load_template("domain-panel.md")
+        nothing = dict(meta, tool_policy={"allowed": ["Write"],
+                                          "forbidden": ["Bash", "Read"]})
+        policy = dispatch._tool_policy_line(nothing, "codex")
+        self.assertEqual([], dispatch._codex_enabled_tools(nothing["tool_policy"]))
+        self.assertIn("no tools", policy)
+        self.assertNotIn("MCP tools .", policy)
+        self.assertIn("There is no shell.", policy)      # the rest still reads
+        for word in self.ABSENT:
+            self.assertNotIn(word, policy, word)
+
+    def test_a_narrowed_role_policy_narrows_the_paragraph(self):
+        # The prose was role-BLIND while the argv's `enabled_tools` narrows
+        # from the same `tool_policy.allowed`; every shipped role grants all
+        # three, so the two agreed by accident (#1677).
+        meta, _body = dispatch.load_template("domain-panel.md")
+        narrowed = dict(meta, tool_policy={"allowed": ["Read"],
+                                           "forbidden": ["Bash", "Grep", "Glob"]})
+        policy = dispatch._tool_policy_line(narrowed, "codex")
+        self.assertIn("`read_file`", policy)
+        self.assertNotIn("`search`", policy)
         self.assertNotIn("`list_files`", policy)
+        # and the argv's allowlist narrows through the same expression
+        self.assertEqual(["read_file"],
+                         dispatch._codex_enabled_tools(narrowed["tool_policy"]))
 
     def test_the_registered_charter_names_the_same_tools(self):
         # F1: `developer_instructions` carried a SECOND hand-written copy of
@@ -241,6 +278,47 @@ class TestRenderAdvisor(unittest.TestCase):
             self.assertIn("{code_context}", text)          # brace-safe: survives
             self.assertNotIn("{claim_json}", text)         # placeholder filled
             self.assertNotIn("---\nname:", text)           # frontmatter stripped
+
+    # ---- #1677: the prompt's tool policy follows the HOST ------------------
+
+    def _policy_section(self, text):
+        """The `## Tool policy` paragraph render_prompt appends, alone.
+
+        The advisor template's BODY also spells Read/Grep/Glob (it explains the
+        cell confinement in Claude's vocabulary); that prose is a separate
+        concern from the policy paragraph this issue is about, so the
+        assertions below read only the paragraph.
+        """
+        return text.split("## Tool policy", 1)[1]
+
+    def test_the_advisor_prompt_renders_the_codex_tool_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp)
+            written = dispatch.render_advisor_prompts(
+                qpath, os.path.join(tmp, "out"), host="codex")
+            with open(written[0], encoding="utf-8") as fh:
+                policy = self._policy_section(fh.read())
+        self.assertIn("panopticon_scope", policy)
+        self.assertIn("There is no shell.", policy)
+        for absent in ("Read", "Grep", "Glob"):
+            self.assertNotIn(absent, policy, absent)
+
+    def test_the_advisor_prompt_without_a_host_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp)
+            written = dispatch.render_advisor_prompts(qpath, os.path.join(tmp, "out"))
+            with open(written[0], encoding="utf-8") as fh:
+                policy = self._policy_section(fh.read())
+        self.assertIn("Your only tools are Read, Grep, Glob.", policy)
+
+    def test_the_cli_threads_its_host_into_the_advisor_prompts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            qpath = self._queue(tmp)
+            outdir = os.path.join(tmp, "out")
+            self.assertEqual(0, dispatch.main(
+                ["--render-advisor", qpath, "--out", outdir, "--host", "codex"]))
+            with open(os.path.join(outdir, self.QID_1 + ".md"), encoding="utf-8") as fh:
+                self.assertIn("panopticon_scope", self._policy_section(fh.read()))
 
     def test_malformed_queue_fails_fast(self):
         with tempfile.TemporaryDirectory() as tmp:
