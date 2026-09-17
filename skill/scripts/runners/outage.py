@@ -91,13 +91,23 @@ _HOST_ERROR_STATUS = re.compile(
     r"(?<![\w./-])%(st)s(?!\w)[\s:,;=()-]*(?:%(rs)s)"
     r"|(?:%(rs)s)[\s:,;=()-]*(?<![\w./-])%(st)s(?!\w)"
     % {"st": _STATUS, "rs": _alt(_REASONS)}, re.I)
-# The prefixes a CLI puts at the START of ITS OWN error rendering. How a family
-# tells the host's words from the agent's when both can arrive in ONE text
-# field: anchored at the start, so an agent that writes "API Error" inside a
-# findings body is not the host talking.
-CLI_ERROR_PREFIXES = ("api error", "invalid api key", "credit balance",
-                      "authentication error", "rate limit", "overloaded",
-                      "error: 4", "error: 5")
+# A CLI's own error FRAMING at the start of a text field. How a family tells
+# the host's words from the agent's when both can arrive in one field -- and
+# anchoring at the start is not enough on its own, because half of these are
+# also ordinary English sentence openings: "Rate limit exceeded responses are
+# not handled" and "Authentication error handling is missing in src/login.py"
+# are findings, not outages, and a gate that accepted them let the whole reply
+# through to the classifier (N1).
+#
+# So the prefix must be followed by the DELIMITER the CLI puts there -- a
+# colon, a middot, a dash, or the end of the line -- and the two prefixes that
+# are pure prose without one ("rate limit", "authentication error", "credit
+# balance") are gone: the renderings they were meant to catch are "Rate limit
+# reached ..." and "Your credit balance is too low", which never started with
+# them anyway, and both carry a status the classifier reads for itself.
+_CLI_ERROR = re.compile(
+    r"^(?:(?:api\s+)?error:\s*[45]\d\d(?!\w)"          # API Error: 403 ..., Error: 503 ...
+    r"|(?:api error|invalid api key|overloaded)(?=\s*(?:[:\u00b7,-]|$)))", re.I)
 
 
 def _surface(host_error):
@@ -152,11 +162,15 @@ def cli_error(text):
     For the one place a family cannot keep the two apart by structure: the
     Claude envelope's `result` string, which carries the agent's final message
     on a good turn and the CLI's `API Error: ...` line on a refused one. The
-    prefix is matched at the START of the stripped text, so a findings body
-    that quotes an error message anywhere inside it is not the host talking.
+    envelope's own `error` OBJECT is preferred wherever the CLI emits one; this
+    is the fallback, and it is deliberately the narrowest thing that still
+    recognises the four renderings the CLI really prints.
+
+    Matched at the START of the stripped text AND up to the delimiter that
+    follows it, so neither a findings body that quotes an error message inside
+    it nor one that OPENS with the same words is mistaken for the host (N1).
     """
-    head = (text or "").strip()
-    return text if head.lower().startswith(CLI_ERROR_PREFIXES) else None
+    return text if _CLI_ERROR.match((text or "").strip()) else None
 
 
 # #1623: the sentence a host-wide outage ends a run with. Two constants, the

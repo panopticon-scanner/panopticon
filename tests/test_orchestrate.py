@@ -19,6 +19,7 @@ import scripts.runners.batch as batch_mod
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
+import scripts.runners.claude as claude_runner
 import scripts.runners.outage as outage
 import scripts.write_guard_hook as write_guard_hook
 from conftest import docker_probe_runner, write_host_evidence
@@ -1584,6 +1585,32 @@ class TestAHostWideOutage(LoopCase):
             self.assertNotIn("sk-ant-api03-7f3c9d2e1a8b4c6d5e0f", status["message"])
             self.assertNotIn("hunter2", status["message"])
             self.assertIn("REDACTED", status["message"])
+
+    def test_an_agents_own_opening_words_do_not_stop_the_run(self):
+        # N1 at the loop, through the REAL claude envelope path: one verify
+        # cell whose reply opens with a finding about authentication. The
+        # provider said nothing, so the cap -- the only bound a verify entry
+        # has -- must still bite.
+        d, floor = self._repo()
+
+        class ClaudeOpener(FakeRunner):
+            OPENER = "Authentication error handling is missing in src/login.py"
+
+            def run_entry(self, entry, env):
+                if not entry["id"].startswith("verify-"):
+                    return super().run_entry(entry, env)
+                self.launched.append(entry["id"])
+                return claude_runner.Runner("claude").parse_envelope(
+                    entry["id"], json.dumps({"type": "result", "is_error": True,
+                                             "result": self.OPENER, "usage": {},
+                                             "session_id": "s"}), 0)
+
+        runner = ClaudeOpener()
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("3 consecutive launches", status["message"])
+        self.assertEqual(orchestrate.MAX_ENTRY_FAILURES,
+                         runner.launched.count("verify-app-SEC-primary"))
 
     def test_a_mixed_batch_charges_only_the_entry_class_failure(self):
         # The discriminator. Two verify cells in one batch: SEC gets the

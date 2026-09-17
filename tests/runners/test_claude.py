@@ -103,6 +103,27 @@ class TestEnvelope(unittest.TestCase):
         self.assertEqual(outage.HOST_FAILURE,
                          r.parse_envelope("e1", json.dumps(envelope), 0).failure_class)
 
+    def test_an_agents_own_opening_words_are_never_the_host(self):
+        # N1: `result` is the AGENT's reply, and the gate used to accept
+        # anything that merely STARTED with one of its prefixes -- so a review
+        # cell whose finding opens "Authentication error handling is missing"
+        # read as an auth outage, stopped the run, and took the per-entry cap
+        # off itself on the way (for a verify entry that cap is the ONLY bound).
+        r = claude_runner.Runner("claude")
+        import tests.runners.test_outage as outage_tests
+        for text in outage_tests.TestTheHostOutageClassifier.AGENT_OPENERS:
+            with self.subTest(text=text):
+                for envelope in (dict(ENVELOPE, is_error=True, result=text),
+                                 dict(ENVELOPE, result=text)):
+                    res = r.parse_envelope("e1", json.dumps(envelope), 1)
+                    self.assertIsNone(res.host_error)
+                    self.assertEqual(outage.ENTRY_FAILURE, res.failure_class)
+        for text in outage_tests.TestTheHostOutageClassifier.CLI_ERRORS:
+            with self.subTest(text=text):
+                res = r.parse_envelope("e1", json.dumps(
+                    dict(ENVELOPE, is_error=True, result=text)), 0)
+                self.assertEqual(outage.HOST_FAILURE, res.failure_class)
+
     def test_is_error_and_nonzero_exit_and_non_json_are_failures(self):
         r = claude_runner.Runner("claude")
         bad = dict(ENVELOPE, is_error=True, result="quota exhausted")

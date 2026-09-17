@@ -133,11 +133,44 @@ class TestTheHostOutageClassifier(unittest.TestCase):
                              model=None, session_id=None, denials=[], error=None)
         self.assertEqual(outage.ENTRY_FAILURE, res.failure_class)
 
+    # The CLI's own error renderings, which this gate exists to let through.
+    CLI_ERRORS = (
+        "API Error: 403 Forbidden",
+        'API Error: 401 {"type":"authentication_error"}',
+        "API Error: 429 Too Many Requests",
+        "Invalid API key - please run /login",
+        "Invalid API key \u00b7 Please run /login",
+        "Overloaded",
+        "Error: 503 Service Unavailable",
+    )
+    # ...and the AGENT's own opening words, which it must not. Every one of
+    # these is a plausible first sentence of a review cell's reply, and every
+    # one of them started with a prefix the gate used to accept on sight --
+    # after which the anchored classifier ran over the WHOLE reply, so any
+    # outage vocabulary anywhere in it flipped the class.
+    AGENT_OPENERS = (
+        "API Error responses leak stack traces; the 429 Too Many Requests branch "
+        "returns the upstream body verbatim",
+        "Authentication error handling is missing in src/login.py",
+        "Rate limit exceeded responses are not handled",
+        "Overloaded __eq__ hides the 403 Forbidden check",
+        "Invalid API key handling: the 401 Unauthorized path logs the key",
+        "Credit balance is too low is rendered to the user verbatim",
+    )
+
     def test_the_cli_error_reader_takes_only_the_clis_own_rendering(self):
         # How a family tells the host's words from the agent's inside ONE text
-        # field: the CLI's error prefix, anchored at the start.
-        self.assertEqual("API Error: 403 Forbidden",
-                         outage.cli_error("API Error: 403 Forbidden"))
+        # field. The prefix must be followed by the DELIMITER a CLI actually
+        # emits -- a colon, a middot, a dash, or the end of the line -- never
+        # by more prose, or the gate is just a list of English sentence
+        # openings.
+        for text in self.CLI_ERRORS:
+            with self.subTest(text=text):
+                self.assertEqual(text, outage.cli_error(text))
+                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(outage.cli_error(text)))
+        for text in self.AGENT_OPENERS:
+            with self.subTest(text=text):
+                self.assertIsNone(outage.cli_error(text))
         self.assertIsNone(outage.cli_error(
             '{"findings": [{"title": "API Error: 403 Forbidden is not handled"}]}'))
         self.assertIsNone(outage.cli_error(""))
