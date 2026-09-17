@@ -5,6 +5,7 @@ unsplittable monolith from 5.0 until then.
 """
 import contextlib
 import dataclasses
+import decimal
 import glob as _glob
 import io
 import json
@@ -1869,6 +1870,22 @@ class TestDriverLoopCLI(unittest.TestCase):
         # is what made `driver loop --host generic` an error instead of the
         # documented degrade to session mode.
         self.assertIsNone(driver.build_parser().parse_args(["loop", "x"]).mode)
+
+    def test_max_budget_usd_refuses_a_non_finite_or_negative_amount(self):
+        # #1648: `type=float` accepted `nan`, `inf` and `-1`. A NaN budget made
+        # every `spent >= budget` comparison False -- the gate was off and said
+        # nothing -- and a negative one stopped the run before it began.
+        for text in ("nan", "NaN", "inf", "-inf", "Infinity", "-1", "-0.01", "abc"):
+            with self.subTest(text=text), self.assertRaises(SystemExit), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                driver.build_parser().parse_args(["loop", "x", "--max-budget-usd", text])
+
+    def test_max_budget_usd_is_parsed_once_as_an_exact_decimal(self):
+        args = driver.build_parser().parse_args(["loop", "x", "--max-budget-usd", "0.1"])
+        self.assertEqual(decimal.Decimal("0.1"), args.max_budget_usd)
+        # ...exactly, which is the whole point: eight of these reach $0.80 and
+        # eight floats do not (0.7999999999999999).
+        self.assertEqual(decimal.Decimal("0.8"), args.max_budget_usd * 8)
 
     def test_no_loop_only_flag_is_an_anti_drift_key(self):
         # M15 (plan 6 final review): spec 4.3/5.4 -- the loop's own knobs say

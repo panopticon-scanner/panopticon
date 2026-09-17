@@ -7,13 +7,13 @@ guards down, and call driver.run again. The engine's done predicates are the onl
 forward (O2); a runner's claim advances nothing.
 """
 import contextlib
-import json
 import os
 import sys
 import time
 
 import scripts.driver as driver
 import scripts.hosts as hosts
+import scripts.money as money
 import scripts.phases.engine as engine
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
@@ -141,26 +141,66 @@ class Ledger:
                 "session_id": result.session_id, "denials": result.denials,
                 "rejected_file": rejected_file,
                 "error": refusal if refusal is not None else result.error}
+        # #1648: `money.ledger_text` is this file's only writer. A non-finite cost
+        # is dropped to null INTO THE ROW (its `error` says so) and never reaches
+        # disk: `json.dumps` emits a bare `NaN` token that the decoder then
+        # accepts, which is how a poisoned cost reached the budget comparison.
+        text, note = money.ledger_text(line)
+        if note:
+            print("driver loop: %s: %s" % (line.get("entry_id"), note),
+                  file=sys.stderr, flush=True)
         # #1095, plan 6 review round 1: the ledger path is a `.panopticon`
         # artifact like any other; a plain `open(path, "a")` bypasses the
         # symlink confinement every other run-folder write goes through.
         with runio._open_a_nofollow(self.path) as fh:
-            fh.write(json.dumps(line, sort_keys=True) + "\n")
+            fh.write(text + "\n")
 
-    def lines(self):
+    def _rows(self):
+        """`(line_no, row, reason)` per ledger line (money.read_rows).
+
+        An ABSENT ledger is not an error: a run that launched nothing spent
+        nothing. A ledger that is THERE and cannot be opened is the opposite --
+        "nothing spent" is the one answer that is certainly wrong -- so it
+        becomes a file-level fault at line 0 (fix round 1, M2): `total_cost`
+        refuses the run over it, `lines()` still answers `[]`, and
+        `usage_document` counts it as the one corrupt row it is."""
         try:
             with open(self.path, encoding="utf-8") as fh:
-                return [json.loads(x) for x in fh if x.strip()]
-        except (OSError, ValueError):
+                return list(money.read_rows(fh))
+        except FileNotFoundError:
             return []
+        except OSError as exc:
+            return [(0, None, "ledger unreadable: %s" % exc)]
+
+    def lines(self):
+        """Every row that could be read, SILENTLY DROPPING the rest -- for the
+        readers that want the launches, not the money. Any reader of the cost
+        must go through `_rows()` (via `total_cost`/`money.cost_fault`), which
+        reports what this one discards.
+
+        #1648: the old whole-file `except ValueError` was intolerant instead --
+        ONE unreadable line returned `[]` and blanked the ledger for everyone."""
+        return [row for _line_no, row, _reason in self._rows() if row is not None]
 
     def total_cost(self):
-        return sum(float(row.get("cost_usd") or 0) for row in self.lines())
+        """The cumulative reported cost, exactly (#1648): `Decimal`, never `float`
+        -- three ledgered $0.15 rows are $0.45, and the float sum of them is
+        0.44999999999999996, one paid entry short of a $0.45 budget. Raises
+        `money.LedgerCorrupt` rather than summing past a line it cannot read."""
+        return money.sum_costs(self._rows())
 
     def usage_document(self):
         by_phase = {p: 0 for p in ("scout", "review", "verify", "unattributed")}
         by_field = {k: 0 for k in USAGE_FIELDS}
-        for row in self.lines():
+        corrupt = 0
+        for _line_no, row, reason in self._rows():
+            # #1648: tokens are not dollars. A row whose MONEY is unreadable still
+            # records tokens that were really spent, so they are counted and the
+            # document says how many such rows it read -- where `total_cost`, over
+            # those very same rows, refuses the run.
+            corrupt += 1 if money.cost_fault(row, reason) else 0
+            if row is None:
+                continue
             # M2: a FAILED launch counts too. `claude -p` reports usage on an is_error envelope
             # exactly as it does on success, and those tokens were really spent -- a timed-out or
             # errored entry is often the most expensive one in a run. Skipping them made
@@ -173,6 +213,7 @@ class Ledger:
                 by_field[k] += int(usage.get(k, 0) or 0)
         return {"schema_version": 1, "total": sum(by_phase.values()), "by_phase": by_phase,
                 "by_field": by_field, "source": runners_base.LEDGER_FILE,
+                "corrupt_rows": corrupt,
                 "definition": "every token the host's envelope reported for each entry "
                               "launch, failed launches included, summed over the four "
                               "usage fields"}
@@ -258,6 +299,15 @@ def loop(args):
     """spec 4.3. Returns the final status dict; never exits (the CLI owns exit)."""
     max_iterations = getattr(args, "max_iterations", None) or DEFAULT_MAX_ITERATIONS
     budget = getattr(args, "max_budget_usd", None)
+    # #1648: the CLI already refused a non-finite or negative budget
+    # (money.budget_arg), so this re-read is for the OTHER caller -- the hand-built
+    # args every loop test and any embedder passes. Refused, never defaulted: a
+    # budget nothing can be compared against is the gate silently off.
+    if budget is not None:
+        budget, given = money._money(budget), budget
+        if budget is None or budget < 0:
+            return _status("error", "driver loop: --max-budget-usd %r is not a finite, "
+                           "non-negative dollar amount" % (given,))
     namespace = "setup" if getattr(args, "setup", False) else None
     guards = ledger = None
     # R-P6-6: review_root resolved ONCE, up front -- BEFORE `_first_run` below calls
@@ -431,11 +481,25 @@ def loop(args):
                                        "completing; still pending: %s"
                                        % (max_iterations, pending_ids)),
                                args, guards, ledger, namespace, mode, runner)
-            if budget is not None and ledger.total_cost() >= float(budget):
-                return _finish(_status("error", "driver loop: --max-budget-usd %s reached; "
-                                       "ledger at %s; still pending: %s"
-                                       % (budget, ledger.path, pending_ids)),
-                               args, guards, ledger, namespace, mode, runner)
+            if budget is not None:
+                # #1648: exact, and fail-CLOSED. `total_cost` raises rather than
+                # summing past a ledger line it cannot read as money -- the old
+                # float sum swallowed a NaN cost, and `NaN >= budget` is False,
+                # so the gate went quiet and the loop kept launching paid entries.
+                try:
+                    spent = ledger.total_cost()
+                except money.LedgerCorrupt as exc:
+                    return _finish(_status("error", "driver loop: %s; refusing to spend past "
+                                           "an unreadable cost; ledger at %s; still pending: %s"
+                                           "; delete or repair that line, or re-run with "
+                                           "`--reset`"
+                                           % (exc, ledger.path, pending_ids)),
+                                   args, guards, ledger, namespace, mode, runner)
+                if spent >= budget:
+                    return _finish(_status("error", "driver loop: --max-budget-usd %s reached; "
+                                           "ledger at %s; still pending: %s"
+                                           % (budget, ledger.path, pending_ids)),
+                                   args, guards, ledger, namespace, mode, runner)
             stuck = [e for e in pending
                      if failures.get(e.get("id"), 0) >= MAX_ENTRY_FAILURES]
             if stuck:

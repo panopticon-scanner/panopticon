@@ -126,6 +126,15 @@ groups:
     Core:
       match:
       - skill/scripts/dispatch.py
+      # #1648: the exact-money vocabulary the ledger and the `--max-budget-usd`
+      # gate read (`orchestrate.Ledger` is the only caller). It belongs beside
+      # orchestrate.py in `Phases`, which is FULL at 48/48 -- a 49th file
+      # chunks that leaf into `Orchestration:Phases_1`, a name the matrix has
+      # no entry for, and the cell is then reviewed with an empty test
+      # inventory (the #1638 P13 defect). Same reasoning as the two parking
+      # notes in `Phases` above, pointing the other way; it moves back when
+      # the Phases split lands.
+      - skill/scripts/money.py
       - skill/scripts/group_runner.py
       - skill/scripts/model_resolver.py
       - skill/scripts/run_manifest.py
@@ -137,6 +146,7 @@ groups:
       tests:
       - tests/test_dispatch.py
       - tests/test_dispatch_request.py
+      - tests/test_money.py
       - tests/test_group_runner.py
       - tests/test_group_runner_integration.py
       - tests/test_model_resolver.py
