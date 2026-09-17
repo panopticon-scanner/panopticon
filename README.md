@@ -8,11 +8,13 @@ Panopticon profiles a target codebase, groups files by risk, dispatches speciali
 
 The skill uses the open `SKILL.md` format and works with:
 
-- Native Agent-tool host — first-class: parallel fan-out via the Agent tool
-- `kimi` / `codex` CLIs — **rebuilding for 5.2**: their 4.x fan-out
-  adapters were retired with the `panel_review`/`lens_sweep` roles the 5.x
-  driver no longer dispatches. `--emit-host-agents kimi|codex` still
-  registers the 5.x enforcement shells; the execution adapters return in 5.2.
+- `claude` — native Agent-tool host, first-class: parallel fan-out via the Agent tool
+- `codex` / `kimi` — enforced headless runners: `driver loop --host codex|kimi`
+  drives every reviewer through a registered, tool-restricted shell (see
+  `docs/PANOPTICON.md`, "Driver run-loop")
+- `generic` — the sequential session-mode fallback for any host with no
+  headless runner; `gemini` is registered but retired as a selectable host
+  (use `--host generic` instead)
 - Other agents that read `SKILL.md` files — degraded: sequential dispatch, same prompts
 
 ## Installation
@@ -38,6 +40,15 @@ Then invoke it with:
 ```bash
 kimi /panopticon
 ```
+
+Or drive the enforced headless runner directly:
+
+```bash
+python3 skill/scripts/driver.py loop <target> --host kimi --mode headless
+```
+
+See `docs/PANOPTICON.md`, "Driver run-loop", for Kimi's headless contract
+(per-run credential home, read/write guards, MCP disabled in that home).
 
 ### Claude Code
 
@@ -66,12 +77,18 @@ ln -s "$(pwd)/skill" ~/.agents/skills/panopticon
 python3 skill/scripts/dispatch.py --emit-host-agents codex
 ```
 
-Invoke it with `$panopticon` or select it from `/skills`. This registers Codex's
-read-only role profiles for the 5.x roles. **The Codex execution adapter is being
-rebuilt for 5.2** — `codex_runner.py` drove the retired 4.x `panel_review`/
-`lens_sweep` roles and was removed with them. Until then, drive a Codex session
-through `driver loop --mode session --host generic` (see `docs/PANOPTICON.md`,
-"Modes" and "Driver run-loop").
+Invoke it with `$panopticon` or select it from `/skills`, or drive the enforced
+headless runner directly:
+
+```bash
+python3 skill/scripts/driver.py loop <target> --host codex --mode headless
+```
+
+Codex runs **enforced-only** — every reviewer entry launches through the shell
+registered above, with no unenforced fallback the way there is on Claude. See
+`docs/PANOPTICON.md`, "Modes" and "Driver run-loop", for the full contract and
+for `--mode session` — the fallback for hosts with no headless runner, not the
+instruction for Codex.
 
 ### Python Package / CLI (Development & Direct Use)
 

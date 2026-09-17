@@ -648,6 +648,37 @@ class TestReadmeQuickStart(unittest.TestCase):
             self.assertIn(flag, qs, flag)
 
 
+class TestReadmeHostAccounts(unittest.TestCase):
+    """#1573: README's "Supported agent platforms" bullet and its Codex
+    install section both said the Codex/Kimi execution adapters were
+    "rebuilding for 5.2" and sent Codex users to generic session mode --
+    while docs/PANOPTICON.md and skill/SKILL.md already documented Codex's
+    and Kimi's enforced headless runners as shipped (#1619/#1620). Three
+    documents, incompatible accounts of the same execution path, and README
+    was the stale one (run-13 COD-3215020638). Pin the fix at the door: every
+    driver-selectable host is named in the platform list, and the
+    already-shipped-adapter phrasing cannot drift back in unnoticed."""
+
+    def setUp(self):
+        with open(os.path.join(ROOT, os.pardir, "README.md"), encoding="utf-8") as fh:
+            self.raw = fh.read()
+        # Fold line-wrapped prose to one line before substring checks: a bold
+        # span split across a markdown line wrap (`is being\nrebuilt for
+        # 5.2`) must still be caught.
+        self.normalized = re.sub(r"\s+", " ", self.raw)
+
+    def test_names_every_driver_selectable_host(self):
+        platforms = _section(self.raw, "## Supported agent platforms", "## Installation")
+        for host in hosts.driver_hosts():
+            self.assertIn(host, platforms,
+                          "README's platform list omits driver host %r" % host)
+
+    def test_no_stale_adapter_rebuild_language(self):
+        for phrase in ("rebuilding for 5.2", "being rebuilt for 5.2",
+                       "execution adapters return"):
+            self.assertNotIn(phrase, self.normalized, phrase)
+
+
 class TestDeltaDocs(unittest.TestCase):
     """#449: SKILL.md and README must describe the shipped delta-review
     behavior (base resolution, the diff-hunks.json artifact, and the
@@ -800,13 +831,14 @@ class TestInstalledFlowDocs(unittest.TestCase):
 
 class TestCodexHostDocs(unittest.TestCase):
     """4.3.0's per-host Codex fan-out (`codex_runner.py`/`--advisor-queue`/
-    `--advisor-model`) was manual-pipeline-only. `driver run --host` accepts
-    only claude|generic today -- Codex isn't yet a first-class driver host,
-    so it falls back to the generic/portable path; dispatch.py's legacy shell
-    registration still covers it (`--emit-host-agents codex`, still true, is
-    what this re-anchors to instead of the retired fan-out mechanism)."""
+    `--advisor-model`) was manual-pipeline-only and was retired with the
+    roles it dispatched. Codex and Kimi are first-class headless driver
+    hosts since #1619/#1620 (`driver loop --host codex|kimi`); the skill's
+    own front matter still has to name them, name `generic` as the session
+    fallback, and keep the `--emit-host-agents` registration step that
+    every family shares (#1573 pins the README half of the same account)."""
 
-    def test_codex_documented_as_generic_fallback_with_legacy_registration(self):
+    def test_codex_and_kimi_named_alongside_the_generic_fallback_and_registration(self):
         skill = _read_doc()
         self.assertIn("--emit-host-agents", skill)
         self.assertIn("codex", skill.lower())
