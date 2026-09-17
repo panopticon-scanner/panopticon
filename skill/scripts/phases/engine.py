@@ -99,6 +99,12 @@ def run_engine(review_root, manifest, phases, max_steps=None):
 
 def emit_status(status, stream=None):
     """Print the status JSON and return the process exit code: 0 for
-    checkpoint/complete, 1 for error. The CLI does `sys.exit(emit_status(...))`."""
+    checkpoint/complete, 1 for error. The CLI does `sys.exit(emit_status(...))`.
+
+    #1623: `paused` exits non-zero too. A host-wide outage stops the run with
+    the review unfinished, and the one reading that CANNOT be allowed is a CI
+    job going green over an empty review axis -- which is the failure the
+    paused status exists to prevent, not one to re-introduce at the exit code.
+    """
     (stream or sys.stdout).write(json.dumps(status) + "\n")
-    return 1 if status.get("status") == "error" else 0
+    return 1 if status.get("status") in ("error", "paused") else 0

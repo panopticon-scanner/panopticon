@@ -200,6 +200,26 @@ class LoopCase(unittest.TestCase):
             fh.write("{}")
         return s
 
+    def _run_loop(self, d, floor, runner, *extra, probes=None, seed=True):
+        """One whole `driver loop` against `runner`, with the engine's own
+        phases real. `seed=False` is the RESUME shape: coverage is already on
+        disk, so the second driver.run the seam exists for would only re-charge
+        the review checkpoint's per-cell attempt marker (see
+        `_after_first_run`)."""
+        args = self._args(d, *extra)
+        with contextlib.ExitStack() as es:
+            if probes is not None:
+                es.enter_context(mock.patch("scripts.host_probes.run_probes",
+                                            side_effect=probes))
+            es.enter_context(mock.patch.object(
+                orchestrate, "_after_first_run",
+                side_effect=lambda rr: seed and self._seed_coverage(rr, floor)))
+            es.enter_context(mock.patch("scripts.runners.base.runner_for",
+                                        return_value=runner))
+            es.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            es.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            return orchestrate.loop(args)
+
     def _seed_coverage(self, d, floor):
         # discovery/coverage would dispatch a scout; seed coverage so the first
         # checkpoint is review (the scout path is covered by TestScoutRoundTrip).
@@ -1275,21 +1295,6 @@ class TestPerEntryFailureCap(LoopCase):
     at `--max-iterations 12`.
     """
 
-    def _run_loop(self, d, floor, runner, *extra, probes=None):
-        args = self._args(d, *extra)
-        with contextlib.ExitStack() as es:
-            if probes is not None:
-                es.enter_context(mock.patch("scripts.host_probes.run_probes",
-                                            side_effect=probes))
-            es.enter_context(mock.patch.object(
-                orchestrate, "_after_first_run",
-                side_effect=lambda rr: self._seed_coverage(rr, floor)))
-            es.enter_context(mock.patch("scripts.runners.base.runner_for",
-                                        return_value=runner))
-            es.enter_context(contextlib.redirect_stdout(io.StringIO()))
-            es.enter_context(contextlib.redirect_stderr(io.StringIO()))
-            return orchestrate.loop(args)
-
     def test_a_chronically_refused_reply_stops_at_the_cap(self):
         d, floor = self._repo()
 
@@ -1389,6 +1394,100 @@ class TestPerEntryFailureCap(LoopCase):
         self.assertEqual(runner.launched.count("verify-app-SEC-primary"),
                          orchestrate.MAX_ENTRY_FAILURES)
         self.assertIn("verify-app-SEC-primary", status["message"])
+        self.assertIn("3 consecutive launches", status["message"])
+        self.assertIn("last: always", status["message"])
+
+
+class TestAHostWideOutage(LoopCase):
+    """#1623: a host-wide outage is not the entry's failure.
+
+    The Kimi evidence run: 243 of 247 launches came back with ONE 403, the
+    loop charged every one of them to whichever entry was holding it, and
+    three iterations therefore spent every pending cell's attempt budget. The
+    run then ended `complete` -- with an empty review axis and a report that
+    looked like a review had happened.
+    """
+
+    FLOOR = ("SEC", "ACC", "ARC", "TST")
+
+    class Outage(FakeRunner):
+        """Every launch comes back with the host's own auth refusal, in the
+        shape a family composes for a non-zero exit."""
+
+        ERROR = "claude -p exited 1: API Error: 403 Forbidden"
+
+        def run_entry(self, entry, env):
+            self.launched.append(entry["id"])
+            return base.RunResult.failed(entry["id"], self.ERROR)
+
+    def test_a_batch_that_is_all_host_failures_pauses_instead_of_charging_the_cells(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Outage()
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual("paused", status["status"], status)
+        # ONE iteration, one launch per cell: the run stops at the outage
+        # instead of spending two more iterations proving the host is still out.
+        self.assertEqual(sorted(["review-app-%s" % x for x in self.FLOOR]),
+                         sorted(runner.launched))
+        # ...and nothing downstream ran, so there is no report claiming a review
+        self.assertFalse(os.path.exists(runio._pano(d, "report.json")))
+
+    def test_the_pause_names_the_host_the_class_the_count_and_the_way_back(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        status = self._run_loop(d, floor, self.Outage())
+        message = status["message"]
+        self.assertIn("claude", message)                      # the host
+        self.assertIn(base.HOST_FAILURE, message)             # the failure class
+        self.assertIn("4", message)                           # how many launches it took down
+        self.assertIn("403 Forbidden", message)               # what the host actually said
+        self.assertIn("driver.py loop", message)              # the exact resume command
+        self.assertIn("--host claude", message)
+
+    def test_a_paused_run_still_ledgers_every_failed_launch(self):
+        # Nothing is rolled back -- nothing was written -- so the evidence of
+        # the outage stays exactly where the operator will look for it.
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Outage()
+        self._run_loop(d, floor, runner)
+        rows = ledger_mod.Ledger(runner.run_dir).lines()
+        self.assertEqual(4, len(rows))
+        for row in rows:
+            self.assertFalse(row["ok"], row)
+            self.assertIn("403", row["error"])
+
+    def test_the_paused_run_resumes_and_re_dispatches_every_cell(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        self.assertEqual("paused", self._run_loop(d, floor, self.Outage())["status"])
+        healthy = FakeRunner()
+        status = self._run_loop(d, floor, healthy, seed=False)
+        self.assertEqual("complete", status["status"], status)
+        self.assertEqual(sorted(["review-app-%s" % x for x in self.FLOOR]),
+                         sorted(x for x in healthy.launched if x.startswith("review-")))
+        report = runio._load_json(runio._pano(d, "report.json"))
+        self.assertNotEqual("INCONCLUSIVE", report["summary"]["gate"])
+
+    def test_a_mixed_batch_charges_only_the_entry_class_failure(self):
+        # The discriminator. Two verify cells in one batch: SEC gets the
+        # host's 403 every time, ACC gets a failure of its own. Before #1623
+        # both streaks ran up together and the cap tripped on SEC, the entry
+        # that had done nothing wrong; now only ACC is ever charged, and SEC
+        # -- which the host never let run -- is never capped.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+
+        class MixedVerify(FakeRunner):
+            def run_entry(self, entry, env):
+                if not entry["id"].startswith("verify-"):
+                    return super().run_entry(entry, env)
+                self.launched.append(entry["id"])
+                return base.RunResult.failed(
+                    entry["id"], "claude -p exited 1: API Error: 403 Forbidden"
+                    if "-SEC-" in entry["id"] else "always")
+
+        runner = MixedVerify()
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("verify-app-ACC-primary", status["message"])
+        self.assertNotIn("verify-app-SEC-primary", status["message"])
         self.assertIn("3 consecutive launches", status["message"])
         self.assertIn("last: always", status["message"])
 

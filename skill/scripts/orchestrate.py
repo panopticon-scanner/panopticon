@@ -312,17 +312,10 @@ def loop(args):
     if _after_first_run(review_root):
         status = _run(args, namespace)                # re-derive after the seam
     iterations = 0
-    # Consecutive failed launches per entry id, and that entry's last failure message (fix round
-    # 2). A launch the runner failed and a reply persist refused both count: neither advanced the
-    # entry, and neither gets likelier on the fortieth attempt. A clean, accepted launch clears
-    # the streak -- this bounds an entry that is STUCK, not one that is merely flaky.
-    #
-    # In memory, and per INVOCATION. In session mode that means a re-entry starts every entry at
-    # zero, deliberately: nothing there advances except a human persisting a reply that passes the
-    # phase's own done predicate, so the disk-evidence gate already bounds it -- there is no
-    # runaway to cap, and a streak that survived across invocations would refuse an operator their
-    # fourth honest attempt at a cell.
-    failures, last_error = {}, {}
+    # The per-entry failure streaks, and (#1623) the verdict on whether a whole batch was
+    # really the HOST going down. `runners_base.FailureTally` documents both, and owns them
+    # because the classification it reads is the runner seam's.
+    tally = runners_base.FailureTally(host, args)
     done, total = 0, 0        # this batch's progress, read by the handlers below
     # #1662: what a Ctrl-C has to take back. Bound BEFORE the try, because the
     # interrupt can land before the first batch ever opens one.
@@ -395,14 +388,10 @@ def loop(args):
                                            "ledger at %s; still pending: %s"
                                            % (budget, ledger.path, pending_ids)),
                                    args, guards, ledger, namespace, mode, runner)
-            stuck = [e for e in pending
-                     if failures.get(e.get("id"), 0) >= MAX_ENTRY_FAILURES]
+            stuck = tally.exhausted(pending, MAX_ENTRY_FAILURES)
             if stuck:
-                eid = stuck[0].get("id")
-                return _finish(_status("error", "driver loop: entry %s failed %d consecutive "
-                                       "launches; last: %s"
-                                       % (eid, failures[eid], last_error.get(eid))),
-                               args, guards, ledger, namespace, mode, runner)
+                return _finish(_status("error", stuck), args, guards, ledger,
+                               namespace, mode, runner)
             guards.arm(pending)
             if mode == "session":
                 # Branched on the MODE, not on a None the headless path can no
@@ -458,11 +447,7 @@ def loop(args):
                     ledger.record(entry, req.get("checkpoint"), result, mode, runner.host,
                                   refusal=refusal, timing=timing, rejected_file=rejected)
                     handled.append(eid)
-                    if result.ok and refusal is None:
-                        failures.pop(eid, None)           # clean launch: streak cleared
-                    else:
-                        failures[eid] = failures.get(eid, 0) + 1
-                        last_error[eid] = refusal or result.error
+                    tally.record(eid, result, refusal)
                     done += 1
                     # Best-effort, exactly as `_finish`'s own call is (F1): derived
                     # from a ledger already on disk, and `_finish` rewrites it. Fatal
@@ -483,6 +468,16 @@ def loop(args):
                       file=sys.stderr, flush=True)
             batch = None
             guards.disarm(pending)                    # armed per batch, dropped per batch
+            # #1623: the batch is charged HERE, not as each entry landed, because a
+            # host-wide outage (auth, quota, rate limit) is not the entries' failure --
+            # and three iterations of one used to spend every pending cell's attempt
+            # budget and end the run `complete` with an empty review axis. The queue is
+            # already drained and the grants are down; nothing was written, so there is
+            # nothing to roll back and `_finish` is the whole teardown.
+            outage = tally.settle()
+            if outage:
+                return _finish(_status("paused", outage), args, guards, ledger,
+                               namespace, mode, runner)
             status = _run(args, namespace)
     except KeyboardInterrupt:
         status = _rolled_back(review_root, batch, pending, handled, req, ledger,
@@ -617,7 +612,7 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
     if guards is not None:
         if status.get("status") == "complete":
             guards.disarm()                          # total (spec 5.1)
-        elif status.get("status") == "error" and guards.armed_entries:
+        elif status.get("status") in ("error", "paused") and guards.armed_entries:
             # I4: exactly what THIS invocation armed, and nothing else. In session mode
             # the grants outlive an invocation, so a total teardown here would revoke a
             # fan-out the PREVIOUS invocation started and that is still running. An
@@ -628,7 +623,8 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
     # -- while the run's REAL figures come from the host's own transcripts via
     # collect_usage, which synthesize wires in and which deliberately never overwrites
     # an existing usage.json. Writing here would replace the real counts with zeros.
-    if mode == "headless" and status.get("status") in ("complete", "error") and ledger is not None:
+    if (mode == "headless" and ledger is not None
+            and status.get("status") in ("complete", "error", "paused")):
         try:
             write_usage(_review_root(args), ledger, namespace)
         except Exception as exc:      # noqa: BLE001 -- must not mask the original status
