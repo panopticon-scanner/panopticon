@@ -4,12 +4,20 @@ import tempfile
 import unittest
 from unittest import mock
 
+import pytest
+
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
 import scripts.runners.claude as claude_runner
 import scripts.runners.outage as outage
 import scripts._version as version
 import scripts.write_guard_hook as write_guard_hook
+
+# #1616 item 8: this file IS the family's launch behaviour, so it is the one
+# that opts out of conftest's `run_entry` refusal. Every launch below still
+# goes through an injected `runner=<fake>` -- except the one test that exists
+# to prove an un-injected Runner refuses.
+pytestmark = pytest.mark.claude_runner
 
 ENVELOPE = {"type": "result", "subtype": "success", "is_error": False,
             "result": "```json\n{\"domains\": []}\n```", "session_id": "sess-1",

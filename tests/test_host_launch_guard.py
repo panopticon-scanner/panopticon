@@ -245,6 +245,29 @@ class TestEverySeamThatCanStartAHostCliIsCovered(unittest.TestCase):
                 launcher(["a-host-cli", "--version"])
 
 
+class TestAClaudeEntryIsRefusedUnlessTheTestOptsIn(unittest.TestCase):
+    """#1616 item 8: the launcher swap above stops the real binary starting,
+    and stops there. A test that reaches `claude.Runner.run_entry` without
+    meaning to gets the refusal INSIDE the runner, where `run_entry`'s
+    never-raise contract turns it into an ordinary failed RunResult -- one
+    more failed entry among the ones the test is about, easy to read past.
+
+    The autouse fixture in tests/conftest.py replaces the method itself, so
+    reaching it is loud. `@pytest.mark.claude_runner` (module-level in
+    tests/runners/test_claude.py) is how the tests that really drive the
+    family's own `run_entry` -- with an injected `runner=<fake>` -- opt back
+    in; this file is not marked, so the refusal is live here.
+    """
+
+    def test_run_entry_raises_rather_than_returning_a_failed_result(self):
+        import scripts.runners.claude as claude_runner
+        import scripts.runners.base as runners_base
+        with self.assertRaises(runners_base.LaunchRefused) as cm:
+            claude_runner.Runner("claude").run_entry(
+                {"id": "review-app-SEC", "prompt": "p"}, {})
+        self.assertIn("claude_runner", str(cm.exception))    # names the way out
+
+
 class TestTheWalkRecognisesSeamsAndOnlySeams(unittest.TestCase):
     """The walk is the whole guarantee, so its two failure modes -- missing a
     real seam, and flagging something that launches nothing -- are pinned on
