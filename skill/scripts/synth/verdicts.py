@@ -1,6 +1,6 @@
 """The verify round: emit its queue, then resolve findings against the advisor
 verdicts and the delta context."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import copy
 import os
 import sys
@@ -76,9 +76,15 @@ class Resolved:
     doc_policy: dict | None
     verdict_unloadable: list
     unanswered_gate: int
+    # #1701 (fix round 1, F1): the vendored-path drops this run's GATE counts,
+    # after the same delta / `gate_scope` filter `gate_eligible` above takes.
+    # They are NOT in `findings`/`active`/`rejected` -- the report body never
+    # holds them -- so they are carried separately rather than partitioned out
+    # of one of those lists. `[]` outside `--security redteam`.
+    gated_suppressed: list = field(default_factory=list)
 
 
-def resolve_findings(fs, delta, run):
+def resolve_findings(fs, delta, run, gated_suppressed=()):
     """The verdict-matching cluster (WS-0 S2): dedupe, queue, bind advisor
     verdicts, derive every finding's evidence object and fingerprint, then
     partition for the gate under the two-axis severity x evidence model.
@@ -254,6 +260,29 @@ def resolve_findings(fs, delta, run):
     gate_eligible = (gate_source if run.gate_unverified else
                      [f for f in gate_source
                       if f["evidence"]["status"] in evidence_mod.GATE_ELIGIBLE_DEFAULT])
+    # #1701 fix round 1 (F1): the gate-counted vendored drops take the SAME
+    # delta filter the real population just took. They carry a `location.file`,
+    # so `classify_findings` can answer for them, and under `--changes
+    # --gate-scope on-diff` a PRE-EXISTING vendored finding is scoped out
+    # exactly as its un-suppressed twin is -- the alternative was a finding that
+    # gates only because of the directory it sits in, which inverts #1578.
+    #
+    # The EVIDENCE filter above is deliberately NOT applied, and this is the one
+    # place the two populations still differ. A suppressed finding is withheld
+    # from `findings[]`, so it is never queued for the verify round and can
+    # never reach `tool_confirmed`; under the default `confirmed_only` policy
+    # filtering on evidence would drop every one of them and leave #1701 open.
+    # `security_gate.py` has no evidence axis at all, so it is not a precedent
+    # either way. OWNER POLICY QUESTION, raised on #1578: either tool findings
+    # under vendored paths get sent through tool-verify like any other (and this
+    # filter then applies), or the asymmetry stands and is disclosed -- which is
+    # what `meta.coverage.tools_suppressed_gated` is for.
+    gated = list(gated_suppressed or [])
+    if delta_mode:
+        delta_mod.classify_findings(gated, delta.diff_hunks.get("hunks") or {},
+                                    delta.diff_context)
+        if run.gate_scope == "on-diff":
+            gated = [f for f in gated if (f.get("delta") or {}).get("on_diff")]
 
     tool_names = {evidence_mod.tool_name(f) for f in findings
                   if evidence_mod.is_tool_sourced(f)}
@@ -279,4 +308,5 @@ def resolve_findings(fs, delta, run):
                     doc_policy=fs.doc_policy, verdict_unloadable=verdict_unloadable,
                     # Gate-aware unanswered count: measured only when
                     # --verdicts-dir was passed at all (see verdict_stats).
-                    unanswered_gate=unanswered if fs.verdicts_supplied else 0)
+                    unanswered_gate=unanswered if fs.verdicts_supplied else 0,
+                    gated_suppressed=gated)

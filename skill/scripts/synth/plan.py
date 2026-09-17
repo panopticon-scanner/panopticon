@@ -391,13 +391,21 @@ def ingest_tool_findings(args):
 
     #1701: under `--security redteam` a finding may not be dropped on the
     strength of a conventional DIRECTORY NAME, so the drops come back as
-    gate-only findings (`security_gate.evaluate`'s `findings + suppressed`, for
-    the driver's own gate) and the `{segment: count}` reads 0 for each of them.
-    The count means "suppressed FROM THE GATE" -- the segment key stays, so the
-    drop from the report body is still visible -- and in `standard` mode it is
-    the full tally, unchanged. Normalized exactly as the kept tool findings are,
-    so severity, panel and location answer the gate identically; they are not
-    added to `tool_findings`, which is what keeps them out of the report body.
+    gate-only CANDIDATES (`security_gate.evaluate`'s `findings + suppressed`,
+    for the driver's own gate). They are normalized exactly as the kept tool
+    findings are -- `normalize_finding`, so severity, panel and location answer
+    the gate identically -- and they are never added to `tool_findings`, which
+    is what keeps them out of the report body.
+
+    Candidates, not the gated set: fix round 1 F1. The `--severity` floor is
+    applied HERE, the same place and with the same arithmetic
+    `FindingSet.prepare` applies it to the kept findings, because a run told to
+    look only at CRITICAL must not have a HIGH gate it from behind a directory
+    name. The delta / `gate_scope` filter is applied where the real population
+    gets it, in `verdicts.resolve_findings`. The `{segment: count}` returned
+    here stays the FULL ingest tally either way; `reconcile` splits it into what
+    the gate counted and what stayed suppressed from it, so the two published
+    numbers still sum to what stderr and `security_gate` print.
     """
     if not args.tools_dir:
         default_tools = os.path.join(".panopticon", "tools")
@@ -411,11 +419,15 @@ def ingest_tool_findings(args):
     tool_findings, dispositions = ingest_tools.ingest_dir_detailed(
         args.tools_dir, None, exclude_globs=args.tools_exclude,
         include_fixtures=args.include_fixtures, suppressed_out=dropped)
-    counts = ingest_tools.suppressed_counts(dropped)
     gated = []
     if gate_counts_suppressed(args):
         gated = [findings_mod.normalize_finding(f) for f in dropped]
-        counts = {segment: 0 for segment in counts}
+        if args.severity and args.severity != "all":
+            # Same expression as FindingSet.prepare's floor, deliberately: the
+            # gate-counted set is filtered by the flags the kept set is filtered
+            # by, or it is not "the same finding, counted the same way".
+            threshold = evidence_mod.SEV_ORDER.index(args.severity.upper())
+            gated = [f for f in gated if evidence_mod.sev_rank(f) <= threshold]
     return (tool_findings, dispositions,
             tool_axis_mod.tools_ran_from_dispositions(dispositions),
-            counts, gated)
+            ingest_tools.suppressed_counts(dropped), gated)

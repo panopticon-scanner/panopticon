@@ -285,6 +285,15 @@ def reconcile(plan, tools, resolved):
                    for p in sorted(panels_incomplete)},
         "tools": tool_divergence,
     }
+    # #1701 fix round 1 (F1/F2): the gate-counted set comes off `resolved`, not
+    # off the ToolAxis -- `resolve_findings` applies the delta / `gate_scope`
+    # filter to it, so the ToolAxis holds CANDIDATES and this holds what the
+    # gate actually counts. Counting it here is what keeps the two published
+    # tallies consistent with each other and with the gate.
+    gated = list(resolved.gated_suppressed or [])
+    gated_counts = repair_mod.repair_tools_suppressed(
+        ingest_tools.suppressed_counts(gated))
+    suppressed_total = repair_mod.repair_tools_suppressed(tools.suppressed)
     integrity = plan.integrity if isinstance(plan.integrity, dict) else None
     integrity = integrity or {"unexpected_findings_files": [],
                               "missing_planned_files": [],
@@ -341,8 +350,22 @@ def reconcile(plan, tools, resolved):
     cell_audit = coverage_io.audit_floor_cells(plan.coverages or [], present)
     coverage = {
         "adapters": tools.dispositions or {},
-        # #1578 (SEC-G2B): the vendored-path drops, per segment; schema has the why.
-        "tools_suppressed": repair_mod.repair_tools_suppressed(tools.suppressed),
+        # #1578 (SEC-G2B): the vendored-path drops, per segment; schema has the
+        # why. #1701 fix round 1 (F2): ONE tally, split in two. `gated` is what
+        # this run's gate counted anyway; this key is the remainder -- what the
+        # exclusion kept out of the gate as well as out of the body, which is
+        # what "suppressed" now means. The two sum, per segment, to the ingest's
+        # own count -- the number stderr and `security_gate` print, which
+        # `ingest_tools.suppressed_counts` exists to keep from diverging.
+        # Repaired FIRST, then split: the tally is derived from `location.file`
+        # values a scanner read out of the reviewed tree, so the arithmetic must
+        # never run on a value the boundary has not pinned (a `"lots"` row cost
+        # a TypeError mid-synthesis in fix round 1 before this order was fixed).
+        # Clamped at 0 for the same reason: a hostile tally that under-counts
+        # its own segment must not publish a negative measurement.
+        "tools_suppressed": {
+            segment: max(0, total - gated_counts.get(segment, 0))
+            for segment, total in suppressed_total.items()},
         "tools_ran": (sorted(tools_ran) if tools_ran is not None
                       else sorted(resolved.tool_names)),
         "build_executing_tools": sorted(
@@ -382,4 +405,4 @@ def reconcile(plan, tools, resolved):
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
                       tools_sanitized=sanitized, tools_network=network,
                       tools_manifest_invalid=tools.manifest_invalid,
-                      gated_suppressed=list(tools.gated_suppressed or []))
+                      gated_suppressed=gated)

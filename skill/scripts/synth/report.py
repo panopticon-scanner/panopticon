@@ -172,7 +172,11 @@ def build_report(inp):
     the cost ledger (cost). assemble() lays the sections out in the report's
     key order.
     """
-    resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run)
+    # #1701 fix round 1 (F1): the gate-counted vendored drops are handed to the
+    # stage that applies the gate's filters, not appended after it.
+    resolved = verdicts_mod.resolve_findings(
+        inp.findings, inp.delta, inp.run,
+        gated_suppressed=inp.tools.gated_suppressed)
     reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved)
     graded = grading_mod.grade_report(inp.run, resolved, reconciled)
     cost = cost_mod.cost_section(inp.cost, inp.plan.scout_profiles_seen,

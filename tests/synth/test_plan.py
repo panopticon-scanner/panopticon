@@ -11,6 +11,7 @@ import unittest
 import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.coverage_io as coverage_io
+import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
@@ -609,37 +610,72 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                                         "region": {"startLine": 1,
                                                    "endLine": 4}}}]}]}]}
 
-    def _run(self, security):
+    def _sarif(self, rel):
+        hit = json.loads(json.dumps(self.SARIF))
+        (hit["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
+         ["artifactLocation"]["uri"]) = rel
+        return hit
+
+    def _run(self, security, rel="app/vendor/patched_auth.py", severity="all",
+             delta=False, groups_json=None):
+        """One synthesis over a single bandit HIGH at `rel`.
+
+        `rel` is the only thing that moves between the suppressed and the
+        un-suppressed arm of the fix-round-1 F1 comparison: `app/vendor/...`
+        is dropped by the vendored-path exclusion, `app/lib/...` is not, and
+        everything else about the two runs is identical.
+        """
         with tempfile.TemporaryDirectory() as d:
-            vendored = os.path.join(d, "app", "vendor")
-            os.makedirs(vendored)
-            with open(os.path.join(vendored, "patched_auth.py"), "w",
-                      encoding="utf-8") as fh:
+            os.makedirs(os.path.join(d, os.path.dirname(rel)))
+            with open(os.path.join(d, rel), "w", encoding="utf-8") as fh:
                 fh.write("x = 1\n" * 50)     # real LoC, so health is measurable
             tools = os.path.join(d, "tools")
             os.makedirs(tools)
             with open(os.path.join(tools, "bandit.sarif"), "w",
                       encoding="utf-8") as fh:
-                json.dump(self.SARIF, fh)
+                json.dump(self._sarif(rel), fh)
             with open(os.path.join(d, "tools-manifest.json"), "w",
                       encoding="utf-8") as fh:
                 json.dump({"schema_version": 1, "selected": ["bandit"],
                            "produced": ["bandit"], "missing": []}, fh)
+            hunks = None
+            if delta:
+                # A real diff that touches ANOTHER file: the finding below is
+                # pre-existing, which is what `--gate-scope on-diff` scopes out.
+                hunks = os.path.join(d, "diff-hunks.json")
+                with open(hunks, "w", encoding="utf-8") as fh:
+                    json.dump({"base": "main", "hunks": {"app/other.py": [[1, 3]]}}, fh)
+            if groups_json is not None:
+                with open(os.path.join(d, "groups.json"), "w",
+                          encoding="utf-8") as fh:
+                    json.dump(groups_json, fh)
             args = _cli_args(tools_dir=tools, security=security, fail_on="high",
-                             target=d, run_dir=d)
-            with contextlib.redirect_stderr(io.StringIO()):
+                             target=d, run_dir=d, severity=severity,
+                             diff_hunks=hunks, gate_scope="on-diff")
+            with _chdir(d), contextlib.redirect_stderr(io.StringIO()):
                 body, disp, ran, suppressed, gated = plan_mod.ingest_tool_findings(args)
                 axis = tool_axis_mod.ToolAxis.load(args, d, [], disp, ran,
                                                    suppressed, gated)
+                prepared = findings_mod.FindingSet.prepare(args, body, security)
+                run = report_mod.RunConfig.from_args(
+                    args, groups_json or {}, self.TS) if groups_json is not None \
+                    else report_mod.RunConfig(target=d, fail_on="high",
+                                              timestamp=self.TS,
+                                              security_mode=security,
+                                              gate_scope="on-diff")
                 report = report_mod.build_report(report_mod.ReportInputs(
-                    run=report_mod.RunConfig(target=d, fail_on="high",
-                                             timestamp=self.TS,
-                                             security_mode=security),
-                    findings=findings_mod.FindingSet(findings=[]),
+                    run=run,
+                    findings=findings_mod.FindingSet(
+                        findings=prepared[0], doc_policy=prepared[1],
+                        catalog=prepared[2]),
+                    delta=delta_mod.DeltaContext.from_args(args),
                     plan=plan_mod.PlanInputs(groups_meta=[
-                        {"name": "g", "files": ["app/vendor/patched_auth.py"]}]),
+                        {"name": "g", "files": [rel]}]),
                     tools=axis))
             return body, report
+
+    def _gate(self, **kw):
+        return self._run("redteam", **kw)[1]["summary"]["gate"]
 
     def test_redteam_fails_the_gate_on_a_vendored_high(self):
         body, report = self._run("redteam")
@@ -666,3 +702,46 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(summary["health"]["weighted_defect"], 0)
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed"],
                          {"vendor": 1})
+
+    # -- fix round 1, F1: the gate-counted set takes the gate's own filters ---
+    #
+    # Each of these runs the SAME bandit HIGH twice, moving only the directory
+    # it sits in, and asserts the two arms answer the gate identically. The
+    # un-suppressed arm is the oracle: whatever the real population does with
+    # this finding under these flags is what the suppressed one must do.
+
+    LIB = "app/lib/patched_auth.py"
+
+    def test_a_pre_existing_vendored_high_is_scoped_out_like_its_twin(self):
+        # `--gate-scope on-diff` over a diff that touches another file: the
+        # finding is pre-existing either way. Before this fix the vendored arm
+        # FAILed while its twin PASSed -- a finding that gates only because of
+        # the directory it is in, which inverts #1578.
+        self.assertEqual(self._gate(rel=self.LIB, delta=True), "PASS")
+        self.assertEqual(self._gate(delta=True), "PASS")
+        # ... and because the gate did NOT count it, the drop is back in the
+        # `suppressed` tally rather than in the gated one. The two always sum
+        # to the ingest's own count, which is what stderr and security_gate say.
+        cov = self._run("redteam", delta=True)[1]["meta"]["coverage"]
+        self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
+
+    def test_a_vendored_finding_below_the_severity_floor_does_not_count(self):
+        # `--severity critical` removes the HIGH from the run entirely; the
+        # vendored twin must not survive the floor behind a directory name.
+        self.assertEqual(self._gate(rel=self.LIB, severity="critical"), "PASS")
+        self.assertEqual(self._gate(severity="critical"), "PASS")
+        cov = self._run("redteam", severity="critical")[1]["meta"]["coverage"]
+        self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
+
+    def test_the_evidence_axis_is_the_one_remaining_asymmetry(self):
+        """The documented, owner-owed difference (see #1578).
+
+        With no delta and no floor the un-suppressed HIGH does NOT gate -- it is
+        an unverified tool claim and `gate_policy` is `confirmed_only` -- while
+        the suppressed one does, because it is withheld from `findings[]` and
+        therefore from the verify round, so it can never earn `tool_confirmed`.
+        Pinned rather than left implicit: if the owner rules that vendored tool
+        findings go through tool-verify, THIS is the test that must change.
+        """
+        self.assertEqual(self._gate(rel=self.LIB), "PASS")
+        self.assertEqual(self._gate(), "FAIL")
