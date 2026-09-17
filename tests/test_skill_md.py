@@ -990,6 +990,16 @@ class TestDriverLoopContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, run_loop)
 
+    def test_the_budget_sentence_states_exact_sums_and_the_non_finite_stop(self):
+        # #1648: the gate summed FLOAT currency and one NaN cost made
+        # `total >= budget` False, so the control failed OPEN. Both halves of
+        # the remedy are operator-visible and therefore documented: the sums
+        # are exact, and a cost that is not money stops the run.
+        run_loop = _section(_read_doc(), "## Driver run-loop", "## Driver setup")
+        for token in ("exact decimal", "non-finite"):
+            with self.subTest(token=token):
+                self.assertIn(token, run_loop)
+
     def test_session_mode_contract_names_persist_and_the_gate(self):
         doc = _read_doc()
         run_loop = doc[doc.index("## Driver run-loop"):doc.index("## Driver setup")]
