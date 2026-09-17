@@ -137,37 +137,68 @@ def remedy(capability, host):
     return text % {"host": host or "this host"}
 
 
-# What the line says INSTEAD of the probe and the detail when the two
-# disagree (#1597). It names the disagreement rather than the measurement:
-# printing "probe write-guard-armed: round-trip denied" beside "is unknown"
-# asserts two things that cannot both be true of one measurement, and the one
-# the operator is entitled to is the masked state -- `hosts.posture` is the
-# fail-closed answer every other surface renders.
-_MASKED = ("the artifact records %r, which is not the state this run reports; "
-           "its probe and detail describe that other measurement and are not "
-           "shown")
+# What the line says INSTEAD of the probe and the detail when the row does not
+# support the status being shown (#1597). It names the disagreement rather than
+# the measurement: printing "probe write-guard-armed: round-trip denied" beside
+# "is unknown" asserts two things that cannot both be true of one measurement,
+# and the one the operator is entitled to is the masked state -- `hosts.posture`
+# is the fail-closed answer every other surface renders.
+_MASKED = ("the artifact's own state is %s, not the state this run reports; its "
+           "probe and detail describe that other measurement and are not shown")
+# The same suppression for a row that carries a measurement and NO state of its
+# own. It is not a milder case: `posture()` answers `unknown` for it exactly as
+# it does for a masked `proven`, so printing the measurement produced #1597's
+# reported sentence verbatim -- and, on a row whose `by` is also absent, the
+# worse "no probe ran: <what a probe found>".
+_STATELESS = ("the artifact records a probe and a detail but no state of its "
+              "own, so nothing in it supports the state this run reports; they "
+              "are not shown")
+_SILENT = "no probe ran: no detail recorded"
+
+
+def _recorded_state(recorded):
+    """The row's own state, rendered for a disclosure line.
+
+    NEVER the raw value. `state` is read off a file a hostile target can
+    pre-commit and a foreign report can carry, so echoing it put an unbounded,
+    attacker-chosen string on all four of 5.1's surfaces -- measured at 5408
+    characters for a 5000-character state, the exact unreadability #1601 is
+    fixing one commit away. Only this module's own three-token vocabulary is
+    quoted; anything else is described, because the fact worth disclosing is
+    that the artifact says something unreadable, not what it says.
+    """
+    return repr(recorded) if recorded in hosts.STATES else "unrecognised"
 
 
 def _probe_clause(row, state):
     """What replaces `probe <by>: <detail>` for one capability's row.
 
-    Three shapes, and the third is #1597. A row that AGREES with the masked
-    state renders the measurement it made. A row that recorded no state at all
-    claims nothing, so "no probe ran" stays exactly as it was -- an absent
-    entry is silence, not a contradiction. A row whose OWN state is not the
-    masked one (a stale artifact, or a foreign one fed through `--compare`:
-    `posture()` masks a PROVEN row for a capability the host does not claim,
-    and normalises an unreadable state to UNKNOWN) has its `by` and `detail`
-    withheld. They are not wrong so much as about something else, and a
-    disclosure that contradicts itself in the same sentence teaches the
-    operator to read past all four surfaces.
+    The rule is one-directional: the measurement prints ONLY when the row's own
+    `state` is present AND equal to the status being shown. Everything else is
+    a row that does not support the sentence it would be printed in.
+
+    * Equal -> render it. A refuted row keeps `probe shadow-shell-scan: ...`,
+      because REFUTED passes the claim mask untouched (hosts.posture, I5).
+    * A DIFFERENT state -> `_MASKED`. The stale or `--compare`-fed artifact:
+      `posture()` masks a PROVEN row for a capability the host does not claim,
+      and normalises an unreadable state to UNKNOWN.
+    * NO state but a probe or a detail -> `_STATELESS`. This was the hole the
+      first pass left: `recorded is None` was read as silence and fell through
+      to the measurement branch, so a row with `by`/`detail` and no `state`
+      printed #1597's reported sentence unchanged. A fresh probe always writes
+      `state` (`host_probes._row`), so this is the stale / foreign / truncated
+      path -- which is the path this rule exists for.
+    * NOTHING recorded at all -> `_SILENT`. An empty row claims nothing, and
+      "nobody looked" is the honest reading of it rather than a contradiction.
     """
     recorded = row.get("state")
-    if recorded is not None and recorded != state:
-        return _MASKED % (recorded,)
-    by = row.get("by")
-    probe_clause = ("probe %s" % by) if by else "no probe ran"
-    return "%s: %s" % (probe_clause, row.get("detail") or "no detail recorded")
+    if recorded == state:
+        by = row.get("by")
+        probe_clause = ("probe %s" % by) if by else "no probe ran"
+        return "%s: %s" % (probe_clause, row.get("detail") or "no detail recorded")
+    if recorded is None:
+        return _STATELESS if (row.get("by") or row.get("detail")) else _SILENT
+    return _MASKED % (_recorded_state(recorded),)
 
 
 def unproven_rows(envelope):

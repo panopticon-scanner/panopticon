@@ -211,7 +211,7 @@ class TestALineNeverContradictsItself(unittest.TestCase):
         # claims something the host cannot". Naming the recorded state
         # EXPLAINS the suppression; it is the by/detail, which assert a
         # measurement beside a status that refutes it, that may not be shown.
-        self.assertIn("the artifact records %r" % hosts.PROVEN, line)
+        self.assertIn(repr(hosts.PROVEN), line)
         # Still a disclosure, not a mood: capability, host and remedy survive.
         self.assertIn(hosts.ARTIFACT_WRITE_GUARD, line)
         self.assertIn("gemini", line)
@@ -227,6 +227,9 @@ class TestALineNeverContradictsItself(unittest.TestCase):
         self.assertIn(hosts.UNKNOWN, line)
         self.assertNotIn("usage-source", line)
         self.assertNotIn("envelope carried", line)
+        # ...and the unreadable token is described, never quoted (R1 Minor 1).
+        self.assertNotIn("banana", line)
+        self.assertIn("unrecognised", line)
 
     def test_a_row_that_agrees_with_the_mask_keeps_its_probe_and_detail(self):
         # The other direction, so the fix cannot be "drop by/detail always".
@@ -236,6 +239,74 @@ class TestALineNeverContradictsItself(unittest.TestCase):
                                  "the reviewed tree ships panopticon-scout.md")
         self.assertIn("shadow-shell-scan", line)
         self.assertIn("panopticon-scout.md", line)
+
+    def test_a_row_with_a_probe_but_no_state_drops_them_too(self):
+        # R1 Major. `state` ABSENT is not silence when the row carries a
+        # measurement: `posture()` still answers `unknown` for it, so the
+        # sentence printed was #1597's reported one, verbatim.
+        env = {"schema_version": 1, "host": "gemini", "probed_at": "T",
+               "capabilities": {hosts.ARTIFACT_WRITE_GUARD: {
+                   "by": "write-guard-armed", "detail": "round-trip denied"}}}
+        line = only([x for x in host_disclosure.lines(env)
+                     if hosts.ARTIFACT_WRITE_GUARD in x], "write-guard line")
+        self.assertIn(hosts.UNKNOWN, line)
+        self.assertNotIn("write-guard-armed", line)
+        self.assertNotIn("round-trip denied", line)
+        self.assertIn("no state", line)
+
+    def test_an_explicit_null_state_behaves_the_same_as_an_absent_one(self):
+        env = {"schema_version": 1, "host": "claude", "probed_at": "T",
+               "capabilities": {hosts.USAGE_LEDGER: {
+                   "state": None, "by": "usage-source",
+                   "detail": "envelope carried `usage`; ledger live"}}}
+        line = only([x for x in host_disclosure.lines(env)
+                     if hosts.USAGE_LEDGER in x], "usage_ledger line")
+        self.assertNotIn("usage-source", line)
+        self.assertNotIn("ledger live", line)
+        # ...and never "no probe ran" beside a detail describing what one found.
+        self.assertNotIn("no probe ran", line)
+
+    def test_the_foreign_report_path_renders_no_contradiction_either(self):
+        # The reachable route the module docstring names: `--compare` feeds a
+        # FOREIGN report, `synth.report` copies its `capabilities` map into
+        # `meta.host_capabilities` verbatim, and both renderers rebuild an
+        # envelope from it and call `lines()`. A fresh probe always writes
+        # `state`; a stale, foreign or truncated artifact need not.
+        env = {"schema_version": 1, "host": "gemini", "probed_at": "T",
+               "capabilities": {hosts.ARTIFACT_WRITE_GUARD: {
+                   "by": "write-guard-armed", "detail": "round-trip denied"}}}
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="target", fail_on="high",
+                                     timestamp="2026-09-17T00:00:00Z",
+                                     host_capabilities=env),
+            findings=findings_mod.FindingSet(findings=[])))
+        body = render_mod.render_summary(report)
+        page = html.unescape(html_report.render(report))
+        for surface, text in (("body", body), ("html", page)):
+            with self.subTest(surface=surface):
+                self.assertIn(hosts.ARTIFACT_WRITE_GUARD, text)
+                self.assertNotIn("write-guard-armed", text)
+                self.assertNotIn("round-trip denied", text)
+
+    def test_an_untrusted_state_value_is_never_echoed_raw(self):
+        # R1 Minor 1. `state` comes off a file a hostile target can pre-commit.
+        # Echoing it put an unbounded, attacker-chosen string on all four
+        # surfaces -- measured at 5408 characters for a 5000-character state,
+        # the exact unreadability #1601 exists to fix.
+        hostile = "A" * 5000
+        clause = host_disclosure._probe_clause(
+            {"state": hostile, "by": "b", "detail": "d"}, hosts.UNKNOWN)
+        self.assertNotIn(hostile, clause)
+        self.assertIn("unrecognised", clause)
+        self.assertLess(len(clause), 160, clause)
+
+    def test_a_known_state_token_is_still_named(self):
+        # The other direction: the three states this module owns ARE the
+        # vocabulary, and naming them is what makes the suppression legible.
+        clause = host_disclosure._probe_clause(
+            {"state": hosts.PROVEN, "by": "b", "detail": "d"}, hosts.UNKNOWN)
+        self.assertIn(repr(hosts.PROVEN), clause)
+        self.assertNotIn("unrecognised", clause)
 
     def test_a_row_that_records_no_state_still_says_nobody_looked(self):
         # An ABSENT state is not a contradiction -- the row claims nothing --
