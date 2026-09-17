@@ -19,6 +19,7 @@ import unittest
 import unittest.mock
 import xml.etree.ElementTree as ET
 
+from _test_helpers import last
 import scripts.capture_goldens as cg
 
 
@@ -258,11 +259,19 @@ class TestRedactBeforeWrite(unittest.TestCase):
 
     def test_the_pre_write_check_parses_the_redacted_bytes(self):
         """Order matters: redact, THEN verify. Verifying the pre-redaction bytes
-        would certify a payload that is not the one committed."""
+        would certify a payload that is not the one committed.
+
+        Guarded index (TST-B3A, #1653): a regression that bypasses the pre-write
+        parse entirely leaves `parsed_inputs` EMPTY, and a raw `[-1]` then
+        raises IndexError before this assertion is ever evaluated -- so the
+        failure names the test's plumbing instead of the redaction invariant it
+        exists to protect.
+        """
         raw = json.dumps({"results": [{"snippet": self.SECRET}]}).encode()
         adapter = _RecordingAdapter(raw=raw)
         self._run(adapter)
-        self.assertIn(b"[REDACTED_UUID]", adapter.parsed_inputs[-1])
+        self.assertIn(b"[REDACTED_UUID]",
+                      last(adapter.parsed_inputs, "pre-write parse call"))
 
     def test_redaction_that_breaks_parse_is_rejected_not_written(self):
         class _Picky(_Adapter):
