@@ -19,6 +19,7 @@ import scripts.runners.batch as batch_mod
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
+import scripts.runners.outage as outage
 import scripts.write_guard_hook as write_guard_hook
 from conftest import docker_probe_runner, write_host_evidence
 from scripts import hosts
@@ -1437,7 +1438,7 @@ class TestAHostWideOutage(LoopCase):
         status = self._run_loop(d, floor, self.Outage())
         message = status["message"]
         self.assertIn("claude", message)                      # the host
-        self.assertIn(base.HOST_FAILURE, message)             # the failure class
+        self.assertIn(outage.HOST_FAILURE, message)             # the failure class
         self.assertIn("4", message)                           # how many launches it took down
         self.assertIn("403 Forbidden", message)               # what the host actually said
         self.assertIn("driver.py loop", message)              # the exact resume command

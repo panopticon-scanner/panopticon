@@ -591,9 +591,9 @@ class TestSkillMd(unittest.TestCase):
         # cell that genuinely cannot answer. Pinned to the code's own clause,
         # exactly as the interrupt sentence below is -- a guide that describes
         # a termination condition the loop no longer has is worse than silence.
-        import scripts.runners.base as runners_base
+        import scripts.runners.outage as outage
         self.assertIn("`paused`", loop)
-        self.assertIn(runners_base.HOST_OUTAGE_CLAUSE, loop)
+        self.assertIn(outage.HOST_OUTAGE_CLAUSE, loop)
         # I6 (fix round 3): `driver persist` grew `--pr`/`--base` because a PR
         # run's review root is the worktree; a session host that does not pass
         # them gets "no entry in the current dispatch request" and no clue why.

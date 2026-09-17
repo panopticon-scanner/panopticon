@@ -21,6 +21,7 @@ import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as runners_base
 import scripts.runners.batch as batch_mod
+import scripts.runners.outage as outage
 import scripts.write_guard_hook as write_guard_hook
 
 DEFAULT_MAX_ITERATIONS = 50
@@ -313,9 +314,8 @@ def loop(args):
         status = _run(args, namespace)                # re-derive after the seam
     iterations = 0
     # The per-entry failure streaks, and (#1623) the verdict on whether a whole batch was
-    # really the HOST going down. `runners_base.FailureTally` documents both, and owns them
-    # because the classification it reads is the runner seam's.
-    tally = runners_base.FailureTally(host, args)
+    # really the HOST going down. `runners.outage.FailureTally` documents and owns both.
+    tally = outage.FailureTally(host, args)
     done, total = 0, 0        # this batch's progress, read by the handlers below
     # #1662: what a Ctrl-C has to take back. Bound BEFORE the try, because the
     # interrupt can land before the first batch ever opens one.
@@ -474,9 +474,9 @@ def loop(args):
             # budget and end the run `complete` with an empty review axis. The queue is
             # already drained and the grants are down; nothing was written, so there is
             # nothing to roll back and `_finish` is the whole teardown.
-            outage = tally.settle()
-            if outage:
-                return _finish(_status("paused", outage), args, guards, ledger,
+            paused = tally.settle()
+            if paused:
+                return _finish(_status("paused", paused), args, guards, ledger,
                                namespace, mode, runner)
             status = _run(args, namespace)
     except KeyboardInterrupt:
