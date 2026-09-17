@@ -303,7 +303,7 @@ def loop(args):
     # started, which is what every later iteration is for.
     args.reset = False
     if status.get("status") != "checkpoint":
-        return _finish(status, args, guards, ledger, namespace, mode, runner)
+        return _finish(status, review_root, guards, ledger, namespace, mode, runner)
     if mode == "session":
         # I4: only now. This invocation has a live checkpoint of its own, so its pending set is
         # the authority on what is still running. An entry now done falls away here; one still
@@ -368,7 +368,7 @@ def loop(args):
                 return _finish(_status("error", "driver loop: %d iterations without "
                                        "completing; still pending: %s"
                                        % (max_iterations, pending_ids)),
-                               args, guards, ledger, namespace, mode, runner)
+                               review_root, guards, ledger, namespace, mode, runner)
             if budget is not None:
                 # #1648: exact, and fail-CLOSED. `total_cost` raises rather than
                 # summing past a ledger line it cannot read as money -- the old
@@ -382,15 +382,15 @@ def loop(args):
                                            "; delete or repair that line, or re-run with "
                                            "`--reset`"
                                            % (exc, ledger.path, pending_ids)),
-                                   args, guards, ledger, namespace, mode, runner)
+                                   review_root, guards, ledger, namespace, mode, runner)
                 if spent >= budget:
                     return _finish(_status("error", "driver loop: --max-budget-usd %s reached; "
                                            "ledger at %s; still pending: %s"
                                            % (budget, ledger.path, pending_ids)),
-                                   args, guards, ledger, namespace, mode, runner)
+                                   review_root, guards, ledger, namespace, mode, runner)
             stuck = tally.exhausted(pending, MAX_ENTRY_FAILURES)
             if stuck:
-                return _finish(_status("error", stuck), args, guards, ledger,
+                return _finish(_status("error", stuck), review_root, guards, ledger,
                                namespace, mode, runner)
             guards.arm(pending)
             if mode == "session":
@@ -479,7 +479,7 @@ def loop(args):
             paused = tally.settle()
             if paused:
                 persist.rollback_markers(review_root, req.get("checkpoint"), pending)
-                return _finish(_status("paused", paused), args, guards, ledger,
+                return _finish(_status("paused", paused), review_root, guards, ledger,
                                namespace, mode, runner)
             status = _run(args, namespace)
     except KeyboardInterrupt:
@@ -487,7 +487,7 @@ def loop(args):
                               mode, runner, guards, done, total)
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
-    return _finish(status, args, guards, ledger, namespace, mode, runner)
+    return _finish(status, review_root, guards, ledger, namespace, mode, runner)
 
 
 def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
@@ -550,8 +550,7 @@ def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner
 
 
 def _review_root(args):
-    review_root, _wt, _pr = runio.resolve_review_root(args.target, base=args.base, pr=args.pr)
-    return review_root
+    return runio.resolve_review_root(args.target, base=args.base, pr=args.pr)[0]
 
 
 def _run(args, namespace):
@@ -592,13 +591,16 @@ def _dispatch_exit(review_root, req, pending, namespace):
                    checkpoint=req.get("checkpoint"))
 
 
-def _finish(status, args, guards, ledger, namespace, mode="headless", runner=None):
+def _finish(status, review_root, guards, ledger, namespace, mode="headless", runner=None):
     """The terminal teardown, executed for every non-checkpoint status. Disarm first, then attempt
     a final write_usage on BOTH `complete` and `error` (review round 2): the `except Exception`
     catch-all (round 1, item 3) can land here after a batch already recorded a ledger line but
     before that iteration's own in-loop write_usage ran, and a `complete`-only write would leave
     usage.json stale against the ledger. Wrapped so a failure here can never mask the real status
-    -- it is appended to the message instead."""
+    -- it is appended to the message instead. `review_root` is `loop`'s own, resolved once
+    before anything else it does (#1616 item 6; `args` was read for nothing else here):
+    re-deriving it cost a `resolve_review_root` -- a `gh pr view` and a worktree
+    acquisition on a `--pr` run -- per terminal status."""
     # C1 (kimi family PR review): the runner's own terminal hook, on EVERY terminal status, before the
     # guards are touched -- a host whose runner holds a scratch area outside the tree (kimi's per-run
     # KIMI_CODE_HOME, which carries the operator's credential surface and the children's verbatim wire
@@ -631,7 +633,7 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
     if (mode == "headless" and ledger is not None
             and status.get("status") in ("complete", "error", "paused")):
         try:
-            write_usage(_review_root(args), ledger, namespace)
+            write_usage(review_root, ledger, namespace)
         except Exception as exc:      # noqa: BLE001 -- must not mask the original status
             status["message"] = "%s; usage.json not written: %s: %s" % (
                 status.get("message"), type(exc).__name__, exc)
@@ -646,7 +648,6 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
         # fail. run_setup_flow's own `complete` branch already composed the right message for that
         # path (readiness gaps and limitations included) -- leave `status["message"]` exactly as
         # it is when there is no draft to promote.
-        review_root = _review_root(args)
         draft = runio._pano(review_root, "groups.yml.draft")
         if os.path.isfile(draft):
             status = dict(status, message=(

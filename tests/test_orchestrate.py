@@ -885,6 +885,24 @@ class TestHeadlessLoop(LoopCase):
             self.assertEqual(row["finished_at"], row["ts"])
             self.assertLessEqual(row["started_at"], row["ts"])
 
+    def test_the_review_root_is_resolved_once_for_the_whole_loop(self):
+        # #1616 item 6: `_finish` re-resolved the review root on top of the
+        # resolution `loop` had already done and held. Free on a plain target;
+        # on a `--pr` run resolving means a `gh pr view` and a worktree
+        # acquisition, paid again on every terminal status.
+        d, floor = self._repo()
+        real, calls = orchestrate._review_root, []
+
+        def _spy(args):
+            calls.append(args)
+            return real(args)
+
+        with mock.patch.object(orchestrate, "_review_root", side_effect=_spy):
+            status = self._run(d, floor, FakeRunner())
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(len(calls), 1,
+                         "the loop resolved the review root %d times" % len(calls))
+
     def test_the_rows_duration_is_the_one_its_own_worker_measured(self):
         # #1616 item 1 -- "ledger duration_ms is always null" -- is already
         # closed, by #1636's P07 timing: `iter_batch` measures around
@@ -1747,12 +1765,12 @@ class TestFinishTreatsPausedAsTerminal(unittest.TestCase):
             self.disarmed.append(entries)
 
     def _finish(self, status, guards=None, ledger=None, writes=None):
-        args = type("Args", (), {"target": "/repo", "base": None, "pr": None})()
+        # #1616 item 6: `_finish` is handed the review root `loop` already
+        # resolved, so there is no `_review_root` call left here to patch.
         writes = [] if writes is None else writes
-        with mock.patch.object(orchestrate, "_review_root", return_value="/repo"), \
-             mock.patch.object(orchestrate, "write_usage",
+        with mock.patch.object(orchestrate, "write_usage",
                                side_effect=lambda *a, **k: writes.append(a)):
-            return orchestrate._finish({"status": status, "message": "m"}, args,
+            return orchestrate._finish({"status": status, "message": "m"}, "/repo",
                                        guards, ledger, None, "headless", None)
 
     def test_paused_disarms_exactly_what_this_invocation_armed(self):
