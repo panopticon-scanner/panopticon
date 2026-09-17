@@ -47,8 +47,8 @@ different hat -- and one that can rot out of step with the first.
 What it does not model. Within the shell it reads, the standing requirement is
 to fail CLOSED -- an unparsed form must be REPORTED, not accepted, which is
 precisely what the two regexes did not do, and `tests/test_workflow_guard.py`
-states every form that was probed and found open before it was parsed. Two
-classes fall outside that and are accepted SILENT gaps, deliberately:
+states every form that was probed and found open before it was parsed. The
+classes below fall outside that and are accepted SILENT gaps, deliberately:
 
 * fetchers that are not curl/wget -- `gh release download`, `aws s3 cp`,
   `python3 -c "...urlretrieve..."`, an action that downloads for you. Reporting
@@ -68,8 +68,21 @@ classes fall outside that and are accepted SILENT gaps, deliberately:
   The rule is about what ARRIVED from outside, and a workflow editing its own
   downloaded file is author-deterministic, not an upstream vector.
 
-Also unmodelled and reported-not-accepted: a `chmod` over a glob, and `if`
-branches (a fetch inside one is a fetch).
+* a `chmod` over a glob (`chmod +x *.sh`): the guard tracks names, a glob
+  names nothing it can bind, so that use goes unseen.
+* a fetch inside an `eval` STRING (`eval "curl -o x URL"`), an executor that
+  reads the file by convention rather than by argument (`make`, `npm install`),
+  a digest computed from the download itself, and `find -exec` / `xargs`
+  operands: probed and found open on the last review pass, recorded in the
+  follow-up issue rather than modelled here.
+* `if:` conditions are compared as WRITTEN (`_binds`), which assumes the
+  expression is stable between the check's step and the use's step. It is not
+  when it reads `env.*` written through `$GITHUB_ENV` in between, or a forward
+  `steps.<id>.*` reference, and `continue-on-error: true` on the check step is
+  not read at all -- the YAML twin of `|| true`.
+
+`if` branches inside the shell are read flat: a fetch inside one is a fetch,
+and a check inside a `then` branch is credited although it may not run.
 """
 import collections
 import os
@@ -84,8 +97,6 @@ from shell_reader import command, conditional, negated, statements
 # the next pipeline stage (None when the fetch ends the pipeline).
 Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 
-# One shell command: its argv, the files it redirects into / reads from, the
-# heredoc body attached to it, and the command substitutions inside it -- the
 # One `run:` step: its name, its script, the shell it will run under, and the
 # `if:` that decides whether it runs at all.
 Step = collections.namedtuple("Step", "name script shell condition",
@@ -532,6 +543,9 @@ def _binds(conditions, check, use):
     step -- the shape the fleet actually has, where the fetch, the checksum and
     the `unzip` share one `if:` -- binds, and a check under a DIFFERENT
     condition (or under one at all, where the use has none) does not.
+
+    Comparing as written assumes the expression is stable between the two
+    steps; see the module docstring's gap list for the cases where it is not.
     """
     when = conditions.get(check)
     return when is None or when == conditions.get(use)
