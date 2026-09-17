@@ -22,6 +22,10 @@ PHASE_OF_CHECKPOINT = {"scout": "scout", "review": "review", "verify": "verify",
                        "scan": "unattributed"}          # R-P6-9: collect_usage.PHASES keys
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
+# #1662: the `status` a row written for an entry the interrupt CUT carries.
+# One owner, because `orchestrate.loop` writes it and the run's history is read
+# back through it.
+CANCELLED = "cancelled"
 
 
 class Ledger:
@@ -31,7 +35,8 @@ class Ledger:
         self.path = os.path.join(run_dir, runners_base.LEDGER_FILE)
 
     def record(self, entry, checkpoint, result, mode, host, duration_ms=None,
-               refusal=None, timing=None, rejected_file=None):
+               refusal=None, timing=None, rejected_file=None,
+               status=None, rolled_back=False):
         """One line per runner call.
 
         `refusal` (fix round 2) overrides the LAUNCH's own verdict. A return-persist
@@ -47,7 +52,23 @@ class Ledger:
         `phase`/`usage`, `total_cost`'s `cost_usd` -- reads exactly what it always did,
         and `ts` still means when the LINE was written, which is now when the loop
         persisted that one entry. `duration_ms` defaults from it too, rather than being
-        spelled twice at the call site, where the two could drift apart (F5)."""
+        spelled twice at the call site, where the two could drift apart (F5).
+
+        `status` and `rolled_back` (#1662) are the interrupt's. A Ctrl-C writes one
+        row per entry of the batch it CUT -- `status: CANCELLED`, `rolled_back: true`,
+        and a `ts` that is the interrupt's own moment -- so the run's history says what
+        was stopped instead of leaving a silent gap. They are written ONLY when set, so
+        a completed row's shape is byte-for-byte what it was (ruling 5) and every
+        existing reader of it is untouched. And they come through `record` rather than
+        through a second writer for the same reason the money does: this method is the
+        only thing that appends to dispatch-ledger.jsonl, and a second appender is how
+        two spellings of one row begin.
+
+        A cancelled entry never completed, so it has no cost: `result.cost_usd` is None,
+        which `money.cost_fault` reads as "no cost" rather than as an unreadable one --
+        the budget gate fails CLOSED, so a row it could not read would end every
+        interrupted run with a money complaint instead of the interrupt's own
+        message."""
         timing = timing or {}
         duration_ms = timing.get("duration_ms") if duration_ms is None else duration_ms
         line = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -61,6 +82,10 @@ class Ledger:
                 "session_id": result.session_id, "denials": result.denials,
                 "rejected_file": rejected_file,
                 "error": refusal if refusal is not None else result.error}
+        if status is not None:
+            line["status"] = status
+        if rolled_back:
+            line["rolled_back"] = True
         # #1648: `money.ledger_text` is this file's only writer. A non-finite cost
         # is dropped to null INTO THE ROW (its `error` says so) and never reaches
         # disk: `json.dumps` emits a bare `NaN` token that the decoder then

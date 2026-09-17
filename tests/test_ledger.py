@@ -124,3 +124,57 @@ class TestLedgerMoney(LoopCase):
         ledger = self._ledger()
         ledger.record({"id": "e"}, "review", self._result(0.1), "headless", "claude")
         self.assertEqual(0, ledger.usage_document()["corrupt_rows"])
+
+
+class TestCancelledRows(LoopCase):
+    """#1662: what a Ctrl-C cut is written into the run's history, through
+    `Ledger.record` -- the ledger's ONE writer -- and never by a second one.
+    The row carries no cost, because nothing was spent on an entry that never
+    ran, and a null cost must not trip the money reader that the budget gate
+    fails closed on."""
+
+    def _ledger(self):
+        d, _floor = self._repo()
+        return ledger_mod.Ledger(d)
+
+    def _cancel(self, ledger, entry_id="review-app-SEC"):
+        ledger.record({"id": entry_id}, "review",
+                      base.RunResult.failed(entry_id, "cancelled"),
+                      "headless", "claude", status=ledger_mod.CANCELLED,
+                      rolled_back=True)
+        return ledger.lines()[0]
+
+    def test_a_cancelled_row_says_so_and_carries_the_interrupt_stamp(self):
+        ledger = self._ledger()
+        row = self._cancel(ledger)
+        self.assertEqual("cancelled", row["status"])
+        self.assertIs(True, row["rolled_back"])
+        self.assertFalse(row["ok"])
+        self.assertIsNone(row["cost_usd"])
+        self.assertRegex(row["ts"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+    def test_a_cancelled_row_does_not_trip_the_budget_gate(self):
+        # `money.cost_fault` reads a null cost as "no cost", not as a fault:
+        # the gate fails CLOSED on an unreadable one, so a cancelled row that
+        # looked unreadable would end every interrupted run with "refusing to
+        # spend past an unreadable cost" instead of the interrupt's own
+        # message.
+        ledger = self._ledger()
+        row = self._cancel(ledger)
+        self.assertIsNone(money.cost_fault(row, None))
+        self.assertEqual(money.ZERO, ledger.total_cost())
+        self.assertEqual(0, ledger.usage_document()["corrupt_rows"])
+
+    def test_a_completed_row_gains_neither_key(self):
+        # The format of a COMPLETED row is unchanged (#1662 ruling 5): only
+        # the rows the interrupt writes carry `status`/`rolled_back`, so every
+        # existing reader of the older shape sees exactly what it always did.
+        ledger = self._ledger()
+        ledger.record({"id": "e"}, "review",
+                      base.RunResult(entry_id="e", ok=True, text="", usage={},
+                                     cost_usd=0.01, model=None, session_id=None,
+                                     denials=[], error=None),
+                      "headless", "claude")
+        row = ledger.lines()[0]
+        self.assertNotIn("status", row)
+        self.assertNotIn("rolled_back", row)
