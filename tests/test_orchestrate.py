@@ -885,6 +885,34 @@ class TestHeadlessLoop(LoopCase):
             self.assertEqual(row["finished_at"], row["ts"])
             self.assertLessEqual(row["started_at"], row["ts"])
 
+    def test_the_rows_duration_is_the_one_its_own_worker_measured(self):
+        # #1616 item 1 -- "ledger duration_ms is always null" -- is already
+        # closed, by #1636's P07 timing: `iter_batch` measures around
+        # `run_entry` IN THE WORKER and hands the loop a
+        # {started_at, finished_at, duration_ms} per entry, which
+        # `Ledger.record` defaults `duration_ms` from. What was missing was a
+        # test that says so. The assertions beside this one (an int >= 0) hold
+        # just as well for a hard-coded zero or for one batch-wide figure
+        # copied onto every row, so this one pins the fact the item is about:
+        # each row carries the time THAT entry took. Two cells in one batch,
+        # one of them made slow -- concurrent, so a batch-wide measurement
+        # would give them the same number.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+
+        class OneSlowCell(FakeRunner):
+            def run_entry(self, entry, env):
+                if entry["id"] == "review-app-SEC":
+                    time.sleep(0.05)
+                return super().run_entry(entry, env)
+
+        runner = OneSlowCell()
+        self._run(d, floor, runner)
+        rows = {r["entry_id"]: r for r in ledger_mod.Ledger(runner.run_dir).lines()}
+        self.assertIn("review-app-ACC", rows)
+        self.assertGreaterEqual(rows["review-app-SEC"]["duration_ms"], 40)
+        self.assertLess(rows["review-app-ACC"]["duration_ms"],
+                        rows["review-app-SEC"]["duration_ms"])
+
     def test_every_completed_entry_prints_one_progress_line(self):
         # The ledger item's "progress visible without inspecting processes":
         # the run-13 operator's only workaround was an external read-only
