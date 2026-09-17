@@ -442,6 +442,29 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertIsNotNone(clean.manifest)
             self.assertIsNone(clean.manifest_invalid)
 
+    def test_a_manifest_that_is_not_a_regular_file_is_unreadable_not_absent(self):
+        """Fix round 2 L1: `os.path.isfile` answers "is a regular file", and
+        anything else at that path took the ABSENT branch -- the permissive
+        scout-derived fallback, certified -- which is the carve-out fix round 1
+        closed for regular files. A directory, a dangling symlink and a symlink
+        to /dev/null are all things a hostile or broken target can leave at a
+        `.panopticon` path; none of them is "no manifest".
+        """
+        with tempfile.TemporaryDirectory() as d:
+            os.mkdir(os.path.join(d, "tools-manifest.json"))
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                axis = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIsNone(axis.manifest)
+            self.assertIn("unreadable", axis.manifest_invalid)
+            self.assertIn("NOT certified", err.getvalue())
+        with tempfile.TemporaryDirectory() as d:
+            os.symlink(os.path.join(d, "nowhere.json"),
+                       os.path.join(d, "tools-manifest.json"))   # dangling
+            with contextlib.redirect_stderr(io.StringIO()):
+                axis = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIsNone(axis.manifest)
+            self.assertIn("unreadable", axis.manifest_invalid)
+
     def test_tool_axis_load_derives_policy_mode_from_the_plans(self):
         plans = [[{"group": "g1", "domain": "code", "tool_policy": "enforced"}]]
         axis = plan_mod.ToolAxis.load(_cli_args(), ".", plans, {}, None)

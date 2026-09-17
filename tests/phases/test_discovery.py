@@ -315,6 +315,23 @@ class TestMalformedProducerOutput(unittest.TestCase):
         self.assertIn("produced no groups.json", str(cm.exception))
         self.assertFalse(discovery.discovery_done(self.root, self.manifest))
 
+    def test_a_directory_at_the_artifact_path_is_a_clean_driver_error(self):
+        """Fix round 2 L2: the F2 removal must not turn a hostile path into a
+        traceback. `groups.json` is inside `.panopticon`, which the reviewed
+        target can pre-commit; a directory there made `os.remove` raise
+        IsADirectoryError out of the phase, where the base code reached a clean
+        `DriverError` (and `driver run` a `status: error`) instead."""
+        os.mkdir(runio._pano(self.root, "groups.json"))
+
+        def never_runs(cmd, **kw):                    # pragma: no cover
+            raise AssertionError("the child must not be launched")
+
+        with mock.patch("subprocess.run", side_effect=never_runs):
+            with self.assertRaises(runio.DriverError) as cm:
+                discovery.discovery_execute(self.root, self.manifest)
+        self.assertIn("cannot clear", str(cm.exception))
+        self.assertEqual(runio._error_status(str(cm.exception))["status"], "error")
+
     def test_a_good_round_after_a_malformed_one_is_accepted(self):
         with mock.patch("subprocess.run", side_effect=self._writes({})):
             discovery.discovery_execute(self.root, self.manifest)

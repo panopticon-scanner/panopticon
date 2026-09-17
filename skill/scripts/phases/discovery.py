@@ -135,6 +135,13 @@ def discovery_execute(review_root, manifest):
         os.remove(out)
     except FileNotFoundError:
         pass
+    except OSError as exc:
+        # `groups.json` sits under `.panopticon`, which the reviewed target can
+        # pre-commit: a DIRECTORY there (or one the process may not unlink)
+        # makes this raise IsADirectoryError/PermissionError. The driver speaks
+        # a status protocol, so that has to be a DriverError -- `status: error`
+        # naming the path -- and not a traceback with no status at all.
+        raise runio.DriverError("discovery: cannot clear %s: %s" % (out, exc))
     proc = runio._run_child(cmd, review_root, "discovery")
     doc = runio._load_json(out)
     if doc is None:

@@ -45,8 +45,9 @@ class PlanInputs:
         discipline (#441), fan-out accounting, resume stats, the integrity
         section, scout requests, coverage files. `plans` is the
         load_dispatch_plans_detailed triple and `queue` the
-        `integrity.load_verify_queue` pair -- both read once by main() because ToolAxis.load / FindingSet.load
-        need a piece of each first (#146/C1: never load the plans twice).
+        `integrity.load_verify_queue` pair -- both read once by main() because
+        ToolAxis.load / FindingSet.load need a piece of each first (#146/C1:
+        never load the plans twice).
         `verdicts` is the FindingSet's dict, threaded through resume_stats so
         the verdicts dir is read once."""
         plan_lists, plans_seen, invalid_plans = plans
@@ -113,7 +114,14 @@ class ToolAxis:
         """
         manifest, manifest_invalid = None, None
         tm_path = os.path.join(run_dir, "tools-manifest.json")
-        if os.path.isfile(tm_path):
+        # `lexists`, not `isfile` (fix round 2 L1): `isfile` asks "is a REGULAR
+        # file", so a directory, a dangling symlink or a link to /dev/null at
+        # this target-writable path answered "no manifest" and took the
+        # permissive scout-derived branch -- the carve-out F1 closed for regular
+        # files, reachable again by leaving something that is not one. `lexists`
+        # asks the question this branch means ("is there anything here"), and
+        # the open() below fails these with an OSError the reason names.
+        if os.path.lexists(tm_path):
             try:
                 with open(tm_path, encoding="utf-8") as fh:
                     tm = json.load(fh)
@@ -396,8 +404,9 @@ def reconcile(plan, tools, resolved):
         # unreadable the runner's selected set is unknown, so `tools_absent`
         # cannot be computed at all -- the scout's advisory list answers a
         # different question, and every selected-but-unproduced scanner silently
-        # drops out of it. Claim nothing here; certification is what fails
-        # (certify's `tools_manifest_invalid`), not the gate.
+        # drops out of it. Claim nothing here: the reason is recorded in
+        # `meta.integrity` below, and `integrity_ok` is false, so the gate goes
+        # INCONCLUSIVE with every other integrity failure (fix round 1 F1).
         tools_absent, tool_divergence = [], {}
     elif isinstance(tools.manifest, dict):
         selected = set(validate_schema_mod.string_list(tools.manifest.get("selected")))
