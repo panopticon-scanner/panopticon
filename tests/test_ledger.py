@@ -165,6 +165,52 @@ class TestCancelledRows(LoopCase):
         self.assertEqual(money.ZERO, ledger.total_cost())
         self.assertEqual(0, ledger.usage_document()["corrupt_rows"])
 
+    def test_a_handled_entry_gets_a_rolled_back_marker_row(self):
+        # The spec clause "tagged `rolled_back: true` on those rows" applied to
+        # the rows carrying the KEPT spend as well -- and the ledger is
+        # append-only with exactly one writer, so the tag arrives as its own
+        # marker row rather than as a retro-edit of the paid one. Without it no
+        # reader can tell which paid rows bought artifacts that were then
+        # taken back.
+        ledger = self._ledger()
+        paid = base.RunResult(entry_id="e1", ok=True, text="", usage={"input_tokens": 100},
+                              cost_usd=0.01, model="m", session_id="s", denials=[],
+                              error=None)
+        ledger.record({"id": "e1"}, "review", paid, "headless", "claude")
+        ledger.rollback_rows([{"id": "e1"}, {"id": "e2"}], {"e1"},
+                             "review", "headless", "claude")
+        rows = ledger.lines()
+        self.assertEqual([None, "rolled_back", "cancelled"],
+                         [row.get("status") for row in rows])
+        marker = rows[1]
+        self.assertIs(True, marker["rolled_back"])
+        self.assertEqual(("e1", False, None, {}),
+                         (marker["entry_id"], marker["ok"], marker["cost_usd"],
+                          marker["usage"]))
+        self.assertIn("rolled back", marker["error"])
+
+    def test_the_marker_rows_are_invisible_to_every_ledger_reader(self):
+        ledger = self._ledger()
+        paid = base.RunResult(entry_id="e1", ok=True, text="",
+                              usage={"input_tokens": 100, "output_tokens": 10},
+                              cost_usd=0.25, model="m", session_id="s", denials=[],
+                              error=None)
+        ledger.record({"id": "e1"}, "review", paid, "headless", "claude")
+        before = (ledger.total_cost(), ledger.usage_document())
+        ledger.rollback_rows([{"id": "e1"}, {"id": "e2"}], {"e1"},
+                             "review", "headless", "claude")
+        self.assertEqual(before, (ledger.total_cost(), ledger.usage_document()))
+        self.assertEqual(0, ledger.usage_document()["corrupt_rows"])
+        # the usage probe's own read filters on `ok`, so neither row is
+        # counted as a launch whose envelope carried no usage
+        import scripts.probes.claude as claude_probe
+        verdict, how = claude_probe._ledger_carries_usage(ledger.path)
+        self.assertIs(True, verdict)
+        # "1 of 1": the one real launch. The two rows the interrupt appended
+        # are `ok: false`, so the probe never counts them as launches whose
+        # envelope carried no usage -- which would have REFUTED the capability.
+        self.assertIn("1 of 1 successful launch", how)
+
     def test_a_completed_row_gains_neither_key(self):
         # The format of a COMPLETED row is unchanged (#1662 ruling 5): only
         # the rows the interrupt writes carry `status`/`rolled_back`, so every

@@ -507,9 +507,11 @@ def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner
       again -- the one outcome the rollback exists to prevent. The guard is
       fail-closed the moment its allowlist is unlinked, so disarming first
       denies the straggler's Write; `_finish`'s own disarm is then a no-op.
-    * every entry that did NOT complete gets a `cancelled` ledger row -- through
-      `Ledger.record`, the ledger's only writer -- so the run's history names
-      what was cut. The rows the batch already wrote stand: spend is a fact.
+    * the batch's entries are ledgered as the interrupt left them
+      (`Ledger.rollback_rows`): `cancelled` for one it cut, a `rolled_back`
+      marker BESIDE the real row of one that had completed. The real rows
+      stand untouched -- spend is a fact -- and the marker is what says the
+      artifact that spend bought was then deleted.
     * the batch's artifacts go, as a unit and by the list the manifest holds.
     * the interrupted phase's per-dispatch marker is given back, so the re-run
       starts with the retry budget it had rather than one interrupt poorer.
@@ -535,16 +537,10 @@ def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner
     except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
         notes.append("guards not disarmed: %s: %s" % (type(exc).__name__, exc))
     try:
-        for entry in pending:
-            if entry.get("id") in finished:
-                continue
-            ledger.record(entry, checkpoint,
-                          runners_base.RunResult.failed(
-                              entry.get("id"), "cancelled (Ctrl-C) before it completed"),
-                          mode, runner.host, status=ledger_mod.CANCELLED,
-                          rolled_back=True)
+        ledger.rollback_rows(pending, finished, checkpoint, mode, runner.host)
     except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
-        notes.append("cancelled rows not written: %s: %s" % (type(exc).__name__, exc))
+        notes.append("the interrupt's own rows not written: %s: %s"
+                     % (type(exc).__name__, exc))
     try:
         _removed, problems = batch.roll_back()
         notes += problems

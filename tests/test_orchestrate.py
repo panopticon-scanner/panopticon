@@ -604,15 +604,20 @@ class TestHeadlessLoop(LoopCase):
         d, floor = self._repo(floor=("SEC", "ACC"))
         runner = FakeRunner()
         self._interrupt_mid_batch(d, floor, runner)
-        rows = {row["entry_id"]: row for row in ledger_mod.Ledger(runner.run_dir).lines()}
-        self.assertEqual({"review-app-SEC", "review-app-ACC"}, set(rows))
-        self.assertEqual(0.01, rows["review-app-SEC"]["cost_usd"])
-        self.assertNotIn("status", rows["review-app-SEC"])
-        cut = rows["review-app-ACC"]
-        self.assertEqual(ledger_mod.CANCELLED, cut["status"])
-        self.assertIs(True, cut["rolled_back"])
-        self.assertIsNone(cut["cost_usd"])
-        self.assertFalse(cut["ok"])
+        rows = ledger_mod.Ledger(runner.run_dir).lines()
+        self.assertEqual([("review-app-SEC", None),          # the real, paid launch
+                          ("review-app-SEC", ledger_mod.ROLLED_BACK),
+                          ("review-app-ACC", ledger_mod.CANCELLED)],
+                         [(row["entry_id"], row.get("status")) for row in rows])
+        paid, marker, cut = rows
+        # the paid row is untouched: its shape and its spend are what they were
+        self.assertEqual(0.01, paid["cost_usd"])
+        self.assertNotIn("rolled_back", paid)
+        # ...and the marker beside it says the artifact that spend bought is gone
+        for row in (marker, cut):
+            self.assertIs(True, row["rolled_back"])
+            self.assertIsNone(row["cost_usd"])
+            self.assertFalse(row["ok"])
         # ...and usage.json still counts the tokens that were really spent
         usage = runio._load_json(os.path.join(runner.run_dir, "usage.json"))
         self.assertEqual(110, usage["total"])

@@ -22,10 +22,13 @@ PHASE_OF_CHECKPOINT = {"scout": "scout", "review": "review", "verify": "verify",
                        "scan": "unattributed"}          # R-P6-9: collect_usage.PHASES keys
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
-# #1662: the `status` a row written for an entry the interrupt CUT carries.
-# One owner, because `orchestrate.loop` writes it and the run's history is read
-# back through it.
+# #1662: the two `status` values the interrupt's own rows carry -- `CANCELLED`
+# for an entry it cut before it completed, `ROLLED_BACK` for the marker beside
+# an entry that HAD completed and whose artifacts were then taken back. One
+# owner, because `orchestrate.loop` writes them and the run's history is read
+# back through them.
 CANCELLED = "cancelled"
+ROLLED_BACK = "rolled_back"
 
 
 class Ledger:
@@ -99,6 +102,40 @@ class Ledger:
         # symlink confinement every other run-folder write goes through.
         with runio._open_a_nofollow(self.path) as fh:
             fh.write(text + "\n")
+
+    def rollback_rows(self, entries, completed, checkpoint, mode, host):
+        """Write the interrupt's rows for one rolled-back batch (#1662): one
+        per entry, through `record`, which is still the ledger's only writer.
+
+        Two kinds, because an interrupted batch leaves two kinds of entry
+        behind and a reader has to be able to tell them apart:
+
+        * an entry that never completed is `CANCELLED` -- it was cut, and
+          nothing was spent on it that the host reported;
+        * an entry that HAD completed gets a `ROLLED_BACK` marker BESIDE its
+          real row. The real row is untouched: it carries the spend, and spend
+          is a fact. But without the marker nothing in the file says that the
+          artifact that row paid for was then deleted, so a reader totting up
+          what the run produced would count a findings file that is not there.
+
+        Appended, never retro-edited: `dispatch-ledger.jsonl` is append-only,
+        and rewriting a line that is already evidence is how a ledger stops
+        being one. Both kinds carry no cost and `ok: false`, so `total_cost`,
+        `usage_document` (`corrupt_rows` included) and the usage probe's own
+        `ok`-filtered read all answer exactly what they did before.
+        """
+        completed = set(completed or ())
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            eid = entry.get("id")
+            cut = eid not in completed
+            self.record(entry, checkpoint,
+                        runners_base.RunResult.failed(
+                            eid, "cancelled (Ctrl-C) before it completed" if cut
+                            else "rolled back (Ctrl-C): this entry's artifacts were removed"),
+                        mode, host,
+                        status=CANCELLED if cut else ROLLED_BACK, rolled_back=True)
 
     def _rows(self):
         """`(line_no, row, reason)` per ledger line (money.read_rows).
