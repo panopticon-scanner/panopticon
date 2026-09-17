@@ -1,11 +1,35 @@
 import os
+import shutil
 import tempfile
 import types
 import unittest
 from unittest import mock
 
+import pytest
+
 import file_issues
 import triage
+
+
+@pytest.fixture(autouse=True)
+def _resolvable_gh():
+    """A `gh` on the TRUSTED path, so `_gh_bin()` can resolve one.
+
+    #1650 R1: `file_issues._gh_bin` now goes through `triage.gh_bin`, which
+    REFUSES rather than falling back to a bare `gh` -- this module creates
+    public issues as the automation account, so an unresolvable CLI must stop
+    it. Every test here injects a fake runner, so the stub is resolved and
+    never launched; it exists to let argv construction be exercised on a
+    machine (CI included) that has no gh installed.
+    """
+    directory = tempfile.mkdtemp(prefix="trusted-bin-")
+    path = os.path.join(directory, "gh")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\nexit 97\n")       # resolved, never run
+    os.chmod(path, 0o755)
+    with mock.patch.object(triage, "TRUSTED_PATH", directory):
+        yield path
+    shutil.rmtree(directory, ignore_errors=True)
 
 
 def _completed(returncode=0, stdout="", stderr=""):
