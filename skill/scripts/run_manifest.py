@@ -6,13 +6,23 @@ PROGRESS never does — the driver re-derives the phase cursor from artifact
 presence. The manifest is written once by the first `driver run`; a conflicting
 flag on re-invocation is refused.
 
-ONE deliberate exception (#1637 P08 F2): `flags.tools` may be relaxed to False
-on a run already in flight — `record_tools_downgrade` — because the alternative
-was `--reset`, i.e. discarding every paid scout, as the only exit from a
-scanner environment that moved mid-run. It is recorded, not silent: the
-previous value and a timestamp land in `flag_changes`, and the report discloses
-it. The reverse (False -> True) is still refused as drift. See
-docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md §3.
+TWO deliberate exceptions rewrite it, both through the one atomic `_rewrite`,
+and neither is an anti-drift key:
+
+1. `flags.tools` may be relaxed to False on a run already in flight —
+   `record_tools_downgrade` (#1637 P08 F2) — because the alternative was
+   `--reset`, i.e. discarding every paid scout, as the only exit from a scanner
+   environment that moved mid-run. It is recorded, not silent: the previous
+   value and a timestamp land in `flag_changes`, and the report discloses it.
+   The reverse (False -> True) is still refused as drift. See
+   docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md §3.
+2. `posture_disclosed` records that this run's full host-posture block has been
+   printed — `record_posture_disclosure` (#1596). It is the one `.panopticon`
+   file with an anti-forgery guard, which is why the decision reads off it and
+   not off `host-capabilities.json`; it holds what the operator has been TOLD,
+   not a run parameter, so the manifest is a record here rather than config.
+   The nearest thing to PROGRESS this file carries, and deliberately not it: a
+   lost value costs one repeated disclosure, never a re-run phase.
 """
 import datetime
 import json

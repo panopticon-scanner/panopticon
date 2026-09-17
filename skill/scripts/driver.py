@@ -377,8 +377,23 @@ def _disclose_posture(review_root, manifest, fresh):
     since = run_manifest.posture_disclosed_at(manifest, digest)
     _emit_posture_disclosure(fresh, since=since)
     if since is None and os.path.isfile(run_manifest.manifest_path(review_root)):
-        run_manifest.record_posture_disclosure(review_root, manifest, digest,
-                                               fresh.get("probed_at"))
+        try:
+            run_manifest.record_posture_disclosure(review_root, manifest, digest,
+                                                   fresh.get("probed_at"))
+        except OSError as exc:
+            # The stamp is EXPENDABLE, and a stamp that cannot be written must
+            # not be the thing that kills an invocation. Losing it costs one
+            # repeated block next time; raising costs the whole call -- and on
+            # the shadow-refusal path below this is the only write in this
+            # function (the artifact write is past the refusal), so an
+            # unwrapped OSError turned a clean "refusing to run" status into a
+            # traceback with no JSON behind it. Said on stderr rather than
+            # swallowed: a run directory that has stopped accepting writes is
+            # something the operator wants to know before synthesis tries.
+            sys.stderr.write(
+                "driver: could not record the posture disclosure stamp (%s: %s)"
+                " -- the full block will print again next invocation\n"
+                % (type(exc).__name__, exc))
 
 
 def _establish_host_posture(review_root, manifest, args, *, registration_dir=None):

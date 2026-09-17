@@ -1430,6 +1430,39 @@ class TestThePostureBlockIsSaidInFullOncePerPosture(unittest.TestCase):
         for key in run_manifest._EPHEMERAL_KEYS:
             self.assertNotIn(key, stamped)
 
+    def test_a_stamp_that_cannot_be_written_does_not_abort_the_run(self):
+        # R1 Minor 7. `record_posture_disclosure`'s own docstring argues the
+        # value is expendable -- "the worst a lost or corrupted value can do is
+        # print the block again" -- but an OSError from that write escaped
+        # `driver.run` and killed the invocation with a traceback and no JSON
+        # status. On the shadow-refusal path it is now the ONLY write in
+        # `_establish_host_posture` (the artifact write is below the refusal),
+        # so a failure there turned a clean "refusing to run" into a traceback.
+        review_root = self._run_root()
+        self._invoke(review_root)                 # invocation 1, writable
+        pano = runio._pano(review_root)
+        moved = copy.deepcopy(self.ARTIFACT)      # operational move -> full block again
+        moved["capabilities"][hosts.USAGE_LEDGER] = {
+            "state": hosts.REFUTED, "by": "usage-source",
+            "detail": "the envelope stopped carrying `usage`"}
+        mode = os.stat(pano).st_mode
+        os.chmod(pano, 0o555)
+        self.addCleanup(os.chmod, pano, mode)
+        probe = os.path.join(pano, "still-writable")
+        try:
+            with open(probe, "w", encoding="utf-8"):
+                pass
+        except OSError:
+            pass
+        else:
+            os.remove(probe)
+            self.skipTest("this process can write a read-only directory (root?)")
+        error, out = self._invoke(review_root, moved)
+        self.assertIsNone(error, "a lost stamp must not stop the run")
+        self.assertIn("could not record the posture disclosure", out)
+        # ...and the disclosure it could not record was still made in full.
+        self.assertIn("the envelope stopped carrying", out)
+
     def test_a_planted_artifact_cannot_suppress_the_first_disclosure(self):
         # The target-writable file. `.panopticon/runs/<tag>/` is `git add -f`-able,
         # so a hostile tree can pre-commit an artifact that matches whatever the
