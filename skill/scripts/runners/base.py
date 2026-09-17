@@ -316,7 +316,8 @@ class HostRunner:
            entries that is minutes of work paid for and thrown away.
         2. `terminate_children()`, which ends what is already RUNNING rather
            than waiting it out. This runs BEFORE the loop tears the guard
-           files down (`orchestrate._finish` does that, after this returns),
+           files down (`orchestrate._rolled_back` does that on the interrupt
+           path, `_finish` otherwise -- both after this returns),
            because a child that outlived its guard would run unconfined --
            the ordering `tests/runners/test_kimi.py` pins.
         3. a BOUNDED wait on the workers that were holding those children
