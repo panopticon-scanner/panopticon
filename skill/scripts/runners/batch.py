@@ -13,11 +13,18 @@ So the loop writes the list down BEFORE its first submit, and the rollback
 deletes that list and nothing else.
 
 The document lives at `runs/<tag>/batch-<n>.json`, beside the ledger and the
-guard files; a batch that finishes without an interrupt deletes it, so a
-manifest on disk means a batch that did not. One left behind is a run that
-was killed outright (SIGKILL, a power loss): it is a RECORD for the operator,
-not an instruction -- nothing applies it on a later invocation, because a
-rollback nobody is watching is what `--reset` is for.
+guard files; a batch that finishes -- cleanly or rolled back -- deletes it, so
+a manifest on disk means a batch that did neither: a run killed outright
+(SIGKILL, a power loss), which reaches no teardown at all.
+
+Such a leftover is a RECORD, not an instruction. Nothing applies it on a later
+invocation -- a rollback nobody is watching is what `--reset` is for -- and it
+is not durable either: `<n>` is the loop's iteration counter, so the next
+`driver loop` on this run opens batch 1 again and `open()` OVERWRITES it. An
+operator who wants to know what a killed run had in flight has to read the
+file BEFORE re-running. Keeping it across runs means naming manifests so they
+cannot collide and deciding what a resume owes a stale one; that is a
+follow-up, and deliberately not smuggled in here.
 
 It lives in `runners/` rather than in `phases/` because `tests/test_layout.py`
 forbids `runners/* -> phases` imports and the loop is what calls both halves
