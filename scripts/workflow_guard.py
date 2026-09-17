@@ -18,13 +18,20 @@ for exactly this act (ten artifact fetches, every one `sha256sum -c`'d) and
   artifact cleared a later `curl -o payload; chmod +x payload`.
 
 A regex over shell text reports a clean pass on every form it cannot parse,
-which is the worst answer a control can give -- so this module parses the
-shell instead, as much of it as the question needs: comments dropped,
-`\\`-continuations, heredocs and `$(...)`/`<(...)`/backtick substitutions
-lifted out, statements split quote-aware on `;`, `&&`, `||`, `|` and newlines,
-argv from `shlex`. Then two questions of the result: which statements FETCH,
-and which statements CHECK what a fetch wrote -- naming that path, carrying a
-digest, before the statement that first uses it.
+which is the worst answer a control can give -- so the guard parses the shell
+instead. `scripts/shell_reader.py` does that half (comments, continuations,
+heredocs, substitutions, quoting, redirections, separators, wrappers); this
+module asks the two supply-chain questions of the result: which statements
+FETCH, and which statements CHECK what a fetch wrote -- naming that path,
+carrying a digest, in a position where the check's failure still stops the
+job, before the statement that first uses it.
+
+The scope is the JOB, not the step (`job_defects`): steps in one job share the
+workspace, /tmp and PATH, so a download in step A and the `chmod +x`/run in
+step B is one act split into two innocent halves, and a `sha256sum -c` in a
+later step is a real check of an earlier step's file. A step whose `shell:` is
+not bash/sh (pwsh, python, cmd) is reported UNREAD rather than clean -- the
+same act in a grammar this module does not have.
 
 Stdlib only, so the test suite imports it with no dependency (`import
 workflow_guard` -- repo-root `scripts/` is on the path via tests/conftest.py).
@@ -37,21 +44,32 @@ this module to every `run:` step in the fleet and `ci.yml` runs the suite on
 every PR, so a second invocation would be the same assertion wearing a
 different hat -- and one that can rot out of step with the first.
 
-What it does not model, and how each gap falls: variable expansion
-(`${VERSION}`, `$TMP` stay literal -- the guard tracks the NAME a step writes,
-so a checksum naming the same variable binds, and a path that is spelled
-differently each time never matches anything, including its own use), globs in
-a `chmod`, and fetchers other than curl/wget (`gh release download`,
-`aws s3 cp`). The standing requirement on every one of them is to fail CLOSED:
-an unparsed form must be REPORTED, never silently accepted, which is precisely
-what the two regexes did not do. `tests/test_workflow_guard.py` states each
-form that was probed and found open before it was parsed.
+What it does not model. Within the shell it reads, the standing requirement is
+to fail CLOSED -- an unparsed form must be REPORTED, not accepted, which is
+precisely what the two regexes did not do, and `tests/test_workflow_guard.py`
+states every form that was probed and found open before it was parsed. Two
+classes fall outside that and are accepted SILENT gaps, deliberately:
+
+* fetchers that are not curl/wget -- `gh release download`, `aws s3 cp`,
+  `python3 -c "...urlretrieve..."`, an action that downloads for you. Reporting
+  every command that might reach the network would be noise, not a gate, and
+  the `uses:` pin rule covers the action half. If one of these lands in a
+  workflow, the fetch-and-exec rule will not see it.
+* variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
+  tracks the NAME a step writes. A checksum naming the same variable binds; a
+  path spelled differently at fetch and at use matches nothing, including its
+  own use, so that download goes unseen.
+
+Also unmodelled and reported-not-accepted: a `chmod` over a glob, and `if`
+branches (a fetch inside one is a fetch).
 """
 import collections
 import os
 import re
-import shlex
 import sys
+
+import shell_reader
+from shell_reader import command, negated, statements
 
 # A download: the tool that ran, the URL it was given, the file it lands in
 # (None = standard output, which is the pipe-to-shell shape), and the argv of
@@ -60,13 +78,12 @@ Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 
 # One shell command: its argv, the files it redirects into / reads from, the
 # heredoc body attached to it, and the command substitutions inside it -- the
-# `$(...)`, `<(...)` and backtick texts, which are commands in their own right
-# and where `eval "$(curl ...)"` hides its download.
-Stage = collections.namedtuple("Stage", "argv writes reads heredoc substitutions")
-# One `;`/`&&`/`||`/newline-separated statement: its pipeline stages, in order.
-Statement = collections.namedtuple("Statement", "stages")
+Step = collections.namedtuple("Step", "name script shell", defaults=(None,))
 
 FETCHERS = ("curl", "wget")
+# The shells this module has a grammar for. Anything else is reported unread.
+PARSED_SHELLS = ("bash", "sh")
+UNNAMED = "<unnamed step>"
 CHECKSUM_TOOLS = ("sha256sum", "sha512sum", "sha384sum", "shasum")
 INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
                 "perl", "ruby", "node", "php", "pwsh", "eval", "source", ".")
@@ -79,27 +96,13 @@ EXECUTORS = INTERPRETERS + UNPACKERS
 # name for the rest of the job.
 BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/usr/local/sbin", "/usr/sbin",
             "/opt/bin", "/bin", "/sbin")
-# Leading words that are not the command: `sudo`, `env FOO=1`, `timeout 300`.
-WRAPPERS = ("sudo", "command", "exec", "nohup", "nice", "stdbuf", "env",
-            "time", "timeout", "xargs", "doas")
-# Shell keywords that stand in FRONT of the command: `if curl ...; then`,
-# `while true; do /tmp/payload; done`. Statements are split on `;`, so each of
-# these arrives as the first word of the statement it introduces -- and a guard
-# that reads `if` as the command sees neither the fetch nor the use.
-KEYWORDS = ("if", "then", "elif", "else", "fi", "do", "done", "while", "until",
-            "for", "case", "esac", "in", "!", "{", "}")
-
-_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
-_REDIRECT = re.compile(r"^(\d*)(>>|>|<)(.*)$")
-_HEREDOC_OP = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
-_HEREDOC_REF = re.compile(r"^@@heredoc(\d+)@@$")
-_SUBST_REF = re.compile(r"@@subst(\d+)@@")
-_SUBST_OPEN = re.compile(r"\$\(|<\(|>\(")
-# An expected digest: a literal, or the variable a workflow pins one in
+# An expected digest: a hex literal, or the variable a workflow pins one in
 # (`${HADOLINT_SHA256}`, `$SHA`). Naming a file is not checking it -- something
-# in the checked line has to BE the expectation.
-_DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
+# in the checked line has to BE the expectation -- and ANY expansion is not
+# good enough either: `echo "$FILE  /tmp/payload" | sha256sum -c -` carries a
+# path where the digest belongs, so the name has to say digest.
+_DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
+                     r"|\$\{?\w*(?:SHA|SUM|DIGEST|HASH|CHECKSUM)\w*\}?", re.I)
 
 # curl and wget spell the same options differently, and the difference is
 # load-bearing: curl's `-o` is the output file, wget's `-o` is the LOG file and
@@ -135,251 +138,6 @@ _DIR_LONG = {"curl": ("output-dir",), "wget": ("directory-prefix",)}
 _DIR_SHORT = {"curl": "", "wget": "P"}
 _STDOUT = ("-", "/dev/stdout", "/dev/fd/1", "/dev/null")
 _UNSET = object()
-
-
-# --- reading the shell -------------------------------------------------------
-
-def without_comments(script):
-    """The script with whole-line comments dropped.
-
-    Half this repo's workflow prose QUOTES the command it is explaining, and a
-    guard that reads its own documentation as an act flags the explanation.
-    Shared with `tests/test_workflow_pins.py`'s install rule, which learned the
-    same lesson (#1641).
-    """
-    return "\n".join(line for line in script.splitlines()
-                     if not line.lstrip().startswith("#"))
-
-
-def join_continuations(script):
-    """`\\`-continuations folded in, so a fetch written across four lines reads
-    as the one command it is."""
-    return re.sub(r"\\\n\s*", " ", script)
-
-
-def _lift_heredocs(text):
-    """(text with each heredoc body replaced by a `@@heredocN@@` token, bodies).
-
-    `sha256sum -c <<EOF ... EOF` is one of the two ways a step writes down what
-    it expects, so the body has to reach the checker rather than being parsed
-    as a dozen stray statements.
-    """
-    lines, bodies, out, i = text.splitlines(), [], [], 0
-    while i < len(lines):
-        line = lines[i]
-        m = _HEREDOC_OP.search(line)
-        if not m:
-            out.append(line)
-            i += 1
-            continue
-        word, body, j = m.group("word"), [], i + 1
-        while j < len(lines) and lines[j].strip() != word:
-            body.append(lines[j])
-            j += 1
-        if j >= len(lines):
-            # No terminator: this `<<` is text inside a string, not a heredoc
-            # (`echo "shift << 2"`). Swallowing the rest of the script as a
-            # body would hide every statement after it.
-            out.append(line)
-            i += 1
-            continue
-        bodies.append("\n".join(body))
-        out.append("%s @@heredoc%d@@ %s"
-                   % (line[:m.start()], len(bodies) - 1, line[m.end():]))
-        i = j + 1
-    return "\n".join(out), bodies
-
-
-def _closing(text, opening):
-    """Index just past the `)` that closes the group opening at `opening`."""
-    depth, i, quote = 0, opening, None
-    while i < len(text):
-        ch = text[i]
-        if quote:
-            if ch == quote:
-                quote = None
-        elif ch in "'\"":
-            quote = ch
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if not depth:
-                return i + 1
-        i += 1
-    return None
-
-
-def _lift_substitutions(text):
-    """(text with each substitution replaced by a `@@substN@@` token, inners).
-
-    `$(...)`, `<(...)` and backticks are commands, and a `|` or `;` inside one
-    belongs to THAT command, not to the statement around it -- so they come out
-    before the statement split, and go back in as commands of their own. This is
-    where `eval "$(curl -fsSL ... )"` and `bash <(curl ...)` keep their fetch.
-    """
-    inners, out, i, quote = [], [], 0, None
-    while i < len(text):
-        ch = text[i]
-        if quote == "'":                        # single quotes suppress all of it
-            out.append(ch)
-            quote = None if ch == "'" else quote
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < len(text):
-            out.append(text[i:i + 2])
-            i += 2
-            continue
-        if ch in "'\"":
-            quote = None if quote == ch else ch
-            out.append(ch)
-            i += 1
-            continue
-        if ch == "`":
-            end = text.find("`", i + 1)
-            if end != -1:
-                inners.append(text[i + 1:end])
-                out.append("@@subst%d@@" % (len(inners) - 1))
-                i = end + 1
-                continue
-        opening = _SUBST_OPEN.match(text, i)
-        if opening:
-            end = _closing(text, opening.end() - 1)
-            inner = text[opening.end():end - 1] if end else ""
-            if end and not inner.startswith("("):   # `$((...))` is arithmetic
-                inners.append(inner)
-                out.append("@@subst%d@@" % (len(inners) - 1))
-                i = end
-                continue
-        out.append(ch)
-        i += 1
-    return "".join(out), inners
-
-
-def _split(text):
-    """[[stage text, ...], ...]: statements, each a list of pipeline stages.
-
-    Quote-aware by hand rather than by regex, because the whole defect being
-    fixed is a regex that could not tell a `|` inside a URL from a pipeline.
-    """
-    statements, stages, buf = [], [], []
-    quote, at_token_start, i, n = None, True, 0, len(text)
-
-    def end_stage():
-        stages.append("".join(buf))
-        del buf[:]
-
-    def end_statement():
-        end_stage()
-        if any(s.strip() for s in stages):
-            statements.append(list(stages))
-        del stages[:]
-
-    while i < n:
-        ch = text[i]
-        if quote:
-            buf.append(ch)
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch in "'\"":
-            quote, at_token_start = ch, False
-            buf.append(ch)
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < n:
-            buf.append(ch)
-            buf.append(text[i + 1])
-            at_token_start, i = False, i + 2
-            continue
-        if ch == "#" and at_token_start:
-            while i < n and text[i] != "\n":
-                i += 1
-            continue
-        prev = "".join(buf[-1:]).strip()
-        if ch in "&|" and (prev in (">", "&") or text[i:i + 2] == "&>"):
-            buf.append(ch)                      # `2>&1`, `&>log`: a redirection
-            at_token_start, i = False, i + 1
-            continue
-        if ch == "|" and text[i:i + 2] != "||":
-            end_stage()
-            at_token_start, i = True, i + 1
-            continue
-        if ch in ";\n&|":
-            end_statement()
-            at_token_start = True
-            i += 2 if text[i:i + 2] in ("&&", "||") else 1
-            continue
-        buf.append(ch)
-        at_token_start = ch.isspace()
-        i += 1
-    end_statement()
-    return statements
-
-
-def _stage(text, bodies, inners):
-    """One pipeline stage, with its redirections, heredoc and substitutions
-    lifted out."""
-    try:
-        tokens = shlex.split(text)
-    except ValueError:                          # an unbalanced quote
-        tokens = text.split()
-    argv, writes, reads, heredoc, pending = [], [], [], None, None
-    substitutions = []
-    for token in tokens:
-        if pending is not None:
-            (writes if pending else reads).append(token)
-            pending = None
-            continue
-        ref = _HEREDOC_REF.match(token)
-        if ref:
-            heredoc = bodies[int(ref.group(1))]
-            continue
-        redirect = _REDIRECT.match(token)
-        if redirect:
-            target, is_write = redirect.group(3), redirect.group(2) != "<"
-            if target:
-                (writes if is_write else reads).append(target)
-            else:
-                pending = is_write
-            continue
-        substitutions.extend(inners[int(n)] for n in _SUBST_REF.findall(token))
-        argv.append(token)
-    return Stage(argv, writes, reads, heredoc, substitutions)
-
-
-def statements(script):
-    """Every statement in a `run:` script, in order, as parsed stages."""
-    text, bodies = _lift_heredocs(join_continuations(without_comments(script)))
-    text, inners = _lift_substitutions(text)
-    out = []
-    for raw in _split(text):
-        stages = [_stage(s, bodies, inners) for s in raw]
-        if any(s.argv for s in stages):
-            out.append(Statement(stages))
-    return out
-
-
-def command(argv):
-    """`argv` with the wrappers stripped: `sudo mv x y` -> `mv x y`."""
-    argv = list(argv)
-    while argv:
-        if _ASSIGNMENT.match(argv[0]) and not argv[0].startswith("-"):
-            argv.pop(0)
-            continue
-        if argv[0] in KEYWORDS:
-            argv.pop(0)
-            continue
-        head = os.path.basename(argv[0])
-        if head not in WRAPPERS:
-            break
-        argv.pop(0)
-        while argv and argv[0].startswith("-"):
-            argv.pop(0)
-        if head == "timeout" and argv and _DURATION.match(argv[0]):
-            argv.pop(0)
-    return argv
 
 
 # --- which statements fetch --------------------------------------------------
@@ -490,7 +248,7 @@ def _substituted(argv, stage):
     """Every fetch inside this stage's command substitutions, credited to the
     command that CONSUMES it -- `eval`, `sh -c`, `bash <(...)` -- because that
     is what decides whether the downloaded bytes become behaviour."""
-    consumer = tuple(t for t in argv if not _SUBST_REF.search(t)) or None
+    consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
     executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
     found = []
     for inner in stage.substitutions:
@@ -515,13 +273,25 @@ def _same_file(token, path):
 def _names(content, dest):
     """Does this checked text name `dest`?
 
-    Word-exact against the path or its basename -- a checksum list legitimately
-    carries bare names -- and NEVER a substring match: `/tmp/payload-old` must
-    not clear `/tmp/payload`.
+    Word-exact against the path, and NEVER a substring match: `/tmp/payload-old`
+    must not clear `/tmp/payload`. A checksum list legitimately carries bare
+    names, so a BARE dest may also be matched by its basename -- but only a
+    bare one: with a directory in the dest, `x.sh` is a different file, and
+    accepting it is the unbound checksum this rule exists to refuse, wearing a
+    shorter path.
     """
     base = os.path.basename(dest)
-    return any(_same_file(word, dest) or (base and _same_file(word, base))
+    bare = not os.path.dirname(dest)
+    return any(_same_file(word, dest)
+               or (bare and base and _same_file(word, base))
                for word in content.split())
+
+
+# A check whose non-zero exit nobody sees is not a check. Runners default to
+# `bash -e -o pipefail`, which is what makes `sha256sum -c` a GATE -- these
+# three shapes take that away, and the guard has to read the shell around the
+# command rather than just the command.
+_SWALLOWING = ("||", "&")
 
 
 def _has_check_flag(argv):
@@ -583,6 +353,8 @@ def _checks(stmts):
                 continue
             if not _has_check_flag(argv):
                 continue
+            if statement.separator in _SWALLOWING or negated(stage.argv):
+                continue                        # its failure goes nowhere
             text = _checked_text(statement, position, stage, argv, written)
             if text and _DIGEST.search(text):
                 found.append((index, text))
@@ -600,18 +372,22 @@ def _uses(stmts, dest, after):
         if index < after:
             continue
         for position, stage in enumerate(statement.stages):
-            how = _use(statement, position, command(stage.argv), dest)
+            how = _use(statement, position, stage, command(stage.argv), dest)
             if how:
                 out.append((index, how))
                 break
     return out
 
 
-def _use(statement, position, argv, dest):
+def _use(statement, position, stage, argv, dest):
     if not argv:
         return None
     name, rest = os.path.basename(argv[0]), argv[1:]
     mentions = [t for t in rest if _same_file(t, dest)]
+    if name in INTERPRETERS and any(_same_file(r, dest) for r in stage.reads):
+        # `bash < payload`, `sh -s -- --yes < payload`: the file is never an
+        # argument, so argv alone shows an interpreter with nothing after it.
+        return "running it under `%s` from standard input" % name
     if name == "chmod" and mentions:
         modes = [t for t in rest if re.fullmatch(r"[0-7]{3,4}", t)]
         if any(t.startswith("+") and "x" in t for t in rest) or any(
@@ -639,20 +415,14 @@ def _use(statement, position, argv, dest):
 
 # --- the rule ----------------------------------------------------------------
 
-def _readable(text):
-    """A lifted substitution back in a shape a human recognises, for the
-    message: `-o $(mktemp)` should not be reported as `-o @@subst0@@`."""
-    return _SUBST_REF.sub("$(...)", text) if text else text
-
-
 def _describe(fetch):
-    return "%s -> %s" % (_readable(fetch.url) or "an unparsed URL",
-                         _readable(fetch.dest))
+    return "%s -> %s" % (shell_reader.readable(fetch.url) or "an unparsed URL",
+                         shell_reader.readable(fetch.dest))
 
 
 def _remedy(dest):
     return ('verify it first: `echo "<sha256>  %s" | sha256sum -c -` between '
-            "the download and that use" % _readable(dest))
+            "the download and that use" % shell_reader.readable(dest))
 
 
 def _defect(fetch, index, stmts, checks):
@@ -668,8 +438,8 @@ def _defect(fetch, index, stmts, checks):
         # shell (`curl ... | sh`, `eval "$(curl ...)"`, `bash <(curl ...)`).
         return ("hands %s straight to `%s`, so there is no file to check -- "
                 "download it to a file, `sha256sum -c` that file, then run it"
-                % (_readable(fetch.url) or "a download",
-                   _readable(" ".join(fetch.piped_to))))
+                % (shell_reader.readable(fetch.url) or "a download",
+                   shell_reader.readable(" ".join(fetch.piped_to))))
     uses = _uses(stmts, fetch.dest, after=index)
     if not uses:
         return None                             # fetched and only read: not this rule
@@ -680,26 +450,32 @@ def _defect(fetch, index, stmts, checks):
     if naming:
         # Ordering is the substance: a checksum that runs after the bytes are
         # made runnable is theatre.
-        return ("verifies %s only AFTER %s" % (_readable(fetch.dest), how))
+        return ("verifies %s only AFTER %s -- fetches %s, so %s"
+                % (shell_reader.readable(fetch.dest), how, _describe(fetch),
+                   _remedy(fetch.dest)))
     if [i for i, _text in checks if i > index]:
         return ("fetches %s and %s; the step's checksum does not name %s, and a "
                 "checksum of a different file verifies nothing -- %s"
-                % (_describe(fetch), how, _readable(fetch.dest),
+                % (_describe(fetch), how, shell_reader.readable(fetch.dest),
                    _remedy(fetch.dest)))
     return ("fetches %s and %s with nothing verifying what arrived -- %s"
             % (_describe(fetch), how, _remedy(fetch.dest)))
 
 
-def fetch_exec_defects(script):
-    """Every unverified fetch-and-execute in one `run:` script."""
-    stmts = statements(script)
+def _defects(stmts):
+    """[(statement index, why)] for every unverified fetch in parsed shell."""
     checks = _checks(stmts)
     found = []
     for index, fetch in _fetch_records(stmts):
         why = _defect(fetch, index, stmts, checks)
         if why:
-            found.append(why)
+            found.append((index, why))
     return found
+
+
+def fetch_exec_defects(script):
+    """Every unverified fetch-and-execute in one `run:` script."""
+    return [why for _index, why in _defects(statements(script))]
 
 
 def fetch_exec_defect(script):
@@ -707,16 +483,83 @@ def fetch_exec_defect(script):
     return "; ".join(fetch_exec_defects(script)) or None
 
 
-def run_steps(doc):
-    """[(step name, run text)] for every `run:` step in a parsed workflow."""
-    steps = []
-    for job in (doc.get("jobs") or {}).values():
+def job_defects(steps):
+    """[(step name, why)] for one job's `run:` steps, folded in order.
+
+    THE SCOPE IS THE JOB, not the step. Steps in a job share the workspace,
+    /tmp and PATH, so `curl -o /tmp/x` in step A and `chmod +x /tmp/x; /tmp/x`
+    in step B is one fetch-and-exec written across two innocent-looking steps
+    -- and a rule scoped to a single `run:` block sees neither half. The same
+    sharing is what makes a `sha256sum -c` in a later step a real check of an
+    earlier step's download, so the fold has to run both ways.
+
+    Parsed STATEMENTS are concatenated, never the texts: each step is its own
+    shell invocation, so one step's stray quote or unterminated heredoc must
+    not reach into the next step's parse. Each defect is attributed to the step
+    that performed the fetch.
+    """
+    stmts, owner, found = [], [], []
+    for item in steps:
+        step = item if isinstance(item, Step) else Step(*item)
+        why = unparseable(step.shell)
+        if why:
+            found.append((step.name, why))
+            continue
+        for statement in statements(step.script):
+            stmts.append(statement)
+            owner.append(step.name)
+    found.extend((owner[index], why) for index, why in _defects(stmts))
+    return found
+
+
+def unparseable(shell):
+    """Why this step's shell is not one this guard reads, or None.
+
+    A `pwsh`, `python` or `cmd` step is not CLEAN, it is UNREAD, and the two
+    answers must not look alike: `Invoke-WebRequest x.exe; ./x.exe` is the same
+    act in a shell this parser has no grammar for.
+    """
+    words = (shell or "").split()
+    if not words or os.path.basename(words[0]) in PARSED_SHELLS:
+        return None
+    return ("runs under `%s`, which this guard does not parse -- it cannot say "
+            "whether the step downloads and executes anything; write it in "
+            "bash/sh, or exempt the step with a reason" % shell)
+
+
+def _default_shell(node):
+    """`defaults: {run: {shell: ...}}` on a workflow or a job, or None."""
+    defaults = node.get("defaults") if isinstance(node, dict) else None
+    run = defaults.get("run") if isinstance(defaults, dict) else None
+    return run.get("shell") if isinstance(run, dict) else None
+
+
+def run_jobs(doc):
+    """[(job id, [Step, ...])] -- each job's `run:` steps, in order.
+
+    The shell is resolved the way Actions resolves it: the step's own `shell:`,
+    else the job's `defaults.run.shell`, else the workflow's, else the runner
+    default (bash on Linux, which is what this guard parses).
+    """
+    jobs = []
+    for name, job in (doc.get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue
+        steps = []
         for step in job.get("steps") or []:
-            if isinstance(step, dict) and step.get("run"):
-                steps.append((step.get("name") or "<unnamed step>", step["run"]))
-    return steps
+            if not isinstance(step, dict) or not step.get("run"):
+                continue
+            shell = (step.get("shell") or _default_shell(job)
+                     or _default_shell(doc))
+            steps.append(Step(step.get("name") or UNNAMED, step["run"], shell))
+        if steps:
+            jobs.append((name, steps))
+    return jobs
+
+
+def run_steps(doc):
+    """Every `run:` step in a parsed workflow, in job order."""
+    return [step for _job, steps in run_jobs(doc) for step in steps]
 
 
 def main(argv=None, out=print):
@@ -731,9 +574,10 @@ def main(argv=None, out=print):
     for path in paths:
         with open(path, encoding="utf-8") as handle:
             doc = yaml.safe_load(handle.read()) or {}
-        for name, script in run_steps(doc):
-            for why in fetch_exec_defects(script):
-                defects.append("%s / %s -- %s" % (os.path.basename(path), name, why))
+        for job, steps in run_jobs(doc):
+            for name, why in job_defects(steps):
+                defects.append("%s / %s / %s -- %s"
+                               % (os.path.basename(path), job, name, why))
     for line in defects:
         out(line)
     if defects:

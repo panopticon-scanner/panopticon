@@ -17,13 +17,13 @@ import unittest
 import yaml
 
 from conftest import REPO_ROOT
-from workflow_guard import fetch_exec_defect, fetches, run_steps
-# #1641's comment-stripper, now shared with the fetch rule's parser: half
-# this repo's workflow and Dockerfile prose QUOTES the commands it explains
-# -- including the two the install rule was written for -- and a guard that
-# reads a comment as an act flags the explanation. `tests/test_security_
-# workflow.py` imports this name from this module.
-from workflow_guard import without_comments as _without_comments
+from workflow_guard import fetches, job_defects, run_jobs
+# #1641's comment-stripper, now `scripts/shell_reader.py`'s: half this repo's
+# workflow and Dockerfile prose QUOTES the commands it explains -- including
+# the two the install rule was written for -- and a guard that reads a comment
+# as an act flags the explanation. One definition, two rules.
+# `tests/test_security_workflow.py` imports this name from this module.
+from shell_reader import without_comments as _without_comments
 
 WORKFLOW_DIR = os.path.join(REPO_ROOT, ".github", "workflows")
 
@@ -106,9 +106,15 @@ def _workflow_files():
 # download in it -- both failing open, over every workflow in the fleet. What
 # remains here is the fleet APPLICATION of that rule, beside the two sibling
 # supply-chain rules (`uses:` pins above, `pip install` below) it shares a
-# workflow reader and a posture check with.
+# workflow reader and a posture check with. Applied per JOB, not per step:
+# steps in a job share the workspace and /tmp, so `curl -o /tmp/x` in one step
+# and `chmod +x /tmp/x; /tmp/x` in the next is one fetch-and-exec that no
+# per-step reading can see -- and a checksum in a later step is a real check
+# of an earlier step's download.
 #
-# (workflow, step name, why it may fetch and execute unverified). EMPTY, and
+# (workflow, step name, why it may fetch and execute unverified) -- the step
+# name is the one the DEFECT is reported against, which is the step that
+# fetched (or, for an unparseable shell, the step that runs it). EMPTY, and
 # the shape is here so it cannot be filled in silently: an exemption is a named
 # step carrying a written reason, and it is checked in both directions below --
 # one that stops firing is stale and fails, and a workflow that has become
@@ -122,24 +128,36 @@ def fetch_exemption(workflow, step_name, entries=EXEMPT_FETCHES):
                 None)
 
 
-def _run_steps_in_repo():
-    """[(workflow basename, step name, run script)] for the whole fleet."""
-    steps = []
+def _run_jobs_in_repo():
+    """[(workflow basename, job id, [Step, ...])] for the whole fleet."""
+    jobs = []
     for path in _workflow_files():
         with open(path, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh.read()) or {}
-        for name, script in run_steps(doc):
-            steps.append((os.path.basename(path), name, script))
-    return steps
+        for job, steps in run_jobs(doc):
+            jobs.append((os.path.basename(path), job, steps))
+    return jobs
+
+
+def _fetch_defects_in_repo():
+    """[(workflow, step name, why)] -- the rule, per JOB, across the fleet.
+
+    Per job because that is the rule's scope (steps share the workspace, so a
+    fetch in one step and its execution in another is one act); the defect is
+    still reported against the step that fetched.
+    """
+    defects = []
+    for workflow, _job, steps in _run_jobs_in_repo():
+        for name, why in job_defects(steps):
+            defects.append((workflow, name, why))
+    return defects
 
 
 class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
     def test_every_run_step_verifies_what_it_executes(self):
-        defects = []
-        for workflow, name, script in _run_steps_in_repo():
-            why = fetch_exec_defect(script)
-            if why and not fetch_exemption(workflow, name):
-                defects.append("%s / %s -- %s" % (workflow, name, why))
+        defects = ["%s / %s -- %s" % (workflow, name, why)
+                   for workflow, name, why in _fetch_defects_in_repo()
+                   if not fetch_exemption(workflow, name)]
         self.assertEqual([], defects, "unverified fetch-and-exec:\n" +
                          "\n".join(defects))
 
@@ -149,7 +167,8 @@ class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
         # in the fleet. "No defects" is evidence only while the scan still
         # sees the two artifact downloads this repo has (hadolint in
         # docker-build-pr.yml, the DependencyCheck release in nvd-cache.yml).
-        found = [(w, f) for w, _n, s in _run_steps_in_repo() for f in fetches(s)]
+        found = [(w, f) for w, _j, steps in _run_jobs_in_repo()
+                 for step in steps for f in fetches(step.script)]
         self.assertGreaterEqual(
             len(found), 2, "workflow fetch scan found almost nothing; the "
                            "scanner is broken, not the tree")
@@ -158,8 +177,8 @@ class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
 
     def test_no_fetch_exemption_outlives_the_step_it_was_written_for(self):
         fired = set()
-        for workflow, name, script in _run_steps_in_repo():
-            if fetch_exec_defect(script) and fetch_exemption(workflow, name):
+        for workflow, name, _why in _fetch_defects_in_repo():
+            if fetch_exemption(workflow, name):
                 fired.add((workflow, name))
         stale = [e[:2] for e in EXEMPT_FETCHES if e[:2] not in fired]
         self.assertEqual([], stale, "fetch exemptions that no longer excuse "

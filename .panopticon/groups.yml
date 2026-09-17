@@ -333,6 +333,10 @@ groups:
     # reviewer holding the rule without the workflows it governs (or the other
     # way round) is reviewing half of it.
     - scripts/workflow_guard.py
+    # fix round 1 split the shell reading out of the guard (it grew past the
+    # house's 700-line module size on one round of hardening). Same group as
+    # its only caller: the reader exists for this rule and is reviewed with it.
+    - scripts/shell_reader.py
     tests:
     - tests/test_apply_labels.py
     - tests/test_security_workflow.py
