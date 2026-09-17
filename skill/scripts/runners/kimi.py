@@ -569,20 +569,19 @@ class Runner(base.HostRunner):
         its config.toml (`api_key` verbatim) and its OAuth symlinks would
         otherwise accumulate under a path every process of that uid can see.
         The debugging value is in the transcripts, not the credential surface."""
-        self._disarm_crash_strippers()
         home = self.kimi_home
-        if not home or not is_temp_home(home):
-            return
-        if status == "complete":
-            shutil.rmtree(home, ignore_errors=True)
-            self._drop_pointer()
-            self.kimi_home = self.run_home = None
-            return
-        removed = strip_secrets(home)     # R3-6: fixed text below, never the names it returned
-        note = ("its config.toml and credential links were removed, so nothing left "
-                "there carries a credential" if removed else "it held no credential files")
-        print("driver loop: the kimi run home is kept for debugging at %s; %s"
-              % (home, note), file=sys.stderr, flush=True)
+        if home and is_temp_home(home):
+            if status == "complete":
+                shutil.rmtree(home, ignore_errors=True)
+                self._drop_pointer()
+                self.kimi_home = self.run_home = None
+            else:
+                removed = strip_secrets(home)     # R3-6: fixed text below, never the names it returned
+                note = ("its config.toml and credential links were removed, so nothing left "
+                        "there carries a credential" if removed else "it held no credential files")
+                print("driver loop: the kimi run home is kept for debugging at %s; %s"
+                      % (home, note), file=sys.stderr, flush=True)
+        self._disarm_crash_strippers()    # LAST (#1662): a Ctrl-C above leaves the exit stripper armed
 
     def _drop_pointer(self):
         """A pointer that outlives the home it names is a lie in the run

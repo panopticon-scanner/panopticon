@@ -736,6 +736,29 @@ class TestHomeLocation(unittest.TestCase):
             self.assertEqual([mock.call(cb) for cb in armed], unregister.call_args_list)
             self.assertEqual([None, None], [first._crash_strip, second._crash_strip])
 
+    def test_an_interrupt_mid_strip_leaves_the_exit_stripper_armed(self):
+        # #1662 re-review: `teardown` took the crash strippers off FIRST and
+        # only then stripped the home, so a Ctrl-C landing between the two
+        # left config.toml (api_key verbatim) behind with no atexit net --
+        # a window the base never had, because a second interrupt never
+        # reached teardown there. The strippers come off LAST: an interrupt
+        # anywhere above leaves the atexit stripper armed to finish the job.
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi")
+                r.prepare(os.path.join(d, "run-1"), review_root=d)
+                self.addCleanup(shutil.rmtree, r.kimi_home, True)
+                self.addCleanup(r._disarm_crash_strippers)
+            armed = r._crash_strip
+            self.assertIsNotNone(armed)
+            with mock.patch.object(kimi_runner, "strip_secrets", side_effect=KeyboardInterrupt), \
+                 mock.patch.object(atexit, "unregister", wraps=atexit.unregister) as unregister:
+                with self.assertRaises(KeyboardInterrupt):
+                    r.teardown("error")
+            self.assertIs(armed, r._crash_strip, "the exit stripper was taken off before the strip ran")
+            unregister.assert_not_called()
+            self.assertTrue(os.path.isfile(os.path.join(r.kimi_home, "config.toml")))
+
     def test_a_c_installed_previous_handler_is_treated_as_the_default(self):
         # R3-4: `signal.getsignal` reports a handler installed from C as None.
         # The chain handled a callable and SIG_DFL and let None fall through,
