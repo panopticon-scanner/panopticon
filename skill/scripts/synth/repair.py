@@ -336,3 +336,53 @@ def repair_tools_network(value, warn=None):
         out[name] = _cut(posture, "network.%s" % name, changes)
     warn_repairs("tools-manifest.json", changes, warn)
     return out
+
+
+def repair_tools_suppressed(value, warn=None):
+    """The vendored-path suppression tally, normalized to what the schema pins
+    for `meta.coverage.tools_suppressed` (#1578).
+
+    `{segment: count}` -- how many tool findings the vendored-path exclusion
+    dropped, and under which conventional directory name. The keys come from a
+    closed vocabulary the controller owns (`ingest_tools._VENDORED_DIRS`) and
+    the counts are the controller's own tally, so this boundary is a thinner
+    one than its two `tools-manifest.json` siblings above -- but the tally is
+    DERIVED from `location.file` values a scanner read out of the reviewed
+    tree, and the rule is that a target-carried input is repaired at its
+    boundary rather than trusted to match what the schema pins. Applying it
+    here costs one call and removes the need to reason about whether a future
+    caller feeds this from somewhere less controlled.
+
+    DROPPED, never coerced, for the reason `repair_tools_sanitized` gives: a
+    count with no honest integer has no repair, only a fabrication. A bool is
+    not an integer (jsonschema rejects `True` where `integer` is pinned), and
+    neither is a negative number -- nothing can be dropped fewer than zero
+    times, and publishing one would be publishing a measurement nobody made.
+    A name over `NAME_MAX` is dropped rather than cut, like `network`'s: a
+    segment name is an identity, and cutting one could collide two rows.
+    """
+    changes = []
+    out = {}
+    if not isinstance(value, dict):
+        if value not in (None, {}):
+            changes.append(("tools_suppressed", "dropped: not an object"))
+        value = {}
+    for name, count in _bounded(
+            sorted(value.items(), key=lambda kv: str(kv[0])),
+            "tools_suppressed", changes):
+        if not isinstance(name, str):
+            changes.append(("tools_suppressed[%r]" % (name,),
+                            "dropped: name is not a string"))
+            continue
+        if len(name) > NAME_MAX:
+            changes.append(("tools_suppressed.%s..." % name[:40],
+                            "dropped: name is longer than %d characters in"
+                            % NAME_MAX))
+            continue
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            changes.append(("tools_suppressed.%s" % name,
+                            "dropped: not a non-negative integer"))
+            continue
+        out[name] = count
+    warn_repairs("tool ingest", changes, warn)
+    return out

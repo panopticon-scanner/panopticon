@@ -1427,3 +1427,32 @@ class TestEgressPostureLine(unittest.TestCase):
             {"<script>alert(1)</script>": "proxied:<b>x</b>"}))
         self.assertNotIn("<script>alert(1)</script>", html_out)
         self.assertNotIn("proxied:<b>", html_out)
+
+
+class TestSuppressedToolFindingsInHtml(unittest.TestCase):
+    """#1578: the same disclosure in the HTML, beside the coverage line where
+    the other "what this run did not see" facts live."""
+
+    def _report(self, suppressed):
+        report = _minimal_report()
+        report["meta"].setdefault("coverage", {})["tools_suppressed"] = suppressed
+        return report
+
+    def test_the_segments_and_counts_are_rendered(self):
+        out = hr.render(self._report({"vendor": 592}))
+        self.assertIn("vendor", out)
+        self.assertIn("592", out)
+        self.assertIn("suppressed", out)
+
+    def test_a_run_that_suppressed_nothing_renders_no_line(self):
+        self.assertNotIn("suppressed as vendored", hr.render(self._report({})))
+
+    def test_a_malformed_block_renders_no_line_rather_than_a_traceback(self):
+        for bad in ("nope", 7, ["vendor"], {"vendor": "lots"}):
+            with self.subTest(value=repr(bad)):
+                self.assertNotIn("suppressed as vendored",
+                                 hr.render(self._report(bad)))
+
+    def test_a_segment_name_cannot_inject_markup(self):
+        out = hr.render(self._report({"<script>alert(1)</script>": 1}))
+        self.assertNotIn("<script>alert(1)</script>", out)

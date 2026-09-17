@@ -94,6 +94,28 @@ def _render_health(health):
             "each x lines spanned). Gate-eligible findings only; never affects "
             "the gate." % (score, "{:,}".format(loc), "{:,}".format(wd)))
 
+def _suppressed_line(suppressed):
+    """#1578: what the vendored-path exclusion dropped, named per segment.
+
+    Silent when nothing was dropped and on a report that never measured this
+    (pre-#1578, or a foreign report on the --compare path) -- "nobody counted"
+    must not render as "nothing was dropped". Tolerant of a malformed block for
+    the same reason the HTML is: this line is not worth a traceback mid-render.
+    """
+    if not isinstance(suppressed, dict):
+        return ""
+    rows = [(seg, n) for seg, n in sorted(suppressed.items())
+            if isinstance(seg, str) and isinstance(n, int)
+            and not isinstance(n, bool) and n > 0]
+    if not rows:
+        return ""
+    return ("**Tool findings suppressed:** %s \u2014 dropped from the tool axis "
+            "for sitting under a conventional vendored-dependency directory; the "
+            "agentic panel still reviewed those files, and `security_gate "
+            "--security redteam` gates them"
+            % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
+
+
 def render_summary(report):
     """Render markdown summary of report with grades, stats, groups, and top findings."""
     s = report["summary"]
@@ -132,6 +154,9 @@ def render_summary(report):
         # state an operator most needs named.
         lines.insert(3, "**Coverage:** NOT CERTIFIED — %s"
                      % ("; ".join(parts) or s.get("coverage_note") or "incomplete"))
+    sup = _suppressed_line((report["meta"].get("coverage") or {}).get("tools_suppressed"))
+    if sup:
+        lines.insert(3, sup)
     rz = (report["meta"].get("coverage") or {}).get("resume") or {}
     _fo = rz.get("fan_out") or {}
     _vf = rz.get("verify") or {}

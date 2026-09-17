@@ -374,7 +374,8 @@ class PlanLoadersTest(unittest.TestCase):
                 # no .panopticon/tools -> silent
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
-                    self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()), ([], {}, None))
+                    self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()),
+                                     ([], {}, None, None))
                 self.assertEqual(err.getvalue(), "")
                 # a non-empty default tools dir left un-ingested is announced
                 os.makedirs(os.path.join(".panopticon", "tools"))
@@ -382,7 +383,8 @@ class PlanLoadersTest(unittest.TestCase):
                     fh.write("{}")
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
-                    self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()), ([], {}, None))
+                    self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()),
+                                     ([], {}, None, None))
                 self.assertIn("appears un-ingested", err.getvalue())
                 # --tools-dir pointing nowhere is still "not measured"
                 self.assertEqual(
@@ -395,10 +397,14 @@ class PlanLoadersTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tools_dir = os.path.join(d, "tools")
             os.makedirs(tools_dir)
-            found, dispositions, ran = plan_mod.ingest_tool_findings(_cli_args(tools_dir=tools_dir))
+            found, dispositions, ran, suppressed = plan_mod.ingest_tool_findings(
+                _cli_args(tools_dir=tools_dir))
             self.assertEqual(found, [])
             self.assertEqual(dispositions, {})
             self.assertEqual(ran, set())   # measured: nothing ran (not None)
+            # #1578: measured and dropped nothing -- `{}`, never None, which is
+            # the "no ingest ran" reading.
+            self.assertEqual(suppressed, {})
 
     def test_tool_axis_load_reads_the_manifest_and_refuses_foreign_ones(self):
         with tempfile.TemporaryDirectory() as d:

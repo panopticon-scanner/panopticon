@@ -386,3 +386,60 @@ class TestRepairGroupsJson(unittest.TestCase):
     def test_a_non_dict_is_still_an_empty_mapping(self):
         got, _err = self._repair(["not", "a", "mapping"])
         self.assertEqual(got, {})
+
+
+class TestRepairToolsSuppressed(unittest.TestCase):
+    """#1578: `meta.coverage.tools_suppressed` counts drops the VENDORED-path
+    exclusion made, keyed by the directory segment that made them.
+
+    The keys come from a closed vocabulary the controller owns
+    (`ingest_tools._VENDORED_DIRS`) and the counts are the controller's own
+    tally -- but the tally is derived from `location.file` values a SCANNER
+    read out of the reviewed tree, and item 14's ruling is that every
+    target-carried input is repaired at its boundary rather than trusted to
+    match what the schema pins. Same shape as its two `tools-manifest.json`
+    siblings: a malformed row costs a warning and the row, never the run and
+    never an `artifact invalid` exit on a report the target authored a corner
+    of. Bounded on both axes at the read, for the same reason they are.
+    """
+
+    def _repair(self, value):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = repair_mod.repair_tools_suppressed(value)
+        return got, err.getvalue()
+
+    def test_a_well_formed_block_passes_through(self):
+        got, err = self._repair({"vendor": 592, "node_modules": 3})
+        self.assertEqual(got, {"vendor": 592, "node_modules": 3})
+        self.assertEqual(err, "")
+
+    def test_nothing_measured_is_an_empty_map(self):
+        for bad in (None, {}, [], 7, "vendor"):
+            with self.subTest(value=repr(bad)):
+                self.assertEqual(self._repair(bad)[0], {})
+
+    def test_a_non_integer_count_is_dropped_never_coerced(self):
+        got, err = self._repair({"vendor": "lots"})
+        self.assertEqual(got, {})
+        self.assertIn("vendor", err)
+
+    def test_a_bool_is_not_an_integer_here(self):
+        # jsonschema rejects True where `integer` is pinned, so an unrepaired
+        # one would fail the artifact it rode into.
+        self.assertEqual(self._repair({"vendor": True})[0], {})
+
+    def test_a_negative_count_is_dropped(self):
+        self.assertEqual(self._repair({"vendor": -1})[0], {})
+
+    def test_a_non_string_segment_is_dropped(self):
+        self.assertEqual(self._repair({7: 1})[0], {})
+
+    def test_an_overlong_segment_is_dropped(self):
+        self.assertEqual(self._repair({"v" * (repair_mod.NAME_MAX + 1): 1})[0], {})
+
+    def test_the_map_is_bounded_at_the_read(self):
+        got, err = self._repair({"seg%04d" % n: 1
+                                 for n in range(repair_mod.ROWS_MAX + 25)})
+        self.assertEqual(len(got), repair_mod.ROWS_MAX)
+        self.assertIn("%d" % repair_mod.ROWS_MAX, err)

@@ -250,8 +250,9 @@ def main(argv=None):
         panel_tools_context=plan_mod.load_panel_tools_context(run_dir),
         tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False))
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
-    tool_findings, dispositions, tools_ran = plan_mod.ingest_tool_findings(args)
-    tools = plan_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran)
+    tool_findings, dispositions, tools_ran, suppressed = plan_mod.ingest_tool_findings(args)
+    tools = plan_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran,
+                                   suppressed)
     prepared = findings_mod.FindingSet.prepare(args, tool_findings, run.security_mode)
     # #1634: redact the INPUT, not only the output -- and do it HERE, upstream
     # of the --emit-verify-queue branch, so both passes of a run see identical

@@ -575,6 +575,7 @@ def _render_header(report):
     )
     parts.append(_render_scanner_context(meta))
     parts.append(_render_test_inventory(meta))
+    parts.append(_render_suppressed_tools(meta))
     return "\n".join(parts)
 
 
@@ -711,6 +712,37 @@ def _render_test_inventory(meta):
             % (" &middot; ".join("%s: %s" % (_escape(str(g)), _escape(str(st)))
                                  for g, st in flagged),
                "one of these groups" if len(flagged) > 1 else "this group"))
+
+
+def _render_suppressed_tools(meta):
+    """#1578: what the tool axis dropped for sitting under a vendored directory.
+
+    Beside the coverage line with the other "what this run did not see" facts.
+    The exclusion earns its keep -- 592 of solidus's 623 eslint-security
+    messages were bundled jQuery under `vendor/` -- but it matches a conventional
+    NAME with no provenance behind it, so the only thing separating a real
+    vendored library from a payload parked at `app/vendor/patched_auth.rb` is
+    an operator who can see the drop happen. That is this line.
+
+    Silent when nothing was dropped, and on a report that never measured it
+    (pre-#1578, or a foreign report on the --compare path): "nobody counted"
+    must not render as "nothing was dropped". Tolerant of a malformed block --
+    the value is repaired at its boundary, and a renderer is not the place to
+    discover that it was not.
+    """
+    suppressed = (meta.get("coverage") or {}).get("tools_suppressed")
+    if not isinstance(suppressed, dict):
+        return ""
+    rows = [(seg, n) for seg, n in sorted(suppressed.items())
+            if isinstance(seg, str) and isinstance(n, int)
+            and not isinstance(n, bool) and n > 0]
+    if not rows:
+        return ""
+    return ("<div class='coverage'>Tool findings suppressed as vendored: %s "
+            "&mdash; dropped from the tool axis on the directory name alone; "
+            "the agentic panel still reviewed those files, and "
+            "<code>security_gate --security redteam</code> gates them</div>"
+            % " &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows))
 
 
 def _render_compare_summary(label, report):
