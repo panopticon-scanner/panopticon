@@ -101,7 +101,7 @@ class TestRunChildCapture(_ChildCase):
             "for _ in range(50):\n"
             "    sys.stdout.write('x' * (1024 * 1024))\n")
         self.assertEqual(proc.returncode, 0)
-        self.assertLess(len(proc.stdout), child.CAPTURE_BYTES_MAX + 200)
+        self.assertLess(len(proc.stdout), child.CAPTURE_CHARS_MAX + 200)
         self.assertIn("[cut", proc.stdout)
 
     def test_a_child_that_floods_stderr_is_capped(self):
@@ -109,10 +109,10 @@ class TestRunChildCapture(_ChildCase):
             "import sys\n"
             "for _ in range(50):\n"
             "    sys.stderr.write('e' * (1024 * 1024))\n")
-        self.assertLess(len(proc.stderr), child.CAPTURE_BYTES_MAX + 200)
+        self.assertLess(len(proc.stderr), child.CAPTURE_CHARS_MAX + 200)
         self.assertIn("[cut", proc.stderr)
 
-    def test_the_line_ceiling_bites_before_the_byte_ceiling(self):
+    def test_the_line_ceiling_bites_before_the_character_ceiling(self):
         n = child.CAPTURE_LINES_MAX + 5000
         proc = self._child("import sys\n"
                            "for i in range(%d):\n"
@@ -142,14 +142,14 @@ class TestRunChildCapture(_ChildCase):
         self.assertNotIn("LAST", proc.stdout)
 
     def test_one_enormous_line_is_still_bounded(self):
-        # The byte ceiling has to hold on a stream with no newline in it at
-        # all. `readline(_CAPTURE_CHUNK)` is bounded BY that chunk as well as by
+        # The character ceiling has to hold on a stream with no newline in it
+        # at all. `readline(_CAPTURE_CHUNK)` is bounded BY that chunk as well as by
         # the newline, so this arrives in 64 KiB slices; an unbounded
         # `readline()` would have held the whole 8 MiB looking for a newline
         # that is not there.
         proc = self._child("import sys\n"
                            "sys.stdout.write('y' * 8 * 1024 * 1024)\n")
-        self.assertLess(len(proc.stdout), child.CAPTURE_BYTES_MAX + 200)
+        self.assertLess(len(proc.stdout), child.CAPTURE_CHARS_MAX + 200)
         self.assertIn("[cut", proc.stdout)
 
 
@@ -291,3 +291,41 @@ class TestTheHeadSurvivesAReaderThatIsCutOff(_ChildCase):
         self.assertIn("… [", proc.stdout)
         self.assertNotIn("… [", self._child(
             "import sys\nsys.stdout.write('done\\n')\n").stdout)
+
+
+class TestTheCeilingIsCharactersAndSaysSo(_ChildCase):
+    """Item 24 R1-3: the ceiling is applied to a `text=True` stream, so it
+    bounds CHARACTERS, and the name and the marker both said bytes.
+
+    The gap is not cosmetic. 1,048,576 characters of U+00E9 is 2 MiB on the
+    wire and the same count of astral characters is 4 MiB, so a constant read
+    as a memory bound is wrong by up to 4x for whoever sizes a limit against
+    it. The reader stays textual -- callers want `str`, and decoding is what
+    makes a diagnostic readable -- so the NAME moves to the truth instead.
+    """
+
+    def test_the_constant_is_named_for_what_it_bounds(self):
+        self.assertTrue(hasattr(child, "CAPTURE_CHARS_MAX"))
+        self.assertFalse(hasattr(child, "CAPTURE_BYTES_MAX"),
+                         "the old name still reads as a byte bound")
+
+    def test_the_marker_names_characters(self):
+        proc = self._child("import sys\n"
+                           "for _ in range(4):\n"
+                           "    sys.stdout.write('x' * (1024 * 1024))\n")
+        self.assertIn("characters]", proc.stdout)
+        self.assertNotIn("bytes]", proc.stdout)
+
+    def test_a_non_ascii_flood_is_bounded_in_characters_not_bytes(self):
+        # Two bytes per character on the wire: the head obeys the ceiling as a
+        # CHARACTER count and costs about twice that many bytes to hold.
+        proc = self._child("import sys\n"
+                           "sys.stdout.write('\\u00e9' * (3 * 1024 * 1024))\n")
+        head = proc.stdout.split("\n… [")[0]
+        self.assertLessEqual(len(head), child.CAPTURE_CHARS_MAX)
+        self.assertGreater(len(head.encode("utf-8")), child.CAPTURE_CHARS_MAX)
+
+    def test_the_worst_case_in_bytes_is_written_down(self):
+        # Whoever sizes a memory budget against this reads the docstring, not
+        # the wire. Say the number there.
+        self.assertIn("4 MiB", child._capture.__doc__ or "")

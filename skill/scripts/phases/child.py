@@ -59,7 +59,12 @@ _CHILD_TIMEOUT_DEFAULT = 600
 # pipe fills blocks on write for ever, which is the hang the timeout exists to
 # bound. Both ceilings, because either one alone has a hole: a million short
 # lines, or one 50 MB line with no newline in it at all.
-CAPTURE_BYTES_MAX = 1 * 1024 * 1024
+#
+# CHARS, not bytes (R1-3). The streams are decoded (`text=True`) because callers
+# want `str` and because a diagnostic is only readable decoded, so the ceiling
+# counts characters: the same 1,048,576 is 1 MiB of ASCII, 2 MiB of U+00E9 and
+# 4 MiB of astral characters in memory. The name says which one it is.
+CAPTURE_CHARS_MAX = 1 * 1024 * 1024
 CAPTURE_LINES_MAX = 20000
 # One read. `readline(n)` returns at the first newline OR after n characters,
 # whichever comes first -- NOT `read(n)`, which returns only once it has the
@@ -102,14 +107,19 @@ class _Head:
         truncated diagnostic must never read as a whole one either way."""
         note = ""
         if self.cut:
-            note += "\n\u2026 [cut %d bytes]" % self.cut
+            note += "\n\u2026 [cut %d characters]" % self.cut
         if not self.complete:
             note += "\n\u2026 [reader cut off: the stream never reached EOF]"
         return "".join(self.parts) + note
 
 
 def _capture(stream, head):
-    """Drain `stream` to EOF, keeping its bounded head in `head` as it arrives."""
+    """Drain `stream` to EOF, keeping its bounded head in `head` as it arrives.
+
+    The ceilings count CHARACTERS off a decoded stream, not bytes off the wire.
+    `CAPTURE_CHARS_MAX` characters cost 1 MiB of memory for ASCII, 2 MiB for
+    Latin-1 range text and at most **4 MiB** for astral characters -- that 4 MiB
+    is the worst case to budget against, not the constant itself."""
     try:
         while True:
             chunk = stream.readline(_CAPTURE_CHUNK)
@@ -117,7 +127,7 @@ def _capture(stream, head):
                 head.complete = True
                 return
             room = CAPTURE_LINES_MAX - head.lines
-            take = chunk[:max(0, CAPTURE_BYTES_MAX - head.chars)] if room > 0 else ""
+            take = chunk[:max(0, CAPTURE_CHARS_MAX - head.chars)] if room > 0 else ""
             if take.count("\n") > room:
                 take = "".join(part + "\n" for part in take.split("\n")[:room])
             head.parts.append(take)
