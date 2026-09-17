@@ -99,19 +99,73 @@ def _report_out(review_root):
     name = f"{tag}-report.json" if tag else "report.json"
     return os.path.join(review_root, ".panopticon", name)
 
+def _confine_link_parent(link_path):
+    """The real directory `_relink` may write into, or a DriverError naming the
+    component that is not one (#1574 COD-E2B).
+
+    `_relink` was the one artifact writer in this module with no confinement:
+    it checked `islink`/`exists` on the LINK and nothing on the path leading to
+    it, so a target that force-commits `.panopticon/runs` as a symlink (the
+    `git add -f` vector `_manifest_committed` documents) redirected an
+    `os.remove` + `os.symlink` to `<elsewhere>/latest` on the first `driver
+    run`, before any phase executed. Anchor on the path's own `.panopticon`
+    segment, exactly as `_confine_artifact_path` does, and require every
+    component of the link's PARENT to be a real directory -- `realpath` equal to
+    the path joined so far. The final component is deliberately exempt: it IS
+    the symlink being written, and `runs/latest` is a legitimate one.
+
+    Returns the parent with any symlinked ANCESTOR of `.panopticon` resolved
+    (`/tmp` -> `/private/tmp` on macOS is not a plant), so the caller's
+    `makedirs`/`symlink` cannot re-traverse what was just vetted. A path with no
+    `.panopticon` segment is not an artifact path and is left be.
+    """
+    parent = os.path.dirname(os.path.abspath(link_path))
+    parts = parent.split(os.sep)
+    if ".panopticon" not in parts:
+        return parent
+    cut = parts.index(".panopticon")
+    base = os.sep.join(parts[:cut + 1]) or os.sep
+    if os.path.islink(base):
+        raise DriverError(
+            "refusing to relink through a symlinked artifact directory: %s" % base)
+    real = os.path.realpath(base)
+    for seg in parts[cut + 1:]:
+        real = os.path.join(real, seg)
+        if os.path.realpath(real) != real:
+            raise DriverError(
+                "refusing to relink through a symlinked path component: %s" % real)
+    return real
+
 def _relink(link_path, target_name):
-    """Create or replace a relative symlink `link_path -> target_name` (same dir)."""
-    os.makedirs(os.path.dirname(link_path), exist_ok=True)
+    """Create or replace a relative symlink `link_path -> target_name` (same dir).
+
+    Confined (`_confine_link_parent`) and atomic: the new link is created beside
+    the destination and `os.replace`d onto it, which swaps the LINK rather than
+    following it and never leaves the path missing for a reader. The old
+    remove-then-create pair was both a window and, on a planted parent, a
+    delete primitive outside the tree."""
+    parent = _confine_link_parent(link_path)
+    os.makedirs(parent, exist_ok=True)
+    final = os.path.join(parent, os.path.basename(link_path))
+    tmp = "%s.relink-%d.tmp" % (final, os.getpid())
+    if os.path.islink(tmp) or os.path.exists(tmp):
+        os.remove(tmp)                        # our own leftover, never the target's
+    os.symlink(target_name, tmp)
     try:
-        if os.path.islink(link_path) or os.path.exists(link_path):
-            os.remove(link_path)
+        os.replace(tmp, final)
     except OSError:
-        pass
-    os.symlink(target_name, link_path)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 def _ensure_run_symlinks(review_root):
     """Point `.panopticon/runs/latest` at the active run folder (best-effort; a
-    platform without symlinks simply skips it — the tag-named paths still work)."""
+    platform without symlinks simply skips it — the tag-named paths still work).
+
+    #1574: best-effort covers OSError only. A DriverError from the confinement
+    is a planted path component, not a platform limitation, and propagates."""
     tag = _run_tag(review_root)
     if not tag:
         return

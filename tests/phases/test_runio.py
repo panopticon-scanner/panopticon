@@ -489,3 +489,97 @@ class TestPerRunFolders(unittest.TestCase):
         # the report.json symlink is kept and still resolves to the durable report
         self.assertEqual(runio._load_json(runio._pano(d, "report.json")),
                          {"summary": {"gate": "PASS"}})
+
+
+class TestRelinkConfinement(unittest.TestCase):
+    """#1574 (COD-E2B): `_relink` is the one artifact writer in this module that
+    was never routed through the confinement the others carry.
+
+    `_ensure_run_symlinks` calls it on `.panopticon/runs/latest` on essentially
+    every `driver run`, before any phase executes. It did `makedirs` ->
+    `islink/exists` -> `os.remove` -> `os.symlink` on the LINK alone, so a target
+    that force-commits `.panopticon/runs` as a symlink to a directory the
+    operator can write got an unguarded delete-and-plant at
+    `<elsewhere>/latest` -- every OSError on the way swallowed. The other three
+    call sites (synthesize's two compat links, validate's worktree-surfacing
+    pair) write into the same shape of path.
+
+    The fix is the shape `_confine_artifact_path` already uses: anchor on the
+    path's own `.panopticon` segment and require every component of the link's
+    PARENT to be a real directory, refusing by name otherwise. The final
+    component is exempt because it IS the link being (re)written, and the
+    replace is atomic so no reader ever sees the path missing.
+    """
+
+    def _planted(self, root, outside, *parts):
+        os.makedirs(os.path.join(root, ".panopticon"))
+        os.symlink(outside, os.path.join(root, ".panopticon", *parts))
+
+    def test_a_planted_runs_symlink_is_refused_by_name(self):
+        with tempfile.TemporaryDirectory() as r, tempfile.TemporaryDirectory() as o:
+            root, outside = os.path.realpath(r), os.path.realpath(o)
+            self._planted(root, outside, "runs")
+            victim = os.path.join(outside, "latest")
+            with open(victim, "w", encoding="utf-8") as fh:
+                fh.write("KEEP")
+            with self.assertRaises(runio.DriverError) as ctx:
+                runio._relink(
+                    os.path.join(root, ".panopticon", "runs", "latest"), "tag-1")
+            self.assertIn("runs", str(ctx.exception))
+            self.assertEqual(os.listdir(outside), ["latest"])   # nothing planted
+            with open(victim, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "KEEP")             # nothing deleted
+
+    def test_a_planted_deeper_component_is_refused_too(self):
+        # The link's GRANDPARENT is the planted one: `.panopticon/runs` is a real
+        # directory and `runs/<tag>` is the link out of the tree.
+        with tempfile.TemporaryDirectory() as r, tempfile.TemporaryDirectory() as o:
+            root, outside = os.path.realpath(r), os.path.realpath(o)
+            os.makedirs(os.path.join(root, ".panopticon", "runs"))
+            os.symlink(outside, os.path.join(root, ".panopticon", "runs", "tag-1"))
+            with self.assertRaises(runio.DriverError) as ctx:
+                runio._relink(os.path.join(root, ".panopticon", "runs",
+                                           "tag-1", "latest"), "somewhere")
+            self.assertIn("tag-1", str(ctx.exception))
+            self.assertEqual(os.listdir(outside), [])
+
+    def test_a_planted_panopticon_symlink_is_refused(self):
+        with tempfile.TemporaryDirectory() as r, tempfile.TemporaryDirectory() as o:
+            root, outside = os.path.realpath(r), os.path.realpath(o)
+            os.symlink(outside, os.path.join(root, ".panopticon"))
+            with self.assertRaises(runio.DriverError):
+                runio._relink(os.path.join(root, ".panopticon", "report.json"),
+                              "tag-1-report.json")
+            self.assertEqual(os.listdir(outside), [])
+
+    def test_ensure_run_symlinks_does_not_swallow_the_refusal(self):
+        # The wrapper swallows OSError so a platform without symlinks degrades
+        # quietly. A planted component is not that: it is a hostile target, and
+        # a DriverError is how this driver says so.
+        with tempfile.TemporaryDirectory() as r, tempfile.TemporaryDirectory() as o:
+            root, outside = os.path.realpath(r), os.path.realpath(o)
+            self._planted(root, outside, "runs")
+            with mock.patch.object(runio, "_run_tag", return_value="tag-1"):
+                with self.assertRaises(runio.DriverError):
+                    runio._ensure_run_symlinks(root)
+            self.assertEqual(os.listdir(outside), [])
+
+    def test_an_ordinary_relink_still_works_and_leaves_no_tmp(self):
+        with tempfile.TemporaryDirectory() as r:
+            root = os.path.realpath(r)
+            link = os.path.join(root, ".panopticon", "runs", "latest")
+            runio._relink(link, "tag-1")
+            runio._relink(link, "tag-2")          # replaces, in place
+            self.assertEqual(os.readlink(link), "tag-2")
+            self.assertEqual(os.listdir(os.path.dirname(link)), ["latest"])
+
+    def test_a_relink_over_a_regular_file_replaces_it(self):
+        with tempfile.TemporaryDirectory() as r:
+            root = os.path.realpath(r)
+            runs = os.path.join(root, ".panopticon", "runs")
+            os.makedirs(runs)
+            with open(os.path.join(runs, "latest"), "w", encoding="utf-8") as fh:
+                fh.write("stale")
+            runio._relink(os.path.join(runs, "latest"), "tag-1")
+            self.assertEqual(os.readlink(os.path.join(runs, "latest")), "tag-1")
+            self.assertEqual(os.listdir(runs), ["latest"])
