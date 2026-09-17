@@ -343,7 +343,7 @@ def _resolve_named(review_root, group_files, name, cache):
 
 
 def named_paths(review_root, claim, group_files=None, unresolved=None,
-                cache=None):
+                cache=None, cap=CAP):
     """(b): the in-repo files this claim's own evidence names, in text order.
 
     Each name goes through `_resolve_named` (#1688), so the claiming cell's own
@@ -359,8 +359,8 @@ def named_paths(review_root, claim, group_files=None, unresolved=None,
     one. Two bounds live here, and both exist because claim text is
     panel-authored and steerable by whatever the reviewed repo plants in it:
 
-      * a claim stops resolving once it holds more paths than its own `CAP`
-        could grant. One PAST the cap, not at it: `grant` reads the closure's
+      * a claim stops resolving once it holds more paths than the caller's
+        `cap` could grant. One PAST the cap, not at it: `grant` reads the closure's
         LENGTH to decide `truncated`, and stopping exactly at the cap would
         report a truncated closure as complete;
       * an entry SEARCHES the tree for at most `ENTRY_CAP` distinct names --
@@ -376,12 +376,13 @@ def named_paths(review_root, claim, group_files=None, unresolved=None,
     seen = cache.setdefault("names", {})
     for text in _claim_text(claim):
         for match in _PATH_RE.findall(text):
-            if len(out) > CAP:
+            if len(out) > cap:            # the CALLER's cap, not the constant
                 return out
-            if match not in seen:
-                seen[match] = _resolve_named(review_root, group_files, match,
-                                             cache)
-            path, ambiguity = seen[match]
+            key = _norm(match) or match   # `./x.py` and `x.py` are one name
+            if key not in seen:
+                seen[key] = _resolve_named(review_root, group_files, match,
+                                           cache)
+            path, ambiguity = seen[key]
             if path:
                 if path not in out:
                     out.append(path)
@@ -525,7 +526,7 @@ def _importers(review_root, rel_path, group_files):
 
 
 def _closure_paths(review_root, claim, group_files, unresolved=None,
-                   cache=None):
+                   cache=None, cap=CAP):
     """The FULL ordered closure, before the cap -- (a), then (b), then (c)."""
     claim = claim if isinstance(claim, dict) else {}
     loc = claim.get("location")
@@ -535,7 +536,7 @@ def _closure_paths(review_root, claim, group_files, unresolved=None,
         primary = None
     out = [primary] if primary else []
     for path in named_paths(review_root, claim, group_files, unresolved,
-                            cache):
+                            cache, cap):
         if path not in out:
             out.append(path)
     if primary and primary.endswith(_PY):
@@ -562,7 +563,7 @@ def closure(review_root, claim, group_files, cap=CAP, unresolved=None):
     across a chunk.
     """
     return _closure_paths(review_root, claim, group_files,
-                          unresolved)[:max(0, cap)]
+                          unresolved, cap=cap)[:max(0, cap)]
 
 
 def _fallback(files, cap, entry_cap, floor_count=0):
@@ -663,7 +664,7 @@ def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP,
     # path and one resolution per distinct name, however many claims name it.
     cache = {}
     for claim in scope:
-        paths = _closure_paths(review_root, claim, files, ambiguous, cache)
+        paths = _closure_paths(review_root, claim, files, ambiguous, cache, cap)
         if len(paths) > cap:
             truncated = True
         for entry in paths[:max(0, cap)]:

@@ -862,6 +862,35 @@ class TestTheResolverIsBoundedPerEntry(_Repo):
         evidence_scope.grant(self.root, files, scope, ambiguous=ambiguous)
         self.assertEqual(len(ambiguous), evidence_scope.ENTRY_CAP)
 
+    def test_the_stop_bound_follows_the_callers_cap_not_the_constant(self):
+        # Round-1 re-review, finding 1: the "stop once the claim holds more
+        # than it can be granted" bound compared the module constant, not the
+        # `cap` the caller passed. `closure(cap=20)` came back short, and
+        # `grant(cap=20)` reported `truncated: False` for a closure that really
+        # held more -- the one honesty field the bound exists to protect.
+        files = ["claim.py"]
+        _write(self.root, "claim.py", "import os\n")
+        names = ["mod%02d.py" % i for i in range(25)]
+        files += [_write(self.root, "src/" + rel, "import os\n") for rel in names]
+        claim = {"location": {"file": "claim.py"}, "description": " ".join(names)}
+        self.assertEqual(len(evidence_scope.closure(self.root, claim, files, cap=20)), 20)
+        got = evidence_scope.grant(self.root, files, [claim], cap=20, entry_cap=60)
+        self.assertTrue(got["truncated"])
+        self.assertEqual(len(got["granted"]), 20)
+
+    def test_alias_spellings_of_one_name_cost_one_search(self):
+        # Round-1 re-review, finding 2: the per-entry memo was keyed on the raw
+        # match, so `./config.py`, `././config.py` and `config.py` each re-ran
+        # the whole candidate enumeration although they are one name.
+        files = ["claim.py"] + self._pair("config.py")
+        _write(self.root, "claim.py", "import os\n")
+        claim = {"location": {"file": "claim.py"},
+                 "description": "see ./config.py and ././config.py and config.py"}
+        with mock.patch.object(evidence_scope, "_candidates",
+                               wraps=evidence_scope._candidates) as spy:
+            evidence_scope.closure(self.root, claim, files, unresolved=[])
+        self.assertLessEqual(spy.call_count, 2)
+
     def test_the_bounds_are_deterministic(self):
         files = ["claim.py"]
         _write(self.root, "claim.py", "import os\n")
