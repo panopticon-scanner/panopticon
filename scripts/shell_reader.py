@@ -53,9 +53,16 @@ WRAPPERS = ("sudo", "command", "exec", "nohup", "nice", "stdbuf", "env",
 # these arrives as the first word of the statement it introduces -- and a guard
 # that reads `if` as the command sees neither the fetch nor the use.
 KEYWORDS = ("if", "then", "elif", "else", "fi", "do", "done", "while", "until",
-            "for", "case", "esac", "in", "!", "{", "}")
+            "for", "case", "esac", "in", "!", "{", "}", "(", ")", "function",
+            "()")
+# The words that make the following command CONDITIONAL rather than fatal: a
+# command in an `if`/`while` test decides a branch, and `set -e` never applies
+# to it. A guard reading exit statuses has to know the difference.
+CONDITIONS = ("if", "elif", "while", "until")
 
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _REDIRECT = re.compile(r"^(\d*)(>>|>|<)(.*)$")
 _HEREDOC_OP = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
@@ -311,7 +318,18 @@ def command(argv):
             argv.pop(0)
             continue
         if argv[0] in KEYWORDS:
+            keyword = argv.pop(0)
+            if keyword == "function" and argv and _NAME.match(argv[0]):
+                argv.pop(0)                     # `function f { ... }`
+            continue
+        # A function header is not a command: `f() { curl ... ; }` and its
+        # `f () {` spelling both put a name where the command was expected,
+        # which is where a long step keeps its download.
+        if _FUNCTION.match(argv[0]):
             argv.pop(0)
+            continue
+        if len(argv) > 1 and argv[1] == "()" and _NAME.match(argv[0]):
+            del argv[0:2]
             continue
         head = os.path.basename(argv[0])
         if head not in WRAPPERS:
@@ -336,6 +354,22 @@ def negated(argv):
     """
     for token in argv:
         if token == "!":
+            return True
+        if token in KEYWORDS or _ASSIGNMENT.match(token):
+            continue
+        return False
+    return False
+
+
+def conditional(argv):
+    """True if this command is an `if`/`while` TEST rather than a step.
+
+    `if sha256sum -c sums; then ...; fi` runs the check for its answer, not
+    for its effect: errexit does not apply to a condition, so the script sails
+    on past a mismatch exactly as `... || true` does.
+    """
+    for token in argv:
+        if token in CONDITIONS:
             return True
         if token in KEYWORDS or _ASSIGNMENT.match(token):
             continue

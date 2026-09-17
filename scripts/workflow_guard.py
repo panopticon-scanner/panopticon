@@ -59,6 +59,14 @@ classes fall outside that and are accepted SILENT gaps, deliberately:
   tracks the NAME a step writes. A checksum naming the same variable binds; a
   path spelled differently at fetch and at use matches nothing, including its
   own use, so that download goes unseen.
+* what runs inside a container: `docker run ... image bash /w/x.sh` (and
+  `podman run`) is one command to this parser. Modelling another executor's
+  argv, its mounts and its entrypoint is a second guard's job; the image the
+  container came from is pinned by digest elsewhere (`tests/test_dockerfile.py`,
+  the `uses:` pin rule).
+* bytes modified after a passing check: `sha256sum -c` then `sed -i` then run.
+  The rule is about what ARRIVED from outside, and a workflow editing its own
+  downloaded file is author-deterministic, not an upstream vector.
 
 Also unmodelled and reported-not-accepted: a `chmod` over a glob, and `if`
 branches (a fetch inside one is a fetch).
@@ -69,7 +77,7 @@ import re
 import sys
 
 import shell_reader
-from shell_reader import command, negated, statements
+from shell_reader import command, conditional, negated, statements
 
 # A download: the tool that ran, the URL it was given, the file it lands in
 # (None = standard output, which is the pipe-to-shell shape), and the argv of
@@ -78,7 +86,10 @@ Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 
 # One shell command: its argv, the files it redirects into / reads from, the
 # heredoc body attached to it, and the command substitutions inside it -- the
-Step = collections.namedtuple("Step", "name script shell", defaults=(None,))
+# One `run:` step: its name, its script, the shell it will run under, and the
+# `if:` that decides whether it runs at all.
+Step = collections.namedtuple("Step", "name script shell condition",
+                              defaults=(None, None))
 
 FETCHERS = ("curl", "wget")
 # The shells this module has a grammar for. Anything else is reported unread.
@@ -137,6 +148,9 @@ _DEST_LONG = {"curl": ("output",), "wget": ("output-document",)}
 _DIR_LONG = {"curl": ("output-dir",), "wget": ("directory-prefix",)}
 _DIR_SHORT = {"curl": "", "wget": "P"}
 _STDOUT = ("-", "/dev/stdout", "/dev/fd/1", "/dev/null")
+# `curl --version` in a diagnostics step downloads nothing; without this it
+# parses as a fetch with no URL, which the rule now REPORTS rather than drops.
+_INFORMATIONAL = ("--version", "-V", "--help", "-h", "--manual", "-M", "--usage")
 _UNSET = object()
 
 
@@ -209,6 +223,8 @@ def _parse_fetch(tool, args, stage, piped_to):
             continue
         operands.append(token)
     url = _pick_url(operands)
+    if url is None and any(a in _INFORMATIONAL for a in args):
+        return None                             # `curl --version`, `wget --help`
     named = dest is not _UNSET
     if not named:
         # wget writes the URL's basename by default; curl streams to stdout
@@ -238,8 +254,10 @@ def _fetch_records(stmts):
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
                 piped_to = tuple(command(following[0].argv)) if following else None
-                found.append((index, _parse_fetch(os.path.basename(argv[0]),
-                                                  argv[1:], stage, piped_to)))
+                fetch = _parse_fetch(os.path.basename(argv[0]), argv[1:],
+                                     stage, piped_to)
+                if fetch is not None:
+                    found.append((index, fetch))
             found.extend((index, f) for f in _substituted(argv, stage))
     return found
 
@@ -253,6 +271,8 @@ def _substituted(argv, stage):
     found = []
     for inner in stage.substitutions:
         for _index, fetch in _fetch_records(statements(inner)):
+            if fetch is None:
+                continue
             if executes or fetch.piped_to is None:
                 fetch = fetch._replace(piped_to=consumer)
             found.append(fetch)
@@ -288,10 +308,52 @@ def _names(content, dest):
 
 
 # A check whose non-zero exit nobody sees is not a check. Runners default to
-# `bash -e -o pipefail`, which is what makes `sha256sum -c` a GATE -- these
-# three shapes take that away, and the guard has to read the shell around the
-# command rather than just the command.
+# `bash -e -o pipefail`, which is what makes `sha256sum -c` a GATE -- and the
+# shell around the command decides whether that survives. `&` detaches it;
+# `||` hands the failure to a branch, which rescues it ONLY if that branch
+# ends the job; `if`/`while`/`!` make it a test, and errexit never applies to
+# a test.
 _SWALLOWING = ("||", "&")
+# The `|| ...` branches that keep a check a check: they fail the step, which
+# is exactly what errexit would have done.
+_FATAL = ("exit", "return", "false")
+_GROUP_OPEN = ("{", "(")
+
+
+def _stops_the_job(stmts, index):
+    """True if the `||` branch after `stmts[index]` fails the step.
+
+    `sha256sum -c - || exit 1` and `... || { echo "::error::"; exit 1; }` are
+    gates, not swallows -- and they are the cheap hardened spellings, so
+    refusing them would push authors toward the exemption list instead.
+    """
+    following = stmts[index + 1:index + 11]
+    if not following:
+        return False
+    first = following[0].stages[0].argv if following[0].stages else []
+    grouped = bool(first) and first[0] in _GROUP_OPEN
+    for statement in following:
+        for stage in statement.stages:
+            argv = command(stage.argv)
+            if argv and os.path.basename(argv[0]) in _FATAL:
+                return True
+        if not grouped or any("}" in t or ")" in t
+                              for stage in statement.stages for t in stage.argv):
+            break
+    return False
+
+
+def _swallowed(stmts, index, statement, stage):
+    """Why this check's failure would go nowhere, or None."""
+    if statement.separator == "&":
+        return "detached with `&`"
+    if statement.separator == "||" and not _stops_the_job(stmts, index):
+        return "handed to a `||` branch that does not fail the step"
+    if negated(stage.argv):
+        return "negated, so the failing path is the THEN branch"
+    if conditional(stage.argv):
+        return "an `if`/`while` test, which errexit does not apply to"
+    return None
 
 
 def _has_check_flag(argv):
@@ -353,7 +415,7 @@ def _checks(stmts):
                 continue
             if not _has_check_flag(argv):
                 continue
-            if statement.separator in _SWALLOWING or negated(stage.argv):
+            if _swallowed(stmts, index, statement, stage):
                 continue                        # its failure goes nowhere
             text = _checked_text(statement, position, stage, argv, written)
             if text and _DIGEST.search(text):
@@ -364,19 +426,52 @@ def _checks(stmts):
 
 # --- which statements execute what was fetched -------------------------------
 
+def _copies(statement, names):
+    """The new names this statement gives a file it already knows.
+
+    `cp payload alias`, `mv`, `ln -s`, `cat payload > alias`: renaming is not
+    executing, but it LAUNDERS -- run `alias` and the bytes are the download's,
+    under a name the guard never heard of. So the alias inherits, and the copy
+    itself stays innocent (copying a fetched JSON is still just a copy).
+    """
+    new = set()
+    for stage in statement.stages:
+        argv = command(stage.argv)
+        if not argv:
+            continue
+        name, operands = os.path.basename(argv[0]), _operands(argv)
+        if name in ("cp", "mv", "ln") and len(operands) > 1:
+            if any(_same_file(o, n) for o in operands[:-1] for n in names):
+                new.add(operands[-1])
+        if name == "cat" and stage.writes:
+            if any(_same_file(o, n) for o in operands for n in names):
+                new.update(stage.writes)
+    return new
+
+
 def _uses(stmts, dest, after):
-    """[(statement index, what it does)] for every statement at or after
-    `after` that turns `dest` into behaviour."""
-    out = []
+    """(names the file goes by, [(statement index, what it does)]).
+
+    Walked in order from the fetch, so a name only counts once the statement
+    that created it has run.
+    """
+    names, out = {dest}, []
     for index, statement in enumerate(stmts):
         if index < after:
             continue
         for position, stage in enumerate(statement.stages):
-            how = _use(statement, position, stage, command(stage.argv), dest)
+            argv, how = command(stage.argv), None
+            for name in sorted(names):
+                how = _use(statement, position, stage, argv, name)
+                if how:
+                    if not _same_file(name, dest):
+                        how += " (as `%s`, copied from it earlier)" % name
+                    break
             if how:
                 out.append((index, how))
                 break
-    return out
+        names |= _copies(statement, names)
+    return names, out
 
 
 def _use(statement, position, stage, argv, dest):
@@ -403,8 +498,10 @@ def _use(statement, position, stage, argv, dest):
         return "installing it"
     if name in UNPACKERS:
         return "unpacking it with `%s`" % name
-    if name in ("mv", "cp") and any(
+    if name in ("mv", "cp", "ln") and any(
             t.startswith(BIN_DIRS) or "/bin/" in t for t in rest):
+        # Including `ln -s`: a symlink on PATH runs the same bytes, and the
+        # name it is then invoked by (`hadolint`) is nowhere in this script.
         return "putting it on PATH with `%s`" % name
     if name == "cat" and position + 1 < len(statement.stages):
         following = command(statement.stages[position + 1].argv)
@@ -425,8 +522,31 @@ def _remedy(dest):
             "the download and that use" % shell_reader.readable(dest))
 
 
-def _defect(fetch, index, stmts, checks):
+def _binds(conditions, check, use):
+    """May a check at statement `check` clear a use at statement `use`?
+
+    Only if the check runs whenever the use does. A step carrying an `if:` may
+    be skipped, so its checksum cannot clear an execution that is not skipped
+    with it -- crediting one is fail-open. Conditions are compared as written
+    (no expression evaluation), so a check and a use in the same conditional
+    step -- the shape the fleet actually has, where the fetch, the checksum and
+    the `unzip` share one `if:` -- binds, and a check under a DIFFERENT
+    condition (or under one at all, where the use has none) does not.
+    """
+    when = conditions.get(check)
+    return when is None or when == conditions.get(use)
+
+
+def _defect(fetch, index, stmts, checks, conditions=None):
     """Why this one fetch is unverified, or None."""
+    if fetch.url is None and fetch.dest is None:
+        # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`:
+        # a download whose target this guard cannot name is not a clean step,
+        # it is an unread one.
+        return ("runs `%s` with no URL and no destination this guard could "
+                "parse, so it cannot say what arrived or whether anything "
+                "checked it -- name the file (`-o <path>`) and `sha256sum -c` "
+                "it, or exempt the step with a reason" % fetch.tool)
     if fetch.dest is None:
         if not fetch.piped_to:
             return None
@@ -440,11 +560,15 @@ def _defect(fetch, index, stmts, checks):
                 "download it to a file, `sha256sum -c` that file, then run it"
                 % (shell_reader.readable(fetch.url) or "a download",
                    shell_reader.readable(" ".join(fetch.piped_to))))
-    uses = _uses(stmts, fetch.dest, after=index)
+    names, uses = _uses(stmts, fetch.dest, after=index)
     if not uses:
         return None                             # fetched and only read: not this rule
     first_use, how = uses[0]
-    naming = [i for i, text in checks if i > index and _names(text, fetch.dest)]
+    # A checksum naming any name the file goes by is a checksum of this file.
+    conditions = conditions or {}
+    naming = [i for i, text in checks if i > index
+              and any(_names(text, name) for name in sorted(names))
+              and _binds(conditions, i, first_use)]
     if any(i < first_use for i in naming):
         return None
     if naming:
@@ -462,12 +586,18 @@ def _defect(fetch, index, stmts, checks):
             % (_describe(fetch), how, _remedy(fetch.dest)))
 
 
-def _defects(stmts):
-    """[(statement index, why)] for every unverified fetch in parsed shell."""
+def _defects(stmts, conditions=None):
+    """[(statement index, why)] for every unverified fetch in parsed shell.
+
+    `conditions` maps a statement index to the `if:` of the step it came from
+    (absent = unconditional), which decides whether a check is allowed to clear
+    a use -- see `_binds`.
+    """
     checks = _checks(stmts)
+    conditions = conditions or {}
     found = []
     for index, fetch in _fetch_records(stmts):
-        why = _defect(fetch, index, stmts, checks)
+        why = _defect(fetch, index, stmts, checks, conditions)
         if why:
             found.append((index, why))
     return found
@@ -486,6 +616,11 @@ def fetch_exec_defect(script):
 def job_defects(steps):
     """[(step name, why)] for one job's `run:` steps, folded in order.
 
+    A step carrying an `if:` is folded for what it FETCHES and what it RUNS;
+    its CHECK is credited only to a use that shares the same condition (see
+    `_binds`), because a checksum that may be skipped cannot clear an
+    execution that is not.
+
     THE SCOPE IS THE JOB, not the step. Steps in a job share the workspace,
     /tmp and PATH, so `curl -o /tmp/x` in step A and `chmod +x /tmp/x; /tmp/x`
     in step B is one fetch-and-exec written across two innocent-looking steps
@@ -498,7 +633,7 @@ def job_defects(steps):
     not reach into the next step's parse. Each defect is attributed to the step
     that performed the fetch.
     """
-    stmts, owner, found = [], [], []
+    stmts, owner, conditions, found = [], [], {}, []
     for item in steps:
         step = item if isinstance(item, Step) else Step(*item)
         why = unparseable(step.shell)
@@ -506,9 +641,16 @@ def job_defects(steps):
             found.append((step.name, why))
             continue
         for statement in statements(step.script):
+            # An `if:` step may not run. Its FETCH still counts -- folding it in
+            # can only report more -- but its CHECK counts only for a use that
+            # is skipped with it (`_binds`): a checksum that may not run cannot
+            # clear an execution that always does.
+            if step.condition:
+                conditions[len(stmts)] = step.condition
             stmts.append(statement)
             owner.append(step.name)
-    found.extend((owner[index], why) for index, why in _defects(stmts))
+    found.extend((owner[index], why)
+                 for index, why in _defects(stmts, conditions))
     return found
 
 
@@ -551,7 +693,10 @@ def run_jobs(doc):
                 continue
             shell = (step.get("shell") or _default_shell(job)
                      or _default_shell(doc))
-            steps.append(Step(step.get("name") or UNNAMED, step["run"], shell))
+            # A job-level `if:` makes every one of its steps conditional.
+            condition = step.get("if") or job.get("if")
+            steps.append(Step(step.get("name") or UNNAMED, step["run"], shell,
+                              condition))
         if steps:
             jobs.append((name, steps))
     return jobs

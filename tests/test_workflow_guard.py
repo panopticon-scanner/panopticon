@@ -312,6 +312,32 @@ class TestWhatCountsAsExecuting(unittest.TestCase):
                      "python3 < /tmp/payload\n"):
             self.assertIsNotNone(self.use(line), line)
 
+    def test_running_a_copy_of_it_under_another_name(self):
+        # M2: renaming laundered the file -- the copy branch only fired for a
+        # destination on PATH, so `cp x y; ./y` ran unverified bytes under a
+        # name the guard had never heard of.
+        for copy in ("cp /tmp/payload /tmp/alias\n",
+                     "mv /tmp/payload /tmp/alias\n",
+                     "ln -s /tmp/payload /tmp/alias\n",
+                     "cat /tmp/payload > /tmp/alias\n"):
+            why = self.use(copy + "chmod +x /tmp/alias\n/tmp/alias\n")
+            self.assertIsNotNone(why, copy)
+
+    def test_symlinking_it_onto_PATH(self):
+        # The alias is then invoked by a bare name this script never mentions.
+        self.assertIsNotNone(self.use("ln -s /tmp/payload /usr/local/bin/p\n"))
+
+    def test_a_checksum_naming_the_alias_clears_it(self):
+        script = (self.FETCH + "cp /tmp/payload /tmp/alias\n" +
+                  'echo "%s  /tmp/alias" | sha256sum -c -\n' % ("a" * 64) +
+                  "chmod +x /tmp/alias\n")
+        self.assertIsNone(wg.fetch_exec_defect(script))
+
+    def test_copying_a_data_file_is_not_executing_it(self):
+        script = ("curl -sfL https://example.test/d.json -o /tmp/d.json\n"
+                  "cp /tmp/d.json /tmp/copy.json\njq . /tmp/copy.json\n")
+        self.assertIsNone(wg.fetch_exec_defect(script))
+
     def test_a_fetch_that_is_never_executed_is_left_alone(self):
         script = ("curl -sfL https://example.test/data.json -o /tmp/d.json\n"
                   "jq . /tmp/d.json\n")
@@ -416,6 +442,33 @@ class TestTheFormsThatHideAFetch(unittest.TestCase):
         script = "cat <<'EOF' > /tmp/note\n$(curl -fsSL https://example.test/i.sh)\nEOF\n"
         self.assertEqual([], wg.fetches(script))
 
+    def test_a_fetch_inside_a_function_body(self):
+        # M1: `f() { ... }` is where a long step keeps its download, and the
+        # function name stood where the command was expected.
+        for opener in ("f() {", "f () {", "function f {"):
+            script = (opener + " curl -fsSL https://example.test/x -o /tmp/x; }\n"
+                      "f\nchmod +x /tmp/x\n")
+            self.assertEqual(1, len(wg.fetches(script)), opener)
+            self.assertIsNotNone(wg.fetch_exec_defect(script), opener)
+
+    def test_a_fetch_inside_a_subshell(self):
+        script = ("( curl -fsSL https://example.test/x -o /tmp/x )\n"
+                  "chmod +x /tmp/x\n")
+        self.assertEqual(1, len(wg.fetches(script)))
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_a_download_with_no_parseable_url_is_reported_not_dropped(self):
+        # L2: `wget -i list.txt` downloads a LIST of URLs to names this guard
+        # cannot know. Unparsed is not clean; say so.
+        why = wg.fetch_exec_defect("wget -i list.txt\n")
+        self.assertIsNotNone(why)
+        self.assertIn("wget", why)
+
+    def test_asking_curl_its_version_is_not_a_download(self):
+        for script in ("curl --version\n", "wget --help\n", "curl -V\n"):
+            self.assertEqual([], wg.fetches(script), script)
+            self.assertIsNone(wg.fetch_exec_defect(script), script)
+
     def test_a_shifted_left_string_is_not_a_heredoc(self):
         # `<<` inside a quoted string has no terminator line; reading it as a
         # heredoc swallows the rest of the step, and every statement after it
@@ -513,6 +566,23 @@ class TestASwallowedCheckIsNotACheck(unittest.TestCase):
             'echo "%s  /tmp/payload" > /tmp/sums\n' % HEX +
             "if ! sha256sum -c /tmp/sums; then echo mismatch; fi\n"))
 
+    def test_under_an_if_condition(self):
+        # M3: errexit never applies to an `if` CONDITION, so the step sails
+        # past a mismatch exactly as it does with `|| true` -- the unsafe
+        # mirror of the `if !` form above.
+        self.assertIsNotNone(self.swallowed(
+            'echo "%s  /tmp/payload" > /tmp/sums\n' % HEX +
+            "if sha256sum -c /tmp/sums; then echo ok; fi\n"))
+
+    def test_or_exit_is_a_gate_not_a_swallow(self):
+        # L1: `|| exit 1` ends the job, which is what errexit would have done.
+        # It is the cheap hardened spelling, so it must not be refused.
+        for branch in ("|| exit 1", "|| exit 2", "|| { echo bad; exit 1; }",
+                       "|| { echo '::error::mismatch'; exit 1; }", "|| false"):
+            self.assertIsNone(self.swallowed(
+                'echo "%s  /tmp/payload" | sha256sum -c - %s\n' % (HEX, branch)),
+                branch)
+
     def test_a_plain_check_still_counts(self):
         self.assertIsNone(
             self.swallowed('echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX))
@@ -551,6 +621,44 @@ class TestTheJobIsTheScope(unittest.TestCase):
         found = wg.job_defects([self.FETCH, self.RUN, self.CHECK])
         self.assertEqual(1, len(found), found)
         self.assertIn("only AFTER", found[0][1])
+
+    def test_a_conditional_steps_check_does_not_count(self):
+        # M4: folding an `if:` step as if it always runs is conservative on the
+        # fetch axis and FAIL-OPEN on the check axis -- a checksum that may be
+        # skipped cannot clear a download that always happens.
+        steps = [wg.Step(*self.FETCH),
+                 wg.Step(self.CHECK[0], self.CHECK[1], None,
+                         "github.event_name == 'push'"),
+                 wg.Step(*self.RUN)]
+        found = wg.job_defects(steps)
+        self.assertEqual(1, len(found), found)
+        self.assertEqual("fetch", found[0][0])
+
+    def test_a_check_under_the_SAME_condition_as_the_use_still_binds(self):
+        # The shape the fleet actually has (nvd-cache.yml's sync step): the
+        # fetch, the checksum and the `unzip` share one `if:`, so they run
+        # together or not at all. A blanket "no conditional check counts" rule
+        # fails THIS, which is how the fleet caught it.
+        when = "steps.decide.outputs.sync == 'true'"
+        steps = [wg.Step(self.FETCH[0], self.FETCH[1], None, when),
+                 wg.Step(self.CHECK[0], self.CHECK[1], None, when),
+                 wg.Step(self.RUN[0], self.RUN[1], None, when)]
+        self.assertEqual([], wg.job_defects(steps))
+
+    def test_one_conditional_step_holding_all_three_binds(self):
+        script = self.FETCH[1] + self.CHECK[1] + self.RUN[1]
+        self.assertEqual([], wg.job_defects(
+            [wg.Step("sync", script, None, "steps.decide.outputs.sync == 'true'")]))
+
+    def test_a_conditional_step_still_counts_as_fetching(self):
+        steps = [wg.Step(self.FETCH[0], self.FETCH[1], None, "always()"),
+                 wg.Step(*self.RUN)]
+        self.assertEqual(1, len(wg.job_defects(steps)))
+
+    def test_a_job_level_condition_reaches_every_step(self):
+        doc = {"jobs": {"b": {"if": "github.ref == 'main'",
+                              "steps": [{"run": "make test"}]}}}
+        self.assertEqual("github.ref == 'main'", wg.run_jobs(doc)[0][1][0].condition)
 
     def test_a_job_with_no_fetch_is_clean(self):
         self.assertEqual([], wg.job_defects([("build", "make test\n")]))
