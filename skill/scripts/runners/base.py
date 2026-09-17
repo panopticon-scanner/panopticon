@@ -321,11 +321,13 @@ class HostRunner:
            the ordering `tests/runners/test_kimi.py` pins.
         3. a BOUNDED wait on the workers that were holding those children
            (`INTERRUPT_GRACE`), instead of the unbounded join the `with`
-           block used to perform. One worker slot can still turn over between
-           the last yield and the cancel -- the worker that finished an entry
-           takes the next queued item immediately, and nothing the consumer
-           does can beat it -- so "running" means at most `width` entries,
-           not the whole batch.
+           block used to perform.
+
+        Up to `width` entries can still LAUNCH between the last yield and the
+        cancel: every worker that finishes an entry takes the next queued item
+        immediately, and nothing the consumer does can beat it, so a batch of
+        twenty at width four can start eight before the cancel lands. That is
+        the bound -- the pool, not a single slot, and never the whole batch.
 
         Callers that may abandon the generator mid-batch should close it
         deterministically (`contextlib.closing`) rather than leave the

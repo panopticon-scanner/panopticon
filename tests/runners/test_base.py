@@ -419,11 +419,12 @@ class TestAnInterruptStopsTheBatch(unittest.TestCase):
 
     def test_the_entries_still_queued_are_never_launched(self):
         # Six entries, concurrency two, interrupted after the first
-        # completion. Exactly one worker slot can turn over before the
-        # interrupt reaches the generator (the worker that finished `e0` takes
-        # the next queued item straight away, and nothing the consumer does
-        # can beat it), so `e1` and at most `e2` run; e3..e5 were queued and
-        # must never launch. On the base every one of the six ran.
+        # completion. A worker that finishes an entry takes the next queued
+        # item straight away and nothing the consumer does can beat it, so up
+        # to `width` entries can still launch after the interrupt -- here only
+        # `e0` completes, so exactly one slot turns over and `e1` plus at most
+        # `e2` run. e3..e5 were queued and must never launch; the test above
+        # pins the general bound. On the base every one of the six ran.
         r, started, _terminated = self._stoppable()
         entries = [{"id": "e%d" % i} for i in range(6)]
         self._interrupt_after_the_first_completion(r, entries)
@@ -431,6 +432,36 @@ class TestAnInterruptStopsTheBatch(unittest.TestCase):
         self.assertEqual([], [x for x in ("e3", "e4", "e5") if x in started],
                          "queued entries launched after the interrupt: %r" % started)
         self.assertLessEqual(len(started), 3, started)
+
+    def test_the_launches_after_the_interrupt_are_bounded_by_the_pool_width(self):
+        # "One worker slot turns over" is only true when ONE entry completes.
+        # Every worker that finishes an entry pulls the next queued item
+        # before the consumer's interrupt can reach the generator, so the real
+        # bound is the POOL, not a single slot: with four fast entries at
+        # width four, four workers each start one more -- eight launches out
+        # of twenty, and never a ninth. The test above is what pins the
+        # cancellation itself; this one pins how much can still get out, which
+        # is the number the seam's docstring now quotes. On the base, whose
+        # `shutdown(wait=True)` queued its sentinel behind every work item, all
+        # twenty ran.
+        released, started = threading.Event(), []
+        self.addCleanup(released.set)
+
+        class Wide(base.HostRunner):
+            host = "fake"; INTERRUPT_GRACE = 0.25
+
+            def run_entry(self, entry, env):
+                started.append(entry["id"])
+                if int(entry["id"][1:]) >= 4:          # only the first four are fast
+                    released.wait(10)
+                return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                      cost_usd=None, model=None, session_id=None,
+                                      denials=[], error=None)
+
+        self._interrupt_after_the_first_completion(
+            Wide(), [{"id": "e%d" % i} for i in range(20)], width=4)
+        self.assertLessEqual(len(started), 8, started)     # 2 x width, exactly
+        self.assertEqual([], [x for x in started if int(x[1:]) >= 8], started)
 
     def test_the_in_flight_entry_is_terminated_rather_than_awaited(self):
         r, _started, terminated = self._stoppable()
