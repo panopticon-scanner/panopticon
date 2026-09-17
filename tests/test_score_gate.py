@@ -1,6 +1,18 @@
 import math
 
+import scripts.evidence as evidence
 import scripts.score_gate as sg
+
+
+def test_the_evidence_module_is_the_package_one_not_a_second_copy():
+    # #1679: score_gate imported `evidence` FLAT-first, and the driver puts
+    # both the package root and the flat scripts dir on PYTHONPATH -- so every
+    # real run held two distinct `evidence` module objects. Harmless while the
+    # module is stateless; a single module-level datum would silently split,
+    # and the EVIDENCE_FACTOR/EVIDENCE_STATUSES check at import time would then
+    # be comparing one copy against the other. Package first, flat fallback:
+    # the pattern host_disclosure.py and model_resolver.py already use.
+    assert sg.evidence is evidence
 
 
 def _f(sev, conf="POSSIBLE", status="unverified"):
