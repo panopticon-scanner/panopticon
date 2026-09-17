@@ -11,6 +11,8 @@ the fix for it.
 5.1's wording rule, verbatim: "name the capability, the host, the probe, and
 the remedy. 'unenforced' alone is not a disclosure; it is a mood."
 """
+import hashlib
+
 # This repo has two directories named `scripts` with no __init__.py (repo-root
 # scripts/ and skill/scripts/). When imported flat (skill/scripts on
 # sys.path -- the standalone-script shape), the try arm raises
@@ -135,27 +137,120 @@ def remedy(capability, host):
     return text % {"host": host or "this host"}
 
 
-def lines(envelope):
-    """One line per capability that is not PROVEN, in a stable order.
+# What the line says INSTEAD of the probe and the detail when the row does not
+# support the status being shown (#1597). It names the disagreement rather than
+# the measurement: printing "probe write-guard-armed: round-trip denied" beside
+# "is unknown" asserts two things that cannot both be true of one measurement,
+# and the one the operator is entitled to is the masked state -- `hosts.posture`
+# is the fail-closed answer every other surface renders.
+_MASKED = ("the artifact's own state is %s, not the state this run reports; its "
+           "probe and detail describe that other measurement and are not shown")
+# The same suppression for a row that carries a measurement and NO state of its
+# own. It is not a milder case: `posture()` answers `unknown` for it exactly as
+# it does for a masked `proven`, so printing the measurement produced #1597's
+# reported sentence verbatim -- and, on a row whose `by` is also absent, the
+# worse "no probe ran: <what a probe found>".
+_STATELESS = ("the artifact records %s but no state of its own, so nothing in "
+              "it supports the state this run reports; it is not shown")
+_SILENT = "no probe ran: no detail recorded"
 
-    Stable because a reader diffs these across runs; `hosts.unproven` sorts for
-    exactly that reason.
+
+def _recorded_state(recorded):
+    """The row's own state, rendered for a disclosure line.
+
+    NEVER the raw value. `state` is read off a file a hostile target can
+    pre-commit and a foreign report can carry, so echoing it put an unbounded,
+    attacker-chosen string on all four of 5.1's surfaces -- measured at 5408
+    characters for a 5000-character state, the exact unreadability #1601 is
+    fixing one commit away. Only this module's own three-token vocabulary is
+    quoted; anything else is described, because the fact worth disclosing is
+    that the artifact says something unreadable, not what it says.
+    """
+    return repr(recorded) if recorded in hosts.STATES else "unrecognised"
+
+
+def _probe_clause(row, state):
+    """What replaces `probe <by>: <detail>` for one capability's row.
+
+    The rule is one-directional: the measurement prints ONLY when the row's own
+    `state` is present AND equal to the status being shown. Everything else is
+    a row that does not support the sentence it would be printed in.
+
+    * Equal -> render it. A refuted row keeps `probe shadow-shell-scan: ...`,
+      because REFUTED passes the claim mask untouched (hosts.posture, I5).
+    * A DIFFERENT state -> `_MASKED`. The stale or `--compare`-fed artifact:
+      `posture()` masks a PROVEN row for a capability the host does not claim,
+      and normalises an unreadable state to UNKNOWN.
+    * NO state but a probe or a detail -> `_STATELESS`. This was the hole the
+      first pass left: `recorded is None` was read as silence and fell through
+      to the measurement branch, so a row with `by`/`detail` and no `state`
+      printed #1597's reported sentence unchanged. A fresh probe always writes
+      `state` (`host_probes._row`), so this is the stale / foreign / truncated
+      path -- which is the path this rule exists for.
+    * NOTHING recorded at all -> `_SILENT`. An empty row claims nothing, and
+      "nobody looked" is the honest reading of it rather than a contradiction.
+    """
+    recorded = row.get("state")
+    if recorded == state:
+        by = row.get("by")
+        probe_clause = ("probe %s" % by) if by else "no probe ran"
+        return "%s: %s" % (probe_clause, row.get("detail") or "no detail recorded")
+    if recorded is None:
+        held = [w for w, k in (("a probe", "by"), ("a detail", "detail")) if row.get(k)]
+        return _STATELESS % (" and ".join(held),) if held else _SILENT
+    return _MASKED % (_recorded_state(recorded),)
+
+
+def unproven_rows(envelope):
+    """THE selection: [(capability, masked state)] this envelope does not prove.
+
+    Pure, and the ONLY place the `hosts.posture()` -> `hosts.unproven()` chain
+    is written for disclosure (#1600). `lines()` renders it and
+    `setup_flow._check_host_shells` (5.1 surface 4) consumes it; before this
+    existed, readiness wrote the same chain itself and then pulled each row's
+    TEXT out of `lines()` by prefix match. Two derivations of one fact, and
+    only one of them observable from the other: mutating `lines()` to emit a
+    row per capability broke the cross-surface guard on the stderr and body
+    surfaces and NOT on readiness -- 2 of 3, from a test written to catch
+    exactly that.
+
+    It returns the STATE beside the name rather than the bare name
+    `hosts.unproven` gives, because that is the other half readiness was
+    re-deriving: `refuted` is a fault an operator can clear and `unknown` is
+    NOT APPLICABLE, and the two must be told apart by the same answer that
+    chose the row. Sorted by `hosts.unproven`, because a reader diffs these
+    across runs.
+
+    An unreadable envelope selects nothing -- `headline()` is where that case
+    is SAID (NO_EVIDENCE); an empty list here would read as all-proven, which
+    is the inversion its docstring forbids, so no caller may take [] from this
+    as an answer on its own.
     """
     caps = _capabilities(envelope)
     host = host_of(envelope)
     if caps is None or host is None:
         return []
     posture = hosts.posture(host, caps)
+    return [(capability, posture[capability])
+            for capability in hosts.unproven(posture)]
+
+
+def lines(envelope):
+    """One line per capability that is not PROVEN, in a stable order.
+
+    Stable because a reader diffs these across runs; `hosts.unproven` sorts for
+    exactly that reason. One line per `unproven_rows` entry, in that order, so
+    the two surfaces that consume this can be zipped rather than prefix-matched.
+    """
+    caps = _capabilities(envelope) or {}
+    host = host_of(envelope)
     out = []
-    for capability in hosts.unproven(posture):
+    for capability, state in unproven_rows(envelope):
         row = caps.get(capability)
         row = row if isinstance(row, dict) else {}
-        by = row.get("by")
-        probe_clause = ("probe %s" % by) if by else "no probe ran"
-        detail = row.get("detail") or "no detail recorded"
-        out.append("%s is %s on host %r -- %s: %s. fix: %s"
-                   % (capability, posture[capability], host, probe_clause,
-                      detail, remedy(capability, host)))
+        out.append("%s is %s on host %r -- %s. fix: %s"
+                   % (capability, state, host, _probe_clause(row, state),
+                      remedy(capability, host)))
     return out
 
 
@@ -216,6 +311,51 @@ def _output_schema_line(envelope, host):
                row.get("flag") or "its")]
 
 
+def disclosure_digest(envelope):
+    """A stable fingerprint of everything the full block would SAY (#1596).
+
+    Over the rendered TEXT, not over the posture map, because the question a
+    caller asks it is "has the operator already been told this?" -- and the
+    `detail`, the remedies and the operational notes are all part of the
+    answer. A capability that stayed refuted for a NEW reason is a changed
+    disclosure even though its state did not move, and `driver` already
+    refreshes the artifact for exactly that case.
+
+    `probed_at` is excluded by construction: it is stamped fresh on every
+    probe and appears in no line, so an unchanged posture digests identically
+    on every invocation of a resumable loop.
+    """
+    body = "\n".join([headline(envelope)] + lines(envelope) + notes(envelope))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def unchanged_headline(envelope, since):
+    """The ONE line an invocation prints when it has said all this already.
+
+    Spec 5.1 says the posture is disclosed once per run; `driver run` is a
+    resumable loop, so the full block ran on every invocation -- ~120 KB of
+    byte-identical stderr across a self-scan (#1596). It is deliberately not
+    silence: a resumer must see the posture they are resuming under, and
+    "absence of warnings must mean measured and proven" forbids saying
+    nothing. So it names the host, BOTH counts (a headline that reported only
+    the unproven could go quiet by counting nothing), and when the full block
+    was printed.
+
+    Falls back to NO_EVIDENCE on an unreadable envelope for the same reason
+    `headline` does: a count of nothing must never render as the all-proven
+    case.
+    """
+    caps = _capabilities(envelope)
+    host = host_of(envelope)
+    if caps is None or host is None:
+        return NO_EVIDENCE
+    unproven_count = len(unproven_rows(envelope))
+    return ("host %r: %d of %d capabilities proven, %d not -- unchanged since "
+            "%s, when the full disclosure was printed (spec 5.1)"
+            % (host, len(hosts.CAPABILITIES) - unproven_count,
+               len(hosts.CAPABILITIES), unproven_count, since))
+
+
 def headline(envelope):
     """The single line surfaces 1 and 3 lead with.
 
@@ -228,11 +368,15 @@ def headline(envelope):
     host = host_of(envelope)
     if caps is None or host is None:
         return NO_EVIDENCE
-    gaps = lines(envelope)
-    if not gaps:
+    # R1 Minor 2: the COUNT and the NAMES come off one call. This counted
+    # `len(lines(...))` and separately named `hosts.unproven(hosts.posture(...))`
+    # -- a second derivation of one fact, surviving inside the module #1600
+    # designated as the single place for it, and producing a sentence whose
+    # count and name-list can disagree with each other.
+    rows = unproven_rows(envelope)
+    if not rows:
         return ALL_PROVEN
-    posture = hosts.posture(host, caps)
     return ("%d of %d NOT PROVEN on host %r (%s) -- this run "
             "does not verify them; see the lines below"
-            % (len(gaps), len(hosts.CAPABILITIES), host,
-               ", ".join(hosts.unproven(posture))))
+            % (len(rows), len(hosts.CAPABILITIES), host,
+               ", ".join(name for name, _state in rows)))

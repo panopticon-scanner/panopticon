@@ -1,3 +1,4 @@
+import ast
 import dataclasses
 import json
 import os
@@ -970,9 +971,17 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
         _isolate_codex_probes(self)
 
     def _check(self, host):
-        return dict((name, (ok, detail))
-                    for name, ok, detail in
-                    setup_flow._check_host_shells(host, lambda *a, **k: None))
+        # #1599: the posture probe is mocked and a real tree is named. This
+        # used to reach `host_probes.run_probes` with repo_root=None, which
+        # read ~/.claude/agents and ~/.codex/agents on whatever machine ran
+        # the suite -- these assertions are about the REGISTRY, not about the
+        # developer's home directory.
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=_shell_less_artifact(host)):
+            return dict((name, (ok, detail))
+                        for name, ok, detail in
+                        setup_flow._check_host_shells(host, lambda *a, **k: None,
+                                                      "."))
 
     def test_codex_no_longer_claims_enforcement_it_never_verified(self):
         # #1344 F2: pin this against real registration state, not whatever
@@ -1026,8 +1035,13 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
             calls.append(cmd)
             raise OSError("not installed")
 
-        result = dict((name, (ok, detail)) for name, ok, detail
-                      in setup_flow._check_host_shells("codex", runner))
+        # #1599: mocked, and given a tree. Unmocked this reached the live
+        # Codex probes and read the home directory of whoever ran the suite;
+        # the subject here is the `codex --version` call recorded in `calls`.
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=_shell_less_artifact("codex")):
+            result = dict((name, (ok, detail)) for name, ok, detail
+                          in setup_flow._check_host_shells("codex", runner, "."))
         self.assertIn(["codex", "--version"], calls,
                       "readiness stopped probing for the Codex CLI")
         ok, detail = result["codex-cli"]
@@ -1136,7 +1150,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
     def test_readiness_reports_every_unproven_capability_with_its_remedy(self):
         with mock.patch.object(host_probes, "run_probes",
                                return_value=_mixed_artifact("claude")):
-            checks = setup_flow._check_host_shells("claude", _runner_ok)
+            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
         named = {c[0]: c for c in checks}
         refuted = named["host-capability:" + hosts.TOOL_POLICY_ENFORCED]
         self.assertIs(False, refuted[1])
@@ -1148,7 +1162,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
     def test_a_proven_capability_gets_no_readiness_row(self):
         with mock.patch.object(host_probes, "run_probes",
                                return_value=_mixed_artifact("claude")):
-            checks = setup_flow._check_host_shells("claude", _runner_ok)
+            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
         self.assertNotIn("host-capability:" + hosts.ARTIFACT_WRITE_GUARD,
                          [c[0] for c in checks])
 
@@ -1174,7 +1188,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
         with mock.patch.dict(hosts.HOSTS, {"claude": claiming}), \
                 mock.patch.object(host_probes, "run_probes",
                                   return_value=_all_proven_artifact("claude")):
-            checks = setup_flow._check_host_shells("claude", _runner_ok)
+            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
         row = {c[0]: c for c in checks}["host-capabilities"]
         self.assertIs(True, row[1])
         self.assertEqual(host_disclosure.ALL_PROVEN, row[2])
@@ -1192,7 +1206,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
                                        claims=frozenset(hosts.CAPABILITIES))
         with mock.patch.dict(hosts.HOSTS, {"claude": claiming}), \
                 mock.patch.object(host_probes, "run_probes", return_value=artifact):
-            checks = setup_flow._check_host_shells("claude", _runner_ok)
+            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
         row = {c[0]: c for c in checks}["host-capabilities"]
         self.assertIs(True, row[1])
         self.assertEqual(host_disclosure.ALL_PROVEN, row[2])
@@ -1202,7 +1216,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
         # tracebacks tells the operator nothing about what to fix.
         with mock.patch.object(host_probes, "run_probes",
                                side_effect=OSError("boom")):
-            checks = setup_flow._check_host_shells("claude", _runner_ok)
+            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
         row = {c[0]: c for c in checks}["host-capabilities"]
         self.assertIsNone(row[1])
         self.assertIn("could not be probed", row[2])
@@ -1237,7 +1251,7 @@ class TestReadinessNeverReadsAnUnreadableEnvelopeAsProof(unittest.TestCase):
             with self.subTest(envelope=name):
                 with mock.patch.object(host_probes, "run_probes",
                                        return_value=bad):
-                    checks = setup_flow._check_host_shells("claude", _runner_ok)
+                    checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
                 row = {c[0]: c for c in checks}["host-capabilities"]
                 # By EQUALITY against the module's own constants: "1 of 5 NOT
                 # PROVEN" contains "PROVEN", so no substring test here can tell
@@ -1250,7 +1264,7 @@ class TestReadinessNeverReadsAnUnreadableEnvelopeAsProof(unittest.TestCase):
         # report. Five rows whose detail is a bare capability name would be
         # "unenforced alone" -- a mood, not a disclosure (5.1).
         with mock.patch.object(host_probes, "run_probes", return_value={}):
-            checks = setup_flow._check_host_shells("claude", _runner_ok)
+            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
         self.assertEqual([], [c for c in checks
                               if c[0].startswith("host-capability:")])
 
@@ -1471,3 +1485,130 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
         with self.assertRaises(ValueError):
             setup_flow.write_spine(d, {"schema_version": 1})
         self.assertEqual([], os.listdir(outside))
+
+
+# --- #1598 / #1599: readiness may not probe without a tree to probe ---------
+# A test that DELIBERATELY calls `_check_host_shells` without a repo_root --
+# the two below are the only ones -- marks the line so the AST guard at the
+# bottom of this file can tell it from a site that simply forgot.
+_REPO_ROOT_EXEMPT = "repo-root-exempt:"
+
+
+class TestReadinessWithoutATreeSaysWhatIsMissing(unittest.TestCase):
+    """#1598: called without `repo_root`, `_check_host_shells` handed the
+    argument straight to `host_probes.run_probes` as `review_root`, where
+    `probe_shadow_shells` joined it with a relative path and raised. The
+    try/except turned that into an honest-but-useless readiness row:
+
+        ('host-capabilities', None, "posture could not be probed: expected
+         str, bytes or os.PathLike object, not NoneType")
+
+    Non-gating and true, and no operator can act on it. An internal type
+    error is not a remedy (spec 5.1: "name the capability, the host, the
+    probe, and the remedy").
+
+    #1599 is the same defect seen from the tests' side: reaching
+    `run_probes` at all made two unit tests depend on whatever
+    `~/.claude/agents` holds on the machine running the suite.
+    """
+
+    def _rows(self, host="claude"):
+        probe = mock.patch.object(
+            host_probes, "run_probes",
+            side_effect=AssertionError("readiness probed with no tree to probe"))
+        with probe as spy:
+            checks = setup_flow._check_host_shells(host, _runner_ok)  # repo-root-exempt: the subject
+        return spy, {c[0]: c for c in checks}
+
+    def test_the_row_names_the_missing_argument_not_a_typeerror(self):
+        _spy, rows = self._rows()
+        _name, ok, detail = rows["host-capabilities"]
+        self.assertIsNone(ok, "a caller's omission is not a host fault")
+        self.assertIn("repo_root", detail)
+        self.assertNotIn("NoneType", detail)
+        self.assertNotIn("os.PathLike", detail)
+
+    def test_no_probe_runs_when_there_is_nothing_to_probe(self):
+        # #1599's root cause. The probes read `~/.claude/agents`,
+        # `~/.codex/agents` and `.claude/settings.local.json`; a unit test that
+        # supplied no tree was measuring the developer's home directory.
+        spy, _rows = self._rows()
+        spy.assert_not_called()
+
+    def test_the_checks_it_can_still_make_survive(self):
+        # Not a bare refusal: `enforced-shells` needs no tree, so it is still
+        # reported. Only the posture row -- the one that needs a tree -- says
+        # it could not be established.
+        _spy, rows = self._rows()
+        self.assertIn("enforced-shells", rows)
+        self.assertEqual([], [n for n in rows if n.startswith("host-capability:")],
+                         "no per-capability verdict may be invented from no probe")
+
+
+class TestNoReadinessUnitTestReachesALiveProbe(unittest.TestCase):
+    """#1599, made durable. Two tests in this file called
+    `_check_host_shells(host, runner)` with `repo_root` defaulting to None and
+    reached `host_probes.run_probes` unmocked -- verified harmless (the
+    write-guard round-trip runs in its own TemporaryDirectory and the rest are
+    read-only stats), but they measured the developer's home directory rather
+    than the code.
+
+    An AST guard, not a grep: the call is spelled across two lines at one site
+    and a text rule would read the argument count off whichever line it
+    matched (`git grep -E` silently ignores `\\b` and returns a false zero).
+    """
+
+    EXEMPT = _REPO_ROOT_EXEMPT
+    _SKIP_DIRS = {"fixtures", "goldens", "__pycache__"}
+
+    def _offenders(self):
+        root = os.path.dirname(os.path.abspath(__file__))
+        offenders = []
+        for base, dirs, files in os.walk(root):
+            dirs[:] = sorted(d for d in dirs if d not in self._SKIP_DIRS)
+            for name in sorted(f for f in files if f.endswith(".py")):
+                path = os.path.join(base, name)
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+                lines = text.splitlines()
+                for node in ast.walk(ast.parse(text, path)):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    func = node.func
+                    if not (isinstance(func, ast.Attribute)
+                            and func.attr == "_check_host_shells"):
+                        continue
+                    if len(node.args) >= 3 or any(kw.arg == "repo_root"
+                                                  for kw in node.keywords):
+                        continue
+                    source = "\n".join(lines[node.lineno - 1:node.end_lineno])
+                    if self.EXEMPT in source:
+                        continue
+                    offenders.append("%s:%d: %s"
+                                     % (os.path.relpath(path, root), node.lineno,
+                                        ast.unparse(node)))
+        return offenders
+
+    def test_every_call_site_supplies_the_tree_it_wants_probed(self):
+        self.assertEqual(
+            [], self._offenders(),
+            "a readiness test with no repo_root measures whatever is under "
+            "$HOME on this machine. Pass one, or mark the line "
+            "`# %s <why>`:\n%s" % (self.EXEMPT, "\n".join(self._offenders())))
+
+    def test_the_scanner_actually_finds_the_call_sites(self):
+        # Guards the guard: a walk that matched nothing would report a clean
+        # pass over an unread tree.
+        root = os.path.dirname(os.path.abspath(__file__))
+        seen = 0
+        for base, dirs, files in os.walk(root):
+            dirs[:] = sorted(d for d in dirs if d not in self._SKIP_DIRS)
+            for name in sorted(f for f in files if f.endswith(".py")):
+                with open(os.path.join(base, name), encoding="utf-8") as fh:
+                    text = fh.read()
+                for node in ast.walk(ast.parse(text, name)):
+                    if (isinstance(node, ast.Call)
+                            and isinstance(node.func, ast.Attribute)
+                            and node.func.attr == "_check_host_shells"):
+                        seen += 1
+        self.assertGreater(seen, 5, "the call-site scan found almost nothing")

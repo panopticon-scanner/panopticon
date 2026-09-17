@@ -6,13 +6,23 @@ PROGRESS never does — the driver re-derives the phase cursor from artifact
 presence. The manifest is written once by the first `driver run`; a conflicting
 flag on re-invocation is refused.
 
-ONE deliberate exception (#1637 P08 F2): `flags.tools` may be relaxed to False
-on a run already in flight — `record_tools_downgrade` — because the alternative
-was `--reset`, i.e. discarding every paid scout, as the only exit from a
-scanner environment that moved mid-run. It is recorded, not silent: the
-previous value and a timestamp land in `flag_changes`, and the report discloses
-it. The reverse (False -> True) is still refused as drift. See
-docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md §3.
+TWO deliberate exceptions rewrite it, both through the one atomic `_rewrite`,
+and neither is an anti-drift key:
+
+1. `flags.tools` may be relaxed to False on a run already in flight —
+   `record_tools_downgrade` (#1637 P08 F2) — because the alternative was
+   `--reset`, i.e. discarding every paid scout, as the only exit from a scanner
+   environment that moved mid-run. It is recorded, not silent: the previous
+   value and a timestamp land in `flag_changes`, and the report discloses it.
+   The reverse (False -> True) is still refused as drift. See
+   docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md §3.
+2. `posture_disclosed` records that this run's full host-posture block has been
+   printed — `record_posture_disclosure` (#1596). It is the one `.panopticon`
+   file with an anti-forgery guard, which is why the decision reads off it and
+   not off `host-capabilities.json`; it holds what the operator has been TOLD,
+   not a run parameter, so the manifest is a record here rather than config.
+   The nearest thing to PROGRESS this file carries, and deliberately not it: a
+   lost value costs one repeated disclosure, never a re-run phase.
 """
 import datetime
 import json
@@ -255,23 +265,27 @@ def is_tools_downgrade(manifest, flags):
 # a resume inherit a fact about a process that has exited.
 _EPHEMERAL_KEYS = ("session_dir", "invocation")
 
+# #1596: {"digest": <host_disclosure.disclosure_digest>, "at": <probed_at>} --
+# the posture this run has already disclosed IN FULL on stderr, and when. The
+# stamp lives here rather than beside the evidence in
+# `runs/<tag>/host-capabilities.json` because it decides whether a disclosure
+# is PRINTED, and this is the one `.panopticon` file with an anti-forgery
+# guard: `driver.run` discards a manifest that is git-tracked in the reviewed
+# tree or stamped for another checkout (`runio._foreign_manifest`) and rebuilds
+# from argv. A target that force-commits an artifact matching what the probe
+# is about to find could otherwise silence surface 1 on the first invocation.
+POSTURE_DISCLOSED = "posture_disclosed"
 
-def record_tools_downgrade(review_root, manifest):
-    """Persist `--no-tools` on an in-flight run, and say when it happened.
+
+def _rewrite(review_root, manifest):
+    """Write the manifest back through a temp file + `os.replace`.
 
     The manifest is otherwise write-once, and stays so for every anti-drift
-    key: this is the single deliberate exception, and it is recorded rather
-    than silent -- `flag_changes` keeps the previous value and the timestamp,
-    so a reader of the run record can see that this run did not start the way
-    it finished. `meta.tools.disabled_mid_run` is derived from it.
-
-    Rewritten through a temp file + os.replace so an interrupt cannot leave a
-    truncated manifest, which is the one artifact that anchors the run tag.
+    key -- the two callers below are the deliberate exceptions and each says
+    why. Atomic because this is the one artifact that anchors the run tag: an
+    interrupt mid-write would leave every `_pano` path unresolvable. The
+    ephemeral keys are stripped here, once, rather than at each caller.
     """
-    previous = (manifest.get("flags") or {}).get("tools")
-    manifest.setdefault("flags", {})["tools"] = False
-    manifest["flag_changes"] = list(manifest.get("flag_changes") or []) + [
-        {"flag": "tools", "from": previous, "to": False, "at": _now_iso()}]
     body = {k: v for k, v in manifest.items() if k not in _EPHEMERAL_KEYS}
     path = manifest_path(review_root)
     tmp = path + ".tmp"
@@ -279,6 +293,47 @@ def record_tools_downgrade(review_root, manifest):
         json.dump(body, fh, indent=2, sort_keys=True)
     os.replace(tmp, path)
     return manifest
+
+
+def record_tools_downgrade(review_root, manifest):
+    """Persist `--no-tools` on an in-flight run, and say when it happened.
+
+    Recorded rather than silent -- `flag_changes` keeps the previous value and
+    the timestamp, so a reader of the run record can see that this run did not
+    start the way it finished. `meta.tools.disabled_mid_run` is derived from it.
+    """
+    previous = (manifest.get("flags") or {}).get("tools")
+    manifest.setdefault("flags", {})["tools"] = False
+    manifest["flag_changes"] = list(manifest.get("flag_changes") or []) + [
+        {"flag": "tools", "from": previous, "to": False, "at": _now_iso()}]
+    return _rewrite(review_root, manifest)
+
+
+def record_posture_disclosure(review_root, manifest, digest, at=None):
+    """Remember that this run's FULL posture block has now been printed (#1596).
+
+    Not an anti-drift key and never read as one: it records what an operator
+    has been TOLD, so the worst a lost or corrupted value can do is print the
+    block again. Written only on the invocations that print it in full -- the
+    first, and any on which the disclosure actually changed -- so a resumable
+    loop rewrites this file once per run rather than once per turn.
+    """
+    manifest[POSTURE_DISCLOSED] = {"digest": digest, "at": at or _now_iso()}
+    return _rewrite(review_root, manifest)
+
+
+def posture_disclosed_at(manifest, digest):
+    """When this exact disclosure was last printed in full, or None.
+
+    None is the fail-loud answer: no stamp, an unreadable one, or one for a
+    DIFFERENT disclosure all mean "say the whole thing", which is the
+    behaviour spec 5.1 had before #1596 collapsed the repeats.
+    """
+    stamp = (manifest or {}).get(POSTURE_DISCLOSED)
+    if not isinstance(stamp, dict) or stamp.get("digest") != digest:
+        return None
+    at = stamp.get("at")
+    return at if isinstance(at, str) and at else None
 
 
 def tools_downgraded_mid_run(manifest):

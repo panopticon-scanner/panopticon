@@ -18,7 +18,9 @@ fixture's real egress. So before running the hostile build we independently
 the probe refuses to run and fails loudly, rather than trusting the flag."""
 import os
 from _test_helpers import first
+import shutil
 import socket
+import tempfile
 import unittest
 
 from _test_helpers import skip_or_fail
@@ -88,6 +90,124 @@ def _containment_decision(probe_enabled, egress_reachable=_egress_reachable):
     if egress_reachable():
         return ("fail", _UNCONTAINED_MSG)
     return None
+
+
+# --- #1655: four guards, and nowhere they are all required to be met --------
+# `test_contained_build_still_yields_scs_findings` below is the only test that
+# invokes an adapter on a hostile project, and `adapter.invoke` sits downstream
+# of four skips: the opt-in, the fixture, adapter applicability, and `dotnet`.
+# Every other test in this file injects the containment outcome or fakes the
+# connection, so an ordinary run goes green on the mocks and the
+# containment-sensitive build path is never exercised.
+#
+# The opt-in is not a defect -- this test EXECUTES evil.csproj's hostile
+# MSBuild target, and forcing that wherever the integration job runs is exactly
+# what must not happen. What the guard below adds is the other half: WHERE
+# something has opted in, the remaining three preconditions are a FAILURE
+# rather than three more skips, so the probe cannot report green having run
+# nothing in the one environment built to run it.
+CONTAINMENT_PROBE_ENV = "PANOPTICON_CONTAINMENT_PROBE"
+
+# No scheduled CI lane sets the opt-in: `adapter-integration.yml` sets
+# PANOPTICON_REQUIRE_INTEGRATION=1 and not this one, so today the probe is for
+# a human running inside the no-egress container. That fact is PINNED, in both
+# directions, by tests/test_workflow_pins.py (EXPECTED_CONTAINMENT_LANES) --
+# the fleet is read with PyYAML there because this tree also runs inside the
+# fixtures image, which carries none. If a lane is ever added, that pin fails
+# and this sentence has to be rewritten with it.
+_NO_LANE = (
+    "no CI lane sets %s=1, so nothing is opted in here (#1655). Run this "
+    "inside the no-egress panopticon-tools container with the flag set; the "
+    "guard then requires the fixture, the adapter and dotnet rather than "
+    "skipping on them." % CONTAINMENT_PROBE_ENV)
+
+
+def unmet_preconditions(environ=None, fixture=FIXTURE, adapters=None,
+                        which=shutil.which):
+    """Every reason the hostile build would NOT execute, in guard order.
+
+    Pure apart from the injectable lookups, so the rule can be exercised on
+    both answers without a container, a fixture or a .NET SDK -- and without
+    ever reaching `adapter.invoke`, which is the thing that runs hostile build
+    logic. Applicability is only asked when the fixture is there; asking an
+    adapter about a directory that does not exist reports the wrong guard.
+    """
+    environ = os.environ if environ is None else environ
+    adapters = ADAPTERS if adapters is None else adapters
+    unmet = []
+    if environ.get(CONTAINMENT_PROBE_ENV) != "1":
+        unmet.append("%s is not 1 -- the containment probe is not opted in"
+                     % CONTAINMENT_PROBE_ENV)
+    if not os.path.isdir(fixture):
+        unmet.append("the hostile-csproj fixture is missing: %s" % fixture)
+    elif not adapters["roslyn-secguard"].is_applicable(fixture):
+        unmet.append("roslyn-secguard is not applicable to %s" % fixture)
+    if which("dotnet") is None:
+        unmet.append("dotnet is not on PATH")
+    return unmet
+
+
+class _AlwaysApplicable:
+    def is_applicable(self, target):
+        return True
+
+
+class _NeverApplicable:
+    def is_applicable(self, target):
+        return False
+
+
+class TestTheContainmentProbeIsNotDecorativeWhereItRuns(unittest.TestCase):
+    """#1655. The rule runs unconditionally on scratch inputs; the APPLICATION
+    of it runs wherever the opt-in is set, and fails there rather than adding
+    a fifth skip."""
+
+    def test_every_guard_the_containment_test_stands_behind_is_listed(self):
+        unmet = unmet_preconditions(environ={}, fixture="/no/such/fixture",
+                                    which=lambda _name: None)
+        self.assertEqual(3, len(unmet), unmet)
+        joined = " | ".join(unmet)
+        self.assertIn(CONTAINMENT_PROBE_ENV, joined)
+        self.assertIn("fixture is missing", joined)
+        self.assertIn("dotnet", joined)
+
+    def test_applicability_is_the_fourth_guard_once_the_fixture_is_there(self):
+        with tempfile.TemporaryDirectory() as present:
+            unmet = unmet_preconditions(
+                environ={CONTAINMENT_PROBE_ENV: "1"}, fixture=present,
+                adapters={"roslyn-secguard": _NeverApplicable()},
+                which=lambda _name: "/usr/bin/dotnet")
+        self.assertEqual(1, len(unmet), unmet)
+        self.assertIn("not applicable", unmet[0])
+
+    def test_nothing_is_unmet_when_every_precondition_holds(self):
+        with tempfile.TemporaryDirectory() as present:
+            self.assertEqual([], unmet_preconditions(
+                environ={CONTAINMENT_PROBE_ENV: "1"}, fixture=present,
+                adapters={"roslyn-secguard": _AlwaysApplicable()},
+                which=lambda _name: "/usr/bin/dotnet"))
+
+    def test_only_the_exact_opt_in_counts(self):
+        with tempfile.TemporaryDirectory() as present:
+            for value in ("true", "yes", "", "0", "2"):
+                with self.subTest(value=value):
+                    unmet = unmet_preconditions(
+                        environ={CONTAINMENT_PROBE_ENV: value}, fixture=present,
+                        adapters={"roslyn-secguard": _AlwaysApplicable()},
+                        which=lambda _name: "/usr/bin/dotnet")
+                    self.assertEqual(1, len(unmet), unmet)
+                    self.assertIn(CONTAINMENT_PROBE_ENV, unmet[0])
+
+    def test_the_hostile_build_really_runs_wherever_it_is_opted_in(self):
+        if os.environ.get(CONTAINMENT_PROBE_ENV) != "1":
+            self.skipTest(_NO_LANE)  # strict-skip-exempt: names the lane; see _NO_LANE
+        unmet = unmet_preconditions()
+        self.assertEqual(
+            [], unmet,
+            "%s=1 says this environment is meant to execute the hostile "
+            "build, but the containment test would skip on:\n  %s\nA probe "
+            "that skips where it is opted in is decorative (#1655)."
+            % (CONTAINMENT_PROBE_ENV, "\n  ".join(unmet)))
 
 
 class _FakeConn:

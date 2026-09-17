@@ -1316,5 +1316,167 @@ class TestTheRegistrationDirSeam(unittest.TestCase):
         self.assertIn(empty, capabilities[hosts.TOOL_POLICY_ENFORCED]["detail"])
 
 
+class TestThePostureBlockIsSaidInFullOncePerPosture(unittest.TestCase):
+    """#1596: `_emit_posture_disclosure` wrote the headline plus one line per
+    unproven capability to stderr on EVERY `driver run` invocation -- measured
+    at 1198 bytes / 5 lines on a mixed posture. `driver run` is a resumable
+    loop, so a self-scan is 100+ invocations: ~120 KB of stderr that is
+    byte-identical BY CONSTRUCTION, because F3a refuses the run outright if
+    the posture moves.
+
+    The resumer still has to see the posture they are resuming under, so the
+    collapse is to a HEADLINE, not to silence: the host, how many capabilities
+    are proven and how many are not, and when the full block was printed.
+
+    The decision is made from the RUN MANIFEST's own stamp. `driver.run`
+    discards a foreign manifest and rebuilds from argv (`_foreign_manifest`);
+    `host-capabilities.json` has no such guard, and deciding from it would let
+    a target that pre-commits a matching artifact suppress the disclosure on
+    the very first invocation.
+    """
+
+    ARTIFACT = {
+        "schema_version": 1, "host": "claude", "probed_at": "2026-09-17T00:00:00Z",
+        "capabilities": {
+            hosts.TOOL_POLICY_ENFORCED: {
+                "state": hosts.REFUTED, "by": "shadow-shell-scan",
+                "detail": "the reviewed tree ships .claude/agents/panopticon-scout.md"},
+            hosts.ARTIFACT_WRITE_GUARD: {
+                "state": hosts.PROVEN, "by": "write-guard-armed",
+                "detail": "round-trip denied"},
+            hosts.READ_SCOPE_CONFINED: {
+                "state": hosts.PROVEN, "by": "read-guard-armed", "detail": "bound"},
+            hosts.USAGE_LEDGER: {
+                "state": hosts.UNKNOWN, "by": None, "detail": "no transcript directory"},
+            hosts.MODEL_BINDING: {
+                "state": hosts.UNKNOWN, "by": None, "detail": "no registered shell"}},
+    }
+
+    def _run_root(self, host="claude"):
+        """A review root with a REAL run-manifest on disk, which is what the
+        posture stamp is recorded on."""
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        run_manifest.write_manifest(review_root, {
+            "schema_version": 1, "host": host, "run_id": "ab" * 8,
+            "created": "2026-09-17T00:00:00Z", "security_mode": "standard",
+            "review_root": os.path.abspath(review_root),
+            "target": os.path.abspath(review_root),
+            "scope": {"mode": "repo", "target": None}})
+        return review_root
+
+    def _invoke(self, review_root, artifact=None):
+        """One `_establish_host_posture` call, manifest re-read from DISK the
+        way a fresh process would, returning (error, stderr)."""
+        manifest = run_manifest.load_manifest(review_root)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), \
+                mock.patch.object(host_probes, "run_probes",
+                                  return_value=copy.deepcopy(
+                                      artifact or self.ARTIFACT)):
+            error = driver._establish_host_posture(
+                review_root, manifest, _Args(target=review_root, session_dir=None))
+        return error, err.getvalue()
+
+    def test_the_first_invocation_says_the_whole_thing(self):
+        review_root = self._run_root()
+        error, out = self._invoke(review_root)
+        self.assertIsNone(error)
+        body = [ln for ln in out.splitlines() if ln.startswith("driver:")]
+        self.assertGreater(len(body), 1, out)
+        for capability in (hosts.TOOL_POLICY_ENFORCED, hosts.USAGE_LEDGER,
+                           hosts.MODEL_BINDING):
+            self.assertIn(capability, out)
+
+    def test_a_second_invocation_with_an_unchanged_posture_prints_one_line(self):
+        review_root = self._run_root()
+        self._invoke(review_root)
+        error, out = self._invoke(review_root)
+        self.assertIsNone(error)
+        self.assertEqual(1, len(out.splitlines()), out)
+        self.assertIn("claude", out)
+        self.assertIn("unchanged since", out)
+        self.assertIn("2026-09-17T00:00:00Z", out)
+        # The resumer is still told what they are resuming under: 2 proven of
+        # 5, 3 not. Both halves, so a headline cannot go quiet by counting
+        # nothing.
+        self.assertIn("2", out)
+        self.assertIn("3", out)
+
+    def test_a_posture_that_moved_says_the_whole_thing_again(self):
+        # An OPERATIONAL capability (usage_ledger) so the run is not refused
+        # -- a gating change halts it, and the collapse must not be the reason
+        # a real change goes unsaid.
+        review_root = self._run_root()
+        self._invoke(review_root)
+        moved = copy.deepcopy(self.ARTIFACT)
+        moved["capabilities"][hosts.USAGE_LEDGER] = {
+            "state": hosts.REFUTED, "by": "usage-source",
+            "detail": "the envelope stopped carrying `usage`"}
+        error, out = self._invoke(review_root, moved)
+        self.assertIsNone(error)
+        self.assertGreater(len(out.splitlines()), 1, out)
+        self.assertIn("the envelope stopped carrying", out)
+
+    def test_the_stamp_lives_on_the_manifest_not_on_the_probe_artifact(self):
+        review_root = self._run_root()
+        self._invoke(review_root)
+        stamped = run_manifest.load_manifest(review_root)
+        self.assertIn(run_manifest.POSTURE_DISCLOSED, stamped)
+        artifact = runio._load_json(
+            runio._pano(review_root, runio.HOST_CAPABILITIES))
+        self.assertNotIn(run_manifest.POSTURE_DISCLOSED, artifact)
+        # ...and the ephemeral keys still never reach disk.
+        for key in run_manifest._EPHEMERAL_KEYS:
+            self.assertNotIn(key, stamped)
+
+    def test_a_stamp_that_cannot_be_written_does_not_abort_the_run(self):
+        # R1 Minor 7. `record_posture_disclosure`'s own docstring argues the
+        # value is expendable -- "the worst a lost or corrupted value can do is
+        # print the block again" -- but an OSError from that write escaped
+        # `driver.run` and killed the invocation with a traceback and no JSON
+        # status. On the shadow-refusal path it is now the ONLY write in
+        # `_establish_host_posture` (the artifact write is below the refusal),
+        # so a failure there turned a clean "refusing to run" into a traceback.
+        review_root = self._run_root()
+        self._invoke(review_root)                 # invocation 1, writable
+        pano = runio._pano(review_root)
+        moved = copy.deepcopy(self.ARTIFACT)      # operational move -> full block again
+        moved["capabilities"][hosts.USAGE_LEDGER] = {
+            "state": hosts.REFUTED, "by": "usage-source",
+            "detail": "the envelope stopped carrying `usage`"}
+        mode = os.stat(pano).st_mode
+        os.chmod(pano, 0o555)
+        self.addCleanup(os.chmod, pano, mode)
+        probe = os.path.join(pano, "still-writable")
+        try:
+            with open(probe, "w", encoding="utf-8"):
+                pass
+        except OSError:
+            pass
+        else:
+            os.remove(probe)
+            self.skipTest("this process can write a read-only directory (root?)")
+        error, out = self._invoke(review_root, moved)
+        self.assertIsNone(error, "a lost stamp must not stop the run")
+        self.assertIn("could not record the posture disclosure", out)
+        # ...and the disclosure it could not record was still made in full.
+        self.assertIn("the envelope stopped carrying", out)
+
+    def test_a_planted_artifact_cannot_suppress_the_first_disclosure(self):
+        # The target-writable file. `.panopticon/runs/<tag>/` is `git add -f`-able,
+        # so a hostile tree can pre-commit an artifact that matches whatever the
+        # probe is about to find. The manifest is the guarded record, and it is
+        # the one consulted.
+        review_root = self._run_root()
+        path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        runio._write_json(path, copy.deepcopy(self.ARTIFACT))
+        error, out = self._invoke(review_root)
+        self.assertIsNone(error)
+        self.assertGreater(len(out.splitlines()), 1, out)
+        self.assertIn(hosts.TOOL_POLICY_ENFORCED, out)
+
+
 if __name__ == "__main__":
     unittest.main()

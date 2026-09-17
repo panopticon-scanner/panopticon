@@ -12,12 +12,13 @@ whole directory rather than whichever lines someone remembered.
 """
 import os
 import re
+import shlex
 import unittest
 
 import yaml
 
 from conftest import REPO_ROOT
-from workflow_guard import fetches, job_defects, run_jobs
+from workflow_guard import UNNAMED, fetches, job_defects, run_jobs
 # #1641's comment-stripper, now `scripts/shell_reader.py`'s: half this repo's
 # workflow and Dockerfile prose QUOTES the commands it explains -- including
 # the two the install rule was written for -- and a guard that reads a comment
@@ -656,3 +657,307 @@ class TestEveryPinnedRequirementsFileIsHashed(unittest.TestCase):
             pinned, RUNNER_PIP_FLOOR,
             "pinned pip %s is older than the %s the runner already ships"
             % (m.group(1), ".".join(str(n) for n in RUNNER_PIP_FLOOR)))
+
+
+# --- #1652: the scheduled adapter job's test selector ------------------------
+# `adapter-integration.yml` is the only job that runs the real adapter probes
+# against the real fixtures, and it selects them with a whole-tree
+# `pytest tests/tools/`. Nothing asserted that argv: a narrowing edit to a
+# passing subset would leave the daily job GREEN while the probes it exists to
+# run no longer execute. `tests/test_integration_strictness.py` asserts the
+# SUBSTRING "tests/tools/", which `pytest tests/tools/test_brakeman.py` also
+# contains -- so the convention needed pinning as an argv, not as a fragment.
+#
+# Here rather than there because this module is where the fleet's unwritten
+# workflow conventions are written down as tests, beside the `uses:` pin and
+# the install pin, sharing one workflow reader.
+ADAPTER_WORKFLOW = "adapter-integration.yml"
+
+# The exact argv, in order. `tests/tools/` and not a `*_integration.py` glob:
+# the railsgoat probe that caught the stale brakeman CWE map lives in
+# test_brakeman.py, so a glob would scope around the class of defect this job
+# exists to catch. `-rs` prints the skip reasons, which is how a strict-mode
+# run is read at all.
+ADAPTER_SELECTOR = ("python3", "-m", "pytest", "tests/tools/", "-q", "-rs",
+                    "-p", "no:cacheprovider")
+
+_PYTHON = re.compile(r"python3?$")
+
+
+def _is_pytest(argv):
+    """`pytest ...` or `python3 -m pytest ...` as the command's OWN argv.
+
+    Not a substring test: the `docker run ... -c "python3 -m pytest ..."` line
+    CONTAINS the word, and reading the outer command as the pytest invocation
+    would pin `docker`'s flags instead of the selector.
+    """
+    if argv[:1] == ["pytest"]:
+        return True
+    return (len(argv) >= 3 and _PYTHON.match(argv[0]) and argv[1] == "-m"
+            and argv[2] == "pytest")
+
+
+def pytest_argvs(script):
+    """Every pytest invocation in a shell script, as argv lists.
+
+    Reads INSIDE `sh -c "<command>"`: the adapter job runs its tests in a
+    container, so the selector is a quoted argument of `docker run`, and a
+    reader that stopped at the outer command would see no pytest at all.
+    """
+    found, pending = [], [script]
+    while pending:
+        text = _join_lines(_without_comments(pending.pop(0)))
+        for segment in re.split(r"&&|\|\||;|\n", text):
+            seg = " ".join(segment.split())
+            if not seg:
+                continue
+            try:
+                argv = shlex.split(seg)
+            except ValueError:                  # an unbalanced quote
+                continue
+            if not argv:
+                continue
+            if _is_pytest(argv):
+                found.append(argv)
+                continue
+            # A quoted sub-command (`-c "..."`) arrives as ONE token holding
+            # whitespace; anything else cannot be a command.
+            pending.extend(t for t in argv
+                           if "pytest" in t and len(t.split()) > 1)
+    return found
+
+
+def selector_defect(argvs, expected=ADAPTER_SELECTOR):
+    """Why this job's pytest selector is not the pinned one, or None."""
+    if not argvs:
+        return ("no pytest command in the step that runs the adapter tests -- "
+                "the job that exists to execute the real adapter probes runs "
+                "none")
+    if len(argvs) > 1:
+        return ("%d pytest commands in one step; the pin describes one: %s"
+                % (len(argvs), " | ".join(" ".join(a) for a in argvs)))
+    if tuple(argvs[0]) != tuple(expected):
+        return ("selector is `%s`; the pin is `%s`. A narrowed selector leaves "
+                "the scheduled job green while the adapter probes it exists to "
+                "run no longer execute (#1652)"
+                % (" ".join(argvs[0]), " ".join(expected)))
+    return None
+
+
+def _adapter_run_steps():
+    path = os.path.join(WORKFLOW_DIR, ADAPTER_WORKFLOW)
+    with open(path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh.read()) or {}
+    return [step for _job, steps in run_jobs(doc) for step in steps]
+
+
+class TestAdapterSelectorRule(unittest.TestCase):
+    """The rule, on scratch scripts -- both answers."""
+
+    SHIPPED = ('docker run --rm \\\n  -v "$PWD:/work:ro" -w /work \\\n'
+               '  -e PANOPTICON_REQUIRE_INTEGRATION=1 \\\n'
+               '  --entrypoint sh panopticon-fixtures:latest \\\n'
+               '  -c "python3 -m pytest tests/tools/ -q -rs -p no:cacheprovider"\n')
+
+    def test_the_shipped_shape_reads_as_the_pinned_selector(self):
+        self.assertEqual([list(ADAPTER_SELECTOR)], pytest_argvs(self.SHIPPED))
+        self.assertIsNone(selector_defect(pytest_argvs(self.SHIPPED)))
+
+    def test_a_narrowed_selector_is_a_defect(self):
+        narrowed = self.SHIPPED.replace("tests/tools/ ",
+                                        "tests/tools/test_brakeman.py ")
+        why = selector_defect(pytest_argvs(narrowed))
+        self.assertIsNotNone(why, "a narrowed selector passed the pin")
+        self.assertIn("test_brakeman.py", why)
+        # ...and the reason this pin had to be an argv: the substring check
+        # that already existed cannot see the narrowing at all.
+        self.assertIn("tests/tools/", narrowed)
+
+    def test_a_k_filter_is_a_defect(self):
+        narrowed = self.SHIPPED.replace("-q -rs", "-k parse -q -rs")
+        self.assertIsNotNone(selector_defect(pytest_argvs(narrowed)))
+
+    def test_a_step_that_runs_no_pytest_is_a_defect(self):
+        why = selector_defect(pytest_argvs("docker build -t x .\n"))
+        self.assertIsNotNone(why)
+        self.assertIn("no pytest command", why)
+
+    def test_the_outer_docker_command_is_not_mistaken_for_the_selector(self):
+        argvs = pytest_argvs(self.SHIPPED)
+        self.assertEqual(1, len(argvs))
+        self.assertNotIn("docker", argvs[0])
+
+
+class TestTheAdapterJobsSelectorIsPinned(unittest.TestCase):
+    def test_the_scheduled_job_still_runs_the_whole_tools_tree(self):
+        steps = _adapter_run_steps()
+        argvs = [a for step in steps for a in pytest_argvs(step.script)]
+        self.assertIsNone(selector_defect(argvs),
+                          selector_defect(argvs) or "")
+
+    def test_the_reader_actually_found_the_workflow(self):
+        # Guards the guard: an unreadable workflow would produce no argvs and
+        # the assertion above would report a defect rather than a silent pass,
+        # but a reader that found no STEPS at all is broken, not the fleet.
+        self.assertTrue(_adapter_run_steps(), "no run: steps in " + ADAPTER_WORKFLOW)
+
+
+# --- #1655: which CI lane, if any, opts the hostile build in -----------------
+# `tests/tools/test_hostile_csproj.py` is the only test that invokes an adapter
+# on a hostile project, and it sits behind four guards -- the
+# PANOPTICON_CONTAINMENT_PROBE opt-in, the fixture, adapter applicability, and
+# `dotnet`. The opt-in exists because the test EXECUTES evil.csproj's hostile
+# MSBuild target, which must only happen inside a no-egress container.
+#
+# The runtime half of the guard lives beside that test (it has to observe the
+# other three preconditions where they are evaluated, and tests/tools/ runs
+# inside the fixtures image, which carries no PyYAML). This half reads the
+# fleet and pins the answer to "which lane is supposed to run it", so the skip
+# reason over there cannot quietly stop being true.
+CONTAINMENT_PROBE_ENV = "PANOPTICON_CONTAINMENT_PROBE"
+
+# (workflow, job, step name) that set it to "1". EMPTY, and deliberately so:
+# no scheduled lane executes the hostile build -- adapter-integration.yml sets
+# PANOPTICON_REQUIRE_INTEGRATION=1 and not this, so the containment test is
+# opt-in for a human inside the container. Changing that is a decision about
+# where hostile build logic may execute, not a test edit: fill this in AND
+# update the skip reason in tests/tools/test_hostile_csproj.py, which names
+# the same fact.
+EXPECTED_CONTAINMENT_LANES = ()
+
+# `docker run` env flags, in every spelling docker accepts: `-e VAR=VALUE`,
+# `-eVAR=VALUE`, `--env VAR=VALUE`, `--env=VAR=VALUE`. A step's env is not only
+# its `env:` block -- this job passes the flags into the container on the
+# command line, so a reader that looked only at `env:` would find nothing.
+#
+# R1 Minor 6: this matched `-e VAR=VALUE` alone. A lane added in any of the
+# other three spellings would have left `EXPECTED_CONTAINMENT_LANES = ()`
+# passing while a lane HAD opted in -- the false-negative direction the pin
+# exists to close. The leading `(?:^|\s)` is what keeps `--entrypoint` and
+# `--env-file` out: neither has whitespace immediately before its `-e`/`--env`,
+# and `--env-file` is followed by `-`, which is neither a space nor `=`.
+_DOCKER_ENV = re.compile(
+    r"(?:^|\s)(?:-e\s*|--env[\s=])([A-Za-z_][A-Za-z0-9_]*)=(\S+)")
+
+
+def step_env(doc, job, step_name, script):
+    """Every variable this step's command ends up seeing.
+
+    Workflow `env:`, then the job's, then the step's, then anything the step
+    passes into a container with `-e`/`--env`, in any of docker's four
+    spellings. Later wins, which is the order Actions and docker apply them in.
+    """
+    env = {}
+    for block in ((doc.get("env") or {}),
+                  ((doc.get("jobs") or {}).get(job) or {}).get("env") or {}):
+        env.update({k: str(v) for k, v in block.items()})
+    for step in ((doc.get("jobs") or {}).get(job) or {}).get("steps") or []:
+        if isinstance(step, dict) and (step.get("name") or UNNAMED) == step_name:
+            env.update({k: str(v) for k, v in (step.get("env") or {}).items()})
+    env.update(dict(_DOCKER_ENV.findall(_join_lines(_without_comments(script)))))
+    return env
+
+
+def _run_step_envs():
+    """[(workflow, job, step name, {VAR: value})] for the whole fleet."""
+    rows = []
+    for path in _workflow_files():
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh.read()) or {}
+        for job, steps in run_jobs(doc):
+            for step in steps:
+                rows.append((os.path.basename(path), job, step.name,
+                             step_env(doc, job, step.name, step.script)))
+    return rows
+
+
+def containment_lanes(rows=None):
+    """(workflow, job, step) for every lane that opts the hostile build in."""
+    return tuple((wf, job, name) for wf, job, name, env
+                 in (rows if rows is not None else _run_step_envs())
+                 if env.get(CONTAINMENT_PROBE_ENV) == "1")
+
+
+class TestContainmentLaneRule(unittest.TestCase):
+    """The reader, on scratch documents -- both answers."""
+
+    DOC = {"jobs": {"integration": {"steps": [
+        {"name": "Run", "run": 'docker run -e PANOPTICON_REQUIRE_INTEGRATION=1 '
+                               'sh -c "pytest tests/tools/"'}]}}}
+
+    def _rows(self, doc):
+        return [("scratch.yml", job, step.name,
+                 step_env(doc, job, step.name, step.script))
+                for job, steps in run_jobs(doc) for step in steps]
+
+    def test_a_lane_that_opts_in_is_found(self):
+        doc = {"jobs": {"integration": {"steps": [
+            {"name": "Run", "run": 'docker run -e %s=1 sh -c "pytest x"'
+                                   % CONTAINMENT_PROBE_ENV}]}}}
+        self.assertEqual((("scratch.yml", "integration", "Run"),),
+                         containment_lanes(self._rows(doc)))
+
+    def test_a_job_level_env_block_counts_too(self):
+        doc = {"jobs": {"integration": {"env": {CONTAINMENT_PROBE_ENV: 1},
+                                        "steps": [{"name": "Run", "run": "pytest x"}]}}}
+        self.assertEqual((("scratch.yml", "integration", "Run"),),
+                         containment_lanes(self._rows(doc)))
+
+    # R1 Minor 6. All four are valid docker; the reader saw only the first, so
+    # a lane added in any of the other three would leave
+    # EXPECTED_CONTAINMENT_LANES = () passing while a lane HAD opted in -- the
+    # false-negative direction this pin exists to close -- and the `_NO_LANE`
+    # skip reason beside the containment test would silently stop being true.
+    # `test_the_env_reader_actually_reads_the_fleet` cannot catch it: it only
+    # proves the reader finds PANOPTICON_REQUIRE_INTEGRATION=1, which the
+    # current fleet happens to spell `-e VAR=VALUE`.
+    SPELLINGS = ("-e %s=1", "--env %s=1", "--env=%s=1", "-e%s=1")
+
+    def test_every_docker_spelling_of_the_opt_in_is_found(self):
+        for spelling in self.SPELLINGS:
+            with self.subTest(spelling=spelling):
+                run = ('docker run --rm --entrypoint sh %s image -c "pytest x"'
+                       % (spelling % CONTAINMENT_PROBE_ENV))
+                doc = {"jobs": {"j": {"steps": [{"name": "R", "run": run}]}}}
+                self.assertEqual((("scratch.yml", "j", "R"),),
+                                 containment_lanes(self._rows(doc)), run)
+
+    def test_neighbouring_docker_flags_are_not_read_as_env(self):
+        # The other direction: `--entrypoint` and `--env-file` must not be
+        # mistaken for `-e`/`--env`, or the reader invents lanes.
+        doc = {"jobs": {"j": {"steps": [{"name": "R", "run":
+               "docker run --entrypoint sh --env-file ci.env image"}]}}}
+        self.assertEqual({}, self._rows(doc)[0][3])
+
+    def test_a_lane_that_does_not_opt_in_is_not_found(self):
+        self.assertEqual((), containment_lanes(self._rows(self.DOC)))
+
+    def test_any_other_value_does_not_count_as_opting_in(self):
+        for value in ("0", "true", "", "2"):
+            with self.subTest(value=value):
+                doc = {"jobs": {"j": {"env": {CONTAINMENT_PROBE_ENV: value},
+                                      "steps": [{"name": "R", "run": "pytest x"}]}}}
+                self.assertEqual((), containment_lanes(self._rows(doc)))
+
+
+class TestTheFleetsContainmentLanesArePinned(unittest.TestCase):
+    def test_the_set_of_lanes_that_opt_in_is_the_recorded_one(self):
+        self.assertEqual(
+            EXPECTED_CONTAINMENT_LANES, containment_lanes(),
+            "a CI lane's %s setting changed. That is a decision about where "
+            "hostile MSBuild logic may execute: update "
+            "EXPECTED_CONTAINMENT_LANES here AND the skip reason in "
+            "tests/tools/test_hostile_csproj.py, which names the same fact "
+            "(#1655)." % CONTAINMENT_PROBE_ENV)
+
+    def test_the_env_reader_actually_reads_the_fleet(self):
+        # Guards the guard. An empty answer above is only meaningful if the
+        # reader can find an env var it is NOT looking for: a parser that
+        # returned {} for every step would pin "no lane" forever, and the
+        # runtime guard beside the containment test would skip in silence.
+        rows = _run_step_envs()
+        self.assertTrue(
+            any(env.get("PANOPTICON_REQUIRE_INTEGRATION") == "1"
+                for _wf, _job, _step, env in rows),
+            "the workflow env reader found no integration lane at all; it is "
+            "broken, not the fleet")

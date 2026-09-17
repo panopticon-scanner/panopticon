@@ -39,6 +39,8 @@ import unittest
 from unittest import mock
 
 from conftest import REPO_ROOT
+import scripts.phases.readiness as readiness_mod
+import scripts.phases.runio as runio
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
 import scripts.phases.runio as _runio
@@ -770,3 +772,40 @@ class TestBothFileListingsAgree(_VerbCase):
                          {k: walked["matrix"][k]
                           for k in ("groups", "code_files", "tests_files")})
         self.assertEqual(walked["matrix"], listed["matrix"])
+
+
+class TestCapabilitiesRowHostShape(unittest.TestCase):
+    """Re-review of item 25b: `_capabilities_row` took `host` raw while
+    `headline()` goes through `host_of`, so a truthy non-string host produced
+    one record saying both `measured: True` and "nobody looked", and a list
+    raised `TypeError: unhashable type` out of the never-crashes readiness
+    surface. Pre-existing (#1637 P10); the artifact is target-writable."""
+
+    def _row_for(self, host):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        folder = os.path.join(d, ".panopticon", "runs", "t1")
+        os.makedirs(folder)
+        with open(os.path.join(folder, runio.HOST_CAPABILITIES), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"host": host, "schema_version": 1,
+                       "capabilities": {c: {"state": hosts.PROVEN, "by": "p",
+                                            "detail": "d"}
+                                        for c in hosts.CAPABILITIES}}, fh)
+        return readiness_mod._capabilities_row(d, "t1")
+
+    def test_a_non_string_host_reads_as_not_measured(self):
+        for host in (["claude"], {"name": "claude"}, 1, True):
+            with self.subTest(host=host):
+                row = self._row_for(host)
+                self.assertIs(False, row["measured"])
+                self.assertIsNone(row["host"])
+                self.assertEqual({}, row["states"])
+                self.assertEqual([], row["unproven"])
+
+    def test_a_string_host_still_measures(self):
+        row = self._row_for("claude")
+        self.assertIs(True, row["measured"])
+        self.assertEqual("claude", row["host"])
+        self.assertEqual([], row["unproven"])
+

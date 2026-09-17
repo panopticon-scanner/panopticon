@@ -320,7 +320,7 @@ def _positive_int(text):
     return value
 
 
-def _emit_posture_disclosure(envelope):
+def _emit_posture_disclosure(envelope, since=None):
     """5.1 surface 1: stderr, before anything dispatches.
 
     Same channel and register as phases/tools.py's "driver: tool scan CRASHED
@@ -332,13 +332,68 @@ def _emit_posture_disclosure(envelope):
     consistency test can call it directly with a hand-built envelope, without
     also having to fake a whole `_establish_host_posture` invocation.
 
+    `since` (#1596) is the stamp at which this exact disclosure was already
+    printed in full; passing it collapses the block to ONE line. The default
+    is the full block, so the surface a caller gets by asking for nothing is
+    the whole disclosure.
+
     `envelope` is a `run_probes()`-shaped dict; `host_disclosure.headline`/
     `lines` already degrade an unreadable envelope to NO_EVIDENCE / no lines
     rather than raising, so this function does not re-validate it.
     """
+    if since:
+        sys.stderr.write("driver: host capabilities: %s\n"
+                         % host_disclosure.unchanged_headline(envelope, since))
+        return
     sys.stderr.write("driver: host capabilities: %s\n" % host_disclosure.headline(envelope))
     for line in host_disclosure.lines(envelope) + host_disclosure.notes(envelope):
         sys.stderr.write("driver:   %s\n" % line)
+
+
+def _disclose_posture(review_root, manifest, fresh):
+    """Surface 1, in full once per posture and as a headline thereafter (#1596).
+
+    `driver run` is a resumable loop and this runs on every invocation, so a
+    self-scan printed the same 5-line block 100+ times -- roughly 120 KB of
+    stderr that is byte-identical BY CONSTRUCTION, since F3a refuses the run
+    outright if the posture moves. Full block when the posture has not been
+    disclosed yet, or when what it SAYS has changed since it was (the digest
+    covers the detail and the operational notes too, not just the states);
+    one headline otherwise.
+
+    Decided from the RUN MANIFEST's stamp, never from `host-capabilities.json`.
+    That file lives on a `.panopticon` path a hostile target can pre-commit,
+    so a target able to guess its own posture could suppress the first
+    disclosure; the manifest is the one artifact `driver.run` refuses to
+    inherit from the tree (`runio._foreign_manifest`).
+
+    The stamp is only recorded when a manifest already exists on disk. Every
+    production caller has one -- `driver.run` writes it before this runs --
+    and MINTING one here would be worse than not recording: `runio._pano`
+    resolves the per-run folder off the manifest, so creating one mid-flow
+    would move `host-capabilities.json` out from under this very function.
+    """
+    digest = host_disclosure.disclosure_digest(fresh)
+    since = run_manifest.posture_disclosed_at(manifest, digest)
+    _emit_posture_disclosure(fresh, since=since)
+    if since is None and os.path.isfile(run_manifest.manifest_path(review_root)):
+        try:
+            run_manifest.record_posture_disclosure(review_root, manifest, digest,
+                                                   fresh.get("probed_at"))
+        except OSError as exc:
+            # The stamp is EXPENDABLE, and a stamp that cannot be written must
+            # not be the thing that kills an invocation. Losing it costs one
+            # repeated block next time; raising costs the whole call -- and on
+            # the shadow-refusal path below this is the only write in this
+            # function (the artifact write is past the refusal), so an
+            # unwrapped OSError turned a clean "refusing to run" status into a
+            # traceback with no JSON behind it. Said on stderr rather than
+            # swallowed: a run directory that has stopped accepting writes is
+            # something the operator wants to know before synthesis tries.
+            sys.stderr.write(
+                "driver: could not record the posture disclosure stamp (%s: %s)"
+                " -- the full block will print again next invocation\n"
+                % (type(exc).__name__, exc))
 
 
 def _establish_host_posture(review_root, manifest, args, *, registration_dir=None):
@@ -441,9 +496,11 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # and because emitting once per INVOCATION here (not once per dispatched
     # cell) is what "once per run" rules out. A resumed invocation
     # re-announces deliberately: the operator resuming needs the posture they
-    # are resuming under. Emitted even when the shadow refusal below is about
-    # to stop the run, so the operator sees the posture the refusal is about.
-    _emit_posture_disclosure(fresh)
+    # are resuming under -- as a HEADLINE once it has already had the whole
+    # thing for this posture (#1596). Emitted even when the shadow refusal
+    # below is about to stop the run, so the operator sees the posture the
+    # refusal is about.
+    _disclose_posture(review_root, manifest, fresh)
     # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
     # tool_policy_enforced is already REFUTED for an unrelated reason -- no
     # registration directory, i.e. every machine that has not run `driver

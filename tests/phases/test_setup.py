@@ -18,6 +18,7 @@ import scripts.phases.requests as requests
 import scripts.driver as driver
 import scripts.coverage_model as coverage_model
 import scripts.host_disclosure as host_disclosure
+import scripts.host_probes as host_probes
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
 import scripts.model_resolver as model_resolver
@@ -581,7 +582,28 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
     # fact about that row. The setup RUN that carries these answers below is
     # driven under `generic`, because `driver setup --host gemini` is now an
     # argparse error -- the rows are the subject, the driven host is scaffold.
-    GEMINI_CHECKS = setup_flow._check_host_shells("gemini", None)
+    #
+    # #1598/#1599: a METHOD, not a module-level constant. As a constant it was
+    # evaluated at COLLECTION time -- before any mock could be in place -- so
+    # it reached the live probes with no repo_root and read whatever
+    # `~/.claude/agents` held on the machine running the suite. It was also
+    # the reason `repo_root` could not simply be made required. The posture is
+    # pinned to a deterministic shell-less envelope and a real tree is named;
+    # the REGISTRY rows above it are what these tests are about.
+    GEMINI_POSTURE = {
+        "schema_version": 1, "host": "gemini", "probed_at": "T",
+        "capabilities": {
+            capability: {"state": hosts.UNKNOWN, "by": None,
+                         "detail": "no probe: gemini does not claim this "
+                                   "capability, so there is nothing to prove"}
+            for capability in hosts.CAPABILITIES},
+    }
+
+    @property
+    def GEMINI_CHECKS(self):
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=self.GEMINI_POSTURE):
+            return setup_flow._check_host_shells("gemini", None, ".")
 
     def test_the_gemini_limitation_reaches_the_operator(self):
         rows = {c[0]: c for c in self.GEMINI_CHECKS}
@@ -632,6 +654,20 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         self.assertEqual([], marker["gaps"])
         self.assertEqual([], marker["limitations"])
 
+    def test_the_operator_message_lists_one_limitation_per_bounded_line(self):
+        # #1601, end to end on the shipped gemini posture: seven limitations,
+        # each carrying a full remedy, rendered as ONE 1847-character line on
+        # the message the operator actually reads. One per line now, each
+        # under the column bar, and one line per stored limitation -- so the
+        # message and `setup-complete.json` still agree on the count.
+        msg, marker = self._fallback(self.GEMINI_CHECKS, host="generic")
+        body = msg.splitlines()
+        self.assertIn("limitations:", body)
+        head = body.index("limitations:")
+        self.assertEqual(len(marker["limitations"]), len(body) - head - 1)
+        over = ["%d: %s" % (len(ln), ln) for ln in body[head:] if len(ln) > 119]
+        self.assertEqual([], over, "\n".join(over))
+
     def test_a_real_gap_is_still_reported_as_a_gap(self):
         checks = [("docker", False, "docker unavailable -- install/start Docker"),
                   ("enforced-shells", None, "gemini registers no enforcement "
@@ -642,6 +678,113 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         self.assertIn("readiness gaps: docker", msg)
         self.assertIn("limitations", msg)
         self.assertIn("enforced-shells", msg)
+
+
+class TestTheLimitationsClauseStaysReadable(unittest.TestCase):
+    """#1601: `_limitations_clause` joined every limitation into ONE line.
+    For `gemini` -- which claims nothing, so five-of-five-unproven plus two
+    shell rows is its entire story, seven limitations each carrying a full
+    remedy -- that line went from ~110 characters to 1847, and the same text
+    is stored in `setup-complete.json`'s `limitations` array.
+
+    Nothing gating changed (shell-less hosts produce 7 rows and 0 gaps), which
+    is exactly why it needs a test: a completion message nobody can read is a
+    disclosure in the letter and not in the fact, and 5.1's "LOUDLY declare
+    them" is about being READ.
+    """
+
+    # A real remedy, verbatim from host_disclosure, so the fixture cannot be
+    # quietly short enough to pass a length bar the shipped text fails.
+    REMEDY = host_disclosure.remedy(hosts.MODEL_BINDING, "gemini")
+
+    def _rows(self, n):
+        return [("host-capability:capability_%02d" % i, self.REMEDY)
+                for i in range(n)]
+
+    def _lines(self, clause):
+        return clause.splitlines()
+
+    def test_twenty_remedies_render_as_twelve_lines_and_a_tail(self):
+        body = self._lines(setup_phase._limitations_clause(self._rows(20)))
+        self.assertEqual("limitations:", body[0])
+        self.assertEqual(1 + setup_phase._LIMITATION_MAX + 1, len(body),
+                         "expected a header, 12 remedies and one tail:\n"
+                         + "\n".join(body))
+        self.assertIn("and 8 more", body[-1])
+
+    def test_no_rendered_line_is_over_the_column_bar(self):
+        for count in (1, 7, 12, 20):
+            with self.subTest(limitations=count):
+                clause = setup_phase._limitations_clause(self._rows(count))
+                over = [ln for ln in self._lines(clause) if len(ln) > 119]
+                self.assertEqual([], over, "line over 119 characters:\n"
+                                 + "\n".join("%d: %s" % (len(ln), ln)
+                                              for ln in over))
+
+    def test_every_line_carries_exactly_one_remedy(self):
+        body = self._lines(setup_phase._limitations_clause(self._rows(3)))
+        self.assertEqual(4, len(body))
+        for name, line in zip(("capability_00", "capability_01", "capability_02"),
+                              body[1:]):
+            self.assertIn(name, line)
+            # ...and only its own: the 1847-character line was every remedy
+            # joined by ", ".
+            self.assertEqual(1, sum(1 for c in ("capability_00", "capability_01",
+                                                "capability_02") if c in line))
+
+    def test_a_non_string_detail_is_rendered_not_raised(self):
+        # Re-review of R1 Minor 4: slicing `detail` instead of the rendered
+        # line made a list/dict/int detail raise where the base rendered it.
+        # `detail` arrives from `_stored_limitations`, i.e. the untrusted
+        # `.panopticon/setup-complete.json`, outside the status-protocol
+        # try/except -- so it escaped as a traceback with no JSON status.
+        for detail in (["a", "b"], {"k": 1}, 7, None):
+            with self.subTest(detail=detail):
+                line = setup_phase._limitation_line("host-capability:x", detail)
+                self.assertIsInstance(line, str)
+                self.assertIn(str(detail), line)
+        long = ["remedy-%02d" % i for i in range(40)]
+        line = setup_phase._limitation_line("host-capability:x", long)
+        self.assertLessEqual(len(line), setup_phase._LIMITATION_LINE)
+        self.assertTrue(line.endswith(setup_phase._TRUNCATED + ")"), line)
+
+    def test_a_short_list_gets_no_tail(self):
+        clause = setup_phase._limitations_clause(self._rows(setup_phase._LIMITATION_MAX))
+        self.assertNotIn("more", clause)
+
+    def test_a_name_longer_than_the_bar_survives_intact(self):
+        # R1 Minor 4. The docstring promised "the NAME is never what gets cut"
+        # while `_limitation_line` sliced the whole rendered line: a 156-char
+        # name came back truncated mid-name, losing the one field
+        # `setup-complete.json` keys the untruncated detail under and the one
+        # an operator greps the readiness rows for. Unreachable with today's
+        # check names (the longest is `host-capability:tool_policy_enforced`,
+        # 36 characters) -- which is exactly why it was a comment claiming a
+        # guarantee the code did not make.
+        name = "host-capability:" + ("x" * 140)
+        line = self._lines(setup_phase._limitations_clause(
+            [(name, self.REMEDY)]))[1]
+        self.assertIn(name, line)
+        self.assertNotIn(self.REMEDY, line, "the detail must still be cut")
+
+    def test_the_detail_is_the_only_field_ever_cut(self):
+        name = "host-capability:model_binding"
+        line = self._lines(setup_phase._limitations_clause(
+            [(name, self.REMEDY)]))[1]
+        self.assertIn(name, line)
+        self.assertTrue(line.endswith(setup_phase._TRUNCATED + ")"), line)
+        # ...and what survives of the detail is a PREFIX of the real one, not
+        # a slice of something else.
+        cut = line[len("  - %s (" % name):-len(setup_phase._TRUNCATED + ")")]
+        self.assertTrue(self.REMEDY.startswith(cut), line)
+        self.assertTrue(cut, "the detail was cut away entirely")
+
+    def test_the_name_survives_truncation(self):
+        # The check's NAME is what an operator greps for and what
+        # setup-complete.json keys on; only the detail may be cut.
+        line = self._lines(setup_phase._limitations_clause(
+            [("host-capability:model_binding", self.REMEDY)]))[1]
+        self.assertIn("host-capability:model_binding", line)
 
 
 class TestSetupConvertsAStalledEngine(unittest.TestCase):
