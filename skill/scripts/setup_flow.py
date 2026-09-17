@@ -834,12 +834,19 @@ def load_bundled_layers(layers_path=None):
     return layers, True
 
 
-def render_scan_brief(repo, vocabulary, layers=None, spine=None):
+def render_scan_brief(repo, vocabulary, layers=None, spine=None, host=None):
     """Render the setup-scan agent brief to .panopticon/setup-scan-brief.md
     (spec §5.1): the spine and size arithmetic, both catalogs in full prose,
     the surfaces enum for profiles. `spine` is `build_spine(...)`; None builds
     one with default sizes. `layers` is `load_bundled_layers()[0]`; None
-    renders the no-layers notice."""
+    renders the no-layers notice.
+
+    `host` renders the tool-policy paragraph from that host's real tool surface
+    (#1677). It matters more here than at the other prompt sites: the setup
+    entry is UNREGISTERED, so no `developer_instructions` translates the tool
+    names for it -- this brief is the only document telling that agent what it
+    may call. Defaults to None (the neutral Claude vocabulary), so every
+    existing caller is unchanged."""
     import dispatch
     spine = spine or build_spine(repo)
     brief = dispatch.render_prompt("setup-scan.md", {
@@ -848,7 +855,7 @@ def render_scan_brief(repo, vocabulary, layers=None, spine=None):
         "capability_catalog": render_capability_catalog(vocabulary),
         "layer_catalog": render_layer_catalog(layers),
         "surfaces": ", ".join(sorted(coverage_model.SURFACES)),
-    })
+    }, host=host)
     path = os.path.join(plan_contract.artifact_root(repo), "setup-scan-brief.md")
     with runio._open_w_nofollow(path) as fh:   # #1577
         fh.write(brief)

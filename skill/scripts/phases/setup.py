@@ -77,7 +77,8 @@ def scan_execute(review_root, manifest):
                                    max_groups=manifest.get("max_groups"))
     setup_flow.write_spine(review_root, spine)
     layers, _ = setup_flow.load_bundled_layers()
-    brief_path = setup_flow.render_scan_brief(review_root, vocab, layers=layers, spine=spine)
+    brief_path = setup_flow.render_scan_brief(review_root, vocab, layers=layers,
+                                              spine=spine, host=host)
     entry = _setup_scan_entry(review_root, _read_text(brief_path), host)
     # #1507: setup's own namespace -- never the per-run resolver, which routed
     # this into whatever runs/latest pointed at and clobbered that run's request.

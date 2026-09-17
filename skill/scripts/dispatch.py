@@ -235,9 +235,6 @@ def emit_host_agents(host, out_dir):
             policy.update(name=agent, description=meta["description"],
                           sandbox_mode="read-only", developer_instructions=_codex_charter(role))
             policy.update({key: cfg[key] for key in ("model", "model_reasoning_effort") if cfg.get(key)})
-            # Host vocabulary belongs here, not in the neutral role templates.
-            # Write is deliberately omitted: every Codex role is return-persist.
-            mapping = {"Read": "read_file", "Grep": "search", "Glob": "list_files"}
             # M-6: `enabled_tools` is the ONLY field of this block command()
             # reads -- it rebuilds the broker's command/args from the RUNNING
             # safety_config(). Emitting them here baked this interpreter and
@@ -249,7 +246,7 @@ def emit_host_agents(host, out_dir):
             # until command() binds the real broker and this entry's read scope.
             policy["mcp_servers"] = {"panopticon_scope": {
                 "command": "/usr/bin/false", "required": True,
-                "enabled_tools": [mapping[tool] for tool in tp["allowed"] if tool in mapping]}}
+                "enabled_tools": _codex_enabled_tools(tp)}}
             lines = ["# Launch through Panopticon: its runner replaces the required MCP placeholder",
                      "# with a broker bound to this review entry's read scope."]
 
@@ -322,6 +319,20 @@ def _prune_retired_shells(host, out_dir, written):
     return removed
 
 
+# Claude's tool vocabulary -> the broker's. Host vocabulary belongs here, not
+# in the neutral role templates. Write is deliberately absent: every Codex role
+# is return-persist. ONE table, read by both the emitted `enabled_tools` and
+# the tool-policy paragraph, so the argv's surface and the prose describing it
+# narrow through the same expression (#1677).
+CODEX_TOOL_FOR = {"Read": "read_file", "Grep": "search", "Glob": "list_files"}
+
+
+def _codex_enabled_tools(tool_policy):
+    """The broker tool names one role's `tool_policy.allowed` grants."""
+    return [CODEX_TOOL_FOR[tool] for tool in tool_policy["allowed"]
+            if tool in CODEX_TOOL_FOR]
+
+
 def _codex_tool_gloss(tool):
     """One broker tool as prose: its own name, its own one-line description.
 
@@ -350,17 +361,20 @@ def _tool_policy_line(meta, host=None):
         # TOOLS, tests/test_codex_host.py against the `enabled_tools` that
         # reach the argv). Delivery -- the return-JSON contract and the
         # `_panopticon` stamp -- belongs to the prompt body and the registered
-        # charter and is deliberately not repeated here. The paragraph is
-        # role-BLIND while the argv's `enabled_tools` is role-narrowed from the
-        # same template's `tool_policy.allowed`; every shipped role grants all
-        # three today, so the two agree -- #1677 covers the narrowing case (and
-        # the setup-scan/advisor sites that never thread `host` at all).
+        # charter and is deliberately not repeated here. The paragraph used to
+        # be role-BLIND while the argv's `enabled_tools` is role-narrowed from
+        # the same template's `tool_policy.allowed`; every shipped role grants
+        # all three today, so the two agreed by accident. #1677: both now
+        # narrow through `_codex_enabled_tools`, so a role that ever grants
+        # less is described as it is launched rather than as its neighbours are.
+        granted = set(_codex_enabled_tools(tp))
+        tools = [t for t in codex_read_tools.TOOLS if t["name"] in granted]
         return ("\n## Tool policy\n\nYour only tools are the `panopticon_scope`"
                 " MCP tools %s. There is no shell. Never execute target code, "
                 "run builds or tests, access the network, spawn agents, or "
                 "attempt any filesystem mutation. The runner captures your "
                 "final JSON itself.\n"
-                % ", ".join(_codex_tool_gloss(t) for t in codex_read_tools.TOOLS))
+                % ", ".join(_codex_tool_gloss(t) for t in tools))
     return ("\n## Tool policy\n\nYour only tools are %s. "
              "You must not use %s under any circumstances.\n"
              % (", ".join(tp["allowed"]), ", ".join(tp["forbidden"])))
@@ -441,12 +455,17 @@ def _is_registered(reg_dir, role_file, host=None):
 
 
 
-def render_advisor_prompts(queue_path, out_dir):
+def render_advisor_prompts(queue_path, out_dir, host=None):
     """Render one advisor prompt per verify-queue entry to out_dir.
 
     Deterministic replacement for the orchestrating agent hand-rendering
     claim JSON into the advisor template. The queue is OUR artifact but is
     parsed fail-fast anyway (a corrupt queue means an upstream bug).
+
+    `host` renders the tool-policy paragraph from that host's real tool
+    surface (#1677). It defaults to None -- the neutral Claude vocabulary --
+    so every existing caller is unchanged; the live driver path in
+    `phases/verify.py` renders its own prompts and already passes the host.
     """
     try:
         with open(queue_path, encoding="utf-8") as fh:
@@ -485,7 +504,7 @@ def render_advisor_prompts(queue_path, out_dir):
             raise ValueError("verify queue %s: unsafe queue_id %r"
                              % (queue_path, queue_id))
         claim = json.dumps(finding, indent=2, ensure_ascii=False)
-        prompt = render_prompt("advisor.md", {"claim_json": claim})
+        prompt = render_prompt("advisor.md", {"claim_json": claim}, host=host)
         prompt = ("Verification run id: %s\nEcho it as the top-level JSON field "
               "`run_id` in your verdict.\n\n%s" % (run_id, prompt))
         # #975: pin the review root. Advisors inherit the session cwd, so a
@@ -554,7 +573,8 @@ def main(argv=None):
             print("dispatch: --render-advisor requires --out DIR", file=sys.stderr)
             return 2
         try:
-            written = render_advisor_prompts(args.render_advisor, args.out)
+            written = render_advisor_prompts(args.render_advisor, args.out,
+                                             host=args.host)
         except ValueError as e:
             print("dispatch: %s" % e, file=sys.stderr)
             return 1

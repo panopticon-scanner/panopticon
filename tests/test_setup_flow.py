@@ -246,6 +246,28 @@ class TestSetupFlow(unittest.TestCase):
         self.assertIn("Auth", brief)
         self.assertIn("**/auth/**", brief)  # the hint globs reach the classifier
 
+    def test_the_codex_scan_brief_renders_the_codex_tool_surface(self):
+        # #1677: the setup-scan entry is UNREGISTERED, so no
+        # `developer_instructions` translates tool names for it -- this brief
+        # is the only document telling that agent what it may call, and it
+        # promised Read/Grep/Glob to a runner that enables none of them.
+        d = _repo(self)
+        vocab = {"names": ["Auth"], "hints": {"Auth": ["**/auth/**"]}}
+        with open(setup_flow.render_scan_brief(d, vocab, host="codex"),
+                  encoding="utf-8") as fh:
+            policy = fh.read().split("## Tool policy", 1)[1]
+        self.assertIn("panopticon_scope", policy)
+        self.assertIn("There is no shell.", policy)
+        for absent in ("Read", "Grep", "Glob"):
+            self.assertNotIn(absent, policy, absent)
+
+    def test_the_scan_brief_without_a_host_is_unchanged(self):
+        d = _repo(self)
+        vocab = {"names": ["Auth"], "hints": {"Auth": ["**/auth/**"]}}
+        with open(setup_flow.render_scan_brief(d, vocab), encoding="utf-8") as fh:
+            policy = fh.read().split("## Tool policy", 1)[1]
+        self.assertIn("Your only tools are Read, Grep, Glob.", policy)
+
     def test_render_capability_catalog_is_full_prose(self):
         # #1500: definition/boundary/aliases/examples/see_also all reach the
         # brief, hints are labelled non-authoritative, entries keep file order.
