@@ -21,7 +21,13 @@ The closure is the bounded answer -- three sources, in priority order:
   (b) every in-repo path the claim's OWN evidence names -- `description`,
       `exploit_scenario`, `remediation`, `evidence.reasoning`, `references`.
       A claim that says "the call sites in grading.py" is telling the driver
-      what it needs; nothing else in the finding schema does;
+      what it needs; nothing else in the finding schema does. Since #1688 that
+      name no longer has to be spelled as a full repo-relative path: it is
+      resolved exactly, then by unique SUFFIX inside the claiming cell, then by
+      unique suffix repo-wide, then by CONTENT -- and a name that still means
+      two DIFFERENT files resolves to neither, because the wrong `config.py` is
+      a read fence pointed at evidence the claim was not about. That refusal is
+      DISCLOSED (`disclosure`), not silent;
   (c) its one-hop in-repo import neighbourhood, BOTH directions: the modules
       the claim file imports, and the files in the same group that import IT
       (the "orchestration call sites" the run-13 backup could not see).
@@ -43,9 +49,11 @@ Its own module rather than more of `phases/verify.py`: verify.py is 603 of the
 scanner and a small import resolver) with one caller.
 """
 import ast
+import hashlib
 import os
 import re
 
+import scripts.run_manifest as run_manifest
 from . import runio
 
 # How many files one claim's closure may grant. Twelve is the smallest number
@@ -85,6 +93,34 @@ _PATH_RE = re.compile(
 # a closure is only worth granting when it is derived, not guessed.
 _PY = ".py"
 
+# How much of a same-named candidate step 4 reads before it gives up on telling
+# two files apart. Four MiB covers every source file in a reviewable tree by a
+# wide margin, and a file larger than it is not source: reading further would
+# spend the closure's whole IO budget proving that two vendored archives differ.
+# Oversized counts as DISTINCT, never as identical -- see `_digest`.
+_HASH_BYTES = 4 * 1024 * 1024
+
+# The controller's own seed for a scope-limited backup's `missing_evidence`.
+# ONE line per name the driver refused to guess at, written into the dispatch
+# BEFORE the advisor runs: an ambiguity the advisor is not told about is one it
+# discovers as a file it cannot open, and "the file I needed was not granted"
+# and "the file I needed could have been three files" are different answers.
+_AMBIGUOUS_LINE = "ambiguous: %s (%d candidates, %s)"
+
+# Why a name resolved to no file. Three of the four never compare content, and
+# the line used to say "differing" for all of them (fix round 1, R1-2) -- a
+# fabricated detail in the one place the advisor is told what the driver
+# actually knows. `too many` read nothing at all; `unreadable` and `oversized`
+# mean this module could not read a candidate WHOLE, so it cannot call it a
+# copy of anything and the ambiguity stands.
+_TOO_MANY, _UNREADABLE, _OVERSIZED, _DIFFERING = (
+    "too many", "unreadable", "oversized", "differing")
+_AMBIGUOUS_BLOCK = (
+    "\nNames these claims used that resolve to more than one file, so this "
+    "driver granted NONE of them rather than guess which one the claim meant. "
+    "If your answer needs one, return NEEDS_MORE_INFO and copy its line into "
+    "`missing_evidence`:\n%s\n")
+
 
 def _norm(path):
     """`./a/b.py` -> `a/b.py`; anything not a usable relative path -> None."""
@@ -122,15 +158,263 @@ def _claim_text(claim):
     return out
 
 
-def named_paths(review_root, claim):
-    """(b): the in-repo files this claim's own evidence names, in text order."""
+def _repo_files(review_root, cache):
+    """Every file THIS RUN discovered, repo-relative -- the tree step 3 searches.
+
+    `.panopticon/groups.json` is discovery's OWN listing, already computed and
+    already on disk: it came from `git ls-files` (so the target's .gitignore
+    defines the surface, #500), it is pruned of excluded dirs, dot-dirs and --
+    unless the run asked for them -- fixture corpora, and every entry is
+    repo-relative. Reading it is one JSON load. Walking the tree again here
+    would be a second, slower and DIFFERENT surface, and an `os.walk` would
+    descend `.git` and vendored virtualenvs the review itself never looks at.
+
+    It must be THIS RUN's listing, and that is checked, not assumed (fix round
+    1, R1-3): `discovery_execute` stamps `groups.json` with the run binding, and
+    this applies the same test the discovery done-predicate does. It matters
+    because with no manifest `_pano` falls back to the TOP-LEVEL
+    `.panopticon/groups.json` -- a path the reviewed target can commit -- and a
+    planted listing steers the grant: the claim names `config.py`, the listing
+    says the repo's only `config.py` is `secrets/config.py`, and the read fence
+    is pointed there. A foreign stamp, a missing stamp and a missing manifest
+    are all "no listing".
+
+    No listing (that, or a `closure()` call outside a run) means no repo-wide
+    step: the name stays unresolved, which is exactly today's behaviour. This
+    resolver may widen a grant only from evidence the run already holds, never
+    by discovering -- or being handed -- a tree of its own.
+
+    `cache` is one dict per entry, so a chunk naming thirty paths loads the
+    listing once rather than thirty times.
+    """
+    if "files" not in cache:
+        doc = runio._load_json(runio._pano(review_root, "groups.json")) or {}
+        run_id = (run_manifest.load_manifest(review_root) or {}).get("run_id")
+        out = set()
+        if run_id and doc.get("run_id") == run_id:
+            for group in doc.get("groups") or []:
+                if isinstance(group, dict):
+                    out.update(p for p in (_norm(f) for f in group.get("files")
+                                           or []) if p)
+        cache["files"] = sorted(out)
+    return cache["files"]
+
+
+def _candidates(review_root, paths, name):
+    """The files in `paths` that `name` could mean, sorted and de-duplicated.
+
+    A path matches when it IS the name or ENDS with it on a component boundary,
+    so `helpers/config.py` matches `src/app/helpers/config.py` and `config.py`
+    never matches `myconfig.py`. Every match is re-checked with `_usable`: a
+    listing entry that no longer exists, or whose realpath leaves the tree
+    through a planted symlink, is not a candidate at all -- suffix resolution
+    may not do what #1096 forbade the exact path from doing. Sorted, because
+    every first-wins choice below has to be the same on every run.
+    """
+    tail = "/" + name
+    out = set()
+    for path in paths or []:
+        norm = _norm(path)
+        if not norm or not (norm == name or norm.endswith(tail)):
+            continue
+        usable = _usable(review_root, norm)
+        if usable:
+            out.add(usable)
+    return sorted(out)
+
+
+def _digest(review_root, rel, cache):
+    """`(sha256-of-the-first-_HASH_BYTES, None)`, or `(None, why)`.
+
+    `(None, why)` means "this module cannot call the file identical to
+    anything": `_UNREADABLE` for a file it could not open, `_OVERSIZED` for one
+    it could not read whole. Either way the ambiguity stands -- the fail-closed
+    direction, because the cost of guessing wrong is a read fence around the
+    wrong file -- and `why` is what the disclosure says instead of inventing
+    "differing" for a comparison that never happened (R1-2).
+
+    MEMOISED in the entry's `cache` (fix round 1, R1-1): a path's bytes do not
+    change inside one dispatch, and without the memo the read bound was per
+    NAME per CLAIM -- 48 claims naming one ambiguous basename read its twelve
+    candidates 48 times over. One read per candidate path per entry, ever.
+    """
+    memo = cache.setdefault("digests", {})
+    if rel not in memo:
+        try:
+            with open(os.path.join(review_root, rel), "rb") as fh:
+                blob = fh.read(_HASH_BYTES + 1)
+        except OSError:
+            memo[rel] = (None, _UNREADABLE)
+        else:
+            memo[rel] = ((None, _OVERSIZED) if len(blob) > _HASH_BYTES
+                         else (hashlib.sha256(blob).hexdigest(), None))
+    return memo[rel]
+
+
+def _collapse(review_root, candidates, cache):
+    """Step 4: `(the one path several same-named candidates all ARE, None)`, or
+    `(None, why they stay ambiguous)`.
+
+    Two files with the same bytes are not an ambiguity -- whichever is granted,
+    the backup reads the same evidence -- so identical candidates collapse to
+    the first in sorted order. Any difference, and none is granted.
+
+    Bounded exactly twice over: more than `CAP` candidates is not a near-miss
+    but a common basename, and is ambiguous without a single read; at or under
+    the cap each candidate is read once, at most `_HASH_BYTES` of it. So the
+    worst case a hostile tree can buy with one name is twelve bounded reads --
+    and the first candidate this module cannot read whole ends the comparison
+    there, because nothing later can make the set identical.
+    """
+    if len(candidates) > CAP:
+        return None, _TOO_MANY
+    digests = []
+    for rel in candidates:
+        digest, why = _digest(review_root, rel, cache)
+        if digest is None:
+            return None, why
+        digests.append(digest)
+    if len(set(digests)) != 1:
+        return None, _DIFFERING
+    return candidates[0], None
+
+
+def _resolve_named(review_root, group_files, name, cache):
+    """The ONE file a named path means: `(path, ambiguity)`. Owner ruling #1688.
+
+    A claim that says `helpers/config.py`, or just `config.py`, is naming the
+    producer it needs; `_usable` alone resolves only a path spelled EXACTLY as
+    it sits in the tree, so the commonest way a claim asks for cross-file
+    evidence was the one way it was refused. In order:
+
+      1. exactly as written -- `_usable`: normalized, confined, existing;
+      2. unique suffix among the CLAIMING CELL's own files. The cell is the
+         context the claim was written in, so a match there is the one its
+         author meant, and it costs no reads;
+      3. unique suffix repo-wide, over the listing this run discovered;
+      4. several matches at step 2 or 3: compare CONTENT (`_collapse`).
+
+    A step-2 ambiguity does not fall through to step 3: the cell is the nearer
+    context and widening the search could only add candidates to a question
+    that has already been answered "more than one".
+
+    Steps 2-4 are what this issue ADDED, and they are what an injected essay of
+    path-shaped tokens can spend: a listing scan and up to twelve bounded reads
+    per name. So they are bounded per ENTRY (fix round 1, R1-1c): at most
+    `ENTRY_CAP` distinct names are ever searched for, and a name past that is
+    dropped in silence -- it could not have been granted anyway, the entry
+    ceiling being spent, and disclosing it would hand the essay a second
+    channel. Step 1 is deliberately OUTSIDE that bound: it is one `isfile` on a
+    path that exists as written, it is what this module did before #1688, and
+    counting it would make `grant`'s `omitted` -- the "N further files omitted
+    by the entry ceiling" the prompt prints -- stop counting at 48.
+
+    `(path, None)` when the name resolves, `(None, record)` when it meant
+    several different files -- `{"name", "reason", "candidates"}`, where
+    `reason` is which of the four ways it stayed ambiguous -- and `(None, None)`
+    when it meant none: an unresolvable name is still simply dropped, which is
+    what keeps prose that merely looks like a path out of the grant.
+    """
+    exact = _usable(review_root, name)
+    if exact:
+        return exact, None
+    name = _norm(name)
+    if not name or name.startswith("/") or ".." in name.split("/"):
+        # An absolute or dot-segmented name never becomes a suffix search:
+        # `../outside.py` is the shape #1096 rejects, and it must not reach the
+        # tree through a basename match either.
+        return None, None
+    searched = cache.setdefault("searched", set())
+    if name not in searched:
+        if len(searched) >= ENTRY_CAP:
+            return None, None
+        searched.add(name)
+    found = _candidates(review_root, group_files, name)
+    if not found:
+        found = _candidates(review_root, _repo_files(review_root, cache), name)
+    if len(found) == 1:
+        return found[0], None
+    if not found:
+        return None, None
+    collapsed, why = _collapse(review_root, found, cache)
+    if collapsed:
+        return collapsed, None
+    return None, {"name": name, "reason": why, "candidates": len(found)}
+
+
+def named_paths(review_root, claim, group_files=None, unresolved=None,
+                cache=None, cap=CAP):
+    """(b): the in-repo files this claim's own evidence names, in text order.
+
+    Each name goes through `_resolve_named` (#1688), so the claiming cell's own
+    files are searched by suffix before the rest of the tree. `unresolved`, when
+    the caller passes a list, collects one record per name that meant more than
+    one file -- de-duplicated by name, because the same ambiguous basename in
+    three claims is one thing for the advisor to be told.
+
+    `cache` is the ENTRY's working memory (fix round 1, R1-1), threaded down
+    from `grant` so one dispatch resolves a given name once and reads a given
+    candidate once. It is keyed to one `(review_root, group_files)` pair --
+    which is what an entry is -- so a caller that changes either starts a new
+    one. Two bounds live here, and both exist because claim text is
+    panel-authored and steerable by whatever the reviewed repo plants in it:
+
+      * a claim stops resolving once it holds more paths than the caller's
+        `cap` could grant. One PAST the cap, not at it: `grant` reads the closure's
+        LENGTH to decide `truncated`, and stopping exactly at the cap would
+        report a truncated closure as complete;
+      * an entry SEARCHES the tree for at most `ENTRY_CAP` distinct names --
+        see `_resolve_named`, which owns that bound because it is the search
+        this issue added that has to be bounded.
+
+    Each distinct name is resolved once per entry and the answer reused, so the
+    cost of a claim repeating a name, or fifty claims sharing one, is a dict
+    lookup.
+    """
     out = []
+    cache = {} if cache is None else cache
+    seen = cache.setdefault("names", {})
     for text in _claim_text(claim):
         for match in _PATH_RE.findall(text):
-            path = _usable(review_root, match)
-            if path and path not in out:
-                out.append(path)
+            if len(out) > cap:            # the CALLER's cap, not the constant
+                return out
+            key = _norm(match) or match   # `./x.py` and `x.py` are one name
+            if key not in seen:
+                seen[key] = _resolve_named(review_root, group_files, match,
+                                           cache)
+            path, ambiguity = seen[key]
+            if path:
+                if path not in out:
+                    out.append(path)
+            elif ambiguity and unresolved is not None and not any(
+                    r.get("name") == ambiguity["name"] for r in unresolved):
+                unresolved.append(ambiguity)
     return out
+
+
+def disclosure(ambiguous):
+    """The prompt block that TELLS a backup advisor what the driver refused to
+    guess -- `""` when nothing was ambiguous.
+
+    Controller-authored and rendered into the dispatch before the advisor runs,
+    exactly like the grant block it follows: nothing here is read back from a
+    verdict, so `_agent_verdict` (the one sanitizer) and its AST guard are
+    untouched, and an advisor cannot fabricate, empty or edit a record of what
+    its own scope was missing.
+
+    Names reach here from a claim's free text, which a hostile repo steers, so
+    they go through `runio._prompt_safe` (#1190) even though `_PATH_RE`'s
+    charset already excludes newlines: one of those two defences is the one
+    that gets edited.
+    """
+    if not ambiguous:
+        return ""
+    return _AMBIGUOUS_BLOCK % "\n".join(
+        "- " + runio._prompt_safe(_AMBIGUOUS_LINE
+                                  % (record.get("name"),
+                                     int(record.get("candidates") or 0),
+                                     record.get("reason") or _DIFFERING))
+        for record in ambiguous)
 
 
 def _module_targets(node):
@@ -241,7 +525,8 @@ def _importers(review_root, rel_path, group_files):
     return out
 
 
-def _closure_paths(review_root, claim, group_files):
+def _closure_paths(review_root, claim, group_files, unresolved=None,
+                   cache=None, cap=CAP):
     """The FULL ordered closure, before the cap -- (a), then (b), then (c)."""
     claim = claim if isinstance(claim, dict) else {}
     loc = claim.get("location")
@@ -250,7 +535,8 @@ def _closure_paths(review_root, claim, group_files):
     if primary is not None and not runio._confined_to_root(review_root, primary):
         primary = None
     out = [primary] if primary else []
-    for path in named_paths(review_root, claim):
+    for path in named_paths(review_root, claim, group_files, unresolved,
+                            cache, cap):
         if path not in out:
             out.append(path)
     if primary and primary.endswith(_PY):
@@ -261,13 +547,23 @@ def _closure_paths(review_root, claim, group_files):
     return out
 
 
-def closure(review_root, claim, group_files, cap=CAP):
+def closure(review_root, claim, group_files, cap=CAP, unresolved=None):
     """The bounded evidence closure for ONE claim, capped, in priority order.
 
     `[]` when the claim has no usable `location.file` -- the whole-group
     fallback that case needs is `grant`'s decision, not this function's.
+
+    `unresolved` is a PARALLEL list the caller may pass to collect the names
+    that meant more than one file (#1688), rather than a second return value: a
+    closure is a list of paths to everything that reads one, and the disclosure
+    has exactly one consumer.
+
+    One claim is its own entry here, so it gets a fresh resolver cache and the
+    whole `ENTRY_CAP` name budget. `grant` is the caller that spends one budget
+    across a chunk.
     """
-    return _closure_paths(review_root, claim, group_files)[:max(0, cap)]
+    return _closure_paths(review_root, claim, group_files,
+                          unresolved, cap=cap)[:max(0, cap)]
 
 
 def _fallback(files, cap, entry_cap, floor_count=0):
@@ -319,7 +615,8 @@ def _claim_floor(review_root, scope):
     return floor
 
 
-def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP):
+def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP,
+          ambiguous=None):
     """The evidence grant for one backup entry:
     `{granted, cap, truncated, entry_cap, entry_truncated, omitted, floor_count}`.
 
@@ -348,6 +645,12 @@ def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP):
     confined `location.file` (unchanged from #1029/#1096): a backup must never
     refute blind. A path the claim NAMED but that escapes the root is simply not
     granted -- it never widens the fence and never triggers the fallback.
+
+    `ambiguous` is an optional list the caller passes to collect every name
+    these claims used that meant more than one file (#1688), for the caller to
+    DISCLOSE. It is a parallel list and not an eighth key on purpose: the dict
+    above is the shape the advisor copies into its verdict's `evidence_scope`,
+    and three docstrings plus the report schema pin it.
     """
     entry_cap = max(0, entry_cap)
     floor = _claim_floor(review_root, scope)
@@ -357,8 +660,11 @@ def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP):
         return _fallback(files, cap, entry_cap)
     granted, truncated, omitted = list(floor), False, set()
     budget = max(0, entry_cap - len(floor))
+    # R1-1: ONE resolver cache for the whole entry -- one read per candidate
+    # path and one resolution per distinct name, however many claims name it.
+    cache = {}
     for claim in scope:
-        paths = _closure_paths(review_root, claim, files)
+        paths = _closure_paths(review_root, claim, files, ambiguous, cache, cap)
         if len(paths) > cap:
             truncated = True
         for entry in paths[:max(0, cap)]:

@@ -448,6 +448,13 @@ class TestSkillMd(unittest.TestCase):
         # clauses earlier and then listed six keys.
         self.assertIn("evidence_scope: {granted, cap, truncated, entry_cap, "
                       "entry_truncated, floor_count}", verify)
+        # #1688: a claim names `config.py`, not always the full repo-relative
+        # path. The operator has to be able to find out how that name was
+        # resolved -- and that two DIFFERENT files of one name resolve to
+        # neither, with the ambiguity disclosed to the backup rather than
+        # guessed at.
+        self.assertIn("unique suffix", verify)
+        self.assertIn("ambiguous", verify)
 
     def test_an_environmental_tool_skip_is_documented_as_retried(self):
         loop = _section(self.text, "## Driver run-loop", "## Driver setup")

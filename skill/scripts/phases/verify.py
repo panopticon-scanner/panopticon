@@ -214,7 +214,7 @@ def _render_findings(review_root, cell):
     return json.dumps(slim, indent=2)
 
 def _verify_entry(review_root, manifest, group, domain, files, cell, host,
-                  bundle, stage, part=0, grant=None):
+                  bundle, stage, part=0, grant=None, ambiguous=None):
     file_list = runio._abs_file_list(review_root, files)
     out_file = _verify_out_file(review_root, group, domain, stage, part)
     prompt = dispatch.render_prompt("domain-advisor.md", {
@@ -236,7 +236,7 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
     pin = ("Repo root: %s\nEvery relative path in the claims below resolves "
            "against this root -- read files THERE, never in your session's "
            "default checkout.\n\n" % os.path.abspath(review_root))
-    prompt = pin + (_grant_block(review_root, grant) if grant else "") + prompt
+    prompt = pin + (_grant_block(review_root, grant, ambiguous) if grant else "") + prompt
     host_ev = runio.host_evidence(review_root)
     enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
     # #1344 F4 (a): a host with no PROVEN artifact_write_guard gets return-persist
@@ -415,7 +415,7 @@ _GRANT_OMITTED = (" %d further files omitted by the entry ceiling -- later "
                   "claims in this check are the ones short of evidence.")
 
 
-def _grant_block(review_root, grant):
+def _grant_block(review_root, grant, ambiguous=None):
     """The prompt section that RECORDS what this backup entry was granted.
 
     Composed here rather than added as a template placeholder: spec 7.4 keeps
@@ -437,10 +437,11 @@ def _grant_block(review_root, grant):
         ("1 of the files below is a claim file" if floor == 1
          else "%d of the files below are claim files" % floor),
         _GRANT_OMITTED % omitted if omitted else "",
-        runio._abs_file_list(review_root, grant.get("granted") or []))
+        runio._abs_file_list(review_root, grant.get("granted") or [])
+        + evidence_scope.disclosure(ambiguous))
 
 
-def _backup_grant(review_root, files, scope):
+def _backup_grant(review_root, files, scope, ambiguous=None):
     """The bounded EVIDENCE CLOSURE this backup entry is granted, recorded:
     `{granted, cap, truncated, entry_cap, entry_truncated, omitted,
     floor_count}` -- the files, the per-claim and per-entry ceilings, whether
@@ -453,7 +454,7 @@ def _backup_grant(review_root, files, scope):
     less evidence than the primary it was checking. The full-group fallback for
     an unlocatable or escaping `location.file` is unchanged (#1096): a backup
     must never refute blind, and never read outside the tree."""
-    return evidence_scope.grant(review_root, files, scope)
+    return evidence_scope.grant(review_root, files, scope, ambiguous=ambiguous)
 
 
 def _backup_scope_files(review_root, files, scope):
@@ -500,11 +501,12 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
             # and a one-hop import neighbourhood -- not the whole group, and the
             # grant it was given is recorded in its prompt.
             for d, c, part in pending:
-                grant = _backup_grant(review_root, files, c)
+                ambiguous = []      # #1688: names that meant several files
+                grant = _backup_grant(review_root, files, c, ambiguous)
                 all_entries.append(
                     _verify_entry(review_root, manifest, group, d,
                                   grant["granted"], c, host, bundle, "backup",
-                                  part, grant=grant))
+                                  part, grant=grant, ambiguous=ambiguous))
     if all_entries:
         req = requests.write_dispatch_request(review_root, manifest["run_id"], "verify",
                                      None, all_entries)
