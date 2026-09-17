@@ -210,6 +210,111 @@ class TestTheHostOutageClassifier(unittest.TestCase):
         self.assertIsNone(outage.cli_error(None))
 
 
+class TestTheClassifierAfterTheR2ReReview(unittest.TestCase):
+    """Item 25d PR 1, R2 re-review N5/N6/N7 (closed by the controller)."""
+
+    # N5: the CLI framing must be followed by host-shaped content. A finding
+    # that opens with `Error: 401 handling…` or `Overloaded: the scheduler…`
+    # is the agent talking, however it is delimited.
+    PROSE_FRAMINGS = (
+        "error: 500 lines reviewed",
+        "Error: 500 lines reviewed across 12 files; no blocking issues",
+        "Error: 401 handling is missing in src/auth/view.py",
+        "Error: 403 responses are never logged",
+        "API Error: the 429 rate limit path is unhandled",
+        "API Error: 401 handling is absent -- src/login.py returns the body verbatim",
+        "Overloaded: the scheduler drops tasks under burst load (src/sched.py:41)",
+        "Overloaded - the queue never drains; see worker.py",
+        "Invalid API key, invalid session token and invalid nonce are all logged at INFO",
+    )
+    GENUINE_FRAMINGS = (
+        "API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}",
+        "API Error: 529 {\"type\":\"overloaded_error\"}",
+        "Error: 503 Service Unavailable",
+        "Error: 429 Too Many Requests",
+        "API Error: 401 Unauthorized",
+        "API Error: 500 Internal Server Error",
+        "API Error: 503 upstream connect error",
+        "Invalid API key, please run /login",
+        "Invalid API key",
+        "Overloaded",
+        "API Error: 502 Bad Gateway",
+    )
+
+    def test_a_prose_sentence_behind_the_framing_is_not_the_cli(self):
+        # The gate is the whole defence on this path: the claude `result`
+        # string reaches the classifier only when `cli_error` lets it through.
+        for text in self.PROSE_FRAMINGS:
+            with self.subTest(text=text):
+                self.assertIsNone(outage.cli_error(text))
+
+    def test_the_genuine_renderings_still_pass_the_framing(self):
+        for text in self.GENUINE_FRAMINGS:
+            with self.subTest(text=text):
+                self.assertEqual(text, outage.cli_error(text))
+                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(text))
+
+    # N6: `code` and 500 qualify a status only inside the provider's error
+    # OBJECT; in free text (kimi's and codex's whole stderr) they are what a
+    # tool says about the code under review.
+    TOOL_STDERR = (
+        "mypy: Found 500 errors in 42 files (checked 118 source files)",
+        "eslint: 500 problems (500 errors, 0 warnings)",
+        "error: 500 problems found",
+        "Compilation failed: 500 errors",
+        "the code (403 lines) was reviewed",
+        "exit code 500",
+        "npm ERR! code 500",
+        "internal error code 500 while reading the cache",
+        "500 errors",
+        "Found 500 error(s)",
+    )
+    OBJECT_SHAPES = (
+        {"code": 403, "message": "Forbidden"},
+        {"statusCode": 429},
+        {"http_status": 503},
+        {"type": "permission_error"},
+        {"type": "api_error", "status": 500},
+        {"error": {"code": 500, "type": "api_error"}},
+    )
+
+    def test_tool_stderr_counting_errors_is_not_the_provider(self):
+        for text in self.TOOL_STDERR:
+            with self.subTest(text=text):
+                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
+
+    def test_the_provider_object_still_qualifies_its_own_number(self):
+        for obj in self.OBJECT_SHAPES:
+            with self.subTest(obj=obj):
+                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(obj))
+
+    # N7: the same envelope arriving as raw JSON on a family's stderr.
+    RAW_JSON = (
+        '{"error":{"status":403,"message":"Forbidden"}}',
+        '{"error":{"code":403,"message":"Forbidden"}}',
+        '{"status_code":429,"message":"slow down"}',
+        '{"http_status":503}',
+        '{"statusCode":429}',
+        '{"error":{"message":"Forbidden"},"status":403}',
+    )
+    RAW_JSON_ENTRY = (
+        '{"file":"src/api.py","line":403}',
+        '{"error":"at line 403 of src/api.py"}',
+        "kimi -p timed out after 403s",
+        '{"findings":[{"severity":"HIGH","line":500}]}',
+    )
+
+    def test_a_json_envelope_on_stderr_is_read_through_its_quotes(self):
+        for text in self.RAW_JSON:
+            with self.subTest(text=text):
+                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(text))
+
+    def test_json_that_merely_contains_a_number_is_not(self):
+        for text in self.RAW_JSON_ENTRY:
+            with self.subTest(text=text):
+                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
+
+
 class TestTheFailureTally(unittest.TestCase):
     """#1623: the loop's per-entry streaks, and the host-outage verdict read
     off them. Here rather than in orchestrate.py because the classification and

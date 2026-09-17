@@ -7,6 +7,7 @@ once a family has answered. The two are wired one way only -- `base.RunResult`
 asks this module to classify a failure nobody classified -- so there is no
 cycle, and `runners/*` still imports no `phases` (layout rule 3).
 """
+import json
 import os
 import re
 import shlex
@@ -86,12 +87,16 @@ _REASONS = (r"forbidden", r"unauthori[sz]ed", r"unauthenticated", r"too{s}many{s
             r"payment{s}required", r"service{s}unavailable", r"bad{s}gateway",
             r"gateway{s}time-?out", r"internal{s}server{s}error", r"quota",
             r"rate{s}limit", r"overloaded", r"error", r"(?:resource{s})?exhausted",
-            r"(?:http{s})?status(?:{s}code)?", r"(?:error{s})?code")
-# 500 is here for the `api_error` shape, which is a host failure only WITH a
-# 5xx beside it -- the adjacency rule is what makes that safe to read, since a
-# bare 500 in a sentence ("expected 200, got 500 in test_gateway.py") touches
-# no reason.
-_STATUS = r"(?:401|402|403|429|500|502|503|504|529)"
+            r"(?:http{s})?status(?:{s}?code)?")     # status, status_code, statusCode
+# The provider's error OBJECT may qualify a status by its own key name
+# (`code: 403`) and may carry 500 for the `api_error` shape. Free text may
+# not (R2 re-review N6): kimi and codex hand their whole stderr over, where
+# `code` is the commonest word a tool says about the code under review and
+# `500 errors` is what mypy prints -- ten realistic tool lines read as the
+# provider when these two were shared.
+_OBJECT_REASONS = _REASONS + (r"(?:error{s})?code",)
+_STATUS = r"(?:401|402|403|429|502|503|504|529)"
+_OBJECT_STATUS = r"(?:401|402|403|429|500|502|503|504|529)"
 
 
 def _alt(patterns):
@@ -103,10 +108,18 @@ def _alt(patterns):
 _HOST_ERROR_KIND = re.compile(r"(?:^|[^0-9a-z])(?:%s)" % _alt(_KINDS), re.I)
 # A status, bounded on both sides so a duration ("403s"), a version, a path and
 # a line number are not one -- and required to touch its reason.
-_HOST_ERROR_STATUS = re.compile(
-    r"(?<![\w./-])%(st)s(?!\w)[\s:,;=()-]*(?:%(rs)s)"
-    r"|(?:%(rs)s)[\s:,;=()-]*(?<![\w./-])%(st)s(?!\w)"
-    % {"st": _STATUS, "rs": _alt(_REASONS)}, re.I)
+# The separator class admits JSON quoting (R2 re-review N7): the same
+# envelope printed raw on a family's stderr -- `{"status":403,"message":
+# "Forbidden"}` -- must read the way the flattened object does.
+def _status_rule(status, reasons):
+    return re.compile(
+        r"(?<![\w./-])%(st)s(?!\w)[\s:,;=()\"'-]*(?:%(rs)s)"
+        r"|(?:%(rs)s)[\s:,;=()\"'-]*(?<![\w./-])%(st)s(?!\w)"
+        % {"st": status, "rs": _alt(reasons)}, re.I)
+
+
+_HOST_ERROR_STATUS = _status_rule(_STATUS, _REASONS)
+_HOST_ERROR_STATUS_OBJECT = _status_rule(_OBJECT_STATUS, _OBJECT_REASONS)
 # A CLI's own error FRAMING at the start of a text field. How a family tells
 # the host's words from the agent's when both can arrive in one field -- and
 # anchoring at the start is not enough on its own, because half of these are
@@ -121,9 +134,18 @@ _HOST_ERROR_STATUS = re.compile(
 # balance") are gone: the renderings they were meant to catch are "Rate limit
 # reached ..." and "Your credit balance is too low", which never started with
 # them anyway, and both carry a status the classifier reads for itself.
+#
+# And the delimiter is necessary but not sufficient (R2 re-review N5): `Error:
+# 401 handling is missing in src/auth/view.py` and `Overloaded: the scheduler
+# drops tasks` clear a delimiter and are findings. So the status must be
+# followed by its reason, a JSON or parenthetical body, another delimiter or
+# the end of the line; and a bare prefix by the end of the line, or by a
+# delimiter and then a KIND or a REASON -- host-shaped content, not prose.
+_HOST_HEAD = r"(?:%s|%s)" % (_alt(_KINDS), _alt(_REASONS))
 _CLI_ERROR = re.compile(
-    r"^(?:(?:api\s+)?error:\s*[45]\d\d(?!\w)"          # API Error: 403 ..., Error: 503 ...
-    r"|(?:api error|invalid api key|overloaded)(?=\s*(?:[:\u00b7,-]|$)))", re.I)
+    r"^(?:(?:api\s+)?error\s*:\s*[45]\d\d(?!\w)(?=\s*(?:$|[{(\[\u00b7,;-]|" + _HOST_HEAD + r"))"
+    r"|(?:api\s+error|invalid\s+api\s+key|overloaded)"
+    r"(?=\s*(?:$|[:\u00b7,-]\s*(?:[{\[]|" + _HOST_HEAD + r"))))", re.I)
 
 
 # The keys a provider error object carries its own verdict in, across the
@@ -157,6 +179,29 @@ def _surface(host_error):
     return "" if host_error is None else str(host_error)
 
 
+def _as_object(host_error):
+    """A provider error object that a family printed as raw JSON on its
+    stderr, read back as the object (R2 re-review N7); anything else as it
+    came. Whole text first, then line by line, so an envelope printed after
+    other stderr is still found. Only a JSON OBJECT qualifies -- a list, a
+    number or a string is not an error envelope.
+    """
+    if not isinstance(host_error, str):
+        return host_error
+    candidates = [host_error.strip()]
+    candidates += [line.strip() for line in host_error.splitlines()]
+    for candidate in candidates:
+        if not candidate.startswith("{") or not candidate.endswith("}"):
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return host_error
+
+
 def classify_failure(host_error):
     """`HOST_FAILURE` when THIS failure was the host's rather than the entry's
     -- auth, quota, a rate limit, or the provider being down -- else
@@ -173,10 +218,14 @@ def classify_failure(host_error):
     is why the surface is narrowed at the family, anchored here, and acted on
     by the loop only when EVERY failure in a batch says the same thing.
     """
+    host_error = _as_object(host_error)
     text = _surface(host_error)
     if not text:
         return ENTRY_FAILURE
-    if _HOST_ERROR_KIND.search(text) or _HOST_ERROR_STATUS.search(text):
+    # The object rule is for the provider's own error object (N3): only there
+    # may a key name qualify a status, and only there is 500 a host failure.
+    status_rule = _HOST_ERROR_STATUS_OBJECT if isinstance(host_error, dict) else _HOST_ERROR_STATUS
+    if _HOST_ERROR_KIND.search(text) or status_rule.search(text):
         return HOST_FAILURE
     return ENTRY_FAILURE
 
