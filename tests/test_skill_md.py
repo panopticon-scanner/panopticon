@@ -648,6 +648,37 @@ class TestReadmeQuickStart(unittest.TestCase):
             self.assertIn(flag, qs, flag)
 
 
+class TestReadmeHostAccounts(unittest.TestCase):
+    """#1573: README's "Supported agent platforms" bullet and its Codex
+    install section both said the Codex/Kimi execution adapters were
+    "rebuilding for 5.2" and sent Codex users to generic session mode --
+    while docs/PANOPTICON.md and skill/SKILL.md already documented Codex's
+    and Kimi's enforced headless runners as shipped (#1619/#1620). Three
+    documents, incompatible accounts of the same execution path, and README
+    was the stale one (run-13 COD-3215020638). Pin the fix at the door: every
+    driver-selectable host is named in the platform list, and the
+    already-shipped-adapter phrasing cannot drift back in unnoticed."""
+
+    def setUp(self):
+        with open(os.path.join(ROOT, os.pardir, "README.md"), encoding="utf-8") as fh:
+            self.raw = fh.read()
+        # Fold line-wrapped prose to one line before substring checks: a bold
+        # span split across a markdown line wrap (`is being\nrebuilt for
+        # 5.2`) must still be caught.
+        self.normalized = re.sub(r"\s+", " ", self.raw)
+
+    def test_names_every_driver_selectable_host(self):
+        platforms = _section(self.raw, "## Supported agent platforms", "## Installation")
+        for host in hosts.driver_hosts():
+            self.assertIn(host, platforms,
+                          "README's platform list omits driver host %r" % host)
+
+    def test_no_stale_adapter_rebuild_language(self):
+        for phrase in ("rebuilding for 5.2", "being rebuilt for 5.2",
+                       "execution adapters return"):
+            self.assertNotIn(phrase, self.normalized, phrase)
+
+
 class TestDeltaDocs(unittest.TestCase):
     """#449: SKILL.md and README must describe the shipped delta-review
     behavior (base resolution, the diff-hunks.json artifact, and the
