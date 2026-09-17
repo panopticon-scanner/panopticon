@@ -1148,6 +1148,46 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(usage["total"], sum(sum(row["usage"].values()) for row in lines))
 
 
+class TestExhaustedReviewCellsAreNamedOnComplete(LoopCase):
+    """#1616 item 2: a review cell that spends `MAX_CELL_ATTEMPTS` without
+    ever returning an acceptable findings file leaves the phase DONE --
+    `review_done` counts exhaustion as done so the run advances rather than
+    wedging -- and the run therefore ends `complete`, reading exactly like a
+    clean one. The terminal status has to be able to tell them apart."""
+
+    class NeverAcceptable(FakeRunner):
+        """Self-writes a findings file the contract rejects, every time: the
+        cell never completes, and no LAUNCH ever fails, so the per-entry cap
+        never trips and only the per-cell retry budget bounds the run."""
+
+        def run_entry(self, entry, env):
+            if not entry["id"].startswith("review-"):
+                return super().run_entry(entry, env)
+            self.launched.append(entry["id"])
+            runio._write_json(entry["out_file"], {"findings": [None]})
+            return base.RunResult(entry_id=entry["id"], ok=True, text="written",
+                                  usage={}, cost_usd=0.0, model=None,
+                                  session_id=None, denials=[], error=None)
+
+    def test_a_cell_that_spends_its_retry_budget_is_named_in_the_terminal_status(self):
+        d, floor = self._repo()
+        status = self._run_loop(d, floor, self.NeverAcceptable())
+        self.assertEqual(status["status"], "complete", status)
+        self.assertTrue(review._cell_exhausted(d, "app", "SEC"))
+        self.assertEqual(status["cells_exhausted"], 1, status)
+        self.assertIn("cells_exhausted: 1", status["message"])
+        self.assertIn("app/SEC", status["message"])
+
+    def test_a_clean_run_says_nothing_about_exhausted_cells(self):
+        # The other half: the key is absent, not zero, so a clean run's
+        # terminal status is byte-for-byte the one every host already parses.
+        d, floor = self._repo()
+        status = self._run_loop(d, floor, FakeRunner())
+        self.assertEqual(status["status"], "complete", status)
+        self.assertNotIn("cells_exhausted", status)
+        self.assertEqual(status["message"], "all phases complete")
+
+
 class TestNoRedundantReDeriveOnReview(LoopCase):
     """review round 1, item 2 (plan-mandated bug): `_after_first_run`'s seam
     must gate the second `driver.run` call -- an UNCONDITIONAL one burns a

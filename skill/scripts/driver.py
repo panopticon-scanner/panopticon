@@ -823,6 +823,22 @@ def run(args, runner=subprocess.run, phases=PHASES):
         return runio._error_status(str(exc))
     if result.get("status") == "complete":
         validate._finalize_worktree(review_root, manifest)
+        # #1616 item 2: `review_done` counts an exhausted cell as done -- which
+        # is what stops one unrecoverable cell wedging the run -- so a run that
+        # lost cells to their retry budget completes with the same status and
+        # the same message as one where every cell answered. Name them, here
+        # rather than in `orchestrate._finish`, because `driver run` reaches
+        # `complete` on its own too and the loop's terminal `complete` IS this
+        # status: one place, both entrypoints. Added ONLY when there are any,
+        # so a clean run's status stays byte-for-byte what every host parses
+        # today.
+        exhausted = review.exhausted_cells(review_root, manifest)
+        if exhausted:
+            result = dict(result, cells_exhausted=len(exhausted), message=(
+                "%s; cells_exhausted: %d (%s) -- these review cells spent their "
+                "retry budget without returning an acceptable findings file, so "
+                "the run completed with them missing from the review axis"
+                % (result.get("message"), len(exhausted), ", ".join(exhausted))))
     return result
 
 
