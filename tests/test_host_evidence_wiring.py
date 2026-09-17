@@ -1015,7 +1015,7 @@ class TestTheWriteGuardAndUsageLedgerAlsoRequireEvidence(unittest.TestCase):
     def test_usage_ledger_does_not_collect_for_claude_with_no_evidence(self):
         from scripts.phases import synthesize
         with tempfile.TemporaryDirectory() as review_root:
-            with mock.patch("scripts.phases.runio._run_child") as run:
+            with mock.patch("scripts.phases.child._run_child") as run:
                 result = synthesize._collect_host_usage(
                     review_root, {"host": "claude", "run_id": "r1",
                                  "created": "2026-09-10T00:00:00Z"})

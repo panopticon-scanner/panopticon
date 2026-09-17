@@ -1373,8 +1373,8 @@ class TestDriverHardening(unittest.TestCase):
         d = self._pano_dir()
         with open(runio._pano(d, "groups.yml"), "w", encoding="utf-8") as fh:
             fh.write("groups:\n  Auth:\n    match: ['**/*.py']\n")
-        with mock.patch("subprocess.run",
-                        side_effect=OSError("ENOENT: no python")):
+        with mock.patch("scripts.phases.child._run_child",
+                        side_effect=runio.DriverError("could not spawn: ENOENT")):
             with self.assertRaises(runio.DriverError) as ctx:
                 discovery.discovery_execute(d, {"security_mode": "standard",
                                              "scope": {"mode": "repo"}})
@@ -2063,3 +2063,29 @@ class TestAnEnvironmentMovingMidRunIsRecoverable(unittest.TestCase):
         self.assertEqual(status["status"], "error", status)
         self.assertIn("already complete", status["message"])
         self.assertEqual(open(path, "rb").read(), before)
+
+
+class TestRunConvertsAConfinementRefusal(unittest.TestCase):
+    """Item 24 R1-1, the twin of `driver setup`'s: every artifact an engine
+    phase writes goes through the whole-path confinement, which refuses a
+    planted component with `ValueError` -- not `DriverError`. `run()` converted
+    only `DriverError` and `EngineStalled`, so that refusal escaped as a
+    traceback and the host asking for a status got no JSON at all.
+
+    Refusing is the guard WORKING. It is an outcome of the verb, so it speaks
+    the verb's status protocol.
+    """
+
+    def _repo(self):
+        return make_git_repo(test_case=self, files={"src/checkout/pay.py": "x = 1\n"},
+                             branch="main", user_email="t@t", user_name="t")
+
+    def test_a_confinement_refusal_from_a_phase_is_an_error_status(self):
+        d = self._repo()
+        boom = ValueError("artifact path escapes .panopticon via a symlinked "
+                          "component: '%s/.panopticon/report.json'" % d)
+        args = driver.build_parser().parse_args(["run", d])
+        with mock.patch("scripts.phases.engine.run_engine", side_effect=boom):
+            status = driver.run(args)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("escapes .panopticon", status["message"])

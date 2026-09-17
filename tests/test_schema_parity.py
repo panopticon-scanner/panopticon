@@ -191,8 +191,16 @@ def _build_report(tmpdir):
                    "effective": ["SEC", "ARC"], "excluded": []}, fh)
 
     # The tool axis, through the real writer's own manifest and a real SARIF.
+    # #1578: the one result sits under `vendor/`, so `meta.coverage.
+    # tools_suppressed` is NON-EMPTY -- an empty map leaves the walk stopping
+    # at the map instead of reaching the per-segment value it describes.
     sarif = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
-                       "results": []}]}
+                       "results": [
+                           {"ruleId": "B105", "level": "warning",
+                            "message": {"text": "hardcoded password"},
+                            "locations": [{"physicalLocation": {
+                                "artifactLocation": {"uri": "vendor/lib/legacy.py"},
+                                "region": {"startLine": 1}}}]}]}]}
     sarif_path = os.path.join(tools, "bandit.sarif")
     with open(sarif_path, "w", encoding="utf-8") as fh:
         json.dump(sarif, fh)
@@ -339,6 +347,9 @@ class TestSchemaParity(unittest.TestCase):
                          {"with": 1, "without": 1})
         self.assertEqual(meta["coverage"]["test_inventory"], {"app": "empty"})
         self.assertEqual(meta["coverage"]["tools_ran"], ["bandit"])
+        # #1578: non-empty, or the per-segment value this section describes is
+        # never walked.
+        self.assertEqual(meta["coverage"]["tools_suppressed"], {"vendor": 1})
         self.assertTrue(self.report["discarded_claims"],
                         "no claim was discarded: the verdict axis did not run")
         self.assertTrue(self.report["findings"], "no finding survived")

@@ -374,7 +374,7 @@ class TestSynthesizeFixtureParityWiring(_ToolVerifyBase):
             return mock.Mock(returncode=0, stdout="", stderr="")
 
         d = self._repo([_result("r1", "src/app.py", 1)])
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             synthesize.synthesize_execute(d, manifest)
         return captured["cmd"]
 

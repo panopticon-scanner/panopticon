@@ -22,6 +22,13 @@ from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard t
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
 import scripts.probes.common as probes_common  # noqa: E402  (#1627: the shared probe helpers)
 from scripts import host_disclosure  # noqa: E402  (#1344 F3b: one voice for the posture)
+# #1577 (SEC-D1C): the five artifact writes below go through the driver's own
+# confined O_NOFOLLOW writers rather than a plain open(). A target repo can
+# commit any of these paths as a symlink (`.gitignore` needs no `git add -f` at
+# all), and `plan_contract.artifact_root` vets the `.panopticon` DIRECTORY, never
+# the leaf. Imported as a module, not as names (tests/test_layout.py rule 1), and
+# this direction only -- `phases/setup.py` already calls into this module.
+from scripts.phases import runio  # noqa: E402
 
 
 # #1135: the committable block ignores run artifacts under .panopticon/ while
@@ -196,7 +203,7 @@ def _ensure_gitignore(repo):
         wanted = _PANOPTICON_COMMITTABLE_ENTRIES + wanted
     added = [e for e in wanted if e not in have]
     if added:
-        with open(gi, "a", encoding="utf-8") as fh:
+        with runio._open_a_nofollow(gi) as fh:   # #1577: never append through a link
             if existing and not existing.endswith("\n"):
                 fh.write("\n")
             fh.write("# panopticon run artifacts (--setup #485)\n")
@@ -210,11 +217,14 @@ def _ensure_gitignore(repo):
 def _seed_config(repo):
     """#485/#486: scaffold .panopticon/config.json with the gh-account field
     (null = inherit ambient) when absent."""
-    path = os.path.join(repo, ".panopticon", "config.json")
+    # #1577: through `artifact_root`, which the original path expression skipped
+    # entirely -- so this one write got neither the directory-symlink check nor
+    # the containment check its four siblings had.
+    path = os.path.join(plan_contract.artifact_root(repo), "config.json")
     if os.path.isfile(path):
         return path, False
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    with runio._open_w_nofollow(path) as fh:
         json.dump({"gh_config_dir": None}, fh, indent=1)
         fh.write("\n")
     return path, True
@@ -733,7 +743,7 @@ def format_budget(spine):
 
 def write_spine(repo, spine):
     path = os.path.join(plan_contract.artifact_root(repo), _SPINE_FILE)
-    with open(path, "w", encoding="utf-8") as fh:
+    with runio._open_w_nofollow(path) as fh:   # #1577
         json.dump(spine, fh, indent=1, sort_keys=True)
         fh.write("\n")
     return path
@@ -840,7 +850,7 @@ def render_scan_brief(repo, vocabulary, layers=None, spine=None):
         "surfaces": ", ".join(sorted(coverage_model.SURFACES)),
     })
     path = os.path.join(plan_contract.artifact_root(repo), "setup-scan-brief.md")
-    with open(path, "w", encoding="utf-8") as fh:
+    with runio._open_w_nofollow(path) as fh:   # #1577
         fh.write(brief)
     return path
 
@@ -1004,7 +1014,7 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     report_path = os.path.join(root, "setup-report.md")
     for path, text in ((draft, draft_text), (report_path, report_text),
                        (os.path.join(root, "setup-report.json"), report_json)):
-        with open(path, "w", encoding="utf-8") as fh:
+        with runio._open_w_nofollow(path) as fh:   # #1577
             fh.write(text)
     return {"ok": True, "draft": draft, "diff": diff, "disclosure": disclosure,
             "report": report, "report_path": report_path}

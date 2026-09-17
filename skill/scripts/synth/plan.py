@@ -92,9 +92,10 @@ class ToolAxis:
     # #1644: why an EXISTING manifest could not be read, or None. Absent and
     # corrupt are different facts and only one of them is an integrity failure.
     manifest_invalid: str | None = None
+    suppressed: dict | None = None   # #1578: {segment: count} dropped as vendored
 
     @classmethod
-    def load(cls, args, run_dir, plan_lists, dispositions, tools_ran):
+    def load(cls, args, run_dir, plan_lists, dispositions, tools_ran, suppressed=None):
         """The tool axis from the run folder (WS-0 S3): the runner's
         tools-manifest with its two FATAL (#17) checks, the policy mode the
         dispatch plans declare, and the ingest results `ingest_tool_findings`
@@ -153,7 +154,8 @@ class ToolAxis:
                          % (mrid, args.run_id, tm_path))
         return cls(policy_mode=derive_tool_policy_mode(plans=plan_lists),
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
-                   ingested_paths=args.files, manifest_invalid=manifest_invalid)
+                   ingested_paths=args.files, manifest_invalid=manifest_invalid,
+                   suppressed=suppressed)   # #1578
 
 
 @dataclass(frozen=True)
@@ -513,6 +515,8 @@ def reconcile(plan, tools, resolved):
     cell_audit = coverage_io.audit_floor_cells(plan.coverages or [], present)
     coverage = {
         "adapters": tools.dispositions or {},
+        # #1578 (SEC-G2B): the vendored-path drops, per segment; schema has the why.
+        "tools_suppressed": repair_mod.repair_tools_suppressed(tools.suppressed),
         "tools_ran": (sorted(tools_ran) if tools_ran is not None
                       else sorted(resolved.tool_names)),
         "build_executing_tools": sorted(
@@ -673,8 +677,9 @@ def load_scout_requests(run_dir):
 
 def ingest_tool_findings(args):
     """The --tools-dir ingest (WS-0 S3): (raw tool findings, per-adapter
-    dispositions, tools_ran). tools_ran is None when --tools-dir wasn't
-    supplied -- reconcile then infers build_executing_tools from the findings;
+    dispositions, tools_ran, the #1578 `{segment: count}` of vendored-path drops
+    -- the findings themselves stay suppressed). tools_ran is None when
+    --tools-dir wasn't supplied -- reconcile infers build_executing_tools then;
     an empty set would ASSERT "no build-executing tool ran" from an absence of
     evidence (the inversion #450 was about). A "failed" disposition (empty /
     unparseable / no-adapter) is excluded from tools_ran, so
@@ -686,8 +691,10 @@ def ingest_tool_findings(args):
                   "include tool findings in this report"
                   % (default_tools, default_tools), file=sys.stderr)
     if not (args.tools_dir and os.path.isdir(args.tools_dir)):
-        return [], {}, None
+        return [], {}, None, None
+    dropped = []     # #1578: filled with the vendored-path drops, for the count
     tool_findings, dispositions = ingest_tools.ingest_dir_detailed(
         args.tools_dir, None, exclude_globs=args.tools_exclude,
-        include_fixtures=args.include_fixtures)
-    return tool_findings, dispositions, tools_ran_from_dispositions(dispositions)
+        include_fixtures=args.include_fixtures, suppressed_out=dropped)
+    return (tool_findings, dispositions, tools_ran_from_dispositions(dispositions),
+            ingest_tools.suppressed_counts(dropped))

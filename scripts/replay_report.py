@@ -116,6 +116,7 @@ def _scratch_root(tmp, review_root, manifest, tag, run_folder):
 def replay(args):
     repo = os.path.abspath(args.repo or os.path.dirname(HERE))
     sys.path.insert(0, os.path.join(repo, "skill"))
+    import scripts.phases.child as child_mod
     import scripts.phases.runio as runio
     import scripts.phases.synthesize as synthesize_phase
     import scripts.run_manifest as run_manifest
@@ -144,7 +145,7 @@ def replay(args):
 
     with tempfile.TemporaryDirectory(prefix="replay-") as tmp:
         root = _scratch_root(tmp, review_root, manifest, tag, run_folder)
-        with mock.patch("scripts.phases.runio._run_child", new=fake_run_child):
+        with mock.patch("scripts.phases.child._run_child", new=fake_run_child):
             try:
                 synthesize_phase.synthesize_execute(root, manifest)
             except runio.DriverError:
@@ -155,7 +156,7 @@ def replay(args):
         out_path = os.path.join(out_dir, f"{tag}-report.json")
         cmd[cmd.index("--out") + 1] = out_path
         proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,  # nosec B603
-                              env=runio._child_env())
+                              env=child_mod._child_env())
         after = _listing(run_folder)
         for name in os.listdir(out_dir):
             if name.startswith(tag):

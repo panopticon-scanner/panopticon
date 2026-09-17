@@ -1326,3 +1326,126 @@ class TestReadinessDoesNotSwallowTheLaunchGuard(unittest.TestCase):
         posture = dict((name, detail) for name, _ok, detail in rows)
         self.assertIn("host-capabilities", posture)
         self.assertIn("probe exploded", posture["host-capabilities"])
+
+
+class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
+    """#1577 (SEC-D1C): the five `--setup` artifact writes were plain `open()`
+    on paths derived from an untrusted target tree.
+
+    `plan_contract.artifact_root()` validates that the `.panopticon` DIRECTORY
+    is not a symlink; it never looks at the LEAF. A target that force-commits
+    `.panopticon/setup-report.md -> ~/.bash_profile` (or plain
+    `.gitignore -> ~/.ssh/authorized_keys`, which needs no `-f` at all) had
+    panopticon's own boilerplate written or appended through the link, as the
+    invoking user, on the documented first step for a repo nobody has vetted.
+
+    The fix is the writer this repo already converged on -- `runio`'s confined
+    `O_NOFOLLOW` pair -- not a sixth spelling of the check. It answers in two
+    ways, and which one fires is a property of the path, not of the caller: a
+    leaf under `.panopticon` whose link resolves OUT of it is REFUSED
+    (`_confine_artifact_path`, the whole-path guard), while a link the
+    confinement has nothing to say about -- `.gitignore` sits in the repo root,
+    not the artifact tree -- is neutralized by `O_NOFOLLOW` and replaced by a
+    fresh regular file. Either way the link's target is never opened.
+    """
+
+    def _victim(self, d, name="victim.txt"):
+        path = os.path.join(d, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("SECRET")
+        return path
+
+    def _assert_untouched(self, victim):
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual("SECRET", fh.read(), "the link's target was written")
+
+    def test_ensure_gitignore_does_not_append_through_a_planted_link(self):
+        d = _repo(self)
+        victim = self._victim(d)
+        gi = os.path.join(d, ".gitignore")
+        os.symlink(victim, gi)
+        setup_flow._ensure_gitignore(d)
+        self._assert_untouched(victim)
+        self.assertFalse(os.path.islink(gi), "the link survived the write")
+        with open(gi, encoding="utf-8") as fh:
+            self.assertIn(".panopticon/*", fh.read())
+
+    def test_seed_config_does_not_create_through_a_planted_link(self):
+        # `_seed_config` guards with `os.path.isfile`, which FOLLOWS the link, so
+        # its primitive is a DANGLING one: creation at an attacker-chosen path
+        # with fixed content, not an overwrite. It also never went through
+        # `artifact_root` at all -- the one write here that had no guard of any
+        # kind -- so the refusal below is new in both halves.
+        d = _repo(self)
+        outside = os.path.join(d, "not-yet-there.json")
+        cfg = os.path.join(d, ".panopticon", "config.json")
+        os.symlink(outside, cfg)
+        with self.assertRaises(ValueError):
+            setup_flow._seed_config(d)
+        self.assertFalse(os.path.exists(outside), "the link's target was created")
+
+    def test_write_spine_does_not_write_through_a_planted_link(self):
+        d = _repo(self)
+        victim = self._victim(d)
+        os.symlink(victim, os.path.join(d, ".panopticon", "setup-spine.json"))
+        with self.assertRaises(ValueError):
+            setup_flow.write_spine(d, setup_flow.build_spine(d))
+        self._assert_untouched(victim)
+
+    def test_render_scan_brief_does_not_write_through_a_planted_link(self):
+        d = _repo(self)
+        victim = self._victim(d)
+        os.symlink(victim, os.path.join(d, ".panopticon", "setup-scan-brief.md"))
+        vocab, _present = setup_flow.load_bundled_vocabulary()
+        with self.assertRaises(ValueError):
+            setup_flow.render_scan_brief(d, vocab)
+        self._assert_untouched(victim)
+
+    def test_ingest_proposal_does_not_write_through_planted_links(self):
+        d = _repo(self)
+        root = os.path.join(d, ".panopticon")
+        with open(os.path.join(root, "setup-proposal.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        for name in ("groups.yml.draft", "setup-report.md", "setup-report.json"):
+            victim = self._victim(d, "victim-%s" % name)
+            os.symlink(victim, os.path.join(root, name))
+        with self.assertRaises(ValueError):
+            setup_flow.ingest_proposal(d)
+        for name in ("groups.yml.draft", "setup-report.md", "setup-report.json"):
+            self._assert_untouched(os.path.join(d, "victim-%s" % name))
+
+    def test_the_writes_still_land_on_an_honest_tree(self):
+        # The guard must not be the thing that breaks setup: same five artifacts,
+        # no plants, all written.
+        d = _repo(self)
+        with open(os.path.join(d, ".panopticon", "setup-proposal.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"groups": [{"capability": "Checkout",
+                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        setup_flow._ensure_gitignore(d)
+        setup_flow._seed_config(d)
+        setup_flow.write_spine(d, setup_flow.build_spine(d))
+        vocab, _present = setup_flow.load_bundled_vocabulary()
+        setup_flow.render_scan_brief(d, vocab)
+        self.assertTrue(setup_flow.ingest_proposal(d)["ok"])
+        for rel in (".gitignore", ".panopticon/config.json",
+                    ".panopticon/setup-spine.json", ".panopticon/setup-scan-brief.md",
+                    ".panopticon/groups.yml.draft", ".panopticon/setup-report.md",
+                    ".panopticon/setup-report.json"):
+            self.assertTrue(os.path.isfile(os.path.join(d, rel)), rel)
+
+    def test_a_planted_intermediate_panopticon_directory_is_refused(self):
+        # The sibling half of the same plant: a real leaf under a `.panopticon`
+        # that is itself a link out of the tree. `artifact_root` already refuses
+        # this -- the assertion is that the writes stay behind it rather than
+        # acquiring their own weaker check.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        outside = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+        os.symlink(outside, os.path.join(d, ".panopticon"))
+        with self.assertRaises(ValueError):
+            setup_flow.write_spine(d, {"schema_version": 1})
+        self.assertEqual([], os.listdir(outside))

@@ -4309,3 +4309,54 @@ class TestTheInventoryStateFilesNothingAndGatesNothing(unittest.TestCase):
         self.assertNotIn("TST-X0X", body)
         self.assertNotIn("Test inventory for {group} is empty or incomplete",
                          body)
+
+
+class TestSuppressedToolFindingsCoverage(unittest.TestCase):
+    """#1578: `meta.coverage.tools_suppressed` -- what the vendored-path
+    exclusion dropped, per segment.
+
+    The exclusion earns its keep (592 of solidus's 623 eslint-security messages
+    were bundled jQuery under `vendor/`), and it stays. What does not stay is
+    the provenance-free, disclosure-free form of it: a directory NAME dropped
+    a finding from the report with nothing but an aggregate stderr line to
+    say so, so a real vendored library and an evasion were indistinguishable.
+    """
+
+    def _coverage(self, suppressed):
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=plan_mod.ToolAxis(suppressed=suppressed)))
+        return report["meta"]["coverage"]
+
+    def test_the_counts_reach_the_report_per_segment(self):
+        self.assertEqual({"vendor": 592, "node_modules": 3},
+                         self._coverage({"vendor": 592,
+                                         "node_modules": 3})["tools_suppressed"])
+
+    def test_a_run_that_suppressed_nothing_reports_an_empty_map(self):
+        # Stated on every report, `{}` included -- the same rule the sibling
+        # disclosures follow: an absent key makes "nothing was dropped" and
+        # "nobody counted" the same document.
+        self.assertEqual({}, self._coverage(None)["tools_suppressed"])
+
+    def test_a_malformed_tally_is_repaired_at_the_boundary(self):
+        # The counts are derived from `location.file` values a scanner read out
+        # of the reviewed tree, so the key is repaired rather than trusted; a
+        # bad row must never cost the run an `artifact invalid` exit.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual({"vendor": 1},
+                             self._coverage({"vendor": 1,
+                                             "node_modules": "lots"})["tools_suppressed"])
+
+    def test_the_gate_is_unchanged_by_the_disclosure(self):
+        # Report-side suppression STAYS -- this key discloses it, it does not
+        # re-gate it. The redteam no-loss rule lives in `security_gate`, which
+        # is the gate that blocks a merge.
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=plan_mod.ToolAxis(suppressed={"vendor": 9})))
+        self.assertEqual(report["summary"]["gate"], "PASS")

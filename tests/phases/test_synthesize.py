@@ -32,7 +32,7 @@ class TestHostUsageCollection(unittest.TestCase):
 
     def test_collects_before_synthesize_with_an_explicit_window(self):
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch("scripts.phases.runio._run_child") as run:
+             mock.patch("scripts.phases.child._run_child") as run:
             write_host_evidence(d, _UL_PROVEN)
             run.return_value = mock.Mock(returncode=0)
             synthesize._collect_host_usage(d, self._manifest())
@@ -54,7 +54,7 @@ class TestHostUsageCollection(unittest.TestCase):
         # cwd) and silently collected NOTHING on the first external target,
         # reintroducing `tokens: null`. It must be the session directory.
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch("scripts.phases.runio._run_child") as run:
+             mock.patch("scripts.phases.child._run_child") as run:
             write_host_evidence(d, _UL_PROVEN)
             run.return_value = mock.Mock(returncode=0)
             synthesize._collect_host_usage(d, self._manifest())
@@ -72,7 +72,7 @@ class TestHostUsageCollection(unittest.TestCase):
         # null on a 612M-token run. The operator can now say where the session
         # is, since the driver cannot deduce it.
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch("scripts.phases.runio._run_child") as run:
+             mock.patch("scripts.phases.child._run_child") as run:
             write_host_evidence(d, _UL_PROVEN)
             run.return_value = mock.Mock(returncode=0)
             synthesize._collect_host_usage(
@@ -84,7 +84,7 @@ class TestHostUsageCollection(unittest.TestCase):
         # A blank value must not win over the default -- it would resolve to a
         # slug for "" and reproduce the silent-null it exists to prevent.
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch("scripts.phases.runio._run_child") as run:
+             mock.patch("scripts.phases.child._run_child") as run:
             write_host_evidence(d, _UL_PROVEN)
             run.return_value = mock.Mock(returncode=0)
             synthesize._collect_host_usage(d, self._manifest(session_dir=""))
@@ -96,7 +96,7 @@ class TestHostUsageCollection(unittest.TestCase):
         # searched directory was the wrong one, which is the likely cause.
         buf = io.StringIO()
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch("scripts.phases.runio._run_child") as run, \
+             mock.patch("scripts.phases.child._run_child") as run, \
              contextlib.redirect_stderr(buf):
             write_host_evidence(d, _UL_PROVEN)
             run.return_value = mock.Mock(returncode=1)
@@ -146,7 +146,7 @@ class TestHostUsageCollection(unittest.TestCase):
 
     def test_non_claude_host_is_skipped(self):
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch("scripts.phases.runio._run_child") as run:
+             mock.patch("scripts.phases.child._run_child") as run:
             self.assertIsNone(
                 synthesize._collect_host_usage(d, self._manifest(host="generic")))
         run.assert_not_called()
@@ -160,7 +160,7 @@ class TestHostUsageCollection(unittest.TestCase):
         m = self._manifest()
         del m["host"]
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch("scripts.phases.runio._run_child") as run:
+             mock.patch("scripts.phases.child._run_child") as run:
             self.assertIsNone(synthesize._collect_host_usage(d, m))
         run.assert_not_called()
 
@@ -170,7 +170,7 @@ class TestHostUsageCollection(unittest.TestCase):
         # exercising the resume early-return this test names. Prove the
         # capability so the file-exists branch is what actually runs.
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch("scripts.phases.runio._run_child") as run:
+             mock.patch("scripts.phases.child._run_child") as run:
             write_host_evidence(d, _UL_PROVEN)
             path = runio._pano(d, "usage.json")
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -183,7 +183,7 @@ class TestHostUsageCollection(unittest.TestCase):
         # An absent number must stay absent -- collection must never fail a run
         # that has already done all its expensive work.
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch("scripts.phases.runio._run_child",
+             mock.patch("scripts.phases.child._run_child",
                         side_effect=runio.DriverError("boom")), \
              contextlib.redirect_stderr(io.StringIO()) as err:
             write_host_evidence(d, _UL_PROVEN)
@@ -192,7 +192,7 @@ class TestHostUsageCollection(unittest.TestCase):
 
     def test_no_transcript_is_reported_not_raised(self):
         with tempfile.TemporaryDirectory() as d, \
-             mock.patch("scripts.phases.runio._run_child",
+             mock.patch("scripts.phases.child._run_child",
                         return_value=mock.Mock(returncode=1)), \
              contextlib.redirect_stderr(io.StringIO()) as err:
             write_host_evidence(d, _UL_PROVEN)
@@ -215,7 +215,7 @@ class TestSynthesizePhase(unittest.TestCase):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
                 json.dump({"grade": "A", "findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             result = synthesize.synthesize_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         self.assertTrue(synthesize.synthesize_done(self.root, self.manifest))
@@ -234,7 +234,7 @@ class TestSynthesizePhase(unittest.TestCase):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
                 json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=fake_run) as rm_:
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as rm_:
             synthesize.synthesize_execute(self.root, self.manifest)
         self.assertIn("--tools-dir", rm_.call_args[0][0])
 
@@ -243,7 +243,7 @@ class TestSynthesizePhase(unittest.TestCase):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
                 json.dump({"grade": "F", "findings": [], "summary": {"gate": "FAIL"}}, fh)
             return mock.Mock(returncode=2, stdout="", stderr="gate failed")  # non-zero
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             result = synthesize.synthesize_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
 
@@ -259,7 +259,7 @@ class TestSynthesizePhase(unittest.TestCase):
                 json.dump({"grade": "A", "findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=validate_schema_mod.ARTIFACT_INVALID,
                              stdout="", stderr="artifact invalid: 3 schema errors")
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             with self.assertRaises(runio.DriverError) as ctx:
                 synthesize.synthesize_execute(self.root, self.manifest)
         self.assertIn("artifact invalid", str(ctx.exception))
@@ -291,7 +291,7 @@ class TestSynthesizePhase(unittest.TestCase):
             return mock.Mock(returncode=validate_schema_mod.ARTIFACT_INVALID,
                              stdout="", stderr="artifact invalid: 1 schema errors")
 
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             with self.assertRaises(runio.DriverError):
                 synthesize.synthesize_execute(self.root, self.manifest)
         tag = runio._run_tag(self.root)
@@ -301,7 +301,7 @@ class TestSynthesizePhase(unittest.TestCase):
             self.assertEqual(json.load(fh)["meta"]["schema_errors"], 1)
 
     def test_absent_report_raises(self):
-        with mock.patch("subprocess.run",
+        with mock.patch("scripts.phases.child._run_child",
                         return_value=mock.Mock(returncode=1, stdout="", stderr="boom")):
             with self.assertRaises(runio.DriverError):
                 synthesize.synthesize_execute(self.root, self.manifest)
@@ -315,7 +315,7 @@ class TestSynthesizePhase(unittest.TestCase):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
                 json.dump({"grade": "A", "findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             synthesize.synthesize_execute(self.root, manifest)
         cmd = captured["cmd"]
         self.assertIn("--diff-context", cmd)
@@ -326,7 +326,7 @@ class TestSynthesizePhase(unittest.TestCase):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
                 json.dump({"grade": "A", "findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=fake_run) as run:
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
             synthesize.synthesize_execute(self.root, self.manifest)
         self.assertNotIn("--diff-context", run.call_args.args[0])
 
@@ -354,7 +354,7 @@ class TestAMidRunToolsDowngradeReachesSynthesize(unittest.TestCase):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
                 json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             synthesize.synthesize_execute(self.root, manifest)
         return captured["cmd"]
 
@@ -393,7 +393,7 @@ class TestTheMidRunFlagParitiesWithSynthesizesParser(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = os.path.realpath(d)
             os.makedirs(runio._pano(root))
-            with mock.patch("subprocess.run", side_effect=fake_run):
+            with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
                 synthesize.synthesize_execute(
                     root, {"run_id": "R", "security_mode": "standard",
                            "flags": {},
@@ -442,7 +442,7 @@ class TestSynthesizeDonePredicate(unittest.TestCase):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:
                 json.dump({"findings": []}, fh)          # parses; no summary
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             with self.assertRaises(runio.DriverError) as cm:
                 synthesize.synthesize_execute(self.root, self.manifest)
         self.assertIn("no usable report.json", str(cm.exception))

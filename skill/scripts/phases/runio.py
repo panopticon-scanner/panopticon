@@ -19,9 +19,9 @@ import scripts.run_manifest as run_manifest
 CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
 
 # The skill/scripts directory -- the parent of this package, not its own
-# directory: `_script()` and `_child_env()` resolve sibling entry scripts and
-# the child PYTHONPATH against it, and both used to read it from driver.py's
-# own __file__. Pinned by ScriptsDirTest.
+# directory: `_script()` and `phases.child._child_env()` resolve sibling entry
+# scripts and the child PYTHONPATH against it, and both used to read it from
+# driver.py's own __file__. Pinned by ScriptsDirTest.
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def _redact_output(text):
@@ -34,22 +34,6 @@ class DriverError(Exception):
 
 def _script(name):
     return os.path.join(_SCRIPTS_DIR, name)
-
-def _child_env():
-    """Env for subprocessed panopticon CLIs. They do `import scripts.*` (a
-    namespace package) plus BARE imports of both skill/scripts modules (e.g.
-    `import evidence`) and repo-root scripts/ modules (e.g. `import file_issues`),
-    so PYTHONPATH must mirror tests/conftest.py exactly: skill, skill/scripts,
-    and <repo>/scripts."""
-    scripts_dir = _SCRIPTS_DIR                         # .../skill/scripts
-    skill_dir = os.path.dirname(scripts_dir)           # .../skill
-    repo_root = os.path.dirname(skill_dir)             # .../panopticon
-    repo_scripts = os.path.join(repo_root, "scripts")  # .../panopticon/scripts
-    env = dict(os.environ)
-    parts = [skill_dir, scripts_dir, repo_scripts]
-    env["PYTHONPATH"] = os.pathsep.join(
-        parts + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-    return env
 
 # §5.1 per-run folders. These artifacts stay at `.panopticon/` top-level: setup
 # files, the resume anchors (run-manifest / setup-manifest), the cross-run EPSS
@@ -99,19 +83,73 @@ def _report_out(review_root):
     name = f"{tag}-report.json" if tag else "report.json"
     return os.path.join(review_root, ".panopticon", name)
 
+def _confine_link_parent(link_path):
+    """The real directory `_relink` may write into, or a DriverError naming the
+    component that is not one (#1574 COD-E2B).
+
+    `_relink` was the one artifact writer in this module with no confinement:
+    it checked `islink`/`exists` on the LINK and nothing on the path leading to
+    it, so a target that force-commits `.panopticon/runs` as a symlink (the
+    `git add -f` vector `_manifest_committed` documents) redirected an
+    `os.remove` + `os.symlink` to `<elsewhere>/latest` on the first `driver
+    run`, before any phase executed. Anchor on the path's own `.panopticon`
+    segment, exactly as `_confine_artifact_path` does, and require every
+    component of the link's PARENT to be a real directory -- `realpath` equal to
+    the path joined so far. The final component is deliberately exempt: it IS
+    the symlink being written, and `runs/latest` is a legitimate one.
+
+    Returns the parent with any symlinked ANCESTOR of `.panopticon` resolved
+    (`/tmp` -> `/private/tmp` on macOS is not a plant), so the caller's
+    `makedirs`/`symlink` cannot re-traverse what was just vetted. A path with no
+    `.panopticon` segment is not an artifact path and is left be.
+    """
+    parent = os.path.dirname(os.path.abspath(link_path))
+    parts = parent.split(os.sep)
+    if ".panopticon" not in parts:
+        return parent
+    cut = parts.index(".panopticon")
+    base = os.sep.join(parts[:cut + 1]) or os.sep
+    if os.path.islink(base):
+        raise DriverError(
+            "refusing to relink through a symlinked artifact directory: %s" % base)
+    real = os.path.realpath(base)
+    for seg in parts[cut + 1:]:
+        real = os.path.join(real, seg)
+        if os.path.realpath(real) != real:
+            raise DriverError(
+                "refusing to relink through a symlinked path component: %s" % real)
+    return real
+
 def _relink(link_path, target_name):
-    """Create or replace a relative symlink `link_path -> target_name` (same dir)."""
-    os.makedirs(os.path.dirname(link_path), exist_ok=True)
+    """Create or replace a relative symlink `link_path -> target_name` (same dir).
+
+    Confined (`_confine_link_parent`) and atomic: the new link is created beside
+    the destination and `os.replace`d onto it, which swaps the LINK rather than
+    following it and never leaves the path missing for a reader. The old
+    remove-then-create pair was both a window and, on a planted parent, a
+    delete primitive outside the tree."""
+    parent = _confine_link_parent(link_path)
+    os.makedirs(parent, exist_ok=True)
+    final = os.path.join(parent, os.path.basename(link_path))
+    tmp = "%s.relink-%d.tmp" % (final, os.getpid())
+    if os.path.islink(tmp) or os.path.exists(tmp):
+        os.remove(tmp)                        # our own leftover, never the target's
+    os.symlink(target_name, tmp)
     try:
-        if os.path.islink(link_path) or os.path.exists(link_path):
-            os.remove(link_path)
+        os.replace(tmp, final)
     except OSError:
-        pass
-    os.symlink(target_name, link_path)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 def _ensure_run_symlinks(review_root):
     """Point `.panopticon/runs/latest` at the active run folder (best-effort; a
-    platform without symlinks simply skips it — the tag-named paths still work)."""
+    platform without symlinks simply skips it — the tag-named paths still work).
+
+    #1574: best-effort covers OSError only. A DriverError from the confinement
+    is a planted path component, not a platform limitation, and propagates."""
     tag = _run_tag(review_root)
     if not tag:
         return
@@ -367,34 +405,6 @@ def load_committed_groups(review_root):
     # Deep-copy so a caller mutating its result can never corrupt the shared
     # cache entry the next phase reads.
     return copy.deepcopy(groups), list(errors)
-
-# Hard bound per phase so a wedged discovery/synthesize or a hung tool runner
-# cannot block the whole (resumable, CI-automatable) driver indefinitely (#1094).
-# discovery/synthesize are fast; the tools phase is a generous backstop above
-# run_tools' own per-tool TOOL_TIMEOUT=900 -- it catches a wedged run_tools
-# harness, not a single slow scanner.
-_CHILD_TIMEOUTS = {"discovery": 600, "tools": 7200, "synthesize": 600}
-
-_CHILD_TIMEOUT_DEFAULT = 600
-
-def _run_child(cmd, review_root, phase, timeout=None):
-    """subprocess.run for a deterministic phase, converting a spawn-level OSError
-    (ENOENT on the interpreter, EMFILE, a bad cwd, ...) or a phase timeout into a
-    DriverError so run()'s handler yields a clean status:error instead of a raw
-    traceback or an unbounded hang (#1033; #1094; #1021/5.0-14 covered only the
-    --pr acquire path). Returns the CompletedProcess on a normal spawn — a
-    non-zero exit is the caller's to interpret, not a spawn error."""
-    if timeout is None:
-        timeout = _CHILD_TIMEOUTS.get(phase, _CHILD_TIMEOUT_DEFAULT)
-    try:
-        return subprocess.run(cmd, cwd=review_root, capture_output=True,  # nosec B603
-                              text=True, env=_child_env(), timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise DriverError("%s: %s timed out after %ss"
-                          % (phase, cmd[1] if len(cmd) > 1 else cmd[0], timeout))
-    except OSError as exc:
-        raise DriverError("%s: could not spawn %s: %s"
-                          % (phase, cmd[1] if len(cmd) > 1 else cmd[0], exc))
 
 def _load_ocrdb_bundle():
     """ocrdb.load_bundle, converting a malformed-bundle ValueError into a

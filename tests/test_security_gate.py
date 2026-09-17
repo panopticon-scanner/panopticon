@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -40,7 +42,7 @@ class TestSecurityGate(unittest.TestCase):
             tools, manifest = self._write(
                 root, {"selected": ["semgrep"], "produced": ["semgrep"],
                        "missing": []}, _sarif())
-            findings, dispositions, failures, high = gate.evaluate(tools, manifest)
+            findings, dispositions, failures, high, _sup = gate.evaluate(tools, manifest)
         self.assertEqual(findings, [])
         self.assertEqual(dispositions["semgrep"]["status"], "empty")
         self.assertEqual(failures, [])
@@ -51,7 +53,7 @@ class TestSecurityGate(unittest.TestCase):
             tools, manifest = self._write(
                 root, {"selected": ["semgrep"], "produced": [],
                        "missing": ["semgrep"]})
-            _, _, failures, _ = gate.evaluate(tools, manifest)
+            _, _, failures, _, _ = gate.evaluate(tools, manifest)
         self.assertEqual(failures, ["semgrep: no output"])
 
     def test_high_finding_fails_gate(self):
@@ -59,7 +61,7 @@ class TestSecurityGate(unittest.TestCase):
             tools, manifest = self._write(
                 root, {"selected": ["semgrep"], "produced": ["semgrep"],
                        "missing": []}, _sarif("error"))
-            _, _, failures, high = gate.evaluate(tools, manifest)
+            _, _, failures, high, _ = gate.evaluate(tools, manifest)
         self.assertEqual(failures, [])
         self.assertEqual(len(high), 1)
         self.assertEqual(high[0]["severity"], "HIGH")
@@ -79,7 +81,7 @@ class TestSecurityGate(unittest.TestCase):
                 root, {"selected": ["semgrep"], "produced": ["semgrep"],
                        "missing": [], "excluded_scope": ["eslint-security"]},
                 _sarif())
-            _, _, failures, high = gate.evaluate(tools, manifest, ["tests/fixtures/*"])
+            _, _, failures, high, _ = gate.evaluate(tools, manifest, ["tests/fixtures/*"])
         self.assertEqual(failures, [])
         self.assertEqual(high, [])
 
@@ -109,7 +111,7 @@ class TestSecurityGate(unittest.TestCase):
             bandit_file = os.path.join(tools, "bandit.json")
             with open(bandit_file, "w", encoding="utf-8") as fh:
                 json.dump({"results": []}, fh)
-            _, _, failures, _ = gate.evaluate(tools, manifest)
+            _, _, failures, _, _ = gate.evaluate(tools, manifest)
         self.assertTrue(any("unexpected scanner output: bandit" in f for f in failures))
 
     def test_large_sarif_file_loading(self):
@@ -140,7 +142,7 @@ class TestSecurityGate(unittest.TestCase):
                 root, {"selected": ["semgrep"], "produced": ["semgrep"], "missing": []},
                 large_sarif,
             )
-            findings, dispositions, failures, high = gate.evaluate(tools, manifest)
+            findings, dispositions, failures, high, _sup = gate.evaluate(tools, manifest)
         self.assertEqual(len(findings), 1000)
         self.assertEqual(dispositions["semgrep"]["status"], "ok")
         self.assertEqual(dispositions["semgrep"]["findings"], 1000)
@@ -181,8 +183,92 @@ class TestSecurityGate(unittest.TestCase):
                 root, {"selected": ["semgrep"], "produced": ["semgrep"], "missing": []},
                 _sarif())
             missing_tools = os.path.join(root, "no-such-tools")
-            _, _, failures, _ = gate.evaluate(missing_tools, manifest)
+            _, _, failures, _, _ = gate.evaluate(missing_tools, manifest)
         self.assertEqual(failures, ["semgrep: no output"])
+
+
+def _vendored_sarif(level="error", uri="app/vendor/patched_auth.rb"):
+    return {"version": "2.1.0", "runs": [{
+        "tool": {"driver": {"name": "semgrep", "rules": []}},
+        "results": [{"ruleId": "test.rule", "level": level,
+                     "message": {"text": "hardcoded credential"},
+                     "locations": [{"physicalLocation": {
+                         "artifactLocation": {"uri": uri},
+                         "region": {"startLine": 1}}}]}]}]}
+
+
+class TestVendoredSuppressionAndTheGate(unittest.TestCase):
+    """#1578 (SEC-G2B): this gate blocks merges, and it inherited the
+    vendored-path exclusion by sharing `ingest_dir_detailed`'s defaults.
+
+    A HIGH/CRITICAL under any path segment literally named `vendor`,
+    `node_modules`, `third_party`, ... was dropped before `evaluate` ever saw
+    it, so a payload landed as `app/vendor/patched_auth.rb` passed the gate
+    outright with no per-file audit trail. The ruling: the report may still
+    suppress it -- that is what makes tool output usable -- but the GATE must
+    not lose a finding to a directory name under redteam, and in standard mode
+    the number it dropped is printed next to the gate line rather than left to
+    an aggregate stderr note nobody reads.
+    """
+
+    def _repo(self, root, sarif):
+        tools = os.path.join(root, "tools")
+        os.makedirs(tools)
+        with open(os.path.join(tools, "semgrep.sarif"), "w", encoding="utf-8") as fh:
+            json.dump(sarif, fh)
+        manifest_path = os.path.join(root, "manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump({"selected": ["semgrep"], "produced": ["semgrep"],
+                       "missing": []}, fh)
+        return tools, manifest_path
+
+    def test_redteam_gates_on_a_suppressed_critical(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, _vendored_sarif())
+            _f, _d, failures, high, suppressed = gate.evaluate(
+                tools, manifest, security_mode="redteam")
+        self.assertEqual(failures, [])
+        self.assertEqual(len(high), 1, "the gate lost a HIGH to a directory name")
+        self.assertEqual(len(suppressed), 1)
+        self.assertEqual(suppressed[0]["suppressed"], "vendor")
+
+    def test_standard_still_suppresses_it_and_discloses_the_count(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, _vendored_sarif())
+            findings, _d, _failures, high, suppressed = gate.evaluate(tools, manifest)
+        self.assertEqual(findings, [])
+        self.assertEqual(high, [])
+        self.assertEqual(len(suppressed), 1)
+
+    def test_the_standard_mode_gate_line_says_how_many_it_dropped(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, _vendored_sarif())
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
+        self.assertEqual(rc, 0)
+        self.assertIn("1 suppressed", buf.getvalue())
+        self.assertIn("vendor", buf.getvalue())
+
+    def test_redteam_mode_fails_the_run_the_default_passes(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, _vendored_sarif())
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(0, gate.main(
+                    ["--tools-dir", tools, "--manifest", manifest]))
+                self.assertEqual(1, gate.main(
+                    ["--tools-dir", tools, "--manifest", manifest,
+                     "--security", "redteam"]))
+
+    def test_an_ordinary_finding_is_unaffected_by_the_mode(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, _vendored_sarif(uri="app/auth.rb"))
+            for mode in ("standard", "redteam"):
+                _f, _d, _failures, high, suppressed = gate.evaluate(
+                    tools, manifest, security_mode=mode)
+                self.assertEqual(len(high), 1, mode)
+                self.assertEqual(suppressed, [], mode)
 
 
 if __name__ == "__main__":

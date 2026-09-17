@@ -1,7 +1,10 @@
 """#run7 SEC-B2C: the single-source secret redaction shared by the driver
 (tool output) and synthesize (shareable report bodies)."""
+import os
 import unittest
 
+from conftest import REPO_ROOT
+import scripts.discovery as discovery
 import scripts.redact as redact
 
 
@@ -208,6 +211,189 @@ class TestRedactAdditionalVendorFormats(unittest.TestCase):
         self.assertNotIn(jwt, out["d"])
 
 
+class TestRedactUrlCredentials(unittest.TestCase):
+    """#1572 (AGT-D1B): the finding's own example -- a connection string with a
+    password in it -- is a STRUCTURAL shape, not an entropy guess.
+
+    `redact_report_secrets` is the last stop before report.json, its HTML and
+    the X0X candidate artifact, all of which the project treats as shareable,
+    and its whole reason for existing is the case where a reviewing agent quoted
+    a credential verbatim to substantiate a finding. A JDBC/Postgres/AMQP URL
+    with userinfo in it was not one of the sixteen shapes it knew.
+
+    The password ALONE is masked. `postgres://svc_reports:...@db.internal:5432`
+    with the user and host intact still tells a reader which credential leaked
+    and where it points -- which is the difference between a finding they can
+    act on and one they have to re-derive. It is also what keeps the shape
+    distinguishable from the sibling mask `scripts.tools.pip_audit` applies at
+    the PRODUCER, which takes the whole userinfo because a dropped
+    `--index-url` line has no diagnostic value to preserve.
+
+    This epic's rule, in full: add shapes, measure each before adding, never add
+    a generic detector. The measurement is
+    `TestUrlCredentialShapeIsFpMeasured`, and `TestRedactRejectsGenericDetection`
+    below is the half that stays shut.
+    """
+
+    CASES = (
+        ("postgres://svc_reports:s3cr3t@db.internal:5432/app",
+         "postgres://svc_reports:[REDACTED]@db.internal:5432/app"),
+        ("jdbc:mysql://root:hunter2@10.0.0.4/orders",
+         "jdbc:mysql://root:[REDACTED]@10.0.0.4/orders"),
+        ("amqps://bus:Tr0ub4dor@rabbit.prod.svc:5671/%2f",
+         "amqps://bus:[REDACTED]@rabbit.prod.svc:5671/%2f"),
+        ("https://ci-bot:ghp_notarealtoken@github.example.com/org/repo.git",
+         "https://ci-bot:[REDACTED]@github.example.com/org/repo.git"),
+        ("mongodb+srv://admin:p%40ss@cluster0.example.net/db",
+         "mongodb+srv://admin:[REDACTED]@cluster0.example.net/db"),
+    )
+
+    def test_the_password_is_masked_and_the_locus_survives(self):
+        for raw, expected in self.CASES:
+            self.assertEqual(redact.redact("dsn=%s end" % raw),
+                             "dsn=%s end" % expected, raw)
+
+    def test_it_survives_the_tree_walk(self):
+        out = redact.redact_tree(
+            {"evidence": {"snippet": "DSN = 'postgres://u:pw@h/db'"}})
+        self.assertNotIn("pw@", out["evidence"]["snippet"])
+        self.assertIn("postgres://u:[REDACTED]@h/db", out["evidence"]["snippet"])
+
+    def test_urls_without_a_password_are_untouched(self):
+        for url in ("https://github.com/panopticon-scanner/panopticon/pull/1566",
+                    "http://localhost:8080/health",
+                    "ssh://git@github.com/org/repo.git",      # user, no password
+                    "https://user@example.com/path",
+                    "https://example.com:8443/a@b",           # '@' after the path
+                    "git@github.com:org/repo.git"):           # scp form, no scheme
+            self.assertEqual(redact.redact("ref %s ok" % url),
+                             "ref %s ok" % url, url)
+
+    def test_it_cannot_run_out_of_one_json_field_into_the_next(self):
+        # The flat pass over a non-JSON capture has no parse to protect it, so
+        # every rule but the PEM body is anchored to classes excluding quotes.
+        probe = '{"a": "postgres://u:", "b": "pw@host/db"}'
+        self.assertEqual(redact.redact(probe), probe)
+
+    # Item 24 R1-5. Two shapes the first cut of this rule let through, both of
+    # them the NORMAL form for what they carry rather than an edge case.
+    EMPTY_USER = (
+        # redis and AMQP put the password in a userinfo with NO user at all --
+        # that is the documented form, not a malformed one. `[^\s/:@"\']+` on
+        # the user required at least one character, so the whole shape missed.
+        ("redis://:s3cr3tpw@cache.internal:6379/0",
+         "redis://:[REDACTED]@cache.internal:6379/0"),
+        ("amqp://:guest@rabbit:5672/%2f",
+         "amqp://:[REDACTED]@rabbit:5672/%2f"),
+    )
+
+    def test_an_empty_user_still_masks_the_password(self):
+        for raw, expected in self.EMPTY_USER:
+            self.assertEqual(redact.redact("url=%s end" % raw),
+                             "url=%s end" % expected, raw)
+
+    def test_a_json_escaped_url_is_masked_too(self):
+        # This pass runs FLAT over raw captures, and a SARIF/JSON capture
+        # escapes every forward slash it was given that way: the literal text
+        # the redactor sees is `postgres:\/\/u:pw@h`. The credential is no less
+        # live for having been escaped on the way in.
+        raw = r'{"message": "connect postgres:\/\/svc:s3cr3t@db.internal\/app"}'
+        out = redact.redact(raw)
+        self.assertNotIn("s3cr3t", out)
+        self.assertIn(r"postgres:\/\/svc:[REDACTED]@db.internal", out)
+
+    def test_the_escaped_form_still_cannot_cross_a_quote(self):
+        probe = r'{"a": "postgres:\/\/u:", "b": "pw@host\/db"}'
+        self.assertEqual(redact.redact(probe), probe)
+
+
+class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
+    """The measurement #1572's rule was admitted on, pinned so it stays true.
+
+    The rule is run over every text file in the repo's own listing -- the same
+    `discovery.discover_repo_files` the review and `driver readiness` use -- and
+    every match must be a known credential-URL specimen. Two are: an advisory
+    in a captured pip-audit golden quoting `https://username:password@proxy:8080`
+    as the shape it is about, and the test that pins pip-audit's own
+    producer-side userinfo mask. Neither is an identifier anything depends on,
+    and both are precisely what the rule is for.
+
+    RE-MEASURED after item 24 R1-5 widened the rule (empty user, JSON-escaped
+    separator): 404 tracked text files, 5 matches, 4 distinct, the same four
+    below -- widening the shape added no new match anywhere in the tree.
+
+    FALSE POSITIVES: zero. That is the number this class exists to hold at zero
+    -- a new match on a git SHA, a path, a fingerprint or a URL without
+    credentials fails here, in the PR that introduces it, rather than mangling a
+    report months later. A redactor is silent when it is wrong, which is why the
+    bar for adding a shape is a measurement rather than a plausible regex.
+    """
+
+    EXPECTED = {
+        ("tests/goldens/tool-raw/pip-audit.raw", "https://username:password@"),
+        ("tests/tools/test_pip_audit.py", "https://bob:hunter2@"),
+        # The same golden specimen, quoted by the guard that pins what this rule
+        # does to it (`TestRawCaptureRedaction.EXPECTED_MASKS`) -- both sides of
+        # the substitution, because the masked form is still a well-formed
+        # credential URL and the rule is idempotent on it.
+        ("tests/test_run_tools_core.py", "https://username:password@"),
+        ("tests/test_run_tools_core.py", "https://username:[REDACTED]@"),
+    }
+
+    # The rule's own definition and its own specimens. They are full of
+    # well-formed credential URLs by construction -- that is what they are for --
+    # and they say nothing about whether the rule is noisy on the REST of the
+    # tree, which is the question this measurement asks. Named, never globbed:
+    # a third file quietly joining this list would be the measurement decaying.
+    SELF = ("skill/scripts/redact.py", "tests/test_redact.py")
+
+    PROBE = "postgres://u:pw@h/db"
+
+    @classmethod
+    def _rule(cls):
+        # Selected by BEHAVIOUR, not by a substring of the pattern source: the
+        # separator stopped being the literal `://` when R1-5 taught it the
+        # JSON-escaped form, and a selector that reads the regex text goes
+        # quietly empty when the regex is edited -- which would leave the whole
+        # measurement below passing over an empty match set.
+        rules = [pat for pat, _repl in redact._PATTERNS if pat.search(cls.PROBE)]
+        assert len(rules) == 1, "expected one URL-credential rule: %s" % rules
+        return rules[0]
+
+    def _matches(self):
+        listing = discovery.discover_repo_files(REPO_ROOT)
+        self.assertGreater(len(listing), 200, "the repo listing collapsed")
+        rule, found = self._rule(), set()
+        for rel in listing:
+            if rel in self.SELF:
+                continue
+            try:
+                with open(os.path.join(REPO_ROOT, rel), "rb") as fh:
+                    raw = fh.read()
+            except OSError:
+                continue
+            if b"\0" in raw[:8000]:
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            for m in rule.finditer(text):
+                found.add((rel, m.group(0)))
+        return found
+
+    def test_every_match_in_the_tree_is_a_credential_url(self):
+        self.assertEqual(self._matches(), self.EXPECTED)
+
+    def test_the_rule_fires_on_a_well_formed_specimen(self):
+        # Non-vacuity: a rule that matched nothing at all would also pass the
+        # assertion above. The two R1-5 shapes are here too, because the FP set
+        # is only meaningful for a rule that still catches what it is for.
+        for specimen in (self.PROBE, "redis://:pw@cache:6379/0",
+                         r"postgres:\/\/u:pw@h"):
+            self.assertRegex(specimen, self._rule())
+
+
 class TestRedactRejectsGenericDetection(unittest.TestCase):
     """Why redact.py has no entropy / long-hex / long-base64 rule, pinned so it
     is not 'improved' back in.
@@ -346,6 +532,7 @@ class TestOnlyThePemRuleMayCrossAQuote(unittest.TestCase):
         "dop_v1_" + "a1b2c3d4" * 8,
         "sk_live_" + "M" * 24,
         "eyJ" + "N" * 12 + ".eyJ" + "O" * 12 + "." + "P" * 20,
+        "postgres://svc_reports:Qfiller@db.internal:5432/app",
         "-----BEGIN RSA PRIVATE KEY-----\nMIIBfiller\n-----END RSA PRIVATE KEY-----",
         "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
     )

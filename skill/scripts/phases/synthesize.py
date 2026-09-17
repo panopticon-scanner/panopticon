@@ -7,6 +7,7 @@ import sys
 from scripts import hosts
 import scripts.run_manifest as run_manifest
 import scripts.synth.validate_schema as validate_schema_mod
+from . import child
 from . import engine
 from . import runio
 from . import requests
@@ -98,7 +99,7 @@ def _collect_host_usage(review_root, manifest):
     cmd += ["--until", datetime.datetime.now(datetime.timezone.utc)
             .strftime("%Y-%m-%dT%H:%M:%SZ")]
     try:
-        proc = runio._run_child(cmd, review_root, "usage", timeout=120)
+        proc = child._run_child(cmd, review_root=review_root, phase="usage", timeout=120)
     except runio.DriverError as exc:
         print("driver: usage collection skipped (%s); meta.cost.tokens stays null"
               % exc, file=sys.stderr, flush=True)
@@ -164,7 +165,7 @@ def synthesize_execute(review_root, manifest):
     if flags.get("diff_context") is not None:
         cmd += ["--diff-context", str(flags["diff_context"])]
     cmd += findings
-    proc = runio._run_child(cmd, review_root, "synthesize")
+    proc = child._run_child(cmd, review_root=review_root, phase="synthesize")
     # A failing gate exits non-zero but still writes the report — that is a valid
     # outcome, not a driver error. Only an ABSENT report is a failure.
     #

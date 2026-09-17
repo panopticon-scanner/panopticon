@@ -747,7 +747,7 @@ def run(args, runner=subprocess.run, phases=PHASES):
         return runio._error_status(posture_error)
     try:
         result = engine.run_engine(review_root, manifest, phases)
-    except runio.DriverError as exc:
+    except (runio.DriverError, ValueError) as exc:   # R1-1: confinement refusal
         return runio._error_status(str(exc))
     except engine.EngineStalled as exc:
         # #1637 P08 F1b: the progress guard fired. Converted here rather than

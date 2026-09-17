@@ -232,7 +232,13 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES):
         print(host_disclosure.GENERIC_DEPRECATION, file=sys.stderr)
     try:
         result = engine.run_engine(review_root, manifest, phases)
-    except (runio.DriverError, engine.EngineStalled) as exc:
+    except (runio.DriverError, engine.EngineStalled, ValueError) as exc:
+        # `ValueError` is item 24 R1-1: since #1577 the five setup artifacts are
+        # written through the confined no-follow writers, whose whole-path
+        # confinement refuses a planted component with a ValueError. That
+        # refusal is the guard WORKING -- an outcome of this verb -- so it
+        # belongs in the status protocol beside the two below, not on stderr as
+        # a traceback with no JSON behind it.
         # #1637 P08 fix round 2: `driver run` converts the engine's progress
         # guard into an `error` status; this drives the SAME engine and was
         # still letting it escape as a traceback. One named class with two call

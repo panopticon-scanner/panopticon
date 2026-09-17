@@ -92,6 +92,17 @@ groups:
       match:
       - skill/scripts/driver.py
       - skill/scripts/phases/**
+      # item 24: `phases/child.py` (a pure move of the child-process helper out
+      # of `phases/runio.py`, so bounding its capture could not push runio past
+      # the 700-line ratchet) is claimed by `Orchestration:Core` instead. This
+      # leaf is FULL at 48/48 -- a 49th file chunks it into
+      # `Orchestration:Phases_1`, a name the matrix has no entry for, and that
+      # cell is then reviewed with an empty test inventory (the #1638 P13
+      # defect). The negation is how the glob above stops claiming it first;
+      # `match:`/`tests:` are one gitignore-style last-match-wins list. This is
+      # the FIRST `!` entry in this file -- nothing above it is a precedent to
+      # read off, so it is spelled out here rather than assumed.
+      - '!skill/scripts/phases/child.py'
       - skill/scripts/orchestrate.py
       - skill/scripts/progress.py
       # Deliberately NOT with its four sibling contracts (findings-envelope,
@@ -140,6 +151,17 @@ groups:
       # 700-line instruction. Same parking reasoning as money.py just above
       # -- belongs beside orchestrate.py in `Phases`, full at 48/48.
       - skill/scripts/ledger.py
+      # item 24: the driver's phase children (spawn, timeout, bounded capture,
+      # process-group kill), moved out of `phases/runio.py`. Parked here for the
+      # same REASON money.py and ledger.py above are -- `Orchestration:Phases`,
+      # where it belongs, is full at 48/48 -- but by a different MECHANISM, and
+      # the difference matters to whoever edits this next: those two live
+      # outside `phases/`, so no glob ever claimed them and parking them here
+      # took nothing but this line. `phases/child.py` IS under `phases/**`, so
+      # `Phases` has to be made to stop claiming it first. The `!` negation
+      # above is the only one in this file; there is no precedent above it to
+      # copy. It goes away when the Phases split lands.
+      - skill/scripts/phases/child.py
       - skill/scripts/group_runner.py
       - skill/scripts/model_resolver.py
       - skill/scripts/run_manifest.py
@@ -155,6 +177,11 @@ groups:
       - tests/test_ledger.py
       - tests/test_group_runner.py
       - tests/test_group_runner_integration.py
+      # item 24: beside the module it tests, not under `tests/phases/**` (which
+      # `Phases` claims, and which would chunk that full leaf). A cell's test
+      # inventory comes from the claiming group's `tests:` axis, so the tests
+      # have to sit where the group that owns `phases/child.py` can claim them.
+      - tests/test_phases_child.py
       - tests/test_model_resolver.py
       - tests/test_run_manifest.py
       - tests/test_agent_templates.py

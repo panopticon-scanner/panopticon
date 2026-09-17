@@ -435,3 +435,34 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
             with contextlib.redirect_stderr(err):
                 render_mod.write_report(report, out, max_bytes=8000)
             self.assertIn("report base is", err.getvalue())   # loud, not silent floor
+
+
+class TestSuppressedToolFindingsAreRendered(unittest.TestCase):
+    """#1578: what the vendored-path exclusion dropped is named in the markdown
+    summary, not only in the JSON.
+
+    An operator reading the summary had no way to tell a bundled jQuery from a
+    payload parked under `app/vendor/` -- the only signal was an aggregate
+    stderr line from a process that had already exited.
+    """
+
+    def _report(self, suppressed):
+        return {"meta": {"target": "src", "coverage": {"tools_suppressed": suppressed}},
+                "summary": {"grade": "B", "risk_level": "MEDIUM", "gate": "PASS",
+                            "stats": {}, "evidence_stats": {"unverified": 1},
+                            "coverage_certified": True},
+                "groups": [], "findings": []}
+
+    def test_the_segments_and_counts_are_named(self):
+        out = render_mod.render_summary(self._report({"vendor": 592, "node_modules": 3}))
+        self.assertIn("vendor: 592", out)
+        self.assertIn("node_modules: 3", out)
+
+    def test_a_run_that_suppressed_nothing_says_nothing(self):
+        self.assertNotIn("suppressed", render_mod.render_summary(self._report({})))
+
+    def test_a_malformed_block_renders_no_line_rather_than_a_traceback(self):
+        for bad in ("nope", 7, ["vendor"], None):
+            with self.subTest(value=repr(bad)):
+                self.assertNotIn(
+                    "suppressed", render_mod.render_summary(self._report(bad)))

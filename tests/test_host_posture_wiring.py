@@ -356,7 +356,7 @@ class TestTheThreeCapabilitiesAreNotInterchangeable(unittest.TestCase):
     # --- the usage gate: USAGE_LEDGER, nothing else ---
 
     def _usage_ran(self, host):
-        with mock.patch("scripts.phases.runio._run_child") as run:
+        with mock.patch("scripts.phases.child._run_child") as run:
             run.return_value = mock.Mock(returncode=0)
             synthesize._collect_host_usage(
                 self.root, {"host": host, "run_id": "r1",

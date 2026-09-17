@@ -251,7 +251,7 @@ class TestTheTwoCallSitesDisagreeOnPurpose(unittest.TestCase):
                       "phase is actually watched")
 
     def test_the_driver_does_not(self):
-        from scripts.phases import runio, tools as tools_phase
+        from scripts.phases import child as child_mod, tools as tools_phase
 
         captured = {}
 
@@ -260,7 +260,7 @@ class TestTheTwoCallSitesDisagreeOnPurpose(unittest.TestCase):
             return _FakeResult(0, "", "")
 
         with tempfile.TemporaryDirectory() as review_root:
-            with mock.patch.object(runio, "_run_child", fake_child):
+            with mock.patch.object(child_mod, "_run_child", fake_child):
                 tools_phase.tools_execute(
                     review_root, {"run_id": "r1", "flags": {"tools": True}})
 

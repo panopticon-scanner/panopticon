@@ -107,7 +107,7 @@ class TestTheFixtureCannotCrossAProcessBoundary(unittest.TestCase):
 
     def test_the_tools_phase_spawns_run_tools_as_a_child(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(tools_phase.runio, "_run_child") as spawn:
+            with mock.patch.object(tools_phase.child, "_run_child") as spawn:
                 spawn.return_value = mock.Mock(returncode=0, stderr="")
                 tools_phase.tools_execute(self._root(d),
                                           {"flags": {}, "run_id": "r"})
@@ -117,7 +117,7 @@ class TestTheFixtureCannotCrossAProcessBoundary(unittest.TestCase):
 
     def test_no_tools_returns_before_the_spawn(self):
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(tools_phase.runio, "_run_child") as spawn:
+            with mock.patch.object(tools_phase.child, "_run_child") as spawn:
                 res = tools_phase.tools_execute(
                     self._root(d), {"flags": {"tools": False}, "run_id": "r"})
             spawn.assert_not_called()

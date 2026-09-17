@@ -94,8 +94,20 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull or build panopticon-tools image
+        # #1575 (OPS-A1A): TWO bounds, and both are load-bearing. `timeout 600`
+        # is the one that matters -- the fallback below is selected by EXIT
+        # STATUS, so a STALLED (as opposed to refused or 404) GHCR response left
+        # `docker pull` hanging, the `else` was never reached, and the
+        # deliberately-engineered degraded-local-build path was dead in exactly
+        # the scenario it exists for. `timeout-minutes` is the backstop for the
+        # step as a whole (the build in the else branch has no deadline of its
+        # own). The job's own `timeout-minutes: 30` is neither: it converts a
+        # fast handled degradation into a hard failure of a required check
+        # thirty minutes later. Same adjudication as docker-build-pr.yml:23-32
+        # (#run10 OPS-A1A), whose fix was likewise a per-call deadline.
+        timeout-minutes: 10
         run: |
-          if docker pull ${{ env.IMAGE }}; then
+          if timeout 600 docker pull ${{ env.IMAGE }}; then
             docker tag ${{ env.IMAGE }} panopticon-tools
           else
             echo "::warning::Pre-built panopticon-tools image not available from GHCR; falling back to a local build. The security scan will run on a degraded, secretless image (NVD API key and some offline assets may be missing)."

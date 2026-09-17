@@ -24,7 +24,7 @@ class TestToolsPhase(unittest.TestCase):
             os.makedirs(out, exist_ok=True)
             open(os.path.join(out, "trivy.json"), "w").close()
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             result = tools_phase.tools_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
@@ -46,7 +46,7 @@ class TestToolsPhase(unittest.TestCase):
                                    # carried by another run's manifest (N2).
                                    "run_id": self.manifest["run_id"]})
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             tools_phase.tools_execute(self.root, self.manifest)
         return runio._load_json(runio._pano(self.root, "tools-ran.json"))
 
@@ -77,7 +77,7 @@ class TestToolsPhase(unittest.TestCase):
             os.makedirs(out, exist_ok=True)
             open(os.path.join(out, "trivy.json"), "w").close()
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             tools_phase.tools_execute(self.root, self.manifest)
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
         self.assertEqual(marker["run_id"], "R")
@@ -93,7 +93,7 @@ class TestToolsPhase(unittest.TestCase):
         # `--no-tools` writes no capture at all, so it must not claim a pass
         # over files an earlier run left in place.
         m = {"run_id": "R", "flags": {"tools": False}}
-        with mock.patch("subprocess.run"):
+        with mock.patch("scripts.phases.child._run_child"):
             tools_phase.tools_execute(self.root, m)
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
         self.assertNotIn("redacted", marker)
@@ -110,7 +110,7 @@ class TestToolsPhase(unittest.TestCase):
             os.makedirs(out, exist_ok=True)
             open(os.path.join(out, "trivy.json"), "w").close()
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             tools_phase.tools_execute(self.root, self.manifest)
         cmd = captured["cmd"]
         self.assertIn("--manifest", cmd)
@@ -121,7 +121,7 @@ class TestToolsPhase(unittest.TestCase):
         def fake_run(cmd, **kw):   # produces nothing, exits 0 (docker missing)
             return mock.Mock(returncode=0, stdout="",
                              stderr="panopticon-tools image not available; skipping")
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             result = tools_phase.tools_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
@@ -135,7 +135,7 @@ class TestToolsPhase(unittest.TestCase):
         # a distinct `crashed` marker (still advances -- tools are best-effort).
         def crash_run(cmd, **kw):
             return mock.Mock(returncode=2, stdout="", stderr="run_tools traceback")
-        with mock.patch("subprocess.run", side_effect=crash_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=crash_run):
             result = tools_phase.tools_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
@@ -145,7 +145,7 @@ class TestToolsPhase(unittest.TestCase):
 
     def test_no_tools_flag_skips_subprocess(self):
         m = {"run_id": "R", "flags": {"tools": False}}
-        with mock.patch("subprocess.run") as run_mock:
+        with mock.patch("scripts.phases.child._run_child") as run_mock:
             result = tools_phase.tools_execute(self.root, m)
         run_mock.assert_not_called()
         self.assertEqual(result.kind, "advanced")
@@ -198,7 +198,7 @@ class TestAnEnvironmentalSkipIsNotDone(unittest.TestCase):
 
     def test_the_operators_own_no_tools_skip_is_done(self):
         m = {"run_id": "R", "flags": {"tools": False}}
-        with mock.patch("subprocess.run") as run_mock:
+        with mock.patch("scripts.phases.child._run_child") as run_mock:
             tools_phase.tools_execute(self.root, m)
         run_mock.assert_not_called()
         self.assertTrue(tools_phase.tools_done(self.root, m))
@@ -255,7 +255,7 @@ class TestTheRetryIsInvocationScopedNotStepScoped(unittest.TestCase):
             engine.Phase("review", "deterministic",
                          lambda root, m: reached["review"], review_execute),
         )
-        with mock.patch.object(tools_phase.runio, "_run_child",
+        with mock.patch.object(tools_phase.child, "_run_child",
                                side_effect=self._silent_child):
             result = engine.run_engine(self.root, self._manifest(token), phases,
                                        max_steps=25)
