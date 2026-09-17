@@ -445,6 +445,18 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("non-destructive rescue", tools)
         self.assertIn("meta.tools.disabled_mid_run", tools)
 
+    def test_discovery_is_documented_as_completing_only_on_a_valid_artifact(self):
+        # #1643: the phase that "succeeds emptily" is the one an operator will
+        # never think to check, so the guide has to say what completion
+        # REQUIRES, that an empty delta scope is still a legitimate answer, and
+        # what a second malformed round does.
+        loop = _section(self.text, "## Driver run-loop", "## Driver setup")
+        disco = _section(loop, "`discovery`**", "`coverage`**")
+        for token in ["well-formed groups artifact", "`run_id`",
+                      "at least one group", "empty delta",
+                      "discovery produced no usable groups"]:
+            self.assertIn(token, disco, token)
+
     def test_raw_captures_are_documented_as_redacted_before_they_are_written(self):
         # #1639 P11: `.panopticon/tools/` is what an operator copies into a CI
         # artifact, and the report's redaction never reached it. The guide has
