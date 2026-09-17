@@ -429,11 +429,15 @@ class TestGhRealBoundary(unittest.TestCase):
         # `triage.py apply` and reconcile_apply refuse outright on the owner's
         # own workstation. It is still not PATH-controlled: both halves are
         # fixed strings over a HOME this process chose.
-        with tempfile.TemporaryDirectory() as home:
+        # The system half is pinned to an EMPTY dir: CI runners ship a real
+        # /usr/bin/gh, which would (correctly) win and turn this into a test
+        # of the runner image.
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as empty:
             local_bin = os.path.join(home, ".local", "bin")
             os.makedirs(local_bin)
             self._make_fake_gh(local_bin, 'echo ok')
-            with mock.patch.dict(os.environ, {"HOME": home}):
+            with mock.patch.dict(os.environ, {"HOME": home}), \
+                    mock.patch.object(triage, "TRUSTED_PATH", empty):
                 self.assertEqual(os.path.join(local_bin, "gh"), triage.gh_bin())
 
     def test_the_operators_bin_dir_is_searched_after_the_system_ones(self):
@@ -447,12 +451,15 @@ class TestGhRealBoundary(unittest.TestCase):
 
     def test_a_gh_only_on_the_ambient_path_is_still_not_resolved(self):
         # The whole point of M2's widening is that it must not widen to PATH.
-        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as hostile:
+        with tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as hostile, \
+                tempfile.TemporaryDirectory() as empty:
             os.makedirs(os.path.join(home, ".local", "bin"))
             self._make_fake_gh(hostile, 'echo hostile')
             with mock.patch.dict(os.environ, {"HOME": home,
                                               "PATH": hostile + os.pathsep
-                                              + os.environ.get("PATH", "")}):
+                                              + os.environ.get("PATH", "")}), \
+                    mock.patch.object(triage, "TRUSTED_PATH", empty):
                 with self.assertRaises(RuntimeError):
                     triage.gh_bin()
 
