@@ -12,6 +12,7 @@ expression for the whole package and the error type is the driver's, not this
 module's.
 """
 import os
+import signal
 import subprocess
 import threading
 
@@ -84,6 +85,44 @@ def _capture(stream, into, name):
     stream.close()
     into[name] = "".join(kept) + ("\n\u2026 [cut %d bytes]" % cut if cut else "")
 
+# #1575 (OPS-A1A): how long a timed-out group is given to exit on SIGTERM
+# before SIGKILL. Short on purpose -- the phase deadline has already passed.
+_KILL_GRACE = 2.0
+
+def _kill_group(proc, grace=_KILL_GRACE):
+    """End a timed-out child's whole PROCESS GROUP, not just its PID.
+
+    `proc.kill()` reaches the direct child only. A phase child that forked a
+    worker -- `run_tools.py` launching a scanner, a scanner launching its own
+    workers -- left that worker alive holding the stdout pipe it inherited, so
+    the reader never saw EOF and the descendant went on running after the driver
+    had already reported the phase timed out. That is not "no timeout"; it is a
+    nominal deadline that bounds one process out of a tree.
+
+    The child is spawned with `start_new_session=True`, so its pid IS the group
+    id and one `killpg` reaches everything it started. SIGTERM first, so a
+    scanner can flush and unlink its temp files, then SIGKILL once the grace
+    window passes. A group that is already gone is success, not an error, and a
+    platform without process groups falls back to the direct kill this replaces.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (AttributeError, OSError):      # no process groups, or already reaped
+        proc.kill()
+        proc.wait()
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except (AttributeError, OSError):  # gone between getpgid and killpg
+            break
+        try:
+            proc.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    proc.wait()
+
 def _run_child(cmd, review_root, phase, timeout=None):
     """Run a deterministic phase's child, converting a spawn-level OSError
     (ENOENT on the interpreter, EMFILE, a bad cwd, ...) or a phase timeout into a
@@ -93,14 +132,15 @@ def _run_child(cmd, review_root, phase, timeout=None):
     non-zero exit is the caller's to interpret, not a spawn error.
 
     #1576: a Popen with reader threads rather than `subprocess.run`, because the
-    capture has to be BOUNDED and `capture_output=True` cannot be."""
+    capture has to be BOUNDED and `capture_output=True` cannot be. #1575: in its
+    own session, so the timeout can reach the whole tree (`_kill_group`)."""
     if timeout is None:
         timeout = _CHILD_TIMEOUTS.get(phase, _CHILD_TIMEOUT_DEFAULT)
     name = cmd[1] if len(cmd) > 1 else cmd[0]
     try:
         proc = subprocess.Popen(cmd, cwd=review_root, text=True,  # nosec B603
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                env=_child_env())
+                                env=_child_env(), start_new_session=True)
     except OSError as exc:
         raise runio.DriverError("%s: could not spawn %s: %s" % (phase, name, exc))
     out = {}
@@ -111,13 +151,13 @@ def _run_child(cmd, review_root, phase, timeout=None):
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+        _kill_group(proc)              # #1575: the whole tree, not the direct PID
         raise runio.DriverError("%s: %s timed out after %ss" % (phase, name, timeout))
     finally:
-        # Bounded, and the readers are daemons: a grandchild that inherited the
-        # pipes can hold them open past a kill aimed at the direct PID, and the
-        # driver must not join on that for ever.
+        # Bounded, and the readers are daemons. `_kill_group` ends everything
+        # that inherited the pipes, so EOF normally arrives at once -- but a
+        # descendant that escaped its group (one that called setsid itself)
+        # must not be able to make the driver join on it for ever.
         for reader in readers:
             reader.join(timeout=_READER_JOIN_GRACE)
     return subprocess.CompletedProcess(cmd, proc.returncode,

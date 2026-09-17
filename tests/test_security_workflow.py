@@ -184,5 +184,50 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertIn("${{ env.TOOLS_OUT }}", runs)
 
 
+class TestTheImagePullIsBounded(unittest.TestCase):
+    """#1575 (OPS-A1A): the `scan` job is a required check on every push, every
+    same-repo PR and every fork PR, and its image step was
+    `if docker pull ...; then ... else <local build> fi`.
+
+    The fallback is selected by EXIT STATUS, so it fires only when the pull
+    RETURNS non-zero. A stalled GHCR response -- as opposed to a refused or 404
+    one -- makes the pull hang, the `else` branch is never reached, and the
+    deliberately-engineered degraded-local-build path is dead in precisely the
+    scenario it exists for. The job's `timeout-minutes: 30` is a crash backstop,
+    not a call timeout: it converts a fast handled degradation into a hard gate
+    failure thirty minutes later, on every PR in the window.
+
+    Two bounds, and both are asserted, because either alone leaves the hole.
+    `timeout-minutes` on the STEP ends the job; only the `timeout` wrapper on
+    the COMMAND returns non-zero and lets the fallback fire. The repo has
+    already adjudicated this argument against itself at
+    `docker-build-pr.yml:23-32` (#run10 OPS-A1A), whose fix was a per-call
+    deadline for exactly this reason.
+    """
+
+    def _pull_step(self):
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            workflow = yaml.safe_load(fh)
+        steps = [step for job in workflow.get("jobs", {}).values()
+                 for step in job.get("steps", [])
+                 if "docker pull" in (step.get("run") or "")]
+        self.assertEqual(len(steps), 1,
+                         "expected exactly one docker-pull step, got %d" % len(steps))
+        return steps[0]
+
+    def test_the_step_carries_its_own_ceiling(self):
+        self.assertEqual(self._pull_step().get("timeout-minutes"), 10)
+
+    def test_the_pull_command_carries_a_deadline_of_its_own(self):
+        run = _without_comments(self._pull_step()["run"])
+        self.assertRegex(run, r"timeout\s+600\s+docker pull",
+                         "a step ceiling ends the JOB; only a command deadline "
+                         "returns non-zero and lets the local-build fallback fire")
+
+    def test_the_fallback_is_still_there_to_fire(self):
+        run = _without_comments(self._pull_step()["run"])
+        self.assertIn("docker build -t panopticon-tools controller", run)
+
+
 if __name__ == "__main__":
     unittest.main()

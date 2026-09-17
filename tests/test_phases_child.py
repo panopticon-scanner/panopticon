@@ -10,8 +10,10 @@ P13).
 import io
 import os
 import shutil
+import signal
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -146,3 +148,81 @@ class TestRunChildCapture(_ChildCase):
                            "sys.stdout.write('y' * 8 * 1024 * 1024)\n")
         self.assertLess(len(proc.stdout), child.CAPTURE_BYTES_MAX + 200)
         self.assertIn("[cut", proc.stdout)
+
+
+class TestATimeoutReachesTheWholeProcessTree(_ChildCase):
+    """#1575 (OPS-A1A): the timeout did not BIND.
+
+    `_run_child` started the child in the driver's own process group and, on
+    timeout, killed the direct PID only. A phase child that forked a worker --
+    `run_tools.py` launching a scanner, a scanner launching its own workers --
+    left that worker alive, holding the stdout pipe it inherited; the reader
+    never saw EOF, and the descendant went on running after the driver had
+    reported the phase timed out. That is the opposite failure from "no
+    timeout": a nominal deadline that bounds one process out of a tree.
+
+    `start_new_session=True` makes the child its own group leader, so one
+    `killpg` reaches everything it spawned.
+    """
+
+    def _orphan_maker(self, pidfile):
+        return (
+            "import subprocess, sys, time\n"
+            "p = subprocess.Popen([sys.executable, '-c',"
+            " 'import time; time.sleep(60)'])\n"
+            "open(%r, 'w').write(str(p.pid))\n"
+            "time.sleep(60)\n" % pidfile)
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:      # pragma: no cover - alive, not ours
+            return True
+        return True
+
+    def test_the_grandchild_does_not_outlive_the_timeout(self):
+        pidfile = os.path.join(self.root, "grandchild.pid")
+        with self.assertRaises(runio.DriverError):
+            self._child(self._orphan_maker(pidfile), timeout=2)
+        pid = int(open(pidfile, encoding="utf-8").read())
+        self.addCleanup(self._reap, pid)
+        for _ in range(100):                      # bounded poll, never a sleep(n)
+            if not self._alive(pid):
+                break
+            time.sleep(0.05)
+        self.assertFalse(self._alive(pid),
+                         "the timeout killed the child and left its worker running")
+
+    def _reap(self, pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    def test_the_child_leads_its_own_session(self):
+        # The property the kill depends on, asserted directly: the child's
+        # process-group id is its own pid, not the driver's group.
+        seen = {}
+        real_popen = child.subprocess.Popen
+
+        def spy(cmd, **kw):
+            seen.update(kw)
+            return real_popen(cmd, **kw)
+
+        with mock.patch.object(child.subprocess, "Popen", side_effect=spy):
+            self._child("import sys\nsys.stdout.write('ok')\n")
+        self.assertIs(seen.get("start_new_session"), True)
+
+    def test_an_ordinary_timeout_is_still_a_driver_error(self):
+        with self.assertRaises(runio.DriverError) as ctx:
+            self._child("import time\ntime.sleep(30)\n", timeout=1)
+        self.assertIn("timed out", str(ctx.exception))
+
+    def test_kill_group_tolerates_a_process_that_is_already_gone(self):
+        proc = child.subprocess.Popen([sys.executable, "-c", "pass"],
+                                      start_new_session=True)
+        proc.wait()
+        child._kill_group(proc, grace=0.1)     # must not raise

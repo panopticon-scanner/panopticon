@@ -88,7 +88,11 @@ class TestFanOutIntegration(unittest.TestCase):
                     input=json.dumps(payload),
                     text=True,
                     capture_output=True,
-                    env=env
+                    env=env,
+                    # #1575 (OPS-A1A): the hook reads a JSON payload off stdin
+                    # and answers; a wedged one would hang the whole CI run,
+                    # with no output to say which of the three cases stalled.
+                    timeout=30,
                 )
                 return proc.stdout.strip()
 
