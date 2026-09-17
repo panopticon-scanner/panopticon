@@ -1,5 +1,6 @@
 """Tests for scripts.phases.runio: run-folder paths, artifact reads and writes,
-child processes, committed groups and review-root resolution.
+committed groups and review-root resolution. The child-process helper moved to
+scripts.phases.child; its tests moved with it (tests/test_phases_child.py).
 """
 import json
 import os
@@ -16,28 +17,6 @@ import scripts.phases.review as review
 import scripts.driver as driver
 import scripts.run_manifest as run_manifest
 
-
-class TestRunChildTimeout(unittest.TestCase):
-    """#1094: the discovery/tools/synthesize spawn point is time-bounded, and a
-    phase timeout is a clean DriverError (status:error), not an unbounded hang."""
-
-    def test_passes_phase_timeout(self):
-        seen = {}
-        def fake_run(cmd, **kw):
-            seen.update(kw)
-            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-        with mock.patch("subprocess.run", side_effect=fake_run), \
-             mock.patch("scripts.phases.runio._child_env", return_value={}):
-            runio._run_child(["python", "discovery.py"], "/tmp", "discovery")
-        self.assertEqual(seen.get("timeout"), runio._CHILD_TIMEOUTS["discovery"])
-
-    def test_timeout_becomes_driver_error(self):
-        def fake_run(cmd, **kw):
-            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
-        with mock.patch("subprocess.run", side_effect=fake_run), \
-             mock.patch("scripts.phases.runio._child_env", return_value={}):
-            with self.assertRaises(runio.DriverError):
-                runio._run_child(["python", "tools.py"], "/tmp", "tools")
 
 class TestForeignManifest(unittest.TestCase):
     """#1093: a run-manifest whose stamped review_root isn't this tree (a target

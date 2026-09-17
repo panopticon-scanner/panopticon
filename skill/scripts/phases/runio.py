@@ -19,9 +19,9 @@ import scripts.run_manifest as run_manifest
 CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
 
 # The skill/scripts directory -- the parent of this package, not its own
-# directory: `_script()` and `_child_env()` resolve sibling entry scripts and
-# the child PYTHONPATH against it, and both used to read it from driver.py's
-# own __file__. Pinned by ScriptsDirTest.
+# directory: `_script()` and `phases.child._child_env()` resolve sibling entry
+# scripts and the child PYTHONPATH against it, and both used to read it from
+# driver.py's own __file__. Pinned by ScriptsDirTest.
 _SCRIPTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def _redact_output(text):
@@ -34,22 +34,6 @@ class DriverError(Exception):
 
 def _script(name):
     return os.path.join(_SCRIPTS_DIR, name)
-
-def _child_env():
-    """Env for subprocessed panopticon CLIs. They do `import scripts.*` (a
-    namespace package) plus BARE imports of both skill/scripts modules (e.g.
-    `import evidence`) and repo-root scripts/ modules (e.g. `import file_issues`),
-    so PYTHONPATH must mirror tests/conftest.py exactly: skill, skill/scripts,
-    and <repo>/scripts."""
-    scripts_dir = _SCRIPTS_DIR                         # .../skill/scripts
-    skill_dir = os.path.dirname(scripts_dir)           # .../skill
-    repo_root = os.path.dirname(skill_dir)             # .../panopticon
-    repo_scripts = os.path.join(repo_root, "scripts")  # .../panopticon/scripts
-    env = dict(os.environ)
-    parts = [skill_dir, scripts_dir, repo_scripts]
-    env["PYTHONPATH"] = os.pathsep.join(
-        parts + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-    return env
 
 # §5.1 per-run folders. These artifacts stay at `.panopticon/` top-level: setup
 # files, the resume anchors (run-manifest / setup-manifest), the cross-run EPSS
@@ -421,34 +405,6 @@ def load_committed_groups(review_root):
     # Deep-copy so a caller mutating its result can never corrupt the shared
     # cache entry the next phase reads.
     return copy.deepcopy(groups), list(errors)
-
-# Hard bound per phase so a wedged discovery/synthesize or a hung tool runner
-# cannot block the whole (resumable, CI-automatable) driver indefinitely (#1094).
-# discovery/synthesize are fast; the tools phase is a generous backstop above
-# run_tools' own per-tool TOOL_TIMEOUT=900 -- it catches a wedged run_tools
-# harness, not a single slow scanner.
-_CHILD_TIMEOUTS = {"discovery": 600, "tools": 7200, "synthesize": 600}
-
-_CHILD_TIMEOUT_DEFAULT = 600
-
-def _run_child(cmd, review_root, phase, timeout=None):
-    """subprocess.run for a deterministic phase, converting a spawn-level OSError
-    (ENOENT on the interpreter, EMFILE, a bad cwd, ...) or a phase timeout into a
-    DriverError so run()'s handler yields a clean status:error instead of a raw
-    traceback or an unbounded hang (#1033; #1094; #1021/5.0-14 covered only the
-    --pr acquire path). Returns the CompletedProcess on a normal spawn — a
-    non-zero exit is the caller's to interpret, not a spawn error."""
-    if timeout is None:
-        timeout = _CHILD_TIMEOUTS.get(phase, _CHILD_TIMEOUT_DEFAULT)
-    try:
-        return subprocess.run(cmd, cwd=review_root, capture_output=True,  # nosec B603
-                              text=True, env=_child_env(), timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise DriverError("%s: %s timed out after %ss"
-                          % (phase, cmd[1] if len(cmd) > 1 else cmd[0], timeout))
-    except OSError as exc:
-        raise DriverError("%s: could not spawn %s: %s"
-                          % (phase, cmd[1] if len(cmd) > 1 else cmd[0], exc))
 
 def _load_ocrdb_bundle():
     """ocrdb.load_bundle, converting a malformed-bundle ValueError into a

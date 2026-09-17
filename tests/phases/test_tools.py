@@ -255,7 +255,7 @@ class TestTheRetryIsInvocationScopedNotStepScoped(unittest.TestCase):
             engine.Phase("review", "deterministic",
                          lambda root, m: reached["review"], review_execute),
         )
-        with mock.patch.object(tools_phase.runio, "_run_child",
+        with mock.patch.object(tools_phase.child, "_run_child",
                                side_effect=self._silent_child):
             result = engine.run_engine(self.root, self._manifest(token), phases,
                                        max_steps=25)
