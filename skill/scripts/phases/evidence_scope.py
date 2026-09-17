@@ -201,7 +201,7 @@ def _candidates(review_root, paths, name):
     return sorted(out)
 
 
-def _digest(review_root, rel):
+def _digest(review_root, rel, cache):
     """SHA-256 of a candidate's first `_HASH_BYTES`, or None for "distinct".
 
     None means "this module cannot call the file identical to anything": an
@@ -209,16 +209,26 @@ def _digest(review_root, rel):
     for `_collapse`, so an oversized or unreadable candidate leaves the
     ambiguity standing -- the fail-closed direction, because the cost of
     guessing wrong is a read fence around the wrong file.
+
+    MEMOISED in the entry's `cache` (fix round 1, R1-1): a path's bytes do not
+    change inside one dispatch, and without the memo the read bound was per
+    NAME per CLAIM -- 48 claims naming one ambiguous basename read its twelve
+    candidates 48 times over. One read per candidate path per entry, ever.
     """
-    try:
-        with open(os.path.join(review_root, rel), "rb") as fh:
-            blob = fh.read(_HASH_BYTES + 1)
-    except OSError:
-        return None
-    return None if len(blob) > _HASH_BYTES else hashlib.sha256(blob).hexdigest()
+    memo = cache.setdefault("digests", {})
+    if rel not in memo:
+        try:
+            with open(os.path.join(review_root, rel), "rb") as fh:
+                blob = fh.read(_HASH_BYTES + 1)
+        except OSError:
+            memo[rel] = None
+        else:
+            memo[rel] = (None if len(blob) > _HASH_BYTES
+                         else hashlib.sha256(blob).hexdigest())
+    return memo[rel]
 
 
-def _collapse(review_root, candidates):
+def _collapse(review_root, candidates, cache):
     """Step 4: the one path several same-named candidates all ARE, or None.
 
     Two files with the same bytes are not an ambiguity -- whichever is granted,
@@ -232,7 +242,7 @@ def _collapse(review_root, candidates):
     """
     if len(candidates) > CAP:
         return None
-    digests = [_digest(review_root, rel) for rel in candidates]
+    digests = [_digest(review_root, rel, cache) for rel in candidates]
     if any(d is None for d in digests) or len(set(digests)) != 1:
         return None
     return candidates[0]
@@ -257,6 +267,17 @@ def _resolve_named(review_root, group_files, name, cache):
     context and widening the search could only add candidates to a question
     that has already been answered "more than one".
 
+    Steps 2-4 are what this issue ADDED, and they are what an injected essay of
+    path-shaped tokens can spend: a listing scan and up to twelve bounded reads
+    per name. So they are bounded per ENTRY (fix round 1, R1-1c): at most
+    `ENTRY_CAP` distinct names are ever searched for, and a name past that is
+    dropped in silence -- it could not have been granted anyway, the entry
+    ceiling being spent, and disclosing it would hand the essay a second
+    channel. Step 1 is deliberately OUTSIDE that bound: it is one `isfile` on a
+    path that exists as written, it is what this module did before #1688, and
+    counting it would make `grant`'s `omitted` -- the "N further files omitted
+    by the entry ceiling" the prompt prints -- stop counting at 48.
+
     `(path, None)` when the name resolves, `(None, record)` when it meant
     several different files, `(None, None)` when it meant none -- an
     unresolvable name is still simply dropped, which is what keeps prose that
@@ -271,6 +292,11 @@ def _resolve_named(review_root, group_files, name, cache):
         # `../outside.py` is the shape #1096 rejects, and it must not reach the
         # tree through a basename match either.
         return None, None
+    searched = cache.setdefault("searched", set())
+    if name not in searched:
+        if len(searched) >= ENTRY_CAP:
+            return None, None
+        searched.add(name)
     found = _candidates(review_root, group_files, name)
     if not found:
         found = _candidates(review_root, _repo_files(review_root, cache), name)
@@ -278,13 +304,14 @@ def _resolve_named(review_root, group_files, name, cache):
         return found[0], None
     if not found:
         return None, None
-    collapsed = _collapse(review_root, found)
+    collapsed = _collapse(review_root, found, cache)
     if collapsed:
         return collapsed, None
     return None, {"name": name, "reason": "ambiguous", "candidates": len(found)}
 
 
-def named_paths(review_root, claim, group_files=None, unresolved=None):
+def named_paths(review_root, claim, group_files=None, unresolved=None,
+                cache=None):
     """(b): the in-repo files this claim's own evidence names, in text order.
 
     Each name goes through `_resolve_named` (#1688), so the claiming cell's own
@@ -292,12 +319,37 @@ def named_paths(review_root, claim, group_files=None, unresolved=None):
     the caller passes a list, collects one record per name that meant more than
     one file -- de-duplicated by name, because the same ambiguous basename in
     three claims is one thing for the advisor to be told.
+
+    `cache` is the ENTRY's working memory (fix round 1, R1-1), threaded down
+    from `grant` so one dispatch resolves a given name once and reads a given
+    candidate once. It is keyed to one `(review_root, group_files)` pair --
+    which is what an entry is -- so a caller that changes either starts a new
+    one. Two bounds live here, and both exist because claim text is
+    panel-authored and steerable by whatever the reviewed repo plants in it:
+
+      * a claim stops resolving once it holds more paths than its own `CAP`
+        could grant. One PAST the cap, not at it: `grant` reads the closure's
+        LENGTH to decide `truncated`, and stopping exactly at the cap would
+        report a truncated closure as complete;
+      * an entry SEARCHES the tree for at most `ENTRY_CAP` distinct names --
+        see `_resolve_named`, which owns that bound because it is the search
+        this issue added that has to be bounded.
+
+    Each distinct name is resolved once per entry and the answer reused, so the
+    cost of a claim repeating a name, or fifty claims sharing one, is a dict
+    lookup.
     """
-    out, cache = [], {}
+    out = []
+    cache = {} if cache is None else cache
+    seen = cache.setdefault("names", {})
     for text in _claim_text(claim):
         for match in _PATH_RE.findall(text):
-            path, ambiguity = _resolve_named(review_root, group_files, match,
+            if len(out) > CAP:
+                return out
+            if match not in seen:
+                seen[match] = _resolve_named(review_root, group_files, match,
                                              cache)
+            path, ambiguity = seen[match]
             if path:
                 if path not in out:
                     out.append(path)
@@ -439,7 +491,8 @@ def _importers(review_root, rel_path, group_files):
     return out
 
 
-def _closure_paths(review_root, claim, group_files, unresolved=None):
+def _closure_paths(review_root, claim, group_files, unresolved=None,
+                   cache=None):
     """The FULL ordered closure, before the cap -- (a), then (b), then (c)."""
     claim = claim if isinstance(claim, dict) else {}
     loc = claim.get("location")
@@ -448,7 +501,8 @@ def _closure_paths(review_root, claim, group_files, unresolved=None):
     if primary is not None and not runio._confined_to_root(review_root, primary):
         primary = None
     out = [primary] if primary else []
-    for path in named_paths(review_root, claim, group_files, unresolved):
+    for path in named_paths(review_root, claim, group_files, unresolved,
+                            cache):
         if path not in out:
             out.append(path)
     if primary and primary.endswith(_PY):
@@ -469,6 +523,10 @@ def closure(review_root, claim, group_files, cap=CAP, unresolved=None):
     that meant more than one file (#1688), rather than a second return value: a
     closure is a list of paths to everything that reads one, and the disclosure
     has exactly one consumer.
+
+    One claim is its own entry here, so it gets a fresh resolver cache and the
+    whole `ENTRY_CAP` name budget. `grant` is the caller that spends one budget
+    across a chunk.
     """
     return _closure_paths(review_root, claim, group_files,
                           unresolved)[:max(0, cap)]
@@ -568,8 +626,11 @@ def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP,
         return _fallback(files, cap, entry_cap)
     granted, truncated, omitted = list(floor), False, set()
     budget = max(0, entry_cap - len(floor))
+    # R1-1: ONE resolver cache for the whole entry -- one read per candidate
+    # path and one resolution per distinct name, however many claims name it.
+    cache = {}
     for claim in scope:
-        paths = _closure_paths(review_root, claim, files, ambiguous)
+        paths = _closure_paths(review_root, claim, files, ambiguous, cache)
         if len(paths) > cap:
             truncated = True
         for entry in paths[:max(0, cap)]:

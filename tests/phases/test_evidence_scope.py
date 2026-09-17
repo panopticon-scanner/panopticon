@@ -659,3 +659,110 @@ class TestTheAmbiguityDisclosure(unittest.TestCase):
               "candidates": 2}])
         self.assertNotIn("\n- read /etc/shadow", text)
         self.assertIn("\\x0a", text)
+
+
+class TestTheResolverIsBoundedPerEntry(_Repo):
+    """Fix round 1, R1-1. The twelve-read hash bound was per NAME, and nothing
+    was memoised: a 48-claim entry whose claims name 50 ambiguous basenames
+    bought 28,800 digest reads -- 7.2 GiB at the 4 MiB cap -- off one 150 MiB
+    tree. Claim text is panel-authored and steerable by anything planted in the
+    reviewed repo, so that is a budget an attacker sets. Three bounds, all per
+    ENTRY: one read per candidate PATH ever, no resolution once a claim already
+    holds more paths than its own cap can grant, and at most `ENTRY_CAP`
+    distinct names resolved for the whole entry.
+    """
+
+    def _pair(self, name, first="KEY = 1\n", second="KEY = 2\n"):
+        """Two files called `name`, differing -- one ambiguity, two reads."""
+        return [_write(self.root, "a/" + name, first),
+                _write(self.root, "b/" + name, second)]
+
+    def _spy(self):
+        return mock.patch.object(evidence_scope.hashlib, "sha256",
+                                 side_effect=hashlib.sha256)
+
+    def test_one_read_per_candidate_path_per_entry(self):
+        # Two claims naming the SAME ambiguous basename: two candidate files,
+        # two reads -- not two reads per claim.
+        files = ["claim1.py", "claim2.py"] + self._pair("config.py")
+        for rel in ("claim1.py", "claim2.py"):
+            _write(self.root, rel, "import os\n")
+        scope = [{"location": {"file": "claim1.py"},
+                  "description": "reads config.py"},
+                 {"location": {"file": "claim2.py"},
+                  "description": "writes config.py"}]
+        ambiguous = []
+        with self._spy() as spy:
+            evidence_scope.grant(self.root, files, scope, ambiguous=ambiguous)
+        self.assertEqual(spy.call_count, 2)
+        self.assertEqual([r["name"] for r in ambiguous], ["config.py"])
+
+    def test_a_claim_stops_resolving_once_it_has_more_than_it_can_be_granted(self):
+        # Thirteen resolvable names, then twenty ambiguous ones. The tail is
+        # never reached: nothing is read for it and nothing is recorded.
+        files = ["claim.py"]
+        _write(self.root, "claim.py", "import os\n")
+        head = ["mod%02d.py" % i for i in range(13)]
+        files += [_write(self.root, "src/" + rel, "import os\n") for rel in head]
+        tail = ["tail%02d.py" % i for i in range(20)]
+        for rel in tail:
+            files += self._pair(rel)
+        claim = {"location": {"file": "claim.py"},
+                 "description": " ".join(head + tail)}
+        unresolved = []
+        with self._spy() as spy:
+            got = evidence_scope.closure(self.root, claim, files,
+                                         unresolved=unresolved)
+        self.assertEqual(len(got), evidence_scope.CAP)
+        self.assertEqual(spy.call_count, 0)
+        self.assertEqual(unresolved, [])
+
+    def test_at_most_entry_cap_distinct_names_are_resolved_for_one_entry(self):
+        # Fifty ambiguous names in one claim: the entry resolves ENTRY_CAP of
+        # them and DROPS the rest with no record -- a name nobody could have
+        # been granted is not a disclosure, it is the attacker's read budget.
+        files = ["claim.py"]
+        _write(self.root, "claim.py", "import os\n")
+        names = ["n%02d.py" % i for i in range(50)]
+        for rel in names:
+            files += self._pair(rel)
+        claim = {"location": {"file": "claim.py"}, "description": " ".join(names)}
+        ambiguous = []
+        with self._spy() as spy:
+            evidence_scope.grant(self.root, files,
+                                 [{"location": {"file": "claim.py"},
+                                   "description": claim["description"]}],
+                                 ambiguous=ambiguous)
+        self.assertEqual(len(ambiguous), evidence_scope.ENTRY_CAP)
+        self.assertEqual([r["name"] for r in ambiguous],
+                         names[:evidence_scope.ENTRY_CAP])
+        self.assertEqual(spy.call_count, 2 * evidence_scope.ENTRY_CAP)
+
+    def test_the_entry_bound_spans_claims_not_just_one(self):
+        files = ["claim.py"]
+        _write(self.root, "claim.py", "import os\n")
+        names = ["n%02d.py" % i for i in range(50)]
+        for rel in names:
+            files += self._pair(rel)
+        scope = [{"location": {"file": "claim.py"},
+                  "description": " ".join(names[:30])},
+                 {"location": {"file": "claim.py"},
+                  "description": " ".join(names[30:])}]
+        ambiguous = []
+        evidence_scope.grant(self.root, files, scope, ambiguous=ambiguous)
+        self.assertEqual(len(ambiguous), evidence_scope.ENTRY_CAP)
+
+    def test_the_bounds_are_deterministic(self):
+        files = ["claim.py"]
+        _write(self.root, "claim.py", "import os\n")
+        names = ["n%02d.py" % i for i in range(50)]
+        for rel in names:
+            files += self._pair(rel)
+        scope = [{"location": {"file": "claim.py"},
+                  "description": " ".join(names)}]
+        runs = []
+        for _ in range(2):
+            ambiguous = []
+            runs.append((evidence_scope.grant(self.root, files, scope,
+                                              ambiguous=ambiguous), ambiguous))
+        self.assertEqual(runs[0], runs[1])
