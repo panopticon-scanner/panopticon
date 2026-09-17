@@ -511,9 +511,11 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
                            "virtualenvs)")
         if sup_total:
             # #1578: named per segment with its count, not folded into the
-            # aggregate above. This line is the stderr half of
-            # `meta.coverage.tools_suppressed`; both exist so an operator can
-            # tell a bundled library from a payload parked under `vendor/`.
+            # aggregate above. This line is the stderr half of the SUM of
+            # `meta.coverage.tools_suppressed` and `tools_suppressed_gated`
+            # (#1701 splits the tally by what the gate counted); all exist so
+            # an operator can tell a bundled library from a payload parked
+            # under `vendor/`.
             reasons.append("vendored dependencies (%s)"
                            % ", ".join("%s: %d" % (seg, suppressed[seg])
                                        for seg in sorted(suppressed)))

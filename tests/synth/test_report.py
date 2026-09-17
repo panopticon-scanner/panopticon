@@ -3983,7 +3983,8 @@ class ReportInputsTest(unittest.TestCase):
         inp = report_mod.ReportInputs(
             run=self._run(), findings=findings_mod.FindingSet(findings=[dict(f)]),
             plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]))
-        resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run)
+        resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run,
+                                                 gated_suppressed=inp.tools.gated_suppressed)
         reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved)
         graded = grading_mod.grade_report(inp.run, resolved, reconciled)
         cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
@@ -3991,6 +3992,29 @@ class ReportInputsTest(unittest.TestCase):
         self.assertEqual(whole, by_hand)
         self.assertEqual(list(whole), ["schema_version", "meta", "summary", "groups",
                                        "findings", "discarded_claims", "cross_panel"])
+
+    def test_stages_compose_with_a_gate_counted_suppressed_finding(self):
+        # Re-review of item 25c R1: `build_report` hands the gated-suppressed
+        # set to `resolve_findings`, and the by-hand recipe above stayed green
+        # only because its ToolAxis is empty. One gated HIGH must give the
+        # same envelope both ways -- FAIL from `build_report`, FAIL by hand.
+        gated = dict(_make_finding(severity="HIGH"))
+        gated["location"] = dict(gated.get("location") or {}, file="app/vendor/x.js")
+        def inputs():
+            return report_mod.ReportInputs(
+                run=self._run(), findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+                tools=tool_axis_mod.ToolAxis(gated_suppressed=[gated]))
+        whole = report_mod.build_report(inputs())
+        inp = inputs()
+        resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run,
+                                                 gated_suppressed=inp.tools.gated_suppressed)
+        reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved)
+        graded = grading_mod.grade_report(inp.run, resolved, reconciled)
+        cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
+        by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)
+        self.assertEqual(whole["summary"]["gate"], by_hand["summary"]["gate"])
+        self.assertEqual(whole, by_hand)
 
 class RunConfigLoaderTest(unittest.TestCase):
     """WS-0 S3: RunConfig.from_args resolves the CLI against groups.json."""
