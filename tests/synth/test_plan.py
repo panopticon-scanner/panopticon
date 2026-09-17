@@ -648,9 +648,15 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                 with open(hunks, "w", encoding="utf-8") as fh:
                     json.dump({"base": "main", "hunks": {"app/other.py": [[1, 3]]}}, fh)
             if groups_json is not None:
-                with open(os.path.join(d, "groups.json"), "w",
-                          encoding="utf-8") as fh:
-                    json.dump(groups_json, fh)
+                # Written to BOTH places a target-reading mutation would look:
+                # the run dir (beside the other run artifacts) and the flat
+                # `.panopticon/` the pre-5.1 path used. Either would satisfy a
+                # `load_groups_json(...)` that should not be there.
+                os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+                for path in (os.path.join(d, "groups.json"),
+                             os.path.join(d, ".panopticon", "groups.json")):
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump(groups_json, fh)
             args = _cli_args(tools_dir=tools, security=security, fail_on="high",
                              target=d, run_dir=d, severity=severity,
                              diff_hunks=hunks, gate_scope="on-diff")
@@ -782,6 +788,41 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         md = render_mod.render_summary(self._run("standard")[1])
         self.assertIn("**Tool findings suppressed:**", md)
         self.assertNotIn("suppressed but GATED", md)
+
+    # -- fix round 1, F3: the mode's provenance is the trust boundary ---------
+
+    def test_the_gate_mode_is_never_taken_from_the_target_written_groups_json(self):
+        """Item 14: `security_mode` for the GATE is controller-carried.
+
+        `groups.json` lives in the target's own `.panopticon/`, and
+        `RunConfig.from_args` falls back to it when `--security` is absent --
+        which is right for `meta.security_mode` (a record of the run) and wrong
+        for the gate (a decision about the target). A target that could pick the
+        mode could pick to have its own vendored findings ignored.
+
+        The assertion is the DIVERGENCE, not the value: the report's metadata
+        says what the file says, while the gate says what the flag says.
+        """
+        _body, report = self._run(None, groups_json={"security_mode": "redteam",
+                                                     "groups": []})
+        # The file really does say redteam -- and the report's metadata, which
+        # is allowed to read it, agrees. Without this the test would pass
+        # vacuously against a file nothing was reading.
+        self.assertEqual(report["meta"]["security_mode"], "redteam")
+        # The gate did not: no --security flag, so it ran standard.
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"], {})
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed"], {"vendor": 1})
+
+    def test_the_flag_gates_even_when_the_target_file_says_standard(self):
+        # The same boundary from the other side: a target cannot turn the
+        # redteam gate OFF by writing `standard` into its own groups.json.
+        _body, report = self._run("redteam",
+                                  groups_json={"security_mode": "standard",
+                                               "groups": []})
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"],
+                         {"vendor": 1})
 
     def test_the_evidence_axis_is_the_one_remaining_asymmetry(self):
         """The documented, owner-owed difference (see #1578).
