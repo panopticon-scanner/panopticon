@@ -369,12 +369,21 @@ def _tool_policy_line(meta, host=None):
         # less is described as it is launched rather than as its neighbours are.
         granted = set(_codex_enabled_tools(tp))
         tools = [t for t in codex_read_tools.TOOLS if t["name"] in granted]
-        return ("\n## Tool policy\n\nYour only tools are the `panopticon_scope`"
-                " MCP tools %s. There is no shell. Never execute target code, "
-                "run builds or tests, access the network, spawn agents, or "
+        if tools:
+            opening = ("Your only tools are the `panopticon_scope` MCP tools %s."
+                       % ", ".join(_codex_tool_gloss(t) for t in tools))
+        else:
+            # R1 minor (iii): narrowing by role introduced an empty case. No
+            # shipped role reaches it -- and such a role's `enabled_tools`
+            # would be empty too, which Codex rejects as an invalid transport
+            # -- but a rendered prompt must never carry "MCP tools ." with the
+            # list missing. Say the thing the empty set means.
+            opening = ("You have no tools: this role is granted none of the "
+                       "`panopticon_scope` MCP tools.")
+        return ("\n## Tool policy\n\n%s There is no shell. Never execute target "
+                "code, run builds or tests, access the network, spawn agents, or "
                 "attempt any filesystem mutation. The runner captures your "
-                "final JSON itself.\n"
-                % ", ".join(_codex_tool_gloss(t) for t in tools))
+                "final JSON itself.\n" % opening)
     return ("\n## Tool policy\n\nYour only tools are %s. "
              "You must not use %s under any circumstances.\n"
              % (", ".join(tp["allowed"]), ", ".join(tp["forbidden"])))

@@ -160,6 +160,22 @@ class TestCodexToolPolicyMatchesTheBrokerSurface(unittest.TestCase):
         self.assertNotIn("`search`", policy)          # a removed tool goes
         self.assertNotIn("`list_files`", policy)      # granted, but not a broker tool
 
+    def test_a_role_granting_no_broker_tool_does_not_render_a_dangling_sentence(self):
+        # R1 minor (iii): narrowing by role introduced an empty case. No
+        # shipped role hits it (and such a role's `enabled_tools` would be
+        # empty too, which Codex rejects as an invalid transport), but a
+        # prompt must never ship "Your only tools are the ... MCP tools ."
+        meta, _body = dispatch.load_template("domain-panel.md")
+        nothing = dict(meta, tool_policy={"allowed": ["Write"],
+                                          "forbidden": ["Bash", "Read"]})
+        policy = dispatch._tool_policy_line(nothing, "codex")
+        self.assertEqual([], dispatch._codex_enabled_tools(nothing["tool_policy"]))
+        self.assertIn("no tools", policy)
+        self.assertNotIn("MCP tools .", policy)
+        self.assertIn("There is no shell.", policy)      # the rest still reads
+        for word in self.ABSENT:
+            self.assertNotIn(word, policy, word)
+
     def test_a_narrowed_role_policy_narrows_the_paragraph(self):
         # The prose was role-BLIND while the argv's `enabled_tools` narrows
         # from the same `tool_policy.allowed`; every shipped role grants all

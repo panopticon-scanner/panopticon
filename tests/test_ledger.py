@@ -245,12 +245,31 @@ class TestLedgerRowTime(LoopCase):
     TIMING = {"started_at": "2026-09-16T18:27:42Z",
               "finished_at": "2026-09-16T18:27:43Z", "duration_ms": 900}
 
+    class _FrozenClock:
+        """A stand-in for the `time` module `ledger` reaches through.
+
+        Swapped as a MODULE ATTRIBUTE on `ledger`, never by patching
+        `time.gmtime` itself: `ledger_mod.time` IS the stdlib module, so
+        patching through it mutates the clock for everything else in the
+        process -- harmless under a single-threaded runner, a cross-test
+        hazard under xdist or threads.
+        """
+
+        def __init__(self, struct):
+            self._struct = struct
+
+        def gmtime(self, *_args):
+            return self._struct
+
+        def strftime(self, fmt, struct=None):
+            return time.strftime(fmt, self._struct if struct is None else struct)
+
     def _record(self, timing=None, frozen=None):
         ledger = ledger_mod.Ledger(self._repo()[0])
         with contextlib.ExitStack() as stack:
             if frozen is not None:
-                stack.enter_context(mock.patch.object(ledger_mod.time, "gmtime",
-                                                      return_value=frozen))
+                stack.enter_context(mock.patch.object(ledger_mod, "time",
+                                                      self._FrozenClock(frozen)))
             ledger.record({"id": "review-app-SEC"}, "review",
                           base.RunResult.failed("review-app-SEC", "x"),
                           "headless", "claude", timing=timing)
