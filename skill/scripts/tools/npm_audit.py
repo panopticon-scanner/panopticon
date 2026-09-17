@@ -1,7 +1,26 @@
 """npm audit adapter for Node dependency CVEs."""
 from __future__ import annotations
+import contextvars
+import os
+
 from .base import (as_list, cve_ids, has_any_file, make_finding, normalize_severity,
                    omit_none, parse_json_bytes, run_tool)
+
+# The manifest THIS invocation audited, target-relative (#1649). A ContextVar
+# for the reason pip_audit carries one: ADAPTERS holds a single shared adapter
+# object, so instance state would let a second invoke overwrite the first
+# invocation's answer before its output was parsed.
+_manifest_path_cv = contextvars.ContextVar("npm_audit_manifest_path", default=None)
+
+# npm reads npm-shrinkwrap.json in preference to package-lock.json, so the
+# order here is the order npm resolves in -- and it is ONE list, read by both
+# `is_applicable` (may we audit this target) and `_manifest` (what did we
+# audit), which is what stopped them disagreeing.
+LOCKFILES = ("npm-shrinkwrap.json", "package-lock.json")
+# What a parse with no invoke in this process (the ingest path reading a
+# captured output file) locates at: npm audit needs a lockfile, and this is the
+# name the adapter has always written.
+DEFAULT_MANIFEST = "package-lock.json"
 
 
 class NpmAuditAdapter:
@@ -9,9 +28,24 @@ class NpmAuditAdapter:
     prefix = "NA"
 
     def is_applicable(self, target: str) -> bool:
-        return has_any_file(target, "package-lock.json", "npm-shrinkwrap.json")
+        return has_any_file(target, *LOCKFILES)
+
+    def _manifest(self, target: str) -> str:
+        """The manifest `npm audit` actually reads for *target*, target-relative.
+
+        Never a path that is not in the target: a shrinkwrap-only project is
+        located at its shrinkwrap, and `package.json` is the last resort for a
+        target that `is_applicable` would not have accepted at all.
+        """
+        for name in LOCKFILES:
+            if os.path.isfile(os.path.join(target, name)):
+                return name
+        return "package.json"
 
     def invoke(self, target: str) -> tuple[bytes, int]:
+        # Recorded where the choice is MADE, so parse cannot name a different
+        # file from the one audited (#1649).
+        _manifest_path_cv.set(self._manifest(target))
         cmd = ["npm", "audit", "--json", "--prefix", target]
         return run_tool(cmd, timeout=300)
 
@@ -77,13 +111,21 @@ class NpmAuditAdapter:
         the original code defaulted the title's version segment to "" but left
         tool_evidence's vulnerable_versions as None-when-absent (so omit_none
         drops it) -- collapsing them to one value would change output.
+
+        #1649: the location is the manifest THIS invocation audited, not a
+        hard-coded package-lock.json. `is_applicable` accepts a shrinkwrap too,
+        so every finding on a shrinkwrap-only project used to point at a file
+        that is not in the tree -- and `location.file` is what source
+        navigation, the advisor's backup scope grant (P16) and path-based
+        downstream matching all key on.
         """
         return make_finding(
             self, n, group,
             title=f"{name} {versions_title}: {title}",
             severity=normalize_severity(severity_raw),
             category="dependency_vulnerability",
-            location={"file": "package-lock.json", "line_start": 1},
+            location={"file": _manifest_path_cv.get() or DEFAULT_MANIFEST,
+                      "line_start": 1},
             description=description,
             impact=f"Vulnerable Node dependency {name} is used.",
             remediation=remediation,
