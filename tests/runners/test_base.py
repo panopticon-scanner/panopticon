@@ -1,5 +1,6 @@
 import contextlib
 import importlib
+import io
 import json
 import os
 import shutil
@@ -447,6 +448,32 @@ class TestAnInterruptStopsTheBatch(unittest.TestCase):
         self.assertEqual(1, len(terminated))
         self.assertLess(elapsed, 5, "the interrupt waited the blocked entry out")
 
+    def test_a_terminate_that_raises_does_not_replace_the_interrupt(self):
+        # A family's teardown must never become the exception the operator
+        # sees instead of their own Ctrl-C.
+        released = threading.Event()
+        self.addCleanup(released.set)
+
+        class Angry(base.HostRunner):
+            host = "angry"; INTERRUPT_GRACE = 0.05
+
+            def run_entry(self, entry, env):
+                if entry["id"] != "e0":
+                    released.wait(10)
+                return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                      cost_usd=None, model=None, session_id=None,
+                                      denials=[], error=None)
+
+            def terminate_children(self, grace=None):
+                raise RuntimeError("teardown exploded")
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self._interrupt_after_the_first_completion(
+                Angry(), [{"id": "e%d" % i} for i in range(4)])
+        self.assertIn("teardown exploded", err.getvalue())
+        self.assertIn("angry", err.getvalue())
+
     def test_terminate_children_sends_sigterm_then_sigkill(self):
         r = base.HostRunner()
         quick, stubborn = FakeChild(), FakeChild(stubborn=True)
@@ -577,3 +604,4 @@ class TestTheBatchManifest(unittest.TestCase):
         batch = batch_mod.Batch(self.dir, 1, "scout", []).open()
         self.assertEqual(([], []), (batch.entry_ids(), batch.artifacts()))
         self.assertEqual(([], []), batch.roll_back())
+

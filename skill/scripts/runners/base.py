@@ -8,6 +8,7 @@ import concurrent.futures
 import dataclasses
 import importlib
 import os
+import sys
 import time
 
 import scripts._version as version
@@ -358,7 +359,14 @@ class HostRunner:
         except BaseException:      # noqa: BLE001 -- KeyboardInterrupt and GeneratorExit both
             stopped = True
             pool.shutdown(wait=False, cancel_futures=True)
-            self.terminate_children()
+            try:
+                self.terminate_children()
+            except Exception as exc:   # noqa: BLE001 -- a family's teardown must not
+                # replace the interrupt it was called for: the operator gets the
+                # line, the loop gets its KeyboardInterrupt back below.
+                print("%s: terminating this batch's children failed: %s: %s"
+                      % (self.host or "runner", type(exc).__name__, exc),
+                      file=sys.stderr, flush=True)
             concurrent.futures.wait([f for f in futures if not f.done()],
                                     timeout=self.INTERRUPT_GRACE)
             raise
