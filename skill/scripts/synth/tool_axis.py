@@ -47,9 +47,16 @@ class ToolAxis:
     # corrupt are different facts and only one of them is an integrity failure.
     manifest_invalid: str | None = None
     suppressed: dict | None = None   # #1578: {segment: count} dropped as vendored
+    # #1701: the vendored drops this run's GATE must still count -- non-empty
+    # only under `--security redteam`. Carried beside `suppressed` rather than
+    # inside it because they answer different questions: that one is what the
+    # report DISCLOSES, this is what certification COUNTS. Never merged into
+    # the report's findings body; `reconcile` hands it to `grade_report`.
+    gated_suppressed: list | None = None
 
     @classmethod
-    def load(cls, args, run_dir, plan_lists, dispositions, tools_ran, suppressed=None):
+    def load(cls, args, run_dir, plan_lists, dispositions, tools_ran, suppressed=None,
+             gated_suppressed=None):
         """The tool axis from the run folder (WS-0 S3): the runner's
         tools-manifest with its two FATAL (#17) checks, the policy mode the
         dispatch plans declare, and the ingest results `ingest_tool_findings`
@@ -130,7 +137,8 @@ class ToolAxis:
         return cls(policy_mode=plan_mod.derive_tool_policy_mode(plans=plan_lists),
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
                    ingested_paths=args.files, manifest_invalid=manifest_invalid,
-                   suppressed=suppressed)   # #1578
+                   suppressed=suppressed,                     # #1578
+                   gated_suppressed=list(gated_suppressed or []))   # #1701
 
 
 @dataclass(frozen=True)
@@ -159,6 +167,11 @@ class Reconciled:
     # beside `integrity` (which also publishes it) the way `integrity_ok` is:
     # certification takes it as an input, and must not have to read a section.
     tools_manifest_invalid: str | None = None
+    # #1701: the vendored-path drops this run's gate counts anyway (redteam
+    # only; `[]` in every other mode). Beside `coverage` like the two blocks
+    # above and for the same reason: `meta.coverage` is what the report SAYS,
+    # and this is a population certification consumes but never publishes.
+    gated_suppressed: list = field(default_factory=list)
 
 
 def tools_ran_from_dispositions(dispositions):
@@ -368,4 +381,5 @@ def reconcile(plan, tools, resolved):
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
                       tools_sanitized=sanitized, tools_network=network,
-                      tools_manifest_invalid=tools.manifest_invalid)
+                      tools_manifest_invalid=tools.manifest_invalid,
+                      gated_suppressed=list(tools.gated_suppressed or []))

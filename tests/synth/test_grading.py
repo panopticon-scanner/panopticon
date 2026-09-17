@@ -309,7 +309,8 @@ resolved = types.SimpleNamespace(
 reconciled = types.SimpleNamespace(
     groups_meta=[{"name": "App", "files": ["app.py"], "parent": "App"}],
     panels_incomplete=[], tools_absent=[], integrity_ok=True,
-    cell_audit={"missing_floor": []}, tools_manifest_invalid=None)
+    cell_audit={"missing_floor": []}, tools_manifest_invalid=None,
+    gated_suppressed=[])
 run = types.SimpleNamespace(target=sys.argv[1], fail_on=None, gate_unverified=False)
 
 graded = grading_mod.grade_report(run, resolved, reconciled)

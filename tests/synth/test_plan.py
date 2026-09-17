@@ -376,7 +376,7 @@ class PlanLoadersTest(unittest.TestCase):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()),
-                                     ([], {}, None, None))
+                                     ([], {}, None, None, []))
                 self.assertEqual(err.getvalue(), "")
                 # a non-empty default tools dir left un-ingested is announced
                 os.makedirs(os.path.join(".panopticon", "tools"))
@@ -385,7 +385,7 @@ class PlanLoadersTest(unittest.TestCase):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()),
-                                     ([], {}, None, None))
+                                     ([], {}, None, None, []))
                 self.assertIn("appears un-ingested", err.getvalue())
                 # --tools-dir pointing nowhere is still "not measured"
                 self.assertEqual(
@@ -398,7 +398,7 @@ class PlanLoadersTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tools_dir = os.path.join(d, "tools")
             os.makedirs(tools_dir)
-            found, dispositions, ran, suppressed = plan_mod.ingest_tool_findings(
+            found, dispositions, ran, suppressed, gated = plan_mod.ingest_tool_findings(
                 _cli_args(tools_dir=tools_dir))
             self.assertEqual(found, [])
             self.assertEqual(dispositions, {})
@@ -406,6 +406,7 @@ class PlanLoadersTest(unittest.TestCase):
             # #1578: measured and dropped nothing -- `{}`, never None, which is
             # the "no ingest ran" reading.
             self.assertEqual(suppressed, {})
+            self.assertEqual(gated, [])    # #1701: nothing dropped, nothing gated
 
     def test_tool_axis_load_reads_the_manifest_and_refuses_foreign_ones(self):
         with tempfile.TemporaryDirectory() as d:
@@ -577,3 +578,91 @@ class TestManifestMustDeclareSelected(unittest.TestCase):
         self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
         self.assertEqual(report["summary"]["gate"], "PASS")
         self.assertTrue(report["summary"]["coverage_certified"])
+
+
+class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
+    """#1701: the driver's own gate lost what the vendored-path exclusion drops.
+
+    #1578 made the CI gate script count the suppressed findings under
+    `--security redteam`, but nothing threaded the run's mode into the report
+    pipeline, so `driver run --security redteam` still passed a HIGH under
+    `app/vendor/` outright -- disclosed as a count, invisible to `summary.gate`.
+    A payload parked behind a conventional directory name is exactly what
+    redteam mode exists to refuse.
+
+    The mode is CONTROLLER-carried (item 14): `--security`, which
+    `phases/synthesize.py` threads from the run manifest. Never
+    `RunConfig.security_mode`, which falls back to the target-written
+    groups.json -- a target that could pick the mode could turn the gate off.
+
+    In `standard` nothing changes: the suppression stands (a self-scan drowns
+    in bundled jQuery otherwise) and the count is disclosed.
+    """
+
+    TS = "2026-09-17T00:00:00Z"
+    SARIF = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
+                       "results": [{"ruleId": "B105", "level": "error",
+                                    "message": {"text": "hardcoded password"},
+                                    "locations": [{"physicalLocation": {
+                                        "artifactLocation": {
+                                            "uri": "app/vendor/patched_auth.py"},
+                                        "region": {"startLine": 1,
+                                                   "endLine": 4}}}]}]}]}
+
+    def _run(self, security):
+        with tempfile.TemporaryDirectory() as d:
+            vendored = os.path.join(d, "app", "vendor")
+            os.makedirs(vendored)
+            with open(os.path.join(vendored, "patched_auth.py"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("x = 1\n" * 50)     # real LoC, so health is measurable
+            tools = os.path.join(d, "tools")
+            os.makedirs(tools)
+            with open(os.path.join(tools, "bandit.sarif"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(self.SARIF, fh)
+            with open(os.path.join(d, "tools-manifest.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"schema_version": 1, "selected": ["bandit"],
+                           "produced": ["bandit"], "missing": []}, fh)
+            args = _cli_args(tools_dir=tools, security=security, fail_on="high",
+                             target=d, run_dir=d)
+            with contextlib.redirect_stderr(io.StringIO()):
+                body, disp, ran, suppressed, gated = plan_mod.ingest_tool_findings(args)
+                axis = tool_axis_mod.ToolAxis.load(args, d, [], disp, ran,
+                                                   suppressed, gated)
+                report = report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(target=d, fail_on="high",
+                                             timestamp=self.TS,
+                                             security_mode=security),
+                    findings=findings_mod.FindingSet(findings=[]),
+                    plan=plan_mod.PlanInputs(groups_meta=[
+                        {"name": "g", "files": ["app/vendor/patched_auth.py"]}]),
+                    tools=axis))
+            return body, report
+
+    def test_redteam_fails_the_gate_on_a_vendored_high(self):
+        body, report = self._run("redteam")
+        summary = report["summary"]
+        self.assertEqual(summary["gate"], "FAIL")
+        self.assertEqual(summary["gate_severities"]["contributing"], ["HIGH"])
+        # It reaches the GATE, never the body: the disclosure stays a count.
+        self.assertEqual(body, [])
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["summary"]["stats"]["high"], 0)
+        # ... and the health grade moves exactly as an un-suppressed HIGH would.
+        self.assertGreater(summary["health"]["weighted_defect"], 0)
+        # `tools_suppressed` now counts what was suppressed FROM THE GATE, and
+        # under redteam the gate counted them: zero, with the segment still
+        # named so the drop from the body stays visible.
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed"],
+                         {"vendor": 0})
+
+    def test_standard_is_unchanged_and_discloses_the_count(self):
+        body, report = self._run("standard")
+        summary = report["summary"]
+        self.assertEqual(summary["gate"], "PASS")
+        self.assertEqual(body, [])
+        self.assertEqual(summary["health"]["weighted_defect"], 0)
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed"],
+                         {"vendor": 1})

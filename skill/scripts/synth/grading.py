@@ -379,7 +379,23 @@ def grade_report(run, resolved, reconciled):
     certification and the gate, from the resolved findings and the reconciled
     plan. Severity is never mutated here; grades and the gate are computed
     from gate-eligible findings only."""
-    gate_eligible = resolved.gate_eligible
+    # #1701: under `--security redteam` the vendored-path exclusion may keep a
+    # tool finding out of the report BODY, but not out of the gate -- a payload
+    # parked at `app/vendor/patched_auth.rb` passing a merge gate on the
+    # strength of a conventional directory name is the defect the mode exists
+    # to refuse. `reconcile` carries the drops here (empty in every other mode)
+    # and they join the population `gate_verdict`, `risk_level`,
+    # `gate_severity_roles` and `health_stats` read, so they count exactly as
+    # un-suppressed findings of the same severity would.
+    #
+    # Unconditionally, rather than through `evidence.status` like the rest of
+    # this set: a suppressed finding is withheld from the report body, so it is
+    # never queued for the verify round and can never earn `tool_confirmed`.
+    # Gating it on a verdict it is structurally unable to receive would leave
+    # #1701 open under a longer explanation. They never enter `resolved.active`,
+    # so `stats`, `top_issues`, the per-group objects and `findings[]` are
+    # untouched -- the disclosure stays a count.
+    gate_eligible = list(resolved.gate_eligible) + list(reconciled.gated_suppressed)
     # Seeded from the ORDERED list, never from `VALID_PANELS` (#1538): every
     # `panel_grades` mapping below and in the roll-up takes its key order from
     # this dict, and a set's order is randomised per process, so two reports

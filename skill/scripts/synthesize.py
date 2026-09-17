@@ -251,9 +251,14 @@ def main(argv=None):
         panel_tools_context=plan_mod.load_panel_tools_context(run_dir),
         tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False))
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
-    tool_findings, dispositions, tools_ran, suppressed = plan_mod.ingest_tool_findings(args)
+    # #1701: `gated_suppressed` is the vendored-path drops the gate must still
+    # count under --security redteam; empty otherwise. It rides to certification
+    # on the ToolAxis and never joins `tool_findings`, so the report body is the
+    # same in both modes.
+    (tool_findings, dispositions, tools_ran, suppressed,
+     gated_suppressed) = plan_mod.ingest_tool_findings(args)
     tools = tool_axis_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran,
-                                        suppressed)
+                                        suppressed, gated_suppressed)
     prepared = findings_mod.FindingSet.prepare(args, tool_findings, run.security_mode)
     # #1634: redact the INPUT, not only the output -- and do it HERE, upstream
     # of the --emit-verify-queue branch, so both passes of a run see identical
