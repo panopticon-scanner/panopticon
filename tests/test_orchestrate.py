@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 import scripts.driver as driver
-import scripts.money as money
+import scripts.ledger as ledger_mod
 import scripts.orchestrate as orchestrate
 import scripts.phases.review as review
 import scripts.phases.runio as runio
@@ -514,7 +514,7 @@ class TestHeadlessLoop(LoopCase):
         while True:
             seen["reply"] = os.path.exists(peer["out_file"])
             seen["ledger"] = any(row.get("entry_id") == peer_id
-                                 for row in orchestrate.Ledger(runner.run_dir).lines())
+                                 for row in ledger_mod.Ledger(runner.run_dir).lines())
             seen["usage"] = bool((runio._load_json(usage_path) or {}).get("total"))
             if all(seen.values()) or time.monotonic() >= deadline:
                 return seen
@@ -564,7 +564,7 @@ class TestHeadlessLoop(LoopCase):
         self.assertIn("re-run to resume from disk", status["message"])
         self.assertEqual({"reply": True, "ledger": True, "usage": True}, seen)
         self.assertEqual(["review-app-SEC"],
-                         [row["entry_id"] for row in orchestrate.Ledger(runner.run_dir).lines()])
+                         [row["entry_id"] for row in ledger_mod.Ledger(runner.run_dir).lines()])
         settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
         self.assertFalse(write_guard_hook.is_armed(
             settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
@@ -579,7 +579,7 @@ class TestHeadlessLoop(LoopCase):
         d, floor = self._repo()
         runner = FakeRunner()
         self._run(d, floor, runner)
-        rows = orchestrate.Ledger(runner.run_dir).lines()
+        rows = ledger_mod.Ledger(runner.run_dir).lines()
         self.assertEqual(len(runner.launched), len(rows))
         for row in rows:
             self.assertEqual(
@@ -625,7 +625,7 @@ class TestHeadlessLoop(LoopCase):
         # spelled twice at the only call site, so a future caller could make a
         # row contradict itself. The parameter now defaults FROM the timing.
         d, floor = self._repo()
-        ledger = orchestrate.Ledger(d)
+        ledger = ledger_mod.Ledger(d)
         result = base.RunResult(entry_id="e", ok=True, text="", usage={}, cost_usd=None,
                                 model=None, session_id=None, denials=[], error=None)
         timing = {"started_at": "2026-01-01T00:00:00Z",
@@ -662,7 +662,7 @@ class TestHeadlessLoop(LoopCase):
              mock.patch.object(orchestrate, "write_usage", side_effect=flaky):
             status = self._run(d, floor, runner)
         self.assertEqual(status["status"], "complete", status)
-        rows = [row["entry_id"] for row in orchestrate.Ledger(runner.run_dir).lines()]
+        rows = [row["entry_id"] for row in ledger_mod.Ledger(runner.run_dir).lines()]
         # nothing was launched and then thrown away
         self.assertEqual(sorted(runner.launched), sorted(rows))
         self.assertIn("usage.json not updated", err.getvalue())
@@ -711,7 +711,7 @@ class TestHeadlessLoop(LoopCase):
         # launch -- and is still fatal, which is what this test is about.
         d, floor = self._repo()
         runner = FakeRunner()
-        with mock.patch.object(orchestrate.Ledger, "record", side_effect=RuntimeError("boom")):
+        with mock.patch.object(ledger_mod.Ledger, "record", side_effect=RuntimeError("boom")):
             status = self._run(d, floor, runner)
         self.assertEqual(status["status"], "error")
         self.assertIn("RuntimeError", status["message"])
@@ -808,13 +808,13 @@ class TestHeadlessLoop(LoopCase):
         # exception fires before this batch's own usage write.
         d, floor = self._repo()
         runner = FakeRunner()
-        real_record = orchestrate.Ledger.record
+        real_record = ledger_mod.Ledger.record
 
         def _record_then_boom(self, *args, **kwargs):
             real_record(self, *args, **kwargs)
             raise RuntimeError("boom")
 
-        with mock.patch.object(orchestrate.Ledger, "record", _record_then_boom):
+        with mock.patch.object(ledger_mod.Ledger, "record", _record_then_boom):
             status = self._run(d, floor, runner)
         self.assertEqual(status["status"], "error")
         self.assertIn("RuntimeError", status["message"])
@@ -1054,7 +1054,7 @@ class TestPerEntryFailureCap(LoopCase):
         self.assertIn("verify-app-SEC-primary", status["message"])
         self.assertIn("3 consecutive launches", status["message"])
         self.assertIn("persist refused", status["message"])
-        rows = [r for r in orchestrate.Ledger(runner.run_dir).lines()
+        rows = [r for r in ledger_mod.Ledger(runner.run_dir).lines()
                 if r["entry_id"] == "verify-app-SEC-primary"]
         self.assertEqual(len(rows), orchestrate.MAX_ENTRY_FAILURES)
         for row in rows:
@@ -1280,7 +1280,7 @@ class TestRefusedRepliesAreRetained(LoopCase):
         self.assertEqual(sorted(os.listdir(rejected)),
                          ["review-app-SEC-%d.json" % n
                           for n in range(1, orchestrate.MAX_ENTRY_FAILURES + 1)])
-        rows = [r for r in orchestrate.Ledger(runner.run_dir).lines()
+        rows = [r for r in ledger_mod.Ledger(runner.run_dir).lines()
                 if r["entry_id"] == "review-app-SEC"]
         self.assertEqual([r["rejected_file"] for r in rows],
                          [os.path.join(rejected, "review-app-SEC-%d.json" % n)
@@ -1355,7 +1355,7 @@ class TestATimedOutEntryKeepsItsEvidence(LoopCase):
         self.assertIn("timed out after", record["reason"])
         self.assertIn("[REDACTED_TOKEN]", record["reply"])
         self.assertTrue(record["reply"].startswith('{"findings"'), record["reply"])
-        row = next(r for r in orchestrate.Ledger(runner.run_dir).lines()
+        row = next(r for r in ledger_mod.Ledger(runner.run_dir).lines()
                    if r["entry_id"] == "review-app-SEC" and not r["ok"])
         self.assertEqual(kept, row["rejected_file"])
         self.assertEqual(7000, sum(row["usage"].values()))
@@ -1409,113 +1409,5 @@ class TestATimedOutEntryKeepsItsEvidence(LoopCase):
              contextlib.redirect_stderr(io.StringIO()):
             orchestrate.loop(args)
         self.assertFalse(os.path.exists(os.path.join(runner.run_dir, "rejected")))
-        row = next(r for r in orchestrate.Ledger(runner.run_dir).lines() if not r["ok"])
+        row = next(r for r in ledger_mod.Ledger(runner.run_dir).lines() if not r["ok"])
         self.assertIsNone(row["rejected_file"])
-
-
-
-class TestLedgerMoney(LoopCase):
-    """#1648: the ledger is the budget gate's only evidence, so it stores
-    nothing it cannot read back as money, and refuses to sum past a line it
-    cannot read at all."""
-
-    def _ledger(self):
-        d, _floor = self._repo()
-        return orchestrate.Ledger(d)
-
-    def _result(self, cost, error=None):
-        return base.RunResult(entry_id="e", ok=True, text="", usage={}, cost_usd=cost,
-                              model=None, session_id=None, denials=[], error=error)
-
-    def test_a_non_finite_cost_never_enters_the_ledger(self):
-        ledger = self._ledger()
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            ledger.record({"id": "e"}, "review", self._result(float("inf")),
-                          "headless", "claude")
-        row = ledger.lines()[0]
-        self.assertIsNone(row["cost_usd"])
-        self.assertIn("cost_usd non-finite (inf) dropped", row["error"])
-        with open(ledger.path, encoding="utf-8") as fh:
-            self.assertNotIn("Infinity", fh.read())
-        self.assertIn("cost_usd non-finite", err.getvalue())
-        self.assertEqual(money.ZERO, ledger.total_cost())
-
-    def test_a_dropped_cost_keeps_the_launch_error_it_was_written_with(self):
-        ledger = self._ledger()
-        with contextlib.redirect_stderr(io.StringIO()):
-            ledger.record({"id": "e"}, "review", self._result(float("nan"), "is_error"),
-                          "headless", "claude")
-        row = ledger.lines()[0]
-        self.assertIn("is_error", row["error"])
-        self.assertIn("cost_usd non-finite (nan) dropped", row["error"])
-
-    def test_a_good_cost_is_ledgered_and_summed_unchanged(self):
-        ledger = self._ledger()
-        for _ in range(3):
-            ledger.record({"id": "e"}, "review", self._result(0.15), "headless", "claude")
-        self.assertEqual([0.15] * 3, [row["cost_usd"] for row in ledger.lines()])
-        self.assertEqual(money._money("0.45"), ledger.total_cost())
-
-    def test_total_cost_refuses_a_ledger_line_it_cannot_read(self):
-        ledger = self._ledger()
-        with open(ledger.path, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"cost_usd": 0.1, "phase": "review", "usage": {}}) + "\n")
-            fh.write('{"cost_usd": NaN, "phase": "review", "usage": {}}\n')
-        with self.assertRaises(money.LedgerCorrupt) as caught:
-            ledger.total_cost()
-        self.assertEqual(2, caught.exception.line_no)
-
-    def test_a_ledger_that_is_there_but_unreadable_is_a_fault_not_a_zero(self):
-        # Fix round 1, M2: `except OSError: return []` answered "nothing spent"
-        # for a ledger that EXISTS and cannot be read -- the one answer that is
-        # certainly wrong, and the gate went on launching. A directory in its
-        # place is the portable way to make the read fail (a chmod 000 file is
-        # vacuous for root); a permission change mid-run is the real case.
-        ledger = self._ledger()
-        os.makedirs(ledger.path)
-        with self.assertRaises(money.LedgerCorrupt) as caught:
-            ledger.total_cost()
-        self.assertIn("ledger unreadable", str(caught.exception))
-        self.assertNotIn("line 0", str(caught.exception))   # file-level, not a line
-        self.assertEqual([], ledger.lines())                # other readers: still tolerant
-        self.assertEqual(1, ledger.usage_document()["corrupt_rows"])
-
-    def test_an_absent_ledger_is_still_nothing_spent(self):
-        # The other half of the M2 split: a run that has launched nothing has a
-        # ledger that is not there, and that is not a fault.
-        ledger = self._ledger()
-        self.assertFalse(os.path.exists(ledger.path))
-        self.assertEqual(money.ZERO, ledger.total_cost())
-        self.assertEqual([], ledger.lines())
-        self.assertEqual(0, ledger.usage_document()["corrupt_rows"])
-
-    def test_lines_still_tolerates_a_bad_line_for_every_other_reader(self):
-        ledger = self._ledger()
-        with open(ledger.path, "w", encoding="utf-8") as fh:
-            fh.write("not json\n")
-            fh.write(json.dumps({"entry_id": "e", "cost_usd": 0.1}) + "\n")
-        self.assertEqual(["e"], [row["entry_id"] for row in ledger.lines()])
-
-    def test_usage_document_counts_the_corrupt_rows_it_tolerated(self):
-        # The tokens were really spent (M2), so a row whose MONEY is unreadable
-        # still contributes its usage -- and the document says how many such
-        # rows it read, rather than quietly under-reporting the run.
-        ledger = self._ledger()
-        with open(ledger.path, "w", encoding="utf-8") as fh:
-            fh.write('{"cost_usd": NaN, "phase": "review", "usage": {"input_tokens": 9}}\n')
-            fh.write(json.dumps({"phase": "review", "cost_usd": "NaN",
-                                 "usage": {"input_tokens": 5}}) + "\n")
-            fh.write(json.dumps({"phase": "verify", "cost_usd": 0.1,
-                                 "usage": {"input_tokens": 3}}) + "\n")
-        doc = ledger.usage_document()
-        self.assertEqual(2, doc["corrupt_rows"])     # the unparseable line and the string NaN
-        self.assertEqual(8, doc["total"])            # the readable rows' tokens, both of them
-        self.assertEqual(5, doc["by_phase"]["review"])
-        with self.assertRaises(money.LedgerCorrupt):
-            ledger.total_cost()
-
-    def test_a_clean_run_reports_no_corrupt_rows(self):
-        ledger = self._ledger()
-        ledger.record({"id": "e"}, "review", self._result(0.1), "headless", "claude")
-        self.assertEqual(0, ledger.usage_document()["corrupt_rows"])
