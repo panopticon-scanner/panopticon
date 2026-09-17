@@ -173,16 +173,35 @@ def _prompt_safe(text):
             out.append(ch)
     return "".join(out)
 
+def _abs_files(review_root, files):
+    """A cell's files absolutized against review_root (#975) — RAW, un-sanitised.
+
+    The ONE place this expression is spelled (#1607). It was inlined at four
+    sites beside `_abs_file_list`, which applied it again per line: the entry's
+    `files` and the prose the prompt carries agreed by inspection rather than
+    by construction, against plan 2b's rule that no path expression is written
+    twice.
+
+    Un-sanitised on purpose: the read-guard matches these byte-for-byte after
+    realpath (spec §7.2), so nothing here may touch the bytes. `_prompt_safe`
+    belongs at the point the paths become a prompt — which is `_abs_file_list`,
+    below, and nowhere else.
+    """
+    return [os.path.abspath(os.path.join(review_root, f)) for f in files]
+
 def _abs_file_list(review_root, files):
-    """Bullet list of files absolutized against review_root (#975): the reviewer
-    subagent inherits the HOST's cwd, not review_root/the --pr worktree, so a
-    bare-relative path resolves against the wrong tree. File-list specific — do
-    NOT route tests or other bullet lists through this; they stay repo-relative.
-    Paths are prompt-sanitized (#1190) so a control char in a filename cannot
-    inject prompt lines."""
+    """Bullet list of a cell's files absolutized against review_root (#975): the
+    reviewer subagent inherits the HOST's cwd, not review_root/the --pr worktree,
+    so a bare-relative path resolves against the wrong tree. File-list specific —
+    do NOT route tests or other bullet lists through this; they stay
+    repo-relative. Paths are prompt-sanitized (#1190) so a control char in a
+    filename cannot inject prompt lines.
+
+    The resolution itself is `_abs_files`: same list, same order, sanitized for
+    prose here only."""
     return "\n".join(
-        "- " + _prompt_safe(os.path.abspath(os.path.join(review_root, f)))
-        for f in files
+        "- " + _prompt_safe(path)
+        for path in _abs_files(review_root, files)
     ) or "- (no files)"
 
 def _load_json(path):

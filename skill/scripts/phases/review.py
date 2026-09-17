@@ -320,7 +320,7 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
     entry_id = "review-%s-%s" % (group, domain)
     # raw paths, deliberately not _prompt_safe'd: the read guard matches them
     # byte-for-byte after realpath (spec 7.2); never paste them into a prompt.
-    abs_files = [os.path.abspath(os.path.join(review_root, f)) for f in files]
+    abs_files = runio._abs_files(review_root, files)
     entry = {"id": entry_id,
             "agent": dispatch.registered_agent_name("domain-panel.md") if enforced else None,
             "enforced": enforced, "model": requests.bound_model(host, "domain_panel"),
