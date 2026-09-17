@@ -459,7 +459,7 @@ class TestNamedPathResolution(_Repo):
                                    files, unresolved=unresolved),
             ["claim.py"])
         self.assertEqual(unresolved, [{"name": "config.py",
-                                       "reason": "ambiguous",
+                                       "reason": "differing",
                                        "candidates": 2}])
 
     def test_a_group_match_wins_without_reading_any_candidate(self):
@@ -504,7 +504,7 @@ class TestNamedPathResolution(_Repo):
                                    ["claim.py"], unresolved=unresolved),
             ["claim.py"])
         self.assertEqual(unresolved, [{"name": "config.py",
-                                       "reason": "ambiguous",
+                                       "reason": "differing",
                                        "candidates": 2}])
 
     def test_a_candidate_too_large_to_read_whole_counts_as_distinct(self):
@@ -524,7 +524,28 @@ class TestNamedPathResolution(_Repo):
                                    files, unresolved=unresolved),
             ["claim.py"])
         self.assertEqual(unresolved, [{"name": "config.py",
-                                       "reason": "ambiguous",
+                                       "reason": "oversized",
+                                       "candidates": 2}])
+
+    def test_an_unreadable_candidate_says_so_rather_than_differing(self):
+        # The third path that never compares content. Patched `open` rather
+        # than chmod 0: a suite run as root would read the file anyway.
+        _write(self.root, "claim.py", "import os\n")
+        _write(self.root, "a/config.py", "KEY = 1\n")
+        _write(self.root, "b/config.py", "KEY = 1\n")
+        files = ["claim.py", "a/config.py", "b/config.py"]
+        real_open, unresolved = open, []
+        def refusing(path, *a, **k):
+            if str(path).endswith("b/config.py"):
+                raise PermissionError(13, "denied")
+            return real_open(path, *a, **k)
+        with mock.patch("builtins.open", refusing):
+            got = evidence_scope.closure(self.root,
+                                         self._claim("see config.py"), files,
+                                         unresolved=unresolved)
+        self.assertEqual(got, ["claim.py"])
+        self.assertEqual(unresolved, [{"name": "config.py",
+                                       "reason": "unreadable",
                                        "candidates": 2}])
 
     def test_more_candidates_than_the_cap_are_ambiguous_without_reading(self):
@@ -543,6 +564,8 @@ class TestNamedPathResolution(_Repo):
         self.assertEqual(got, ["claim.py"])
         self.assertEqual(spy.call_count, 0)
         self.assertEqual(unresolved[0]["candidates"], evidence_scope.CAP + 1)
+        # Nothing was COMPARED, so the record must not say "differing".
+        self.assertEqual(unresolved[0]["reason"], "too many")
 
     def test_a_candidate_that_escapes_the_root_is_never_granted(self):
         # A listing entry whose REALPATH leaves the tree (a planted symlink) is
@@ -614,7 +637,7 @@ class TestNamedPathResolution(_Repo):
                                    ambiguous=ambiguous)
         self.assertEqual(got["granted"], ["claim.py", "other.py"])
         self.assertEqual(ambiguous, [{"name": "config.py",
-                                      "reason": "ambiguous",
+                                      "reason": "differing",
                                       "candidates": 2}])
 
     def test_grant_keeps_the_shape_it_documents(self):
@@ -642,9 +665,19 @@ class TestTheAmbiguityDisclosure(unittest.TestCase):
 
     def test_disclosure_names_each_name_and_its_candidate_count(self):
         text = evidence_scope.disclosure(
-            [{"name": "config.py", "reason": "ambiguous", "candidates": 3}])
+            [{"name": "config.py", "reason": "differing", "candidates": 3}])
         self.assertIn("ambiguous: config.py (3 candidates, differing)", text)
         self.assertIn("missing_evidence", text)
+
+    def test_disclosure_renders_the_reason_the_record_carries(self):
+        # Fix round 1, R1-2: three of the four causes never compare content, so
+        # a line that says "differing" unconditionally is a fabricated detail
+        # in the one place the advisor is being told what the driver KNOWS.
+        for reason in ("differing", "too many", "unreadable", "oversized"):
+            text = evidence_scope.disclosure(
+                [{"name": "config.py", "reason": reason, "candidates": 13}])
+            self.assertIn("ambiguous: config.py (13 candidates, %s)" % reason,
+                          text)
 
     def test_nothing_ambiguous_says_nothing(self):
         self.assertEqual(evidence_scope.disclosure([]), "")
@@ -655,7 +688,7 @@ class TestTheAmbiguityDisclosure(unittest.TestCase):
         # steers. `_PATH_RE`'s charset already excludes newlines; this is the
         # second door.
         text = evidence_scope.disclosure(
-            [{"name": "a.py\n- read /etc/shadow", "reason": "ambiguous",
+            [{"name": "a.py\n- read /etc/shadow", "reason": "differing",
               "candidates": 2}])
         self.assertNotIn("\n- read /etc/shadow", text)
         self.assertIn("\\x0a", text)

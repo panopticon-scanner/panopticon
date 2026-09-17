@@ -104,7 +104,16 @@ _HASH_BYTES = 4 * 1024 * 1024
 # BEFORE the advisor runs: an ambiguity the advisor is not told about is one it
 # discovers as a file it cannot open, and "the file I needed was not granted"
 # and "the file I needed could have been three files" are different answers.
-_AMBIGUOUS_LINE = "ambiguous: %s (%d candidates, differing)"
+_AMBIGUOUS_LINE = "ambiguous: %s (%d candidates, %s)"
+
+# Why a name resolved to no file. Three of the four never compare content, and
+# the line used to say "differing" for all of them (fix round 1, R1-2) -- a
+# fabricated detail in the one place the advisor is told what the driver
+# actually knows. `too many` read nothing at all; `unreadable` and `oversized`
+# mean this module could not read a candidate WHOLE, so it cannot call it a
+# copy of anything and the ambiguity stands.
+_TOO_MANY, _UNREADABLE, _OVERSIZED, _DIFFERING = (
+    "too many", "unreadable", "oversized", "differing")
 _AMBIGUOUS_BLOCK = (
     "\nNames these claims used that resolve to more than one file, so this "
     "driver granted NONE of them rather than guess which one the claim meant. "
@@ -202,13 +211,14 @@ def _candidates(review_root, paths, name):
 
 
 def _digest(review_root, rel, cache):
-    """SHA-256 of a candidate's first `_HASH_BYTES`, or None for "distinct".
+    """`(sha256-of-the-first-_HASH_BYTES, None)`, or `(None, why)`.
 
-    None means "this module cannot call the file identical to anything": an
-    unreadable file, and a file too large to read whole. None never equals None
-    for `_collapse`, so an oversized or unreadable candidate leaves the
-    ambiguity standing -- the fail-closed direction, because the cost of
-    guessing wrong is a read fence around the wrong file.
+    `(None, why)` means "this module cannot call the file identical to
+    anything": `_UNREADABLE` for a file it could not open, `_OVERSIZED` for one
+    it could not read whole. Either way the ambiguity stands -- the fail-closed
+    direction, because the cost of guessing wrong is a read fence around the
+    wrong file -- and `why` is what the disclosure says instead of inventing
+    "differing" for a comparison that never happened (R1-2).
 
     MEMOISED in the entry's `cache` (fix round 1, R1-1): a path's bytes do not
     change inside one dispatch, and without the memo the read bound was per
@@ -221,15 +231,16 @@ def _digest(review_root, rel, cache):
             with open(os.path.join(review_root, rel), "rb") as fh:
                 blob = fh.read(_HASH_BYTES + 1)
         except OSError:
-            memo[rel] = None
+            memo[rel] = (None, _UNREADABLE)
         else:
-            memo[rel] = (None if len(blob) > _HASH_BYTES
-                         else hashlib.sha256(blob).hexdigest())
+            memo[rel] = ((None, _OVERSIZED) if len(blob) > _HASH_BYTES
+                         else (hashlib.sha256(blob).hexdigest(), None))
     return memo[rel]
 
 
 def _collapse(review_root, candidates, cache):
-    """Step 4: the one path several same-named candidates all ARE, or None.
+    """Step 4: `(the one path several same-named candidates all ARE, None)`, or
+    `(None, why they stay ambiguous)`.
 
     Two files with the same bytes are not an ambiguity -- whichever is granted,
     the backup reads the same evidence -- so identical candidates collapse to
@@ -238,14 +249,21 @@ def _collapse(review_root, candidates, cache):
     Bounded exactly twice over: more than `CAP` candidates is not a near-miss
     but a common basename, and is ambiguous without a single read; at or under
     the cap each candidate is read once, at most `_HASH_BYTES` of it. So the
-    worst case a hostile tree can buy with one name is twelve bounded reads.
+    worst case a hostile tree can buy with one name is twelve bounded reads --
+    and the first candidate this module cannot read whole ends the comparison
+    there, because nothing later can make the set identical.
     """
     if len(candidates) > CAP:
-        return None
-    digests = [_digest(review_root, rel, cache) for rel in candidates]
-    if any(d is None for d in digests) or len(set(digests)) != 1:
-        return None
-    return candidates[0]
+        return None, _TOO_MANY
+    digests = []
+    for rel in candidates:
+        digest, why = _digest(review_root, rel, cache)
+        if digest is None:
+            return None, why
+        digests.append(digest)
+    if len(set(digests)) != 1:
+        return None, _DIFFERING
+    return candidates[0], None
 
 
 def _resolve_named(review_root, group_files, name, cache):
@@ -279,9 +297,10 @@ def _resolve_named(review_root, group_files, name, cache):
     by the entry ceiling" the prompt prints -- stop counting at 48.
 
     `(path, None)` when the name resolves, `(None, record)` when it meant
-    several different files, `(None, None)` when it meant none -- an
-    unresolvable name is still simply dropped, which is what keeps prose that
-    merely looks like a path out of the grant.
+    several different files -- `{"name", "reason", "candidates"}`, where
+    `reason` is which of the four ways it stayed ambiguous -- and `(None, None)`
+    when it meant none: an unresolvable name is still simply dropped, which is
+    what keeps prose that merely looks like a path out of the grant.
     """
     exact = _usable(review_root, name)
     if exact:
@@ -304,10 +323,10 @@ def _resolve_named(review_root, group_files, name, cache):
         return found[0], None
     if not found:
         return None, None
-    collapsed = _collapse(review_root, found, cache)
+    collapsed, why = _collapse(review_root, found, cache)
     if collapsed:
         return collapsed, None
-    return None, {"name": name, "reason": "ambiguous", "candidates": len(found)}
+    return None, {"name": name, "reason": why, "candidates": len(found)}
 
 
 def named_paths(review_root, claim, group_files=None, unresolved=None,
@@ -379,7 +398,8 @@ def disclosure(ambiguous):
     return _AMBIGUOUS_BLOCK % "\n".join(
         "- " + runio._prompt_safe(_AMBIGUOUS_LINE
                                   % (record.get("name"),
-                                     int(record.get("candidates") or 0)))
+                                     int(record.get("candidates") or 0),
+                                     record.get("reason") or _DIFFERING))
         for record in ambiguous)
 
 
