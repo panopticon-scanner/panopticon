@@ -30,7 +30,7 @@ SETTINGS_FILE = "host-settings.json"
 ALLOWLIST_FILE = "write-allowlist.json"
 SCOPE_FILE = "read-scope.json"
 # The loop's per-launch ledger, beside the settings file in the run folder.
-# Named here for the same one-owner reason: `orchestrate.Ledger` writes it
+# Named here for the same one-owner reason: `ledger.Ledger` writes it
 # and the usage probe names it as the headless evidence surface, and the two
 # must not spell it differently.
 LEDGER_FILE = "dispatch-ledger.jsonl"
@@ -39,7 +39,7 @@ MODES = ("headless", "session")
 
 def _utc(epoch):
     """The one UTC stamp format the run's evidence is written in -- the same
-    one `orchestrate.Ledger` writes its `ts` in, so a row's three stamps sort
+    one `ledger.Ledger` writes its `ts` in, so a row's three stamps sort
     against each other as plain strings."""
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 

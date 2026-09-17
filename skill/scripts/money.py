@@ -1,6 +1,6 @@
 """Exact dollars for the dispatch ledger and the `--max-budget-usd` gate (#1648).
 
-Two defects with one fix site, both in `orchestrate.Ledger`:
+Two defects with one fix site, both in `ledger.Ledger`:
 
 * the ledger summed `float(cost)` and the gate compared it with `float(budget)`,
   so the boundary was only as exact as binary floating point -- eight ledgered
