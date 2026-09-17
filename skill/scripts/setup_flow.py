@@ -451,7 +451,11 @@ def _check_host_shells(host, runner, repo_root=None):
     # read_scope_confined is proven on claude (read-guard-armed) and unknown on
     # every other host, and an unknown must not report as a failure nobody can
     # clear.
-    for (capability, state), line in zip(host_disclosure.unproven_rows(fresh), gaps):
+    # `strict=True`: a plain zip truncates to the shorter sequence, so a filter
+    # that ever appears in `lines()` would make readiness quietly drop rows --
+    # the invisible drift this whole change exists to end. Loud instead.
+    for (capability, state), line in zip(host_disclosure.unproven_rows(fresh),
+                                         gaps, strict=True):
         ok = False if state == hosts.REFUTED else None
         checks.append(("host-capability:" + capability, ok, line))
     return checks

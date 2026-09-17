@@ -453,6 +453,44 @@ class TestReadinessConsumesTheSelectionLinesMakes(unittest.TestCase):
                 self.assertEqual(line, detail)
                 self.assertTrue(line.startswith(name.split(":", 1)[1]))
 
+    def test_the_headline_counts_and_names_the_same_selection(self):
+        # R1 Minor 2. `headline()` counted `len(lines(...))` and separately
+        # named `hosts.unproven(hosts.posture(...))` -- a second derivation of
+        # one fact, inside the module the fix designated as the single place.
+        # Measured: "5 of 5 NOT PROVEN ... (model_binding,
+        # tool_policy_enforced, usage_ledger)" -- a count and a name-list that
+        # disagree in the same sentence.
+        selection = self._selection(MIXED)
+        with mock.patch.object(host_disclosure, "unproven_rows",
+                               return_value=selection):
+            head = host_disclosure.headline(MIXED)
+            count = len(host_disclosure.lines(MIXED))
+        self.assertIn("%d of %d" % (count, len(hosts.CAPABILITIES)), head)
+        for capability, _state in selection:
+            with self.subTest(capability=capability):
+                self.assertIn(capability, head)
+
+    def test_the_headline_no_longer_writes_the_posture_chain_itself(self):
+        import ast
+        import inspect
+        tree = ast.parse(inspect.getsource(host_disclosure.headline))
+        called = {ast.unparse(node.func) for node in ast.walk(tree)
+                  if isinstance(node, ast.Call)}
+        self.assertNotIn("hosts.unproven", called)
+        self.assertNotIn("hosts.posture", called)
+        self.assertIn("unproven_rows", called)
+
+    def test_readiness_refuses_to_pair_two_lists_that_disagree(self):
+        # R1 Minor 3. A plain `zip` truncates to the shorter sequence, so if
+        # `lines()` ever grows a filter, readiness would quietly lose rows --
+        # the invisible drift #1600 exists to end. `strict=True` makes it loud.
+        with mock.patch.object(host_disclosure, "lines",
+                               return_value=["one line only"]):
+            with mock.patch.object(host_probes, "run_probes",
+                                   return_value=MIXED):
+                with self.assertRaises(ValueError):
+                    setup_flow._check_host_shells("claude", _runner_ok, ".")
+
     def test_readiness_no_longer_writes_the_posture_chain_itself(self):
         # The structural half (memory: a text guard must read the AST). The
         # re-derivation is deleted, not merely shadowed: `_check_host_shells`

@@ -368,11 +368,15 @@ def headline(envelope):
     host = host_of(envelope)
     if caps is None or host is None:
         return NO_EVIDENCE
-    gaps = lines(envelope)
-    if not gaps:
+    # R1 Minor 2: the COUNT and the NAMES come off one call. This counted
+    # `len(lines(...))` and separately named `hosts.unproven(hosts.posture(...))`
+    # -- a second derivation of one fact, surviving inside the module #1600
+    # designated as the single place for it, and producing a sentence whose
+    # count and name-list can disagree with each other.
+    rows = unproven_rows(envelope)
+    if not rows:
         return ALL_PROVEN
-    posture = hosts.posture(host, caps)
     return ("%d of %d NOT PROVEN on host %r (%s) -- this run "
             "does not verify them; see the lines below"
-            % (len(gaps), len(hosts.CAPABILITIES), host,
-               ", ".join(hosts.unproven(posture))))
+            % (len(rows), len(hosts.CAPABILITIES), host,
+               ", ".join(name for name, _state in rows)))
