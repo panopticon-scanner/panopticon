@@ -6,6 +6,7 @@ import subprocess
 
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
+import scripts.runners.outage as outage
 import scripts.write_guard_hook as write_guard_hook
 
 
@@ -104,9 +105,20 @@ class Runner(base.HostRunner):
             error = "claude -p exited %s: %s" % (returncode, text[:200])
         elif data.get("is_error"):
             error = "claude -p reported is_error: %s" % text[:200]
+        # #1623: the HOST's own error surface, kept apart from the message
+        # above -- which quotes 200 characters of `text`, i.e. the AGENT's
+        # reply, so a cell whose finding is about a 403 handler would be read
+        # as a 403. The envelope's own error object when the CLI emits one;
+        # otherwise the `result` string ONLY when it is the CLI's own error
+        # rendering (`outage.cli_error` anchors on the prefix), never the free
+        # text of a finding.
+        host_error = data.get("error") if isinstance(data.get("error"), (dict, str)) else None
+        if host_error is None and error is not None:
+            host_error = outage.cli_error(text)
         return base.RunResult(entry_id=entry_id, ok=error is None, text=text if error is None else "",
                                usage=usage, cost_usd=data.get("total_cost_usd"), model=model,
-                               session_id=data.get("session_id"), denials=denials, error=error)
+                               session_id=data.get("session_id"), denials=denials, error=error,
+                               host_error=host_error)
 
     def launch_env(self, overlay=None):
         """The seam's preparation (`base.HostRunner.launch_env`) plus this

@@ -13,6 +13,7 @@ import time
 
 import scripts._version as version
 import scripts.read_guard_hook as read_guard_hook
+import scripts.runners.outage as outage
 
 # An alias of a definition from OUTSIDE this package (read_guard_hook is a
 # top-level script, not a runners/ sibling) -- legal under layout rule 4,
@@ -78,9 +79,28 @@ class RunResult:
     session_id: object       # str | None
     denials: list            # the host's permission_denials, verbatim
     error: object            # str | None: launch failure, non-zero exit, budget stop, timeout
+    host_error: object = None      # the HOST's own error surface (#1623): str | dict | None
+                                   # -- the CLI's error line or the provider error object it
+                                   # printed, NEVER the agent's text. `error` is the operator's
+                                   # message and may quote the agent; this is what is classified.
+    failure_class: object = None   # "host" | "entry" (#1623); None means "classify it for me"
+
+    def __post_init__(self):
+        """Classify any result that did not say (#1623).
+
+        Here rather than only in `failed` because a family's non-zero-exit
+        failure is built through the plain constructor -- `claude.parse_envelope`
+        turns exit 1 into `RunResult(ok=False, error=...)`, which is one of the
+        shapes a 403 arrives in. A family that passes its own value keeps it:
+        `dataclasses.replace` re-runs this, and an already-set class is never
+        re-derived.
+        """
+        if self.failure_class is None:
+            self.failure_class = outage.classify_failure(self.host_error)
 
     @classmethod
-    def failed(cls, entry_id, error, usage=None, text=""):
+    def failed(cls, entry_id, error, usage=None, text="", host_error=None,
+               failure_class=None):
         """A failed entry, with whatever evidence the launch did produce.
 
         D10 ruling 5: a timed-out entry is often the most expensive one in a
@@ -93,7 +113,8 @@ class RunResult:
         prints its figures only at the end.
         """
         return cls(entry_id=entry_id, ok=False, text=text, usage=usage or {}, cost_usd=None,
-                    model=None, session_id=None, denials=[], error=str(error))
+                    model=None, session_id=None, denials=[], error=str(error),
+                    host_error=host_error, failure_class=failure_class)
 
 
 class HostRunner:

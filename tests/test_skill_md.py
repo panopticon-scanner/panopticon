@@ -585,6 +585,15 @@ class TestSkillMd(unittest.TestCase):
         # stops after three launches of one cell has to be able to find out
         # why, and that it is not something a flag can raise.
         self.assertIn("per-entry cap of 3 consecutive", loop)
+        # #1623: `paused` is a TERMINAL status of its own, and an operator
+        # whose run stopped has to be able to tell a host-wide outage (auth,
+        # quota, rate limit: nothing charged, nothing lost, re-run it) from a
+        # cell that genuinely cannot answer. Pinned to the code's own clause,
+        # exactly as the interrupt sentence below is -- a guide that describes
+        # a termination condition the loop no longer has is worse than silence.
+        import scripts.runners.outage as outage
+        self.assertIn("`paused`", loop)
+        self.assertIn(outage.HOST_OUTAGE_CLAUSE, loop)
         # I6 (fix round 3): `driver persist` grew `--pr`/`--base` because a PR
         # run's review root is the worktree; a session host that does not pass
         # them gets "no entry in the current dispatch request" and no clue why.

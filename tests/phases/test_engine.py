@@ -65,6 +65,13 @@ class TestEmitStatus(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("boom", buf.getvalue())
 
+    def test_paused_returns_exit_1(self):
+        # #1623: a host-wide outage stops the run with the review unfinished.
+        # docs/PANOPTICON.md promises this exit code -- "a CI job cannot read
+        # an outage as a clean review" -- and nothing held it to it.
+        self.assertEqual(engine.emit_status({"status": "paused", "message": "m"},
+                                            stream=io.StringIO()), 1)
+
     def test_checkpoint_and_complete_return_exit_0(self):
         self.assertEqual(engine.emit_status({"status": "checkpoint"},
                                             stream=io.StringIO()), 0)

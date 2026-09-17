@@ -20,6 +20,7 @@ import scripts.kimi_guard_hook as kimi_guard_hook
 import scripts.runners.base as base
 import scripts.kimi_toml as kimi_toml
 import scripts.runners.kimi as kimi_runner
+import scripts.runners.outage as outage
 
 STREAM = "\n".join([
     json.dumps({"role": "meta", "type": "system.version", "version": "0.42.0"}),
@@ -134,6 +135,21 @@ class TestParseEnvelope(unittest.TestCase):
             "e1", "", 1, stderr="Error: rate limit exceeded\n")
         self.assertFalse(res.ok)
         self.assertIn("rate limit", res.error)
+
+    def test_the_host_surface_is_stderr_never_the_assistants_content(self):
+        # #1623 C1: `detail` prefers the assistant's own text, so a cell whose
+        # reply names src/billing/quota.py would otherwise read as a quota
+        # outage and stop the whole run.
+        r = kimi_runner.Runner("kimi")
+        res = r.parse_envelope(
+            "e1", json.dumps({"role": "assistant",
+                              "content": "no such file or directory: src/billing/quota.py"}),
+            1, stderr="")
+        self.assertIsNone(res.host_error)
+        self.assertEqual(outage.ENTRY_FAILURE, res.failure_class)
+        res = r.parse_envelope("e1", "", 1, stderr="provider.auth_error: 403\n")
+        self.assertEqual("provider.auth_error: 403", res.host_error)
+        self.assertEqual(outage.HOST_FAILURE, res.failure_class)
 
     def test_garbage_lines_are_tolerated(self):
         text, session_id = kimi_runner.Runner("kimi").parse_envelope(
