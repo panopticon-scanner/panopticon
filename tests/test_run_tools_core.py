@@ -949,20 +949,48 @@ class TestRawCaptureRedaction(unittest.TestCase):
                         leaked.append(name)
         self.assertEqual(leaked, [], "raw capture kept the marker: %s" % leaked)
 
+    # #1572: the ONE golden a rule legitimately fires on, and exactly what it
+    # does to it. pip-audit's capture embeds a CVE advisory about
+    # `Proxy-Authorization` leaks, which quotes `https://username:password@proxy:8080`
+    # as the shape it is describing. That is a well-formed credential URL, and
+    # the URL-userinfo rule masks its password -- correctly: a redactor cannot
+    # know that this particular password is the literal word "password".
+    #
+    # Pinned as a SUBSTITUTION rather than by exempting the file, because the
+    # claim this test exists to make is about STRUCTURE. The change is one
+    # substring inside one JSON string value; every `ruleId`, `location`,
+    # `region` and `level` in the document is still byte-identical, which is
+    # what the assertion below now says for this golden and says by identity
+    # for the other fourteen.
+    EXPECTED_MASKS = {
+        "pip-audit.raw": (b"https://username:password@proxy:8080",
+                          b"https://username:[REDACTED]@proxy:8080"),
+    }
+
     def test_clean_goldens_are_byte_identical(self):
         """Ruling 1: redaction never changes SARIF STRUCTURE. Every committed
         real-scanner golden -- 15 tools, SARIF, JSON and XML -- comes back
         byte-for-byte through the choke point, so `ruleId`, `locations`,
         `region` line numbers and `level` are provably untouched on output that
-        carries no secret."""
+        carries no secret -- and, for the one golden that does carry a
+        credential shape, changed by exactly the one substitution named in
+        EXPECTED_MASKS and nothing else."""
         names = sorted(n for n in os.listdir(self.GOLDENS) if n.endswith(".raw"))
         self.assertIn("gitleaks.raw", names)
         self.assertGreaterEqual(len(names), 15, names)
+        self.assertLessEqual(set(self.EXPECTED_MASKS), set(names),
+                             "EXPECTED_MASKS names a golden that is gone")
         changed = []
         for name in names:
             with open(os.path.join(self.GOLDENS, name), "rb") as fh:
                 raw = fh.read()
-            if rt._redact_capture(name[:-4], raw) != raw:
+            want = raw
+            if name in self.EXPECTED_MASKS:
+                before, after = self.EXPECTED_MASKS[name]
+                self.assertIn(before, raw, "%s no longer carries the specimen "
+                              "EXPECTED_MASKS is about" % name)
+                want = raw.replace(before, after)
+            if rt._redact_capture(name[:-4], raw) != want:
                 changed.append(name)
         self.assertEqual(changed, [], "redaction rewrote a clean golden: %s" % changed)
 

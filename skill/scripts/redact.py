@@ -7,9 +7,10 @@ to token prefixes + lengths so they mask WELL-FORMED secrets, not prose that
 merely mentions a token format (e.g. "a ghp_ token" is left untouched; a real
 `ghp_<40 chars>` is masked). See #run7 SEC-B2C.
 
-Two rules are structural rather than prefix-anchored -- UUID and JWT -- because a
-secret scanner's output quotes the secret without its `NAME=` context. See the
-comments on those entries.
+Three rules are structural rather than prefix-anchored -- UUID, JWT, and the
+`scheme://user:password@host` URL userinfo -- because a secret scanner's output
+quotes the secret without its `NAME=` context, and because a connection string
+IS its own context. See the comments on those entries.
 
 There is deliberately NO entropy, long-hex, or long-base64 rule. Measured across
 run-12 finding text, tracked source, and the goldens: hex>=32 matched git SHAs
@@ -47,6 +48,37 @@ _PATTERNS = [
     # first two starting eyJ (base64 of '{"'). Distinctive enough to be safe.
     (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
      "[REDACTED_JWT]"),
+    # Structure-anchored like the JWT above, and #1572's whole contribution: a
+    # URL that carries a password in its userinfo (`scheme://user:pass@host`).
+    # The finding's own example, and the one credential shape a reviewer is most
+    # likely to quote verbatim while substantiating a finding -- a connection
+    # string is evidence, not an aside. Any scheme, because the shape is the
+    # anchor: postgres, jdbc:mysql, amqps, mongodb+srv, https-with-a-PAT.
+    #
+    # ONLY THE PASSWORD IS MASKED. `postgres://svc_reports:[REDACTED]@db.internal`
+    # still says which credential leaked and where it points, which is the
+    # difference between a finding an operator can act on and one they have to
+    # re-derive. `scripts.tools.pip_audit._USERINFO` takes the whole userinfo
+    # instead, and should: a dropped `--index-url` line has no locus worth
+    # keeping, and it masks at the PRODUCER so no consumer has to remember to.
+    # This is the backstop for everything that never passed through a producer.
+    #
+    # Every class excludes whitespace, `/`, `@` and both quote characters. The
+    # quotes are what keep a match inside one JSON/XML field on the flat pass
+    # (see TestOnlyThePemRuleMayCrossAQuote); `/` is what stops
+    # `http://host:8080/u@v` -- a port and a path that happens to contain an `@`
+    # -- from reading as a credential. FP-measured at zero over the whole repo
+    # listing before it was added; see TestUrlCredentialShapeIsFpMeasured.
+    #
+    # The scheme is LENGTH-BOUNDED, and that is not cosmetic. `[A-Za-z0-9+.-]*`
+    # before a literal `://` backtracks once per character of every alphanumeric
+    # run in the document, which is O(n^2) on exactly the inputs this pass is
+    # handed -- a 200 KB scanner capture, a PEM body quoted out of source. It
+    # cost 0.2s on a 20 KB run of one letter and grows with the square; bounded,
+    # the same input is 0.001s. 30 is above every scheme in the IANA registry;
+    # a longer one simply does not match, which is the completeness limit.
+    (re.compile(r"""([A-Za-z][A-Za-z0-9+.\-]{0,30}://[^\s/:@"']+:)[^\s/@"']+(@)"""),
+     r"\1[REDACTED]\2"),
     # PEM private key. The body is BOUNDED two ways (#1639 P11), because it was
     # `.*?` under DOTALL -- the one rule here with nothing to stop it -- and a
     # raw scanner capture is where that bit: gitleaks quotes a truncated
