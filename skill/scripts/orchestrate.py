@@ -507,9 +507,15 @@ def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner
       (`persist.rollback_markers`), so the re-run starts from the checkpoint
       with the retry budget it had rather than one interrupt poorer.
 
-    Every step is wrapped: `loop` never raises (review round 1, item 3), and a
-    bookkeeping failure on the way out must be REPORTED in the message rather
-    than replace the interrupt that caused it.
+    Every step is wrapped, and wrapped in `except BaseException` rather than
+    `except Exception`: the operator who held the key down, or hit it again
+    because the first Ctrl-C did not seem to do anything, raises a SECOND
+    KeyboardInterrupt in the middle of this -- and a KeyboardInterrupt is a
+    BaseException, so an `except Exception` here did not hold it. Escaping
+    skipped `_finish` entirely: the guards stayed armed over the whole session
+    and the kimi run home kept its config.toml and its credential links. So
+    every failure on the way out is REPORTED under one `rollback incomplete`
+    note and the interrupt's own status is what the operator gets back.
     """
     if batch is None:
         return _status("error", INTERRUPTED_IDLE)
@@ -523,16 +529,16 @@ def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner
                               entry.get("id"), "cancelled (Ctrl-C) before it completed"),
                           mode, runner.host, status=ledger_mod.CANCELLED,
                           rolled_back=True)
-    except Exception as exc:              # noqa: BLE001 -- `loop` never raises
+    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
         notes.append("cancelled rows not written: %s: %s" % (type(exc).__name__, exc))
     try:
         _removed, problems = batch.roll_back()
         notes += problems
         persist.rollback_markers(review_root, checkpoint, pending)
-    except Exception as exc:              # noqa: BLE001 -- `loop` never raises
-        notes.append("rollback incomplete: %s: %s" % (type(exc).__name__, exc))
+    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
+        notes.append("%s: %s" % (type(exc).__name__, exc))
     return _status("error", INTERRUPTED % (done, total)
-                   + ("; " + "; ".join(notes) if notes else ""))
+                   + ("; rollback incomplete: " + "; ".join(notes) if notes else ""))
 
 
 def _review_root(args):

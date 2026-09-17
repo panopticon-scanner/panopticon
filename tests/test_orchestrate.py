@@ -718,6 +718,53 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(1, len(during["kept"]), during)   # it really was kept...
         self.assertEqual([], self._rejected(runner))       # ...and taken back
 
+    def _guards_armed(self, runner):
+        settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
+        return (write_guard_hook.is_armed(
+                    settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0],
+                read_guard_hook.is_armed(
+                    settings, os.path.join(runner.run_dir, "read-scope.json"))[0])
+
+    def _interrupt_the_rollback(self, where):
+        """Patch `where` so the SECOND Ctrl-C lands inside the rollback itself
+        -- the operator holding the key down, or hitting it again because the
+        first one did not seem to do anything."""
+        if where == "ledger":
+            real = ledger_mod.Ledger.record
+
+            def record(self, *args, **kwargs):
+                if kwargs.get("status"):        # only the interrupt's own rows
+                    raise KeyboardInterrupt
+                return real(self, *args, **kwargs)
+
+            return mock.patch.object(ledger_mod.Ledger, "record", record)
+        if where == "artifacts":
+            return mock.patch.object(batch_mod.Batch, "roll_back",
+                                     side_effect=KeyboardInterrupt)
+        return mock.patch.object(orchestrate.persist, "rollback_markers",
+                                 side_effect=KeyboardInterrupt)
+
+    def test_a_second_interrupt_during_the_rollback_still_tears_down(self):
+        # `loop` never raises (review round 1, item 3) -- and a KeyboardInterrupt
+        # is a BaseException, so an `except Exception` around the rollback does
+        # not hold it. Escaping here skips `_finish` entirely: the guards stay
+        # armed over the whole session and the kimi run home keeps its
+        # config.toml and credential links.
+        for where in ("ledger", "artifacts", "markers"):
+            with self.subTest(where=where):
+                d, floor = self._repo(floor=("SEC", "ACC"))
+                runner = FakeRunner()
+                runner.torn_down = []
+                runner.teardown = runner.torn_down.append
+                with self._interrupt_the_rollback(where):
+                    status, _seen = self._interrupt_mid_batch(d, floor, runner)
+                self.assertEqual("error", status["status"], status)
+                self.assertIn("interrupted:", status["message"])
+                self.assertIn("rollback incomplete", status["message"])
+                self.assertIn("KeyboardInterrupt", status["message"])
+                self.assertEqual(["error"], runner.torn_down)
+                self.assertEqual((False, False), self._guards_armed(runner))
+
     def test_driver_run_alone_writes_no_batch_manifest(self):
         # `driver run` is the non-loop path: it stops AT a checkpoint and
         # writes nothing between checkpoints, so an interrupt there has
