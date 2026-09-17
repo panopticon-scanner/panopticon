@@ -14,6 +14,7 @@ from . import findings as findings_mod
 from . import delta as delta_mod
 from . import grading as grading_mod
 from . import plan as plan_mod
+from . import tool_axis as tool_axis_mod
 from . import cost as cost_mod
 from . import verdicts as verdicts_mod
 from . import validate_schema as validate_schema_mod
@@ -158,7 +159,7 @@ class ReportInputs:
     findings: findings_mod.FindingSet
     delta: delta_mod.DeltaContext = field(default_factory=delta_mod.DeltaContext)
     plan: plan_mod.PlanInputs = field(default_factory=plan_mod.PlanInputs)
-    tools: plan_mod.ToolAxis = field(default_factory=plan_mod.ToolAxis)
+    tools: tool_axis_mod.ToolAxis = field(default_factory=tool_axis_mod.ToolAxis)
     cost: cost_mod.CostInputs = field(default_factory=cost_mod.CostInputs)
 
 
@@ -171,8 +172,12 @@ def build_report(inp):
     the cost ledger (cost). assemble() lays the sections out in the report's
     key order.
     """
-    resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run)
-    reconciled = plan_mod.reconcile(inp.plan, inp.tools, resolved)
+    # #1701 fix round 1 (F1): the gate-counted vendored drops are handed to the
+    # stage that applies the gate's filters, not appended after it.
+    resolved = verdicts_mod.resolve_findings(
+        inp.findings, inp.delta, inp.run,
+        gated_suppressed=inp.tools.gated_suppressed)
+    reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved)
     graded = grading_mod.grade_report(inp.run, resolved, reconciled)
     cost = cost_mod.cost_section(inp.cost, inp.plan.scout_profiles_seen,
                                  resolved.verdict_stats["queued"])

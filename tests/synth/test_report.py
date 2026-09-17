@@ -15,6 +15,7 @@ import scripts.synth.codes as codes_mod
 import scripts.synth.delta as delta_mod
 import scripts.synth.grading as grading_mod
 import scripts.synth.plan as plan_mod
+import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.cost as cost_mod
 import scripts.synth.report as report_mod
@@ -2350,7 +2351,7 @@ class TestToolAxisMeta(unittest.TestCase):
         r = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
             findings=findings_mod.FindingSet(findings=[]),
-            tools=plan_mod.ToolAxis(tools_ran={"roslyn-secguard", "bandit"}),
+            tools=tool_axis_mod.ToolAxis(tools_ran={"roslyn-secguard", "bandit"}),
         ))
         self.assertEqual(r["meta"]["coverage"]["build_executing_tools"], ["roslyn-secguard"])
 
@@ -2627,7 +2628,7 @@ class TestMetaCoverage(unittest.TestCase):
         r = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-05T00:00:00Z"),
             findings=findings_mod.FindingSet(findings=[self._tool()]),
-            tools=plan_mod.ToolAxis(
+            tools=tool_axis_mod.ToolAxis(
                 policy_mode="enforced",
                 tools_ran={"bandit"},
                 dispositions={"bandit": {"status": "ok", "findings": 1}},
@@ -2707,7 +2708,7 @@ class TestCoverageEndToEnd(unittest.TestCase):
                 max_verify=1,
             ),
             findings=findings_mod.FindingSet(findings=[tool, agent]),
-            tools=plan_mod.ToolAxis(
+            tools=tool_axis_mod.ToolAxis(
                 policy_mode="enforced",
                 tools_ran={"bandit"},
                 dispositions=disp,
@@ -2796,7 +2797,7 @@ class TestCoverageDivergence(unittest.TestCase):
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(groups_meta=self.GROUPS,
                                      scout_requested=["trivy", "semgrep"]),
-            tools=plan_mod.ToolAxis(
+            tools=tool_axis_mod.ToolAxis(
                 tools_ran=["trivy"],
                 dispositions={"trivy": {"status": "ok", "findings": 2},
                               "semgrep": {"status": "noscan", "findings": 0}}),
@@ -2811,7 +2812,7 @@ class TestCoverageDivergence(unittest.TestCase):
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(groups_meta=self.GROUPS, scout_requested=["trivy", "semgrep"]),
-            tools=plan_mod.ToolAxis(tools_ran=["trivy"]),
+            tools=tool_axis_mod.ToolAxis(tools_ran=["trivy"]),
         ))
         self.assertEqual(
             r["meta"]["coverage"]["divergence"]["tools"], {"semgrep": "requested_absent"}
@@ -2861,7 +2862,7 @@ class TestFloorCellCoverageWiring(unittest.TestCase):
                 groups_meta=self.GROUPS,
                 coverages=[{"group": "g1", "floor": ["SEC"], "effective": ["SEC"]}],
             ),
-            tools=plan_mod.ToolAxis(ingested_paths=[]),
+            tools=tool_axis_mod.ToolAxis(ingested_paths=[]),
         ))
         self.assertEqual(r["meta"]["coverage"]["cells"]["missing_floor"], [["g1", "SEC"]])
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
@@ -2875,7 +2876,7 @@ class TestFloorCellCoverageWiring(unittest.TestCase):
                 groups_meta=self.GROUPS,
                 coverages=[{"group": "g1", "floor": ["SEC"], "effective": ["SEC"]}],
             ),
-            tools=plan_mod.ToolAxis(
+            tools=tool_axis_mod.ToolAxis(
                 ingested_paths=[os.path.join(".panopticon", "findings-g1-SEC.json")],
             ),
         ))
@@ -3670,7 +3671,7 @@ class TestToolCoverageCertification(unittest.TestCase):
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(scout_requested=["bcryptjs", "pip-audit", "eslint"]),
-            tools=plan_mod.ToolAxis(manifest=tm),
+            tools=tool_axis_mod.ToolAxis(manifest=tm),
         ))
         self.assertEqual(
             self._div_tools(r),
@@ -3693,7 +3694,7 @@ class TestToolCoverageCertification(unittest.TestCase):
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(scout_requested=[]),
-            tools=plan_mod.ToolAxis(
+            tools=tool_axis_mod.ToolAxis(
                 manifest=tm, tools_ran={"gitleaks"},
                 dispositions={"bandit": {"status": "failed", "findings": 0,
                                          "reason": "unparseable: x"},
@@ -3716,7 +3717,7 @@ class TestToolCoverageCertification(unittest.TestCase):
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(scout_requested=[]),
-            tools=plan_mod.ToolAxis(
+            tools=tool_axis_mod.ToolAxis(
                 manifest=tm, tools_ran=set(),
                 dispositions={"bandit": {"status": "failed", "findings": 0,
                                          "reason": "unparseable: x"},
@@ -3736,7 +3737,7 @@ class TestToolCoverageCertification(unittest.TestCase):
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(scout_requested=[]),
-            tools=plan_mod.ToolAxis(manifest=tm),
+            tools=tool_axis_mod.ToolAxis(manifest=tm),
         ))
         self.assertEqual(self._div_tools(r), {})
         self.assertTrue(r["summary"]["coverage_certified"])
@@ -3754,7 +3755,7 @@ class TestToolCoverageCertification(unittest.TestCase):
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(scout_requested=[]),
-            tools=plan_mod.ToolAxis(manifest=tm),
+            tools=tool_axis_mod.ToolAxis(manifest=tm),
         ))
         self.assertEqual(self._div_tools(r), {"npm-audit": "requested_absent"})
         self.assertFalse(r["summary"]["coverage_certified"])
@@ -3771,7 +3772,7 @@ class TestToolCoverageCertification(unittest.TestCase):
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(scout_requested=["npm-audit", "bcryptjs"]),
-            tools=plan_mod.ToolAxis(manifest=tm),
+            tools=tool_axis_mod.ToolAxis(manifest=tm),
         ))
         self.assertEqual(
             self._div_tools(r),
@@ -3785,7 +3786,7 @@ class TestToolCoverageCertification(unittest.TestCase):
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(scout_requested=["eslint"]),
-            tools=plan_mod.ToolAxis(tools_ran=[]),
+            tools=tool_axis_mod.ToolAxis(tools_ran=[]),
         ))
         self.assertEqual(self._div_tools(r), {"eslint": "requested_absent"})
         self.assertFalse(r["summary"]["coverage_certified"])
@@ -3939,7 +3940,7 @@ class ReportInputsTest(unittest.TestCase):
             findings=findings_mod.FindingSet(findings=[dict(f)]),
             delta=delta_mod.DeltaContext(),
             plan=plan_mod.PlanInputs(),
-            tools=plan_mod.ToolAxis(),
+            tools=tool_axis_mod.ToolAxis(),
             cost=cost_mod.CostInputs(),
         ))
         self.assertEqual(terse, explicit)
@@ -3982,14 +3983,38 @@ class ReportInputsTest(unittest.TestCase):
         inp = report_mod.ReportInputs(
             run=self._run(), findings=findings_mod.FindingSet(findings=[dict(f)]),
             plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]))
-        resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run)
-        reconciled = plan_mod.reconcile(inp.plan, inp.tools, resolved)
+        resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run,
+                                                 gated_suppressed=inp.tools.gated_suppressed)
+        reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved)
         graded = grading_mod.grade_report(inp.run, resolved, reconciled)
         cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
         by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)
         self.assertEqual(whole, by_hand)
         self.assertEqual(list(whole), ["schema_version", "meta", "summary", "groups",
                                        "findings", "discarded_claims", "cross_panel"])
+
+    def test_stages_compose_with_a_gate_counted_suppressed_finding(self):
+        # Re-review of item 25c R1: `build_report` hands the gated-suppressed
+        # set to `resolve_findings`, and the by-hand recipe above stayed green
+        # only because its ToolAxis is empty. One gated HIGH must give the
+        # same envelope both ways -- FAIL from `build_report`, FAIL by hand.
+        gated = dict(_make_finding(severity="HIGH"))
+        gated["location"] = dict(gated.get("location") or {}, file="app/vendor/x.js")
+        def inputs():
+            return report_mod.ReportInputs(
+                run=self._run(), findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+                tools=tool_axis_mod.ToolAxis(gated_suppressed=[gated]))
+        whole = report_mod.build_report(inputs())
+        inp = inputs()
+        resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run,
+                                                 gated_suppressed=inp.tools.gated_suppressed)
+        reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved)
+        graded = grading_mod.grade_report(inp.run, resolved, reconciled)
+        cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
+        by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)
+        self.assertEqual(whole["summary"]["gate"], by_hand["summary"]["gate"])
+        self.assertEqual(whole, by_hand)
 
 class RunConfigLoaderTest(unittest.TestCase):
     """WS-0 S3: RunConfig.from_args resolves the CLI against groups.json."""
@@ -4110,7 +4135,7 @@ class TestSanitizedRequirementLinesReachTheReport(unittest.TestCase):
             run=report_mod.RunConfig(target="src", fail_on="high",
                                      timestamp=DEFAULT_TIMESTAMP),
             findings=findings_mod.FindingSet(findings=[]),
-            tools=plan_mod.ToolAxis(manifest=manifest)))["meta"]
+            tools=tool_axis_mod.ToolAxis(manifest=manifest)))["meta"]
 
     def test_meta_tools_carries_the_manifest_block(self):
         meta = self._meta({"schema_version": 1, "selected": [], "produced": [],
@@ -4327,7 +4352,7 @@ class TestSuppressedToolFindingsCoverage(unittest.TestCase):
             run=report_mod.RunConfig(target="src", fail_on="high",
                                      timestamp=DEFAULT_TIMESTAMP),
             findings=findings_mod.FindingSet(findings=[]),
-            tools=plan_mod.ToolAxis(suppressed=suppressed)))
+            tools=tool_axis_mod.ToolAxis(suppressed=suppressed)))
         return report["meta"]["coverage"]
 
     def test_the_counts_reach_the_report_per_segment(self):
@@ -4358,5 +4383,5 @@ class TestSuppressedToolFindingsCoverage(unittest.TestCase):
             run=report_mod.RunConfig(target="src", fail_on="high",
                                      timestamp=DEFAULT_TIMESTAMP),
             findings=findings_mod.FindingSet(findings=[]),
-            tools=plan_mod.ToolAxis(suppressed={"vendor": 9})))
+            tools=tool_axis_mod.ToolAxis(suppressed={"vendor": 9})))
         self.assertEqual(report["summary"]["gate"], "PASS")

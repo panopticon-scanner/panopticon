@@ -11,7 +11,11 @@ import unittest
 import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.coverage_io as coverage_io
+import scripts.synth.delta as delta_mod
+import scripts.synth.render as render_mod
+import scripts.html_report as html_report
 import scripts.synth.plan as plan_mod
+import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
 import scripts.group_runner as gr
 import scripts.group_runner as group_runner_mod
@@ -115,7 +119,7 @@ class TestToolPolicyMode(unittest.TestCase):
         report = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-03T00:00:00Z"),
             findings=findings_mod.FindingSet(findings=[f]),
-            tools=plan_mod.ToolAxis(policy_mode="mixed"),
+            tools=tool_axis_mod.ToolAxis(policy_mode="mixed"),
         ))
         self.assertEqual(report["meta"]["coverage"]["tool_policy_mode"], "mixed")
         self.assertEqual(report["meta"]["version"], __version__)
@@ -127,10 +131,10 @@ class TestToolsRanFromDispositions(unittest.TestCase):
             "gitleaks": {"status": "empty", "findings": 0},
             "semgrep": {"status": "failed", "findings": 0, "reason": "empty output file"},
         }
-        self.assertEqual(plan_mod.tools_ran_from_dispositions(dispositions), {"bandit", "gitleaks"})
+        self.assertEqual(tool_axis_mod.tools_ran_from_dispositions(dispositions), {"bandit", "gitleaks"})
 
     def test_empty_dispositions_yields_empty_set(self):
-        self.assertEqual(plan_mod.tools_ran_from_dispositions({}), set())
+        self.assertEqual(tool_axis_mod.tools_ran_from_dispositions({}), set())
 
     def test_noscan_gets_no_coverage_credit_but_still_counts_as_produced(self):
         # #1335: the two questions this set used to answer at once. A no-op
@@ -143,9 +147,9 @@ class TestToolsRanFromDispositions(unittest.TestCase):
             "semgrep": {"status": "noscan", "findings": 0, "reason": "scanned 0 files"},
             "trivy": {"status": "failed", "findings": 0, "reason": "empty output file"},
         }
-        self.assertEqual(plan_mod.tools_ran_from_dispositions(dispositions),
+        self.assertEqual(tool_axis_mod.tools_ran_from_dispositions(dispositions),
                          {"bandit", "gitleaks"})
-        self.assertEqual(plan_mod.tools_produced_from_dispositions(dispositions),
+        self.assertEqual(tool_axis_mod.tools_produced_from_dispositions(dispositions),
                          {"bandit", "gitleaks", "semgrep"})
 
 class TestToolPolicyModeUnknown(unittest.TestCase):
@@ -375,7 +379,7 @@ class PlanLoadersTest(unittest.TestCase):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()),
-                                     ([], {}, None, None))
+                                     ([], {}, None, None, []))
                 self.assertEqual(err.getvalue(), "")
                 # a non-empty default tools dir left un-ingested is announced
                 os.makedirs(os.path.join(".panopticon", "tools"))
@@ -384,7 +388,7 @@ class PlanLoadersTest(unittest.TestCase):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()),
-                                     ([], {}, None, None))
+                                     ([], {}, None, None, []))
                 self.assertIn("appears un-ingested", err.getvalue())
                 # --tools-dir pointing nowhere is still "not measured"
                 self.assertEqual(
@@ -397,7 +401,7 @@ class PlanLoadersTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tools_dir = os.path.join(d, "tools")
             os.makedirs(tools_dir)
-            found, dispositions, ran, suppressed = plan_mod.ingest_tool_findings(
+            found, dispositions, ran, suppressed, gated = plan_mod.ingest_tool_findings(
                 _cli_args(tools_dir=tools_dir))
             self.assertEqual(found, [])
             self.assertEqual(dispositions, {})
@@ -405,10 +409,11 @@ class PlanLoadersTest(unittest.TestCase):
             # #1578: measured and dropped nothing -- `{}`, never None, which is
             # the "no ingest ran" reading.
             self.assertEqual(suppressed, {})
+            self.assertEqual(gated, [])    # #1701: nothing dropped, nothing gated
 
     def test_tool_axis_load_reads_the_manifest_and_refuses_foreign_ones(self):
         with tempfile.TemporaryDirectory() as d:
-            axis = plan_mod.ToolAxis.load(_cli_args(files=["f.json"]), d, [], {}, None)
+            axis = tool_axis_mod.ToolAxis.load(_cli_args(files=["f.json"]), d, [], {}, None)
             self.assertIsNone(axis.manifest)
             self.assertEqual(axis.policy_mode, "unknown")
             self.assertEqual(axis.ingested_paths, ["f.json"])
@@ -417,7 +422,7 @@ class PlanLoadersTest(unittest.TestCase):
             with open(tm, "w") as fh:
                 fh.write("{corrupt")
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                corrupt = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+                corrupt = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIsNone(corrupt.manifest)
             # #1644: and the reason is RECORDED, not swallowed into "no manifest".
             self.assertIn("unreadable", corrupt.manifest_invalid)
@@ -425,26 +430,29 @@ class PlanLoadersTest(unittest.TestCase):
             with open(tm, "w") as fh:
                 json.dump(["semgrep"], fh)                 # parses, not an object
             with contextlib.redirect_stderr(io.StringIO()):
-                notdict = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+                notdict = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIsNone(notdict.manifest)
             self.assertIn("not a JSON object", notdict.manifest_invalid)
             with open(tm, "w") as fh:
                 json.dump({"selected": ["semgrep"]}, fh)   # pre-5.1: no schema_version
             with self.assertRaises(SystemExit) as cm:
-                plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+                tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIn("lacks schema_version", str(cm.exception))
             with open(tm, "w") as fh:
-                json.dump({"schema_version": "1", "run_id": "other"}, fh)
+                # #1692: `selected` is required of a manifest that is accepted
+                # at all, so every shape below that IS accepted carries one.
+                json.dump({"schema_version": "1", "run_id": "other",
+                           "selected": []}, fh)
             with self.assertRaises(SystemExit) as cm:
-                plan_mod.ToolAxis.load(_cli_args(run_id="this"), d, [], {}, None)
+                tool_axis_mod.ToolAxis.load(_cli_args(run_id="this"), d, [], {}, None)
             self.assertIn("run_id 'other' != this run 'this'", str(cm.exception))
             # same run (or no --run-id) is accepted
-            axis = plan_mod.ToolAxis.load(_cli_args(run_id="other"), d, [], {"semgrep": "ok"},
+            axis = tool_axis_mod.ToolAxis.load(_cli_args(run_id="other"), d, [], {"semgrep": "ok"},
                                           {"semgrep"})
             self.assertEqual(axis.manifest["run_id"], "other")
             self.assertEqual(axis.tools_ran, {"semgrep"})
             self.assertEqual(axis.dispositions, {"semgrep": "ok"})
-            clean = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            clean = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIsNotNone(clean.manifest)
             self.assertIsNone(clean.manifest_invalid)
 
@@ -459,7 +467,7 @@ class PlanLoadersTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             os.mkdir(os.path.join(d, "tools-manifest.json"))
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                axis = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+                axis = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIsNone(axis.manifest)
             self.assertIn("unreadable", axis.manifest_invalid)
             self.assertIn("NOT certified", err.getvalue())
@@ -467,13 +475,13 @@ class PlanLoadersTest(unittest.TestCase):
             os.symlink(os.path.join(d, "nowhere.json"),
                        os.path.join(d, "tools-manifest.json"))   # dangling
             with contextlib.redirect_stderr(io.StringIO()):
-                axis = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+                axis = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIsNone(axis.manifest)
             self.assertIn("unreadable", axis.manifest_invalid)
 
     def test_tool_axis_load_derives_policy_mode_from_the_plans(self):
         plans = [[{"group": "g1", "domain": "code", "tool_policy": "enforced"}]]
-        axis = plan_mod.ToolAxis.load(_cli_args(), ".", plans, {}, None)
+        axis = tool_axis_mod.ToolAxis.load(_cli_args(), ".", plans, {}, None)
         self.assertEqual(axis.policy_mode, plan_mod.derive_tool_policy_mode(plans=plans))
 
     def test_plan_inputs_load_composes_the_plan_stage(self):
@@ -497,3 +505,334 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertEqual(pi.coverages, coverage_io.load_coverage_files(d))
             self.assertEqual(pi.resume, group_runner_mod.resume_stats([], None, None, _verdicts={}))
             self.assertEqual(pi.out_of_scope, plan_mod.out_of_scope_findings([], []))
+
+
+class TestManifestMustDeclareSelected(unittest.TestCase):
+    """#1692: a `tools-manifest.json` carrying only `{"schema_version": 1}`
+    certified a run on which no scanner ran at all.
+
+    The file is target-writable by the code's own account, and this shape needs
+    no corruption -- only OMISSION. It passed both #17 FATAL checks, and then
+    `reconcile`'s present-manifest branch read `selected` as the empty set: no
+    `missing`, so nothing absent; every scout request demoted to the non-gating
+    `requested_unavailable`; `tools_absent == []`; gate PASS, certified, rc 0.
+
+    A manifest the runner writes ALWAYS carries `selected`, even when it
+    selected nothing, so its absence is the read failing -- the #1644 treatment,
+    not a repair. Same for any non-list `selected`: the item-20 round-1 comment
+    on #1692 measured `"selected": "semgrep"` publishing six one-letter tool
+    names into `divergence.tools`, because `lost_required_coverage` iterates a
+    string character by character.
+
+    No second gate lever: `manifest_invalid` rides in `meta.integrity`, which is
+    what `integrity_ok` already reads, so the gate goes INCONCLUSIVE with every
+    other integrity failure.
+    """
+
+    TS = "2026-09-17T00:00:00Z"
+
+    def _run(self, manifest, dispositions=None, tools_ran=None):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "tools-manifest.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(manifest, fh)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                axis = tool_axis_mod.ToolAxis.load(
+                    _cli_args(), d, [], dispositions or {}, tools_ran)
+                report = report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(target=d, fail_on="high",
+                                             timestamp=self.TS),
+                    findings=findings_mod.FindingSet(findings=[]),
+                    plan=plan_mod.PlanInputs(scout_requested=["semgrep"]),
+                    tools=axis))
+            return axis, report, err.getvalue()
+
+    def test_schema_version_only_manifest_is_unreadable_not_empty(self):
+        axis, report, err = self._run({"schema_version": 1})
+        self.assertIsNone(axis.manifest)
+        self.assertIn("selected", axis.manifest_invalid)
+        self.assertIn("NOT certified", err)
+        self.assertEqual(report["meta"]["integrity"]["tools_manifest_invalid"],
+                         axis.manifest_invalid)
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertIn("selected", report["summary"]["coverage_note"])
+        # And it claims nothing about the tool axis it could not read.
+        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"], {})
+
+    def test_a_string_selected_never_becomes_one_letter_tool_names(self):
+        axis, report, _err = self._run(
+            {"schema_version": 1, "selected": "semgrep", "produced": [],
+             "missing": []},
+            dispositions={}, tools_ran=set())
+        self.assertIsNone(axis.manifest)
+        self.assertIn("selected", axis.manifest_invalid)
+        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"], {})
+        self.assertFalse(report["summary"]["coverage_certified"])
+
+    def test_an_empty_selected_list_is_a_manifest_not_a_failure(self):
+        # The shape this fix must NOT reject: the runner ran and honestly
+        # selected nothing. `selected: []` is a measurement; a missing key is
+        # the absence of one.
+        axis, report, _err = self._run(
+            {"schema_version": 1, "selected": [], "produced": [], "missing": []})
+        self.assertIsNotNone(axis.manifest)
+        self.assertIsNone(axis.manifest_invalid)
+        self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertTrue(report["summary"]["coverage_certified"])
+
+
+class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
+    """#1701: the driver's own gate lost what the vendored-path exclusion drops.
+
+    #1578 made the CI gate script count the suppressed findings under
+    `--security redteam`, but nothing threaded the run's mode into the report
+    pipeline, so `driver run --security redteam` still passed a HIGH under
+    `app/vendor/` outright -- disclosed as a count, invisible to `summary.gate`.
+    A payload parked behind a conventional directory name is exactly what
+    redteam mode exists to refuse.
+
+    The mode is CONTROLLER-carried (item 14): `--security`, which
+    `phases/synthesize.py` threads from the run manifest. Never
+    `RunConfig.security_mode`, which falls back to the target-written
+    groups.json -- a target that could pick the mode could turn the gate off.
+
+    In `standard` nothing changes: the suppression stands (a self-scan drowns
+    in bundled jQuery otherwise) and the count is disclosed.
+    """
+
+    TS = "2026-09-17T00:00:00Z"
+    SARIF = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
+                       "results": [{"ruleId": "B105", "level": "error",
+                                    "message": {"text": "hardcoded password"},
+                                    "locations": [{"physicalLocation": {
+                                        "artifactLocation": {
+                                            "uri": "app/vendor/patched_auth.py"},
+                                        "region": {"startLine": 1,
+                                                   "endLine": 4}}}]}]}]}
+
+    def _sarif(self, rel):
+        hit = json.loads(json.dumps(self.SARIF))
+        (hit["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
+         ["artifactLocation"]["uri"]) = rel
+        return hit
+
+    def _run(self, security, rel="app/vendor/patched_auth.py", severity="all",
+             delta=False, groups_json=None):
+        """One synthesis over a single bandit HIGH at `rel`.
+
+        `rel` is the only thing that moves between the suppressed and the
+        un-suppressed arm of the fix-round-1 F1 comparison: `app/vendor/...`
+        is dropped by the vendored-path exclusion, `app/lib/...` is not, and
+        everything else about the two runs is identical.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, os.path.dirname(rel)))
+            with open(os.path.join(d, rel), "w", encoding="utf-8") as fh:
+                fh.write("x = 1\n" * 50)     # real LoC, so health is measurable
+            tools = os.path.join(d, "tools")
+            os.makedirs(tools)
+            with open(os.path.join(tools, "bandit.sarif"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(self._sarif(rel), fh)
+            with open(os.path.join(d, "tools-manifest.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"schema_version": 1, "selected": ["bandit"],
+                           "produced": ["bandit"], "missing": []}, fh)
+            hunks = None
+            if delta:
+                # A real diff that touches ANOTHER file: the finding below is
+                # pre-existing, which is what `--gate-scope on-diff` scopes out.
+                hunks = os.path.join(d, "diff-hunks.json")
+                with open(hunks, "w", encoding="utf-8") as fh:
+                    json.dump({"base": "main", "hunks": {"app/other.py": [[1, 3]]}}, fh)
+            if groups_json is not None:
+                # Written to BOTH places a target-reading mutation would look:
+                # the run dir (beside the other run artifacts) and the flat
+                # `.panopticon/` the pre-5.1 path used. Either would satisfy a
+                # `load_groups_json(...)` that should not be there.
+                os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+                for path in (os.path.join(d, "groups.json"),
+                             os.path.join(d, ".panopticon", "groups.json")):
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump(groups_json, fh)
+            args = _cli_args(tools_dir=tools, security=security, fail_on="high",
+                             target=d, run_dir=d, severity=severity,
+                             diff_hunks=hunks, gate_scope="on-diff")
+            with _chdir(d), contextlib.redirect_stderr(io.StringIO()):
+                body, disp, ran, suppressed, gated = plan_mod.ingest_tool_findings(args)
+                axis = tool_axis_mod.ToolAxis.load(args, d, [], disp, ran,
+                                                   suppressed, gated)
+                prepared = findings_mod.FindingSet.prepare(args, body, security)
+                run = report_mod.RunConfig.from_args(
+                    args, groups_json or {}, self.TS) if groups_json is not None \
+                    else report_mod.RunConfig(target=d, fail_on="high",
+                                              timestamp=self.TS,
+                                              security_mode=security,
+                                              gate_scope="on-diff")
+                report = report_mod.build_report(report_mod.ReportInputs(
+                    run=run,
+                    findings=findings_mod.FindingSet(
+                        findings=prepared[0], doc_policy=prepared[1],
+                        catalog=prepared[2]),
+                    delta=delta_mod.DeltaContext.from_args(args),
+                    plan=plan_mod.PlanInputs(groups_meta=[
+                        {"name": "g", "files": [rel]}]),
+                    tools=axis))
+            return body, report
+
+    def _gate(self, **kw):
+        return self._run("redteam", **kw)[1]["summary"]["gate"]
+
+    def test_redteam_fails_the_gate_on_a_vendored_high(self):
+        body, report = self._run("redteam")
+        summary = report["summary"]
+        self.assertEqual(summary["gate"], "FAIL")
+        self.assertEqual(summary["gate_severities"]["contributing"], ["HIGH"])
+        # It reaches the GATE, never the body: the disclosure stays a count.
+        self.assertEqual(body, [])
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["summary"]["stats"]["high"], 0)
+        # ... and the health grade moves exactly as an un-suppressed HIGH would.
+        self.assertGreater(summary["health"]["weighted_defect"], 0)
+        # `tools_suppressed` now counts what was suppressed FROM THE GATE, and
+        # under redteam the gate counted them: zero, with the segment still
+        # named so the drop from the body stays visible.
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed"],
+                         {"vendor": 0})
+
+    def test_standard_is_unchanged_and_discloses_the_count(self):
+        body, report = self._run("standard")
+        summary = report["summary"]
+        self.assertEqual(summary["gate"], "PASS")
+        self.assertEqual(body, [])
+        self.assertEqual(summary["health"]["weighted_defect"], 0)
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed"],
+                         {"vendor": 1})
+
+    # -- fix round 1, F1: the gate-counted set takes the gate's own filters ---
+    #
+    # Each of these runs the SAME bandit HIGH twice, moving only the directory
+    # it sits in, and asserts the two arms answer the gate identically. The
+    # un-suppressed arm is the oracle: whatever the real population does with
+    # this finding under these flags is what the suppressed one must do.
+
+    LIB = "app/lib/patched_auth.py"
+
+    def test_a_pre_existing_vendored_high_is_scoped_out_like_its_twin(self):
+        # `--gate-scope on-diff` over a diff that touches another file: the
+        # finding is pre-existing either way. Before this fix the vendored arm
+        # FAILed while its twin PASSed -- a finding that gates only because of
+        # the directory it is in, which inverts #1578.
+        self.assertEqual(self._gate(rel=self.LIB, delta=True), "PASS")
+        self.assertEqual(self._gate(delta=True), "PASS")
+        # ... and because the gate did NOT count it, the drop is back in the
+        # `suppressed` tally rather than in the gated one. The two always sum
+        # to the ingest's own count, which is what stderr and security_gate say.
+        cov = self._run("redteam", delta=True)[1]["meta"]["coverage"]
+        self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
+
+    def test_a_vendored_finding_below_the_severity_floor_does_not_count(self):
+        # `--severity critical` removes the HIGH from the run entirely; the
+        # vendored twin must not survive the floor behind a directory name.
+        self.assertEqual(self._gate(rel=self.LIB, severity="critical"), "PASS")
+        self.assertEqual(self._gate(severity="critical"), "PASS")
+        cov = self._run("redteam", severity="critical")[1]["meta"]["coverage"]
+        self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
+
+    # -- fix round 1, F2: the disclosure the gate FAIL rests on ----------------
+
+    def test_the_gated_count_is_published_and_rendered(self):
+        """A redteam FAIL over an empty findings list must be explainable.
+
+        Before this fix both renderers filtered rows to `n > 0` and every row
+        was zero under redteam, so the operator saw
+        `**Gate:** FAIL` with `HIGH: 0`, no finding, and no mention of
+        suppression in the markdown, the HTML or (legibly) the JSON.
+        """
+        _body, report = self._run("redteam")
+        cov = report["meta"]["coverage"]
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(cov["tools_suppressed_gated"], {"vendor": 1})
+        self.assertEqual(cov["tools_suppressed"], {"vendor": 0})
+        md = render_mod.render_summary(report)
+        self.assertIn("suppressed but GATED", md)
+        self.assertIn("vendor: 1", md)
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "r.html")
+            html_report.write_html(report, out)
+            with open(out, encoding="utf-8") as fh:
+                html = fh.read()
+        self.assertIn("suppressed as vendored but", html)
+        self.assertIn("this run", html)
+
+    def test_the_two_tallies_sum_to_the_ingest_count_in_either_mode(self):
+        """One tally, split -- `ingest_tools.suppressed_counts`' one-definition
+        rule. The artifact may not disagree with the same run's stderr or with
+        `security_gate`, which both print the undivided number."""
+        for security, gated, withheld in (("redteam", {"vendor": 1}, {"vendor": 0}),
+                                          ("standard", {}, {"vendor": 1})):
+            with self.subTest(security=security):
+                cov = self._run(security)[1]["meta"]["coverage"]
+                self.assertEqual(cov["tools_suppressed_gated"], gated)
+                self.assertEqual(cov["tools_suppressed"], withheld)
+                total = {seg: cov["tools_suppressed"].get(seg, 0)
+                         + cov["tools_suppressed_gated"].get(seg, 0)
+                         for seg in set(cov["tools_suppressed"])
+                         | set(cov["tools_suppressed_gated"])}
+                self.assertEqual(total, {"vendor": 1})
+
+    def test_standard_mode_renders_only_the_original_line(self):
+        md = render_mod.render_summary(self._run("standard")[1])
+        self.assertIn("**Tool findings suppressed:**", md)
+        self.assertNotIn("suppressed but GATED", md)
+
+    # -- fix round 1, F3: the mode's provenance is the trust boundary ---------
+
+    def test_the_gate_mode_is_never_taken_from_the_target_written_groups_json(self):
+        """Item 14: `security_mode` for the GATE is controller-carried.
+
+        `groups.json` lives in the target's own `.panopticon/`, and
+        `RunConfig.from_args` falls back to it when `--security` is absent --
+        which is right for `meta.security_mode` (a record of the run) and wrong
+        for the gate (a decision about the target). A target that could pick the
+        mode could pick to have its own vendored findings ignored.
+
+        The assertion is the DIVERGENCE, not the value: the report's metadata
+        says what the file says, while the gate says what the flag says.
+        """
+        _body, report = self._run(None, groups_json={"security_mode": "redteam",
+                                                     "groups": []})
+        # The file really does say redteam -- and the report's metadata, which
+        # is allowed to read it, agrees. Without this the test would pass
+        # vacuously against a file nothing was reading.
+        self.assertEqual(report["meta"]["security_mode"], "redteam")
+        # The gate did not: no --security flag, so it ran standard.
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"], {})
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed"], {"vendor": 1})
+
+    def test_the_flag_gates_even_when_the_target_file_says_standard(self):
+        # The same boundary from the other side: a target cannot turn the
+        # redteam gate OFF by writing `standard` into its own groups.json.
+        _body, report = self._run("redteam",
+                                  groups_json={"security_mode": "standard",
+                                               "groups": []})
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"],
+                         {"vendor": 1})
+
+    def test_the_evidence_axis_is_the_one_remaining_asymmetry(self):
+        """The documented, owner-owed difference (see #1578).
+
+        With no delta and no floor the un-suppressed HIGH does NOT gate -- it is
+        an unverified tool claim and `gate_policy` is `confirmed_only` -- while
+        the suppressed one does, because it is withheld from `findings[]` and
+        therefore from the verify round, so it can never earn `tool_confirmed`.
+        Pinned rather than left implicit: if the owner rules that vendored tool
+        findings go through tool-verify, THIS is the test that must change.
+        """
+        self.assertEqual(self._gate(rel=self.LIB), "PASS")
+        self.assertEqual(self._gate(), "FAIL")
