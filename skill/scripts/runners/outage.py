@@ -7,8 +7,12 @@ once a family has answered. The two are wired one way only -- `base.RunResult`
 asks this module to classify a failure nobody classified -- so there is no
 cycle, and `runners/*` still imports no `phases` (layout rule 3).
 """
+import os
 import re
 import shlex
+import sys
+
+import scripts.redact as redact
 
 
 # #1623: the two classes a failed launch can belong to. `host` is the run's
@@ -158,12 +162,74 @@ def cli_error(text):
 # #1623: the sentence a host-wide outage ends a run with. Two constants, the
 # way the interrupt's are, because `docs/PANOPTICON.md` quotes the clause back
 # and the guide test reads it off here rather than re-typing it.
-HOST_OUTAGE_CLAUSE = ("no entry's attempt budget was charged and nothing was written, so "
-                      "re-running the loop resumes this run where it stopped")
+#
+# The clause says what is TRUE of the batch, which is not "nothing was
+# written": the pause fires when every FAILURE was the host's, and a batch can
+# reach that with successful entries in it whose findings are persisted, whose
+# ledger rows are written and whose spend is in usage.json. What the pause
+# guarantees is narrower and is the part that matters -- no attempt budget was
+# charged, and the launches that FAILED left nothing behind to take back.
+HOST_OUTAGE_CLAUSE = ("no entry's attempt budget was charged and the failed launches left "
+                      "nothing behind, so every reply that did land is kept and re-running "
+                      "the loop resumes this run where it stopped")
 HOST_OUTAGE = ("paused: the %s host failed %d of this batch's %d launches with a %s-class "
                "failure (auth, quota, a rate limit, or the provider itself) rather than an "
                "entry-class one; last: %s; " + HOST_OUTAGE_CLAUSE + ", with the same flags, "
                "once the host is back: `%s`")
+# The flags a resume has to carry, in the order the parser declares them:
+# (attribute, flag, kind). `value` prints the flag and its value, `flag` prints
+# itself when set, `list` prints every value it holds.
+#
+# Two kinds of flag are here and one is deliberately not. The ANTI-DRIFT flags
+# (`--security`, `--fail-on`, the scope selectors, ...) because the engine
+# refuses a resume that changed one; and the per-invocation BOUNDS
+# (`--max-budget-usd`, `--entry-timeout`, `--concurrency`, `--max-iterations`,
+# `--max-turns`) because a copy-pasted resume that silently dropped them would
+# run unbounded, which is the opposite of what an operator watching a quota
+# outage wants. `--reset` is the one flag never carried: it would discard the
+# very run this line exists to resume. `--host`, `--mode` and the review root
+# are emitted ahead of the table, from the values the LOOP resolved rather
+# than from whatever the operator did or did not type.
+_RESUME_FLAGS = (
+    ("security", "--security", "value"),
+    ("fail_on", "--fail-on", "value"),
+    ("severity", "--severity", "value"),
+    ("gate_scope", "--gate-scope", "value"),
+    ("diff_context", "--diff-context", "value"),
+    ("tools", "--tools", "flag"),
+    ("no_tools", "--no-tools", "flag"),
+    ("include_fixtures", "--include-fixtures", "flag"),
+    ("allow_unenforced", "--allow-unenforced", "flag"),
+    ("session_dir", "--session-dir", "value"),
+    ("max_per_group", "--max-per-group", "value"),
+    ("max_verify", "--max-verify", "value"),
+    ("scope_file", "-f", "value"),
+    ("scope_dir", "-d", "value"),
+    ("scope_group", "-g", "value"),
+    ("scope_changed", "-c", "flag"),
+    ("scope_files", "--files", "list"),
+    ("concurrency", "--concurrency", "value"),
+    ("max_iterations", "--max-iterations", "value"),
+    ("max_budget_usd", "--max-budget-usd", "value"),
+    ("max_turns", "--max-turns", "value"),
+    ("entry_timeout", "--entry-timeout", "value"),
+    ("max_groups", "--max-groups", "value"),
+)
+
+
+def program():
+    """How THIS process was invoked, as the head of a runnable command.
+
+    Never the hard-coded `python3 skill/scripts/driver.py`: #495 says that
+    spelling in the guide is a PLACEHOLDER for whatever directory the skill was
+    installed to, so on an installed skill it names a path that does not exist.
+    Read off `sys.argv[0]` when the driver really is what is running, and
+    otherwise the abbreviated `driver` form every other runtime hint in the
+    loop already prints (`_dispatch_exit`'s `driver persist <id>`).
+    """
+    argv0 = sys.argv[0] if sys.argv else ""
+    return ("python3 %s" % shlex.quote(argv0)
+            if os.path.basename(argv0) == "driver.py" else "driver")
 
 
 class FailureTally:
@@ -236,8 +302,12 @@ class FailureTally:
                 self.streaks[eid] = self.streaks.get(eid, 0) + 1
         if not failures or any(cls != HOST_FAILURE for _eid, _err, cls in failures):
             return None
+        # M3/item 24: the host's own words reach an operator's terminal and
+        # whatever collects it, and the one message whose PURPOSE is to surface
+        # an auth failure is the likeliest of all of them to be carrying a
+        # credential ("Incorrect API key provided: sk-ant-...").
         return HOST_OUTAGE % (self.host, len(failures), len(batch), HOST_FAILURE,
-                              failures[-1][1], self.resume_command())
+                              redact.redact(failures[-1][1]), self.resume_command())
 
     def exhausted(self, pending, cap):
         """The `error` message for the first pending entry that has spent `cap`
@@ -246,28 +316,43 @@ class FailureTally:
         for entry in pending or ():
             eid = entry.get("id") if isinstance(entry, dict) else None
             if self.streaks.get(eid, 0) >= cap:
+                # Redacted for the same reason the pause message is: this one
+                # quotes a failure the HOST composed too, and it predates the
+                # rule rather than being exempt from it.
                 return ("driver loop: entry %s failed %d consecutive launches; last: %s"
-                        % (eid, self.streaks[eid], self.last_error.get(eid)))
+                        % (eid, self.streaks[eid], redact.redact(self.last_error.get(eid))))
         return None
 
     def resume_command(self):
         """The command that resumes this run once the host is back.
 
-        The flags that RESOLVE the run, and no others: the review root
-        (`target`, plus `--pr`/`--base`, whose worktree is the review root),
-        the namespace, and the host and mode the loop settled on. Everything
-        else the operator passed has to be passed again too -- the engine
-        refuses a changed flag as run drift -- which is what "with the same
-        flags" in the message says.
+        Reconstructed from the loop's own `args`, so what it prints is what the
+        operator ran: the review root (`target`, or the `--pr`/`--base` whose
+        worktree IS the review root), the namespace, the host and mode the loop
+        RESOLVED, and every flag in `_RESUME_FLAGS` that was set -- the
+        anti-drift ones because the engine refuses a resume that changed one,
+        the bounds because a resume that quietly dropped them would run
+        unbounded. Quoted with `shlex`, so a path with a space in it survives
+        the copy-paste.
         """
-        target = getattr(self.args, "target", None) or "."
-        cmd = ["python3 skill/scripts/driver.py loop", shlex.quote(str(target))]
-        if getattr(self.args, "pr", None):
-            cmd += ["--pr", str(self.args.pr)]
-        elif getattr(self.args, "base", None):
-            cmd += ["--base", shlex.quote(str(self.args.base))]
-        if getattr(self.args, "setup", False):
+        args = self.args
+        cmd = [program(), "loop", shlex.quote(str(getattr(args, "target", None) or "."))]
+        if getattr(args, "pr", None):
+            cmd += ["--pr", str(args.pr)]
+        elif getattr(args, "base", None):
+            cmd += ["--base", shlex.quote(str(args.base))]
+        if getattr(args, "setup", False):
             cmd.append("--setup")
         cmd += ["--host", str(self.host),
-                "--mode", str(getattr(self.args, "mode", None) or "headless")]
+                "--mode", str(getattr(args, "mode", None) or "headless")]
+        for attr, flag, kind in _RESUME_FLAGS:
+            value = getattr(args, attr, None)
+            if not value:
+                continue
+            if kind == "flag":
+                cmd.append(flag)
+            elif kind == "list":
+                cmd += [flag] + [shlex.quote(str(v)) for v in value]
+            else:
+                cmd += [flag, shlex.quote(str(value))]
         return " ".join(cmd)

@@ -472,10 +472,13 @@ def loop(args):
             # host-wide outage (auth, quota, rate limit) is not the entries' failure --
             # and three iterations of one used to spend every pending cell's attempt
             # budget and end the run `complete` with an empty review axis. The queue is
-            # already drained and the grants are down; nothing was written, so there is
-            # nothing to roll back and `_finish` is the whole teardown.
+            # already drained and the grants are down, and the failed launches wrote
+            # nothing, so no ARTIFACT is rolled back; the per-dispatch attempt marker is
+            # given back exactly as the interrupt gives it back, or three paused runs
+            # exhaust the same budget the automatic iterations used to.
             paused = tally.settle()
             if paused:
+                persist.rollback_markers(review_root, req.get("checkpoint"), pending)
                 return _finish(_status("paused", paused), args, guards, ledger,
                                namespace, mode, runner)
             status = _run(args, namespace)

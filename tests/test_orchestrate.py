@@ -1443,7 +1443,7 @@ class TestAHostWideOutage(LoopCase):
         self.assertIn(outage.HOST_FAILURE, message)             # the failure class
         self.assertIn("4", message)                           # how many launches it took down
         self.assertIn("403 Forbidden", message)               # what the host actually said
-        self.assertIn("driver.py loop", message)              # the exact resume command
+        self.assertIn("driver loop", message)                 # the exact resume command
         self.assertIn("--host claude", message)
 
     def test_a_paused_run_still_ledgers_every_failed_launch(self):
@@ -1493,6 +1493,98 @@ class TestAHostWideOutage(LoopCase):
         self.assertEqual(orchestrate.MAX_ENTRY_FAILURES,
                          runner.launched.count("verify-app-SEC-primary"))
 
+    def test_a_paused_run_gives_the_cells_their_attempt_back(self):
+        # M2. The pause gave back the per-entry streak but not the review
+        # checkpoint's per-cell attempt marker, which `review_execute` charges
+        # at DISPATCH -- so three paused runs during one outage exhausted
+        # MAX_CELL_ATTEMPTS and the fourth dropped the cells. That is #1623's
+        # own symptom, at three operator re-runs instead of three iterations.
+        d, floor = self._repo(floor=self.FLOOR)
+        self.assertEqual("paused", self._run_loop(d, floor, self.Outage())["status"])
+        for _ in range(2):
+            self.assertEqual("paused",
+                             self._run_loop(d, floor, self.Outage(), seed=False)["status"])
+        attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
+        self.assertEqual([], [k for k, v in attempts.items() if v],
+                         "a host-paused batch charged the cells: %s" % attempts)
+        # ...and the fourth run still has every cell to dispatch
+        healthy = FakeRunner()
+        status = self._run_loop(d, floor, healthy, seed=False)
+        self.assertEqual("complete", status["status"], status)
+        self.assertEqual(sorted(["review-app-%s" % x for x in self.FLOOR]),
+                         sorted(x for x in healthy.launched if x.startswith("review-")))
+
+    def test_the_pause_claims_only_what_is_true_of_the_batch(self):
+        # m1. The pause fires when every FAILURE is host-class, which a batch
+        # with successful entries in it can be -- over persisted findings, real
+        # ledger rows and a rewritten usage.json. "nothing was written" was
+        # false there.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+
+        class HalfOut(self.Outage):
+            def run_entry(self, entry, env):
+                if entry["id"].endswith("-SEC"):
+                    return FakeRunner.run_entry(self, entry, env)
+                return super().run_entry(entry, env)
+
+        status = self._run_loop(d, floor, HalfOut())
+        self.assertEqual("paused", status["status"], status)
+        landed = runio._pano(d, "findings-app-SEC.json")
+        self.assertTrue(os.path.exists(landed), "the successful cell was persisted")
+        self.assertNotIn("nothing was written", status["message"])
+
+    def test_the_resume_command_carries_every_flag_the_run_was_given(self):
+        # m2. A copy-pasted resume that silently dropped the operator's bounds
+        # would run unbounded, and the message calls itself the way back "with
+        # the same flags".
+        d, floor = self._repo(floor=self.FLOOR)
+        status = self._run_loop(d, floor, self.Outage(), "--security", "redteam",
+                                "--concurrency", "2", "--max-iterations", "7",
+                                "--max-budget-usd", "5", "--entry-timeout", "60",
+                                "--max-turns", "9", "--allow-unenforced")
+        for token in ("--host claude", "--mode headless", "--security redteam",
+                      "--fail-on high", "--no-tools", "--allow-unenforced",
+                      "--concurrency 2", "--max-iterations 7", "--max-budget-usd 5",
+                      "--entry-timeout 60", "--max-turns 9", d):
+            self.assertIn(token, status["message"])
+        # ...and never `--reset`, which would discard the run it is resuming
+        self.assertNotIn("--reset", status["message"])
+
+    def test_the_pause_and_the_cap_redact_what_the_host_said(self):
+        # M3. The one message whose whole purpose is to surface an AUTH
+        # failure is the one most likely to carry a credential.
+        d, floor = self._repo()
+
+        class Leaks(FakeRunner):
+            SECRET = ("Incorrect API key provided: sk-ant-api03-7f3c9d2e1a8b4c6d5e0f; "
+                      "db url postgres://svc:hunter2@db.internal/x")
+
+            def run_entry(self, entry, env):
+                if not entry["id"].startswith("verify-"):
+                    return super().run_entry(entry, env)
+                self.launched.append(entry["id"])
+                return base.RunResult.failed(entry["id"], "claude -p exited 1: " + self.SECRET,
+                                             host_error=self.host_error())
+
+            def host_error(self):
+                return "API Error: 401 " + self.SECRET
+
+        paused = self._run_loop(d, floor, Leaks())
+        self.assertEqual("paused", paused["status"], paused)
+
+        class LeaksButEntryClass(Leaks):
+            def host_error(self):
+                return None                    # the entry's own failure: the cap path
+
+        d2, floor2 = self._repo()
+        capped = self._run_loop(d2, floor2, LeaksButEntryClass())
+        self.assertEqual("error", capped["status"], capped)
+        self.assertIn("3 consecutive launches", capped["message"])
+        for status in (paused, capped):
+            self.assertNotIn("sk-ant-api03-7f3c9d2e1a8b4c6d5e0f", status["message"])
+            self.assertNotIn("hunter2", status["message"])
+            self.assertIn("REDACTED", status["message"])
+
     def test_a_mixed_batch_charges_only_the_entry_class_failure(self):
         # The discriminator. Two verify cells in one batch: SEC gets the
         # host's 403 every time, ACC gets a failure of its own. Before #1623
@@ -1519,6 +1611,40 @@ class TestAHostWideOutage(LoopCase):
         self.assertNotIn("verify-app-SEC-primary", status["message"])
         self.assertIn("3 consecutive launches", status["message"])
         self.assertIn("last: always", status["message"])
+
+
+class TestFinishTreatsPausedAsTerminal(unittest.TestCase):
+    """M1: `paused` is a TERMINAL status, so `_finish` owes it the same
+    teardown `error` gets -- and both branches were reachable only through a
+    loop path where `guards.disarm(pending)` had already run, so a mutation to
+    either went unnoticed by the whole suite."""
+
+    class Guards:
+        def __init__(self):
+            self.armed_entries = [{"id": "review-app-SEC"}]
+            self.disarmed = []
+
+        def disarm(self, entries=None):
+            self.disarmed.append(entries)
+
+    def _finish(self, status, guards=None, ledger=None, writes=None):
+        args = type("Args", (), {"target": "/repo", "base": None, "pr": None})()
+        writes = [] if writes is None else writes
+        with mock.patch.object(orchestrate, "_review_root", return_value="/repo"), \
+             mock.patch.object(orchestrate, "write_usage",
+                               side_effect=lambda *a, **k: writes.append(a)):
+            return orchestrate._finish({"status": status, "message": "m"}, args,
+                                       guards, ledger, None, "headless", None)
+
+    def test_paused_disarms_exactly_what_this_invocation_armed(self):
+        guards = self.Guards()
+        self._finish("paused", guards=guards)
+        self.assertEqual([guards.armed_entries], guards.disarmed)
+
+    def test_paused_writes_the_terminal_usage_document(self):
+        writes = []
+        self._finish("paused", ledger=object(), writes=writes)
+        self.assertEqual(1, len(writes), "usage.json was not rewritten on the paused path")
 
 
 class TestTheRealUsageProbeAcrossLoopIterations(LoopCase):

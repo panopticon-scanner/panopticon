@@ -338,6 +338,11 @@ class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
         # credential URL and the rule is idempotent on it.
         ("tests/test_run_tools_core.py", "https://username:password@"),
         ("tests/test_run_tools_core.py", "https://username:[REDACTED]@"),
+        # item 25d (#1623): the specimen that holds the loop's terminal
+        # messages to this rule. The `paused` message quotes what the HOST
+        # said, and the message whose whole purpose is to surface an auth
+        # failure is the likeliest of all of them to be carrying a credential.
+        ("tests/test_orchestrate.py", "postgres://svc:hunter2@"),
     }
 
     # The rule's own definition and its own specimens. They are full of

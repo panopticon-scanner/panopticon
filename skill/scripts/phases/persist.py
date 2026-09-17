@@ -510,7 +510,12 @@ def rollback_markers(review_root, checkpoint, entries):
     attempts is skipped for the rest of the run
     (`review._cell_exhausted`). An operator's Ctrl-C is not the host failing
     to answer, so leaving the charge standing means three interrupts silently
-    drop a cell from the review, with no line anywhere saying so. The charge
+    drop a cell from the review, with no line anywhere saying so. #1623 adds
+    the second caller on identical reasoning: a host-wide outage (auth, quota,
+    a rate limit) is not the CELL failing to answer either -- it was never
+    given a turn -- so the loop's `paused` path gives the charge back too, or
+    three paused runs during one outage drop the cells exactly as three
+    automatic iterations of the outage used to. The charge
     is exactly one per dispatched cell per checkpoint, so undoing it is a
     decrement of one; a key already at zero is left alone, and earlier real
     failures keep their own charges.

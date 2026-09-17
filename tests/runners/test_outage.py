@@ -1,6 +1,7 @@
 """`runners/outage.py`: whose failure was that, and what the loop does about a
 batch of them (#1623)."""
 import unittest
+from unittest import mock
 
 import scripts.runners.base as base
 import scripts.runners.outage as outage
@@ -198,7 +199,7 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertIn("kimi", message)                       # the host
         self.assertIn(outage.HOST_FAILURE, message)            # the failure class
         self.assertIn("4", message)                          # the count
-        self.assertIn("driver.py loop", message)             # the exact resume command
+        self.assertIn("driver loop", message)                # the exact resume command
         self.assertIn("--host kimi", message)
 
     def test_a_mixed_batch_charges_only_the_entry_class_failures(self):
@@ -237,6 +238,27 @@ class TestTheFailureTally(unittest.TestCase):
                                          host_error="429 Too Many Requests"))
             tally.settle()
         self.assertIsNone(tally.exhausted([{"id": "a"}], 3))
+
+    def test_the_resume_command_names_the_program_this_process_was_started_as(self):
+        # #495: `python3 skill/scripts/driver.py` is the GUIDE's placeholder
+        # for the install directory, so hard-coding it prints a path that does
+        # not exist on an installed skill. Read off argv, with the abbreviated
+        # form every other runtime hint uses as the fallback.
+        tally = outage.FailureTally("claude", self._args())
+        with mock.patch.object(outage.sys, "argv", ["/opt/panopticon/skill/scripts/driver.py",
+                                                    "loop"]):
+            self.assertEqual("python3 /opt/panopticon/skill/scripts/driver.py",
+                             outage.program())
+            self.assertIn("python3 /opt/panopticon/skill/scripts/driver.py loop",
+                          tally.resume_command())
+        with mock.patch.object(outage.sys, "argv", ["/usr/local/bin/pytest"]):
+            self.assertEqual("driver", outage.program())
+
+    def test_the_resume_command_never_carries_reset(self):
+        # It would discard the very run the line exists to resume.
+        args = self._args()
+        args.reset = True
+        self.assertNotIn("--reset", outage.FailureTally("claude", args).resume_command())
 
     def test_the_resume_command_carries_the_flags_that_resolve_the_same_run(self):
         tally = outage.FailureTally("codex", self._args(target="/tmp/repo", pr=7, mode="headless"))
