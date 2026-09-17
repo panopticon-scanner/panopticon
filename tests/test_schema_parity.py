@@ -195,9 +195,11 @@ def _build_report(tmpdir):
     # tools_suppressed` is NON-EMPTY -- an empty map leaves the walk stopping
     # at the map instead of reaching the per-segment value it describes.
     # #1701: this fixture runs `--security redteam`, so the drop is counted by
-    # the GATE and the segment's value is 0. The KEY is what this section's
-    # walk needs, and it survives -- which is also the point of zeroing rather
-    # than dropping the row: the finding is still withheld from `findings[]`.
+    # the GATE and `tools_suppressed`'s segment value is 0 while the sibling
+    # `tools_suppressed_gated` carries the 1. The KEY is what this section's
+    # walk needs, and it survives on both -- which is also the point of zeroing
+    # rather than dropping the row: the finding is still withheld from
+    # `findings[]`, and the two rows sum to what the ingest actually dropped.
     sarif = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
                        "results": [
                            {"ruleId": "B105", "level": "warning",
@@ -355,6 +357,11 @@ class TestSchemaParity(unittest.TestCase):
         # never walked. #1701: 0 under this fixture's `--security redteam` --
         # the count means "suppressed from the GATE", and redteam gates them.
         self.assertEqual(meta["coverage"]["tools_suppressed"], {"vendor": 0})
+        # #1701 fix round 1 (F2): the other half of the same tally, and the only
+        # thing in the artifact that explains a redteam gate verdict resting on
+        # a finding `findings[]` does not hold. Non-empty for its own walk, and
+        # the two must sum to the number the ingest and `security_gate` print.
+        self.assertEqual(meta["coverage"]["tools_suppressed_gated"], {"vendor": 1})
         self.assertTrue(self.report["discarded_claims"],
                         "no claim was discarded: the verdict axis did not run")
         self.assertTrue(self.report["findings"], "no finding survived")

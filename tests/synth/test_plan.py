@@ -12,6 +12,8 @@ import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.coverage_io as coverage_io
 import scripts.synth.delta as delta_mod
+import scripts.synth.render as render_mod
+import scripts.html_report as html_report
 import scripts.synth.plan as plan_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
@@ -732,6 +734,54 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(self._gate(severity="critical"), "PASS")
         cov = self._run("redteam", severity="critical")[1]["meta"]["coverage"]
         self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
+
+    # -- fix round 1, F2: the disclosure the gate FAIL rests on ----------------
+
+    def test_the_gated_count_is_published_and_rendered(self):
+        """A redteam FAIL over an empty findings list must be explainable.
+
+        Before this fix both renderers filtered rows to `n > 0` and every row
+        was zero under redteam, so the operator saw
+        `**Gate:** FAIL` with `HIGH: 0`, no finding, and no mention of
+        suppression in the markdown, the HTML or (legibly) the JSON.
+        """
+        _body, report = self._run("redteam")
+        cov = report["meta"]["coverage"]
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(cov["tools_suppressed_gated"], {"vendor": 1})
+        self.assertEqual(cov["tools_suppressed"], {"vendor": 0})
+        md = render_mod.render_summary(report)
+        self.assertIn("suppressed but GATED", md)
+        self.assertIn("vendor: 1", md)
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "r.html")
+            html_report.write_html(report, out)
+            with open(out, encoding="utf-8") as fh:
+                html = fh.read()
+        self.assertIn("suppressed as vendored but", html)
+        self.assertIn("this run", html)
+
+    def test_the_two_tallies_sum_to_the_ingest_count_in_either_mode(self):
+        """One tally, split -- `ingest_tools.suppressed_counts`' one-definition
+        rule. The artifact may not disagree with the same run's stderr or with
+        `security_gate`, which both print the undivided number."""
+        for security, gated, withheld in (("redteam", {"vendor": 1}, {"vendor": 0}),
+                                          ("standard", {}, {"vendor": 1})):
+            with self.subTest(security=security):
+                cov = self._run(security)[1]["meta"]["coverage"]
+                self.assertEqual(cov["tools_suppressed_gated"], gated)
+                self.assertEqual(cov["tools_suppressed"], withheld)
+                total = {seg: cov["tools_suppressed"].get(seg, 0)
+                         + cov["tools_suppressed_gated"].get(seg, 0)
+                         for seg in set(cov["tools_suppressed"])
+                         | set(cov["tools_suppressed_gated"])}
+                self.assertEqual(total, {"vendor": 1})
+
+    def test_standard_mode_renders_only_the_original_line(self):
+        md = render_mod.render_summary(self._run("standard")[1])
+        self.assertIn("**Tool findings suppressed:**", md)
+        self.assertNotIn("suppressed but GATED", md)
 
     def test_the_evidence_axis_is_the_one_remaining_asymmetry(self):
         """The documented, owner-owed difference (see #1578).

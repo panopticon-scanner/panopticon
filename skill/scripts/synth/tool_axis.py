@@ -366,6 +366,11 @@ def reconcile(plan, tools, resolved):
         "tools_suppressed": {
             segment: max(0, total - gated_counts.get(segment, 0))
             for segment, total in suppressed_total.items()},
+        # #1701 fix round 1 (F2): the other half. Without it the artifact holds
+        # no number at all for a redteam FAIL whose findings list is empty --
+        # the mode that changed the gate was the mode that stopped disclosing,
+        # and the report contradicted its own run's stderr and CI gate line.
+        "tools_suppressed_gated": gated_counts,
         "tools_ran": (sorted(tools_ran) if tools_ran is not None
                       else sorted(resolved.tool_names)),
         "build_executing_tools": sorted(

@@ -102,17 +102,49 @@ def _suppressed_line(suppressed):
     must not render as "nothing was dropped". Tolerant of a malformed block for
     the same reason the HTML is: this line is not worth a traceback mid-render.
     """
-    if not isinstance(suppressed, dict):
-        return ""
-    rows = [(seg, n) for seg, n in sorted(suppressed.items())
-            if isinstance(seg, str) and isinstance(n, int)
-            and not isinstance(n, bool) and n > 0]
+    rows = _suppressed_rows(suppressed)
     if not rows:
         return ""
     return ("**Tool findings suppressed:** %s \u2014 dropped from the tool axis "
             "for sitting under a conventional vendored-dependency directory; the "
             "agentic panel still reviewed those files, and `security_gate "
             "--security redteam` gates them"
+            % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
+
+
+def _suppressed_rows(value):
+    """The `{segment: count}` rows worth printing: named, countable, non-zero.
+
+    Shared by both suppression lines so they can never disagree about which
+    rows exist. Tolerant of a malformed block for the same reason the HTML is:
+    neither line is worth a traceback mid-render.
+    """
+    if not isinstance(value, dict):
+        return []
+    return [(seg, n) for seg, n in sorted(value.items())
+            if isinstance(seg, str) and isinstance(n, int)
+            and not isinstance(n, bool) and n > 0]
+
+
+def _suppressed_gated_line(gated):
+    """#1701: what the vendored-path exclusion withheld from `findings[]` and
+    THIS RUN'S gate counted anyway.
+
+    Its own line, with its own wording, because it says the opposite of the one
+    above: those findings were not lost from the gate, they were lost from the
+    REPORT while still setting it. Without it a redteam FAIL renders as
+    "HIGH: 0 -- FAILS THE GATE" over an empty findings list, with nothing
+    anywhere saying why (fix round 1, F2). Silent when nothing was gated, which
+    is every standard-mode run.
+    """
+    rows = _suppressed_rows(gated)
+    if not rows:
+        return ""
+    return ("**Tool findings suppressed but GATED:** %s \u2014 withheld from the "
+            "findings below for sitting under a conventional vendored-dependency "
+            "directory, and counted toward THIS RUN's gate, risk level and health "
+            "grade anyway (`--security redteam`). A gate verdict here may rest on "
+            "findings this report does not list"
             % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
 
 
@@ -154,9 +186,15 @@ def render_summary(report):
         # state an operator most needs named.
         lines.insert(3, "**Coverage:** NOT CERTIFIED — %s"
                      % ("; ".join(parts) or s.get("coverage_note") or "incomplete"))
-    sup = _suppressed_line((report["meta"].get("coverage") or {}).get("tools_suppressed"))
+    _cov = report["meta"].get("coverage") or {}
+    sup = _suppressed_line(_cov.get("tools_suppressed"))
     if sup:
         lines.insert(3, sup)
+    # #1701: inserted AFTER the line above so it lands ABOVE it -- a count that
+    # moved this run's gate outranks a count that did not.
+    sup_gated = _suppressed_gated_line(_cov.get("tools_suppressed_gated"))
+    if sup_gated:
+        lines.insert(3, sup_gated)
     rz = (report["meta"].get("coverage") or {}).get("resume") or {}
     _fo = rz.get("fan_out") or {}
     _vf = rz.get("verify") or {}

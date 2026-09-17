@@ -575,6 +575,9 @@ def _render_header(report):
     )
     parts.append(_render_scanner_context(meta))
     parts.append(_render_test_inventory(meta))
+    # #1701: the gated count first -- a suppression that moved this run's gate
+    # outranks one that did not.
+    parts.append(_render_suppressed_gated_tools(meta))
     parts.append(_render_suppressed_tools(meta))
     return "\n".join(parts)
 
@@ -730,18 +733,48 @@ def _render_suppressed_tools(meta):
     the value is repaired at its boundary, and a renderer is not the place to
     discover that it was not.
     """
-    suppressed = (meta.get("coverage") or {}).get("tools_suppressed")
-    if not isinstance(suppressed, dict):
-        return ""
-    rows = [(seg, n) for seg, n in sorted(suppressed.items())
-            if isinstance(seg, str) and isinstance(n, int)
-            and not isinstance(n, bool) and n > 0]
+    rows = _suppressed_rows((meta.get("coverage") or {}).get("tools_suppressed"))
     if not rows:
         return ""
     return ("<div class='coverage'>Tool findings suppressed as vendored: %s "
             "&mdash; dropped from the tool axis on the directory name alone; "
             "the agentic panel still reviewed those files, and "
             "<code>security_gate --security redteam</code> gates them</div>"
+            % " &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows))
+
+
+def _suppressed_rows(value):
+    """The `{segment: count}` rows worth rendering: named, countable, non-zero.
+
+    Shared by both suppression blocks so they can never disagree about which
+    rows exist. Tolerant of a malformed block -- the value is repaired at its
+    boundary, and a renderer is not the place to discover that it was not.
+    """
+    if not isinstance(value, dict):
+        return []
+    return [(seg, n) for seg, n in sorted(value.items())
+            if isinstance(seg, str) and isinstance(n, int)
+            and not isinstance(n, bool) and n > 0]
+
+
+def _render_suppressed_gated_tools(meta):
+    """#1701: what was withheld from `findings[]` and set THIS RUN's gate anyway.
+
+    Its own block, with its own wording, because it says the opposite of the one
+    above: those findings were not lost from the gate, they were lost from the
+    REPORT while still setting it. Without it a redteam FAIL renders as a gate
+    verdict over an empty findings table with nothing anywhere to explain it
+    (fix round 1, F2). Silent when nothing was gated -- every standard-mode run.
+    """
+    rows = _suppressed_rows((meta.get("coverage") or {}).get("tools_suppressed_gated"))
+    if not rows:
+        return ""
+    return ("<div class='coverage'>Tool findings suppressed as vendored but "
+            "GATED: %s &mdash; withheld from the findings below on the directory "
+            "name alone, and counted toward <strong>this run's</strong> gate, "
+            "risk level and health grade anyway "
+            "(<code>--security redteam</code>). A gate verdict here may rest on "
+            "findings this report does not list</div>"
             % " &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows))
 
 
