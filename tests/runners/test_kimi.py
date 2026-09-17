@@ -616,17 +616,21 @@ class TestHomeLocation(unittest.TestCase):
             # prepares many runners does not stack wrappers on SIGTERM.
             self.assertIsNone(r._crash_strip)
 
-    def test_an_interrupt_mid_batch_leaves_the_config_in_place_until_the_pool_drains(self):
-        # R3-1: a Ctrl-C raises KeyboardInterrupt in the main thread inside
-        # run_batch's `with ThreadPoolExecutor`, whose __exit__ JOINS every
-        # queued entry -- nothing is cancelled. Each of those still launches
-        # with KIMI_CODE_HOME pointing at this home, and its config.toml is
-        # the ONLY place the guard hooks and the derived deny-list are
-        # registered: strip it before the drain and every remaining child runs
-        # fail-open. orchestrate.loop already routes KeyboardInterrupt to
-        # teardown("error") AFTER the drain, so `prepare` must leave SIGINT
-        # alone. Real Runner, real run_batch, fake run_entry; the interrupt is
-        # raised the way the driver's own handler raises it -- no signal is sent.
+    def test_an_interrupt_mid_batch_terminates_before_the_guards_come_down(self):
+        # R3-1, as amended by #1662. A Ctrl-C raises KeyboardInterrupt in the
+        # main thread inside the pool. `config.toml` is the ONLY place this
+        # host's guard hooks and derived deny-list are registered, so any
+        # child still running when it is stripped runs fail-open -- which is
+        # why the ORDER is: cancel what has not started, terminate what is
+        # running, and only then let `orchestrate._finish` call
+        # teardown("error"). Every entry that did launch must therefore have
+        # seen the config; the ones still queued must not have launched at
+        # all (before #1662 the pool's `with` drained all four). `prepare`
+        # must still leave SIGINT alone: the loop routes the interrupt, and a
+        # handler that stripped secrets would strip them before the
+        # termination rather than after. Real Runner, real run_batch, fake
+        # run_entry; the interrupt is raised the way the driver's own handler
+        # raises it -- no signal is sent.
         with tempfile.TemporaryDirectory() as d:
             before = signal.getsignal(signal.SIGINT)
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
@@ -660,11 +664,17 @@ class TestHomeLocation(unittest.TestCase):
             with mock.patch.object(r, "run_entry", fake_run_entry), \
                  self.assertRaises(KeyboardInterrupt):
                 base.HostRunner.run_batch(r, entries, 2, lambda e: {})
-            self.assertEqual(4, len(seen), "the pool drains every queued entry")
+            launched = [eid for eid, _present in seen]
+            self.assertIn("e0", launched)
+            self.assertLess(len(seen), 4,
+                            "the queued entries were launched anyway: %r" % seen)
+            self.assertNotIn("e3", launched,
+                             "an entry still queued at the interrupt launched: %r" % seen)
             self.assertEqual([], [eid for eid, present in seen if not present],
-                             "entries launched after the interrupt saw no config.toml: %r" % seen)
-            self.assertTrue(os.path.isfile(config), "config.toml must survive the drain")
-            r.teardown("error")                  # the loop's path: strip AFTER the drain
+                             "an entry ran after the config was stripped: %r" % seen)
+            self.assertTrue(os.path.isfile(config),
+                            "config.toml must outlive the termination")
+            r.teardown("error")        # the loop's path: strip AFTER the termination
             self.assertFalse(os.path.exists(config))
 
     def test_a_prepare_that_rejects_the_operator_config_leaves_no_home_behind(self):

@@ -504,10 +504,11 @@ class Runner(base.HostRunner):
         exception; SIGTERM goes on top, CHAINING to whatever was there -- safe
         on this side of the drain because its chain ends in SIG_DFL, which ends
         the process: nothing launches after it. SIGINT is deliberately NOT here
-        (R3-1): KeyboardInterrupt is already routed by orchestrate.loop to
-        teardown("error") AFTER run_batch's pool has drained, and a handler
-        strips BEFORE the drain -- every entry still queued would then launch
-        against a home with no config.toml, i.e. no guard hooks. SIGKILL nobody
+        (R3-1, as amended by #1662): KeyboardInterrupt is already routed by
+        orchestrate.loop to teardown("error") AFTER `iter_batch` has cancelled
+        the queue and terminated what was running, and a handler would strip
+        BEFORE that -- the entries the interrupt catches mid-flight would
+        finish against a home with no config.toml, i.e. no guard hooks. SIGKILL nobody
         can catch: that residual is in docs/PANOPTICON.md."""
         if self._crash_strip is not None:
             return

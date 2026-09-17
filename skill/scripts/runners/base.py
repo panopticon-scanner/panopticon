@@ -171,6 +171,11 @@ class HostRunner:
     # the seam's reference implementation honours it -- and a family that
     # cannot says so here, once, instead of documenting it in prose.
     HONOURS_MAX_TURNS = True
+    # #1662: how long a terminated child is given to exit before it is killed,
+    # and the bound on how long an INTERRUPTED batch waits for the workers
+    # that were holding those children. Short on purpose -- a Ctrl-C means
+    # stop, and the operator is watching a terminal.
+    INTERRUPT_GRACE = 5.0
 
     def __init__(self, host=None):
         if host:
@@ -224,6 +229,64 @@ class HostRunner:
     def run_entry(self, entry, env):
         raise NotImplementedError("a host runner must implement run_entry")
 
+    def register_child(self, proc):
+        """Record a live child, so a Ctrl-C can end it (#1662).
+
+        `proc` is anything `subprocess.Popen`-shaped -- `terminate()`,
+        `kill()`, `wait(timeout=)` are all this seam uses.
+
+        Stored on the INSTANCE dict lazily rather than in `__init__`: a family
+        (and several fakes in this suite) may define its own `__init__`
+        without chaining to this one, and a registry that only exists when
+        somebody remembered to call `super()` is a registry that silently
+        holds nothing on the one host that needed it. `setdefault` and
+        `append` are each atomic under the GIL, which is all the synchronising
+        a list appended to from the pool's workers and read from the main
+        thread needs.
+
+        The three families shipped today launch through a blocking
+        `subprocess.run`, which hands back no handle at all, so they register
+        nothing and `terminate_children` is a no-op for them: an operator's
+        terminal Ctrl-C already SIGINTs every child in the foreground process
+        group, and what this module adds for those hosts is refusing to LAUNCH
+        the rest of the batch and refusing to wait the running ones out. A
+        family that adopts `Popen` -- or any host whose children leave the
+        foreground group -- registers here and gets the path below.
+        """
+        self.__dict__.setdefault("_children", []).append(proc)
+
+    def terminate_children(self, grace=None):
+        """End every child this runner still has in flight -- `terminate()`
+        (SIGTERM on POSIX), then `kill()` (SIGKILL) for whatever has not
+        exited within `grace` -- and return the children it acted on (#1662).
+
+        Called by `iter_batch` on the interrupt path, before the loop tears
+        the guard files down. It installs NO signal handler and replaces none:
+        `runners/kimi.py` chains a SIGTERM secret-stripper onto whatever was
+        already registered, and an interrupt path that installed its own would
+        unlink that chain. The registry is EMPTIED as it is read, so a second
+        call is a no-op rather than a second kill at a pid the OS may since
+        have reused.
+        """
+        grace = self.INTERRUPT_GRACE if grace is None else grace
+        children = list(self.__dict__.get("_children") or ())
+        self.__dict__["_children"] = []
+        for proc in children:
+            try:
+                proc.terminate()
+            except (OSError, ValueError):        # already gone
+                pass
+        deadline = time.monotonic() + max(0.0, float(grace))
+        for proc in children:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except Exception:    # noqa: BLE001 -- TimeoutExpired, or a handle that cannot wait
+                try:
+                    proc.kill()
+                except (OSError, ValueError):
+                    pass
+        return children
+
     def iter_batch(self, entries, concurrency, env_for):
         """Run every entry through run_entry on a thread pool, yielding
         `(entry, result, timing)` in COMPLETION order; an exception becomes
@@ -239,25 +302,33 @@ class HostRunner:
         ledgers each entry AS IT ARRIVES, so a batch that is interrupted keeps
         everything already yielded.
 
-        What it does NOT keep is the rest of the batch, and the set is bigger
-        than the entries that were running: `shutdown(wait=True)` queues its
-        stop sentinel BEHIND every work item, so every entry the batch has
-        queued -- running or not yet started -- is still launched and allowed
-        to finish. None of them is persisted (their futures are never
-        consumed), so the resume re-launches all of them, and the interrupt
-        itself does not return until the last one does. Deliberate, not
-        incidental -- see the drain paragraph below -- and narrowing it to the
-        already-launched ones is a follow-up, not something to change here.
+        #1662 -- Ctrl-C means complete stoppage. An interrupt (or a close:
+        both arrive here as a BaseException at the yield) does three things,
+        in this order:
 
-        The pool's `with` block still JOINS every future on exit: nothing is
-        cancelled, whether this generator is exhausted, closed, or unwound by
-        an exception raised at the yield. Deliberate, and depended upon --
-        children already launched are registered under guard files the loop
-        tears down afterwards, so a runner that stripped its scratch config
-        before the drain would leave every remaining child running fail-open
-        (tests/runners/test_kimi.py). Callers that may abandon the generator
-        mid-batch should close it deterministically (`contextlib.closing`)
-        rather than leave the drain to garbage collection.
+        1. `shutdown(cancel_futures=True)`, so every work item still QUEUED is
+           dropped and never launches. It used to be the opposite:
+           `shutdown(wait=True)` queues its stop sentinel BEHIND every work
+           item, so an interrupted batch still launched everything it had
+           queued, persisted none of it (the futures are never consumed) and
+           re-launched all of it on the resume. On a wide batch of slow
+           entries that is minutes of work paid for and thrown away.
+        2. `terminate_children()`, which ends what is already RUNNING rather
+           than waiting it out. This runs BEFORE the loop tears the guard
+           files down (`orchestrate._finish` does that, after this returns),
+           because a child that outlived its guard would run unconfined --
+           the ordering `tests/runners/test_kimi.py` pins.
+        3. a BOUNDED wait on the workers that were holding those children
+           (`INTERRUPT_GRACE`), instead of the unbounded join the `with`
+           block used to perform. One worker slot can still turn over between
+           the last yield and the cancel -- the worker that finished an entry
+           takes the next queued item immediately, and nothing the consumer
+           does can beat it -- so "running" means at most `width` entries,
+           not the whole batch.
+
+        Callers that may abandon the generator mid-batch should close it
+        deterministically (`contextlib.closing`) rather than leave the
+        cancellation to garbage collection.
         """
         entries = list(entries)
         if not entries:
@@ -278,10 +349,24 @@ class HostRunner:
                                    "finished_at": _utc(started + elapsed),
                                    "duration_ms": int(elapsed * 1000)}
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=width) as pool:
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=width)
+        futures, stopped = [], False
+        try:
             futures = [pool.submit(one, e) for e in entries]
             for f in concurrent.futures.as_completed(futures):
                 yield f.result()
+        except BaseException:      # noqa: BLE001 -- KeyboardInterrupt and GeneratorExit both
+            stopped = True
+            pool.shutdown(wait=False, cancel_futures=True)
+            self.terminate_children()
+            concurrent.futures.wait([f for f in futures if not f.done()],
+                                    timeout=self.INTERRUPT_GRACE)
+            raise
+        finally:
+            # The normal path joins exactly as the old `with` block did (every
+            # future is already done by then); the interrupted one has just
+            # bounded its own wait and must not block again here.
+            pool.shutdown(wait=not stopped)
 
     def run_batch(self, entries, concurrency, env_for):
         """Drain iter_batch; results in ENTRY order, one per entry. The session
