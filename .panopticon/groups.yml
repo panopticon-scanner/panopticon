@@ -327,12 +327,23 @@ groups:
   CI:
     match:
     - .github/**
+    # #1647: the fetch-and-exec rule for `.github/workflows/*.yml` run steps.
+    # It is an operator CLI under repo-root scripts/ like bump_pins.py, but it
+    # is ABOUT .github/**, and its two tests are already this group's -- a
+    # reviewer holding the rule without the workflows it governs (or the other
+    # way round) is reviewing half of it.
+    - scripts/workflow_guard.py
+    # fix round 1 split the shell reading out of the guard (it grew past the
+    # house's 700-line module size on one round of hardening). Same group as
+    # its only caller: the reader exists for this rule and is reviewed with it.
+    - scripts/shell_reader.py
     tests:
     - tests/test_apply_labels.py
     - tests/test_security_workflow.py
     - tests/test_image_freshness.py
     - tests/test_nvd_cache_decision.py
     - tests/test_workflow_pins.py
+    - tests/test_workflow_guard.py
     - tests/test_pyproject.py
     - tests/test_pyproject_metadata.py
     panels:

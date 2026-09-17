@@ -245,6 +245,28 @@ Two differences between the files are deliberate:
 `EXEMPT_INSTALLS` list with a reason, every pin in such a file carries a `--hash=` (a `TODO-hash`
 placeholder is refused), and the pinned pip may not be older than the one the runner ships.
 
+The third door is what a workflow **downloads and then runs**, and `scripts/workflow_guard.py`
+holds it. It parses shell — statements split quote-aware on `;`, `&&`, `||` and `|`, argv from
+`shlex`, comments dropped and `\`-continuations, heredocs and `$(…)`/`<(…)` substitutions lifted
+first — and fails the suite when a `curl`/`wget` download is made executable, interpreted,
+unpacked, moved onto `PATH` or handed to an interpreter on stdin without a checksum **bound to that
+path**: a `sha256sum -c` (or `shasum -a 256 -c`) whose sums list — piped in, heredoc'd, or a file an
+earlier statement wrote — names the file that was fetched, carries a digest, and runs before the
+first use of it. A checksum whose failure is swallowed (`… || true`, `… &`, `if ! …`) is not a
+check, because `bash -e` is what makes one a gate. A fetch piped straight into a shell
+(`curl … | sh`, `eval "$(curl …)"`, `bash <(curl …)`) can never satisfy the rule: there is no file
+to hash, so download to a file, check it, then run it.
+
+The scope is the **job**, not the step: a job's `run:` steps are folded in order, because they share
+the workspace and `/tmp` — `curl -o /tmp/x` in one step and `chmod +x /tmp/x; /tmp/x` in the next is
+one fetch-and-exec that no per-step reading can see, and a `sha256sum -c` in a later step is a real
+check of an earlier step's download. A step whose `shell:` is not bash/sh (pwsh, python, cmd) is
+reported **unread** rather than clean. Exemptions are `(workflow, step name, reason)` tuples on
+`tests/test_workflow_pins.py`'s `EXEMPT_FETCHES`, held to the same staleness and posture checks as
+the install list. Run it by hand with `python3 scripts/workflow_guard.py .github/workflows/*.yml`;
+CI gets **no separate lint step**, because `tests/test_workflow_pins.py` already applies it to the
+whole fleet on every PR.
+
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking
 changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.version`,
