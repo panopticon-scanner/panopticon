@@ -293,6 +293,43 @@ class TestTheHeadSurvivesAReaderThatIsCutOff(_ChildCase):
             "import sys\nsys.stdout.write('done\\n')\n").stdout)
 
 
+class TestAnEmptyCutOffStreamStaysFalsy(unittest.TestCase):
+    """Round-1 re-review, finding 1: an EMPTY stream whose reader was cut off
+    rendered as the bare "reader cut off" note -- a truthy string -- so the
+    `(proc.stderr or proc.stdout)` sites in discovery and synthesize picked
+    the note over the diagnostic R1-2 had just rescued from stdout. A stream
+    that kept nothing renders as nothing; the cut-off fact rides on the stream
+    that has content."""
+
+    def test_nothing_kept_renders_as_nothing(self):
+        head = child._Head()                  # never completed, nothing read
+        self.assertEqual("", head.text())
+        self.assertEqual("DIAGNOSTIC", head.text() or "DIAGNOSTIC")
+
+    def test_something_kept_and_cut_off_still_says_so(self):
+        head = child._Head()
+        head.parts.append("DIAGNOSTIC: adapter exploded\n")
+        self.assertIn("DIAGNOSTIC", head.text())
+        self.assertIn("reader cut off", head.text())
+
+
+class TestTheHeadIsBoundedInPartsToo(unittest.TestCase):
+    """Round-1 re-review, finding 2: once a ceiling was reached the reader kept
+    appending an empty string per LINE, so a five-million-line child grew the
+    accumulator to five million entries (44 MB) in the module whose purpose
+    is bounding memory. Nothing kept means nothing appended."""
+
+    def test_lines_past_the_ceiling_do_not_grow_the_head(self):
+        stream = io.StringIO("x\n" * (child.CAPTURE_LINES_MAX + 5000))
+        head = child._Head()
+        child._capture(stream, head)
+        self.assertTrue(head.complete)
+        self.assertEqual(child.CAPTURE_LINES_MAX, head.lines)
+        self.assertNotIn("", head.parts)
+        self.assertLessEqual(len(head.parts), child.CAPTURE_LINES_MAX)
+        self.assertEqual(2 * 5000, head.cut)
+
+
 class TestTheCeilingIsCharactersAndSaysSo(_ChildCase):
     """Item 24 R1-3: the ceiling is applied to a `text=True` stream, so it
     bounds CHARACTERS, and the name and the marker both said bytes.

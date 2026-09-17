@@ -105,12 +105,15 @@ class _Head:
         Both facts are recorded, because they are different: `cut` is output the
         CEILING dropped, `complete` is whether the stream was read to its end. A
         truncated diagnostic must never read as a whole one either way."""
+        kept = "".join(self.parts)
         note = ""
         if self.cut:
             note += "\n\u2026 [cut %d characters]" % self.cut
-        if not self.complete:
+        if not self.complete and kept:
+            # An EMPTY cut-off stream renders as nothing: the `(stderr or stdout)`
+            # readers must fall through to the stream that has the diagnostic.
             note += "\n\u2026 [reader cut off: the stream never reached EOF]"
-        return "".join(self.parts) + note
+        return kept + note
 
 
 def _capture(stream, head):
@@ -130,7 +133,8 @@ def _capture(stream, head):
             take = chunk[:max(0, CAPTURE_CHARS_MAX - head.chars)] if room > 0 else ""
             if take.count("\n") > room:
                 take = "".join(part + "\n" for part in take.split("\n")[:room])
-            head.parts.append(take)
+            if take:                       # nothing kept means nothing appended
+                head.parts.append(take)
             head.chars += len(take)
             head.lines += take.count("\n")
             head.cut += len(chunk) - len(take)
@@ -191,7 +195,14 @@ def _run_child(cmd, review_root, phase, timeout=None):
 
     #1576: a Popen with reader threads rather than `subprocess.run`, because the
     capture has to be BOUNDED and `capture_output=True` cannot be. #1575: in its
-    own session, so the timeout can reach the whole tree (`_kill_group`)."""
+    own session, so the timeout can reach the whole tree (`_kill_group`).
+
+    A descendant that outlives the child (or escaped its process group) is
+    deliberately LEFT once the readers' shared join grace expires: the child
+    itself has already been reaped, so there is no group left to signal, and
+    the driver must not stall on a pipe it cannot close. Its output past that
+    point is lost and the head says so.
+    """
     if timeout is None:
         timeout = _CHILD_TIMEOUTS.get(phase, _CHILD_TIMEOUT_DEFAULT)
     name = cmd[1] if len(cmd) > 1 else cmd[0]
