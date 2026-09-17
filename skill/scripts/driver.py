@@ -341,7 +341,7 @@ def _emit_posture_disclosure(envelope):
         sys.stderr.write("driver:   %s\n" % line)
 
 
-def _establish_host_posture(review_root, manifest, args):
+def _establish_host_posture(review_root, manifest, args, *, registration_dir=None):
     """Probe this host now; write the evidence, or refuse if it moved.
 
     Spec 5.2. Runs on EVERY invocation, not once per run: `driver run` is a
@@ -353,6 +353,12 @@ def _establish_host_posture(review_root, manifest, args):
     directions: a posture that degraded is alarming, and one that improved
     still leaves the entries already dispatched under the weaker posture, so
     the honest answer to both is a fresh run.
+
+    `registration_dir` (#1609) is a TEST SEAM: None -- the default, and what
+    every production caller passes -- keeps the registration probes reading the
+    real registry row, which is what production must do. F4 pinned every direct
+    `run_probes("claude", ...)` call in tests to a temp dir and could not pin
+    the ones that come through here, because this argument did not exist.
 
     `args` is accepted and deliberately READ FOR NOTHING TREE-SHAPED. It is
     kept as a test seam: `args.target` is the operator's own checkout, which
@@ -424,6 +430,7 @@ def _establish_host_posture(review_root, manifest, args):
     # (posture is established before `prepare`), so a probe that measures this
     # run's children legitimately falls back until a child has run.
     fresh = host_probes.run_probes(host, review_root, session_root=session_root,
+                                   registration_dir=registration_dir,
                                    shadow=shadow, settings_path=settings_path,
                                    run_home=getattr(args, "run_home", None))
     # 5.1 surface 1. Emitted here -- after `fresh` is computed, before the

@@ -72,6 +72,21 @@ def _register_perfect_shells(directory):
                      "---\n\nbody\n" % (name[:-3], ", ".join(allowed)))
 
 
+def _own_registration(case):
+    """A registration directory THIS test owns (#1609).
+
+    Empty and freshly made, so every probe's STATE is what it already was --
+    the suite's throwaway HOME holds no `.claude/agents` either, and an absent
+    directory and an empty one are both "nothing is registered" to both probes.
+    What changes is that the directory belongs to this test instead of being
+    one the whole process shares, so an assertion added here later cannot be
+    moved by what some other test wrote into the shared home.
+    """
+    directory = tempfile.mkdtemp(prefix="registration-")
+    case.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+    return directory
+
+
 def _write_evidence(review_root, states):
     """A host-capabilities.json whose capabilities carry the given states."""
     capabilities = {name: {"state": states.get(name, hosts.UNKNOWN),
@@ -220,19 +235,21 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
         # test_a_second_invocation_with_the_same_posture_is_silent above; the
         # only thing that legitimately varies invocation to invocation is the
         # timestamp, so only _now_iso is controlled here.
+        registration = _own_registration(self)     # #1609
         with tempfile.TemporaryDirectory() as review_root:
             manifest = self._manifest(session_dir=review_root)
             args = self._args()
             with mock.patch.object(run_manifest, "_now_iso",
                                    return_value="2026-01-01T00:00:00Z"):
                 self.assertIsNone(driver._establish_host_posture(
-                    review_root, manifest, args))
+                    review_root, manifest, args, registration_dir=registration))
             path = runio._pano(review_root, runio.HOST_CAPABILITIES)
             before = runio._load_json(path)
 
             with mock.patch.object(run_manifest, "_now_iso",
                                    return_value="2099-01-01T00:00:00Z"):
-                err = driver._establish_host_posture(review_root, manifest, args)
+                err = driver._establish_host_posture(review_root, manifest, args,
+                                                     registration_dir=registration)
 
             self.assertIsNone(err)
             after = runio._load_json(path)
@@ -306,7 +323,8 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as review_root:
             manifest = self._manifest(session_dir=review_root)
             err = driver._establish_host_posture(
-                review_root, manifest, self._args())
+                review_root, manifest, self._args(),
+                registration_dir=_own_registration(self))     # #1609
             self.assertIsNone(err)
             self.assertTrue(runio.host_evidence(review_root))
 
@@ -317,25 +335,29 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
         # have been INVOKED again on the second call: a short-circuit that
         # skips re-probing once an artifact exists would leave call_count at 1
         # while still returning None and leaving the artifact unchanged.
+        registration = _own_registration(self)     # #1609
         with tempfile.TemporaryDirectory() as review_root:
             manifest = self._manifest(session_dir=review_root)
             args = self._args()
             with mock.patch.object(host_probes, "run_probes",
                                    wraps=host_probes.run_probes) as probed:
-                driver._establish_host_posture(review_root, manifest, args)
+                driver._establish_host_posture(review_root, manifest, args,
+                                               registration_dir=registration)
                 before = runio.host_evidence(review_root)
-                self.assertIsNone(
-                    driver._establish_host_posture(review_root, manifest, args))
+                self.assertIsNone(driver._establish_host_posture(
+                    review_root, manifest, args, registration_dir=registration))
                 self.assertEqual(2, probed.call_count)
             self.assertEqual(before, runio.host_evidence(review_root))
 
     def test_a_posture_that_moved_refuses_and_names_the_capability(self):
         # The 5.2 rule, in the degrading direction: the run's earlier entries
         # were dispatched under a posture that no longer holds.
+        registration = _own_registration(self)     # #1609
         with tempfile.TemporaryDirectory() as review_root:
             manifest = self._manifest(session_dir=review_root)
             args = self._args()
-            driver._establish_host_posture(review_root, manifest, args)
+            driver._establish_host_posture(review_root, manifest, args,
+                                           registration_dir=registration)
             # Derived from the STORED artifact, not from a second live probe:
             # a fresh `run_probes` reads this machine's registration directory
             # and session root, so the state it lands on is not the test's to
@@ -501,7 +523,8 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
                 fh.write("{}")
             run_manifest.write_manifest(review_root, manifest)
             err = driver._establish_host_posture(
-                review_root, manifest, self._args())
+                review_root, manifest, self._args(),
+                registration_dir=_own_registration(self))     # #1609
             self.assertIsNone(err)
             tag = run_manifest.run_tag(manifest)
             self.assertIsNotNone(tag)
@@ -673,7 +696,8 @@ class TestTheProbesReadTheRightTree(unittest.TestCase):
                                    wraps=probes_common.probe_shadow_shells) as scan:
                 driver._establish_host_posture(
                     review_root, self._manifest(session_dir=review_root),
-                    _Args(target=review_root, session_dir=None))
+                    _Args(target=review_root, session_dir=None),
+                    registration_dir=_own_registration(self))     # #1609
             self.assertEqual(1, scan.call_count)
             self.assertEqual(review_root, scan.call_args.args[1])
 
@@ -737,7 +761,8 @@ class TestTheProbesReadTheRightTree(unittest.TestCase):
                                    wraps=host_probes.run_probes) as probed:
                 driver._establish_host_posture(
                     review_root, manifest,
-                    _Args(target=target, session_dir=None))
+                    _Args(target=target, session_dir=None),
+                    registration_dir=_own_registration(self))     # #1609
             self.assertEqual(review_root, probed.call_args.args[1])
             self.assertEqual(runio.session_dir(manifest),
                              probed.call_args.kwargs["session_root"])
@@ -856,15 +881,16 @@ class TestTheDriftRefusalNamesTheRightRemedy(unittest.TestCase):
             manifest = {"host": "claude", "run_id": "r1" * 4,
                         "created": "2026-09-10", "security_mode": "standard",
                         "session_dir": session}
+            registration = _own_registration(self)     # #1609
             self.assertIsNone(driver._establish_host_posture(
-                review_root, manifest, args))
+                review_root, manifest, args, registration_dir=registration))
             stored = runio.host_evidence(review_root)
             self.assertEqual(hosts.PROVEN,
                              stored[hosts.ARTIFACT_WRITE_GUARD]["state"])
             resumed = {k: v for k, v in manifest.items() if k != "session_dir"}
             with _in(elsewhere):
                 err = driver._establish_host_posture(
-                    review_root, resumed, args)
+                    review_root, resumed, args, registration_dir=registration)
             self.assertIsNotNone(err)
             self.assertIn(hosts.ARTIFACT_WRITE_GUARD, err)
             self.assertIn("--session-dir", err)
@@ -1202,8 +1228,12 @@ class TestAProbeReportsRatherThanRaisingOutOfDriverRun(unittest.TestCase):
         # PREPENDED: `driver run` shells out to git for its clean-tree
         # baseline, and a PATH holding only the stub would fail that for a
         # reason this test is not about.
+        # #1609: `driver run` has no registration seam (production must read
+        # the real registry), so the registry ROW is pinned instead -- the
+        # other half of the same idiom.
         with mock.patch.dict(os.environ,
                              {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}), \
+                _pinned_registration(_own_registration(self)), \
                 mock.patch.object(runners_base, "runner_for",
                                   return_value=WrongSignature()):
             status = driver.run(args)            # must not raise
@@ -1213,6 +1243,78 @@ class TestAProbeReportsRatherThanRaisingOutOfDriverRun(unittest.TestCase):
         evidence = runio.host_evidence(review_root)
         self.assertEqual(hosts.UNKNOWN, evidence[hosts.USAGE_LEDGER]["state"])
         self.assertIn("TypeError", evidence[hosts.USAGE_LEDGER]["detail"])
+
+class TestTheRegistrationDirSeam(unittest.TestCase):
+    """#1609: `_establish_host_posture` calls `run_probes` with no
+    `registration_dir` BY DESIGN -- production must read the real registry --
+    so a test calling it directly had no way to say which directory the
+    registration probes should read. F4 pinned every direct
+    `run_probes("claude", ...)` call in tests to a temp dir; these it could
+    not, because there was no seam.
+
+    The default is unchanged (the registry row), so production reads exactly
+    what it always did.
+    """
+
+    def _manifest(self, session_dir):
+        claude = os.path.join(session_dir, ".claude")
+        os.makedirs(claude, exist_ok=True)
+        with open(os.path.join(claude, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{}")
+        return {"host": "claude", "run_id": "r1" * 4, "created": "2026-09-10",
+                "security_mode": "standard", "session_dir": session_dir}
+
+    def _establish(self, review_root, **kw):
+        target = tempfile.mkdtemp(prefix="operator-checkout-")
+        self.addCleanup(shutil.rmtree, target, ignore_errors=True)
+        err = driver._establish_host_posture(
+            review_root, self._manifest(review_root),
+            _Args(target=target, session_dir=review_root), **kw)
+        self.assertIsNone(err, err)
+        artifact = runio._load_json(
+            runio._pano(review_root, runio.HOST_CAPABILITIES))
+        return artifact["capabilities"]
+
+    def test_the_probes_read_the_directory_the_seam_names(self):
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        registration = _own_registration(self)
+        _register_perfect_shells(registration)
+        capabilities = self._establish(review_root,
+                                       registration_dir=registration)
+        row = capabilities[hosts.TOOL_POLICY_ENFORCED]
+        self.assertEqual(hosts.PROVEN, row["state"], row["detail"])
+        self.assertIn(registration, row["detail"])
+        # ... and the model-binding probe reads the same directory (F4 added it
+        # to this code path, and it was the second one with no way to be pinned)
+        self.assertIn(registration, capabilities[hosts.MODEL_BINDING]["detail"])
+
+    def test_the_default_still_reads_the_registry_row(self):
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        registered = _own_registration(self)
+        _register_perfect_shells(registered)
+        with _pinned_registration(registered):
+            capabilities = self._establish(review_root)
+        self.assertEqual(hosts.PROVEN,
+                         capabilities[hosts.TOOL_POLICY_ENFORCED]["state"])
+        self.assertIn(registered,
+                      capabilities[hosts.TOOL_POLICY_ENFORCED]["detail"])
+
+    def test_the_seam_wins_over_the_registry_row(self):
+        # Both present: the explicit argument is the one the probes read, so a
+        # test that pins it is not silently answered by the process-wide row.
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        registered, empty = _own_registration(self), _own_registration(self)
+        _register_perfect_shells(registered)
+        with _pinned_registration(registered):
+            capabilities = self._establish(review_root, registration_dir=empty)
+        self.assertEqual(hosts.REFUTED,
+                         capabilities[hosts.TOOL_POLICY_ENFORCED]["state"])
+        self.assertIn(empty, capabilities[hosts.TOOL_POLICY_ENFORCED]["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()
