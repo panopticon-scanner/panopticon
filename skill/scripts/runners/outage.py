@@ -16,54 +16,143 @@ import shlex
 # and the loop refuses to charge an entry's attempt budget for one.
 HOST_FAILURE = "host"
 ENTRY_FAILURE = "entry"
-# The provider-side symptoms, read case-insensitively out of the failure TEXT,
-# which is where all three shipped families put the host's own words: claude
-# composes "claude -p exited %s: %s" and "claude -p reported is_error: %s" from
-# the envelope, kimi "kimi -p exited %s: %s" from stdout-or-stderr, and codex
-# takes its `turn.failed`/`error` event's message verbatim. One host-agnostic
-# reader therefore covers the shipped text, and a family that knows better
-# passes `failure_class` at its own RunResult construction instead of teaching
-# this list a fourth dialect.
-_HOST_FAILURE_TEXT = (
-    # the credential is refused
-    "unauthorized", "unauthorised", "forbidden", "authentication",
-    "invalid api key", "api key not", "no api key", "token expired",
-    "expired token", "oauth", "please log in", "please login", "not logged in",
-    "/login",
-    # there is no money or allowance left
-    "quota", "insufficient_quota", "billing", "payment required",
-    "out of credits", "credit balance", "usage limit",
-    # too fast
-    "rate limit", "rate_limit", "ratelimit", "too many requests", "overloaded",
-    # the provider itself
-    "service unavailable", "bad gateway", "gateway timeout", "upstream",
-    "temporarily unavailable", "internal server error",
+# What is classified is the HOST's own error surface (`RunResult.host_error`),
+# never the composed `RunResult.error`: on two of the three shipped families
+# that message is built out of up to 200 characters of the AGENT's reply
+# (`claude -p exited %s: %s` % (rc, text[:200]); kimi's `detail` prefers the
+# assistant's content over stderr), so a cell reviewing `src/billing/quota.py`
+# would report its own findings as a quota outage. Every family fills
+# `host_error` from the place it ALREADY parses the host's error and from
+# nowhere else; a family that recorded none said nothing about the host.
+#
+# The match is anchored on both sides of that, as defence in depth:
+#
+# * a KIND -- the error key or reason phrase a provider names its own failures
+#   with (`authentication_error`, `insufficient_quota`, `RESOURCE_EXHAUSTED`).
+#   Phrase-shaped, never a bare word: `quota` alone is a directory name,
+#   `quota exceeded` is an outage. Separators are `[\s_.-]` so the wire form
+#   (`rate_limit_error`) and the prose form (`rate limit error`) are one entry.
+# * a STATUS that sits NEXT TO its reason (`403 Forbidden`, `429 Too Many
+#   Requests`, `auth_error: 403`, `API Error: 401`). A bare status is not
+#   enough: `line 403`, `got 503 in tests/test_gateway.py` and `429 python
+#   files` are all things a failing entry really says.
+_S = r"[\s_.-]"                      # how a provider spells a compound reason
+_KINDS = (
+    r"auth(?:entication|orization)?{s}?error",   # auth_error, provider.auth_error
+    r"invalid{s}api{s}key",
+    r"(?:missing|no){s}api{s}key",
+    r"api{s}key{s}(?:not{s}found|expired|is{s}invalid)",
+    r"please{s}run{s}/login",
+    r"(?:not{s}authenticated|unauthenticated)",
+    r"permission{s}denied",
+    r"insufficient{s}quota",
+    r"quota{s}(?:exceeded|exhausted)",
+    r"exceeded{s}your{s}current{s}quota",
+    r"resource{s}exhausted",
+    r"credit{s}balance{s}is{s}too{s}low",
+    r"payment{s}required",
+    r"billing{s}hard{s}limit",
+    r"rate_limit",                               # the wire key, underscore only
+    r"rate{s}limit(?:ed|{s}(?:error|exceeded|reached))",
+    r"exceeded{s}(?:your{s})?rate{s}limit",
+    r"too{s}many{s}requests",
+    r"overloaded(?:{s}error)?",
+    r"(?:service|api){s}unavailable",
+    r"temporarily{s}unavailable",
+    r"upstream{s}connect{s}error",
+    r"bad{s}gateway",
+    r"gateway{s}time-?out",
+    r"internal{s}server{s}error",
 )
-# ...and the statuses they arrive as. Bounded on BOTH sides so that a duration
-# ("kimi -p timed out after 403s"), a version, a path and a line number are not
-# read as an HTTP status: no word character, dot, dash or slash before it, and
-# no word character after.
-_HOST_FAILURE_STATUS = re.compile(r"(?<![\w./-])(401|402|403|429|502|503|504|529)(?!\w)")
+# The reason phrases a status is allowed to sit beside. Short on purpose: this
+# half only qualifies a status that is already there.
+_REASONS = (r"forbidden", r"unauthori[sz]ed", r"unauthenticated", r"too{s}many{s}requests",
+            r"payment{s}required", r"service{s}unavailable", r"bad{s}gateway",
+            r"gateway{s}time-?out", r"internal{s}server{s}error", r"quota",
+            r"rate{s}limit", r"overloaded", r"error", r"(?:resource{s})?exhausted",
+            r"status(?:{s}code)?")
+_STATUS = r"(?:401|402|403|429|502|503|504|529)"
 
 
-def classify_failure(error):
-    """`HOST_FAILURE` when this failure was the HOST's rather than this entry's
+def _alt(patterns):
+    return "|".join(p.format(s=_S) for p in patterns)
+
+
+# A kind never starts mid-word: `/billing/quota.py` and `myquota exceeded` are
+# not the provider talking. `_` and `.` are separators, not word characters.
+_HOST_ERROR_KIND = re.compile(r"(?:^|[^0-9a-z])(?:%s)" % _alt(_KINDS), re.I)
+# A status, bounded on both sides so a duration ("403s"), a version, a path and
+# a line number are not one -- and required to touch its reason.
+_HOST_ERROR_STATUS = re.compile(
+    r"(?<![\w./-])%(st)s(?!\w)[\s:,;=()-]*(?:%(rs)s)"
+    r"|(?:%(rs)s)[\s:,;=()-]*(?<![\w./-])%(st)s(?!\w)"
+    % {"st": _STATUS, "rs": _alt(_REASONS)}, re.I)
+# The prefixes a CLI puts at the START of ITS OWN error rendering. How a family
+# tells the host's words from the agent's when both can arrive in ONE text
+# field: anchored at the start, so an agent that writes "API Error" inside a
+# findings body is not the host talking.
+CLI_ERROR_PREFIXES = ("api error", "invalid api key", "credit balance",
+                      "authentication error", "rate limit", "overloaded",
+                      "error: 4", "error: 5")
+
+
+def _surface(host_error):
+    """The text to match, out of whatever shape a family recorded.
+
+    A provider error arrives either as a line (`provider.auth_error: 403`) or
+    as the error OBJECT the API returned. The object is flattened key by key,
+    so `{"status": 429}` reads as `status: 429` -- a status beside its reason,
+    which is exactly the anchoring rule -- and a nested `{"error": {...}}`
+    envelope is followed one level at a time.
+    """
+    if isinstance(host_error, dict):
+        parts = []
+        for key in ("type", "code", "status", "status_code", "reason", "error", "message"):
+            value = host_error.get(key)
+            if isinstance(value, dict):
+                parts.append(_surface(value))
+            elif value not in (None, "", []):
+                parts.append("%s: %s" % (key, value))
+        return " ".join(parts)
+    return "" if host_error is None else str(host_error)
+
+
+def classify_failure(host_error):
+    """`HOST_FAILURE` when THIS failure was the host's rather than the entry's
     -- auth, quota, a rate limit, or the provider being down -- else
     `ENTRY_FAILURE` (#1623).
 
-    Deliberately asymmetric. An unrecognised failure stays the entry's, which
-    is what every failure was before this existed, so nothing a family already
-    returns changes meaning. A false negative costs exactly what #1623 cost; a
-    false positive stops a run that could have retried -- and the loop acts on
-    it only when EVERY failure in a batch says the same thing, so one
-    misread line in a mixed batch changes nothing at all.
+    `host_error` is the host's own error surface and nothing else: the CLI's
+    error line, or the provider error object it printed. Absent -- the normal
+    case, because most failures are the entry's -- is `ENTRY_FAILURE`, which
+    is what every failure was before this existed.
+
+    Deliberately asymmetric in the same direction. A false negative costs what
+    #1623 cost: an outage charged to the cells. A false positive stops a run
+    that could have retried AND takes the per-entry cap off that entry, which
+    is why the surface is narrowed at the family, anchored here, and acted on
+    by the loop only when EVERY failure in a batch says the same thing.
     """
-    text = ("" if error is None else str(error)).lower()
+    text = _surface(host_error)
     if not text:
         return ENTRY_FAILURE
-    if _HOST_FAILURE_STATUS.search(text) or any(m in text for m in _HOST_FAILURE_TEXT):
+    if _HOST_ERROR_KIND.search(text) or _HOST_ERROR_STATUS.search(text):
         return HOST_FAILURE
     return ENTRY_FAILURE
+
+
+def cli_error(text):
+    """`text` when it IS a CLI's own error rendering rather than the agent's
+    reply, else None (#1623).
+
+    For the one place a family cannot keep the two apart by structure: the
+    Claude envelope's `result` string, which carries the agent's final message
+    on a good turn and the CLI's `API Error: ...` line on a refused one. The
+    prefix is matched at the START of the stripped text, so a findings body
+    that quotes an error message anywhere inside it is not the host talking.
+    """
+    head = (text or "").strip()
+    return text if head.lower().startswith(CLI_ERROR_PREFIXES) else None
 
 
 # #1623: the sentence a host-wide outage ends a run with. Two constants, the

@@ -631,9 +631,9 @@ class Runner(base.HostRunner):
                   and isinstance(record.get("session_id"), str)):
                 session_id = record["session_id"]
         if returncode != 0:
-            detail = text or (stderr or "").strip()
-            return base.RunResult.failed(
-                entry_id, "kimi -p exited %s: %s" % (returncode, detail[:200]))
+            host = (stderr or "").strip()      # #1623: the HOST's surface; `text` is the AGENT's
+            return base.RunResult.failed(entry_id, "kimi -p exited %s: %s"
+                                         % (returncode, (text or host)[:200]), host_error=host or None)
         return text, session_id
 
     def launch_env(self, overlay=None):

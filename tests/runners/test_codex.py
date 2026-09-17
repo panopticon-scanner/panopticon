@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from scripts.runners import base, codex
+from scripts.runners import base, codex, outage
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +39,28 @@ START = {"type": "thread.started", "thread_id": "session-1"}
 REPLY = {"type": "item.completed", "item": {"type": "agent_message", "text": '{"domains": []}'}}
 DONE = {"type": "turn.completed", "usage": {
     "input_tokens": 100, "cached_input_tokens": 60, "output_tokens": 20}}
+
+
+def test_the_host_surface_is_the_failed_turns_own_error_not_the_agent_message():
+    # #1623 C1: the `turn.failed`/`error` event IS the host talking; an
+    # agent_message about a 403 handler is not.
+    failed = {"type": "turn.failed", "error": {"type": "rate_limit_error",
+                                               "message": "429 Too Many Requests"}}
+    result = codex.Runner.parse_envelope("e", envelope(START, failed), 1)
+    assert result.failure_class == outage.HOST_FAILURE
+    finding = {"type": "item.completed",
+               "item": {"type": "agent_message", "text": "/admin returns 403 Forbidden"}}
+    result = codex.Runner.parse_envelope("e", envelope(START, finding), 1)
+    assert result.host_error is None
+    assert result.failure_class == outage.ENTRY_FAILURE
+
+
+def test_a_rate_limited_launch_that_printed_nothing_reads_its_stderr():
+    # The codex outage shape #1623 names: the JSONL never starts, and the
+    # reason is on stderr.
+    result = codex.Runner.parse_envelope("e", "", 1, stderr="stream error: exceeded rate limit\n")
+    assert result.failure_class == outage.HOST_FAILURE
+    assert codex.Runner.parse_envelope("e", "", 1).failure_class == outage.ENTRY_FAILURE
 
 
 def test_exec_jsonl_preserves_final_reply_and_session_without_inventing_cost_or_model():

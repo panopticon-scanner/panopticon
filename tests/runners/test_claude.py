@@ -7,6 +7,7 @@ from unittest import mock
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
 import scripts.runners.claude as claude_runner
+import scripts.runners.outage as outage
 import scripts._version as version
 import scripts.write_guard_hook as write_guard_hook
 
@@ -81,6 +82,26 @@ class TestEnvelope(unittest.TestCase):
         self.assertEqual(res.session_id, "sess-1")
         self.assertEqual(res.denials, ENVELOPE["permission_denials"])
         self.assertIsNone(res.error)
+
+    def test_the_host_surface_is_the_envelopes_own_error_not_the_agents_text(self):
+        # #1623 C1: `error` carries 200 characters of the AGENT's reply, so a
+        # cell whose finding is about a 403 handler must not read as a 403.
+        r = claude_runner.Runner("claude")
+        finding = dict(ENVELOPE, is_error=True,
+                       result='{"findings": [{"title": "/admin returns 403 Forbidden"}]}')
+        res = r.parse_envelope("e1", json.dumps(finding), 0)
+        self.assertIsNone(res.host_error)
+        self.assertEqual(outage.ENTRY_FAILURE, res.failure_class)
+        # ...while the CLI's OWN rendering of a provider refusal does.
+        refused = dict(ENVELOPE, is_error=True, result="API Error: 403 Forbidden")
+        res = r.parse_envelope("e1", json.dumps(refused), 0)
+        self.assertEqual("API Error: 403 Forbidden", res.host_error)
+        self.assertEqual(outage.HOST_FAILURE, res.failure_class)
+        # ...and so does an envelope that carries a provider error object.
+        envelope = dict(ENVELOPE, is_error=True, result="",
+                        error={"type": "rate_limit_error", "message": "slow down"})
+        self.assertEqual(outage.HOST_FAILURE,
+                         r.parse_envelope("e1", json.dumps(envelope), 0).failure_class)
 
     def test_is_error_and_nonzero_exit_and_non_json_are_failures(self):
         r = claude_runner.Runner("claude")

@@ -8,30 +8,55 @@ import scripts.runners.outage as outage
 
 class TestTheHostOutageClassifier(unittest.TestCase):
     """#1623: 243 of the 247 failed launches in the Kimi evidence run were ONE
-    403 -- the host, not the entries -- and the loop charged every one of them
-    to the entry that happened to be holding it.
+    `provider.auth_error: 403` -- the host, not the entries -- and the loop
+    charged every one of them to the entry that happened to be holding it.
 
-    The classifier is host-agnostic on purpose: it reads the failure TEXT, and
-    all three shipped families compose `RunResult.error` out of the host's own
-    exit line and message (`claude -p exited 1: ...`, `kimi -p exited 1: ...`,
-    codex's `turn.failed` error), so there is one place that decides and every
-    family is free to override it at its own construction.
+    What is classified is the HOST's own error surface (`RunResult.host_error`),
+    never the composed `error` text: on two of the three shipped families that
+    text is built out of up to 200 characters of the AGENT's output, so a cell
+    reviewing `src/billing/quota.py` would otherwise report its own findings as
+    a quota outage. The match is anchored on structured shapes -- an error KIND
+    the provider names, or a status sitting next to its reason -- not on a
+    substring anywhere in a sentence.
     """
 
     HOST = (
-        # the three families' shipped failure text, verbatim in shape
-        "kimi -p exited 1: Error: 403 Forbidden",
-        "claude -p exited 1: API Error: 401 {\"type\":\"authentication_error\"}",
-        "claude -p reported is_error: Invalid API key - please run /login",
-        "codex exited with status 1: stream error: unexpected status 429 Too Many Requests",
-        "kimi -p exited 1: quota exceeded for this organization",
-        "claude -p exited 1: Your credit balance is too low",
-        "codex exited with status 1: 503 Service Unavailable",
-        "kimi -p exited 1: upstream connect error",
-        "claude -p exited 1: Overloaded",
+        # the shapes #1623 itself names, across four families
+        "provider.auth_error: 403",
+        "kimi -p exited 1: provider.auth_error: 403",
+        "stream error: exceeded rate limit",
+        "429 Too Many Requests",
+        "429 RESOURCE_EXHAUSTED: Quota exceeded for quota metric",
+        "You exceeded your current quota",
+        # ...and the rest of the shipped surfaces
+        "Error: 403 Forbidden",
+        'API Error: 401 {"type":"authentication_error"}',
+        "Invalid API key - please run /login",
+        "quota exceeded for this organization",
+        "Your credit balance is too low",
+        "503 Service Unavailable",
+        "upstream connect error",
+        "Overloaded",
+        "rate_limit_error",
+        "insufficient_quota",
     )
     ENTRY = (
-        # every OTHER failure this suite and the three families produce
+        # The review's corpus: REAL entry-class failures whose text merely
+        # MENTIONS the vocabulary of an outage -- a finding about auth, a path
+        # under src/billing/, a line number that happens to be 403. Every one
+        # of these read `host` before the classifier was anchored, and a batch
+        # of them stopped the run.
+        'claude -p exited 1: {"findings": [{"title": "Missing authentication on /admin"}]}',
+        "claude -p reported is_error: the handler returns 403 for a signed-out user; "
+        "see src/auth/view.py",
+        "claude -p exited 1: TypeError: unsupported operand type at synth/render.py line 403",
+        "claude -p reported is_error: cannot read tests/fixtures/rate limit harness README",
+        "kimi -p exited 1: no such file or directory: src/billing/quota.py",
+        "claude -p exited 1: the repo has 429 python files; I could not finish in the turn budget",
+        "codex exited with status 1: assertion failed: expected 200, got 503 in "
+        "tests/test_gateway.py",
+        "claude -p reported is_error: the OAuth callback in src/login.py has no state parameter",
+        # ...and every other failure this suite and the three families produce
         "always", "flaky", "concurrency cap", "is_error",
         "persist refused: shape check failed",
         "claude -p timed out after 300s",
@@ -44,49 +69,78 @@ class TestTheHostOutageClassifier(unittest.TestCase):
         "ValueError: Codex requires delivery: return_json; it cannot self-write",
     )
 
-    def test_the_provider_side_symptoms_read_as_a_host_failure(self):
-        for error in self.HOST:
-            with self.subTest(error=error):
-                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(error))
+    def test_the_provider_side_surfaces_read_as_a_host_failure(self):
+        for host_error in self.HOST:
+            with self.subTest(host_error=host_error):
+                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(host_error))
 
-    def test_every_other_failure_stays_the_entrys_own(self):
-        for error in self.ENTRY:
-            with self.subTest(error=error):
-                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(error))
+    def test_a_failure_that_merely_mentions_the_vocabulary_is_the_entrys_own(self):
+        for text in self.ENTRY:
+            with self.subTest(text=text):
+                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
 
-    def test_no_error_at_all_is_an_entry_failure(self):
+    def test_a_provider_error_object_is_read_by_its_structure(self):
+        for surface in ({"type": "authentication_error", "message": "invalid x-api-key"},
+                        {"error": {"type": "rate_limit_error", "message": "slow down"}},
+                        {"status": 429, "message": "please retry"},
+                        {"code": "insufficient_quota"}):
+            with self.subTest(surface=surface):
+                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(surface))
+        self.assertEqual(outage.ENTRY_FAILURE,
+                         outage.classify_failure({"message": "the cell found a 403 handler"}))
+
+    def test_no_surface_at_all_is_an_entry_failure(self):
+        # A family that recorded no host error said nothing about the host, and
+        # the loop treats silence as the entry's own failure -- which is what
+        # every failure was before #1623.
         self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(None))
         self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(""))
+        self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure({}))
 
-    def test_a_failed_result_carries_the_classification(self):
+    def test_a_failed_result_classifies_from_the_host_surface_not_the_message(self):
+        composed = "claude -p exited 1: the finding is that /admin returns 403 Forbidden"
+        self.assertEqual(outage.ENTRY_FAILURE,
+                         base.RunResult.failed("e1", composed).failure_class)
         self.assertEqual(outage.HOST_FAILURE,
-                         base.RunResult.failed("e1", "kimi -p exited 1: 403 Forbidden").failure_class)
-        self.assertEqual(outage.ENTRY_FAILURE, base.RunResult.failed("e1", "always").failure_class)
+                         base.RunResult.failed("e1", composed,
+                                               host_error="provider.auth_error: 403").failure_class)
 
     def test_a_family_may_refine_it_at_its_own_construction(self):
-        # The seam's ruling: the default classifier covers the shipped text and
-        # a family that knows better says so, rather than patching this module.
+        # The seam's ruling: the default classifier covers the shipped
+        # surfaces, and a family that knows better says so rather than
+        # patching this module.
         res = base.RunResult.failed("e1", "always", failure_class=outage.HOST_FAILURE)
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
         direct = base.RunResult(entry_id="e1", ok=False, text="", usage={}, cost_usd=None,
                                 model=None, session_id=None, denials=[],
                                 error="claude -p exited 1: 429 rate limit",
+                                host_error="429 Too Many Requests",
                                 failure_class=outage.ENTRY_FAILURE)
         self.assertEqual(outage.ENTRY_FAILURE, direct.failure_class)
 
     def test_a_direct_construction_is_classified_too(self):
         # `claude.parse_envelope` builds its non-zero-exit failure through the
-        # plain constructor, not through `failed` -- which is exactly the
-        # shape a 403 arrives in on that host.
+        # plain constructor, not through `failed`.
         res = base.RunResult(entry_id="e1", ok=False, text="", usage={}, cost_usd=None,
                              model=None, session_id=None, denials=[],
-                             error="claude -p exited 1: 403 Forbidden")
+                             error="claude -p exited 1: whatever the agent said",
+                             host_error="API Error: 403 Forbidden")
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
 
     def test_a_successful_result_is_not_a_failure_of_either_kind(self):
         res = base.RunResult(entry_id="e1", ok=True, text="{}", usage={}, cost_usd=None,
                              model=None, session_id=None, denials=[], error=None)
         self.assertEqual(outage.ENTRY_FAILURE, res.failure_class)
+
+    def test_the_cli_error_reader_takes_only_the_clis_own_rendering(self):
+        # How a family tells the host's words from the agent's inside ONE text
+        # field: the CLI's error prefix, anchored at the start.
+        self.assertEqual("API Error: 403 Forbidden",
+                         outage.cli_error("API Error: 403 Forbidden"))
+        self.assertIsNone(outage.cli_error(
+            '{"findings": [{"title": "API Error: 403 Forbidden is not handled"}]}'))
+        self.assertIsNone(outage.cli_error(""))
+        self.assertIsNone(outage.cli_error(None))
 
 
 class TestTheFailureTally(unittest.TestCase):
@@ -99,8 +153,11 @@ class TestTheFailureTally(unittest.TestCase):
         return type("Args", (), dict({"target": "/tmp/repo", "mode": "headless",
                                       "pr": None, "base": None, "setup": False}, **kw))()
 
-    def _fail(self, error):
-        return base.RunResult.failed("e", error)
+    def _fail(self, error, host_error=None):
+        """A failed launch. `host_error` is the HOST's own surface -- the only
+        thing classified -- and absent is the ordinary case: the entry's own
+        failure, which is what the streaks are for."""
+        return base.RunResult.failed("e", error, host_error=host_error)
 
     def _ok(self):
         return base.RunResult(entry_id="e", ok=True, text="{}", usage={}, cost_usd=None,
@@ -133,7 +190,8 @@ class TestTheFailureTally(unittest.TestCase):
     def test_a_whole_batch_of_host_failures_charges_nobody_and_pauses(self):
         tally = outage.FailureTally("kimi", self._args())
         for eid in ("a", "b", "c", "d"):
-            tally.record(eid, self._fail("kimi -p exited 1: Error: 403 Forbidden"))
+            tally.record(eid, self._fail("kimi -p exited 1: Error: 403 Forbidden",
+                                         host_error="Error: 403 Forbidden"))
         message = tally.settle()
         self.assertEqual({}, tally.streaks)
         self.assertTrue(message.startswith("paused:"), message)
@@ -145,7 +203,8 @@ class TestTheFailureTally(unittest.TestCase):
 
     def test_a_mixed_batch_charges_only_the_entry_class_failures(self):
         tally = outage.FailureTally("claude", self._args())
-        tally.record("a", self._fail("claude -p exited 1: 403 Forbidden"))
+        tally.record("a", self._fail("claude -p exited 1: 403 Forbidden",
+                                     host_error="403 Forbidden"))
         tally.record("b", self._fail("always"))
         self.assertIsNone(tally.settle())                    # not an outage
         self.assertEqual({"b": 1}, tally.streaks)
@@ -157,7 +216,7 @@ class TestTheFailureTally(unittest.TestCase):
 
     def test_settling_closes_the_batch(self):
         tally = outage.FailureTally("claude", self._args())
-        tally.record("a", self._fail("403 Forbidden"))
+        tally.record("a", self._fail("403 Forbidden", host_error="403 Forbidden"))
         self.assertIsNotNone(tally.settle())
         self.assertIsNone(tally.settle())                    # the next batch is empty
 
@@ -174,13 +233,15 @@ class TestTheFailureTally(unittest.TestCase):
     def test_an_entry_the_host_failed_never_reaches_the_cap(self):
         tally = outage.FailureTally("kimi", self._args())
         for _ in range(9):
-            tally.record("a", self._fail("kimi -p exited 1: 429 rate limit"))
+            tally.record("a", self._fail("kimi -p exited 1: 429 rate limit",
+                                         host_error="429 Too Many Requests"))
             tally.settle()
         self.assertIsNone(tally.exhausted([{"id": "a"}], 3))
 
     def test_the_resume_command_carries_the_flags_that_resolve_the_same_run(self):
         tally = outage.FailureTally("codex", self._args(target="/tmp/repo", pr=7, mode="headless"))
-        tally.record("a", self._fail("codex exited with status 1: 503 Service Unavailable"))
+        tally.record("a", self._fail("codex exited with status 1: 503 Service Unavailable",
+                                     host_error="503 Service Unavailable"))
         message = tally.settle()
         self.assertIn("--pr 7", message)
         self.assertIn("/tmp/repo", message)

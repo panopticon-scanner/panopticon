@@ -79,6 +79,10 @@ class RunResult:
     session_id: object       # str | None
     denials: list            # the host's permission_denials, verbatim
     error: object            # str | None: launch failure, non-zero exit, budget stop, timeout
+    host_error: object = None      # the HOST's own error surface (#1623): str | dict | None
+                                   # -- the CLI's error line or the provider error object it
+                                   # printed, NEVER the agent's text. `error` is the operator's
+                                   # message and may quote the agent; this is what is classified.
     failure_class: object = None   # "host" | "entry" (#1623); None means "classify it for me"
 
     def __post_init__(self):
@@ -86,16 +90,17 @@ class RunResult:
 
         Here rather than only in `failed` because a family's non-zero-exit
         failure is built through the plain constructor -- `claude.parse_envelope`
-        turns exit 1 into `RunResult(ok=False, error="claude -p exited 1: ...")`,
-        which is precisely the shape a 403 arrives in on that host. A family
-        that passes its own value keeps it: `dataclasses.replace` re-runs this,
-        and an already-set class is never re-derived.
+        turns exit 1 into `RunResult(ok=False, error=...)`, which is one of the
+        shapes a 403 arrives in. A family that passes its own value keeps it:
+        `dataclasses.replace` re-runs this, and an already-set class is never
+        re-derived.
         """
         if self.failure_class is None:
-            self.failure_class = outage.classify_failure(self.error)
+            self.failure_class = outage.classify_failure(self.host_error)
 
     @classmethod
-    def failed(cls, entry_id, error, usage=None, text="", failure_class=None):
+    def failed(cls, entry_id, error, usage=None, text="", host_error=None,
+               failure_class=None):
         """A failed entry, with whatever evidence the launch did produce.
 
         D10 ruling 5: a timed-out entry is often the most expensive one in a
@@ -109,7 +114,7 @@ class RunResult:
         """
         return cls(entry_id=entry_id, ok=False, text=text, usage=usage or {}, cost_usd=None,
                     model=None, session_id=None, denials=[], error=str(error),
-                    failure_class=failure_class)
+                    host_error=host_error, failure_class=failure_class)
 
 
 class HostRunner:

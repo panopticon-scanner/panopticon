@@ -60,7 +60,7 @@ class Runner(base.HostRunner):
         self.review_root = os.path.abspath(review_root)
 
     @staticmethod
-    def parse_envelope(entry_id, stdout, returncode):
+    def parse_envelope(entry_id, stdout, returncode, stderr=None):
         """Parse exec's JSONL, retaining measured usage even on failed turns.
 
         Cached input is a SUBSET of Codex input_tokens. The shared ledger sums
@@ -71,6 +71,7 @@ class Runner(base.HostRunner):
         """
         text, session_id, model, error = "", None, None, None
         usage, denials, completed = {}, [], False
+        host_error = None          # #1623: only the host's own failure event fills this
         # N-I3: WHEN each was last set, so a recovery can be told from
         # commentary. Every agent_message overwrites `text`, and commentary
         # legitimately precedes the final JSON, so "text is non-empty" does
@@ -97,7 +98,7 @@ class Runner(base.HostRunner):
                         # failure. Commentary before it is not a recovery, and
                         # a failure after this point still fails, because it
                         # sets `error` again below.
-                        error = None
+                        error = host_error = None
                     reported = event.get("usage")
                     if reported is None or reported == {}:
                         continue
@@ -120,7 +121,11 @@ class Runner(base.HostRunner):
                     }.items():
                         usage[field] = usage.get(field, 0) + value
                 elif kind in ("turn.failed", "error"):
-                    error = str(event.get("error") or event.get("message") or kind)
+                    # #1623: THIS is the host talking -- the harness's own
+                    # failure event, not an agent_message -- so it is the one
+                    # thing on this stream the outage classifier may read.
+                    host_error = event.get("error") or event.get("message") or kind
+                    error = str(host_error)
                     error_seq = sequence
                 elif kind == "item.completed":
                     item = event.get("item") or {}
@@ -147,9 +152,15 @@ class Runner(base.HostRunner):
                 error = error or "codex returned no final message"
         except (TypeError, ValueError) as exc:
             error = "invalid Codex JSONL: %s" % exc
+        if host_error is None and error is not None and (stderr or "").strip():
+            # The outage shape #1623 names for this family: the rate limit is
+            # refused before `exec` prints a single JSONL event, so the only
+            # thing the host said is on stderr.
+            host_error = stderr.strip()
         return base.RunResult(entry_id=entry_id, ok=error is None, text=text,
                          usage=usage, cost_usd=None, model=model,
-                         session_id=session_id, denials=denials, error=error)
+                         session_id=session_id, denials=denials, error=error,
+                         host_error=host_error)
 
     def run_entry(self, entry, env):
         entry_id = entry.get("id", "") if isinstance(entry, dict) else ""
@@ -174,7 +185,8 @@ class Runner(base.HostRunner):
             proc = self.runner(command, input=entry["prompt"], text=True,
                              capture_output=True, cwd=self.review_root,
                              env=child_env, timeout=self.entry_timeout)
-            return self.parse_envelope(entry_id, proc.stdout, proc.returncode)
+            return self.parse_envelope(entry_id, proc.stdout, proc.returncode,
+                                       stderr=proc.stderr)
         except subprocess.TimeoutExpired as exc:
             # D10 ruling 5: exec's envelope is a line per event, so a killed
             # launch's stdout still holds every `turn.completed` usage line it

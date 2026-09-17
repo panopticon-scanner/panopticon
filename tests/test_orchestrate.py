@@ -1416,10 +1416,12 @@ class TestAHostWideOutage(LoopCase):
         shape a family composes for a non-zero exit."""
 
         ERROR = "claude -p exited 1: API Error: 403 Forbidden"
+        HOST_ERROR = "API Error: 403 Forbidden"
 
         def run_entry(self, entry, env):
             self.launched.append(entry["id"])
-            return base.RunResult.failed(entry["id"], self.ERROR)
+            return base.RunResult.failed(entry["id"], self.ERROR,
+                                         host_error=self.HOST_ERROR)
 
     def test_a_batch_that_is_all_host_failures_pauses_instead_of_charging_the_cells(self):
         d, floor = self._repo(floor=self.FLOOR)
@@ -1467,6 +1469,30 @@ class TestAHostWideOutage(LoopCase):
         report = runio._load_json(runio._pano(d, "report.json"))
         self.assertNotEqual("INCONCLUSIVE", report["summary"]["gate"])
 
+    def test_a_failure_that_only_MENTIONS_a_quota_is_still_the_entrys_own(self):
+        # #1623 C1. A batch of one, whose failure text names a file under
+        # src/billing/: read off the composed message it stopped the whole run
+        # on the first launch, and `MAX_ENTRY_FAILURES` -- the cap that is the
+        # loop's only bound on an entry that cannot advance -- was silently off
+        # for it. The host said nothing here, so the cap must still bite.
+        d, floor = self._repo()
+
+        class QuotaPath(FakeRunner):
+            def run_entry(self, entry, env):
+                if not entry["id"].startswith("verify-"):
+                    return super().run_entry(entry, env)
+                self.launched.append(entry["id"])
+                return base.RunResult.failed(
+                    entry["id"],
+                    "kimi -p exited 1: no such file or directory: src/billing/quota.py")
+
+        runner = QuotaPath()
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("3 consecutive launches", status["message"])
+        self.assertEqual(orchestrate.MAX_ENTRY_FAILURES,
+                         runner.launched.count("verify-app-SEC-primary"))
+
     def test_a_mixed_batch_charges_only_the_entry_class_failure(self):
         # The discriminator. Two verify cells in one batch: SEC gets the
         # host's 403 every time, ACC gets a failure of its own. Before #1623
@@ -1480,9 +1506,11 @@ class TestAHostWideOutage(LoopCase):
                 if not entry["id"].startswith("verify-"):
                     return super().run_entry(entry, env)
                 self.launched.append(entry["id"])
-                return base.RunResult.failed(
-                    entry["id"], "claude -p exited 1: API Error: 403 Forbidden"
-                    if "-SEC-" in entry["id"] else "always")
+                if "-SEC-" in entry["id"]:
+                    return base.RunResult.failed(
+                        entry["id"], "claude -p exited 1: API Error: 403 Forbidden",
+                        host_error="API Error: 403 Forbidden")
+                return base.RunResult.failed(entry["id"], "always")
 
         runner = MixedVerify()
         status = self._run_loop(d, floor, runner)
