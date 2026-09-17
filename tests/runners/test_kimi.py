@@ -642,20 +642,22 @@ class TestHomeLocation(unittest.TestCase):
             self.assertIs(before, signal.getsignal(signal.SIGINT),
                           "prepare must not install a SIGINT handler")
             config = os.path.join(home, "config.toml")
-            seen, interrupted = [], threading.Event()
+            seen, released = [], threading.Event()
+            self.addCleanup(released.set)
+            # The in-flight entry stays in flight until the interrupt has been
+            # through, so "still queued" means still queued: a fake that
+            # returned the moment the Ctrl-C landed would free its worker to
+            # pull the next item and the assertion would be a race.
+            r.INTERRUPT_GRACE = 0.05          # ...and the bounded wait is short
 
             def fake_run_entry(entry, env):
-                if entry["id"] != "e0":
-                    interrupted.wait(5)          # queued behind the interrupt
                 seen.append((entry["id"], os.path.isfile(config)))
                 if entry["id"] == "e0":
-                    try:
-                        handler = signal.getsignal(signal.SIGINT)
-                        if callable(handler):
-                            handler(signal.SIGINT, None)      # what a Ctrl-C would run
-                    finally:
-                        interrupted.set()
+                    handler = signal.getsignal(signal.SIGINT)
+                    if callable(handler):
+                        handler(signal.SIGINT, None)      # what a Ctrl-C would run
                     raise KeyboardInterrupt
+                released.wait(5)
                 return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
                                       cost_usd=None, model=None, session_id=None,
                                       denials=[], error=None)
@@ -664,6 +666,7 @@ class TestHomeLocation(unittest.TestCase):
             with mock.patch.object(r, "run_entry", fake_run_entry), \
                  self.assertRaises(KeyboardInterrupt):
                 base.HostRunner.run_batch(r, entries, 2, lambda e: {})
+            released.set()
             launched = [eid for eid, _present in seen]
             self.assertIn("e0", launched)
             self.assertLess(len(seen), 4,
