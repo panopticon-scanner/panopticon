@@ -88,6 +88,9 @@ class ToolAxis:
     dispositions: dict | None = None
     manifest: dict | None = None
     ingested_paths: list | None = None
+    # #1644: why an EXISTING manifest could not be read, or None. Absent and
+    # corrupt are different facts and only one of them is an integrity failure.
+    manifest_invalid: str | None = None
 
     @classmethod
     def load(cls, args, run_dir, plan_lists, dispositions, tools_ran):
@@ -95,17 +98,38 @@ class ToolAxis:
         tools-manifest with its two FATAL (#17) checks, the policy mode the
         dispatch plans declare, and the ingest results `ingest_tool_findings`
         produced. #1031: a present manifest makes reconcile gate on its
-        `missing`, not the scout's advisory list; a corrupt/absent one just
-        falls back to the 4.x scout-derived gate (tolerant read)."""
-        manifest = None
+        `missing`, not the scout's advisory list; an ABSENT one falls back to
+        the 4.x scout-derived gate.
+
+        #1644: a manifest that EXISTS and cannot be read is neither. Corruption
+        used to be folded into absence -- `manifest = None`, silently -- and
+        absence selects the permissive path, so a scanner the runner selected
+        and never produced dropped out of `tools_absent` entirely. The reason is
+        recorded here and reconcile refuses to invent the required set from it.
+        This is the read failing, not a field being malformed: a manifest that
+        parses to an object with rubbish IN it is repaired at the boundary by
+        `synth/repair.py` (#1645/#1646), where a bad row costs a warning and the
+        row, never the run.
+        """
+        manifest, manifest_invalid = None, None
         tm_path = os.path.join(run_dir, "tools-manifest.json")
         if os.path.isfile(tm_path):
             try:
                 with open(tm_path, encoding="utf-8") as fh:
                     tm = json.load(fh)
-                manifest = tm if isinstance(tm, dict) else None
-            except (OSError, ValueError):
-                manifest = None
+            except (OSError, ValueError) as exc:
+                manifest_invalid = "tools-manifest.json is unreadable: %s" % exc
+            else:
+                if isinstance(tm, dict):
+                    manifest = tm
+                else:
+                    manifest_invalid = ("tools-manifest.json is not a JSON object "
+                                        "(%s)" % type(tm).__name__)
+            if manifest_invalid:
+                print("synthesize: %s -- the runner's selected/missing set is "
+                      "unknown, so tool coverage is NOT certified (the scout's "
+                      "advisory list is not a substitute for it)."
+                      % manifest_invalid, file=sys.stderr)
         if manifest is not None:
             # #17: never certify against a foreign/stale manifest. A 5.1 manifest
             # carries schema_version; its run_id (when the runner stamps it) must
@@ -121,7 +145,7 @@ class ToolAxis:
                          % (mrid, args.run_id, tm_path))
         return cls(policy_mode=derive_tool_policy_mode(plans=plan_lists),
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
-                   ingested_paths=args.files)
+                   ingested_paths=args.files, manifest_invalid=manifest_invalid)
 
 
 @dataclass(frozen=True)
@@ -146,6 +170,10 @@ class Reconciled:
     # `tools_sanitized`: coverage says which adapters PRODUCED output, and this
     # says what one of them could reach while doing it.
     tools_network: dict = field(default_factory=dict)
+    # #1644: why this run's tools-manifest could not be read, or None. Carried
+    # beside `integrity` (which also publishes it) the way `integrity_ok` is:
+    # certification takes it as an input, and must not have to read a section.
+    tools_manifest_invalid: str | None = None
 
 
 # One source for the per-group dispatch-plan filename glob (#681): synthesize
@@ -362,7 +390,16 @@ def reconcile(plan, tools, resolved):
     # the artifact and the HTML.
     network = (repair_mod.repair_tools_network(
         tools.manifest.get("network")) if isinstance(tools.manifest, dict) else {})
-    if isinstance(tools.manifest, dict):
+    if tools.manifest_invalid:
+        # #1644: corruption is not absence, and the scout-derived fallback below
+        # is only honest when nothing WAS corrupted. With the manifest
+        # unreadable the runner's selected set is unknown, so `tools_absent`
+        # cannot be computed at all -- the scout's advisory list answers a
+        # different question, and every selected-but-unproduced scanner silently
+        # drops out of it. Claim nothing here; certification is what fails
+        # (certify's `tools_manifest_invalid`), not the gate.
+        tools_absent, tool_divergence = [], {}
+    elif isinstance(tools.manifest, dict):
         selected = set(validate_schema_mod.string_list(tools.manifest.get("selected")))
         produced_m = set(validate_schema_mod.string_list(tools.manifest.get("produced")))
         missing = tools.manifest.get("missing")
@@ -422,6 +459,11 @@ def reconcile(plan, tools, resolved):
                               "invalid_verify_queue": None,
                               "unenforced_acknowledged": False,
                               "plans_seen": 0}
+    # #1644: recorded beside the other "this artifact exists and cannot be
+    # trusted" reasons, and always present (None on a clean read AND on a run
+    # with no manifest at all), exactly like `invalid_verify_queue`.
+    integrity = dict(integrity)
+    integrity["tools_manifest_invalid"] = tools.manifest_invalid
     scope_ok = not ((plan.out_of_scope or {}).get("count")
                     if isinstance(plan.out_of_scope, dict) else False)
     integrity_ok = scope_ok and not (integrity.get("unexpected_findings_files")
@@ -492,7 +534,8 @@ def reconcile(plan, tools, resolved):
     return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
-                      tools_sanitized=sanitized, tools_network=network)
+                      tools_sanitized=sanitized, tools_network=network,
+                      tools_manifest_invalid=tools.manifest_invalid)
 
 
 def load_groups_json(path):

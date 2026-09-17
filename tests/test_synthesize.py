@@ -1525,3 +1525,94 @@ def test_no_run_artifact_a_target_can_write_ends_the_run(tmp_path, name, body):
     # counts the advisory domain checks, which this fixture deliberately trips.
     assert "schema: $." not in err.getvalue()
     json.loads(out.read_text(encoding="utf-8"))
+
+
+class TestACorruptToolsManifestCannotCertify(unittest.TestCase):
+    """#1644: corruption was treated as absence, and absence chose the
+    permissive path.
+
+    `ToolAxis.load` turned an unreadable / invalid-JSON / non-object
+    `tools-manifest.json` into `manifest=None` without recording anything, and
+    `reconcile` then took the NO-manifest branch: `tools_absent` =
+    scout_requested - produced. A scanner the runner SELECTED but the scout
+    never requested therefore vanished from `tools_absent`, and the
+    certification input looked complete.
+
+    End to end on real artifacts, like #1512's neighbour above: the defect is in
+    what a read does with a file on disk, and a hand-built `build_report` input
+    closes that gap by construction.
+    """
+
+    def _run(self, d, manifest_bytes=None, scout_tools=("semgrep",)):
+        run_dir = os.path.join(d, "run")
+        tools_dir = os.path.join(run_dir, "tools")
+        os.makedirs(tools_dir)
+        # A scout that asked for semgrep, and no tool output at all: on the
+        # no-manifest path that is one lost tool and an INCONCLUSIVE gate.
+        with open(os.path.join(run_dir, "scout-g1.json"), "w") as fh:
+            json.dump({"group": "g1", "tools": list(scout_tools), "domains": []}, fh)
+        if manifest_bytes is not None:
+            with open(os.path.join(run_dir, "tools-manifest.json"), "wb") as fh:
+                fh.write(manifest_bytes)
+        fp = os.path.join(run_dir, "findings-g1-code.json")
+        with open(fp, "w") as fh:
+            json.dump({"findings": []}, fh)
+        out = os.path.join(d, "r.json")
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = syn.main(["--target", "src", "--run-dir", run_dir,
+                           "--tools-dir", tools_dir, "--fail-on", "critical",
+                           "--out", out, fp])
+        with open(out, encoding="utf-8") as fh:
+            return rc, json.load(fh), err.getvalue()
+
+    def test_an_unparseable_manifest_is_an_integrity_failure_not_a_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, err = self._run(d, b"not json")
+        reason = report["meta"]["integrity"]["tools_manifest_invalid"]
+        self.assertTrue(reason, "the corrupt manifest was not recorded anywhere")
+        self.assertIn("tools-manifest", reason)
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertIn("tools manifest unreadable", report["summary"]["coverage_note"])
+        # The permissive fallback is what #1644 is about: with no readable
+        # manifest the required set is unknown, so `tools_absent` is not
+        # invented from the scout's advisory list.
+        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"], {})
+        # The three-way distinction: certification fails, the GATE still says
+        # what the findings say (no finding, `--fail-on critical` -> PASS).
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertEqual(rc, 0)
+        self.assertIn("tools-manifest", err)
+
+    def test_a_scanner_the_scout_never_asked_for_no_longer_vanishes(self):
+        """The exact mechanism, with nothing else able to fail the run.
+
+        The runner selected a scanner and wrote no output; the scout never
+        requested it. With the manifest readable that is one lost tool. Corrupt
+        the manifest and the scout-derived fallback computes
+        `[] - produced == []` -- no gap, certification complete, and the only
+        record that a scanner was ever selected is the file that cannot be read.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            _rc, report, _err = self._run(d, b"not json", scout_tools=())
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertTrue(report["meta"]["integrity"]["tools_manifest_invalid"])
+
+    def test_a_non_object_manifest_is_the_same_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            _rc, report, _err = self._run(d, b'["semgrep"]')
+        self.assertIn("not a JSON object",
+                      report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assertFalse(report["summary"]["coverage_certified"])
+
+    def test_an_ABSENT_manifest_keeps_the_scout_derived_gate(self):
+        # A pre-#1031 run, or `--no-tools`: nothing was corrupted, so the 4.x
+        # scout-derived path stands exactly as it did.
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(d, None)
+        self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"],
+                         {"semgrep": "requested_absent"})
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertEqual(rc, 2)

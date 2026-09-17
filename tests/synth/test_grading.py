@@ -82,6 +82,24 @@ class TestCertify(unittest.TestCase):
         self.assertEqual(r["gate"], "INCONCLUSIVE")
         self.assertFalse(r["coverage_certified"])
 
+    def test_an_unreadable_manifest_sinks_certification_and_not_the_gate(self):
+        # #1644: every other input above is a measured gap, and gaps move the
+        # gate. This one is the measurement being impossible, which is a
+        # statement about the review rather than about the findings.
+        r = grading_mod.certify("A", [], "high", set(), [],
+                                tools_manifest_invalid="tools-manifest.json is "
+                                                       "unreadable: x")
+        self.assertEqual(r["gate"], "PASS")
+        self.assertEqual(r["overall_grade"], "A")     # not provisional
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("tools manifest unreadable", r["coverage_note"])
+
+    def test_a_confirmed_fail_still_fails_with_an_unreadable_manifest(self):
+        r = grading_mod.certify("F", self._crit(), "high", set(), [],
+                                tools_manifest_invalid="unreadable")
+        self.assertEqual(r["gate"], "FAIL")
+        self.assertFalse(r["coverage_certified"])
+
 class TestHealthScore(unittest.TestCase):
     """#1146: secondary health index = the share of reviewed LoC NOT under
     severity-weighted defect footprint, on a 0-100 scale, reported ALONGSIDE the
@@ -280,7 +298,7 @@ resolved = types.SimpleNamespace(
 reconciled = types.SimpleNamespace(
     groups_meta=[{"name": "App", "files": ["app.py"], "parent": "App"}],
     panels_incomplete=[], tools_absent=[], integrity_ok=True,
-    cell_audit={"missing_floor": []})
+    cell_audit={"missing_floor": []}, tools_manifest_invalid=None)
 run = types.SimpleNamespace(target=sys.argv[1], fail_on=None, gate_unverified=False)
 
 graded = grading_mod.grade_report(run, resolved, reconciled)

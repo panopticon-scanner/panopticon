@@ -425,10 +425,22 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertIsNone(axis.manifest)
             self.assertEqual(axis.policy_mode, "unknown")
             self.assertEqual(axis.ingested_paths, ["f.json"])
+            self.assertIsNone(axis.manifest_invalid)   # no file is not a failure
             tm = os.path.join(d, "tools-manifest.json")
             with open(tm, "w") as fh:
                 fh.write("{corrupt")
-            self.assertIsNone(plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None).manifest)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                corrupt = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIsNone(corrupt.manifest)
+            # #1644: and the reason is RECORDED, not swallowed into "no manifest".
+            self.assertIn("unreadable", corrupt.manifest_invalid)
+            self.assertIn("NOT certified", err.getvalue())
+            with open(tm, "w") as fh:
+                json.dump(["semgrep"], fh)                 # parses, not an object
+            with contextlib.redirect_stderr(io.StringIO()):
+                notdict = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIsNone(notdict.manifest)
+            self.assertIn("not a JSON object", notdict.manifest_invalid)
             with open(tm, "w") as fh:
                 json.dump({"selected": ["semgrep"]}, fh)   # pre-5.1: no schema_version
             with self.assertRaises(SystemExit) as cm:
@@ -445,7 +457,9 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertEqual(axis.manifest["run_id"], "other")
             self.assertEqual(axis.tools_ran, {"semgrep"})
             self.assertEqual(axis.dispositions, {"semgrep": "ok"})
-            self.assertIsNotNone(plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None).manifest)
+            clean = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            self.assertIsNotNone(clean.manifest)
+            self.assertIsNone(clean.manifest_invalid)
 
     def test_tool_axis_load_derives_policy_mode_from_the_plans(self):
         plans = [[{"group": "g1", "domain": "code", "tool_policy": "enforced"}]]

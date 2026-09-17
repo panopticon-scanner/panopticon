@@ -498,6 +498,10 @@
               "type": ["string", "null"],
               "description": "A present verify-queue artifact could not be parsed or had no entries list; forces INCONCLUSIVE."
             },
+            "tools_manifest_invalid": {
+              "type": ["string", "null"],
+              "description": "#1644: this run's tools-manifest.json EXISTS and could not be read (unreadable, not JSON, or not a JSON object) — the reason, else null. Corruption is not absence: with the runner's selected set unknown, `tools_absent` cannot be computed at all, so the report claims none and `summary.coverage_certified` is false with `coverage_note` saying why. It does NOT move `summary.gate`, which reports what the findings say — the certification/gate distinction. A manifest that parses to an object with malformed FIELDS is a different case, repaired at the read (see meta.tools.sanitized / network) and never recorded here."
+            },
             "plans_seen": {
               "type": "integer"
             },

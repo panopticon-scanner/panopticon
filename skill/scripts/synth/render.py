@@ -125,7 +125,13 @@ def render_summary(report):
         tools = div.get("tools") or {}
         if tools:
             parts.append("tools " + ", ".join(sorted(tools)))
-        lines.insert(3, "**Coverage:** NOT CERTIFIED — %s" % ("; ".join(parts) or "incomplete"))
+        # #1644: the divergence map is the detail for a MEASURED gap. When the
+        # measurement itself could not be made -- an unreadable tools manifest
+        # leaves both maps empty -- the reason lives in `coverage_note`, and
+        # without it this line printed the bare word "incomplete" for the one
+        # state an operator most needs named.
+        lines.insert(3, "**Coverage:** NOT CERTIFIED — %s"
+                     % ("; ".join(parts) or s.get("coverage_note") or "incomplete"))
     rz = (report["meta"].get("coverage") or {}).get("resume") or {}
     _fo = rz.get("fan_out") or {}
     _vf = rz.get("verify") or {}

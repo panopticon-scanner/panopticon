@@ -3091,7 +3091,11 @@ class TestIntegrity(unittest.TestCase):
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(groups_meta=self.G, integrity=integ),
         ))
-        self.assertEqual(r["meta"]["integrity"], integ)
+        # #1644: reconcile adds the manifest-read reason to whatever integrity
+        # section it was handed, so the published section is the caller's plus
+        # that one key.
+        self.assertEqual(r["meta"]["integrity"],
+                         dict(integ, tools_manifest_invalid=None))
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
 
     def test_a_missing_owed_snapshot_cannot_certify(self):
@@ -3133,6 +3137,9 @@ class TestIntegrity(unittest.TestCase):
                 "invalid_verify_queue": None,
                 "unenforced_acknowledged": False,
                 "plans_seen": 0,
+                # #1644: stated on every report -- None means the manifest read
+                # was clean (or there was none), never "not measured".
+                "tools_manifest_invalid": None,
             },
         )
         self.assertEqual(r["summary"]["gate"], "PASS")
@@ -3158,6 +3165,9 @@ class TestIntegrity(unittest.TestCase):
                 "invalid_verify_queue": None,
                 "unenforced_acknowledged": False,
                 "plans_seen": 0,
+                # #1644: stated on every report -- None means the manifest read
+                # was clean (or there was none), never "not measured".
+                "tools_manifest_invalid": None,
             },
         )
         self.assertEqual(r["summary"]["gate"], "PASS")

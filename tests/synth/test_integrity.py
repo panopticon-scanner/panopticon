@@ -261,6 +261,10 @@ class IntegritySectionTest(unittest.TestCase):
             "content_snapshot_unreadable", "content_snapshot_missing",
             "empty_dispatch_plans", "invalid_dispatch_plans",
             "invalid_verify_queue", "plans_seen"]
+    # #1644 lands `tools_manifest_invalid` on the section, but from reconcile
+    # (which is the only caller that holds the tool axis), not from
+    # integrity_section -- so the KEY ORDER pinned here is deliberately
+    # unchanged and the new key is asserted where it is added.
 
     def test_key_order_is_the_report_contract(self):
         with tempfile.TemporaryDirectory() as d:

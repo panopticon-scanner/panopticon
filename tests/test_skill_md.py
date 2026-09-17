@@ -79,6 +79,17 @@ class TestSkillMd(unittest.TestCase):
         # claim that's the key on disk.
         self.assertIn("denials", self.text)
 
+    def test_an_unreadable_tools_manifest_is_documented_as_failing_certification(self):
+        # #1644: the three levels have to stay separable in prose too --
+        # absent, unreadable, and parseable-but-malformed are three different
+        # facts with three different outcomes, and only the middle one is an
+        # integrity failure.
+        for token in ["unreadable tools manifest fails certification",
+                      "meta.integrity.tools_manifest_invalid",
+                      "not computed from the scout's advisory list",
+                      "ABSENT manifest", "malformed FIELDS"]:
+            self.assertIn(token, self.text, token)
+
     def test_documents_the_host_capability_disclosure_and_that_it_does_not_gate(self):
         # #1344 F3b. This file is the operator-facing contract: it already
         # documents meta.cost, meta.coverage, meta.integrity and even the

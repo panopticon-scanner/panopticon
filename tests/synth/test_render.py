@@ -17,6 +17,30 @@ from scripts import host_disclosure, hosts
 _OMIT = object()
 
 
+class TestUncertifiedCoverageLine(unittest.TestCase):
+    """#1644: what the terminal prints when there is no divergence to print."""
+
+    def _summary(self, **summary):
+        base = {"overall_grade": "B", "risk_level": "MEDIUM", "gate": "PASS",
+                "coverage_certified": False, "evidence_stats": {},
+                "stats": {}, "gate_severities": None}
+        base.update(summary)
+        return {"meta": {"target": "t", "coverage": {}, "integrity": {}},
+                "summary": base, "findings": [], "groups": []}
+
+    def test_the_reason_replaces_the_bare_word_incomplete(self):
+        text = render_mod.render_summary(self._summary(
+            coverage_note="tools manifest unreadable — tool coverage could not "
+                          "be computed: tools-manifest.json is unreadable: x"))
+        self.assertIn("NOT CERTIFIED", text)
+        self.assertIn("tools manifest unreadable", text)
+        self.assertNotIn("NOT CERTIFIED — incomplete", text)
+
+    def test_with_no_note_and_no_divergence_it_still_says_something(self):
+        text = render_mod.render_summary(self._summary(coverage_note=None))
+        self.assertIn("NOT CERTIFIED — incomplete", text)
+
+
 class TestCompareParts(unittest.TestCase):
     def test_read_json_report_merges_meta_parts(self):
         # #run7 ARC-D1A: --compare must merge split-report continuation parts, not
