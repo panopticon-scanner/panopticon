@@ -14,6 +14,7 @@ import datetime
 import functools
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -169,34 +170,67 @@ RATE_HINTS = ("rate limit", "secondary rate", "abuse detection",
 CONFIG_PATH = os.path.join(".panopticon", "config.json")
 
 
-def gh_env(config_path=None):
-    """#486: explicit, config-declared gh account selection.
+# #1650 / SEC-D1B (CWE-427). The `gh` invoked from this module performs
+# authenticated issue comments, edits, closures, label creation and milestone
+# mutation as the automation account, so WHICH binary that is may not be
+# decided by whoever controls the ambient PATH: prepending one writable
+# directory was enough to substitute the CLI, and the substitute inherits the
+# credentials. The fixed system list below is the only place looked.
+TRUSTED_PATH = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
 
-    Reads .panopticon/config.json's "gh_config_dir" and returns an env dict
-    with GH_CONFIG_DIR set to it (expanded), so every gh subprocess the tools
-    spawn uses the DECLARED account instead of whatever ambient credential the
-    shell happens to carry (the thebeamishsociety wrong-account incident:
-    default cred lacked push, the 404 was swallowed). Returns None (= inherit
-    the ambient environment, backward compatible) when the config is missing
-    or the field is absent/null. Raises on corrupt/unreadable config or
-    non-string gh_config_dir values so we fail closed rather than silently
-    inherit the wrong credential (#1101).
+
+def gh_bin():
+    """The absolute `gh` to launch, resolved against TRUSTED_PATH and nothing else.
+
+    Refuses rather than falling back to the bare name: a bare `gh` handed to
+    subprocess is resolved by exactly the search this function exists to
+    replace, so a fallback would reopen the door on every machine where the
+    trusted resolution failed.
     """
+    found = shutil.which("gh", path=TRUSTED_PATH)
+    if not found:
+        raise RuntimeError(
+            "gh is not on the trusted PATH (%s), and this tool will not resolve "
+            "it through the ambient environment: install gh there, or run the "
+            "mutation by hand" % TRUSTED_PATH)
+    return found
+
+
+def gh_env(config_path=None):
+    """The environment every gh subprocess runs under: the DECLARED account,
+    and nothing ambient.
+
+    #486: reads .panopticon/config.json's "gh_config_dir" and sets
+    GH_CONFIG_DIR to it (expanded), so every gh subprocess the tools spawn uses
+    the DECLARED account instead of whatever ambient credential the shell
+    happens to carry (the thebeamishsociety wrong-account incident: default
+    cred lacked push, the 404 was swallowed). Raises on corrupt/unreadable
+    config or non-string gh_config_dir values so we fail closed rather than
+    silently inherit the wrong credential (#1101).
+
+    #1650: this used to return None (inherit everything) when no config
+    declared a directory, and otherwise `dict(os.environ)` with one key
+    changed -- so PATH passed through untouched in BOTH branches, and PATH is
+    what chooses the binary. The env is now built, never copied: HOME (gh's
+    own state), GH_CONFIG_DIR when one is declared, and the trusted PATH. An
+    ambient GH_TOKEN no longer reaches the child either, which is the point --
+    the declared account is the only account.
+    """
+    env = {"HOME": os.path.expanduser("~"), "PATH": TRUSTED_PATH}
     if config_path is None:
         config_path = CONFIG_PATH   # late-bound so tests/patches can retarget
     try:
         with open(config_path, encoding="utf-8") as fh:
             cfg = json.load(fh)
     except FileNotFoundError:
-        return None
+        return env
     except (OSError, ValueError) as exc:
         raise ValueError(f"corrupt or unreadable panopticon config ({config_path}): {exc}") from exc
     d = cfg.get("gh_config_dir") if isinstance(cfg, dict) else None
     if d is None:
-        return None
+        return env
     if not isinstance(d, str) or not d:
         raise ValueError(f"invalid gh_config_dir in {config_path!r}: expected string, got {d!r}")
-    env = dict(os.environ)
     env["GH_CONFIG_DIR"] = os.path.expanduser(d)
     return env
 
@@ -207,11 +241,22 @@ def gh_env(config_path=None):
 GH_TIMEOUT = 120
 
 
+def _run_gh(argv, **kwargs):
+    """`subprocess.run` with argv[0] replaced by the trusted absolute `gh`.
+
+    The call sites build `["gh", ...]` because that is what the command reads
+    as; the resolution happens HERE, once, so no call site can spell it
+    differently (#1650).
+    """
+    return subprocess.run([gh_bin()] + list(argv)[1:], **kwargs)
+
+
 def default_gh_runner():
-    """subprocess.run partial carrying the config-declared env (#486) and a hard
-    timeout (#1103). Kept as a factory so gh_env is re-read per call site
-    construction -- tests inject their own runner and never hit this."""
-    return functools.partial(subprocess.run, env=gh_env(), timeout=GH_TIMEOUT)
+    """subprocess.run partial carrying the config-declared env (#486), a hard
+    timeout (#1103) and the trusted-path resolution (#1650). Kept as a factory
+    so gh_env is re-read per call site construction -- tests inject their own
+    runner and never hit this."""
+    return functools.partial(_run_gh, env=gh_env(), timeout=GH_TIMEOUT)
 
 
 # One retry ladder for every gh subprocess call in the repo. It used to be two:
