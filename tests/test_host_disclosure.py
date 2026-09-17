@@ -240,6 +240,23 @@ class TestALineNeverContradictsItself(unittest.TestCase):
         self.assertIn("shadow-shell-scan", line)
         self.assertIn("panopticon-scout.md", line)
 
+    def test_the_stateless_sentence_names_only_what_the_row_holds(self):
+        # Re-review nit: the sentence said the artifact "records a probe and a
+        # detail" for all three shapes, a false statement about the artifact
+        # on the one surface this fix exists to make honest.
+        cases = ({"detail": "round-trip denied"}, "a detail but no state"),
+        cases += ({"by": "write-guard-armed"}, "a probe but no state"),
+        cases += ({"by": "write-guard-armed", "detail": "round-trip denied"},
+                  "a probe and a detail but no state"),
+        for row, expected in cases:
+            with self.subTest(row=row):
+                clause = host_disclosure._probe_clause(row, hosts.UNKNOWN)
+                self.assertIn(expected, clause)
+                if "by" not in row:
+                    self.assertNotIn("a probe", clause)
+                if "detail" not in row:
+                    self.assertNotIn("a detail", clause)
+
     def test_a_row_with_a_probe_but_no_state_drops_them_too(self):
         # R1 Major. `state` ABSENT is not silence when the row carries a
         # measurement: `posture()` still answers `unknown` for it, so the

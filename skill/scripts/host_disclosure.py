@@ -150,9 +150,8 @@ _MASKED = ("the artifact's own state is %s, not the state this run reports; its 
 # it does for a masked `proven`, so printing the measurement produced #1597's
 # reported sentence verbatim -- and, on a row whose `by` is also absent, the
 # worse "no probe ran: <what a probe found>".
-_STATELESS = ("the artifact records a probe and a detail but no state of its "
-              "own, so nothing in it supports the state this run reports; they "
-              "are not shown")
+_STATELESS = ("the artifact records %s but no state of its own, so nothing in "
+              "it supports the state this run reports; it is not shown")
 _SILENT = "no probe ran: no detail recorded"
 
 
@@ -197,7 +196,8 @@ def _probe_clause(row, state):
         probe_clause = ("probe %s" % by) if by else "no probe ran"
         return "%s: %s" % (probe_clause, row.get("detail") or "no detail recorded")
     if recorded is None:
-        return _STATELESS if (row.get("by") or row.get("detail")) else _SILENT
+        held = [w for w, k in (("a probe", "by"), ("a detail", "detail")) if row.get(k)]
+        return _STATELESS % (" and ".join(held),) if held else _SILENT
     return _MASKED % (_recorded_state(recorded),)
 
 

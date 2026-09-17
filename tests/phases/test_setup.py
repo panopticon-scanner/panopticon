@@ -732,6 +732,22 @@ class TestTheLimitationsClauseStaysReadable(unittest.TestCase):
             self.assertEqual(1, sum(1 for c in ("capability_00", "capability_01",
                                                 "capability_02") if c in line))
 
+    def test_a_non_string_detail_is_rendered_not_raised(self):
+        # Re-review of R1 Minor 4: slicing `detail` instead of the rendered
+        # line made a list/dict/int detail raise where the base rendered it.
+        # `detail` arrives from `_stored_limitations`, i.e. the untrusted
+        # `.panopticon/setup-complete.json`, outside the status-protocol
+        # try/except -- so it escaped as a traceback with no JSON status.
+        for detail in (["a", "b"], {"k": 1}, 7, None):
+            with self.subTest(detail=detail):
+                line = setup_phase._limitation_line("host-capability:x", detail)
+                self.assertIsInstance(line, str)
+                self.assertIn(str(detail), line)
+        long = ["remedy-%02d" % i for i in range(40)]
+        line = setup_phase._limitation_line("host-capability:x", long)
+        self.assertLessEqual(len(line), setup_phase._LIMITATION_LINE)
+        self.assertTrue(line.endswith(setup_phase._TRUNCATED + ")"), line)
+
     def test_a_short_list_gets_no_tail(self):
         clause = setup_phase._limitations_clause(self._rows(setup_phase._LIMITATION_MAX))
         self.assertNotIn("more", clause)

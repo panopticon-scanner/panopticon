@@ -564,7 +564,7 @@ def _capabilities_row(review_root, tag):
         envelope = runio._load_json(os.path.join(
             review_root, ".panopticon", "runs", tag, runio.HOST_CAPABILITIES))
     caps = envelope.get("capabilities") if isinstance(envelope, dict) else None
-    who = envelope.get("host") if isinstance(envelope, dict) else None
+    who = host_disclosure.host_of(envelope)      # str or None, as headline() reads it
     if not isinstance(caps, dict) or not who:
         return {"measured": False, "host": None, "states": {}, "unproven": [],
                 "detail": NOT_MEASURED}

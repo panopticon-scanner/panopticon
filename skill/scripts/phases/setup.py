@@ -153,6 +153,7 @@ def _limitation_line(name, detail):
     `host-capability:tool_policy_enforced`, is 36 characters), so the
     name-wins branch is a promise kept rather than a trade-off anyone meets.
     """
+    detail = str(detail)     # read off setup-complete.json: any JSON shape
     line = "  - %s (%s)" % (name, detail)
     if len(line) <= _LIMITATION_LINE:
         return line
