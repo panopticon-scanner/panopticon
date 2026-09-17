@@ -40,6 +40,7 @@ class TestTheHostOutageClassifier(unittest.TestCase):
         "Overloaded",
         "rate_limit_error",
         "insufficient_quota",
+        "permission_denied",              # the provider's wire kind, not the OS's English
     )
     ENTRY = (
         # The review's corpus: REAL entry-class failures whose text merely
@@ -68,6 +69,17 @@ class TestTheHostOutageClassifier(unittest.TestCase):
         "codex returned no final message",
         "enforcement shell not registered at /tmp/x/panopticon-domain-panel.sh",
         "ValueError: Codex requires delivery: return_json; it cannot self-write",
+        # N2. kimi and codex hand over their WHOLE stderr as the host surface,
+        # so every EACCES line from the CLI or a tool it spawned arrives here.
+        # `permission denied` is the OS's English, not a shape any provider
+        # emits -- and a run told to wait for the provider and re-run
+        # reproduces a local file-mode problem for ever.
+        "grep: /repo/.git/objects/pack: Permission denied",
+        "find: '/repo/node_modules/.cache': Permission denied",
+        "PermissionError: [Errno 13] Permission denied: '/repo/.panopticon/runs'",
+        "Error: EACCES: permission denied, open '/tmp/panopticon-kimi-x/config.toml'",
+        "kimi: could not open the session wire file: Permission denied",
+        "warning: unable to access '/repo/.git/config': Permission denied",
     )
 
     def test_the_provider_side_surfaces_read_as_a_host_failure(self):

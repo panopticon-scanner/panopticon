@@ -48,7 +48,14 @@ _KINDS = (
     r"api{s}key{s}(?:not{s}found|expired|is{s}invalid)",
     r"please{s}run{s}/login",
     r"(?:not{s}authenticated|unauthenticated)",
-    r"permission{s}denied",
+    # N2: the WIRE key only (Google's canonical 403 name), never the
+    # space-separated English. kimi and codex hand their whole stderr over as
+    # the host surface, and `Permission denied` there is the OS talking about
+    # a local file -- an EACCES on a temp directory read as a provider outage
+    # tells the operator to wait and re-run, which reproduces it for ever.
+    # The provider's own 403 still arrives as a status beside its reason, or
+    # as `permission_error` below.
+    r"permission_denied",
     r"insufficient{s}quota",
     r"quota{s}(?:exceeded|exhausted)",
     r"exceeded{s}your{s}current{s}quota",

@@ -20,6 +20,7 @@ import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
 import scripts.runners.claude as claude_runner
+import scripts.runners.kimi as kimi_runner
 import scripts.runners.outage as outage
 import scripts.write_guard_hook as write_guard_hook
 from conftest import docker_probe_runner, write_host_evidence
@@ -1611,6 +1612,29 @@ class TestAHostWideOutage(LoopCase):
         self.assertIn("3 consecutive launches", status["message"])
         self.assertEqual(orchestrate.MAX_ENTRY_FAILURES,
                          runner.launched.count("verify-app-SEC-primary"))
+
+    def test_a_local_permission_error_is_not_a_provider_outage(self):
+        # N2, through the REAL kimi stderr path: a file this machine cannot
+        # open is not the host refusing us. Told to wait for the provider and
+        # re-run, the operator reproduces it for ever and the run can never
+        # complete.
+        d, floor = self._repo()
+
+        class Eacces(FakeRunner):
+            STDERR = ("Error: EACCES: permission denied, open "
+                      "'/tmp/panopticon-kimi-abc/config.toml'")
+
+            def run_entry(self, entry, env):
+                if not entry["id"].startswith("verify-"):
+                    return super().run_entry(entry, env)
+                self.launched.append(entry["id"])
+                return kimi_runner.Runner("kimi").parse_envelope(
+                    entry["id"], "", 1, stderr=self.STDERR)
+
+        runner = Eacces()
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("3 consecutive launches", status["message"])
 
     def test_a_mixed_batch_charges_only_the_entry_class_failure(self):
         # The discriminator. Two verify cells in one batch: SEC gets the
