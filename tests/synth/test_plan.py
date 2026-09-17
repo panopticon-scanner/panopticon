@@ -12,6 +12,7 @@ import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.coverage_io as coverage_io
 import scripts.synth.plan as plan_mod
+import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
 import scripts.group_runner as gr
 import scripts.group_runner as group_runner_mod
@@ -115,7 +116,7 @@ class TestToolPolicyMode(unittest.TestCase):
         report = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-03T00:00:00Z"),
             findings=findings_mod.FindingSet(findings=[f]),
-            tools=plan_mod.ToolAxis(policy_mode="mixed"),
+            tools=tool_axis_mod.ToolAxis(policy_mode="mixed"),
         ))
         self.assertEqual(report["meta"]["coverage"]["tool_policy_mode"], "mixed")
         self.assertEqual(report["meta"]["version"], __version__)
@@ -127,10 +128,10 @@ class TestToolsRanFromDispositions(unittest.TestCase):
             "gitleaks": {"status": "empty", "findings": 0},
             "semgrep": {"status": "failed", "findings": 0, "reason": "empty output file"},
         }
-        self.assertEqual(plan_mod.tools_ran_from_dispositions(dispositions), {"bandit", "gitleaks"})
+        self.assertEqual(tool_axis_mod.tools_ran_from_dispositions(dispositions), {"bandit", "gitleaks"})
 
     def test_empty_dispositions_yields_empty_set(self):
-        self.assertEqual(plan_mod.tools_ran_from_dispositions({}), set())
+        self.assertEqual(tool_axis_mod.tools_ran_from_dispositions({}), set())
 
     def test_noscan_gets_no_coverage_credit_but_still_counts_as_produced(self):
         # #1335: the two questions this set used to answer at once. A no-op
@@ -143,9 +144,9 @@ class TestToolsRanFromDispositions(unittest.TestCase):
             "semgrep": {"status": "noscan", "findings": 0, "reason": "scanned 0 files"},
             "trivy": {"status": "failed", "findings": 0, "reason": "empty output file"},
         }
-        self.assertEqual(plan_mod.tools_ran_from_dispositions(dispositions),
+        self.assertEqual(tool_axis_mod.tools_ran_from_dispositions(dispositions),
                          {"bandit", "gitleaks"})
-        self.assertEqual(plan_mod.tools_produced_from_dispositions(dispositions),
+        self.assertEqual(tool_axis_mod.tools_produced_from_dispositions(dispositions),
                          {"bandit", "gitleaks", "semgrep"})
 
 class TestToolPolicyModeUnknown(unittest.TestCase):
@@ -408,7 +409,7 @@ class PlanLoadersTest(unittest.TestCase):
 
     def test_tool_axis_load_reads_the_manifest_and_refuses_foreign_ones(self):
         with tempfile.TemporaryDirectory() as d:
-            axis = plan_mod.ToolAxis.load(_cli_args(files=["f.json"]), d, [], {}, None)
+            axis = tool_axis_mod.ToolAxis.load(_cli_args(files=["f.json"]), d, [], {}, None)
             self.assertIsNone(axis.manifest)
             self.assertEqual(axis.policy_mode, "unknown")
             self.assertEqual(axis.ingested_paths, ["f.json"])
@@ -417,7 +418,7 @@ class PlanLoadersTest(unittest.TestCase):
             with open(tm, "w") as fh:
                 fh.write("{corrupt")
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                corrupt = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+                corrupt = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIsNone(corrupt.manifest)
             # #1644: and the reason is RECORDED, not swallowed into "no manifest".
             self.assertIn("unreadable", corrupt.manifest_invalid)
@@ -425,26 +426,26 @@ class PlanLoadersTest(unittest.TestCase):
             with open(tm, "w") as fh:
                 json.dump(["semgrep"], fh)                 # parses, not an object
             with contextlib.redirect_stderr(io.StringIO()):
-                notdict = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+                notdict = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIsNone(notdict.manifest)
             self.assertIn("not a JSON object", notdict.manifest_invalid)
             with open(tm, "w") as fh:
                 json.dump({"selected": ["semgrep"]}, fh)   # pre-5.1: no schema_version
             with self.assertRaises(SystemExit) as cm:
-                plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+                tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIn("lacks schema_version", str(cm.exception))
             with open(tm, "w") as fh:
                 json.dump({"schema_version": "1", "run_id": "other"}, fh)
             with self.assertRaises(SystemExit) as cm:
-                plan_mod.ToolAxis.load(_cli_args(run_id="this"), d, [], {}, None)
+                tool_axis_mod.ToolAxis.load(_cli_args(run_id="this"), d, [], {}, None)
             self.assertIn("run_id 'other' != this run 'this'", str(cm.exception))
             # same run (or no --run-id) is accepted
-            axis = plan_mod.ToolAxis.load(_cli_args(run_id="other"), d, [], {"semgrep": "ok"},
+            axis = tool_axis_mod.ToolAxis.load(_cli_args(run_id="other"), d, [], {"semgrep": "ok"},
                                           {"semgrep"})
             self.assertEqual(axis.manifest["run_id"], "other")
             self.assertEqual(axis.tools_ran, {"semgrep"})
             self.assertEqual(axis.dispositions, {"semgrep": "ok"})
-            clean = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+            clean = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIsNotNone(clean.manifest)
             self.assertIsNone(clean.manifest_invalid)
 
@@ -459,7 +460,7 @@ class PlanLoadersTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             os.mkdir(os.path.join(d, "tools-manifest.json"))
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                axis = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+                axis = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIsNone(axis.manifest)
             self.assertIn("unreadable", axis.manifest_invalid)
             self.assertIn("NOT certified", err.getvalue())
@@ -467,13 +468,13 @@ class PlanLoadersTest(unittest.TestCase):
             os.symlink(os.path.join(d, "nowhere.json"),
                        os.path.join(d, "tools-manifest.json"))   # dangling
             with contextlib.redirect_stderr(io.StringIO()):
-                axis = plan_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
+                axis = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIsNone(axis.manifest)
             self.assertIn("unreadable", axis.manifest_invalid)
 
     def test_tool_axis_load_derives_policy_mode_from_the_plans(self):
         plans = [[{"group": "g1", "domain": "code", "tool_policy": "enforced"}]]
-        axis = plan_mod.ToolAxis.load(_cli_args(), ".", plans, {}, None)
+        axis = tool_axis_mod.ToolAxis.load(_cli_args(), ".", plans, {}, None)
         self.assertEqual(axis.policy_mode, plan_mod.derive_tool_policy_mode(plans=plans))
 
     def test_plan_inputs_load_composes_the_plan_stage(self):

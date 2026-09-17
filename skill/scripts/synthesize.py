@@ -17,6 +17,7 @@ import scripts.x0x_report as x0x_report
 import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
+import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.cost as cost_mod
 import scripts.synth.report as report_mod
@@ -251,8 +252,8 @@ def main(argv=None):
         tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False))
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
     tool_findings, dispositions, tools_ran, suppressed = plan_mod.ingest_tool_findings(args)
-    tools = plan_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran,
-                                   suppressed)
+    tools = tool_axis_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran,
+                                        suppressed)
     prepared = findings_mod.FindingSet.prepare(args, tool_findings, run.security_mode)
     # #1634: redact the INPUT, not only the output -- and do it HERE, upstream
     # of the --emit-verify-queue branch, so both passes of a run see identical
@@ -292,7 +293,7 @@ def main(argv=None):
     # #1335: SPEND, not coverage -- a no-op scanner still cost a dispatch.
     cost = cost_mod.CostInputs.load(
         run_dir, args.verdicts_dir,
-        plan_mod.tools_produced_from_dispositions(dispositions))
+        tool_axis_mod.tools_produced_from_dispositions(dispositions))
     delta = delta_mod.DeltaContext.from_args(args)
 
     # #1034/#1: a corrupt/malformed OCRDb bundle must exit with a code CI can
