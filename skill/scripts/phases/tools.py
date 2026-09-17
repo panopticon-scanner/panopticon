@@ -123,7 +123,7 @@ def tools_execute(review_root, manifest):
            "--out", out_dir, "--deps",
            "--run-id", manifest.get("run_id") or "",   # #17: manifest self-identifies
            "--manifest", manifest_path]
-    proc = child._run_child(cmd, review_root, "tools")
+    proc = child._run_child(cmd, review_root=review_root, phase="tools")
     # The runner's own report of what it did with the captures it wrote (#1639
     # P11 F5). Tolerant: a crash before the manifest was written leaves nothing
     # to copy, and the marker then claims nothing.

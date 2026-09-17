@@ -1373,8 +1373,8 @@ class TestDriverHardening(unittest.TestCase):
         d = self._pano_dir()
         with open(runio._pano(d, "groups.yml"), "w", encoding="utf-8") as fh:
             fh.write("groups:\n  Auth:\n    match: ['**/*.py']\n")
-        with mock.patch("subprocess.run",
-                        side_effect=OSError("ENOENT: no python")):
+        with mock.patch("scripts.phases.child._run_child",
+                        side_effect=runio.DriverError("could not spawn: ENOENT")):
             with self.assertRaises(runio.DriverError) as ctx:
                 discovery.discovery_execute(d, {"security_mode": "standard",
                                              "scope": {"mode": "repo"}})

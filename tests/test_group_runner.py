@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.group_runner as gr
 import scripts.evidence as ev
@@ -329,3 +330,64 @@ class TestOutFileContentHashes(unittest.TestCase):
                 self.assertIsNone(checked)
 
 
+
+class TestSha256FileIsChunked(unittest.TestCase):
+    """#1576 (OPS-D1A): `_sha256_file` did `hashlib.sha256(fh.read())`.
+
+    It runs over every declared findings artifact twice -- once at fan-out end
+    to snapshot, once at synthesis to verify the ingested bytes still match --
+    so one oversized artifact (a failed or concurrent cell writer) allocated its
+    complete contents in controller memory and could abort the review at the
+    exact moment the run was being certified. A digest needs a stream, never a
+    whole file.
+    """
+
+    def _spy(self, path):
+        """Run `_sha256_file` with the module's `open` wrapped, recording every
+        `read()` size. The module global is checked before the builtin, so this
+        reaches the call under test and nothing else."""
+        sizes = []
+        real_open = open
+
+        class _Spy:
+            def __init__(self, fh):
+                self._fh = fh
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._fh.close()
+                return False
+
+            def read(self, n=-1):
+                sizes.append(n)
+                return self._fh.read(n)
+
+        def fake_open(p, *a, **kw):
+            return _Spy(real_open(p, *a, **kw))
+
+        with mock.patch.object(gr, "open", fake_open, create=True):
+            digest = gr._sha256_file(path)
+        return digest, sizes
+
+    def test_the_file_is_read_in_bounded_chunks(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "findings.json")
+            body = bytes(range(256)) * ((gr._SHA256_CHUNK * 3) // 256 + 7)
+            with open(path, "wb") as fh:
+                fh.write(body)
+            digest, sizes = self._spy(path)
+            self.assertEqual(digest, hashlib.sha256(body).hexdigest())
+            self.assertNotIn(-1, sizes, "the whole file was read in one call")
+            self.assertEqual(max(sizes), gr._SHA256_CHUNK)
+            self.assertGreater(len(sizes), 3, "one read is not a stream")
+
+    def test_an_empty_file_still_hashes(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "empty.json")
+            open(path, "wb").close()
+            self.assertEqual(gr._sha256_file(path),
+                             hashlib.sha256(b"").hexdigest())

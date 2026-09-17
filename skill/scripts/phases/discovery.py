@@ -143,7 +143,7 @@ def discovery_execute(review_root, manifest):
         # a status protocol, so that has to be a DriverError -- `status: error`
         # naming the path -- and not a traceback with no status at all.
         raise runio.DriverError("discovery: cannot clear %s: %s" % (out, exc))
-    proc = child._run_child(cmd, review_root, "discovery")
+    proc = child._run_child(cmd, review_root=review_root, phase="discovery")
     doc = runio._load_json(out)
     if doc is None:
         raise runio.DriverError(

@@ -197,9 +197,23 @@ def resume_stats(plan, queue, verdicts_dir, _verdicts=None):
                        "pending": v_pending}}
 
 
+# #1576 (OPS-D1A): the read size for `_sha256_file`. It runs over every declared
+# findings artifact twice -- snapshot at fan-out end, verify at synthesis -- so
+# `fh.read()` put one oversized artifact (a failed or concurrent cell writer)
+# entirely in controller memory at the moment the run was being certified. A
+# digest needs a stream, and 64 KiB is one page-cache read per update.
+_SHA256_CHUNK = 65536
+
+
 def _sha256_file(path):
+    digest = hashlib.sha256()
     with open(path, "rb") as fh:
-        return hashlib.sha256(fh.read()).hexdigest()
+        while True:
+            chunk = fh.read(_SHA256_CHUNK)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def snapshot_out_files(plan, out_path=None):

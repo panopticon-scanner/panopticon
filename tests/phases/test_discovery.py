@@ -35,14 +35,14 @@ class TestDiscoveryPhase(unittest.TestCase):
                 json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
 
-        with mock.patch("subprocess.run", side_effect=fake_run):
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             result = discovery.discovery_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         self.assertTrue(discovery.discovery_done(self.root, self.manifest))
 
     def test_discovery_raises_when_no_groups_json_produced(self):
         self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
-        with mock.patch("subprocess.run",
+        with mock.patch("scripts.phases.child._run_child",
                         return_value=mock.Mock(returncode=1, stdout="", stderr="boom")):
             with self.assertRaises(runio.DriverError):
                 discovery.discovery_execute(self.root, self.manifest)
@@ -57,7 +57,7 @@ class TestDiscoveryPhase(unittest.TestCase):
                 json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
 
-        with mock.patch("subprocess.run", side_effect=fake_run) as run:
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
             result = discovery.discovery_execute(self.root, manifest)
         self.assertEqual(result.kind, "advanced")
         cmd = run.call_args.args[0]
@@ -74,7 +74,7 @@ class TestDiscoveryPhase(unittest.TestCase):
                 json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
 
-        with mock.patch("subprocess.run", side_effect=fake_run) as run:
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
             discovery.discovery_execute(self.root, manifest)
         cmd = run.call_args.args[0]
         self.assertNotIn("--scope-file", cmd)
@@ -92,7 +92,7 @@ class TestDiscoveryPhase(unittest.TestCase):
                 json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
 
-        with mock.patch("subprocess.run", side_effect=fake_run) as run:
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
             result = discovery.discovery_execute(self.root, manifest)
         self.assertEqual(result.kind, "advanced")
         cmd = run.call_args.args[0]
@@ -117,7 +117,7 @@ class TestDiscoveryPhase(unittest.TestCase):
                 json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
 
-        with mock.patch("subprocess.run", side_effect=fake_run) as run:
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
             result = discovery.discovery_execute(self.root, manifest)
         self.assertEqual(result.kind, "advanced")
         cmd = run.call_args.args[0]
@@ -140,7 +140,7 @@ class TestDiscoveryPhase(unittest.TestCase):
                 json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
 
-        with mock.patch("subprocess.run", side_effect=fake_run) as run:
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
             result = discovery.discovery_execute(self.root, manifest)
         self.assertEqual(result.kind, "advanced")
         cmd = run.call_args.args[0]
@@ -162,7 +162,7 @@ class TestDiscoveryPhase(unittest.TestCase):
                 json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
             return mock.Mock(returncode=0, stdout="", stderr="")
 
-        with mock.patch("subprocess.run", side_effect=fake_run) as run:
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
             discovery.discovery_execute(self.root, manifest)
         cmd = run.call_args.args[0]
         self.assertNotIn("--pr-base", cmd)
@@ -282,7 +282,7 @@ class TestMalformedProducerOutput(unittest.TestCase):
         return fake_run
 
     def test_the_first_malformed_round_retries_and_the_second_errors(self):
-        with mock.patch("subprocess.run", side_effect=self._writes({})):
+        with mock.patch("scripts.phases.child._run_child", side_effect=self._writes({})):
             first = discovery.discovery_execute(self.root, self.manifest)
             self.assertEqual(first.kind, "advanced")
             self.assertFalse(discovery.discovery_done(self.root, self.manifest))
@@ -309,7 +309,7 @@ class TestMalformedProducerOutput(unittest.TestCase):
         def writes_nothing(cmd, **kw):
             return mock.Mock(returncode=1, stdout="", stderr="boom")
 
-        with mock.patch("subprocess.run", side_effect=writes_nothing):
+        with mock.patch("scripts.phases.child._run_child", side_effect=writes_nothing):
             with self.assertRaises(runio.DriverError) as cm:
                 discovery.discovery_execute(self.root, self.manifest)
         self.assertIn("produced no groups.json", str(cm.exception))
@@ -326,17 +326,17 @@ class TestMalformedProducerOutput(unittest.TestCase):
         def never_runs(cmd, **kw):                    # pragma: no cover
             raise AssertionError("the child must not be launched")
 
-        with mock.patch("subprocess.run", side_effect=never_runs):
+        with mock.patch("scripts.phases.child._run_child", side_effect=never_runs):
             with self.assertRaises(runio.DriverError) as cm:
                 discovery.discovery_execute(self.root, self.manifest)
         self.assertIn("cannot clear", str(cm.exception))
         self.assertEqual(runio._error_status(str(cm.exception))["status"], "error")
 
     def test_a_good_round_after_a_malformed_one_is_accepted(self):
-        with mock.patch("subprocess.run", side_effect=self._writes({})):
+        with mock.patch("scripts.phases.child._run_child", side_effect=self._writes({})):
             discovery.discovery_execute(self.root, self.manifest)
         good = {"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}
-        with mock.patch("subprocess.run", side_effect=self._writes(good)):
+        with mock.patch("scripts.phases.child._run_child", side_effect=self._writes(good)):
             result = discovery.discovery_execute(self.root, self.manifest)
         self.assertEqual(result.kind, "advanced")
         self.assertTrue(discovery.discovery_done(self.root, self.manifest))
