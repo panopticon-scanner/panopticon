@@ -209,13 +209,31 @@ def _git(repo, args, timeout=30, text=True):
                           capture_output=True, text=text, check=True,
                           timeout=timeout, env={"PATH": os.environ.get("PATH", "")})
 
-def _worktree_dirty(repo):
+def _worktree_dirty(repo, exclude=()):
     """True when repo's working tree has uncommitted changes (git status
     --porcelain is non-empty) -- used to set diff-hunks.json's
     includes_uncommitted for the P6.3 --repo-scan delta scopes: True for a
-    live tree (e.g. -c usage), False for a clean checkout."""
+    live tree (e.g. -c usage), False for a clean checkout.
+
+    ``exclude`` (#1681 fix round 3, M4): repo-root-relative names whose status
+    lines are not dirt. The ``--pr-worktree`` caller passes the root config
+    names -- the SAME ones `write_diff_hunks` and `collect_changed_files`
+    exclude -- because `diff_map._sync_config` wrote the operator's config into
+    that worktree before this ran: without it the answer is True on every --pr
+    run, and the driver's own sync is declared as the PR author's uncommitted
+    work.
+    """
     r = _git(repo, ["status", "--porcelain"])
-    return bool(r.stdout.strip())
+    names = set(exclude)
+    for line in r.stdout.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:]                     # "XY <path>"; git quotes odd names,
+        if " -> " in path:                  # which then match no plain name here
+            path = path.split(" -> ", 1)[1]   # rename/copy: the NEW path changed
+        if path.strip() not in names:
+            return True
+    return False
 
 def collect_changed_files(repo, base=None, exclude=()):
     """Collect repo-relative paths changed since the merge base (or HEAD~1).
@@ -1629,11 +1647,13 @@ def main(argv=None):
         # fix round 2 item 6 -- this used to read "False for a clean --pr
         # worktree", which stopped being so the moment the sync started
         # writing into it).
-        includes_uncommitted = _worktree_dirty(repo)
+        # M4: the same exclusion, on the same flag, for all three -- the sync
+        # is not the PR's uncommitted work any more than it is the PR's hunk.
+        _cfg_exclude = repo_config.CONFIG_NAMES if args.pr_worktree else ()
+        includes_uncommitted = _worktree_dirty(repo, exclude=_cfg_exclude)
         write_diff_hunks(repo, base, source,
                          _hunks_path_for(args.out), args.diff_context,
-                         includes_uncommitted,
-                         exclude=repo_config.CONFIG_NAMES if args.pr_worktree else ())
+                         includes_uncommitted, exclude=_cfg_exclude)
     else:
         # #5.0-07: a NON-delta (whole-repo) scan must be authoritative and drop
         # any stale diff-hunks.json left by a prior -c/--pr run — otherwise the

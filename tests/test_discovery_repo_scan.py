@@ -353,3 +353,22 @@ class TestWorktreeDirty(unittest.TestCase):
         with open(os.path.join(repo, "b.py"), "w", encoding="utf-8") as fh:
             fh.write("new\n")
         self.assertTrue(discovery._worktree_dirty(repo))
+
+    def test_excluded_names_do_not_count_as_dirt(self):
+        # M4: the --pr-worktree caller passes the root config names, which the
+        # driver itself wrote into that tree (diff_map._sync_config).
+        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
+        names = discovery.repo_config.CONFIG_NAMES
+        with open(os.path.join(repo, names[0]), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\ngroups: {}\n")
+        self.assertTrue(discovery._worktree_dirty(repo))
+        self.assertFalse(discovery._worktree_dirty(repo, exclude=names))
+
+    def test_an_excluded_name_does_not_mask_other_dirt(self):
+        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
+        names = discovery.repo_config.CONFIG_NAMES
+        with open(os.path.join(repo, names[0]), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\ngroups: {}\n")
+        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("changed\n")
+        self.assertTrue(discovery._worktree_dirty(repo, exclude=names))

@@ -335,6 +335,45 @@ def test_repo_scan_plain_delta_still_lists_a_changed_root_config(tmp_path):
     assert "panopticon.yml" in hunks["hunks"]
 
 
+def _pr_worktree_after_sync(tmp_path):
+    """A --pr worktree as the driver hands it to discovery: the PR's own commit
+    on top of the base, and the OPERATOR's root config written in (never
+    committed there) by `diff_map._sync_config`."""
+    repo = repo_with_matrix(tmp_path)
+    (repo / "src" / "checkout" / "pay.py").write_text("x=2\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "the PR's own change")
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Auth:\n    match: ['src/auth/**']\n")
+    return repo
+
+
+def _hunks_for_pr_worktree(repo):
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            "--pr-worktree", str(repo), "--out", str(out)])
+    assert rc == 0
+    return json.loads((repo / ".panopticon" / "diff-hunks.json").read_text())
+
+
+def test_repo_scan_pr_worktree_does_not_call_the_synced_config_uncommitted(tmp_path):
+    # M4: `_sync_config` writes the operator's config into the worktree before
+    # discovery ever runs, so `git status --porcelain` is never empty there and
+    # includes_uncommitted came back True on EVERY --pr run -- the driver's own
+    # sync published as the PR author's uncommitted work. The dirty check
+    # excludes the same names the hunk map and the reviewed set already do.
+    hunks = _hunks_for_pr_worktree(_pr_worktree_after_sync(tmp_path))
+    assert hunks["includes_uncommitted"] is False
+
+
+def test_repo_scan_pr_worktree_still_reports_real_uncommitted_work(tmp_path):
+    # The exclusion is the config names and nothing else: anything ELSE
+    # uncommitted in the worktree is still declared.
+    repo = _pr_worktree_after_sync(tmp_path)
+    (repo / "src" / "checkout" / "cart.py").write_text("x=3\n")
+    assert _hunks_for_pr_worktree(repo)["includes_uncommitted"] is True
+
+
 def _reviewed_files(out_path):
     """Every file discovery.py --repo-scan actually dispatched: grouped, plus
     the ungrouped leftovers a changed root config (unmatched by any committed
