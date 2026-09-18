@@ -1614,7 +1614,7 @@ class TestFinishTreatsPausedAsTerminal(unittest.TestCase):
 
     def _finish(self, status, guards=None, ledger=None, writes=None):
         # #1616 item 6: `_finish` is handed the review root `loop` already
-        # resolved, so there is no `_review_root` call left here to patch.
+        # resolved, so there is no `_resolve_target` call left here to patch.
         writes = [] if writes is None else writes
         with mock.patch.object(orchestrate, "write_usage",
                                side_effect=lambda *a, **k: writes.append(a)):
