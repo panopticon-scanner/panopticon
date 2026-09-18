@@ -428,9 +428,12 @@ def loop(args):
             # below are unchanged -- there is nothing of theirs to take back.
             unlaunched = [e for e in pending if e.get("id") not in handled]
             if unlaunched:
-                print("driver loop: host outage detected after %d host-class failure(s); "
+                # What the STOP saw, not what is left over: a success drained
+                # afterwards may have closed the run, and the settle verdict
+                # below is the only thing entitled to call this an outage.
+                print("driver loop: stopped launching after %d host-class failure(s); "
                       "%d of %d entries not launched"
-                      % (tally.trailing, len(unlaunched), len(pending)),
+                      % (tally.stopped_at or 0, len(unlaunched), len(pending)),
                       file=sys.stderr, flush=True)
             for note in batch.close():        # a clean batch leaves no manifest
                 print("driver loop: batch manifest not removed: %s" % note,

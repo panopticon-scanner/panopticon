@@ -1773,7 +1773,8 @@ class TestAMidBatchHostOutage(LoopCase):
         unlaunched = len(self.FLOOR) - len(reviews)
         self.assertGreaterEqual(unlaunched, 2, reviews)
         self.assertIn("%d of %d entries not launched" % (unlaunched, len(self.FLOOR)), err)
-        self.assertIn("host outage detected after", err)
+        self.assertIn("driver loop: stopped launching after %d host-class failure(s)"
+                      % max(2, self.WIDTH), err)
         self.assertIn("%d of its entries were never launched" % unlaunched, status["message"])
 
     def test_only_the_cell_that_failed_on_its_own_account_is_charged(self):
@@ -1850,6 +1851,13 @@ class TestAMidBatchHostOutage(LoopCase):
         attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
         self.assertEqual([], [k for k, v in attempts.items() if v != 1], attempts)
         self.assertNotIn("paused", err)
+        # the stderr line reports what the STOP saw, which a later success has
+        # since reset -- and it does not call this an outage, because the
+        # settle verdict is the only thing entitled to that word
+        self.assertIn("driver loop: stopped launching after %d host-class failure(s); "
+                      "%d of %d entries not launched"
+                      % (max(2, self.WIDTH), len(never), len(self.FLOOR)), err)
+        self.assertNotIn("outage", err)
 
     def test_a_403_a_later_launch_answers_after_is_not_an_outage(self):
         # The other half of the trailing-run rule: a 403 whose successor came

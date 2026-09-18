@@ -462,6 +462,23 @@ class TestTheFailureTally(unittest.TestCase):
                              seq=seq)
             self.assertTrue(tally.outage(width), width)
 
+    def test_the_stop_remembers_the_count_a_later_success_erases(self):
+        # The loop's "stopped launching after N" line is read off the moment
+        # the stop FIRED. `_trailing` by then is whatever the drain left --
+        # zero, when a success with a later seq closed the run -- and
+        # "stopped launching after 0 host-class failure(s)" says nothing.
+        tally = outage.FailureTally("kimi", self._args())
+        self.assertIsNone(tally.stopped_at)
+        for seq in range(2):
+            tally.record("e%d" % seq, self._fail("403", host_error="403 Forbidden"), seq=seq)
+            tally.outage(2)
+        self.assertEqual(2, tally.stopped_at)
+        tally.record("e9", self._ok(), seq=9)              # the in-flight success lands
+        self.assertFalse(tally.outage(2), "the run should have closed")
+        self.assertEqual(2, tally.stopped_at, "the stop's own count was overwritten")
+        self.assertIsNone(tally.settle(3))                 # ...and it was not an outage
+        self.assertIsNone(tally.stopped_at, "stopped_at outlived its batch")
+
     def test_the_pause_says_how_many_entries_were_never_launched(self):
         tally = outage.FailureTally("kimi", self._args())
         for seq in range(2):

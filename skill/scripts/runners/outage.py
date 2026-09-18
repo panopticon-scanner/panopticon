@@ -389,12 +389,11 @@ class FailureTally:
         # The batch's host-class entry ids, as of the last `settle`: the loop
         # gives each of them its per-dispatch attempt marker back.
         self.uncharged = []
-
-    @property
-    def trailing(self):
-        """How many host-class failures the open run holds -- what the loop's
-        "host outage detected after N" line names (#1721)."""
-        return self._trailing
+        # How many host-class failures the run held when `outage` first said
+        # stop, or None. Read by the loop's "stopped launching after N" line,
+        # and NOT the same as `_trailing` by then: a success drained after the
+        # stop can have closed the run and reset it to zero.
+        self.stopped_at = None
 
     def record(self, entry_id, result, refusal=None, seq=None):
         """One landed entry: `result` as the runner returned it, `refusal` the
@@ -441,8 +440,16 @@ class FailureTally:
         because at width `w` the first `w` results are all from launches that
         overlapped, so anything less would fire on a single moment's worth of
         evidence however wide the pool.
+
+        The count at the FIRST yes is kept in `stopped_at` for the loop's own
+        line: by the time the batch has drained, a later success may have
+        closed the run, and "stopped launching after 0" says nothing.
         """
-        return self._trailing >= max(2, int(width or 1))
+        if self._trailing < max(2, int(width or 1)):
+            return False
+        if self.stopped_at is None:
+            self.stopped_at = self._trailing
+        return True
 
     def settle(self, unlaunched=0):
         """Close the batch: charge what it really proved, and return the
@@ -453,6 +460,7 @@ class FailureTally:
         message names because they are neither done nor charged."""
         batch, self._batch = self._batch, []
         trailing, self._trailing, self._outage_seq = self._trailing, 0, None
+        self.stopped_at = None
         host = [(eid, err) for eid, err, cls in batch if cls == HOST_FAILURE]
         self.uncharged = [eid for eid, _err in host]
         for eid, err, cls in batch:
