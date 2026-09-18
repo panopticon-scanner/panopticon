@@ -68,6 +68,38 @@ class TestCommand(unittest.TestCase):
                     self.assertIn(flag, cmd)
         self.assertEqual(("-p", "--output-format"), claude_runner.Runner.ENVELOPE_FLAGS)
 
+    def test_every_launch_drops_the_targets_project_and_local_discovery(self):
+        # #1657 step 2: the child runs in the REVIEWED TREE, which is where
+        # claude discovers `.claude/settings.json`, `.claude/settings.local
+        # .json`, `.mcp.json`, `.claude/skills` and `.claude/commands`. A
+        # hostile target plants any of those and they load as configuration.
+        # `--setting-sources user` drops the project and local settings (and
+        # the hooks they declare); `--strict-mcp-config` leaves a launch that
+        # passes no `--mcp-config` with no MCP at all; `--disable-slash-
+        # commands` costs nothing, since reviewers run registered `--agent`
+        # shells. All three are `claude --help`-attested.
+        for enforced in (True, False):
+            with self.subTest(enforced=enforced):
+                cmd = self.r.command(_entry(enforced), "/run/host-settings.json", max_turns=40)
+                self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "user")
+                self.assertIn("--strict-mcp-config", cmd)
+                self.assertIn("--disable-slash-commands", cmd)
+                # `--settings` is a SEPARATE channel that still applies under
+                # `--setting-sources user`, which is the only reason the guard
+                # hooks in that file still arm.
+                self.assertLess(cmd.index("--settings"), cmd.index("--setting-sources"))
+                self.assertEqual(cmd[cmd.index("--settings") + 1], "/run/host-settings.json")
+
+    def test_no_launch_ever_unarms_the_guard_hooks(self):
+        # `--bare` and `--safe-mode` both DISABLE hooks. Passing either would
+        # silently un-arm the read and write guards -- the confinement this
+        # host's whole posture rests on -- while looking like hardening.
+        for enforced in (True, False):
+            cmd = self.r.command(_entry(enforced), "/s.json", max_turns=40)
+            for flag in ("--bare", "--safe-mode"):
+                with self.subTest(enforced=enforced, flag=flag):
+                    self.assertNotIn(flag, cmd)
+
     def test_no_per_entry_budget_arm_exists(self):
         # M3 (final review): `--max-budget-usd` is a WHOLE-RUN knob the loop
         # enforces off its own ledger (spec 4.3). `command` carried a
