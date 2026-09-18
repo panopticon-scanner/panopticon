@@ -477,60 +477,75 @@ class TestDiffMapFailures(unittest.TestCase):
                     diff_map.hunk_map(d, "HEAD")
 
 
-class TestSyncGroups(unittest.TestCase):
-    """#run8 SEC-D1C: _sync_groups copies the operator's groups.yml into an
-    attacker-controlled PR worktree and must not follow a symlinked destination
-    out of that worktree (CWE-59)."""
+class TestSyncConfig(unittest.TestCase):
+    """#run8 SEC-D1C / #1681: _sync_config OVERWRITES whatever the PR shipped
+    under either root config name with the operator's own file, and must not
+    follow a symlinked destination out of the worktree (CWE-59)."""
 
-    def _repo_with_groups(self, d):
+    def _repo_with_config(self, d, name="panopticon.yml"):
         repo = os.path.join(d, "repo")
-        os.makedirs(os.path.join(repo, ".panopticon"))
-        with open(os.path.join(repo, ".panopticon", "groups.yml"), "w",
-                  encoding="utf-8") as fh:
-            fh.write("groups: []\n")
+        os.makedirs(repo)
+        with open(os.path.join(repo, name), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\ngroups: {}\n")
         return repo
 
     def test_copies_into_worktree_normally(self):
         with tempfile.TemporaryDirectory() as d:
-            repo = self._repo_with_groups(d)
-            wt = os.path.join(d, "wt")
-            os.makedirs(wt)
-            diff_map._sync_groups(repo, wt)
-            dst = os.path.join(wt, ".panopticon", "groups.yml")
-            self.assertTrue(os.path.isfile(dst))
-            with open(dst, encoding="utf-8") as fh:
-                self.assertEqual(fh.read(), "groups: []\n")
+            repo = self._repo_with_config(d)
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            self.assertEqual(diff_map._sync_config(repo, wt), [])
+            with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
 
-    def test_noop_when_operator_has_no_groups(self):
+    def test_noop_when_operator_has_no_config(self):
         with tempfile.TemporaryDirectory() as d:
-            repo = os.path.join(d, "repo")           # no .panopticon/groups.yml
-            os.makedirs(repo)
-            wt = os.path.join(d, "wt")
-            os.makedirs(wt)
-            diff_map._sync_groups(repo, wt)          # must not raise
-            self.assertFalse(os.path.exists(os.path.join(wt, ".panopticon")))
+            repo = os.path.join(d, "repo"); os.makedirs(repo)
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            self.assertEqual(diff_map._sync_config(repo, wt), [])
+            self.assertFalse(os.path.exists(os.path.join(wt, "panopticon.yml")))
 
-    def test_rejects_symlinked_panopticon_dir(self):
+    def test_operator_file_overwrites_a_pr_shipped_one_and_says_so(self):
         with tempfile.TemporaryDirectory() as d:
-            repo = self._repo_with_groups(d)
-            wt = os.path.join(d, "wt")
-            os.makedirs(wt)
-            escape = os.path.join(d, "escape")       # attacker-chosen destination
-            os.makedirs(escape)
-            os.symlink(escape, os.path.join(wt, ".panopticon"))
-            with self.assertRaisesRegex(RuntimeError, "symlinked .panopticon"):
-                diff_map._sync_groups(repo, wt)
-            # nothing written into the escape target
-            self.assertFalse(os.path.exists(os.path.join(escape, "groups.yml")))
+            repo = self._repo_with_config(d)
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            with open(os.path.join(wt, "panopticon.yml"), "w") as fh:
+                fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+            notes = diff_map._sync_config(repo, wt)
+            self.assertEqual(open(os.path.join(wt, "panopticon.yml")).read(), "version: 1\ngroups: {}\n")
+            self.assertTrue(any("overwrote" in n and "panopticon.yml" in n for n in notes))
 
-    def test_rejects_symlinked_groups_file(self):
+    def test_both_names_in_the_worktree_are_removed_before_the_copy(self):
         with tempfile.TemporaryDirectory() as d:
-            repo = self._repo_with_groups(d)
-            wt = os.path.join(d, "wt")
-            os.makedirs(os.path.join(wt, ".panopticon"))
-            outside = os.path.join(d, "outside.yml")  # points nowhere yet
-            os.symlink(outside, os.path.join(wt, ".panopticon", "groups.yml"))
-            with self.assertRaisesRegex(RuntimeError, "symlinked destination"):
-                diff_map._sync_groups(repo, wt)
-            self.assertFalse(os.path.exists(outside))
+            repo = self._repo_with_config(d, name=".panopticon.yml")
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            open(os.path.join(wt, "panopticon.yml"), "w").write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+            notes = diff_map._sync_config(repo, wt)
+            self.assertFalse(os.path.exists(os.path.join(wt, "panopticon.yml")))
+            self.assertEqual(open(os.path.join(wt, ".panopticon.yml")).read(), "version: 1\ngroups: {}\n")
+            self.assertTrue(any("removed" in n for n in notes))
+
+    def test_a_symlink_at_either_name_in_the_worktree_is_unlinked_not_followed(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_config(d)
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            outside = os.path.join(d, "outside.yml")
+            with open(outside, "w", encoding="utf-8") as fh:
+                fh.write("i must not be read or written through the link\n")
+            os.symlink(outside, os.path.join(wt, "panopticon.yml"))
+            os.symlink(outside, os.path.join(wt, ".panopticon.yml"))
+            diff_map._sync_config(repo, wt)
+            self.assertFalse(os.path.islink(os.path.join(wt, "panopticon.yml")))
+            self.assertEqual(open(os.path.join(wt, "panopticon.yml")).read(), "version: 1\ngroups: {}\n")
+            # the link was unlinked, never followed: the file it pointed at is untouched
+            with open(outside, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "i must not be read or written through the link\n")
+
+    def test_rejects_a_worktree_root_that_is_a_symlink(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_config(d)
+            escape = os.path.join(d, "escape"); os.makedirs(escape)
+            wt = os.path.join(d, "wt"); os.symlink(escape, wt)
+            with self.assertRaisesRegex(RuntimeError, "symlinked worktree"):
+                diff_map._sync_config(repo, wt)
+            self.assertFalse(os.path.exists(os.path.join(escape, "panopticon.yml")))
 

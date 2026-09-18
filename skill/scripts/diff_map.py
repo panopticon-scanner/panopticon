@@ -7,9 +7,24 @@ import json as _json
 import os
 import re
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 import uuid
+
+# This repo has two directories named `scripts` with no __init__.py (repo-root
+# scripts/ and skill/scripts/). When imported flat (skill/scripts on
+# sys.path -- the standalone-script shape, e.g. discovery.py's own bootstrap),
+# the try arm raises ModuleNotFoundError. When `scripts` resolves as a
+# namespace package (pytest via conftest.py, or driver.py's own bootstrap
+# importing this module as `scripts.diff_map`), it succeeds and binds the
+# SAME module object every other caller sees -- see host_disclosure.py for the
+# same fallback on the same seam.
+try:
+    import scripts.repo_config as repo_config
+except ImportError:
+    import repo_config
 
 _NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -281,46 +296,45 @@ def _worktree_dir(repo, pr_number):
 _PR_TIMEOUT = 180
 
 
-def _sync_groups(repo, wt_path):
-    """Copy the operator's `.panopticon/groups.yml` into the PR worktree so the
-    review runs against the operator's grouping, not whatever the PR shipped.
+def _sync_config(repo, wt_path):
+    """Copy the OPERATOR's root config into the PR worktree so the review runs
+    against the operator's grouping, never the PR's (#1681; was `_sync_groups`).
 
-    #run8 SEC-D1C: the worktree holds ATTACKER-CONTROLLED checked-out PR content
-    (`git worktree add --detach wt head_sha`). If the PR commits `.panopticon`
-    (or `.panopticon/groups.yml`) as a SYMLINK -- git tracks symlinks, and
-    `git add -f` defeats the `.panopticon/` gitignore -- then makedirs/copy2
-    would resolve THROUGH it and write groups.yml to an attacker-chosen location
-    outside the worktree (CWE-59 improper link resolution). The worktree ROOT is
-    already symlink-checked in acquire_pr; this closes the same hole one level
-    down. Refuse (loud, consistent with the module's fail-loud contract) if the
-    destination dir/file is a symlink or resolves outside the worktree root.
+    #run8 SEC-D1C: the worktree holds ATTACKER-CONTROLLED checked-out PR
+    content. Its root is symlink-checked in acquire_pr and again here; a
+    PR-shipped copy of the root config (file OR symlink) under either
+    recognized config name at the worktree root is REMOVED with lstat+unlink
+    -- never opened, never followed (CWE-59) -- before the operator's file is
+    copied in under the operator's own name. Overwriting is the point (the
+    old copy-if-absent let the PR's file govern its own review); every
+    removal and overwrite is returned as a disclosure line for the caller to
+    print. Returns [] when the operator has no config.
     """
-    src = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(src):
-        return
-    panop_dir = os.path.join(wt_path, ".panopticon")
-    if os.path.islink(panop_dir):
+    res = repo_config.resolve(repo)
+    if res.path is None:
+        return []
+    if os.path.islink(wt_path) or not os.path.isdir(wt_path):
         raise RuntimeError(
-            "panopticon --pr: refusing to sync groups.yml through symlinked "
-            ".panopticon in PR worktree (%s)" % panop_dir)
-    real_wt = os.path.realpath(wt_path)
-    real_parent = os.path.realpath(panop_dir)   # non-existent tail resolves literally
-    try:
-        contained = os.path.commonpath([real_parent, real_wt]) == real_wt
-    except ValueError:
-        contained = False
-    if not contained:
-        raise RuntimeError(
-            "panopticon --pr: refusing to sync groups.yml outside the worktree "
-            "(destination %s escapes %s)" % (real_parent, real_wt))
-    dst = os.path.join(panop_dir, "groups.yml")
-    if os.path.islink(dst):
-        raise RuntimeError(
-            "panopticon --pr: refusing to write groups.yml through a symlinked "
-            "destination (%s)" % dst)
-    if not os.path.isfile(dst):
-        os.makedirs(panop_dir, exist_ok=True)
-        shutil.copy2(src, dst)
+            "panopticon --pr: refusing to sync into a symlinked worktree (%s)" % wt_path)
+    notes = []
+    for name in repo_config.CONFIG_NAMES:
+        dst = os.path.join(wt_path, name)
+        try:
+            st = os.lstat(dst)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            shutil.rmtree(dst)
+        else:
+            os.unlink(dst)
+        notes.append("removed the PR's %s from the worktree "
+                     "(target content must not govern its own review)" % name)
+    dst = os.path.join(wt_path, os.path.basename(res.path))
+    shutil.copy2(res.path, dst)
+    if any("removed the PR's %s" % os.path.basename(res.path) in n for n in notes):
+        notes.append("overwrote %s in the worktree with the operator's copy"
+                     % os.path.basename(res.path))
+    return notes
 
 
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
@@ -372,7 +386,8 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     if any(line.split()[:1] == [wt]
            for line in listing_out.splitlines() if line.strip()):
         head_sha = _run(["git", "-C", wt, "rev-parse", "HEAD"]).strip()
-        _sync_groups(repo, wt)
+        for line in _sync_config(repo, wt):
+            print("panopticon --pr: %s" % line, file=sys.stderr)
         return {"worktree": wt, "base": base, "head_sha": head_sha}   # reuse (resume)
 
     fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
@@ -386,7 +401,8 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
             _run(["git", "-C", repo, "update-ref", "-d", fetch_ref])
         except RuntimeError:
             pass
-    _sync_groups(repo, wt)
+    for line in _sync_config(repo, wt):
+        print("panopticon --pr: %s" % line, file=sys.stderr)
     return {"worktree": wt, "base": base, "head_sha": head_sha}
 
 
