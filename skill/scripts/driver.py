@@ -480,7 +480,7 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # different remedy and is deliberately not handled here.
     if host in hosts.known_hosts() and host not in hosts.driver_hosts():
         return hosts.unselectable_host_message(host, "run")
-    if hosts.is_deprecated(host):
+    if hosts.is_unenforced_fallback(host):
         # D1: printed from the RESOLVED host, not from argv, so a resumed run
         # (--host absent, the manifest authoritative) prints it too. Every
         # invocation reaches here before any phase dispatches (spec 10: a

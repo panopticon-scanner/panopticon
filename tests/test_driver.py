@@ -1606,9 +1606,9 @@ class TestDriverRunRefusesAnUnselectableManifestHost(unittest.TestCase):
 
         Minted under `claude` -- which CLAIMS every capability -- so that the
         pair below can tell selectability from claims. The near-miss this
-        guards is named in `hosts.is_deprecated`'s own docstring: gemini
-        claims nothing AND is unselectable, so a refusal keyed on the claim
-        set passes for exactly the wrong reason. `_untouched` therefore
+        guards is named in `hosts.is_unenforced_fallback`'s own docstring:
+        gemini claims nothing AND is unselectable, so a refusal keyed on the
+        claim set passes for exactly the wrong reason. `_untouched` therefore
         resumes as `generic`, the row that claims nothing and IS selectable,
         which a claims-keyed refusal would wrongly stop.
         """

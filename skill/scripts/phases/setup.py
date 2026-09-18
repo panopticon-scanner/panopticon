@@ -311,12 +311,12 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
                     "max_groups": getattr(args, "max_groups", None) or overrides["max_groups"]}
         runio._write_json(_setup_manifest_path(review_root), manifest)
     host = manifest.get("host", runio._DEFAULTS["host"])
-    if posture is None and hosts.is_deprecated(host):
+    if posture is None and hosts.is_unenforced_fallback(host):
         # D1, mirroring driver.run()'s _establish_host_posture: printed from
         # the RESOLVED host (the manifest, whether just minted from args.host
         # or loaded from a prior invocation), once per `driver setup` call,
-        # before either setup phase runs. `hosts.is_deprecated` (not a bare
-        # `host == "generic"`) because tests/test_host_posture_wiring.py's
+        # before either setup phase runs. `hosts.is_unenforced_fallback` (not
+        # a bare `host == "generic"`) because tests/test_host_posture_wiring.py's
         # AST guard forbids phases/ deciding anything from a host's NAME.
         #
         # `posture is None` (fix round 1, F4): when a posture step is injected

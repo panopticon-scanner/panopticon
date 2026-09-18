@@ -54,18 +54,19 @@ class TestQueries(unittest.TestCase):
     def test_driver_hosts_is_a_subset_of_known_hosts(self):
         self.assertTrue(set(hosts.driver_hosts()) <= set(hosts.known_hosts()))
 
-    def test_only_generic_is_deprecated(self):
-        # D4. gemini also claims nothing, and after #1621 is not selectable
-        # either -- but it is still not the deprecated FALLBACK, which is a
-        # distinct role: `is_deprecated` gates the run-time NOTICE, and a
-        # predicate broadened to "claims nothing" (or to "not selectable")
-        # would print that notice for rows it does not describe.
-        self.assertTrue(hosts.is_deprecated("generic"))
+    def test_only_generic_is_the_unenforced_fallback(self):
+        # D1 (spec 8.3 option 1, superseding D4). gemini also claims nothing,
+        # and after #1621 is not selectable either -- but it is still not the
+        # unenforced FALLBACK, which is a distinct role: `is_unenforced_fallback`
+        # gates the run-time NOTICE, and a predicate broadened to "claims
+        # nothing" (or to "not selectable") would print that notice for rows
+        # it does not describe.
+        self.assertTrue(hosts.is_unenforced_fallback("generic"))
         for host in hosts.known_hosts():
             if host != "generic":
                 with self.subTest(host=host):
-                    self.assertFalse(hosts.is_deprecated(host))
-        self.assertFalse(hosts.is_deprecated("no-such-host"))
+                    self.assertFalse(hosts.is_unenforced_fallback(host))
+        self.assertFalse(hosts.is_unenforced_fallback("no-such-host"))
 
 
 class TestDriverHostCapabilities(unittest.TestCase):

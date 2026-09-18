@@ -147,7 +147,7 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
         # PR's to take (section 3).
         section = _section(_read_doc(), 7)
         self.assertTrue(hosts.spec("generic").driver_selectable)
-        self.assertTrue(hosts.is_deprecated("generic"))
+        self.assertTrue(hosts.is_unenforced_fallback("generic"))
         self.assertIn("--host generic", section)
         self.assertIn("owner", section.lower())
         self.assertIn("8.3", section)
