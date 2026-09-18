@@ -168,24 +168,40 @@ class TestSetupFlow(unittest.TestCase):
         # the draft lives at the ROOT now, so it is ignored either way
         self.assertIn(setup_flow.repo_config.DRAFT_NAME, gi)
 
-    def test_provision_fresh_repo_adds_committable_block(self):
+    def test_provision_never_re_exposes_the_artifact_directory(self):
+        # M5: `!.panopticon/` existed to re-include the directory so that
+        # `.panopticon/groups.yml` could be committed out of it. Since #1681
+        # nothing under there is committable -- the config is a root file --
+        # so the negation buys a target nothing and re-exposes a directory of
+        # run artifacts to the next `git add .`.
+        d = _repo(self)
+        setup_flow.provision(d)
+        gi = self._gitignore(d)
+        self.assertIn(".panopticon/*", gi)       # run artifacts still ignored
+        self.assertNotIn("!", gi)                # and nothing re-included
+
+    def test_provision_fresh_repo_adds_the_artifact_block(self):
         d = _repo(self)  # no .gitignore
         setup_flow.provision(d)
         gi = self._gitignore(d)
         self.assertIn(".panopticon/*", gi)
-        self.assertIn("!.panopticon/", gi)
+        # M5: no negation of any kind -- neither the per-file one the legacy
+        # matrix needed nor the directory one that re-included it.
+        self.assertNotIn("!.panopticon/", gi)
         self.assertNotIn("!.panopticon/groups.yml", gi)   # nothing there is committed
 
-    def test_provision_appends_negations_to_star_form(self):
-        # .panopticon/* already present (committable-compatible), the directory
-        # negation missing -> append it (pure append), never rewrite the line.
+    def test_provision_leaves_an_existing_star_form_alone(self):
+        # .panopticon/* already present -> nothing to add for it (pure append,
+        # never a rewrite). M5: there is no directory negation to append after
+        # it any more, so the only new lines are the always-ignore entries.
         d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write(".panopticon/*\n")
         setup_flow.provision(d)
         gi = self._gitignore(d)
         self.assertEqual(gi.count(".panopticon/*"), 1)   # not duplicated
-        self.assertIn("!.panopticon/", gi)
+        self.assertNotIn("!.panopticon/", gi)
+        self.assertIn(setup_flow.repo_config.DRAFT_NAME, gi)
 
     def test_seed_writes_a_versioned_root_config_through_the_one_writer(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1218,14 +1234,16 @@ class TestGlobFormBlanketIgnore(unittest.TestCase):
         setup_flow.provision(d)
         self.assertEqual(_status(d), "")
 
-    def test_a_committable_form_repo_still_gets_its_negations(self):
+    def test_a_contents_form_repo_gets_no_negation(self):
         # `.panopticon/*` ignores the CONTENTS, not the directory, so the
-        # directory negation still takes effect -- this form must keep working.
+        # directory is visible without being re-included -- and since M5
+        # nothing under it is committable, so nothing re-includes it.
         d = _git_repo(self, ".panopticon/*\n")
         setup_flow.provision(d)
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
-        self.assertIn("!.panopticon/", gi)
+        self.assertNotIn("!.panopticon/", gi)
+        self.assertEqual(gi.count(".panopticon/*"), 1)
 
     def test_a_fresh_git_repo_still_gets_the_full_block(self):
         d = _git_repo(self, "node_modules/\n")

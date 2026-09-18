@@ -39,17 +39,20 @@ from scripts import host_disclosure  # noqa: E402  (#1344 F3b: one voice for the
 from scripts.phases import runio  # noqa: E402
 
 
-# #1135: the committable block ignores run artifacts under .panopticon/ while
-# leaving the directory itself visible. Applied ONLY to a repo that does not
-# already ignore the .panopticon DIRECTORY outright -- see _ensure_gitignore.
+# #1135: this block ignores run artifacts under .panopticon/ while leaving the
+# directory itself visible. Applied ONLY to a repo that does not already ignore
+# the .panopticon DIRECTORY outright -- see _ensure_gitignore.
 #
 # #1681: the committed config is at the REPO ROOT now, not under .panopticon/,
-# so there is no per-file negation here any more -- nothing under the blanket
-# is meant to be committed. The DRAFT is at the root too, and it is derived, so
-# it joins the always-ignore list below.
-_PANOPTICON_COMMITTABLE_ENTRIES = [
+# so nothing under the blanket is meant to be committed -- neither a per-file
+# negation nor the `!.panopticon/` directory one that used to re-include the
+# directory so the legacy matrix file could be committed out of it (fix round
+# 3, M5). `.panopticon/*` ignores the CONTENTS and leaves the directory itself
+# visible on its own, so re-including it buys a target nothing and re-exposes a
+# directory of run artifacts to the next `git add .`. The DRAFT is at the root
+# too, and it is derived, so it joins the always-ignore list below.
+_PANOPTICON_ARTIFACT_ENTRIES = [
     ".panopticon/*",
-    "!.panopticon/",
 ]
 _DRAFT_IGNORE_ENTRY = repo_config.DRAFT_NAME
 _ALWAYS_IGNORE_ENTRIES = [".claude/settings.local.json", _DRAFT_IGNORE_ENTRY]
@@ -62,7 +65,7 @@ _PANOPTICON_DIR_BLANKET = {
     ".panopticon", ".panopticon/", "/.panopticon", "/.panopticon/",
     # #run7 ARC-A2B: a `**/`-prefixed blanket also excludes the directory, so
     # git cannot re-include anything out of it -- treat it as un-negatable too
-    # (else provision() would append a committable block that can't take effect
+    # (else provision() would append an artifact block that can't take effect
     # and spuriously rewrites .gitignore).
     "**/.panopticon", "**/.panopticon/",
 }
@@ -189,15 +192,17 @@ def _ensure_gitignore(repo):
 
     Returns the list of entries appended. If the repo already blanket-ignores
     the .panopticon DIRECTORY (``_PANOPTICON_DIR_BLANKET``), that ignore is left
-    exactly as-is: the ``.panopticon/*`` + negation block is NOT applied
-    (applying it used to migrate the line in place -- a spurious working-tree
-    modification that also re-exposed the directory, #1135). A fresh repo (or
-    one already using the negation-compatible ``.panopticon/*`` form) gets the
-    full block; any already-present entry is skipped so re-runs are true no-ops.
+    exactly as-is: the ``.panopticon/*`` artifact block is NOT applied (applying
+    it used to migrate the line in place -- a spurious working-tree modification
+    that also re-exposed the directory, #1135). A fresh repo (or one already
+    using the ``.panopticon/*`` form) gets the full block; any already-present
+    entry is skipped so re-runs are true no-ops.
 
     #1681: the committed config is at the root, so nothing here decides whether
     it is trackable -- the always-ignore entries (the local hook settings and
-    the derived root DRAFT) are appended either way.
+    the derived root DRAFT) are appended either way. Nothing under
+    ``.panopticon/`` is committable, so nothing written here re-includes it
+    (fix round 3, M5).
 
     #1509: "already blanket-ignores" is decided by ``git check-ignore`` where
     possible, not by matching spellings -- the literal set missed the glob form
@@ -212,7 +217,7 @@ def _ensure_gitignore(repo):
     dir_blanket = _dir_blanket_ignored(repo, have)
     wanted = list(_ALWAYS_IGNORE_ENTRIES)
     if not dir_blanket:
-        wanted = _PANOPTICON_COMMITTABLE_ENTRIES + wanted
+        wanted = _PANOPTICON_ARTIFACT_ENTRIES + wanted
     added = [e for e in wanted if e not in have]
     if added:
         with runio._open_a_nofollow(gi) as fh:   # #1577: never append through a link
