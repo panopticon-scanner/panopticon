@@ -931,9 +931,13 @@ class TestHeadlessLoop(LoopCase):
         self._run(d, floor, runner)
         rows = {r["entry_id"]: r for r in ledger_mod.Ledger(runner.run_dir).lines()}
         self.assertIn("review-app-ACC", rows)
+        # Fix round 1, N1: both bounds are CONCRETE. Comparing the two rows
+        # instead raced the sleep -- on a contended runner (this suite launches
+        # at the pool's full width) ACC's own work can exceed 50 ms and invert
+        # the pair, while the fact under test is only that each row carries its
+        # own entry's time.
         self.assertGreaterEqual(rows["review-app-SEC"]["duration_ms"], 40)
-        self.assertLess(rows["review-app-ACC"]["duration_ms"],
-                        rows["review-app-SEC"]["duration_ms"])
+        self.assertLess(rows["review-app-ACC"]["duration_ms"], 40)
 
     def test_every_completed_entry_prints_one_progress_line(self):
         # The ledger item's "progress visible without inspecting processes":

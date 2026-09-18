@@ -68,6 +68,11 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 "cell-attempts.json")
 
 
+# How many exhausted cells the terminal `complete` message names before it
+# says "and N more" (the count beside it is always exact).
+_EXHAUSTED_NAMED = 10
+
+
 # #1637 P08 (owner ruling D7): `readiness` leads. `coverage` is the first
 # checkpoint that SPENDS anything, and everything before it is deterministic
 # and cheap -- so the one place a scanner-environment verdict can be both
@@ -887,11 +892,18 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         # today.
         exhausted = review.exhausted_cells(review_root, manifest)
         if exhausted:
+            # The COUNT is exact; the NAMED list is bounded (fix round 1, N2).
+            # A run that loses 100 cells would otherwise put 100 `group/domain`
+            # pairs into one status line that hosts and CI parse, and the
+            # per-cell detail is on disk either way (`cell-attempts.json`, and
+            # the report's missing floor cells).
+            named, more = exhausted[:_EXHAUSTED_NAMED], len(exhausted) - _EXHAUSTED_NAMED
             result = dict(result, cells_exhausted=len(exhausted), message=(
-                "%s; cells_exhausted: %d (%s) -- these review cells spent their "
+                "%s; cells_exhausted: %d (%s%s) -- these review cells spent their "
                 "retry budget without returning an acceptable findings file, so "
                 "the run completed with them missing from the review axis"
-                % (result.get("message"), len(exhausted), ", ".join(exhausted))))
+                % (result.get("message"), len(exhausted), ", ".join(named),
+                   " and %d more" % more if more > 0 else "")))
     return result
 
 
