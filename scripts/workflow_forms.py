@@ -228,14 +228,34 @@ def covers(token, dest, recursive=False):
     return False
 
 
+# `find [-H|-L|-P] [-D <opts>] [-O<n>] <starting-point...> <expression>`: the
+# options in front of the starting points are not predicates, and reading one
+# as "the roots end here" leaves the binding with nothing.
+_FIND_LEADING = ("-H", "-L", "-P")
+
+
 def _walked(argv):
-    """The roots a `find` walks: its operands before the first predicate."""
+    """The roots a `find` walks: its starting points, or `.` when it has none.
+
+    The two spellings a maintainer writes without thinking -- `find -L /tmp …`
+    and `find -name x …` -- both used to yield no roots at all, which is how a
+    closed form quietly reopens.
+    """
+    i = 1
+    while i < len(argv):
+        if argv[i] in _FIND_LEADING or argv[i].startswith("-O"):
+            i += 1
+            continue
+        if argv[i] == "-D":
+            i += 2
+            continue
+        break
     roots = []
-    for token in argv[1:]:
+    for token in argv[i:]:
         if token.startswith("-") or token in ("(", "!"):
             break
         roots.append(token)
-    return roots
+    return roots or ["."]
 
 
 def _recursive(argv):
