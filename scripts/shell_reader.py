@@ -63,10 +63,14 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
-# A `case` arm pattern: `a)`, `*)`, `(a)`, and the tail of an `a|b)` alternation
-# (the statement split cuts that on the `|`). A command name cannot end in an
-# unquoted `)`, so this only ever stands in FRONT of one.
-_ARM = re.compile(r"^[^\s]*[^\s(]\)$")
+# A token ending in an unquoted `)` where a command was expected: a `case`
+# arm pattern -- `a)`, `*)`, `(a)`, `"a b")` (quoted, so the word carries a
+# space), and the tail of an `a|b)` alternation (the statement split cuts that
+# on the `|`) -- or the one-word tail of a tight subshell, `( ... || true)`.
+# Neither is a command name; the reader strips it and reads what follows. The
+# subshell's HEAD, `(curl ...`, is the other side of that coin: one token, so
+# the fetch it starts is unseen (a documented gap, see `workflow_guard`).
+ARM = re.compile(r"^(?!\(\)$)\S(?:.*[^(])?\)$")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _REDIRECT = re.compile(r"^(\d*)(>>|>|<)(.*)$")
 _HEREDOC_OP = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
@@ -334,7 +338,7 @@ def command(argv):
         # `f () {` spelling both put a name where the command was expected,
         # which is where a long step keeps its download. A `case` arm pattern
         # (`a) curl ... ;;`) is the same class, and hid the fetch outright.
-        if _FUNCTION.match(argv[0]) or _ARM.match(argv[0]):
+        if _FUNCTION.match(argv[0]) or ARM.match(argv[0]):
             argv.pop(0)
             continue
         if len(argv) > 1 and argv[1] == "()" and _NAME.match(argv[0]):

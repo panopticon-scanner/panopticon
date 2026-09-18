@@ -29,6 +29,8 @@ import os
 import tempfile
 import unittest
 
+import shell_reader
+import workflow_forms
 import workflow_guard as wg
 # The download shape itself lives in the layer below the rule (#1697).
 from workflow_forms import Fetch
@@ -785,6 +787,31 @@ class TestABranchIsNotAlwaysTaken(unittest.TestCase):
                   "esac\n") % HEX
         self.assertIsNotNone(wg.fetch_exec_defect(script))
 
+    def test_quoted_multi_word_arm_patterns_still_open_their_own_arms(self):
+        # Round-2 re-review: the arm regex forbade whitespace, so a pattern
+        # written `"a b")` -- one word carrying a space once the quotes are
+        # read -- did not open an arm. With ONE such arm the `case` keyword's
+        # own body still separated it from the next recognised arm; with two,
+        # both bodies shared that region and a check in one cleared a use in
+        # the other.
+        script = ("case $x in\n"
+                  ' "a b")\n'
+                  "   curl -sfL https://example.test/payload -o /tmp/payload\n"
+                  '   echo "%s  /tmp/payload" | sha256sum -c -\n'
+                  "   ;;\n"
+                  ' "c d")\n'
+                  "   chmod +x /tmp/payload\n"
+                  "   ;;\n"
+                  "esac\n") % HEX
+        stmts = shell_reader.statements(script)
+        bodies = workflow_forms.regions(stmts)
+        fetch = next(i for i, st in enumerate(stmts)
+                     if st.stages[0].argv and st.stages[0].argv[0] == "curl")
+        run = next(i for i, st in enumerate(stmts)
+                   if st.stages[0].argv and st.stages[0].argv[0] == "chmod")
+        self.assertNotEqual(bodies.get(fetch), bodies.get(run), bodies)
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
     def test_a_check_after_the_esac_still_binds(self):
         self.assertIsNone(wg.fetch_exec_defect(
             self.FETCH + "case $x in\n a)\n   :\n   ;;\nesac\n" +
@@ -947,6 +974,19 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.accepted(("get", 'DEST=/tmp/payload\n'
                               'curl -sfL https://example.test/p -o "$DEST"\n'),
                       ("run", "chmod +x /tmp/payload\n/tmp/payload\n"))
+
+    # A subshell written tight: the reader has no paren grammar, so `(curl`
+    # is one word and the fetch at its head is unseen; the spaced spelling is
+    # read. KEPT -- closing it is a grouping model the flat reader lacks.
+    def test_a_fetch_at_the_head_of_a_tight_subshell_is_unseen(self):
+        tight = "(curl -sfL https://example.test/payload -o /tmp/payload || true)\n"
+        self.assertEqual([], wg.fetches(tight))
+        self.accepted(("get", tight), ("run", "chmod +x /tmp/payload\n"))
+
+    def test_the_same_subshell_with_a_space_is_read(self):
+        spaced = "( curl -sfL https://example.test/payload -o /tmp/payload || true )\n"
+        self.assertEqual(1, len(wg.fetches(spaced)), wg.fetches(spaced))
+        self.flagged(("get", spaced), ("run", "chmod +x /tmp/payload\n"))
 
     # 3. what runs inside a container. CLOSED for the shape the fleet can
     # reach -- a bind mount and an interpreter operand -- because the reader

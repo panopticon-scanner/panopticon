@@ -40,7 +40,7 @@ import os
 import re
 
 import shell_reader
-from shell_reader import command, conditional, negated
+from shell_reader import ARM, command, conditional, negated
 
 
 # A download: the tool that ran, the URL it was given, the file it lands in
@@ -310,7 +310,6 @@ def described(statement, position, stage, argv):
 _BRANCH_OPEN = ("then", "do", "case")
 _BRANCH_ALTERNATE = ("else", "elif")
 _BRANCH_CLOSE = ("fi", "done", "esac")
-_ARM = re.compile(r"^[^\s]*[^\s(]\)$")
 
 
 def _arm(statement):
@@ -322,7 +321,7 @@ def _arm(statement):
     the split cuts on `|` -- the `b)` of an `a|b)` alternation, which is why
     every stage is asked and not only the first.
     """
-    return any(stage.argv and _ARM.match(stage.argv[0])
+    return any(stage.argv and ARM.match(stage.argv[0])
                for stage in statement.stages)
 
 
