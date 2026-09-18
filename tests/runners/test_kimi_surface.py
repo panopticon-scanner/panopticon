@@ -75,6 +75,16 @@ class TestSkillsDirectory(unittest.TestCase):
         self.assertEqual(os.path.dirname(self.r.skills_dir), self.r.kimi_home)
         self.assertEqual(os.stat(self.r.skills_dir).st_mode & 0o077, 0)
 
+    def test_an_unprepared_runner_refuses_to_build_an_argv_at_all(self):
+        # Failing OPEN here would hand back a launchable argv with NO
+        # `--skills-dir`, i.e. with the CLI's auto-discovered user AND project
+        # roots live -- the target's `.kimi-code/skills` back in play, silently.
+        # `prepare` already hard-raises on a missing guard hook; same shape.
+        unprepared = kimi_runner.Runner("kimi")
+        with self.assertRaises(RuntimeError) as raised:
+            unprepared.command(_entry(True), "kimi-code/k3")
+        self.assertIn("not prepared", str(raised.exception))
+
     def test_it_is_a_real_directory_the_run_minted_not_a_reused_path(self):
         # `prepare` mints a fresh home every time (N2), so the skills dir
         # cannot be a path a previous run -- or the reviewed tree -- named.

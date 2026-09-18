@@ -340,9 +340,17 @@ class Runner(base.HostRunner):
         skills nor the reviewed tree's are loaded (KM-1, #1657). Equals form
         for the same 0.42.0 reason as `--agent-file=`, and before `-p`, which
         takes the prompt."""
-        cmd = [self.CLI, "--output-format", "stream-json"]
-        if self.skills_dir:
-            cmd.append("--skills-dir=%s" % self.skills_dir)
+        if not self.skills_dir:
+            # LOUD, not silent: an argv without this flag is a launchable one
+            # whose skill discovery falls back to the auto-discovered user AND
+            # project roots -- the target's `.kimi-code/skills/*/SKILL.md`
+            # back in play. Same refusal shape as `prepare`'s missing-guard
+            # check: a control that cannot be armed stops the launch.
+            raise RuntimeError(
+                "the kimi runner was not prepared; refusing to launch a reviewer whose "
+                "skill discovery would fall back to the target's project roots (KM-1, #1657)")
+        cmd = [self.CLI, "--output-format", "stream-json",
+               "--skills-dir=%s" % self.skills_dir]
         if entry.get("enforced") and entry.get("agent"):
             cmd.append("--agent-file=%s" % self._shell_path(entry))
         if alias:
