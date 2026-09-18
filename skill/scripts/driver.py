@@ -512,12 +512,19 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # persisted, so a resume without the flag legitimately falls back to cwd.
     # `_posture_drift` names --session-dir when that is what moved.
     session_root = runio.session_dir(manifest)
-    # Probed directly, and ONCE (Minor 4): _shadow_refusal may not read the
+    # Probed directly, and ONCE (Minor 4): _surface_refusal may not read the
     # verdict back off the artifact's `by` field (see its docstring), and
     # running the scan a second time inside run_probes was both duplicate work
     # and a window in which the artifact and the refusal could disagree about
     # the same tree.
     shadow = probes_common.probe_shadow_shells(host, review_root)
+    # The same arrangement for #1657 step 3's generalisation of that scan, and
+    # the same argument twice over: it also DISCLOSES its CONTROLLED hits on
+    # stderr, and a second call would print them twice. `sys.stderr` is the
+    # run's disclosure channel here exactly as it is for
+    # `kimi_toml.MCP_DISCLOSURE`, and this runs once per invocation.
+    surface = probes_common.probe_discovery_surface(host, review_root,
+                                                    disclose=sys.stderr)
     # Plan 6 (spec 5.4): in headless mode the guards are armed into the run
     # folder's host-settings.json, never the session root -- so that file,
     # not the session's, is what the guard probes must prove. `mode` is a
@@ -539,7 +546,8 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # run's children legitimately falls back until a child has run.
     fresh = host_probes.run_probes(host, review_root, session_root=session_root,
                                    registration_dir=registration_dir,
-                                   shadow=shadow, settings_path=settings_path,
+                                   shadow=shadow, surface=surface,
+                                   settings_path=settings_path,
                                    run_home=getattr(args, "run_home", None))
     # 5.1 surface 1. Emitted here -- after `fresh` is computed, before the
     # artifact is written or compared, and before the shadow refusal below --
@@ -560,7 +568,7 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # setup` -- a shadow file planted mid-run gives refuted -> refuted, no
     # mismatch, and a refusal evaluated only under `stored is None` would never
     # look at it again.
-    refusal = _shadow_refusal(shadow, manifest)
+    refusal = _surface_refusal((shadow, surface), manifest)
     if refusal:
         return refusal
     path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
@@ -698,11 +706,29 @@ def _posture_drift(was, now, manifest):
     return "%s Start a fresh run with --reset." % message
 
 
-def _shadow_refusal(shadow, manifest):
-    """Spec 7.3: a target shipping panopticon-* agent files refuses the run.
+# What each preflight probe's refusal MEANS, keyed by the probe's own id (R4).
+# One sentence each, beside the other, because the two refusals are one
+# decision for the operator -- "the tree you pointed me at supplies part of
+# the reviewer" -- reached by two different routes.
+_REFUSAL_REASON = {
+    probes_common.SHADOW_SHELL_SCAN:
+        "A project-scoped agent file takes precedence over the registered "
+        "enforcement shell, so this target would be reviewing itself with "
+        "reviewers it supplied.",
+    probes_common.DISCOVERY_SURFACE:
+        "A target-authored file the host would load reaches the reviewer "
+        "through a channel no launch control closes.",
+}
+_REFUSAL_REMEDY = ("Remove the file(s), or re-run with --allow-unenforced to "
+                   "proceed with enforcement explicitly refuted.")
 
-    `shadow` is `probes.common.probe_shadow_shells`'s OWN `(state, by, detail)`
-    result -- never the artifact's `capabilities[tool_policy_enforced]` row.
+
+def _surface_refusal(results, manifest):
+    """Spec 7.3 and #1657 step 3: what the TARGET supplies refuses the run.
+
+    `results` are the preflight probes' OWN `(state, by, detail)` tuples --
+    the shadow-shell scan's and the discovery-surface scan's -- never the
+    artifact's `capabilities[tool_policy_enforced]` row.
     That row's `by` names whichever probe `run_probes` recorded FIRST among
     those that reached the resolved state, so on a host whose
     registered-shell-tools probe ALSO refutes (no registration directory at
@@ -711,24 +737,30 @@ def _shadow_refusal(shadow, manifest):
     found the hostile file. Keying this refusal off `by` silently dropped the
     shadow finding on exactly the machines a hostile target is most likely to
     be pointed at: an unregistered first run. Deciding from the probe's own
-    result is immune to whatever else ties with it.
+    result is immune to whatever else ties with it -- and with two probes on
+    one capability it is now also the only way to say WHICH one refused.
+
+    Any REFUTED refuses, and the message names the probe and repeats its
+    detail: the two remedies differ (delete an agent file; delete, or accept,
+    a file the host would load), and an operator who is told only "refused"
+    has to go find out which tree fact is meant.
 
     `--allow-unenforced` downgrades rather than silences: the run proceeds with
     tool_policy_enforced REFUTED (resolve_state ranks refuted over proven), so
-    the report says plainly it was not enforced. Both REFUTED reasons a shadow
-    probe can return -- a shadowing file was found, or a scope directory could
-    not be read so shadowing could not be ruled out -- refuse the same way.
+    the report says plainly it was not enforced. Every REFUTED reason either
+    probe can return -- a file was found, or a directory could not be read and
+    the tree could not be ruled out -- refuses the same way.
     """
-    state, _by, detail = shadow
-    if state != hosts.REFUTED:
+    refuted = [r for r in results if r and r[0] == hosts.REFUTED]
+    if not refuted:
         return None
     if (manifest.get("flags") or {}).get("allow_unenforced"):
         return None
-    return ("refusing to run: %s. A project-scoped agent file takes precedence "
-            "over the registered enforcement shell, so this target would be "
-            "reviewing itself with reviewers it supplied. Remove the file(s), "
-            "or re-run with --allow-unenforced to proceed with enforcement "
-            "explicitly refuted." % detail)
+    _state, by, detail = refuted[0]
+    return "refusing to run: %s: %s. %s %s" % (
+        by, detail,
+        _REFUSAL_REASON.get(by, "The reviewed tree supplies part of the "
+                                "reviewer."), _REFUSAL_REMEDY)
 
 
 def run(args, runner=subprocess.run, phases=PHASES, resolved=None):

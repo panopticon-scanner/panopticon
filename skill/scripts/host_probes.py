@@ -99,7 +99,8 @@ def _no_probe_reason(row, capability, host):
 
 
 def run_probes(host, review_root, session_root=None, registration_dir=None,
-               home=None, shadow=None, settings_path=None, run_home=None):
+               home=None, shadow=None, settings_path=None, run_home=None,
+               surface=None):
     """Establish this host's posture now, and return the artifact body.
 
     THREE DIFFERENT TREES, and collapsing them is what produced both of this
@@ -131,7 +132,11 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     back off the artifact's `by` field -- hand in the single result it already
     computed. Without it the scan ran twice per invocation: duplicate work,
     and a TOCTOU window in which the artifact and the refusal could disagree
-    about the same tree. `home` exists for fixtures.
+    about the same tree. `surface` is the same arrangement for
+    `probes.common.probe_discovery_surface` (#1657 step 3), whose result
+    `driver._surface_refusal` reads for the same reason and which also
+    DISCLOSES on stderr -- so the caller owns the one call and this records
+    what it already learned. `home` exists for fixtures.
 
     `settings_path` (plan 6, spec 5.4) names the file a HEADLESS runner will
     arm; when given, it is the two guard probes' subject INSTEAD of
@@ -225,6 +230,17 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     record(hosts.TOOL_POLICY_ENFORCED,
            shadow if shadow is not None
            else probes_common.probe_shadow_shells(host, review_root))
+    # Its generalisation (#1657 step 3), on the SAME capability and for the
+    # same reason: a target that gets text into the reviewer's system prompt,
+    # or a process started beside it, controls the reviewer's tool policy as
+    # surely as one that replaces its shell. Run for every host whose registry
+    # row declares a discovery surface -- a row with none has nothing to scan
+    # for, and recording its no-op sentence would put a line about a table
+    # that does not exist into every `generic` run's disclosure.
+    if row and row.discovery_surface:
+        record(hosts.TOOL_POLICY_ENFORCED,
+               surface if surface is not None
+               else probes_common.probe_discovery_surface(host, review_root))
     # Also not in any row's `probes`, and for a stronger reason than the
     # shadow scan's: it measures no capability at all, so there is no
     # capability to map it to and PROBE_CAPABILITY would have to lie. It runs

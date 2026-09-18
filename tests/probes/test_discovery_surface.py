@@ -22,6 +22,7 @@ from unittest import mock
 from scripts import hosts
 import scripts.probes.common as probes_common
 import scripts.probes.surface as probes_surface
+from tests.probes.helpers import _shell
 
 
 # The §3 table, as the spec writes it. Pinned VERBATIM rather than derived:
@@ -451,3 +452,114 @@ class TestTheScan(unittest.TestCase):
         stream = io.StringIO()
         probes_common.probe_discovery_surface("claude", self.root, disclose=stream)
         self.assertEqual("", stream.getvalue())
+
+
+def _register_perfect_shells(directory):
+    """Every driver role registered with exactly its template's tools, so a
+    refusal below is attributable to THIS probe and not to an incidental
+    registration gap on the machine running the suite."""
+    from scripts import dispatch
+    for role in probes_common.DRIVER_ROLES:
+        role_file = dispatch.ROLE_FILES[role]
+        allowed = dispatch.load_template(role_file)[0]["tool_policy"]["allowed"]
+        _shell(directory, dispatch.registered_agent_filename("claude", role_file),
+               allowed)
+
+
+class TestTheWiring(unittest.TestCase):
+    """§6/§8: what the artifact records, and what the driver does about it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        self.registration = os.path.join(self.root, "registration")
+        _register_perfect_shells(self.registration)
+
+    def _capabilities(self, host="claude", **kwargs):
+        from scripts import host_probes
+        body = host_probes.run_probes(host, self.root, session_root=self.root,
+                                      registration_dir=self.registration, **kwargs)
+        return body["capabilities"][hosts.TOOL_POLICY_ENFORCED]
+
+    def test_a_refuting_surface_beats_the_registration_proof(self):
+        # `resolve_state` ranks refuted over proven, and `by` names the probe
+        # that DECIDED -- the registration proof is real and still loses.
+        _plant(self.root, "CLAUDE.md")
+        row = self._capabilities()
+        self.assertEqual(hosts.REFUTED, row["state"])
+        self.assertEqual("target-discovery-surface", row["by"])
+        self.assertIn("CLAUDE.md", row["detail"])
+
+    def test_the_callers_own_result_is_recorded_rather_than_a_second_scan(self):
+        # The shadow scan's Minor 4, for the same reason: the driver decides
+        # from the probe's OWN tuple, so scanning again here would be
+        # duplicate work and a window in which the artifact and the refusal
+        # disagree about one tree.
+        row = self._capabilities(
+            surface=(hosts.REFUTED, probes_common.DISCOVERY_SURFACE,
+                     "the caller's own sentence"))
+        self.assertEqual(hosts.REFUTED, row["state"])
+        self.assertIn("the caller's own sentence", row["detail"])
+
+    def test_a_host_with_no_surface_records_nothing_from_this_probe(self):
+        row = self._capabilities(host="generic")
+        self.assertNotIn("discovers no target-authored configuration", row["detail"])
+
+    def test_the_refuting_detail_reaches_the_disclosure_surfaces(self):
+        # §6: the artifact row is what `host_disclosure.lines()` renders, and
+        # that list is what surfaces 1/3/4 print -- so the probe's sentence
+        # travels with the same wiring the shadow scan's does, rather than a
+        # second rendering that can drift from it.
+        import scripts.host_disclosure as host_disclosure
+        from scripts import host_probes
+        _plant(self.root, "CLAUDE.md")
+        envelope = host_probes.run_probes("claude", self.root,
+                                          session_root=self.root,
+                                          registration_dir=self.registration)
+        rendered = " ".join(host_disclosure.lines(envelope))
+        self.assertIn("probe target-discovery-surface", rendered)
+        self.assertIn("CLAUDE.md", rendered)
+
+
+class TestTheRefusal(unittest.TestCase):
+    """R4 / §6: `_surface_refusal` takes BOTH probes' own tuples."""
+
+    _CLEAN = (hosts.UNKNOWN, "shadow-shell-scan", "nothing shadowed")
+    _SHADOW = (hosts.REFUTED, "shadow-shell-scan",
+               "the reviewed tree ships .claude/agents/panopticon-scout.md")
+    _SURFACE = (hosts.REFUTED, "target-discovery-surface",
+                "the reviewed tree ships CLAUDE.md (CL-1: no launch control closes it)")
+
+    def _refusal(self, results, allow=False):
+        import scripts.driver as driver
+        return driver._surface_refusal(
+            results, {"flags": {"allow_unenforced": allow}} if allow else {})
+
+    def test_a_clean_pair_runs(self):
+        self.assertIsNone(self._refusal((self._CLEAN, self._CLEAN)))
+
+    def test_the_shadow_probe_still_refuses_with_its_own_sentence(self):
+        message = self._refusal((self._SHADOW, self._CLEAN))
+        self.assertIn("refusing to run: shadow-shell-scan: ", message)
+        self.assertIn("panopticon-scout.md", message)
+        self.assertIn("takes precedence over the registered enforcement shell",
+                      message)
+        self.assertIn("--allow-unenforced", message)
+
+    def test_the_surface_probe_refuses_and_is_named(self):
+        message = self._refusal((self._CLEAN, self._SURFACE))
+        self.assertIn("refusing to run: target-discovery-surface: ", message)
+        self.assertIn("CL-1", message)
+        self.assertIn("no launch control closes", message)
+        self.assertIn("--allow-unenforced", message)
+
+    def test_allow_unenforced_downgrades_either_refusal(self):
+        for results in ((self._SHADOW, self._CLEAN), (self._CLEAN, self._SURFACE)):
+            with self.subTest(results=results[0][1]):
+                self.assertIsNone(self._refusal(results, allow=True))
+
+    def test_both_refuting_names_the_first_and_keeps_its_detail(self):
+        message = self._refusal((self._SHADOW, self._SURFACE))
+        self.assertIn("refusing to run: shadow-shell-scan: ", message)
+        self.assertIn("panopticon-scout.md", message)
