@@ -16,8 +16,11 @@ So `prepare` builds a per-run home: the operator's OAuth stores (`credentials`,
   * the two guard hooks (kimi_guard_hook.py read/write) with this run's
     scope/allowlist paths baked into their commands;
   * ``merge_all_available_skills = false`` and ``builtin_product_skills =
-    false``, so neither the operator's nor a hostile TARGET's skills can
-    inject into a reviewer;
+    false``, which keep the OPERATOR's own skills out of a reviewer. They do
+    NOT stop a hostile target's (measured, #1657 spike): the launch's
+    ``--skills-dir=<per-run home>/no-skills`` is what does that, by replacing
+    both auto-discovered roots with one empty run-owned directory
+    (`new_skills_dir` below, `runners/kimi.py::command`);
   * ``tools.disabled``, DERIVED as the CLI's whole tool vocabulary minus the
     union of the role templates' allowed lists -- an allow-list expressed in
     the only form Kimi's config takes. That closes the default-agent surface
@@ -25,9 +28,22 @@ So `prepare` builds a per-run home: the operator's OAuth stores (`credentials`,
     three-name deny-list left an unguarded read tool, two egress tools and a
     persistence tool live;
   * ``[mcp]``, REPLACED rather than carried: `enabled = false` and no servers,
-    whatever the operator's config holds, because MCP tools come from another
-    process and neither the deny-list nor the hooks can see them. How many
-    were dropped is said on stderr (#1640; `kimi_toml.mediated_mcp` says why).
+    whatever the operator's config holds. It is a SECOND LAYER, not the
+    mechanism: 0.42.0's config schema does not know those keys. How many were
+    dropped is said on stderr (#1640; `kimi_toml.mediated_mcp` says why).
+
+WHAT ACTUALLY NEUTRALISES TARGET-PLANTED MCP: KIMI'S WORKSPACE-TRUST GATE ON A
+FRESH HOME (measured 2026-09-18, one real launch). The 0.42.0 CLI reads
+``<git root>/.mcp.json`` and ``<cwd>/.kimi-code/mcp.json`` only when the
+WORKSPACE-TRUST record for cwd exists under ``KIMI_CODE_HOME`` (the
+``workspace-trust/`` document scope): `configLoader.loadMcpServersDetailed`
+takes `includeProject` from `this.trust.isTrusted()`. The per-run home is a
+fresh `mkdtemp` that links only `_CREDENTIAL_ITEMS`, so no such record exists,
+cwd is untrusted, and those files are never read -- two planted stdio servers
+neither spawned. Link the trust scope in, or copy the operator's home
+wholesale, and they would: the reviewer would hold tools no `tools.disabled`
+entry and no guard hook can see. That is why `_CREDENTIAL_ITEMS` is pinned by
+a test naming this gate (tests/runners/test_kimi_surface.py).
 
 Every other value in the source config is carried verbatim -- including any
 plaintext `api_key` the operator keeps there (stripping it would break
@@ -69,6 +85,9 @@ POINTER_FILE = "kimi-home-path"
 _GUARD = os.path.abspath(kimi_guard_hook.__file__)
 # Symlinked into the per-run home: the OAuth credential stores (file + dir).
 # Config itself is regenerated, not linked -- the hooks have to merge into it.
+# NOT a list to extend casually: what is absent from the per-run home is what
+# keeps a target's MCP out of it. `workspace-trust` above all -- see the module
+# docstring's gate paragraph, and the pin in tests/runners/test_kimi_surface.py.
 _CREDENTIAL_ITEMS = ("credentials", "oauth")
 # The CLI's builtin tool vocabulary by major.minor, measured from a live session's
 # `llm.tools_snapshot` on 0.42.0. It lives with the runner that must DENY these names, not with
@@ -256,6 +275,30 @@ def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
         shutil.rmtree(home, ignore_errors=True)
         raise
     return home
+
+
+def new_skills_dir(home):
+    """An empty, mode-700 skill root inside the per-run home, for the launch's
+    `--skills-dir` (KM-1, #1657).
+
+    INSIDE the home rather than beside it so `teardown` disposes of both at
+    once, and so the directory a reviewer's skill discovery is pointed at is
+    one this run created and nothing else can reach by name. Re-entrant:
+    building it twice over the same home is a no-op (`exist_ok`); `prepare`
+    mints a fresh home each run, so in practice this directory is new every
+    time.
+    """
+    path = os.path.join(home, "no-skills")
+    # I2, the same rule `build_kimi_home` states for the home itself:
+    # `makedirs(exist_ok=True)` is happy with a symlink to a directory and
+    # `chmod` follows it, so a link planted at this name would relax someone
+    # else's directory to 700 and then be handed to the child as its skill root.
+    if os.path.islink(path):
+        raise OSError("refusing to build the kimi skills dir through a symlink: %s" % path)
+    os.makedirs(path, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
+
 
 def _write_text(path, text):
     """Stage at `<path>.tmp` and rename, mode 0o600, never writing THROUGH a

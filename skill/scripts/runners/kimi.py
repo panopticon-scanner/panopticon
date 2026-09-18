@@ -169,6 +169,7 @@ class Runner(base.HostRunner):
         self.runner = runner
         self.kimi_home = None
         self.run_home = None           # the seam's name for it (base.HostRunner)
+        self.skills_dir = None         # the empty run-owned dir `--skills-dir` names
         self.home_pointer = None
         self._crash_strip = None       # the atexit callback, while one is armed
         self._signal_handlers = {}     # {signum: our wrapper}; it carries what was there
@@ -201,6 +202,13 @@ class Runner(base.HostRunner):
         allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
         self.kimi_home = kimi_home_mod.build_kimi_home(
             kimi_home_mod.new_kimi_home(), scope_path, allowlist_path)
+        # KM-1 (#1657): with no `--skills-dir` the CLI auto-discovers its USER
+        # and PROJECT skill roots, and the project ones are inside the tree
+        # under review -- `.kimi-code/skills/*/SKILL.md`, `.agents/skills/
+        # */SKILL.md` -- so a hostile target ships instructions straight into a
+        # reviewer. One explicit directory replaces both roots, and this one is
+        # empty, run-owned and thrown away with the home.
+        self.skills_dir = kimi_home_mod.new_skills_dir(self.kimi_home)
         # `run_home` is the seam's own name for it: the loop reads it off the
         # runner and hands it to the probes, so an effective-surface probe can
         # find this run's children without opening anything in the target.
@@ -297,7 +305,10 @@ class Runner(base.HostRunner):
             if status == "complete":
                 shutil.rmtree(home, ignore_errors=True)
                 self._drop_pointer()
-                self.kimi_home = self.run_home = None
+                # skills_dir too: it lives inside the tree just removed, and
+                # a runner holding a deleted path beside two honest `None`s is
+                # how a later `--skills-dir=<gone>` would get built (R1-7).
+                self.kimi_home = self.run_home = self.skills_dir = None
             else:
                 removed = kimi_home_mod.strip_secrets(home)   # R3-6: fixed text below, never the names it returned
                 note = ("its config.toml and credential links were removed, so nothing left "
@@ -324,8 +335,25 @@ class Runner(base.HostRunner):
         0.42.0 misparses the space form after -p) gives the shell EXPLICIT
         precedence over any project-scoped shadow file in the reviewed tree,
         which is the point of registering enforcement shells. `-m` binds the
-        model on EVERY entry that names one."""
-        cmd = [self.CLI, "--output-format", "stream-json"]
+        model on EVERY entry that names one.
+
+        `--skills-dir=<dir>` ("Load skills from this directory instead of
+        auto-discovered user and project directories", `kimi --help`) points
+        the CLI at THIS run's empty directory, so neither the operator's
+        skills nor the reviewed tree's are loaded (KM-1, #1657). Equals form
+        for the same 0.42.0 reason as `--agent-file=`, and before `-p`, which
+        takes the prompt."""
+        if not self.skills_dir:
+            # LOUD, not silent: an argv without this flag is a launchable one
+            # whose skill discovery falls back to the auto-discovered user AND
+            # project roots -- the target's `.kimi-code/skills/*/SKILL.md`
+            # back in play. Same refusal shape as `prepare`'s missing-guard
+            # check: a control that cannot be armed stops the launch.
+            raise RuntimeError(
+                "the kimi runner was not prepared; refusing to launch a reviewer whose "
+                "skill discovery would fall back to the target's project roots (KM-1, #1657)")
+        cmd = [self.CLI, "--output-format", "stream-json",
+               "--skills-dir=%s" % self.skills_dir]
         if entry.get("enforced") and entry.get("agent"):
             cmd.append("--agent-file=%s" % self._shell_path(entry))
         if alias:
@@ -390,10 +418,15 @@ class Runner(base.HostRunner):
                 return base.RunResult.failed(
                     entry_id, "entry model %r does not resolve to a model alias "
                     "the installed Kimi CLI has configured" % entry["model"])
-        run_env = self.launch_env(env)
-        cmd = self.command(entry, alias)
         launcher = DEFAULT_RUNNER if self.runner is None else self.runner
         try:
+            # Inside the try on purpose: `command()` refuses an unprepared
+            # runner (no `--skills-dir`), and that refusal is a launch failure
+            # like any other -- a failed RunResult, never an exception out of
+            # run_entry (spec 4.4; codex's "not prepared" raise sits in its
+            # try for the same reason).
+            run_env = self.launch_env(env)
+            cmd = self.command(entry, alias)
             proc = launcher(cmd, cwd=self.review_root, env=run_env, capture_output=True,
                             text=True, timeout=self.entry_timeout)
         except base.LaunchRefused:        # I3: the suite's guard, never a run state
