@@ -284,6 +284,41 @@ class TestDriverSetup(unittest.TestCase):
         with open(committed_path, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), content)
 
+    def test_reset_clears_the_capability_evidence_setup_writes(self):
+        # Fix round 1, F2, the lifecycle half. `driver loop --setup` writes a
+        # FLAT .panopticon/host-capabilities.json (its posture step, #1616
+        # item 3). Nothing cleared it: it is not a review artifact, so
+        # `driver.run`'s own `--reset` never reaches it, and the setup list
+        # did not name it -- leaving a file the verb reads on every later
+        # invocation with no way to discard it.
+        d = self._repo()
+        flat = os.path.join(d, ".panopticon", runio.HOST_CAPABILITIES)
+        os.makedirs(os.path.dirname(flat), exist_ok=True)
+        runio._write_json(flat, {"schema_version": 1, "host": "claude",
+                                 "sentinel": True, "capabilities": {}})
+        setup._clear_setup_artifacts(d)
+        self.assertFalse(os.path.isfile(flat))
+
+    def test_reset_does_not_reach_a_review_runs_evidence(self):
+        # The trap in the line above: `host-capabilities.json` is NOT in
+        # `runio._TOP_LEVEL`, so `runio._pano` resolves it into `runs/<tag>/`
+        # whenever a review run-manifest is on the tree -- and that file is
+        # that run's, not setup's. Clearing setup's must name the flat path.
+        d = self._repo()
+        runio._write_json(runio._pano(d, "run-manifest.json"),
+                          {"schema_version": 1, "run_id": "r1", "host": "claude",
+                           "review_root": os.path.abspath(d),
+                           "created": "2026-09-17T00:00:00Z"})
+        per_run = runio._pano(d, runio.HOST_CAPABILITIES)
+        self.assertNotEqual(os.path.abspath(per_run),
+                            os.path.join(d, ".panopticon", runio.HOST_CAPABILITIES))
+        os.makedirs(os.path.dirname(per_run), exist_ok=True)
+        runio._write_json(per_run, {"schema_version": 1, "host": "claude",
+                                    "capabilities": {}})
+        setup._clear_setup_artifacts(d)
+        self.assertTrue(os.path.isfile(per_run),
+                        "a --setup --reset deleted a review run's own evidence")
+
     def test_setup_end_to_end_loop(self):
         """scan checkpoint -> host persists proposal -> re-invoke ingests ->
         complete, draft present, committed groups.yml never written."""

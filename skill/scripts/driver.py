@@ -545,7 +545,18 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
         return refusal
     path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
     stored = runio._load_json(path)
-    if stored is None:
+    # A namespace that is not a run is RECORDED, never compared (fix round 1,
+    # F2). Everything the drift refusal says is about one run -- "entries
+    # already dispatched were built under the previous posture", and the remedy
+    # it names is `--reset`, which starts a fresh one. `driver loop --setup` is
+    # not a run: its single `setup-scan` entry is dispatched and consumed inside
+    # the invocation, while the flat host-capabilities.json outlives every one
+    # of them. Comparing across invocations would therefore refuse the verb for
+    # a difference that is not drift -- and the bootstrap sequence itself makes
+    # one, since `tool_policy_enforced` is REFUTED before the operator emits the
+    # host agents and PROVEN after, and it gates. The record is still written
+    # every time, so the disclosure is this invocation's own.
+    if stored is None or namespace is not None:
         runio._write_json(path, fresh)
         return None
     was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)

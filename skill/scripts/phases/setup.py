@@ -9,6 +9,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
 from . import engine
+from . import persist
 from . import runio
 from . import requests
 
@@ -111,12 +112,32 @@ _SETUP_ARTIFACTS = ("setup-scan-brief.md", "setup-spine.json", "setup-proposal.j
                     "groups.yml.draft", "setup-report.md", "setup-report.json",
                     "setup-complete.json", SETUP_MANIFEST)
 
+def _setup_capabilities_path(review_root):
+    """The capability evidence `driver loop --setup`'s posture step writes.
+
+    Resolved through `persist.run_dir(review_root, "setup")` -- the flat
+    `.panopticon/`, where every other setup artifact lives -- and deliberately
+    NOT through `runio._pano`, which is what the rest of this module uses:
+    `host-capabilities.json` is not in `runio._TOP_LEVEL`, so `_pano` resolves
+    it into `runs/<tag>/` whenever a review run-manifest is on the tree. That
+    file is that run's evidence, and a `--setup --reset` deleting it would be
+    the same class of accident as the stale-runs-folder writes (#1507).
+    """
+    return os.path.join(persist.run_dir(review_root, "setup"), runio.HOST_CAPABILITIES)
+
 def _clear_setup_artifacts(review_root):
     """Remove derived setup artifacts + the setup-manifest for --reset. NEVER
-    touches the committed groups.yml."""
-    for name in _SETUP_ARTIFACTS:
+    touches the committed groups.yml.
+
+    The capability evidence is cleared too (fix round 1, F2): `driver loop
+    --setup` reads it back on every later invocation, and `driver.run`'s own
+    `--reset` cannot reach it -- that one clears the REVIEW namespace, i.e. the
+    per-run folder. A file the verb consults with no way to discard it is a
+    remedy the refusal message names and does not deliver."""
+    for path in ([runio._pano(review_root, name) for name in _SETUP_ARTIFACTS]
+                 + [_setup_capabilities_path(review_root)]):
         try:
-            os.remove(runio._pano(review_root, name))
+            os.remove(path)
         except OSError:
             pass
 

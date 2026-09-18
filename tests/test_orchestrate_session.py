@@ -384,6 +384,27 @@ class TestSetupEstablishesHostPosture(LoopCase):
                              "setup overwrote the review run's own evidence")
 
 
+    def test_a_posture_change_between_two_setup_invocations_is_not_drift(self):
+        # Fix round 1, F2: the drift refusal is a statement about ONE RUN --
+        # "entries already dispatched were built under the previous posture" --
+        # and `driver loop --setup` is not a run. Its one `setup-scan` entry is
+        # dispatched and consumed inside the invocation, and the flat
+        # host-capabilities.json it compares against outlives every one of
+        # them. The bootstrap sequence itself moves a GATING capability:
+        # tool_policy_enforced is refuted before the operator emits the host
+        # agents and proven after. Refusing would wedge the verb, and the
+        # remedy the refusal names (--reset) did not clear the file.
+        d, _ = self._repo()
+        self.assertEqual(self._setup_loop(d)["status"], "complete")
+        status = self._setup_loop(d, **{"scripts.host_probes.run_probes":
+                                        {"side_effect": _write_guard_not_proven}})
+        self.assertEqual(status["status"], "complete", status)
+        # ...and the record on disk is this invocation's, not the first one's.
+        stored = runio._load_json(os.path.join(d, ".panopticon",
+                                               runio.HOST_CAPABILITIES))
+        self.assertEqual(hosts.UNKNOWN,
+                         stored["capabilities"][hosts.ARTIFACT_WRITE_GUARD]["state"])
+
     def test_the_guard_probes_measure_the_file_setup_really_arms(self):
         # #1616 item 10: `headless_settings_path(review_root)` without the
         # namespace resolves THROUGH the run-manifest, so on a repo that
