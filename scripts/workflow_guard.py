@@ -86,12 +86,16 @@ that starts catching one fails there, and this list is edited with it.
   a sums file the step wrote, what was recorded is the text `sha256sum x`,
   which carries no digest, so the check does not count and the fetch is
   already reported.
-* what runs inside a container: `docker run ... image bash /w/x.sh` (and
-  `podman run`) is one command to this parser.
-  KEPT: modelling another executor's argv, its mounts and its entrypoint is a
-  second guard's job; the image the container came from is pinned by digest
-  elsewhere (`tests/test_dockerfile.py`, the `uses:` pin rule), and the fleet's
-  one `docker run` (adapter-integration.yml) runs an image built in that job.
+* what runs inside a container, BEYOND the one shape that is read: `docker
+  run … -v /tmp:/w img bash /w/x.sh` binds by basename (`_in_container`),
+  because on the far side of a bind mount the basename is the only name the
+  bytes have. What is still unread is everything that needs the mount table
+  itself -- a file renamed by the mount (`-v /tmp/x.sh:/w/y.sh`), an argument
+  the image's ENTRYPOINT supplies, and whatever the image itself runs.
+  KEPT: those need another executor's mounts and entrypoint modelled, which is
+  reading a second program's configuration rather than this job's shell. The
+  image the container came from is pinned by digest elsewhere
+  (`tests/test_dockerfile.py`, the `uses:` pin rule).
 * an executor that reads the file by convention rather than by argument
   (`make`, `npm install`): the download is never an operand, so no use names
   it.
@@ -154,6 +158,11 @@ INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
 # with a mode; `tar`/`unzip` write whatever the archive says.
 UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
 EXECUTORS = INTERPRETERS + UNPACKERS
+# The container runners, and the subcommands of theirs that run a command. The
+# image itself is pinned by digest elsewhere; what is read here is the argv
+# after it.
+CONTAINERS = ("docker", "podman", "nerdctl")
+_CONTAINER_RUN = ("run", "exec", "create")
 # `mv`/`cp` of a fetched file into one of these is what makes it runnable by
 # name for the rest of the job.
 BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/usr/local/sbin", "/usr/sbin",
@@ -436,12 +445,40 @@ def _uses(stmts, dest, after):
     return names, out
 
 
+def _in_container(argv, dest):
+    """The interpreter a container command hands `dest` to, or None.
+
+    Mounts are NOT modelled -- `-v /tmp:/w` renames a whole tree, and reading
+    another executor's argv, its mounts and its entrypoint is a second guard's
+    job -- so the binding is by BASENAME, and only inside a container argv.
+    Everywhere else a basename match is exactly the unbound checksum this rule
+    refuses, because the directory is real and a different one is a different
+    file; on the far side of a bind mount the directory is the container's,
+    and `docker run … -v /tmp:/w img bash /w/x.sh` runs the bytes this job
+    downloaded to /tmp/x.sh under a path no step ever wrote.
+    """
+    base = os.path.basename(dest)
+    if not base or len(argv) < 2 or argv[1] not in _CONTAINER_RUN:
+        return None
+    for position, token in enumerate(argv[2:], start=2):
+        if os.path.basename(token) not in INTERPRETERS:
+            continue
+        for operand in argv[position + 1:]:
+            if not operand.startswith("-") and os.path.basename(operand) == base:
+                return os.path.basename(token)
+    return None
+
+
 def _use(statement, position, stage, argv, dest):
     if not argv:
         return None
     argv, handed, recursive = described(statement, position, stage, argv)
     name, rest = os.path.basename(argv[0]), argv[1:]
     mentions = [t for t in rest + handed if covers(t, dest, recursive)]
+    if name in CONTAINERS:
+        interpreter = _in_container(argv, dest)
+        if interpreter:
+            return "running it inside a container under `%s`" % interpreter
     if name in INTERPRETERS and any(same_file(r, dest) for r in stage.reads):
         # `bash < payload`, `sh -s -- --yes < payload`: the file is never an
         # argument, so argv alone shows an interpreter with nothing after it.

