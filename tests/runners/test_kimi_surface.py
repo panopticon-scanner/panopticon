@@ -11,6 +11,7 @@ injected with a fake.
 """
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import tomllib
@@ -104,6 +105,24 @@ class TestSkillsDirectory(unittest.TestCase):
             other = _prepared(second)
             self.addCleanup(other.teardown, "complete")
             self.assertNotEqual(other.skills_dir, self.r.skills_dir)
+
+
+class TestSkillsDirectoryIsNotBuiltThroughALink(unittest.TestCase):
+    def test_a_link_planted_at_the_name_is_refused_not_chmodded(self):
+        # The file's own I2 rule, twenty lines above `new_skills_dir`:
+        # `makedirs(exist_ok=True)` is happy with a symlink to a directory and
+        # `chmod` follows it, so a link planted at this name would relax
+        # someone else's directory to 700 and then be handed to the child as
+        # its skill root.
+        with tempfile.TemporaryDirectory() as d:
+            home = os.path.join(d, "home")
+            elsewhere = os.path.join(d, "elsewhere")
+            os.makedirs(home)
+            os.makedirs(elsewhere, mode=0o755)
+            os.symlink(elsewhere, os.path.join(home, "no-skills"))
+            with self.assertRaises(OSError):
+                kimi_home.new_skills_dir(home)
+            self.assertEqual(0o755, stat.S_IMODE(os.stat(elsewhere).st_mode))
 
 
 class TestWorkspaceTrustGate(unittest.TestCase):

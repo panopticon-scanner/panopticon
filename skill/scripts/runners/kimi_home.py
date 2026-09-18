@@ -276,16 +276,25 @@ def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
         raise
     return home
 
+
 def new_skills_dir(home):
     """An empty, mode-700 skill root inside the per-run home, for the launch's
     `--skills-dir` (KM-1, #1657).
 
     INSIDE the home rather than beside it so `teardown` disposes of both at
     once, and so the directory a reviewer's skill discovery is pointed at is
-    one this run created and nothing else can reach by name. Idempotent: a
-    second `prepare` on the same home gets the same empty directory.
+    one this run created and nothing else can reach by name. Re-entrant:
+    building it twice over the same home is a no-op (`exist_ok`); `prepare`
+    mints a fresh home each run, so in practice this directory is new every
+    time.
     """
     path = os.path.join(home, "no-skills")
+    # I2, the same rule `build_kimi_home` states for the home itself:
+    # `makedirs(exist_ok=True)` is happy with a symlink to a directory and
+    # `chmod` follows it, so a link planted at this name would relax someone
+    # else's directory to 700 and then be handed to the child as its skill root.
+    if os.path.islink(path):
+        raise OSError("refusing to build the kimi skills dir through a symlink: %s" % path)
     os.makedirs(path, exist_ok=True)
     os.chmod(path, 0o700)
     return path
