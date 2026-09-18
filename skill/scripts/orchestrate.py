@@ -13,6 +13,7 @@ import sys
 import scripts.driver as driver
 import scripts.hosts as hosts
 import scripts.ledger as ledger_mod
+import scripts.loop_batch as loop_batch
 import scripts.money as money
 import scripts.phases.engine as engine
 import scripts.phases.persist as persist
@@ -110,29 +111,6 @@ class Guards:
         return {runners_base.ENV_ENTRY_ID: entry["id"],
                 runners_base.ENV_WRITE_ALLOWLIST: os.path.abspath(self.allowlist_path),
                 runners_base.ENV_READ_SCOPE: os.path.abspath(self.scope_path)}
-
-
-def write_usage(review_root, ledger, namespace=None):
-    """R-P6-4: rewritten after every ENTRY (P07; it was every batch) so synthesize --
-    which runs inside the engine, before `complete` -- finds it; never estimated.
-
-    `namespace` mirrors `probes.common.headless_settings_path`'s namespace-aware
-    resolution (Task 6 fix round 1, item 2): `runio._pano(review_root, "usage.json")`
-    alone follows whatever run-manifest.json happens to be on review_root, and for
-    `namespace == "setup"` that can be a STALE review run's manifest, routing usage.json
-    into that prior run's `runs/<tag>/` folder and clobbering it. Deriving the directory
-    from `headless_settings_path` instead -- the SAME helper `loop`'s `run_dir` and the
-    guard probes consult -- keeps this write in the one folder everything else for this
-    invocation already agrees on: the flat `.panopticon/` for setup, the per-run tag
-    folder for a review."""
-    run_dir = persist.run_dir(review_root, namespace)
-    # atomic (F6): rewritten per ENTRY now, so a reader can catch it truncated.
-    runio._write_json(os.path.join(run_dir, "usage.json"), ledger.usage_document(), atomic=True)
-
-
-def _pending(entries):
-    """The resume set, from disk: every entry whose out_file is not yet good."""
-    return [e for e in entries if isinstance(e, dict) and not persist.is_done(e)]
 
 
 def _status(kind, message, **extra):
@@ -363,7 +341,7 @@ def loop(args):
             iterations += 1
             req = requests.load_dispatch_request(review_root, namespace) or {}
             entries = [e for e in req.get("entries") or [] if isinstance(e, dict)]
-            pending = _pending(entries)
+            pending = loop_batch._pending(entries)
             pending_ids = ", ".join(e.get("id") for e in pending)
             if iterations > max_iterations:
                 return _finish(_status("error", "driver loop: %d iterations without "
@@ -417,36 +395,9 @@ def loop(args):
                     pending, getattr(args, "concurrency", None), guards.env_for)) as stream:
                 for entry, result, timing in stream:
                     eid = entry.get("id")
-                    # The reply is persisted BEFORE the ledger row is written, so
-                    # the row can record a refusal as the failed launch it is.
-                    refusal = rejected = None
-                    if result.ok and entry.get("delivery") == "return_json":
-                        ok, reason = persist.write_reply(entry, result.text)
-                        if not ok:
-                            refusal = "persist refused: %s" % (reason or "shape check failed")
-                            # D10 ruling 1: the reply is kept, redacted, instead of
-                            # being dropped on the floor -- `_materialize_prompts`
-                            # reads it back into the retry prompt (ruling 2).
-                            rejected = persist.retain_rejected(run_dir, entry, result.text, reason,
-                                                              kind=persist.REFUSAL)
-                            print("driver loop: %s" % reason, file=sys.stderr, flush=True)
-                    elif not result.ok:
-                        # D10 ruling 5: a failed launch that PRINTED something keeps it
-                        # -- the timeout path is the one that has partial output, and it
-                        # is the entry that was most expensive to lose. `retain_rejected`
-                        # writes nothing for a failure with no output, so an ordinary
-                        # launch failure is exactly what it was.
-                        rejected = persist.retain_rejected(run_dir, entry, result.text, result.error,
-                                                          kind=persist.LAUNCH_FAILURE)
-                        print("driver loop: entry %s failed: %s" % (eid, result.error),
-                              file=sys.stderr, flush=True)
-                    if rejected:
-                        # #1662: not knowable at `open` (retain_rejected names
-                        # the record only once it has written it), and it is
-                        # this batch's output like any other.
-                        batch.add_artifact(eid, rejected)
-                    ledger.record(entry, req.get("checkpoint"), result, mode, runner.host,
-                                  refusal=refusal, timing=timing, rejected_file=rejected)
+                    refusal = loop_batch.record_entry(
+                        entry, result, timing, run_dir, batch, ledger, req,
+                        mode, runner)
                     handled.append(eid)
                     tally.record(eid, result, refusal)
                     done += 1
@@ -455,7 +406,7 @@ def loop(args):
                     # here, it discarded every entry still in flight -- drained, paid
                     # for, never persisted -- the very loss P07 exists to stop.
                     try:
-                        write_usage(review_root, ledger, namespace)
+                        loop_batch.write_usage(review_root, ledger, namespace)
                     except Exception as exc:   # noqa: BLE001 -- progress, not evidence
                         print("driver loop: usage.json not updated: %s: %s"
                               % (type(exc).__name__, exc), file=sys.stderr, flush=True)
@@ -633,7 +584,7 @@ def _finish(status, review_root, guards, ledger, namespace, mode="headless", run
     if (mode == "headless" and ledger is not None
             and status.get("status") in ("complete", "error", "paused")):
         try:
-            write_usage(review_root, ledger, namespace)
+            loop_batch.write_usage(review_root, ledger, namespace)
         except Exception as exc:      # noqa: BLE001 -- must not mask the original status
             status["message"] = "%s; usage.json not written: %s: %s" % (
                 status.get("message"), type(exc).__name__, exc)

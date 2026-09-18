@@ -165,7 +165,7 @@ it's used automatically when present, `--no-tools` to skip.
 Two module attributes exist so the unit suite can refuse a real launch, and neither may ever be
 assigned outside `tests/`. `DEFAULT_RUNNER` (on each host-CLI launch seam —
 `tests/conftest.py`'s `LAUNCH_SEAMS`, found by AST walk in `tests/test_host_launch_guard.py`) and
-`skill/scripts/phases/readiness.py`'s `DOCKER_RUNNER`, which the readiness phase resolves its
+`skill/scripts/phases/readiness_checks.py`'s `DOCKER_RUNNER`, which the readiness phase resolves its
 `docker version` / `docker image inspect` probes through. **Its production value is `None`**,
 meaning "use `setup_flow.DEFAULT_RUNNER`"; a non-`None` value left in shipped code would make the
 readiness checkpoint answer "ok" off a fake without probing Docker at all — and that is the check

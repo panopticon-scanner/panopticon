@@ -9,8 +9,8 @@ import scripts.citations as citations
 from scripts.citations import load_cwe_catalog
 import scripts.evidence as evidence_mod
 import scripts.ocrdb as ocrdb
-from . import findings as findings_mod
 from . import codes as codes_mod
+from . import corroborate as corroborate_mod
 from . import delta as delta_mod
 from . import plan as plan_mod
 
@@ -20,7 +20,7 @@ def emit_verify_queue(findings, run_dir, max_verify):
     prepared findings and return True (main exits 0 so the orchestrator runs
     the verify phase). With nothing to queue, remove a STALE queue file and
     return False: main goes on to emit the final report."""
-    prepared, _ = findings_mod.prepare_for_queue(copy.deepcopy(findings))
+    prepared, _ = corroborate_mod.prepare_for_queue(copy.deepcopy(findings))
     queue, cut = evidence_mod.build_verify_queue(prepared, max_verify)
     qpath = os.path.join(run_dir, "verify-queue.json")
     if queue:
@@ -95,7 +95,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     (distinct from whether it yielded any verdicts) so the aggregate "no
     verdict" note still fires for an existing-but-empty dir.
     """
-    findings, integration_findings = findings_mod.prepare_for_queue(fs.findings)
+    findings, integration_findings = corroborate_mod.prepare_for_queue(fs.findings)
     catalog = fs.catalog if fs.catalog is not None else load_cwe_catalog()
     ocrdb_bundle = ocrdb.load_bundle()
     ocrdb_coverage = codes_mod.validate_finding_codes(findings, ocrdb_bundle)

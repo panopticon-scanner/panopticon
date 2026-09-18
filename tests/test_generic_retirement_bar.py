@@ -34,6 +34,7 @@ import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.phases.setup as setup
 import scripts.phases.verify as verify
+import scripts.phases.verify_tools as verify_tools
 import scripts.read_guard_hook as read_guard_hook
 
 SECURITY_BAR = (hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED)
@@ -194,7 +195,7 @@ class TestTheReadClauseIsProvenByConstruction(unittest.TestCase):
             "domain-advisor.md": verify._verify_entry(
                 self.root, self.manifest, "Auth", "SEC", self.files, self.cell, "claude",
                 self.bundle, "primary"),
-            "advisor.md": verify._tool_verify_entry(
+            "advisor.md": verify_tools._tool_verify_entry(
                 self.root, self.manifest, "q1",
                 {"id": "T-1", "severity": "HIGH",
                  "location": {"file": "a.py", "line_start": 1}}, "claude"),

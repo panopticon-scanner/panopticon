@@ -43,6 +43,7 @@ import scripts.phases.readiness as readiness_mod
 import scripts.phases.runio as runio
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
+import scripts.phases.readiness_checks as readiness_checks
 import scripts.phases.runio as _runio
 from scripts import hosts
 
@@ -50,6 +51,7 @@ from tools.git_repo import make_git_repo
 
 
 _READINESS = "scripts.phases.readiness"
+_READINESS_CHECKS = "scripts.phases.readiness_checks"
 
 GROUPS_YML = ("groups:\n"
               "  Core:\n    match: ['src/**']\n    panels: [COD]\n"
@@ -141,7 +143,7 @@ class _VerbCase(unittest.TestCase):
         environ = {"PATH": self._tmpdir() if path is None else path,
                    "HOME": self._tmpdir() if home is None else home}
         with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch(_READINESS + ".DOCKER_RUNNER",
+            stack.enter_context(mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
                                            _docker_runner(daemon=daemon, image=image)))
             stack.enter_context(mock.patch.dict(os.environ, environ))
             if stub_which:
@@ -184,7 +186,7 @@ class TestTheUnreadyMachine(_VerbCase):
     def test_the_image_remedy_is_the_phase_s_own_text_not_a_second_copy(self):
         d = self._repo()
         _code, body = self._json(d, image=1, which=READY_CLI)
-        self.assertEqual(readiness.IMAGE_REMEDY, body["tools_image"]["remedy"])
+        self.assertEqual(readiness_checks.IMAGE_REMEDY, body["tools_image"]["remedy"])
 
     def test_a_dead_daemon_is_gating_too(self):
         d = self._repo()
@@ -221,7 +223,7 @@ class TestTheDependenciesRow(_VerbCase):
 
     def test_a_missing_package_is_gating_and_names_the_install(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with mock.patch(_READINESS + "._installed",
+        with mock.patch(_READINESS_CHECKS + "._installed",
                         side_effect=lambda name: name != "jsonschema"):
             code, body = self._json(d, which=READY_CLI)
         self.assertEqual(1, code)
@@ -233,7 +235,7 @@ class TestTheDependenciesRow(_VerbCase):
 
     def test_a_complete_install_passes_and_says_what_it_checked(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        with mock.patch(_READINESS + "._installed", return_value=True):
+        with mock.patch(_READINESS_CHECKS + "._installed", return_value=True):
             code, body = self._json(d, which=READY_CLI)
         self.assertEqual(0, code, json.dumps(body, indent=2))
         self.assertIs(True, body["dependencies"]["ok"])
@@ -249,15 +251,15 @@ class TestTheDependenciesRow(_VerbCase):
             declared = tomllib.load(fh)["project"]["dependencies"]
         names = {re.split(r"[<>=!~ ]", d, maxsplit=1)[0].lower() for d in declared}
         self.assertEqual(
-            names, {pip for _mod, pip in readiness.RUNTIME_PACKAGES},
-            "readiness.RUNTIME_PACKAGES and pyproject's [project] dependencies "
+            names, {pip for _mod, pip in readiness_checks.RUNTIME_PACKAGES},
+            "readiness_checks.RUNTIME_PACKAGES and pyproject's [project] dependencies "
             "disagree -- a run needs what the package declares")
 
     def test_the_row_reaches_the_real_interpreter_by_default(self):
         # The seam exists for the tests; the production answer must come from
         # the interpreter, not from a constant that can go stale.
-        self.assertTrue(readiness._installed("json"))
-        self.assertFalse(readiness._installed("no_such_module_anywhere_12345"))
+        self.assertTrue(readiness_checks._installed("json"))
+        self.assertFalse(readiness_checks._installed("no_such_module_anywhere_12345"))
 
 
 class TestTheReadyMachine(_VerbCase):

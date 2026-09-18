@@ -11,7 +11,7 @@ from . import child
 from . import engine
 from . import runio
 from . import requests
-from . import verify
+from . import verify_tools
 
 
 def synthesize_done(review_root, manifest):
@@ -145,7 +145,7 @@ def synthesize_execute(review_root, manifest):
         # could queue one the driver never dispatched a verdict for. Also
         # closes the latent gap where the manifest captured include_fixtures
         # but synthesize_execute never forwarded it.
-        if verify._tools_include_fixtures(manifest):
+        if verify_tools._tools_include_fixtures(manifest):
             cmd += ["--include-fixtures"]
     # #1637 P08 F2: the mid-run `--no-tools` rescue is a real downgrade of what
     # this run's later panels were shown, so the report says so. Threaded from

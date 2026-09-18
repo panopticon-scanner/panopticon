@@ -49,6 +49,7 @@ import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.phases.synthesize as synthesize
 import scripts.phases.verify as verify
+import scripts.phases.verify_tools as verify_tools
 
 PHASES = os.path.join(REPO_ROOT, "skill", "scripts", "phases")
 
@@ -305,7 +306,7 @@ class TestTheThreeCapabilitiesAreNotInterchangeable(unittest.TestCase):
             "verify._verify_entry": verify._verify_entry(
                 self.root, manifest, "Auth", "SEC", self.files, self.cell,
                 host, self.bundle, "primary")["enforced"],
-            "verify._tool_verify_entry": verify._tool_verify_entry(
+            "verify_tools._tool_verify_entry": verify_tools._tool_verify_entry(
                 self.root, manifest, "q1",
                 {"id": "T-1", "severity": "HIGH"}, host)["enforced"],
             "requests._driver_plan_entries": plan[0]["enforced"],

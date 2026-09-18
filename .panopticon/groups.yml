@@ -103,6 +103,18 @@ groups:
       # the FIRST `!` entry in this file -- nothing above it is a precedent to
       # read off, so it is spelled out here rather than assumed.
       - '!skill/scripts/phases/child.py'
+      # item 25e: `phases/verify_tools.py` (the verify phase's TOOL round,
+      # moved out of `phases/verify.py` to get it off the 700-line ratchet)
+      # is claimed by `Orchestration:Core` for the same reason, by the same
+      # mechanism -- this leaf is still FULL at 48/48, and the negation is
+      # what stops the glob above claiming a 49th file. Second `!` entry in
+      # this file; the one above it is the precedent.
+      - '!skill/scripts/phases/verify_tools.py'
+      # item 25e, same pass: `phases/readiness_checks.py` (the readiness
+      # phase's environment checks, moved out of `phases/readiness.py`)
+      # parks in `Orchestration:Core` by this same negation, for the same
+      # 48/48 reason.
+      - '!skill/scripts/phases/readiness_checks.py'
       - skill/scripts/orchestrate.py
       - skill/scripts/progress.py
       # Deliberately NOT with its four sibling contracts (findings-envelope,
@@ -151,6 +163,16 @@ groups:
       # 700-line instruction. Same parking reasoning as money.py just above
       # -- belongs beside orchestrate.py in `Phases`, full at 48/48.
       - skill/scripts/ledger.py
+      # item 25e: the loop's per-batch bookkeeping -- the resume set, the
+      # per-entry usage rewrite, and what happens to ONE entry that came
+      # back (persist the reply or keep what was refused, then the ledger
+      # row) -- moved out of `orchestrate.py`, which was ON its 700-line
+      # instruction. FLAT rather than `runners/loop_batch.py` because
+      # `runners/*` may not import `scripts.phases.*` and all three do
+      # (tests/test_layout.py rule 3), so it is `money.py`/`ledger.py`'s
+      # shape and lands here the same way: belongs beside orchestrate.py
+      # in `Phases`, which is full at 48/48.
+      - skill/scripts/loop_batch.py
       # item 24: the driver's phase children (spawn, timeout, bounded capture,
       # process-group kill), moved out of `phases/runio.py`. Parked here for the
       # same REASON money.py and ledger.py above are -- `Orchestration:Phases`,
@@ -162,6 +184,25 @@ groups:
       # above is the only one in this file; there is no precedent above it to
       # copy. It goes away when the Phases split lands.
       - skill/scripts/phases/child.py
+      # item 25e: the verify phase's TOOL round -- the recomputed tool-verify
+      # queue, the per-finding advisor entry, and the claim-location
+      # confinement they share with `verify._render_findings` -- moved out
+      # of `phases/verify.py`, which was ON the 700-line ceiling. Parked
+      # here by the `phases/child.py` MECHANISM one entry above (a `!`
+      # negation in the `Phases` glob, because `phases/**` claims it
+      # first), for the `money.py`/`ledger.py` REASON: `Phases`, where it
+      # belongs, is still full at 48/48. Its tests stay under
+      # `tests/phases/**` with `Phases`: the module is parked, its coverage
+      # is not. It goes home when the Phases split lands.
+      - skill/scripts/phases/verify_tools.py
+      # item 25e: the readiness phase's environment checks -- the docker and
+      # tools-image probes with their `DOCKER_RUNNER` test-only seam, the
+      # runtime-package check and the host-CLI PATH rows -- moved out of
+      # `phases/readiness.py`, which had 12 lines of headroom under the
+      # 700-line ceiling. Same mechanism and same reason as
+      # `phases/verify_tools.py` immediately above; its tests stay under
+      # `tests/phases/**` with `Phases`.
+      - skill/scripts/phases/readiness_checks.py
       # item 25d (#1623): the loop's host-outage verdict -- the failure
       # classifier, the per-entry failure tally and the `paused` message --
       # moved out of `runners/base.py`, which had 32 lines of headroom under
@@ -179,6 +220,22 @@ groups:
       # attempt budget, the resume command's flag surface), not the family
       # seam. It moves to `Hosts` when the Hosts split lands.
       - skill/scripts/runners/outage.py
+      # item 25e: `probes/kimi_snapshot.py` -- the two readings a kimi probe
+      # measures against (the child's `llm.tools_snapshot`, and the
+      # config.toml the runner generates), moved out of `probes/kimi.py` to
+      # get it off the 700-line ceiling. Parked here for the same REASON as
+      # the four above, and measured: that same item moved
+      # `runners/kimi_home.py` out of `runners/kimi.py`, which took
+      # `Orchestration:Hosts` from 47 to exactly its 48-file cap, so THIS file
+      # is the 49th and would chunk that leaf into `Orchestration:Hosts_1`, a
+      # name the matrix has no entry for (the #1638 P13 defect). Same
+      # MECHANISM as `runners/outage.py` above -- a literal path in a group
+      # listed BEFORE `Hosts`, which claims `probes/**` by glob; catalog order
+      # settles it and no `!` negation is needed. Its tests are
+      # `tests/probes/test_kimi.py`, which stays with `Hosts`: the module is
+      # parked, its coverage is not. It moves to `Hosts` when the Hosts split
+      # lands.
+      - skill/scripts/probes/kimi_snapshot.py
       - skill/scripts/group_runner.py
       - skill/scripts/model_resolver.py
       - skill/scripts/run_manifest.py

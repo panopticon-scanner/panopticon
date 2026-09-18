@@ -10,6 +10,7 @@ import unittest
 
 import scripts.synthesize as syn
 import scripts.dispatch as dispatch_mod
+import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.codes as codes_mod
 import scripts.synth.delta as delta_mod
@@ -1420,7 +1421,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
     def test_proximity_window_adjacent_lines(self):
         # Panels citing adjacent lines (function def at 150, vulnerable call at
         # 151) within CORROBORATION_LINE_WINDOW still corroborate.
-        self.assertGreaterEqual(findings_mod.CORROBORATION_LINE_WINDOW, 1)
+        self.assertGreaterEqual(corroborate_mod.CORROBORATION_LINE_WINDOW, 1)
         findings = [
             self._f(
                 "SE-1",
@@ -1446,7 +1447,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
             self._f("SE-1", "security", "input-validation", 7, conf="POSSIBLE"),
             self._f("CD-1", "code", "error-handling", 7, conf="CERTAIN"),
         ]
-        integ = findings_mod.cross_panel_corroboration(fs)
+        integ = corroborate_mod.cross_panel_corroboration(fs)
         self.assertEqual(len(integ), 1)
         by_id = {f["id"]: f for f in fs}
         self.assertEqual(by_id["SE-1"]["confidence"], "POSSIBLE")
@@ -1455,7 +1456,7 @@ class TestCrossPanelCorroboration(unittest.TestCase):
         self.assertTrue(by_id["CD-1"]["corroborated"])
 
     def test_integration_entry_records_max_severity(self):
-        integ = findings_mod.cross_panel_corroboration(
+        integ = corroborate_mod.cross_panel_corroboration(
             [
                 self._f("SE-1", "security", "input-validation", 3, sev="CRITICAL"),
                 self._f("CD-1", "code", "error-handling", 3, sev="LOW"),
@@ -2286,7 +2287,7 @@ class TestToolAxisMeta(unittest.TestCase):
 
     def test_tool_axis_rejection_rate_when_verdicts_exist(self):
         a, b = self._tool("T-1"), self._tool("T-2", location={"file": "b.py", "line_start": 2})
-        prepared, _ = findings_mod.prepare_for_queue([a, b])
+        prepared, _ = corroborate_mod.prepare_for_queue([a, b])
         queue, _c = evidence_mod.build_verify_queue(prepared)
         verdicts = {}
         for i, e in enumerate(queue):
@@ -2309,7 +2310,7 @@ class TestToolAxisMeta(unittest.TestCase):
 
     def test_tool_axis_counts_needs_more_info_and_excludes_it_from_decided(self):
         a, b = self._tool("T-1"), self._tool("T-2", location={"file": "b.py", "line_start": 2})
-        prepared, _ = findings_mod.prepare_for_queue([a, b])
+        prepared, _ = corroborate_mod.prepare_for_queue([a, b])
         queue, _c = evidence_mod.build_verify_queue(prepared)
         verdicts = {
             queue[0]["queue_id"]: {
@@ -2384,7 +2385,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
         }
 
     def _queue(self, findings):
-        prepared, _ = findings_mod.prepare_for_queue(findings)
+        prepared, _ = corroborate_mod.prepare_for_queue(findings)
         return evidence_mod.build_verify_queue(prepared)[0]
 
     def test_counts_matched_unknown_and_unanswered(self):
@@ -3890,7 +3891,7 @@ class TestStrictGate(unittest.TestCase):
 
     def test_confirmed_tool_high_fails_the_gate(self):
         f = self._tool_high()
-        prepared, _ = findings_mod.prepare_for_queue([dict(f)])
+        prepared, _ = corroborate_mod.prepare_for_queue([dict(f)])
         queue, _c = evidence_mod.build_verify_queue(prepared)
         qid = queue[0]["queue_id"]
         verdicts = {

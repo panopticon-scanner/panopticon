@@ -3,16 +3,17 @@
 Split out of `host_probes.py` (#1627); the probes themselves arrived with the
 kimi family PR (#1344). The kimi runner confines reviewers through a per-run
 KIMI_CODE_HOME whose config registers kimi_guard_hook.py (see
-runners/kimi.py's docstring for the whole design). These probes prove the
-pieces: the shells' tool surface, the two guard round-trips through the REAL
-hook protocol (a subprocess, exactly as the CLI invokes it), the model-alias
-binding, and the wire-file usage channel.
+runners/kimi_home.py's docstring for the whole design). These probes prove
+the pieces: the shells' tool surface, the two guard round-trips through the
+REAL hook protocol (a subprocess, exactly as the CLI invokes it), the
+model-alias binding, and the wire-file usage channel. The two readings they
+measure against -- the child's `llm.tools_snapshot` and the config.toml the
+runner generates -- live in `probes/kimi_snapshot.py`.
 
 What every family shares is reached by module attribute (`common.<name>`), so
 each of those names still has exactly one definition and one patch target.
 The probe-id -> function registry stays in `host_probes.py`.
 """
-import glob
 import json
 import os
 import re
@@ -24,7 +25,7 @@ import tomllib
 from scripts import dispatch, hosts, kimi_toml, model_resolver, write_guard_hook
 
 from . import common
-
+from . import kimi_snapshot
 
 
 # I3 (gate review): every spawn of a REAL host binary in this module resolves
@@ -53,7 +54,7 @@ KIMI_MODEL_ALIAS = "kimi-model-alias-bound"
 KIMI_USAGE_WIRE = "kimi-usage-wire"
 
 # The CLI's builtin tool vocabulary lives with the RUNNER
-# (runners.kimi.TOOL_VOCABULARY), because the runner is what has to deny it:
+# (runners.kimi_home.TOOL_VOCABULARY), the side that has to deny it:
 # Kimi's config offers a deny-list and no allow-list, so the per-run
 # `tools.disabled` is derived from that table minus the templates' grants (I1).
 # The probe reads the same table back. A version it does not cover resolves
@@ -77,65 +78,6 @@ def _kimi_version(runner=None):
     return "%s.%s" % (match.group(1), match.group(2)) if match else None
 
 
-_TOOLS_SNAPSHOT = "llm.tools_snapshot"
-
-
-def _kimi_wire_snapshot(run_home):
-    """(tools, agent, wire) from the most recent child's `llm.tools_snapshot`
-    under THIS run's per-run home, or (None, None, why).
-
-    I5: the effective tool surface of a child that really ran, which is the
-    only thing that answers "did the shell restrict it". `run_home` is handed
-    in by the loop, off the live runner instance (N2). It is deliberately NOT
-    read back from the run folder's pointer file: that file sits in the
-    reviewed tree, and a target that could rewrite it could point this probe
-    at a directory it had planted -- turning `host-capabilities.json` into a
-    record of a child that never ran.
-
-    The record's shape is read tolerantly: `tools` as names or as objects with
-    a `name`, and the agent under any of the spellings a snapshot has been
-    seen to use. A record this cannot read is "no snapshot", never a
-    refutation -- an unrecognised shape is unknown data, not evidence.
-    """
-    home = run_home
-    if not home or not os.path.isdir(home):
-        return None, None, "this run has no per-run kimi home yet"
-    pattern = os.path.join(glob.escape(home), "sessions", "*", "*", "agents", "*", "wire.jsonl")
-    try:
-        wires = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
-    except OSError as exc:        # a file that vanished between glob and stat
-        return None, None, "the per-run home's wire files could not be listed: %s" % exc
-    for wire in wires:
-        tools, agent = None, None
-        try:
-            with open(wire, encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        record = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(record, dict) or record.get("type") != _TOOLS_SNAPSHOT:
-                        continue
-                    names = record.get("tools")
-                    if not isinstance(names, list):
-                        continue
-                    tools = {n if isinstance(n, str) else n.get("name")
-                             for n in names if isinstance(n, (str, dict))}
-                    tools.discard(None)
-                    for key in ("agent", "agentName", "agent_file", "agentFile"):
-                        value = record.get(key)
-                        if isinstance(value, str) and value:
-                            agent = os.path.basename(value)
-                            agent = agent[:-3] if agent.endswith(".md") else agent
-                            break
-        except OSError:
-            continue
-        if tools is not None and agent:
-            return tools, agent, wire
-    return None, None, ("no child wire file under %s carries an %s record yet"
-                        % (home, _TOOLS_SNAPSHOT))
-
-
 def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=None,
                              run_home=None):
     """The registered shells restrict tools on the EFFECTIVE surface.
@@ -151,7 +93,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     surface confirmation (a writer-role child measured carrying exactly
     ['Read', 'Write']).
     """
-    import scripts.runners.kimi as kimi_runner
+    import scripts.runners.kimi_home as kimi_home
     registration_dir = registration_dir or (hosts.spec(host).registration_dir
                                             if hosts.spec(host) else "")
     base_state, base_by, base_detail = common.probe_registered_shell_tools(host, registration_dir)
@@ -165,7 +107,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
         return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
                 "shells match their templates, but the installed kimi version "
                 "could not be determined, so its tool vocabulary is unverified")
-    vocabulary = kimi_runner.TOOL_VOCABULARY.get(version)
+    vocabulary = kimi_home.TOOL_VOCABULARY.get(version)
     if vocabulary is None:
         return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
                 "shells match their templates, but the probe's vocabulary table "
@@ -188,8 +130,8 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     # not recomputed from `disabled_tools()`. Recomputing subtracted the
     # templates' union from a vocabulary it had just subtracted the same union
     # from: empty by construction, an identity wearing a measurement's clothes.
-    allowed = kimi_runner.allowed_tool_union()
-    disabled, where = _kimi_generated_disabled()
+    allowed = kimi_home.allowed_tool_union()
+    disabled, where = kimi_snapshot._kimi_generated_disabled()
     if disabled is None:
         # R2-4: not a fallback. I5 falls back on an unrecognised record shape --
         # third-party data -- and says so; this is OUR OWN writer failing, and
@@ -211,7 +153,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     # I5: the EFFECTIVE surface, when a child has already run in this run's
     # home. The table above says what the CLI ships; the snapshot says what a
     # launched child was actually given.
-    snapshot, agent, where = _kimi_wire_snapshot(run_home)
+    snapshot, agent, where = kimi_snapshot._kimi_wire_snapshot(run_home)
     if snapshot is not None:
         grant = common._frontmatter_tools(os.path.join(registration_dir, "%s.md" % agent))
         if grant is None:
@@ -220,12 +162,13 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
                         % (where, sorted(snapshot), agent, registration_dir))
         elif set(grant) != snapshot:
             faults.append("the last child's %s for %r carries %s, its registered "
-                          "shell grants %s" % (_TOOLS_SNAPSHOT, agent,
+                          "shell grants %s" % (kimi_snapshot._TOOLS_SNAPSHOT, agent,
                                                sorted(snapshot), sorted(grant)))
             measured = ""
         else:
             measured = ("the last child's %s for %r carries exactly its shell's "
-                        "grant %s (%s)" % (_TOOLS_SNAPSHOT, agent, sorted(grant), where))
+                        "grant %s (%s)" % (kimi_snapshot._TOOLS_SNAPSHOT, agent,
+                                           sorted(grant), where))
     else:
         measured = ("%s, so the effective surface rests on the version table"
                     % where)
@@ -268,57 +211,6 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
                   % (mode, len(rows), len(rows), os.path.basename(guard_path)))
 
 
-def _kimi_armed_home(sandbox):
-    """Build the per-run home the RUNNER builds, inside `sandbox`, from a
-    minimal fixture operator config. Returns (home, scope_path, allowlist_path).
-
-    The real `build_kimi_home` -- not a re-implementation -- so the file this
-    inspects is the file a run arms. C1 puts the runner's own home under the
-    temp root; the probe passes a home inside its sandbox instead, so nothing
-    survives the probe. The operator's real home is never read.
-    """
-    import scripts.runners.kimi as kimi_runner
-    fixture_home = os.path.join(sandbox, "fixture-home")
-    os.makedirs(fixture_home, exist_ok=True)
-    with open(os.path.join(fixture_home, "config.toml"), "w", encoding="utf-8") as fh:
-        fh.write('default_model = "kimi-code/k3"\n')
-    run_dir = os.path.join(sandbox, "run")
-    os.makedirs(run_dir, exist_ok=True)
-    scope_path = os.path.join(run_dir, "read-scope.json")
-    allowlist_path = os.path.join(run_dir, "write-allowlist.json")
-    home = kimi_runner.build_kimi_home(os.path.join(sandbox, "kimi-home"),
-                                       scope_path, allowlist_path,
-                                       real_home=fixture_home)
-    return home, scope_path, allowlist_path
-
-
-def _kimi_generated_disabled():
-    """(tools.disabled, where) read out of a config.toml the runner generates,
-    or (None, why). The file is built and read inside a sandbox and nothing
-    survives the call.
-
-    R2-4: the except list covers every type the writer it drives can raise --
-    `build_merged_config` raises ValueError (M3/N5's own mechanism) and
-    `dump_toml` raises TypeError (C2's) -- because `run_probes` wraps no probe
-    lambda and `_establish_host_posture` is called unwrapped, so an escape here
-    would abort posture establishment with a traceback. "A probe reports,
-    never raises" is this module's contract, not a tendency.
-    """
-    try:
-        with tempfile.TemporaryDirectory() as sandbox:
-            home, _scope, _allowlist = _kimi_armed_home(sandbox)
-            with open(os.path.join(home, "config.toml"), "rb") as fh:
-                config = tomllib.load(fh)
-    except tomllib.TOMLDecodeError as exc:
-        return None, "the generated config.toml is not valid TOML (%s)" % exc
-    except (OSError, ValueError, TypeError) as exc:
-        return None, common.failure_detail(
-            exc, "the per-run config could not be generated")
-    tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
-    names = {t for t in (tools.get("disabled") or []) if isinstance(t, str)}
-    return names, "the config.toml the runner generates"
-
-
 _KIMI_GUARD_PROBE = {"read": "read guard probe", "write": "write guard probe"}
 
 
@@ -349,9 +241,9 @@ def _kimi_hooks_are_armed(sandbox, mode):
     present in `tools.disabled`.
     """
     import scripts.kimi_guard_hook as kimi_guard_hook
-    import scripts.runners.kimi as kimi_runner
+    import scripts.runners.kimi_home as kimi_home
     try:
-        home, scope_path, allowlist_path = _kimi_armed_home(sandbox)
+        home, scope_path, allowlist_path = kimi_snapshot._kimi_armed_home(sandbox)
         with open(os.path.join(home, "config.toml"), "rb") as fh:
             config = tomllib.load(fh)
     except OSError as exc:
@@ -366,8 +258,8 @@ def _kimi_hooks_are_armed(sandbox, mode):
     tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
     disabled = set(tools.get("disabled") or [])
     faults, notes, mine, mine_file = [], [], None, ""
-    for matcher, this_mode, data_path in ((kimi_runner.READ_MATCHER, "read", scope_path),
-                                          (kimi_runner.WRITE_MATCHER, "write", allowlist_path)):
+    for matcher, this_mode, data_path in ((kimi_home.READ_MATCHER, "read", scope_path),
+                                          (kimi_home.WRITE_MATCHER, "write", allowlist_path)):
         problems = []
         matching = [h for h in hooks
                     if h.get("event") == "PreToolUse" and h.get("matcher") == matcher]
@@ -388,7 +280,7 @@ def _kimi_hooks_are_armed(sandbox, mode):
         elif problems:
             notes.append("%s (the %s owns that one)"
                          % ("; ".join(problems), _KIMI_GUARD_PROBE[this_mode]))
-    missing = sorted(set(kimi_runner.disabled_tools()) - disabled)
+    missing = sorted(set(kimi_home.disabled_tools()) - disabled)
     if missing:
         faults.append("tools.disabled omits %s" % ", ".join(missing))
     # #1640: read back off the FILE, like every other fault here -- the

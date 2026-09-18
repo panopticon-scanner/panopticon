@@ -20,6 +20,7 @@ nothing left to bind to.
 import unittest
 
 import scripts.evidence as evidence_mod
+import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 
 
@@ -51,7 +52,7 @@ class CollapsedIdBindingTest(unittest.TestCase):
     def test_dedupe_records_the_ids_it_collapses(self):
         agent, tool = self._pair()
         self.assertNotEqual(agent["id"], tool["id"], "fixture needs two distinct ids")
-        survivors = findings_mod.dedupe([agent, tool])
+        survivors = corroborate_mod.dedupe([agent, tool])
         self.assertEqual(len(survivors), 1, "fixture must actually collapse")
         merged = evidence_mod.merged_ids(survivors[0])
         self.assertEqual(set(merged) | {survivors[0]["id"]},
@@ -60,7 +61,7 @@ class CollapsedIdBindingTest(unittest.TestCase):
 
     def test_a_verdict_naming_a_collapsed_id_still_binds(self):
         agent, tool = self._pair()
-        survivors = findings_mod.dedupe([agent, tool])
+        survivors = corroborate_mod.dedupe([agent, tool])
         survivor = survivors[0]
         collapsed = next(i for i in (agent["id"], tool["id"]) if i != survivor["id"])
         by_fid = {collapsed: [{"verdict": "CONFIRMED", "stage": "primary",
@@ -73,7 +74,7 @@ class CollapsedIdBindingTest(unittest.TestCase):
         # An alias must never outrank the finding's real id: the survivor's own
         # verdict is the one that adjudicated the finding that survived.
         agent, tool = self._pair()
-        survivors = findings_mod.dedupe([agent, tool])
+        survivors = corroborate_mod.dedupe([agent, tool])
         survivor = survivors[0]
         collapsed = next(i for i in (agent["id"], tool["id"]) if i != survivor["id"])
         by_fid = {
@@ -89,7 +90,7 @@ class CollapsedIdBindingTest(unittest.TestCase):
         # Aliasing widens WHICH id binds, never which RUN may bind. A stale
         # cross-run verdict must not gain a new way in.
         agent, tool = self._pair()
-        survivor = findings_mod.dedupe([agent, tool])[0]
+        survivor = corroborate_mod.dedupe([agent, tool])[0]
         collapsed = next(i for i in (agent["id"], tool["id"]) if i != survivor["id"])
         by_fid = {collapsed: [{"verdict": "CONFIRMED", "stage": "primary",
                                "run_id": "OTHER-RUN"}]}

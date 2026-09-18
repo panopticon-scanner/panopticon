@@ -12,6 +12,7 @@ from unittest import mock
 from scripts import dispatch, host_probes, hosts
 import scripts.probes.common as probes_common
 import scripts.probes.kimi as kimi_probes
+import scripts.probes.kimi_snapshot as kimi_snapshot
 from tests.probes.helpers import _shell
 
 
@@ -80,9 +81,9 @@ class TestKimiShellSurfaceProbe(unittest.TestCase):
         # the probe must flip to refuted rather than wave the shells through.
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            import scripts.runners.kimi as kimi_runner
-            narrow = {"0.42": kimi_runner.TOOL_VOCABULARY["0.42"] - {"Read", "Bash"}}
-            with mock.patch.dict(kimi_runner.TOOL_VOCABULARY, narrow):
+            import scripts.runners.kimi_home as kimi_home
+            narrow = {"0.42": kimi_home.TOOL_VOCABULARY["0.42"] - {"Read", "Bash"}}
+            with mock.patch.dict(kimi_home.TOOL_VOCABULARY, narrow):
                 state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=d, version="0.42")
         self.assertEqual(hosts.REFUTED, state)
@@ -334,8 +335,8 @@ def _kimi_armed_config_without(mode):
     #1633 the command is shell-quoted, so `" read "` (quote, mode, quote) --
     which relied on the old `"%s" read "%s"` spelling -- matched nothing, and
     this mutation silently dropped no hook at all."""
-    import scripts.runners.kimi as kimi_runner
-    real = kimi_runner.build_merged_config
+    import scripts.runners.kimi_home as kimi_home
+    real = kimi_home.build_merged_config
 
     def mutated(source, scope_path, allowlist_path, *args, **kwargs):
         merged = real(source, scope_path, allowlist_path, *args, **kwargs)
@@ -351,8 +352,8 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
     `build_merged_config` entirely, both used to return `proven`."""
 
     def test_a_config_that_arms_no_hooks_refutes_both_probes(self):
-        import scripts.runners.kimi as kimi_runner
-        with mock.patch.object(kimi_runner, "build_merged_config",
+        import scripts.runners.kimi_home as kimi_home
+        with mock.patch.object(kimi_home, "build_merged_config",
                                side_effect=lambda source, s, a, *x, **k: {"tools": {"disabled": []}}):
             read = kimi_probes.probe_kimi_read_guard("kimi", doctor_runner=_DoctorFake())
             write = kimi_probes.probe_kimi_write_guard("kimi")
@@ -361,8 +362,8 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
             self.assertIn("PreToolUse", detail)
 
     def test_dropping_the_read_hook_refutes_the_read_probe(self):
-        import scripts.runners.kimi as kimi_runner
-        with mock.patch.object(kimi_runner, "build_merged_config",
+        import scripts.runners.kimi_home as kimi_home
+        with mock.patch.object(kimi_home, "build_merged_config",
                                side_effect=_kimi_armed_config_without("read")):
             state, _by, detail = kimi_probes.probe_kimi_read_guard(
                 "kimi", doctor_runner=_DoctorFake())
@@ -370,8 +371,8 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         self.assertIn("Read", detail)
 
     def test_dropping_the_write_hook_refutes_the_write_probe(self):
-        import scripts.runners.kimi as kimi_runner
-        with mock.patch.object(kimi_runner, "build_merged_config",
+        import scripts.runners.kimi_home as kimi_home
+        with mock.patch.object(kimi_home, "build_merged_config",
                                side_effect=_kimi_armed_config_without("write")):
             state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.REFUTED, state)
@@ -382,8 +383,8 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         # STATES would believe artifact_write_guard was broken when only read
         # confinement is. Each probe owns its own matcher and merely notes the
         # other's.
-        import scripts.runners.kimi as kimi_runner
-        with mock.patch.object(kimi_runner, "build_merged_config",
+        import scripts.runners.kimi_home as kimi_home
+        with mock.patch.object(kimi_home, "build_merged_config",
                                side_effect=_kimi_armed_config_without("read")):
             state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.PROVEN, state)
@@ -391,8 +392,8 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         self.assertIn("read guard probe", detail)
 
     def test_dropping_the_write_hook_does_not_refute_read_confinement(self):
-        import scripts.runners.kimi as kimi_runner
-        with mock.patch.object(kimi_runner, "build_merged_config",
+        import scripts.runners.kimi_home as kimi_home
+        with mock.patch.object(kimi_home, "build_merged_config",
                                side_effect=_kimi_armed_config_without("write")):
             state, _by, detail = kimi_probes.probe_kimi_read_guard(
                 "kimi", doctor_runner=_DoctorFake())
@@ -401,8 +402,8 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         self.assertIn("write guard probe", detail)
 
     def test_a_hook_pointing_at_a_nonexistent_script_is_refuted(self):
-        import scripts.runners.kimi as kimi_runner
-        with mock.patch.object(kimi_runner, "_GUARD", "/nonexistent/kimi_guard_hook.py"):
+        import scripts.runners.kimi_home as kimi_home
+        with mock.patch.object(kimi_home, "_GUARD", "/nonexistent/kimi_guard_hook.py"):
             state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("guard script", detail)
@@ -416,14 +417,14 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         self.assertIn("valid TOML", detail)
 
     def test_a_disabled_tool_the_runner_drops_is_refuted(self):
-        import scripts.runners.kimi as kimi_runner
-        real = kimi_runner.build_merged_config
+        import scripts.runners.kimi_home as kimi_home
+        real = kimi_home.build_merged_config
 
         def without_disabled(source, scope_path, allowlist_path, *args, **kwargs):
             merged = real(source, scope_path, allowlist_path, *args, **kwargs)
             merged["tools"] = {"disabled": []}
             return merged
-        with mock.patch.object(kimi_runner, "build_merged_config",
+        with mock.patch.object(kimi_home, "build_merged_config",
                                side_effect=without_disabled):
             state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.REFUTED, state)
@@ -435,8 +436,8 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         # live is a refutation of the arming, exactly as a missing hook or a
         # gutted `tools.disabled` is. Shared between the two probes for the
         # same reason `tools.disabled` is: neither guard covers those tools.
-        import scripts.runners.kimi as kimi_runner
-        real = kimi_runner.build_merged_config
+        import scripts.runners.kimi_home as kimi_home
+        real = kimi_home.build_merged_config
 
         for name, block in (("enabled", {"enabled": True, "servers": []}),
                             ("servers", {"enabled": False,
@@ -446,7 +447,7 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
                 merged["mcp"] = block
                 return merged
             with self.subTest(live=name):
-                with mock.patch.object(kimi_runner, "build_merged_config",
+                with mock.patch.object(kimi_home, "build_merged_config",
                                        side_effect=with_mcp):
                     read = kimi_probes.probe_kimi_read_guard(
                         "kimi", doctor_runner=_DoctorFake())
@@ -464,8 +465,8 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         # on the base: all three reported `proven` on BOTH guard probes, so a
         # refactor that dropped the `merged["mcp"]` assignment would have
         # shipped a per-run home carrying the operator's MCP defaults.
-        import scripts.runners.kimi as kimi_runner
-        real = kimi_runner.build_merged_config
+        import scripts.runners.kimi_home as kimi_home
+        real = kimi_home.build_merged_config
 
         shapes = (("absent", None),
                   ("scalar", "live-and-dangerous"),
@@ -487,7 +488,7 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
                     merged["mcp"] = _block
                 return merged
             with self.subTest(shape=name):
-                with mock.patch.object(kimi_runner, "build_merged_config",
+                with mock.patch.object(kimi_home, "build_merged_config",
                                        side_effect=armed):
                     read = kimi_probes.probe_kimi_read_guard(
                         "kimi", doctor_runner=_DoctorFake())
@@ -503,19 +504,19 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
         # and a live block still refutes -- because a bar that had been moved
         # would break exactly one of them.
         import scripts.kimi_toml as kimi_toml
-        import scripts.runners.kimi as kimi_runner
+        import scripts.runners.kimi_home as kimi_home
         stolen = kimi_toml.inert_mcp()
         stolen["enabled"] = True
         stolen["servers"].append({"name": "planted"})
         state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.PROVEN, state, detail)
-        real = kimi_runner.build_merged_config
+        real = kimi_home.build_merged_config
 
         def live(source, scope_path, allowlist_path, *args, **kwargs):
             merged = real(source, scope_path, allowlist_path, *args, **kwargs)
             merged["mcp"] = {"enabled": True, "servers": [{"name": "planted"}]}
             return merged
-        with mock.patch.object(kimi_runner, "build_merged_config", side_effect=live):
+        with mock.patch.object(kimi_home, "build_merged_config", side_effect=live):
             state, _by, detail = kimi_probes.probe_kimi_write_guard("kimi")
         self.assertEqual(hosts.REFUTED, state, detail)
 
@@ -526,13 +527,14 @@ class TestKimiGuardArmingIsMeasured(unittest.TestCase):
 
     def test_prepare_refuses_to_run_without_the_guard_script(self):
         import scripts.runners.kimi as kimi_runner
+        import scripts.runners.kimi_home as kimi_home
         with tempfile.TemporaryDirectory() as d:
             home = os.path.join(d, "fixture-home")
             os.makedirs(home)
             with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
                 fh.write('default_model = "kimi-code/k3"\n')
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": home}), \
-                 mock.patch.object(kimi_runner, "_GUARD", os.path.join(d, "gone.py")):
+                 mock.patch.object(kimi_home, "_GUARD", os.path.join(d, "gone.py")):
                 runner = kimi_runner.Runner("kimi")
                 with self.assertRaises(RuntimeError) as caught:
                     runner.prepare(os.path.join(d, "run"), review_root=d)
@@ -559,8 +561,8 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
         # construction, so it could only fire when the derivation itself was
         # monkeypatched. The question is whether the FILE the runner writes
         # covers the vocabulary, so the answer has to come out of that file.
-        import scripts.runners.kimi as kimi_runner
-        real = kimi_runner.build_merged_config
+        import scripts.runners.kimi_home as kimi_home
+        real = kimi_home.build_merged_config
 
         def disables_nothing(source, scope_path, allowlist_path, *args, **kwargs):
             merged = real(source, scope_path, allowlist_path, *args, **kwargs)
@@ -568,7 +570,7 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
             return merged
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            with mock.patch.object(kimi_runner, "build_merged_config",
+            with mock.patch.object(kimi_home, "build_merged_config",
                                    side_effect=disables_nothing):
                 state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=d, version="0.42")
@@ -582,7 +584,7 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
         # tucked into its detail.
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            with mock.patch.object(kimi_probes, "_kimi_armed_home",
+            with mock.patch.object(kimi_snapshot, "_kimi_armed_home",
                                    side_effect=OSError("no space left on device")):
                 state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=d, version="0.42")
@@ -594,9 +596,9 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
         # raises TypeError (C2); neither was caught, and `run_probes` wraps no
         # probe, so posture establishment would have died on a traceback.
         import scripts.kimi_toml as kimi_toml
-        import scripts.runners.kimi as kimi_runner
+        import scripts.runners.kimi_home as kimi_home
         for target, boom in ((kimi_toml, TypeError("cannot emit TOML")),
-                             (kimi_runner, ValueError("expected a table at `tools`"))):
+                             (kimi_home, ValueError("expected a table at `tools`"))):
             name = "dump_toml" if target is kimi_toml else "build_merged_config"
             with self.subTest(raises=type(boom).__name__):
                 with tempfile.TemporaryDirectory() as d:
@@ -608,10 +610,10 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
                 self.assertIn(str(boom), detail)
 
     def test_a_tool_that_is_neither_granted_nor_disabled_is_refuted(self):
-        import scripts.runners.kimi as kimi_runner
+        import scripts.runners.kimi_home as kimi_home
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            with mock.patch.object(kimi_runner, "disabled_tools",
+            with mock.patch.object(kimi_home, "disabled_tools",
                                    side_effect=lambda vocabulary=None: ["Bash"]):
                 state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=d, version="0.42")
@@ -629,8 +631,8 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
     def _home(self, snapshot=None, agent="panopticon-domain-panel"):
         """A per-run home holding one child's wire file, as the runner's own
         `run_home` would be. Returns its path."""
-        import scripts.runners.kimi as kimi_runner
-        home = tempfile.mkdtemp(prefix=kimi_runner.HOME_PREFIX)
+        import scripts.runners.kimi_home as kimi_home
+        home = tempfile.mkdtemp(prefix=kimi_home.HOME_PREFIX)
         self.addCleanup(shutil.rmtree, home, True)
         if snapshot is not None:
             wire = os.path.join(home, "sessions", "wd_1", "session_x",
@@ -691,14 +693,14 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
         # channel does not EXIST, so that is what is asserted: the keyword is
         # refused outright, and the call production makes reports nothing the
         # planted directory contains.
-        import scripts.runners.kimi as kimi_runner
+        import scripts.runners.kimi_home as kimi_home
         planted = self._home(snapshot=["Bash", "FetchURL"])
         with tempfile.TemporaryDirectory() as d:
             registration = os.path.join(d, "agents")
             _kimi_fully_registered(registration)
             run_dir = os.path.join(d, "run")
             os.makedirs(run_dir)
-            with open(os.path.join(run_dir, kimi_runner.POINTER_FILE), "w",
+            with open(os.path.join(run_dir, kimi_home.POINTER_FILE), "w",
                       encoding="utf-8") as fh:
                 fh.write(planted)
             with self.assertRaises(TypeError):        # no tree-reading channel

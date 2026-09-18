@@ -17,7 +17,7 @@ from . import runio
 from . import coverage
 from . import inventory as inventory_mod
 from . import requests
-from . import verify
+from . import verify_tools
 
 
 # #1513: rejecting a malformed cell is only half the fix. review_execute
@@ -274,7 +274,7 @@ def _tool_hits_for_cell(review_root, manifest, domain, files):
     if not wanted:
         return ""
     findings = _ingested_tool_findings(review_root,
-                                       verify._tools_include_fixtures(manifest))
+                                       verify_tools._tools_include_fixtures(manifest))
     hits = [f for f in findings
             if ((f.get("location") or {}).get("file")) in wanted]
     hits.sort(key=lambda h: (str((h.get("location") or {}).get("file") or ""),

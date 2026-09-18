@@ -30,8 +30,9 @@ ws0-god-module-refactor-design.md section 6.3.
 5. Size ratchet: no package module exceeds LINE_CEILING lines. Raising the
    number here is a visible decision; drifting past it is not.
 6. Every package module imports on its own in a fresh interpreter. `phases/`
-   contains three mutual pairs (coverage<->requests, review<->verify,
-   persist<->requests) and `synth/` one (plan<->tool_axis, #1701: the tool axis
+   contains two mutual pairs (coverage<->requests, persist<->requests;
+   review<->verify dissolved when the tool round moved to verify_tools)
+   and `synth/` one (plan<->tool_axis, #1701: the tool axis
    reads the dispatch-plan-derived policy mode, the plan side reads the tool
    ingest's coverage-credit set); rule 1
    is what makes them safe (a partially-initialized sibling is fine when it
