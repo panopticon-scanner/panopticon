@@ -20,11 +20,13 @@ for exactly this act (ten artifact fetches, every one `sha256sum -c`'d) and
 A regex over shell text reports a clean pass on every form it cannot parse,
 which is the worst answer a control can give -- so the guard parses the shell
 instead. `scripts/shell_reader.py` does that half (comments, continuations,
-heredocs, substitutions, quoting, redirections, separators, wrappers); this
-module asks the two supply-chain questions of the result: which statements
-FETCH, and which statements CHECK what a fetch wrote -- naming that path,
-carrying a digest, in a position where the check's failure still stops the
-job, before the statement that first uses it.
+heredocs, substitutions, quoting, redirections, separators, wrappers) and
+`scripts/workflow_forms.py` the argv shapes above it (what a fetcher was told,
+what an operand stands for, where a script hides in a string); this module
+asks the two supply-chain questions of the result: which statements FETCH, and
+which statements CHECK what a fetch wrote -- naming that path, carrying a
+digest, in a position where the check's failure still stops the job, before
+the statement that first uses it.
 
 The scope is the JOB, not the step (`job_defects`): steps in one job share the
 workspace, /tmp and PATH, so a download in step A and the `chmod +x`/run in
@@ -112,18 +114,16 @@ that starts catching one fails there, and this list is edited with it.
 and a check inside a `then` branch is credited although it may not run.
 """
 import collections
-import fnmatch
 import os
 import re
 import sys
 
 import shell_reader
+import workflow_forms
 from shell_reader import command, conditional, negated, statements
+from workflow_forms import (FETCHERS, STDOUT, covers, described, parse_fetch,
+                            same_file, scripts)
 
-# A download: the tool that ran, the URL it was given, the file it lands in
-# (None = standard output, which is the pipe-to-shell shape), and the argv of
-# the next pipeline stage (None when the fetch ends the pipeline).
-Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
 # that decides whether it runs at all, and whether its own failure stops the
@@ -131,7 +131,6 @@ Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 Step = collections.namedtuple("Step", "name script shell condition soft",
                               defaults=(None, None, False))
 
-FETCHERS = ("curl", "wget")
 # The shells this module has a grammar for. Anything else is reported unread.
 PARSED_SHELLS = ("bash", "sh")
 UNNAMED = "<unnamed step>"
@@ -155,135 +154,8 @@ BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/usr/local/sbin", "/usr/sbin",
 _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
                      r"|\$\{?\w*(?:SHA|SUM|DIGEST|HASH|CHECKSUM)\w*\}?", re.I)
 
-# curl and wget spell the same options differently, and the difference is
-# load-bearing: curl's `-o` is the output file, wget's `-o` is the LOG file and
-# its `-O` is the output document. One shared table writes a log path into the
-# guard's dest field and then verifies the wrong thing.
-# Short options that consume the next word, so it is not mistaken for the URL:
-# curl's -A/-b/-c/-C/-d/-D/-e/-E/-F/-H/-K/-m/-o/-P/-Q/-r/-t/-T/-u/-U/-w/-x/-X/
-# -y/-Y/-z, wget's -a/-o/-O/-i/-B/-t/-T/-w/-Q/-P/-D/-A/-R/-I/-X/-U/-e/-l.
-_VALUE_SHORT = {"curl": set("AbcCdDeEFHKmoPQrtTuUwxXyYz"),
-                "wget": set("aoOiBtTwQPDARIXUel")}
-_VALUE_LONG = {
-    "curl": {"output", "url", "connect-timeout", "max-time", "retry",
-             "retry-delay", "retry-max-time", "header", "data", "data-raw",
-             "data-binary", "data-urlencode", "user", "user-agent", "proxy",
-             "proxy-user", "cacert", "capath", "cert", "key", "cookie",
-             "cookie-jar", "referer", "request", "range", "write-out",
-             "max-filesize", "limit-rate", "resolve", "form", "form-string",
-             "oauth2-bearer", "unix-socket", "interface", "dump-header",
-             "upload-file", "continue-at", "config", "location-trusted"},
-    "wget": {"output-document", "output-file", "append-output",
-             "directory-prefix", "timeout", "connect-timeout", "read-timeout",
-             "dns-timeout", "tries", "waitretry", "wait", "user", "password",
-             "user-agent", "header", "quota", "input-file", "base", "referer",
-             "post-data", "post-file", "ca-certificate", "certificate",
-             "private-key", "limit-rate", "bind-address"},
-}
-_DEST_SHORT = {"curl": "o", "wget": "O"}
-_DEST_LONG = {"curl": ("output",), "wget": ("output-document",)}
-# The directory the file lands in when it is not part of the destination:
-# curl's `--output-dir` applies to `-o` and `-O` alike; wget's `-P` applies to
-# the default name only (`-O` wins outright).
-_DIR_LONG = {"curl": ("output-dir",), "wget": ("directory-prefix",)}
-_DIR_SHORT = {"curl": "", "wget": "P"}
-_STDOUT = ("-", "/dev/stdout", "/dev/fd/1", "/dev/null")
-# `curl --version` in a diagnostics step downloads nothing; without this it
-# parses as a fetch with no URL, which the rule now REPORTS rather than drops.
-_INFORMATIONAL = ("--version", "-V", "--help", "-h", "--manual", "-M", "--usage")
-_UNSET = object()
-
 
 # --- which statements fetch --------------------------------------------------
-
-def _basename(url):
-    if not url:
-        return None
-    name = os.path.basename(url.split("?", 1)[0].split("#", 1)[0].rstrip("/"))
-    return name or None
-
-
-def _pick_url(operands):
-    """The operand that is the URL. A scheme wins outright; a variable is the
-    next best answer (`curl -o x "$URL"`); otherwise the first operand, which
-    is where both tools take it."""
-    for operand in operands:
-        if "://" in operand:
-            return operand
-    for operand in operands:
-        if operand.startswith("$"):
-            return operand
-    return operands[0] if operands else None
-
-
-def _parse_fetch(tool, args, stage, piped_to):
-    """One `curl`/`wget` argv -> the Fetch it performs."""
-    value_short, value_long = _VALUE_SHORT[tool], _VALUE_LONG[tool]
-    dest_short, dest_long = _DEST_SHORT[tool], _DEST_LONG[tool]
-    dir_short, dir_long = _DIR_SHORT[tool], _DIR_LONG[tool]
-    dest, remote_name, operands, i = _UNSET, False, [], 0
-    directory = None
-    while i < len(args):
-        token, i = args[i], i + 1
-        if token == "--":
-            operands.extend(args[i:])
-            break
-        if token.startswith("--"):
-            name, sep, inline = token[2:].partition("=")
-            if name in dest_long:
-                dest = inline if sep else (args[i] if i < len(args) else None)
-                i += 0 if sep else 1
-            elif name in dir_long:
-                directory = inline if sep else (args[i] if i < len(args) else None)
-                i += 0 if sep else 1
-            elif name in value_long and not sep:
-                i += 1
-            continue
-        if token.startswith("-") and len(token) > 1:
-            j = 1
-            while j < len(token):
-                ch, j = token[j], j + 1
-                if ch == dest_short:
-                    dest = token[j:] if token[j:] else (
-                        args[i] if i < len(args) else None)
-                    i += 0 if token[j:] else 1
-                    break
-                if tool == "curl" and ch == "O":
-                    remote_name = True
-                    continue
-                if dir_short and ch == dir_short:
-                    directory = token[j:] if token[j:] else (
-                        args[i] if i < len(args) else None)
-                    i += 0 if token[j:] else 1
-                    break
-                if ch in value_short:
-                    if not token[j:]:
-                        i += 1
-                    break
-            continue
-        operands.append(token)
-    url = _pick_url(operands)
-    if url is None and any(a in _INFORMATIONAL for a in args):
-        return None                             # `curl --version`, `wget --help`
-    named = dest is not _UNSET
-    if not named:
-        # wget writes the URL's basename by default; curl streams to stdout
-        # unless asked for the remote name.
-        dest = _basename(url) if (tool == "wget" or remote_name) else None
-    if directory and dest and not os.path.isabs(dest) and (
-            tool == "curl" or not named):
-        dest = os.path.join(directory, dest)
-    if stage.writes:
-        dest = stage.writes[-1]                 # `curl ... > /tmp/x`
-    if dest is None and piped_to and os.path.basename(piped_to[0]) == "tee":
-        # `curl ... | sudo tee /usr/local/bin/tool`: the pipeline IS the
-        # download's destination, and what tee wrote is what runs next.
-        written = [t for t in piped_to[1:] if not t.startswith("-")]
-        dest = written[0] if written else None
-    if dest in _STDOUT:
-        dest = None
-    return Fetch(tool, url, dest, piped_to)
-
 
 def _fetch_records(stmts):
     """[(statement index, Fetch)] for every download in the script."""
@@ -294,8 +166,8 @@ def _fetch_records(stmts):
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
                 piped_to = tuple(command(following[0].argv)) if following else None
-                fetch = _parse_fetch(os.path.basename(argv[0]), argv[1:],
-                                     stage, piped_to)
+                fetch = parse_fetch(os.path.basename(argv[0]), argv[1:],
+                                    stage, piped_to)
                 if fetch is not None:
                     found.append((index, fetch))
             found.extend((index, f) for f in _substituted(argv, stage))
@@ -319,31 +191,6 @@ def _substituted(argv, stage):
     return found
 
 
-# A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`.
-# The text is shell and this module reads shell, so the quotes are not a
-# grammar it lacks -- only one it was not looking through. `python3 -c` and
-# `perl -e` are NOT here: that text is another language, and the gap list says
-# so.
-_SHELL_STRING = ("sh", "bash", "dash", "ash", "ksh", "zsh")
-
-
-def _scripts(argv):
-    """The shell scripts this command is handed as a string, in order.
-
-    A lifted `$(...)` or heredoc marker is never one: it stands for text held
-    in the parse it came from, and `_substituted` already credits what is
-    inside it.
-    """
-    if not argv:
-        return []
-    name, found = os.path.basename(argv[0]), []
-    if name == "eval":
-        found = [t for t in argv[1:] if not t.startswith("-")]
-    elif name in _SHELL_STRING and "-c" in argv:
-        found = argv[argv.index("-c") + 1:][:1]
-    return [t for t in found if not shell_reader.is_marker(t)]
-
-
 def _flattened(stmts):
     """`eval "<script>"` expanded, in place, into the statements it runs.
 
@@ -356,7 +203,7 @@ def _flattened(stmts):
     out = []
     for statement in stmts:
         for stage in statement.stages:
-            for text in _scripts(command(stage.argv)):
+            for text in scripts(command(stage.argv)):
                 out.extend(_flattened(statements(text)))
         out.append(statement)
     return out
@@ -373,27 +220,6 @@ def fetches(script):
 
 
 # --- which statements check, and what they check -----------------------------
-
-def _same_file(token, path):
-    return os.path.normpath(token) == os.path.normpath(path)
-
-
-def _names(content, dest):
-    """Does this checked text name `dest`?
-
-    Word-exact against the path, and NEVER a substring match: `/tmp/payload-old`
-    must not clear `/tmp/payload`. A checksum list legitimately carries bare
-    names, so a BARE dest may also be matched by its basename -- but only a
-    bare one: with a directory in the dest, `x.sh` is a different file, and
-    accepting it is the unbound checksum this rule exists to refuse, wearing a
-    shorter path.
-    """
-    base = os.path.basename(dest)
-    bare = not os.path.dirname(dest)
-    return any(_same_file(word, dest)
-               or (bare and base and _same_file(word, base))
-               for word in content.split())
-
 
 # A check whose non-zero exit nobody sees is not a check. Runners default to
 # `bash -e -o pipefail`, which is what makes `sha256sum -c` a GATE -- and the
@@ -472,7 +298,7 @@ def _checked_text(statement, position, stage, argv, written):
     """
     if stage.heredoc:
         return stage.heredoc
-    files = [f for f in _operands(argv) + stage.reads if f not in _STDOUT]
+    files = [f for f in _operands(argv) + stage.reads if f not in STDOUT]
     # `shasum -a 256 -c -`: the `256` is `-a`'s value, not a sums file.
     files = [f for f in files if not re.fullmatch(r"\d+", f)]
     if files:
@@ -548,10 +374,10 @@ def _copies(statement, names):
             continue
         name, operands = os.path.basename(argv[0]), _operands(argv)
         if name in ("cp", "mv", "ln") and len(operands) > 1:
-            if any(_same_file(o, n) for o in operands[:-1] for n in names):
+            if any(same_file(o, n) for o in operands[:-1] for n in names):
                 new.add(operands[-1])
         if name == "cat" and stage.writes:
-            if any(_same_file(o, n) for o in operands for n in names):
+            if any(same_file(o, n) for o in operands for n in names):
                 new.update(stage.writes)
     return new
 
@@ -571,7 +397,7 @@ def _uses(stmts, dest, after):
             for name in sorted(names):
                 how = _use(statement, position, stage, argv, name)
                 if how:
-                    if not _same_file(name, dest):
+                    if not same_file(name, dest):
                         how += " (as `%s`, copied from it earlier)" % name
                     break
             if how:
@@ -581,85 +407,13 @@ def _uses(stmts, dest, after):
     return names, out
 
 
-# An operand that carries a glob metacharacter DESCRIBES files rather than
-# naming one, which is the whole of what `chmod +x *.sh` had over this rule.
-_GLOB = re.compile(r"[*?\[]")
-# `find`'s ways of running a command over what it walked. The operand is `{}`,
-# which names nothing at all.
-_FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
-_RECURSIVE = ("-R", "-r", "--recursive")
-
-
-def _covers(token, dest, recursive=False):
-    """Does this operand stand for `dest`, even without naming it?
-
-    Three spellings, and the guard binds by NAME, so each one hid a use:
-    exactly (`chmod +x /tmp/payload`), by a glob (`chmod +x /tmp/*.sh`), and by
-    the directory a recursive command walks (`chmod -R +x /tmp`). A glob is
-    matched against the whole path and, for a bare dest, its basename -- the
-    same asymmetry `_names` draws, and for the same reason.
-    """
-    if _same_file(token, dest):
-        return True
-    if _GLOB.search(token):
-        return (fnmatch.fnmatch(dest, token)
-                or (not os.path.dirname(dest)
-                    and fnmatch.fnmatch(os.path.basename(dest), token)))
-    if recursive and not token.startswith("-"):
-        prefix = os.path.normpath(token)
-        if prefix == ".":
-            return not os.path.isabs(dest)
-        return os.path.normpath(dest).startswith(prefix + os.sep)
-    return False
-
-
-def _walked(argv):
-    """The roots a `find` walks: its operands before the first predicate."""
-    roots = []
-    for token in argv[1:]:
-        if token.startswith("-") or token in ("(", "!"):
-            break
-        roots.append(token)
-    return roots
-
-
-def _described(statement, position, stage, argv):
-    r"""(the command that really runs, the operands it is handed, is it a walk).
-
-    Two shapes give a command its operands without writing them down, and both
-    made a download runnable with no use this rule could read: `find <roots>
-    ... -exec chmod +x {} \;` substitutes each hit for `{}`, and `... | xargs
-    chmod +x` reads them off the pipe -- where `command()` strips `xargs` as a
-    wrapper, leaving a `chmod +x` with no operands at all. The roots stand in
-    for what was walked, and a walk binds like a recursive flag.
-    """
-    for predicate in _FIND_EXEC:
-        if os.path.basename(argv[0]) == "find" and predicate in argv:
-            inner = [t for t in argv[argv.index(predicate) + 1:]
-                     if t not in ("{}", ";", "+")]
-            if inner:
-                return inner, _walked(argv), True
-    # `command()` strips what stands in FRONT of the command, and `argv` is
-    # what it left: so the wrappers are the prefix, and an `xargs` anywhere
-    # else is an operand -- a file that happens to be called `xargs` hands
-    # nothing over.
-    lead = stage.argv[:len(stage.argv) - len(argv)]
-    if position and any(os.path.basename(t) == "xargs" for t in lead):
-        previous = command(statement.stages[position - 1].argv)
-        if previous and os.path.basename(previous[0]) == "find":
-            return argv, _walked(previous), True
-        return argv, previous[1:] if previous else [], False
-    return argv, [], False
-
-
 def _use(statement, position, stage, argv, dest):
     if not argv:
         return None
-    argv, handed, walk = _described(statement, position, stage, argv)
+    argv, handed, recursive = described(statement, position, stage, argv)
     name, rest = os.path.basename(argv[0]), argv[1:]
-    recursive = walk or any(t in _RECURSIVE for t in rest)
-    mentions = [t for t in rest + handed if _covers(t, dest, recursive)]
-    if name in INTERPRETERS and any(_same_file(r, dest) for r in stage.reads):
+    mentions = [t for t in rest + handed if covers(t, dest, recursive)]
+    if name in INTERPRETERS and any(same_file(r, dest) for r in stage.reads):
         # `bash < payload`, `sh -s -- --yes < payload`: the file is never an
         # argument, so argv alone shows an interpreter with nothing after it.
         return "running it under `%s` from standard input" % name
@@ -668,7 +422,7 @@ def _use(statement, position, stage, argv, dest):
         if any(t.startswith("+") and "x" in t for t in rest) or any(
                 int(digit) % 2 for mode in modes for digit in mode[-3:]):
             return "making it executable"
-    if _same_file(argv[0], dest):
+    if same_file(argv[0], dest):
         return "running it"
     if not mentions:
         return None
@@ -750,7 +504,7 @@ def _defect(fetch, index, stmts, checks, conditions=None):
     # A checksum naming any name the file goes by is a checksum of this file.
     conditions = conditions or {}
     naming = [(i, why) for i, text, why in checks
-              if i > index and any(_names(text, name) for name in sorted(names))]
+              if i > index and any(workflow_forms.names_file(text, name) for name in sorted(names))]
     cleared = [i for i, why in naming
                if why is None and _binds(conditions, i, first_use)]
     if any(i < first_use for i in cleared):

@@ -30,7 +30,8 @@ import tempfile
 import unittest
 
 import workflow_guard as wg
-from workflow_guard import Fetch
+# The download shape itself lives in the layer below the rule (#1697).
+from workflow_forms import Fetch
 
 HEX = "a" * 64
 OTHER_HEX = "b" * 64
