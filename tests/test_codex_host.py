@@ -378,7 +378,11 @@ def test_inspection_uses_same_command_and_injected_transport_without_network(tmp
     assert '["inside", "outside", "linked"]' in captured["script"]
 
 
-def test_transport_is_local_only_and_closes_on_failure(monkeypatch):
+def test_transport_is_local_only_and_closes_on_failure(tmp_path, monkeypatch):
+    root, entry, env = _case(tmp_path)
+    # A REGISTERED argv: the transport now launches in the scratch `--cd`
+    # names (#1657), and `launch_cwd` refuses one this module never allocated.
+    argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog)
     captured = {}
 
     class FakeServer:
@@ -408,8 +412,44 @@ def test_transport_is_local_only_and_closes_on_failure(monkeypatch):
 
     monkeypatch.setattr(codex_host.http.server, "ThreadingHTTPServer", FakeServer)
     with pytest.raises(subprocess.TimeoutExpired):
-        codex_host._capture_requests(["codex", "exec", "-"], {}, fake, "safe script")
+        codex_host._capture_requests(argv, {}, fake, "safe script")
     assert captured == {"shutdown": True, "closed": True}
+
+
+def test_the_probe_launch_also_runs_in_the_registered_scratch(tmp_path, monkeypatch):
+    # #1657: the surface probe is the OTHER real `codex exec` this module
+    # spawns, and its result becomes host-capabilities.json. It passed no
+    # `cwd`, so the child inherited the driver's -- the reviewed tree on an
+    # ordinary `driver loop .` -- while `--cd` named the scratch: exactly the
+    # split `launch_cwd` exists to close, carried into the posture evidence.
+    root, entry, env = _case(tmp_path)
+    argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog)
+    seen = {}
+
+    class FakeServer:
+        server_port = 12345
+
+        def __init__(self, address, handler):
+            pass
+
+        def serve_forever(self):
+            pass
+
+        def shutdown(self):
+            pass
+
+        def server_close(self):
+            pass
+
+    def fake(launched, **kwargs):
+        seen.update(kwargs)
+        raise subprocess.TimeoutExpired(launched, kwargs["timeout"])
+
+    monkeypatch.setattr(codex_host.http.server, "ThreadingHTTPServer", FakeServer)
+    with pytest.raises(subprocess.TimeoutExpired):
+        codex_host._capture_requests(argv, {}, fake, "safe script")
+    assert seen["cwd"] == argv[argv.index("--cd") + 1]
+    assert not Path(seen["cwd"]).is_relative_to(root)
 
 
 def test_launch_diagnostic_is_bounded_and_redacts_credentials():

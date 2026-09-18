@@ -498,8 +498,14 @@ def _capture_requests(argv, env, runner, script):
         "request_max_retries": 0, "stream_max_retries": 0,
     }}}
     try:
+        # #1657: the same rule as the entry launch -- no codex child runs with
+        # the reviewed tree as its process cwd. This one used to pass no `cwd`
+        # at all, so it inherited the driver's, and its output is what
+        # host-capabilities.json is built from. `argv` is still registered
+        # here: `inspect_surface` releases it in its own `finally`.
         proc = runner([*argv[:-1], *_overrides(provider), "-"], env=env, input="Inspect the probe tools.",
-                      text=True, capture_output=True, timeout=PROBE_TIMEOUT)
+                      text=True, capture_output=True, cwd=launch_cwd(argv),
+                      timeout=PROBE_TIMEOUT)
         if proc.returncode:
             raise ValueError(_launch_error(proc))
     finally:
