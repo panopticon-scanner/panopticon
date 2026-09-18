@@ -1,6 +1,6 @@
 # Panopticon Commons catalog -- near-universal, cross-cutting file groups
 # (Docs/CI/Build/Config/Deps) that discovery.catalog_groups checks AFTER the
-# committed .panopticon/groups.yml catalog: committed groups always win,
+# committed panopticon.yml catalog: committed groups always win,
 # Commons only ever sees genuine leftovers, and the true residual still
 # chunks `Ungrouped_N`.
 #

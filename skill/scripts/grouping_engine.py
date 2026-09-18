@@ -14,12 +14,12 @@ module owns the arithmetic that decides how a claimed vertical is cut:
   and by the ceiling.
 - `apply_ceiling`: over the ceiling, collapse the smallest layer anywhere,
   re-evaluate, repeat. Verticals are never auto-merged (D1).
-- `layer_bodies`: the groups.yml subgroup bodies for a layered vertical, with
-  exactly one CARRIER whose globs are the vertical's `match:` minus every
-  other layer's globs, so the vertical's claim stays complete.
+- `layer_bodies`: the committed config's subgroup bodies for a layered
+  vertical, with exactly one CARRIER whose globs are the vertical's `match:`
+  minus every other layer's globs, so the vertical's claim stays complete.
 - `plan_groups`: stage 3 over the whole repo -- committed groups first, then
   the proposal, scoped tests, the run-time `Tests` sweep, Commons, the size
-  policy above -- returning the groups.yml side, the claims and the report.
+  policy above -- returning the config side, the claims and the report.
 - `format_report`: the deterministic `setup-report.md` (spec §7.1).
 
 Every function is deterministic given its arguments (sorted iteration, ties
@@ -30,6 +30,7 @@ import re
 
 import coverage_model
 import discovery
+import repo_config
 import setup_proposal
 import tests_axis
 
@@ -167,7 +168,7 @@ def plan_layers(vertical_files, layer_specs, cap, all_files, floor=FLOOR):
         largest["carrier"] = True
         notes.append("no residual: layer %s (%d files) is the carrier"
                      % (largest["layer"], len(largest["files"])))
-    # carrier last, proposal order otherwise -- the order groups.yml will list
+    # carrier last, proposal order otherwise -- the order the config will list
     layers.sort(key=lambda ly: ly["carrier"])
     while len(layers) > 1 and min(len(ly["files"]) for ly in layers) < floor:
         layers, note = merge_smallest_layer(layers)
@@ -217,7 +218,7 @@ def apply_ceiling(layered, other_leaves, ceiling):
     vertical reduced to one layer leaves `layered` and becomes an unlayered
     (chunked) vertical. Verticals are never merged. Returns
     `(layered, notes, over_by)`; `over_by > 0` means "raise max_groups or
-    merge verticals in groups.yml" -- coverage is never dropped to fit."""
+    merge verticals in the config" -- coverage is never dropped to fit."""
     layered = {v: list(ls) for v, ls in sorted(layered.items())}
     notes = []
 
@@ -244,7 +245,7 @@ def apply_ceiling(layered, other_leaves, ceiling):
 
 
 def layer_bodies(vertical, layers):
-    """The groups.yml parent body for a layered vertical: `{"subgroups":
+    """The config's parent body for a layered vertical: `{"subgroups":
     {layer: {match, tests, panels, exclude}}}` in `layers` order (carrier
     last). Non-carrier layers keep their proposed globs. The carrier's globs
     are the vertical's `match:` plus a negation of every other layer's
@@ -352,7 +353,7 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
     warnings = list(warnings) + list(more)
     claims = {n: list(fs) for n, fs in sorted({**a_assigned, **parent_claims}.items())}
     skipped = [n for n in parents if claims.get(n)]
-    # What the merged groups.yml will actually contain: the committed leaves
+    # What the merged config will actually contain: the committed leaves
     # plus the proposals that claimed something (merge_additive drops the
     # rest as redundant). A redundant proposed `Tests` must not suppress the
     # sweep, nor a redundant vertical offer an affinity home or take a name.
@@ -504,8 +505,9 @@ def format_report(report, disclosure=None):
         # Reachable only when CODE leaves exceed the ceiling, so both levers
         # named here can actually move the number (#1506).
         out.append("- **over ceiling by %d** -- the ceiling counts code leaves only, "
-                   "so raise `max_groups` or merge verticals in groups.yml; nothing "
-                   "was dropped to fit" % r["over_ceiling_by"])
+                   "so raise `max_groups` or merge verticals in %s; nothing "
+                   "was dropped to fit"
+                   % (r["over_ceiling_by"], repo_config.CONFIG_NAMES[0]))
     out += ["", "## Leaves", "", "| leaf | kind | files | units | floor |", "|---|---|---|---|---|"]
     out += ["| %s | %s | %d | %d | %s |" % (lf["name"], lf["kind"], lf["files"], lf["units"],
                                             ", ".join(lf["domains"]) or "-")

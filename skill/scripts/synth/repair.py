@@ -53,7 +53,7 @@ WARN_LINES_MAX = 20
 
 # `groups[].files[]` is the one list bounded by dropping, not cutting (module
 # docstring). The count is an order of magnitude above the largest group the
-# grouping engine forms and the fixture sinks a hand-written groups.yml
+# grouping engine forms and the fixture sinks a hand-written config
 # carries; the length is PATH_MAX on every platform panopticon runs on.
 FILES_MAX = 10000
 PATH_MAX = 4096

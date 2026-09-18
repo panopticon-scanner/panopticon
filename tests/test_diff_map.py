@@ -262,6 +262,14 @@ class TestDiffAnchors(unittest.TestCase):
 
 class TestPrWorktree(unittest.TestCase):
     def test_acquire_reads_base_and_adds_worktree(self):
+        # `acquire_pr` calls `_sync_config` on BOTH paths (#1681), and that
+        # refuses a worktree directory that is not there -- so a fake `git
+        # worktree add` has to leave a real directory behind the way git does.
+        # Pinned as a temp dir created here and removed after: with a
+        # hard-coded `/tmp/wt-pr7` this passed only while a stale one from an
+        # earlier run happened to still exist, and failed on a clean machine.
+        wt = tempfile.mkdtemp(prefix="panopticon-test-wt-")
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
         calls = []
         fetched_ref = []
         def runner(argv, **kw):
@@ -275,10 +283,10 @@ class TestPrWorktree(unittest.TestCase):
                 out = "deadbeef\n"
             class R: returncode = 0; stdout = out; stderr = ""
             return R()
-        with mock.patch.object(diff_map, "_worktree_dir", return_value="/tmp/wt-pr7"):
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
             info = diff_map.acquire_pr(7, repo=".", runner=runner)
         self.assertEqual(info["base"], "main")
-        self.assertEqual(info["worktree"], "/tmp/wt-pr7")
+        self.assertEqual(info["worktree"], wt)
         worktree = next(a for a in calls if "worktree" in a and "add" in a)
         self.assertEqual(worktree[-1], "deadbeef")
         self.assertNotIn("FETCH_HEAD", " ".join(" ".join(a) for a in calls))
@@ -289,6 +297,10 @@ class TestPrWorktree(unittest.TestCase):
     def test_acquire_is_idempotent_deterministic_path(self):
         repo = "."
         wt = diff_map._worktree_dir(repo, 7)
+        # Same reason as the test above: the fake `worktree add` creates the
+        # directory, so `_sync_config` has a real tree to sync into on the
+        # create pass and the reuse pass alike.
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
         calls = {"fetch": 0, "wtadd": 0}
         def runner(argv, **kw):
             out = ""
@@ -301,6 +313,7 @@ class TestPrWorktree(unittest.TestCase):
                 out = "%s  deadbeef [detached HEAD]\n" % wt if calls["wtadd"] > 0 else ""
             elif "worktree" in argv and "add" in argv:
                 calls["wtadd"] += 1
+                os.makedirs(wt, exist_ok=True)
             elif "fetch" in argv:
                 calls["fetch"] += 1
             elif "rev-parse" in argv:
@@ -396,6 +409,10 @@ class TestPrWorktree(unittest.TestCase):
 
     def test_acquire_pr_calls_carry_timeout(self):
         # #1081: every git/gh call in acquire_pr is time-bounded.
+        # Real temp worktree for the same reason as the two tests above: the
+        # create path ends in `_sync_config`, which refuses a missing tree.
+        wt = tempfile.mkdtemp(prefix="panopticon-test-wt-")
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
         seen = []
         def runner(argv, **kw):
             seen.append(kw.get("timeout"))
@@ -406,7 +423,7 @@ class TestPrWorktree(unittest.TestCase):
                 out = "deadbeef\n"
             class R: returncode = 0; stdout = out; stderr = ""
             return R()
-        with mock.patch.object(diff_map, "_worktree_dir", return_value="/tmp/wt-pr7"):
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
             diff_map.acquire_pr(7, repo=".", runner=runner)
         self.assertTrue(seen)
         self.assertTrue(all(t == diff_map._PR_TIMEOUT for t in seen), seen)

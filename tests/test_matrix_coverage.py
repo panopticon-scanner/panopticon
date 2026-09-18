@@ -1,7 +1,7 @@
 """#1638 P06: the committed matrix must claim every runtime module and every test.
 
 Run-13 reviewed eighteen runtime modules in `Ungrouped_1` -- the residual sink --
-because `.panopticon/groups.yml` had not grown with the tree. The visible
+because `panopticon.yml` had not grown with the tree. The visible
 consequence was P13: `phases/review.py` builds each cell's test inventory from
 the claiming group's `tests:` axis, so a module whose tests no group claims is
 reviewed against an EMPTY inventory, and the reviewer duly reported "no
@@ -86,7 +86,7 @@ ALLOWLIST = {
         "vertical for the same reason",
 }
 
-_CLAIM_ADVICE = ("add it to .panopticon/groups.yml — a file no group claims is "
+_CLAIM_ADVICE = ("add it to panopticon.yml — a file no group claims is "
                  "reviewed as Ungrouped without its architecture context or "
                  "its tests")
 
@@ -127,7 +127,7 @@ class TestMatrixCoverage(unittest.TestCase):
         # as a catalog that failed to load.
         self.assertTrue(
             self.catalog,
-            ".panopticon/groups.yml declares no groups: the review matrix is "
+            "panopticon.yml declares no groups: the review matrix is "
             "missing or unparseable, and every file would fall back to an "
             "Ungrouped_N chunk. Run `python3 skill/scripts/driver.py readiness .`")
 
@@ -166,14 +166,14 @@ class TestMatrixCoverage(unittest.TestCase):
         missing = self._unclaimed(self.runtime)
         self.assertEqual(
             missing, [],
-            "%d runtime file(s) no group in .panopticon/groups.yml claims:\n"
+            "%d runtime file(s) no group in panopticon.yml claims:\n"
             "  %s\n%s" % (len(missing), "\n  ".join(missing), _CLAIM_ADVICE))
 
     def test_every_test_file_is_claimed(self):
         missing = self._unclaimed(self.tests)
         self.assertEqual(
             missing, [],
-            "%d test file(s) no group in .panopticon/groups.yml claims:\n"
+            "%d test file(s) no group in panopticon.yml claims:\n"
             "  %s\n%s" % (len(missing), "\n  ".join(missing), _CLAIM_ADVICE))
 
     def test_test_files_ride_the_tests_axis_not_match(self):
@@ -209,7 +209,7 @@ class TestMatrixCoverage(unittest.TestCase):
             "an oversize leaf is split into `<name>_N` chunks at run time, and "
             "a chunk name has no entry in the matrix -- its cell is reviewed "
             "with an empty test inventory (#1638 P13). Split the leaf into "
-            "layers in .panopticon/groups.yml instead."
+            "layers in panopticon.yml instead."
             % (len(over), cap, "\n  ".join(over)))
 
     def test_allowlist_entries_still_exist(self):

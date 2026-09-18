@@ -1,8 +1,7 @@
 """#1681 Plan 1 ratchet: only `repo_config.py` may spell a config filename.
 
-`PENDING` lists the production modules still carrying a literal while the
-plan is in flight; each task removes the modules it repoints, and the last
-task empties the set. A NEW literal anywhere else fails immediately."""
+`PENDING` is empty: every production module resolves the name through
+`repo_config`. A NEW literal anywhere else fails immediately."""
 import os
 import re
 import unittest
@@ -12,12 +11,7 @@ from conftest import REPO_ROOT
 SCRIPTS = os.path.join(REPO_ROOT, "skill", "scripts")
 OWNER = os.path.join(SCRIPTS, "repo_config.py")
 LITERALS = re.compile(r"""(?<![\w-])(\.?panopticon\.yml(\.draft)?|groups\.yml(\.draft)?|config\.json)(?![\w-])""")
-PENDING = frozenset({
-    "coverage_model.py", "grouping_engine.py", "groups_schema.py",
-    "ingest_tools.py", "phases/coverage.py", "phases/discovery.py",
-    "phases/inventory.py", "phases/review.py", "phases/verify_tools.py",
-    "probes/common.py", "synth/grading.py", "synth/plan.py", "synth/repair.py",
-})
+PENDING = frozenset()
 
 
 def _offenders():

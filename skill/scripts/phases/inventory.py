@@ -16,7 +16,7 @@ what the reviewer may and may not conclude.
 Split out of `review.py` at fix round 1: the verdict, its two basename
 filters and the prompt text are one cohesive concern, and `review.py` was at
 658 of the 700-line package ceiling with it inlined. `skill/scripts/phases/**`
-already claims this file in the committed matrix, so no `groups.yml` edit was
+already claims this file in the committed matrix, so no config edit was
 needed (the P06 guard is green either way).
 """
 import os
@@ -134,7 +134,7 @@ def foreign_tests(unit, stems, units, stems_of):
     THIS reviewer will never be shown.
 
     A UNIT, not a group: chunks of one authored leaf are folded together
-    before this runs, because a sibling chunk is the same groups.yml entry
+    before this runs, because a sibling chunk is the same config entry
     and blaming it named a group the operator cannot find (fix round 1, F3).
 
     `stems_of` is `unit_stems_map(units)` -- built ONCE by the caller, because

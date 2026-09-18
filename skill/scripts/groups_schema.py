@@ -1,6 +1,6 @@
-"""Parse + validate the 5.0 matrix `groups.yml` (match/tests/panels/exclude).
+"""Parse + validate the 5.0 matrix in the root config (match/tests/panels/exclude).
 
-Extends the 4.x groups.yml (match-only) with the matrix fields. Pure: takes an
+Extends the 4.x matrix (match-only) with the matrix fields. Pure: takes an
 already-loaded dict, returns (groups, errors). No file I/O. See spec §3.
 
 5.1 adds one level of subgrouping: a top-level group body is either a LEAF
@@ -17,7 +17,7 @@ DOMAINS = frozenset(
     {"SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG"})
 
 # #5.0-02: group names are interpolated into artifact FILENAMES and into trusted
-# reviewer prompts, so a name from a (possibly hostile) committed groups.yml must
+# reviewer prompts, so a name from a (possibly hostile) committed config must
 # be a strict token — no path separators, '..', leading dot, control chars, or
 # trailing newline, which would escape .panopticon or inject into the task text.
 # ':' is deliberately excluded from the allowed charset: it is reserved as the
@@ -44,7 +44,7 @@ RESIDUAL_SINK = "Ungrouped"
 _CHUNK_SUFFIX_RE = re.compile(r"(?P<base>.+)_\d+\Z")
 
 
-# #1501: `groups.yml` and the Commons catalog are documented as taking
+# #1501: the committed config and the Commons catalog are documented as taking
 # "gitignore-flavored globs", but `discovery._glob_to_re` is a hand-rolled
 # translator, and a glob it cannot translate does not error -- it renders an
 # EMPTY group and inflates `Ungrouped`, the signal we read as catalog
@@ -182,7 +182,7 @@ def parse_groups(doc):
     # #run7 ARC-D2B: accept the legacy list form `groups: [{name: ..., ...}]`.
     # load_catalog and _committed_matrix already normalize it, but _matrix_catalog
     # (the reader main() uses for --repo-scan grouping) went straight to
-    # parse_groups, so a list-valued groups.yml silently became {} here and EVERY
+    # parse_groups, so a list-valued config silently became {} here and EVERY
     # committed group was dropped to Commons/._N. Normalize once in the owner.
     if isinstance(groups_dict, list):
         groups_dict = {g.get("name"): g for g in groups_dict

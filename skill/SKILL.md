@@ -101,7 +101,10 @@ resolve against cwd; only the script path substitutes.
   host to headless and have nothing to launch. `--json` says which rule picked it
   (`selected_from`).
 - `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap; produces
-  `.panopticon/groups.yml.draft` + `setup-report.md` (read the report first).
+  `panopticon.yml.draft` (repo root) + `.panopticon/setup-report.md` (read the report first).
+- `driver migrate-config [target]` — one-way move of a legacy `.panopticon/groups.yml` into the
+  root `panopticon.yml`. Nothing reads the old path any more; commit the new file and delete
+  the old one.
 - `driver loop [target] [driver run flags] [--mode {headless,session}] [--concurrency N]
   [--max-iterations N] [--max-budget-usd X] [--setup]` — the whole review on rails (the host
   contract); session mode prints `dispatch` and you `driver persist <id> --file <reply>` each

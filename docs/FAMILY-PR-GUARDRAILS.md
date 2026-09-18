@@ -284,10 +284,10 @@ Repository:
   tool-name mapping lives inside your emit branch, never in the shared
   templates under `skill/agents/`.
 - Never commit anything under `.panopticon*/` (it is git-ignored on purpose).
-  The single exception is not yours to take: `.panopticon/groups.yml`, the
-  self-scan review matrix, is tracked (`git add -f`) and maintained by the core
-  stack (#1638 P06), guarded by `tests/test_matrix_coverage.py`. Your PR still
-  commits nothing under `.panopticon*/` -- run artifacts least of all.
+  The self-scan review matrix lives at the repo root as `panopticon.yml`,
+  committed by construction and maintained by the core stack (#1638 P06,
+  #1681), guarded by `tests/test_matrix_coverage.py`. Your PR still commits
+  nothing under `.panopticon*/` -- run artifacts least of all.
   Never commit shells, settings, or anything else that lives under a home
   directory.
 - Do not weaken a test or a doc guard to make it pass. Update an expectation

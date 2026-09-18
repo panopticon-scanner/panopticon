@@ -308,7 +308,7 @@ INVENTORY_STATES = ("complete", "empty", "split")
 def load_test_inventory(run_dir):
     """`{unit: state}` over <run_dir>/panel-test-inventory.json (#1638 P13).
 
-    The review phase records, per REVIEW UNIT (the groups.yml entry a chunked
+    The review phase records, per REVIEW UNIT (the config entry a chunked
     `<name>_N` was split out of, so the key names a group the operator can
     find), whether that unit's prompts were built from a `complete`, `empty`
     or `split` inventory; this reads it back so `meta.coverage.test_inventory`

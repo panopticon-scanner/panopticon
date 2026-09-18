@@ -39,7 +39,7 @@ def groups_artifact_errors(doc, manifest=None):
     record the two fields every consumer reads (`_discovered_groups` takes
     `name` and `files`; `coverage_execute` keys the matrix on `name`). Anything
     richer belongs to `groups_schema`, which validates the committed
-    `groups.yml` -- the file this one is DERIVED from, and the only one that had
+    config -- the file this one is DERIVED from, and the only one that had
     a validator.
     """
     manifest = manifest if isinstance(manifest, dict) else {}

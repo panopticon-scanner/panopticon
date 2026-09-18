@@ -380,7 +380,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     explicit include_fixtures flag alone — redteam no longer auto-keeps fixture
     TOOL findings (that only re-adjudicated designed-vulnerable scaffolding);
     pass include_fixtures=True to opt in. Fixture CONTENT review is independent
-    of this flag (it is governed by groups.yml routing on the review path).
+    of this flag (it is governed by the config's routing on the review path).
 
     exclude_globs (F-CAL-2): additional fnmatch patterns matched against each
     finding's location.file; matches are dropped too. Both filters share one

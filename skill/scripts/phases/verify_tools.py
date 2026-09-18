@@ -72,7 +72,7 @@ def _tools_include_fixtures(manifest):
     longer auto-includes fixture TOOL findings -- adjudicating designed-
     vulnerable fixture CVEs (e.g. TR-010 on vulnerable-rust/Cargo.lock) burned
     verify budget to re-reject scaffolding by construction. Fixture CONTENT
-    injection-hunting is unaffected: it is a review-panel job (groups.yml
+    injection-hunting is unaffected: it is a review-panel job (the config's
     routing), independent of this tool-finding flag. Pass --include-fixtures
     to opt in to tool coverage of fixtures (incl. under redteam)."""
     flags = manifest.get("flags") or {}
