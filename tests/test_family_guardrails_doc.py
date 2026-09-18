@@ -76,6 +76,17 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
                       "HELP_ARGV", "cli-flags"):
             self.assertIn(token, doc, token)
 
+    def test_the_registry_rules_cover_the_discovery_surface(self):
+        # #1657 step 3: `discovery_surface` is a registry field, and section 2
+        # is where a family reads what its row owes. A host whose row is left
+        # empty gets a probe that scans nothing and an artifact that says the
+        # target ships nothing -- the reassuring answer, arrived at by not
+        # looking, which is the failure this whole contract is written
+        # against.
+        section = _section(_read_doc(), 2)
+        for token in ("`discovery_surface`", "CONTROLLED", "pinned control"):
+            self.assertIn(token, section, token)
+
     def test_names_every_known_host_and_the_launch_prompt(self):
         doc = _read_doc()
         for host in hosts.known_hosts():

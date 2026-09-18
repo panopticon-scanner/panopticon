@@ -162,6 +162,15 @@ Rules that follow from the registry:
   (#1619) and kimi (#1620) -- clears both. A PR that flips a row re-pins that
   assertion, alongside the `--host generic` paragraph in
   `docs/PANOPTICON.md`, in the same commit as the probes that earn it.
+- Populate `discovery_surface` for your host from the #1657 spike table:
+  what the REVIEWED tree can ship that your CLI discovers from it, one row
+  per cell, `OPEN` when nothing in your launch closes it and `CONTROLLED`
+  when something does. Every CONTROLLED entry needs a pinned control in
+  `probes/common.CONTROLS`, asserted against your runner's own `command()`
+  argv (or, when the control is not a flag, against its mechanism) by
+  `tests/probes/test_discovery_surface.py`. An empty row is not a neutral
+  default: it makes `target-discovery-surface` scan nothing and report that
+  the target ships nothing -- the reassuring answer, reached by not looking.
 - Never test a host by name in a phase (`host == "codex"`). Route every
   decision through `hosts.posture()` or `hosts.declares()`; an AST guard in
   `tests/test_host_posture_wiring.py` rejects the comparison.
