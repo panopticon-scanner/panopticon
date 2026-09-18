@@ -547,6 +547,31 @@ class TestTheWiring(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, row["state"])
         self.assertIn("the caller's own sentence", row["detail"])
 
+    def test_a_controlled_disclosure_lands_on_a_row_this_probe_did_not_decide(self):
+        # Spec §6 puts the CONTROLLED disclosure in the row's `detail`, and §3
+        # makes it the substitute for the evidence CX-1..CX-3 cannot produce --
+        # which are exactly the rows of a host whose capability resolves
+        # PROVEN. Recording only the probes that AGREED with the verdict left
+        # that sentence on stderr and nowhere else, so nothing durable said
+        # what the target shipped or which control kept it out.
+        _plant(self.root, ".claude/settings.json")
+        row = self._capabilities()
+        self.assertEqual(hosts.PROVEN, row["state"])
+        self.assertEqual("registered-shell-tools", row["by"])   # it still decided
+        self.assertIn("closed by claude:setting-sources-user (CL-2/CL-4)",
+                      row["detail"])
+
+    def test_the_deciding_probe_still_owns_by_when_this_one_refutes(self):
+        # The other direction: appending the disclosure must not move `by`
+        # away from the probe that decided -- `_surface_refusal` and
+        # `host_disclosure` both read it.
+        _plant(self.root, "CLAUDE.md")
+        _plant(self.root, ".claude/settings.json")
+        row = self._capabilities()
+        self.assertEqual(hosts.REFUTED, row["state"])
+        self.assertEqual("target-discovery-surface", row["by"])
+        self.assertEqual(1, row["detail"].count("CL-2/CL-4"), row["detail"])
+
     def test_a_host_with_no_surface_records_nothing_from_this_probe(self):
         row = self._capabilities(host="generic")
         self.assertNotIn("discovers no target-authored configuration", row["detail"])

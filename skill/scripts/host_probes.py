@@ -128,7 +128,7 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     refuted beats proven beats unknown.
 
     `shadow` lets a caller that must ALSO decide from the shadow scan's own
-    `(state, by, detail)` -- driver._shadow_refusal, which may not read it
+    `(state, by, detail)` -- driver._surface_refusal, which may not read it
     back off the artifact's `by` field -- hand in the single result it already
     computed. Without it the scan ran twice per invocation: duplicate work,
     and a TOCTOU window in which the artifact and the refusal could disagree
@@ -237,10 +237,11 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     # row declares a discovery surface -- a row with none has nothing to scan
     # for, and recording its no-op sentence would put a line about a table
     # that does not exist into every `generic` run's disclosure.
+    disclosed = None
     if row and row.discovery_surface:
-        record(hosts.TOOL_POLICY_ENFORCED,
-               surface if surface is not None
-               else probes_common.probe_discovery_surface(host, review_root))
+        disclosed = (surface if surface is not None
+                     else probes_common.probe_discovery_surface(host, review_root))
+        record(hosts.TOOL_POLICY_ENFORCED, disclosed)
     # Also not in any row's `probes`, and for a stronger reason than the
     # shadow scan's: it measures no capability at all, so there is no
     # capability to map it to and PROBE_CAPABILITY would have to lie. It runs
@@ -271,10 +272,25 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         # directory) -- which is every machine that has not run `driver
         # setup`, i.e. exactly where a hostile target is most likely to be
         # reviewed. A caller that must decide from the shadow probe alone
-        # (driver._shadow_refusal) calls it directly rather than trusting
+        # (driver._surface_refusal) calls it directly rather than trusting
         # this join order; this field is disclosure, not a decision input.
-        capabilities[capability] = _row(
-            state, agreeing[0][1], "; ".join(r[2] for r in agreeing))
+        details = [r[2] for r in agreeing]
+        # ...and ALSO the discovery-surface probe's sentence when it did not
+        # reach the verdict (#1657 step 3 fix round 1). Its non-deciding
+        # result is the one probe result here that carries a DISCLOSURE rather
+        # than the absence of a finding: "the target ships X and <control>
+        # closed it". Spec §6 puts that in this row's `detail`, and §3 makes
+        # it the substitute for the evidence CX-1..CX-3 cannot produce -- the
+        # codex rows whose capability resolves PROVEN, i.e. precisely the case
+        # where this probe answers UNKNOWN and never agrees. Recorded only
+        # once: when it DID decide it is already in `agreeing`.
+        # `disclosed in results` keeps this on the capability it was RECORDED
+        # for -- a name comparison here would be a second place that knows
+        # which capability this probe bears on, and the row above is the
+        # first.
+        if disclosed is not None and disclosed in results and disclosed not in agreeing:
+            details.append(disclosed[2])
+        capabilities[capability] = _row(state, agreeing[0][1], "; ".join(details))
     return {"schema_version": SCHEMA_VERSION, "host": host,
             "probed_at": run_manifest._now_iso(), "capabilities": capabilities,
             hosts.CLI_FLAGS: cli_flags}
