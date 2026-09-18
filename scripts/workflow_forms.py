@@ -271,6 +271,44 @@ def described(statement, position, stage, argv):
     return argv, [], _recursive(argv)
 
 
+# The shell words that open a body which MAY NOT RUN, and the ones that close
+# it. The reader is flat -- statements, not a tree -- but these words arrive as
+# the first token of the statement they introduce, which is enough to say
+# whether something was written INSIDE a branch.
+_BRANCH_OPEN = ("then", "do", "case")
+_BRANCH_ALTERNATE = ("else", "elif")
+_BRANCH_CLOSE = ("fi", "done", "esac")
+
+
+def regions(stmts):
+    """{statement index: the branch body it sits in}, absent = it always runs.
+
+    `if c; then A; fi` runs A only when c held, so a `sha256sum -c` written in
+    A cannot clear a use written outside it -- the shell twin of an `if:` on a
+    step, refused for the same reason. Bodies nest, so the value is the whole
+    stack: two statements share a branch only when they share every enclosing
+    one, and `else`/`elif` end the body before them rather than nesting inside
+    it, which is what makes two arms of one `if` different answers.
+
+    Read at the head of the statement only. A keyword is a keyword where a
+    command was expected; `echo then` is an argument, and counting it would
+    open a body that never closes.
+    """
+    where, stack, opened = {}, [], 0
+    for index, statement in enumerate(stmts):
+        head = statement.stages[0].argv if statement.stages else []
+        token = head[0] if head else None
+        if token in _BRANCH_CLOSE or token in _BRANCH_ALTERNATE:
+            if stack:
+                stack.pop()
+        if token in _BRANCH_OPEN or token == "else":
+            opened += 1
+            stack.append(opened)
+        if stack:
+            where[index] = tuple(stack)
+    return where
+
+
 # --- where a script hides ----------------------------------------------------
 
 # A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`.

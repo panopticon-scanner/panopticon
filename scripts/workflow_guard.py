@@ -110,8 +110,12 @@ that starts catching one fails there, and this list is edited with it.
   this module never sees. `continue-on-error: true` was the other half of this
   entry and is now read -- see `job_defects`.
 
-`if` branches inside the shell are read flat: a fetch inside one is a fetch,
-and a check inside a `then` branch is credited although it may not run.
+`if` branches inside the shell are read flat for what they FETCH and what they
+RUN -- folding those in can only report more. Not for what they CHECK:
+`workflow_forms.regions` reads the `then`/`else`/`do` bodies back out of the
+statement stream, and a checksum written inside a branch clears only a use
+written inside the same branch (#1697 item 3), which is `_binds` again in the
+shell's own grammar.
 """
 import collections
 import os
@@ -340,6 +344,15 @@ _NO_DIGEST = ("carries no digest, so it says which file to read and not what "
               "should have arrived")
 _UNSHARED_IF = ("runs under an `if:` the use does not share, so it may be "
                 "skipped while the use is not")
+_UNSHARED_BRANCH = ("is written inside an `if`/`while` branch the use is not "
+                    "in, so it may be skipped while the use runs")
+
+
+def _unshared(conditions, check, use):
+    """Which half of the check's condition the use does not share."""
+    when = conditions.get(check) or (None, None)
+    theirs = conditions.get(use) or (None, None)
+    return _UNSHARED_BRANCH if when[1] and when[1] != theirs[1] else _UNSHARED_IF
 
 
 def _checks(stmts, soft=()):
@@ -467,7 +480,10 @@ def _binds(conditions, check, use):
 
     Only if the check runs whenever the use does. A step carrying an `if:` may
     be skipped, so its checksum cannot clear an execution that is not skipped
-    with it -- crediting one is fail-open. Conditions are compared as written
+    with it -- crediting one is fail-open. The condition has two halves: the
+    step's `if:`, and the `if`/`while` branch of the SHELL the statement was
+    written inside (`workflow_forms.regions`) -- a check binds only where both
+    match. Conditions are compared as written
     (no expression evaluation), so a check and a use in the same conditional
     step -- the shape the fleet actually has, where the fetch, the checksum and
     the `unzip` share one `if:` -- binds, and a check under a DIFFERENT
@@ -524,7 +540,8 @@ def _defect(fetch, index, stmts, checks, conditions=None):
     if naming:
         # It NAMED the file. Saying "does not name" here sends the author
         # hunting a spelling bug in a line that is spelled right.
-        why = next((w for _i, w in naming if w), None) or _UNSHARED_IF
+        why = (next((w for _i, w in naming if w), None)
+               or _unshared(conditions, naming[0][0], first_use))
         return ("fetches %s and %s; the checksum that names %s %s -- %s"
                 % (_describe(fetch), how, shell_reader.readable(fetch.dest),
                    why, _remedy(fetch.dest)))
@@ -557,7 +574,10 @@ def _defects(stmts, conditions=None, soft=()):
 
 def fetch_exec_defects(script):
     """Every unverified fetch-and-execute in one `run:` script."""
-    return [why for _index, why in _defects(read(script))]
+    stmts = read(script)
+    branches = workflow_forms.regions(stmts)
+    return [why for _index, why in
+            _defects(stmts, {i: (None, b) for i, b in branches.items()})]
 
 
 def fetch_exec_defect(script):
@@ -594,15 +614,20 @@ def job_defects(steps):
         if why:
             found.append((step.name, why))
             continue
-        for statement in read(step.script):
+        # Per step, because each one is its own shell invocation: an `if`
+        # left open at the end of step A must not make step B conditional.
+        here = read(step.script)
+        branches = workflow_forms.regions(here)
+        for local, statement in enumerate(here):
             # An `if:` step may not run. Its FETCH still counts -- folding it in
             # can only report more -- but its CHECK counts only for a use that
             # is skipped with it (`_binds`): a checksum that may not run cannot
             # clear an execution that always does. A `continue-on-error` step
             # DOES run, and its failure is discarded, so its check counts for
             # nothing.
-            if step.condition:
-                conditions[len(stmts)] = step.condition
+            when = (step.condition, branches.get(local))
+            if any(when):
+                conditions[len(stmts)] = when
             if step.soft:
                 soft.add(len(stmts))
             stmts.append(statement)

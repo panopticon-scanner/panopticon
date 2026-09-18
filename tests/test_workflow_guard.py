@@ -677,6 +677,66 @@ class TestTheMessageSaysWhatWasChecked(unittest.TestCase):
             self.assertNotIn("the step's checksum", why)
 
 
+class TestABranchIsNotAlwaysTaken(unittest.TestCase):
+    """#1697 item 3: a `sha256sum -c` inside a `then` branch may not run.
+
+    The reader is flat -- it produces statements, not a tree -- but the words
+    that open and close a body (`then`, `else`, `do`, `fi`, `done`) are right
+    there in the argv it produced, so "written inside a branch" is a question
+    it can answer. This is the shell twin of the `if:` on a step (`_binds`),
+    and it is refused for the same reason: a check that may be skipped cannot
+    clear an execution that is not.
+    """
+
+    FETCH = "curl -sfL https://example.test/payload -o /tmp/payload\n"
+    CHECK = 'echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX
+    EXEC = "chmod +x /tmp/payload\n"
+
+    def test_a_check_inside_a_then_branch_clears_nothing_outside_it(self):
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            self.FETCH + "if true; then\n" + self.CHECK + "fi\n" + self.EXEC))
+
+    def test_a_check_inside_a_loop_body_clears_nothing_outside_it(self):
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            self.FETCH + "for f in x; do\n" + self.CHECK + "done\n" + self.EXEC))
+
+    def test_the_same_branch_as_the_use_still_binds(self):
+        # The hardened spelling: fetch, check and use share one body, so they
+        # run together or not at all -- refusing this would push authors off
+        # the rule instead of onto it.
+        self.assertIsNone(wg.fetch_exec_defect(
+            "if true; then\n" + self.FETCH + self.CHECK + self.EXEC + "fi\n"))
+
+    def test_a_then_branch_does_not_clear_an_else_branch(self):
+        # The check runs FIRST in statement order, so ordering is not what
+        # refuses it: the two bodies are alternatives.
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            self.FETCH + "if true; then\n" + self.CHECK + "else\n" +
+            self.EXEC + "fi\n"))
+
+    def test_a_check_after_the_fi_still_binds(self):
+        self.assertIsNone(wg.fetch_exec_defect(
+            self.FETCH + "if true; then :; fi\n" + self.CHECK + self.EXEC))
+
+    def test_a_nested_branch_does_not_clear_its_parent(self):
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            self.FETCH + "if true; then\n" + "if true; then\n" + self.CHECK +
+            "fi\n" + self.EXEC + "fi\n"))
+
+    def test_the_message_says_it_was_the_branch(self):
+        why = wg.fetch_exec_defect(
+            self.FETCH + "if true; then\n" + self.CHECK + "fi\n" + self.EXEC)
+        self.assertIn("the checksum that names", why)
+        self.assertIn("branch", why)
+
+    def test_a_branch_in_one_step_does_not_reach_into_the_next(self):
+        # Each step is its own shell invocation, so an unterminated `if` in
+        # step A must not make step B's checksum look conditional.
+        self.assertEqual([], wg.job_defects(
+            [("a", "if true; then :; fi\n"),
+             ("b", self.FETCH + self.CHECK + self.EXEC)]))
+
+
 class TestTheJobIsTheScope(unittest.TestCase):
     """M5: steps in one job share the workspace, /tmp and PATH.
 
