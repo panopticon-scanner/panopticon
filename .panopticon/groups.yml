@@ -446,6 +446,10 @@ groups:
     # house's 700-line module size on one round of hardening). Same group as
     # its only caller: the reader exists for this rule and is reviewed with it.
     - scripts/shell_reader.py
+    # #1697 split the argv SHAPES out of the guard the same way, for the same
+    # reason: closing four documented gaps pushed it past the module size
+    # again. Same group, same reason -- the layer exists for this rule.
+    - scripts/workflow_forms.py
     tests:
     - tests/test_apply_labels.py
     - tests/test_security_workflow.py

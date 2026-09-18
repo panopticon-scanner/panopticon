@@ -63,6 +63,14 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
+# A token ending in an unquoted `)` where a command was expected: a `case`
+# arm pattern -- `a)`, `*)`, `(a)`, `"a b")` (quoted, so the word carries a
+# space), and the tail of an `a|b)` alternation (the statement split cuts that
+# on the `|`) -- or the one-word tail of a tight subshell, `( ... || true)`.
+# Neither is a command name; the reader strips it and reads what follows. The
+# subshell's HEAD, `(curl ...`, is the other side of that coin: one token, so
+# the fetch it starts is unseen (a documented gap, see `workflow_guard`).
+ARM = re.compile(r"^(?!\(\)$)\S(?:.*[^(])?\)$")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _REDIRECT = re.compile(r"^(\d*)(>>|>|<)(.*)$")
 _HEREDOC_OP = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
@@ -267,7 +275,11 @@ def _stage(text, bodies, inners):
         # A redirection TARGET can be a command too (`bash < <(curl ...)`), so
         # the substitutions come off the token before it is filed away as a
         # path -- otherwise the whole command inside it is discarded unread.
-        substitutions.extend(inners[int(n)] for n in SUBST_REF.findall(token))
+        # An index past the end belongs to ANOTHER parse: a caller re-reading
+        # a substitution's text hands over markers this parse never made, and
+        # a guard that raises on them reports nothing at all.
+        substitutions.extend(inners[int(n)] for n in SUBST_REF.findall(token)
+                             if int(n) < len(inners))
 
     for token in tokens:
         if pending is not None:
@@ -276,7 +288,7 @@ def _stage(text, bodies, inners):
             pending = None
             continue
         ref = _HEREDOC_REF.match(token)
-        if ref:
+        if ref and int(ref.group(1)) < len(bodies):
             heredoc, expands = bodies[int(ref.group(1))]
             if expands:
                 # `<<EOF` expands, `<<'EOF'` does not: the body of an expanding
@@ -324,8 +336,9 @@ def command(argv):
             continue
         # A function header is not a command: `f() { curl ... ; }` and its
         # `f () {` spelling both put a name where the command was expected,
-        # which is where a long step keeps its download.
-        if _FUNCTION.match(argv[0]):
+        # which is where a long step keeps its download. A `case` arm pattern
+        # (`a) curl ... ;;`) is the same class, and hid the fetch outright.
+        if _FUNCTION.match(argv[0]) or ARM.match(argv[0]):
             argv.pop(0)
             continue
         if len(argv) > 1 and argv[1] == "()" and _NAME.match(argv[0]):
@@ -384,5 +397,10 @@ def readable(text):
 
 
 def is_marker(token):
-    """True for a token that is (or contains) a lifted substitution."""
-    return bool(SUBST_REF.search(token))
+    """True for a token that is (or contains) something this parse lifted out.
+
+    A `@@substN@@` or `@@heredocN@@` stands for text held in THIS parse's
+    tables, so it means nothing to any other parse: a reader that re-reads a
+    token as a script of its own has to ask this first.
+    """
+    return bool(SUBST_REF.search(token) or _HEREDOC_REF.match(token))

@@ -29,8 +29,11 @@ import os
 import tempfile
 import unittest
 
+import shell_reader
+import workflow_forms
 import workflow_guard as wg
-from workflow_guard import Fetch
+# The download shape itself lives in the layer below the rule (#1697).
+from workflow_forms import Fetch
 
 HEX = "a" * 64
 OTHER_HEX = "b" * 64
@@ -469,6 +472,20 @@ class TestTheFormsThatHideAFetch(unittest.TestCase):
             self.assertEqual([], wg.fetches(script), script)
             self.assertIsNone(wg.fetch_exec_defect(script), script)
 
+    def test_a_substitution_carrying_a_heredoc_marker_does_not_crash(self):
+        # #1697 review F7: the OUTER parse lifts the heredoc body and leaves
+        # `@@heredoc0@@` inside the substitution's text; re-reading that text
+        # is a second parse whose tables are empty. A guard that raises
+        # reports nothing at all, which is worse than reporting a gap.
+        for script in ('eval "$(cat <<\'EOF\'\n'
+                       "curl -sfL https://example.test/p -o /tmp/p\n"
+                       "chmod +x /tmp/p\n"
+                       'EOF\n)"\n',
+                       'sh -c "$(cat <<\'EOF\'\nhello\nEOF\n)"\n',
+                       'X="$(cat <<\'EOF\'\nhello\nEOF\n)"\n'):
+            wg.fetch_exec_defect(script)        # must not raise
+            wg.fetches(script)
+
     def test_a_shifted_left_string_is_not_a_heredoc(self):
         # `<<` inside a quoted string has no terminator line; reading it as a
         # heredoc swallows the rest of the step, and every statement after it
@@ -583,6 +600,24 @@ class TestASwallowedCheckIsNotACheck(unittest.TestCase):
                 'echo "%s  /tmp/payload" | sha256sum -c - %s\n' % (HEX, branch)),
                 branch)
 
+    def test_an_if_test_whose_check_is_the_second_pipeline_stage(self):
+        # #1697 item 2, and the FIRST one the issue asks for: the `if` sits on
+        # the pipeline HEAD (`echo`), so asking the checksum's own stage
+        # whether it is a test answers no -- and this is the spelling the
+        # guard's own remedy text recommends, so it is the one an author is
+        # most likely to wrap.
+        self.assertIsNotNone(self.swallowed(
+            'if echo "%s  /tmp/payload" | sha256sum -c -; then :; fi\n' % HEX))
+
+    def test_a_negation_on_the_pipeline_head(self):
+        self.assertIsNotNone(self.swallowed(
+            '! echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX))
+
+    def test_a_while_test_whose_check_is_the_second_pipeline_stage(self):
+        self.assertIsNotNone(self.swallowed(
+            'while echo "%s  /tmp/payload" | sha256sum -c -; do break; done\n'
+            % HEX))
+
     def test_a_plain_check_still_counts(self):
         self.assertIsNone(
             self.swallowed('echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX))
@@ -590,6 +625,210 @@ class TestASwallowedCheckIsNotACheck(unittest.TestCase):
     def test_a_check_joined_with_and_still_counts(self):
         self.assertIsNone(self.swallowed(
             'echo "%s  /tmp/payload" | sha256sum -c - && echo verified\n' % HEX))
+
+
+class TestTheMessageSaysWhatWasChecked(unittest.TestCase):
+    """#1697: one sentence was doing four jobs.
+
+    "the step's checksum does not name X" was printed whenever no checksum
+    CLEARED the fetch -- including when one named it exactly and was refused
+    for a different reason (swallowed, soft, under another `if:`). The author
+    reading it goes looking for a naming bug in a line that names the file
+    correctly, and the control's real objection never reaches them. And the
+    scope has been the JOB since M5, so "the step's" was wrong twice over.
+    """
+
+    FETCH = "curl -sfL https://example.test/payload -o /tmp/payload\n"
+    CHECK = 'echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX
+    EXEC = "chmod +x /tmp/payload\n"
+
+    def why(self, *steps):
+        found = wg.job_defects(list(steps))
+        self.assertEqual(1, len(found), found)
+        return found[0][1]
+
+    def test_no_checksum_in_the_job_names_it(self):
+        why = self.why(("get", self.FETCH),
+                       ("check", 'echo "%s  /tmp/other" | sha256sum -c -\n'
+                                 % OTHER_HEX),
+                       ("run", self.EXEC))
+        self.assertIn("no checksum in the job names", why)
+
+    def test_a_checksum_that_names_it_and_was_swallowed(self):
+        why = self.why(("get", self.FETCH),
+                       ("check", self.CHECK.rstrip("\n") + " || true\n"),
+                       ("run", self.EXEC))
+        self.assertIn("the checksum that names", why)
+        self.assertIn("`||` branch", why)
+        self.assertNotIn("does not name", why)
+
+    def test_a_checksum_that_names_it_and_carries_no_digest(self):
+        # `$FILE` is an expansion, not an expectation: the checked text names
+        # the download and says nothing about what should have arrived.
+        why = self.why(("get", self.FETCH),
+                       ("check", 'echo "$FILE  /tmp/payload" | sha256sum -c -\n'),
+                       ("run", self.EXEC))
+        self.assertIn("the checksum that names", why)
+        self.assertIn("no digest", why)
+
+    def test_a_checksum_that_names_it_under_another_condition(self):
+        why = self.why(wg.Step("get", self.FETCH),
+                       wg.Step("check", self.CHECK, None, "github.ref == 'main'"),
+                       wg.Step("run", self.EXEC))
+        self.assertIn("the checksum that names", why)
+        self.assertIn("`if:`", why)
+
+    def test_a_checksum_that_names_it_in_a_soft_step(self):
+        why = self.why(wg.Step("get", self.FETCH),
+                       wg.Step("check", self.CHECK, None, None, True),
+                       wg.Step("run", self.EXEC))
+        self.assertIn("continue-on-error", why)
+
+    def test_the_scope_is_never_called_the_step(self):
+        for why in (self.why(("get", self.FETCH), ("run", self.EXEC)),
+                    self.why(("get", self.FETCH),
+                             ("check", 'echo "%s  /tmp/other" | sha256sum -c -\n'
+                                       % OTHER_HEX),
+                             ("run", self.EXEC))):
+            self.assertNotIn("the step's checksum", why)
+
+
+class TestABranchIsNotAlwaysTaken(unittest.TestCase):
+    """#1697 item 3: a `sha256sum -c` inside a `then` branch may not run.
+
+    The reader is flat -- it produces statements, not a tree -- but the words
+    that open and close a body (`then`, `else`, `do`, `fi`, `done`) are right
+    there in the argv it produced, so "written inside a branch" is a question
+    it can answer. This is the shell twin of the `if:` on a step (`_binds`),
+    and it is refused for the same reason: a check that may be skipped cannot
+    clear an execution that is not.
+    """
+
+    FETCH = "curl -sfL https://example.test/payload -o /tmp/payload\n"
+    CHECK = 'echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX
+    EXEC = "chmod +x /tmp/payload\n"
+
+    def test_a_check_inside_a_then_branch_clears_nothing_outside_it(self):
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            self.FETCH + "if true; then\n" + self.CHECK + "fi\n" + self.EXEC))
+
+    def test_a_check_inside_a_loop_body_clears_nothing_outside_it(self):
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            self.FETCH + "for f in x; do\n" + self.CHECK + "done\n" + self.EXEC))
+
+    def test_the_same_branch_as_the_use_still_binds(self):
+        # The hardened spelling: fetch, check and use share one body, so they
+        # run together or not at all -- refusing this would push authors off
+        # the rule instead of onto it.
+        self.assertIsNone(wg.fetch_exec_defect(
+            "if true; then\n" + self.FETCH + self.CHECK + self.EXEC + "fi\n"))
+
+    def test_a_then_branch_does_not_clear_an_else_branch(self):
+        # The check runs FIRST in statement order, so ordering is not what
+        # refuses it: the two bodies are alternatives.
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            self.FETCH + "if true; then\n" + self.CHECK + "else\n" +
+            self.EXEC + "fi\n"))
+
+    def test_a_check_after_the_fi_still_binds(self):
+        self.assertIsNone(wg.fetch_exec_defect(
+            self.FETCH + "if true; then :; fi\n" + self.CHECK + self.EXEC))
+
+    def test_a_nested_branch_does_not_clear_its_parent(self):
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            self.FETCH + "if true; then\n" + "if true; then\n" + self.CHECK +
+            "fi\n" + self.EXEC + "fi\n"))
+
+    # `case` arms are branch bodies too, and after the `if`/`else` twin was
+    # refused this was the one spelling left that still bought the credit.
+    CASE_SPLIT = ("case $x in\n"
+                  " a)\n"
+                  "   curl -sfL https://example.test/payload -o /tmp/payload\n"
+                  '   echo "%s  /tmp/payload" | sha256sum -c -\n'
+                  "   ;;\n"
+                  " b)\n"
+                  "   chmod +x /tmp/payload\n"
+                  "   ;;\n"
+                  "esac\n") % HEX
+
+    def test_one_arm_of_a_case_does_not_clear_another(self):
+        self.assertIsNotNone(wg.fetch_exec_defect(self.CASE_SPLIT))
+
+    def test_an_arm_written_on_one_line_is_read_at_all(self):
+        # `a) curl …` puts the pattern where the command was expected, which
+        # hid the fetch itself -- the same class as `then` and `f() {`.
+        script = ("case $x in\n"
+                  " a) curl -sfL https://example.test/payload -o /tmp/payload\n"
+                  '    echo "%s  /tmp/payload" | sha256sum -c - ;;\n'
+                  " b) chmod +x /tmp/payload ;;\n"
+                  "esac\n") % HEX
+        self.assertEqual(1, len(wg.fetches(script)), wg.fetches(script))
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_one_arm_holding_all_three_still_binds(self):
+        script = ("case $x in\n"
+                  " a)\n"
+                  "   curl -sfL https://example.test/payload -o /tmp/payload\n"
+                  '   echo "%s  /tmp/payload" | sha256sum -c -\n'
+                  "   chmod +x /tmp/payload\n"
+                  "   ;;\n"
+                  "esac\n") % HEX
+        self.assertIsNone(wg.fetch_exec_defect(script))
+
+    def test_an_alternation_pattern_still_opens_a_new_arm(self):
+        script = ("case $x in\n"
+                  " a|b)\n"
+                  "   curl -sfL https://example.test/payload -o /tmp/payload\n"
+                  '   echo "%s  /tmp/payload" | sha256sum -c -\n'
+                  "   ;;\n"
+                  " c)\n"
+                  "   chmod +x /tmp/payload\n"
+                  "   ;;\n"
+                  "esac\n") % HEX
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_quoted_multi_word_arm_patterns_still_open_their_own_arms(self):
+        # Round-2 re-review: the arm regex forbade whitespace, so a pattern
+        # written `"a b")` -- one word carrying a space once the quotes are
+        # read -- did not open an arm. With ONE such arm the `case` keyword's
+        # own body still separated it from the next recognised arm; with two,
+        # both bodies shared that region and a check in one cleared a use in
+        # the other.
+        script = ("case $x in\n"
+                  ' "a b")\n'
+                  "   curl -sfL https://example.test/payload -o /tmp/payload\n"
+                  '   echo "%s  /tmp/payload" | sha256sum -c -\n'
+                  "   ;;\n"
+                  ' "c d")\n'
+                  "   chmod +x /tmp/payload\n"
+                  "   ;;\n"
+                  "esac\n") % HEX
+        stmts = shell_reader.statements(script)
+        bodies = workflow_forms.regions(stmts)
+        fetch = next(i for i, st in enumerate(stmts)
+                     if st.stages[0].argv and st.stages[0].argv[0] == "curl")
+        run = next(i for i, st in enumerate(stmts)
+                   if st.stages[0].argv and st.stages[0].argv[0] == "chmod")
+        self.assertNotEqual(bodies.get(fetch), bodies.get(run), bodies)
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_a_check_after_the_esac_still_binds(self):
+        self.assertIsNone(wg.fetch_exec_defect(
+            self.FETCH + "case $x in\n a)\n   :\n   ;;\nesac\n" +
+            self.CHECK + self.EXEC))
+
+    def test_the_message_says_it_was_the_branch(self):
+        why = wg.fetch_exec_defect(
+            self.FETCH + "if true; then\n" + self.CHECK + "fi\n" + self.EXEC)
+        self.assertIn("the checksum that names", why)
+        self.assertIn("branch", why)
+
+    def test_a_branch_in_one_step_does_not_reach_into_the_next(self):
+        # Each step is its own shell invocation, so an unterminated `if` in
+        # step A must not make step B's checksum look conditional.
+        self.assertEqual([], wg.job_defects(
+            [("a", "if true; then :; fi\n"),
+             ("b", self.FETCH + self.CHECK + self.EXEC)]))
 
 
 class TestTheJobIsTheScope(unittest.TestCase):
@@ -693,6 +932,303 @@ class TestAnUnparseableShellIsNotAPass(unittest.TestCase):
                "jobs": {"b": {"defaults": {"run": {"shell": "bash"}},
                               "steps": [{"run": "echo hi", "shell": "sh"}]}}}
         self.assertEqual("sh", wg.run_jobs(doc)[0][1][0].shell)
+
+
+# --- #1697: the documented gap list, as executable pins -----------------------
+# The module docstring names ten forms this guard does not model. A list of
+# fail-open forms written only in prose ROTS: a form that starts being caught
+# keeps its entry, a form that stops being caught gains none, and either way
+# the list stops describing the control. So each of the ten runs here, through
+# `job_defects`, in the smallest step that spells it -- and the assertion is
+# the current answer, whatever that answer is.
+#
+# Every one of them was accepted when this class was written. #1697 then ruled
+# each by REACHABILITY: four were reachable and are CLOSED, so their pin is
+# `flagged`; six keep their entry in the docstring with the reason they keep
+# it, so their pin is `accepted` -- the fail-open state said out loud, where a
+# change that starts catching one has to come and edit it.
+
+
+class TestTheGapsTheGuardDocuments(unittest.TestCase):
+    """#1697: the ten forms the module docstring ruled, each as a live step."""
+
+    def accepted(self, *steps):
+        """The job is clean -- this form goes unseen, and says so out loud."""
+        found = wg.job_defects(list(steps))
+        self.assertEqual([], found, found)
+
+    def flagged(self, *steps):
+        """The form was ruled reachable and the guard now reports it."""
+        found = wg.job_defects(list(steps))
+        self.assertEqual(1, len(found), found)
+        return found[0][1]
+
+    # 1. a fetcher that is not curl/wget.
+    def test_a_fetcher_that_is_not_curl_or_wget(self):
+        for fetch in ("gh release download v1.2.3 -O /tmp/payload\n",
+                      "aws s3 cp s3://bucket/payload /tmp/payload\n"):
+            self.accepted(("get", fetch), ("run", "chmod +x /tmp/payload\n"))
+
+    # 2. variable expansion: the same file under two spellings.
+    def test_a_destination_spelled_one_way_and_used_another(self):
+        self.accepted(("get", 'DEST=/tmp/payload\n'
+                              'curl -sfL https://example.test/p -o "$DEST"\n'),
+                      ("run", "chmod +x /tmp/payload\n/tmp/payload\n"))
+
+    # A subshell written tight: the reader has no paren grammar, so `(curl`
+    # is one word and the fetch at its head is unseen; the spaced spelling is
+    # read. KEPT -- closing it is a grouping model the flat reader lacks.
+    def test_a_fetch_at_the_head_of_a_tight_subshell_is_unseen(self):
+        tight = "(curl -sfL https://example.test/payload -o /tmp/payload || true)\n"
+        self.assertEqual([], wg.fetches(tight))
+        self.accepted(("get", tight), ("run", "chmod +x /tmp/payload\n"))
+
+    def test_the_same_subshell_with_a_space_is_read(self):
+        spaced = "( curl -sfL https://example.test/payload -o /tmp/payload || true )\n"
+        self.assertEqual(1, len(wg.fetches(spaced)), wg.fetches(spaced))
+        self.flagged(("get", spaced), ("run", "chmod +x /tmp/payload\n"))
+
+    # 3. what runs inside a container. CLOSED for the shape the fleet can
+    # reach -- a bind mount and an interpreter operand -- because the reader
+    # already yields that argv. Mounts are NOT modelled: the binding is by
+    # basename, which is the only name the bytes have on the far side.
+    def test_a_container_running_the_download_under_a_shell(self):
+        self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                     ("run", "docker run --rm -v /tmp:/w img bash /w/x.sh\n"))
+
+    def test_a_podman_run_counts_the_same(self):
+        self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                     ("run", "podman run --rm -v /tmp:/w img sh /w/x.sh\n"))
+
+    def test_a_container_running_another_file_is_left_alone(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker run --rm -v /tmp:/w img bash /w/other.sh\n"))
+
+    def test_a_verified_download_may_be_run_in_a_container(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("check", 'echo "%s  /tmp/x.sh" | sha256sum -c -\n' % HEX),
+                      ("run", "docker run --rm -v /tmp:/w img bash /w/x.sh\n"))
+
+    def test_a_docker_build_is_not_a_container_run(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker build -f x.sh .\n"))
+
+    # The three shapes the container entry still names as unread, each one a
+    # pin so the docstring cannot drift from what the code does.
+    def test_a_file_renamed_by_the_mount_is_unread(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker run --rm -v /tmp/x.sh:/w/y.sh img "
+                              "bash /w/y.sh\n"))
+
+    def test_an_argument_the_entrypoint_supplies_is_unread(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker run --rm -v /tmp:/w img\n"))
+
+    def test_what_the_image_runs_on_its_own_is_unread(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker run --rm -v /tmp:/w img /w/x.sh\n"))
+
+    def test_the_fleets_own_container_line_is_still_clean(self):
+        # adapter-integration.yml's shape, which fetches nothing: the scan must
+        # not invent a use out of an `--entrypoint sh` and an image name.
+        self.accepted(("run", 'docker run --rm -v "$PWD:/work:ro" -w /work '
+                              "--entrypoint sh panopticon-fixtures:latest "
+                              '-c "python3 -m pytest tests/tools/ -q"\n'))
+
+    # 4. bytes modified after a passing check.
+    def test_bytes_modified_after_a_passing_check(self):
+        self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                      ("check", 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX),
+                      ("run", "sed -i s/a/b/ /tmp/p\nchmod +x /tmp/p\n/tmp/p\n"))
+
+    # 5. a chmod over a glob -- and over a directory, which is the same act.
+    # CLOSED: ordinary bash, and the fleet writes both spellings
+    # (`chmod -R a+rX odc-data` in nvd-cache.yml, `find ... | xargs` in both
+    # Dockerfiles). A glob names nothing, but it DESIGNATES the download.
+    def test_a_chmod_over_a_glob_is_making_it_executable(self):
+        self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                     ("run", "chmod +x /tmp/d/*.sh\n"))
+
+    def test_a_recursive_chmod_over_the_directory_is_making_it_executable(self):
+        self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                     ("run", "chmod -R +x /tmp/d\n"))
+
+    def test_a_recursive_chmod_over_the_root_is_the_widest_of_all(self):
+        # `os.path.normpath("/")` is `/`, so the prefix test asked whether the
+        # path starts with `//`: the single widest spelling bound nothing.
+        self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                     ("run", "chmod -R +x /\n"))
+
+    def test_a_recursive_chmod_over_the_root_leaves_a_relative_file_alone(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o x.sh\n"),
+                      ("run", "chmod -R +x /\n"))
+
+    def test_a_glob_that_does_not_match_the_download_is_left_alone(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                      ("run", "chmod +x /tmp/d/*.py\n"))
+
+    def test_a_recursive_chmod_over_another_directory_is_left_alone(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                      ("run", "chmod -R +x /tmp/e\n"))
+
+    def test_a_glob_bound_download_can_still_be_cleared(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                      ("check", 'echo "%s  /tmp/d/x.sh" | sha256sum -c -\n' % HEX),
+                      ("run", "chmod +x /tmp/d/*.sh\n"))
+
+    # 6. a fetch inside an `eval` STRING (not a substitution). CLOSED: the
+    # string is shell, and this module reads shell -- the quotes are not a
+    # grammar it lacks, only one it was not looking through.
+    def test_a_fetch_inside_an_eval_string(self):
+        self.flagged(("get", 'eval "curl -sfL https://example.test/p -o /tmp/p"\n'),
+                     ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+
+    def test_a_fetch_inside_a_sh_dash_c_string(self):
+        self.flagged(("get", 'sh -c "curl -sfL https://example.test/p -o /tmp/p"\n'),
+                     ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+
+    def test_a_clustered_c_flag_is_still_a_script(self):
+        # `sh -ec`, `bash -lc`, `bash -euc`: the ordinary CI idiom, not an
+        # obfuscation. A short-option cluster carrying `c` IS `-c`.
+        for opener in ("sh -ec", "bash -lc", "bash -euc", "bash -x -c"):
+            self.flagged(("get", '%s "curl -sfL https://example.test/p '
+                                 '-o /tmp/p"\n' % opener),
+                         ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+
+    def test_a_shell_flag_cluster_without_c_hands_over_no_script(self):
+        self.accepted(("run", 'sh -eu "curl -sfL https://example.test/p '
+                              '-o /tmp/p"\nchmod +x /tmp/p\n'))
+
+    def test_a_fetch_and_its_use_both_inside_the_string(self):
+        self.flagged(("run", 'eval "curl -sfL https://example.test/p -o /tmp/p; '
+                             'chmod +x /tmp/p"\n'))
+
+    def test_a_checksum_inside_the_string_still_clears_it(self):
+        # The expansion keeps the ORDER, so a step hardened inside its own
+        # quoted script is read as hardened rather than as unread.
+        self.accepted(("run", 'sh -c "curl -sfL https://example.test/p -o /tmp/p; '
+                              'echo %s  /tmp/p | sha256sum -c -; '
+                              'chmod +x /tmp/p"\n' % HEX))
+
+    def test_a_pipe_to_a_shell_inside_the_string_is_still_a_pipe_to_a_shell(self):
+        self.flagged(("run", 'eval "curl -sfL https://example.test/i.sh | sh"\n'))
+
+    def test_a_string_that_fetches_nothing_is_left_alone(self):
+        self.accepted(("run", 'sh -c "echo hello; /usr/bin/true"\n'))
+
+    # 7. an executor that reads the file by convention, not by argument.
+    def test_an_executor_that_reads_the_file_by_convention(self):
+        self.accepted(("get", "curl -sfL https://example.test/m -o Makefile\n"),
+                      ("run", "make\n"))
+        self.accepted(("get", "curl -sfL https://example.test/p -o package.json\n"),
+                      ("run", "npm install\n"))
+
+    # 8. a digest computed from the download itself.
+    def test_a_digest_computed_from_the_download_itself(self):
+        self.accepted(
+            ("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+            ("check", 'SHA="$(sha256sum /tmp/p | cut -d\' \' -f1)"\n'
+                      'echo "$SHA  /tmp/p" | sha256sum -c -\n'),
+            ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+
+    def test_a_sums_file_the_step_computed_from_the_download_is_already_caught(self):
+        # The other spelling of the same theatre, and this half is NOT a gap:
+        # the recorded text is `sha256sum /tmp/p`, which carries no digest.
+        found = wg.job_defects(
+            [("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+             ("check", "sha256sum /tmp/p > /tmp/p.sha\nsha256sum -c /tmp/p.sha\n"),
+             ("run", "chmod +x /tmp/p\n")])
+        self.assertEqual(1, len(found), found)
+
+    # 9. `find -exec` and `xargs` operands. CLOSED with 5: the same act, the
+    # operand describing the file instead of naming it.
+    def test_a_find_exec_operand_is_making_it_executable(self):
+        self.flagged(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                     ("run", r"find /tmp -name p -exec chmod +x {} \;" "\n"))
+
+    def test_an_xargs_operand_is_making_it_executable(self):
+        self.flagged(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                     ("run", "echo /tmp/p | xargs chmod +x\n"))
+
+    def test_a_find_piped_into_xargs_is_making_it_executable(self):
+        self.flagged(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                     ("run", "find /tmp -name p | xargs chmod +x\n"))
+
+    def test_a_stage_that_merely_names_xargs_inherits_nothing(self):
+        # `xargs` counts where it stands IN FRONT of the command, which is
+        # where `command()` strips it. A file that happens to be called
+        # `xargs` is an operand, and operands hand nothing over.
+        self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                      ("run", "echo /tmp/p | chmod +x xargs\n"))
+
+    def test_an_option_before_the_starting_point_still_walks_it(self):
+        # `-H`/`-L`/`-P` precede the starting points and are not predicates;
+        # reading one as "no roots" reopens the form.
+        for option in ("-H", "-L", "-P"):
+            self.flagged(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                         ("run", r"find %s /tmp -name p -exec chmod +x {} \;"
+                                 % option + "\n"))
+
+    def test_a_find_with_no_starting_point_walks_the_working_directory(self):
+        # The commonest spelling of all: no root means `.`.
+        self.flagged(("get", "curl -sfL https://example.test/p -o p\n"),
+                     ("run", r"find -name p -exec chmod +x {} \;" "\n"))
+
+    def test_a_find_over_another_tree_is_left_alone(self):
+        self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                      ("run", r"find /opt -name p -exec chmod +x {} \;" "\n"))
+
+    # a heredoc body consumed inside a substitution (added by #1697's review:
+    # it used to CRASH, and now it is read as a word).
+    def test_a_heredoc_body_inside_a_substitution_is_unread(self):
+        self.accepted(("run", 'eval "$(cat <<\'EOF\'\n'
+                              "curl -sfL https://example.test/p -o /tmp/p\n"
+                              "chmod +x /tmp/p\n"
+                              'EOF\n)"\n'))
+
+    # 10. the `if:` comparison, and its YAML twin of `|| true`.
+    def test_a_check_step_carrying_continue_on_error(self):
+        # `continue-on-error: true` is the YAML twin of `|| true`: the step
+        # fails and the job carries on. Read through the document, because the
+        # field is YAML the guard already has in hand.
+        doc = {"jobs": {"b": {"steps": [
+            {"name": "get", "run": "curl -sfL https://example.test/p -o /tmp/p\n"},
+            {"name": "check", "continue-on-error": True,
+             "run": 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX},
+            {"name": "run", "run": "chmod +x /tmp/p\n/tmp/p\n"}]}}}
+        self.flagged(*wg.run_steps(doc))
+
+    def test_a_job_level_continue_on_error_reaches_every_step(self):
+        doc = {"jobs": {"b": {"continue-on-error": True, "steps": [
+            {"name": "get", "run": "curl -sfL https://example.test/p -o /tmp/p\n"},
+            {"name": "check", "run": 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX},
+            {"name": "run", "run": "chmod +x /tmp/p\n/tmp/p\n"}]}}}
+        self.flagged(*wg.run_steps(doc))
+
+    def test_a_check_step_without_it_still_clears_the_fetch(self):
+        doc = {"jobs": {"b": {"steps": [
+            {"name": "get", "run": "curl -sfL https://example.test/p -o /tmp/p\n"},
+            {"name": "check", "continue-on-error": False,
+             "run": 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX},
+            {"name": "run", "run": "chmod +x /tmp/p\n/tmp/p\n"}]}}}
+        self.accepted(*wg.run_steps(doc))
+
+    def test_a_soft_step_still_counts_as_fetching(self):
+        doc = {"jobs": {"b": {"steps": [
+            {"name": "get", "continue-on-error": True,
+             "run": "curl -sfL https://example.test/p -o /tmp/p\n"},
+            {"name": "run", "run": "chmod +x /tmp/p\n/tmp/p\n"}]}}}
+        self.flagged(*wg.run_steps(doc))
+
+    def test_a_condition_compared_as_written_is_assumed_stable(self):
+        # `env.NEED` is rewritten between the two steps, so the SAME text is
+        # not the same answer -- but the guard compares the text.
+        when = "env.NEED == 'yes'"
+        self.accepted(
+            wg.Step("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+            wg.Step("check", 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX, None, when),
+            wg.Step("flip", 'echo "NEED=no" >> "$GITHUB_ENV"\n'),
+            wg.Step("run", "chmod +x /tmp/p\n/tmp/p\n", None, when))
 
 
 class TestRunSteps(unittest.TestCase):
