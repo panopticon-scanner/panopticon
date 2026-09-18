@@ -40,8 +40,10 @@ def resolve(review_root):
 
     `panopticon.yml` wins over `.panopticon.yml`; both present is disclosed.
     A symlink at either name is refused (the file-level counterpart of
-    `plan_contract.artifact_root`'s directory check) and disclosed."""
-    disclosures, found = [], []
+    `plan_contract.artifact_root`'s directory check) and disclosed: if any
+    candidate is a symlink, the result is None even if the other name is a
+    regular file (no both-present disclosure in that case)."""
+    disclosures, found, symlink_seen = [], [], False
     for name in CONFIG_NAMES:
         path = os.path.join(review_root, name)
         try:
@@ -50,9 +52,12 @@ def resolve(review_root):
             continue
         if stat.S_ISLNK(st.st_mode):
             disclosures.append("config path %s is a symlink; refused" % path)
+            symlink_seen = True
             continue
         if stat.S_ISREG(st.st_mode):
             found.append(path)
+    if symlink_seen:
+        return Resolution(None, disclosures)
     if len(found) == 2:
         disclosures.append("both `%s` and `%s` present; using `%s`"
                            % (CONFIG_NAMES[0], CONFIG_NAMES[1], CONFIG_NAMES[0]))
@@ -88,14 +93,14 @@ def read_document(review_root):
     beside a root file is ignored with a disclosure; alone, it is an error."""
     res = resolve(review_root)
     disclosures = list(res.disclosures)
+    stale = stale_config_json(review_root)
+    if stale:
+        disclosures.append(stale)
     if legacy_present(review_root):
         if res.path is None:
             return Document(None, None, [legacy_message(review_root)], disclosures)
         disclosures.append("`%s` is present but no longer read; delete it"
                            % LEGACY_GROUPS_PATH)
-    stale = stale_config_json(review_root)
-    if stale:
-        disclosures.append(stale)
     if res.path is None:
         return Document(None, None, [], disclosures)
     try:

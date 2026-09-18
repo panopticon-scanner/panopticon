@@ -56,6 +56,24 @@ class TestResolve(unittest.TestCase):
             os.makedirs(os.path.join(d, "panopticon.yml"))
             self.assertIsNone(rc.resolve(d).path)
 
+    def test_symlink_at_one_name_beside_a_regular_file_at_the_other_refuses(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = _write(d, "elsewhere.yml", GOOD)
+            os.symlink(real, os.path.join(d, "panopticon.yml"))
+            _write(d, ".panopticon.yml", GOOD)
+            res = rc.resolve(d)
+            self.assertIsNone(res.path)
+            self.assertIn("symlink", res.disclosures[0])
+
+    def test_symlink_at_the_other_name_beside_a_regular_file_also_refuses(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = _write(d, "elsewhere.yml", GOOD)
+            _write(d, "panopticon.yml", GOOD)
+            os.symlink(real, os.path.join(d, ".panopticon.yml"))
+            res = rc.resolve(d)
+            self.assertIsNone(res.path)
+            self.assertIn("symlink", res.disclosures[0])
+
 
 class TestReadDocument(unittest.TestCase):
     def test_good_document(self):
@@ -128,6 +146,15 @@ class TestReadDocument(unittest.TestCase):
             doc = rc.read_document(d)
             self.assertEqual(doc.errors, [])
             self.assertTrue(any("no longer read" in s for s in doc.disclosures))
+
+    def test_legacy_groups_and_stale_config_json_together_are_both_disclosed(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            _write(d, rc.LEGACY_GROUPS_PATH, "groups: {}\n")
+            _write(d, rc.LEGACY_CONFIG_JSON, "{}")
+            doc = rc.read_document(d)
+            self.assertEqual(doc.errors, [rc.legacy_message(d)])
+            self.assertTrue(any("config.json" in s for s in doc.disclosures))
 
     def test_stale_config_json_is_disclosed(self):
         with tempfile.TemporaryDirectory() as d:

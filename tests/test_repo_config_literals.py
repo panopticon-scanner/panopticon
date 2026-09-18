@@ -11,7 +11,7 @@ from conftest import REPO_ROOT
 
 SCRIPTS = os.path.join(REPO_ROOT, "skill", "scripts")
 OWNER = os.path.join(SCRIPTS, "repo_config.py")
-LITERALS = re.compile(r"""(?<![\w./-])(\.?panopticon\.yml(\.draft)?|groups\.yml(\.draft)?|config\.json)(?![\w-])""")
+LITERALS = re.compile(r"""(?<![\w-])(\.?panopticon\.yml(\.draft)?|groups\.yml(\.draft)?|config\.json)(?![\w-])""")
 PENDING = frozenset({
     "phases/runio.py", "driver.py", "discovery.py", "setup_flow.py",
     "phases/setup.py", "orchestrate.py", "diff_map.py", "phases/readiness.py",
@@ -45,3 +45,9 @@ class TestConfigNameLiterals(unittest.TestCase):
     def test_the_owner_spells_them(self):
         with open(OWNER, encoding="utf-8") as fh:
             self.assertTrue(LITERALS.search(fh.read()))
+
+    def test_pattern_matches_path_embedded_spellings(self):
+        self.assertTrue(LITERALS.search(".panopticon/groups.yml"))
+        self.assertTrue(LITERALS.search("root/.panopticon/config.json"))
+        self.assertFalse(LITERALS.search("tools-config.json"))
+        self.assertFalse(LITERALS.search("my-groups.yml"))
