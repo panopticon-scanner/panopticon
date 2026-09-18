@@ -711,13 +711,22 @@ def _shadow_refusal(shadow, manifest):
             "explicitly refuted." % detail)
 
 
-def run(args, runner=subprocess.run, phases=PHASES):
+def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
+    # `resolved` is `runio.resolve_review_root`'s own (review_root, worktree,
+    # pr_base), already computed by a caller that holds it (#1616 item 6, fix
+    # round 1): `orchestrate.loop` calls this once per ITERATION, and on a
+    # `--pr` run every resolution is a `gh pr view` and a worktree
+    # acquisition. Default None keeps the standalone `driver run` entrypoint
+    # resolving exactly as it did -- including its injected `runner`, which is
+    # how the failure path below is tested.
+    #
     # #5.0-14: resolving the review root can fail loudly for a --pr run (gh
     # auth/network, a bad PR number, worktree acquisition) — keep it inside the
     # status protocol instead of letting a raw RuntimeError escape run().
     try:
-        review_root, worktree, pr_base = runio.resolve_review_root(
-            args.target, base=args.base, pr=args.pr, runner=runner)
+        review_root, worktree, pr_base = resolved if resolved is not None else (
+            runio.resolve_review_root(args.target, base=args.base, pr=args.pr,
+                                      runner=runner))
     except (RuntimeError, ValueError, OSError) as exc:
         return runio._error_status("could not resolve review root: %s" % exc)
     if args.pr is not None:

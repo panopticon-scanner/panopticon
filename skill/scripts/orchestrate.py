@@ -210,9 +210,10 @@ def loop(args):
     # resolve failure (a bad --pr, e.g.) is reported the same way driver.run() itself reports it
     # rather than raising out of loop(), which must never raise.
     try:
-        review_root = _review_root(args)
+        resolved = _resolve_target(args)
     except (RuntimeError, ValueError, OSError) as exc:
         return _status("error", "driver loop: could not resolve review root: %s" % exc)
+    review_root = resolved[0]
     # I5 then I8: the mode fallback asks whether THIS host has a runner, so the
     # host has to be resolved first.
     host, _source = runio.resolve_host(
@@ -287,7 +288,7 @@ def loop(args):
         # settings/allowlist/scope paths it resolves depend only on `session_root`, which does not
         # change across a run.
         guards = Guards(mode, session_root=session_root)
-    status = _first_run(args, namespace)
+    status = _first_run(args, namespace, resolved)
     # `--reset` is CONSUMED by that call. `driver.run` reads `args.reset` on every invocation and
     # the loop hands it the same `args` each iteration, so left set it cleared the run folder and
     # re-minted the manifest on every `_run` below: the run restarted at its first checkpoint
@@ -311,7 +312,7 @@ def loop(args):
         # the FRESH request `_first_run` just wrote (Task 6 ruling 3).
         _disarm_previous(guards, prev_req)
     if _after_first_run(review_root):
-        status = _run(args, namespace)                # re-derive after the seam
+        status = _run(args, namespace, resolved)      # re-derive after the seam
     iterations = 0
     # The per-entry failure streaks, and (#1623) the verdict on whether a whole batch was
     # really the HOST going down. `runners.outage.FailureTally` documents and owns both.
@@ -481,7 +482,7 @@ def loop(args):
                 persist.rollback_markers(review_root, req.get("checkpoint"), pending)
                 return _finish(_status("paused", paused), review_root, guards, ledger,
                                namespace, mode, runner)
-            status = _run(args, namespace)
+            status = _run(args, namespace, resolved)
     except KeyboardInterrupt:
         status = _rolled_back(review_root, batch, pending, handled, req, ledger,
                               mode, runner, guards, done, total)
@@ -549,21 +550,23 @@ def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner
                    + ("; rollback incomplete: " + "; ".join(notes) if notes else ""))
 
 
-def _review_root(args):
-    return runio.resolve_review_root(args.target, base=args.base, pr=args.pr)[0]
+def _resolve_target(args):
+    """`(review_root, worktree, pr_base)` -- resolved ONCE per invocation and passed down (#1616 item 6):
+    `driver.run` takes it as `resolved=`, not a `gh pr view` and a worktree acquisition per iteration."""
+    return runio.resolve_review_root(args.target, base=args.base, pr=args.pr)
 
 
-def _run(args, namespace):
+def _run(args, namespace, resolved=None):
     if namespace == "setup":
         import scripts.phases.setup as setup
-        # #1616 item 3: the posture step `driver.run` does on every invocation,
-        # handed in because `phases/*` may not import an entry script.
+        # #1616 item 3: the posture step `driver.run` does on every invocation, handed in
+        # because `phases/*` may not import an entry script (tests/test_layout.py rule 3).
         return setup.run_setup_flow(args, posture=driver._establish_host_posture)
-    return driver.run(args)
+    return driver.run(args, resolved=resolved)
 
 
-def _first_run(args, namespace):
-    return _run(args, namespace)
+def _first_run(args, namespace, resolved=None):
+    return _run(args, namespace, resolved)
 
 
 def _dispatch_exit(review_root, req, pending, namespace):
@@ -597,10 +600,7 @@ def _finish(status, review_root, guards, ledger, namespace, mode="headless", run
     catch-all (round 1, item 3) can land here after a batch already recorded a ledger line but
     before that iteration's own in-loop write_usage ran, and a `complete`-only write would leave
     usage.json stale against the ledger. Wrapped so a failure here can never mask the real status
-    -- it is appended to the message instead. `review_root` is `loop`'s own, resolved once
-    before anything else it does (#1616 item 6; `args` was read for nothing else here):
-    re-deriving it cost a `resolve_review_root` -- a `gh pr view` and a worktree
-    acquisition on a `--pr` run -- per terminal status."""
+    -- it is appended to the message instead. `review_root` is `loop`'s own (#1616 item 6)."""
     # C1 (kimi family PR review): the runner's own terminal hook, on EVERY terminal status, before the
     # guards are touched -- a host whose runner holds a scratch area outside the tree (kimi's per-run
     # KIMI_CODE_HOME, which carries the operator's credential surface and the children's verbatim wire

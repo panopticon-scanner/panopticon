@@ -888,18 +888,20 @@ class TestHeadlessLoop(LoopCase):
             self.assertLessEqual(row["started_at"], row["ts"])
 
     def test_the_review_root_is_resolved_once_for_the_whole_loop(self):
-        # #1616 item 6: `_finish` re-resolved the review root on top of the
-        # resolution `loop` had already done and held. Free on a plain target;
-        # on a `--pr` run resolving means a `gh pr view` and a worktree
-        # acquisition, paid again on every terminal status.
+        # #1616 item 6: once per `driver loop` INVOCATION, counted at the
+        # bottom (`runio.resolve_review_root`) rather than at the seam, because
+        # the loop calls `driver.run` once per ITERATION and that was the
+        # dominant term -- fix round 1, F3, measured 5 on this very run (1 in
+        # `loop`, 4 in `driver.run`). On a `--pr` run each one is a
+        # `gh pr view` plus a worktree acquisition.
         d, floor = self._repo()
-        real, calls = orchestrate._review_root, []
+        real, calls = runio.resolve_review_root, []
 
-        def _spy(args):
-            calls.append(args)
-            return real(args)
+        def _spy(*a, **kw):
+            calls.append((a, kw))
+            return real(*a, **kw)
 
-        with mock.patch.object(orchestrate, "_review_root", side_effect=_spy):
+        with mock.patch.object(runio, "resolve_review_root", side_effect=_spy):
             status = self._run(d, floor, FakeRunner())
         self.assertEqual(status["status"], "complete", status)
         self.assertEqual(len(calls), 1,
