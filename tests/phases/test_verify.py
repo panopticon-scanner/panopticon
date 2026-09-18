@@ -11,6 +11,7 @@ import scripts.phases.runio as runio
 import scripts.phases.requests as requests
 import scripts.phases.review as review
 import scripts.phases.verify as verify
+import scripts.phases.verify_tools as verify_tools
 import scripts.phases.persist as persist
 import scripts.phases.evidence_scope as evidence_scope
 
@@ -122,14 +123,14 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
         # neutralized before it reaches the unconfined advisor; in-tree paths and
         # other location fields pass through untouched.
         root = "/repo"
-        esc = verify._confine_claim_location(
+        esc = verify_tools._confine_claim_location(
             root, {"file": "../../../.ssh/id_rsa", "line_start": 3})
-        self.assertEqual(esc["file"], verify._REDACTED_CLAIM_PATH)
+        self.assertEqual(esc["file"], verify_tools._REDACTED_CLAIM_PATH)
         self.assertEqual(esc["line_start"], 3)                 # siblings preserved
-        keep = verify._confine_claim_location(root, {"file": "src/auth.py", "line_start": 9})
+        keep = verify_tools._confine_claim_location(root, {"file": "src/auth.py", "line_start": 9})
         self.assertEqual(keep["file"], "src/auth.py")
-        self.assertIsNone(verify._confine_claim_location(root, None))   # no location
-        self.assertEqual(verify._confine_claim_location(root, {}), {})  # no file key
+        self.assertIsNone(verify_tools._confine_claim_location(root, None))   # no location
+        self.assertEqual(verify_tools._confine_claim_location(root, {}), {})  # no file key
 
     def test_render_findings_confines_location_in_claims(self):
         # #run8 ARC-F2A: the claims JSON handed to the domain-advisor must carry a
@@ -141,7 +142,7 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
              "location": {"file": "app/db.py", "line_start": 5}},
         ]
         blob = json.loads(verify._render_findings("/repo", cell))
-        self.assertEqual(blob[0]["location"]["file"], verify._REDACTED_CLAIM_PATH)
+        self.assertEqual(blob[0]["location"]["file"], verify_tools._REDACTED_CLAIM_PATH)
         self.assertEqual(blob[1]["location"]["file"], "app/db.py")
 
     def test_tool_verify_entry_confines_finding_location(self):
@@ -150,9 +151,9 @@ class TestVerifyBackupNarrowing(unittest.TestCase):
         finding = {"id": "T-1", "severity": "HIGH",
                    "location": {"file": "../../../root/.ssh/id_rsa", "line_start": 2}}
         with tempfile.TemporaryDirectory() as root:
-            entry = verify._tool_verify_entry(
+            entry = verify_tools._tool_verify_entry(
                 root, {"run_id": "r"}, "q1", finding, "kimi")
-        self.assertIn(verify._REDACTED_CLAIM_PATH, entry["prompt"])
+        self.assertIn(verify_tools._REDACTED_CLAIM_PATH, entry["prompt"])
         self.assertNotIn("id_rsa", entry["prompt"])
 
     def test_verify_entry_carries_the_stamp_keys_persist_checks(self):
@@ -655,7 +656,7 @@ class TestPartialDependencyAuditReachesTheAdvisor(unittest.TestCase):
     def _prompt(self, root, source="tool:pip-audit"):
         finding = {"id": "T-1", "severity": "HIGH", "source": source,
                    "location": {"file": "requirements.txt", "line_start": 1}}
-        return verify._tool_verify_entry(root, {"run_id": "r"}, "q1",
+        return verify_tools._tool_verify_entry(root, {"run_id": "r"}, "q1",
                                          finding, "claude")["prompt"]
 
     def test_a_pip_audit_claim_is_told_the_audit_was_partial(self):

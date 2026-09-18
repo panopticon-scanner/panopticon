@@ -962,7 +962,7 @@ class TestTheOtherFourSitesAlsoRequireEvidence(unittest.TestCase):
     "written identically, so a future change is mechanical." Mechanically
     identical code is not mechanically identical TEST COVERAGE: reverting any
     one of `review._cell_entry`, `verify._verify_entry`,
-    `verify._tool_verify_entry` or `requests._driver_plan_entries` back to
+    `verify_tools._tool_verify_entry` or `requests._driver_plan_entries` back to
     `hosts.declares()` alone -- confirmed by hand during verification, then
     reverted -- left the full suite green, because
     `TestTheThreeCapabilitiesAreNotInterchangeable` (test_host_posture_wiring.py)
@@ -997,9 +997,9 @@ class TestTheOtherFourSitesAlsoRequireEvidence(unittest.TestCase):
             self.assertIsNone(entry["agent"])
 
     def test_tool_verify_entry_is_not_enforced_without_evidence(self):
-        from scripts.phases import verify
+        from scripts.phases import verify_tools
         with tempfile.TemporaryDirectory() as review_root:
-            entry = verify._tool_verify_entry(
+            entry = verify_tools._tool_verify_entry(
                 review_root, self._manifest(), "q1",
                 {"id": "T-1", "severity": "HIGH"}, "claude")
             self.assertFalse(entry["enforced"])

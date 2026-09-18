@@ -17,6 +17,7 @@ import scripts.phases.coverage as coverage
 import scripts.phases.review as review
 import scripts.phases.setup as setup
 import scripts.phases.verify as verify_phase
+import scripts.phases.verify_tools as verify_tools_phase
 import scripts.read_guard_hook as rg
 from scripts import read_guard_hook
 
@@ -905,7 +906,7 @@ class TestEntryIdsMatchTheSpecIdGrammar(unittest.TestCase):
             "verify": verify_phase._verify_entry(
                 self.root, self.manifest, "Auth", "SEC", self.files, self.cell, "claude",
                 self.bundle, "primary"),
-            "tool-verify": verify_phase._tool_verify_entry(
+            "tool-verify": verify_tools_phase._tool_verify_entry(
                 self.root, self.manifest, "q1",
                 {"id": "T-1", "severity": "HIGH",
                  "location": {"file": "a.py", "line_start": 1}}, "claude"),
