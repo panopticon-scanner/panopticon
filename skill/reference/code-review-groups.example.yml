@@ -31,8 +31,9 @@ groups:
         - "tests/products/**"
       panels: [COD, DAT]
       exclude: [LNG]             # drops domains for THIS group only
-# Pruned BEFORE grouping, so these files reach no review cell of any domain
-# and no tool scan — the right lever for a deliberately-vulnerable corpus.
+# Pruned BEFORE grouping, so these files reach no review cell of any domain --
+# the right lever for a deliberately-vulnerable corpus. It prunes discovery
+# only; tool findings are dropped with synthesize.py's --tools-exclude.
 exclude_paths:
   - "tests/fixtures/**"
 # Size policy. CLI flags win over these; these win over the defaults.

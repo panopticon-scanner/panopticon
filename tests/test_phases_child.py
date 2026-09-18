@@ -1,7 +1,7 @@
 """Tests for scripts.phases.child: the driver's phase children.
 
 Split out of tests/phases/test_runio.py with the module itself. It lives HERE
-rather than under tests/phases/ because `.panopticon/groups.yml` claims
+rather than under tests/phases/ because this repo's root config claims
 `skill/scripts/phases/child.py` under `Orchestration:Core` -- `Phases` is full
 at 48/48 -- and a cell's test inventory is built from the claiming group's
 `tests:` axis, so the tests have to sit where that group can claim them (#1638

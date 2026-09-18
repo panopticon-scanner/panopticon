@@ -17,7 +17,7 @@ import yaml
 
 import coverage_model
 import groups_schema
-import repo_config  # noqa: E402
+import repo_config
 
 # 5.2: names the engine mints itself -- the Tests sweep, the Commons fold, the
 # residual sink, and the residual LAYER. A catalog entry or alias carrying one

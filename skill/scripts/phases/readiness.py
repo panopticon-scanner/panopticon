@@ -234,7 +234,7 @@ NOT_MEASURED = "not measured — first `driver run` probes"
 # fallback); only the whole-repo scope degrades to `._N` chunking. The verb
 # shares no scope flag -- deliberately -- so it reports the whole-repo answer
 # and says which scopes that answer does not apply to.
-NO_GROUPS = ("no %s -- run `driver setup`; a whole-repo review needs it, "
+NO_GROUPS = ("no %s — run `driver setup`; a whole-repo review needs it, "
              "the -f / -d / -g / --pr scopes do not (this verb takes no scope "
              "flag, so it reports the whole-repo answer)" % repo_config.CONFIG_NAMES[0])
 

@@ -1,7 +1,7 @@
 """#1681 Plan 1 ratchet: only `repo_config.py` may spell a config filename.
 
-`PENDING` is empty: every production module resolves the name through
-`repo_config`. A NEW literal anywhere else fails immediately."""
+`PENDING` is empty: no production module outside `repo_config.py` spells one.
+A NEW literal anywhere else fails immediately."""
 import os
 import re
 import unittest

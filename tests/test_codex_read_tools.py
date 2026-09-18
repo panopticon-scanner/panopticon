@@ -543,9 +543,9 @@ def test_the_exclusion_list_matches_the_one_discovery_prunes():
     # discovery's `git ls-files --exclude-standard` surface does; these two
     # names are how it reaches the same answer. What actually keeps discovery
     # off them is `_filter_reviewable`'s dot-dir prune, which holds whatever
-    # git reports: since #1638 P06 the tracked `.panopticon/groups.yml` IS
-    # listed by `git ls-files`, and `discover_repo_files` still returns zero
-    # `.panopticon/` entries. The .gitignore assertion below stays as the
+    # git reports: nothing under `.panopticon/` is tracked any more except the
+    # scratch ledger, and `discover_repo_files` returns zero `.panopticon/`
+    # entries either way. The .gitignore assertion below stays as the
     # second half of the parity -- both names remain ignored for the tools that
     # do read it, so the broker's hard-coded pair cannot drift unnoticed.
     gitignore_parity = {".panopticon", ".worktrees"}

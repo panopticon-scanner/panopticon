@@ -77,8 +77,8 @@ def legacy_message(review_root):
 def stale_config_json(review_root):
     """The disclosure for a retired `.panopticon/config.json`, or None."""
     if os.path.isfile(os.path.join(review_root, LEGACY_CONFIG_JSON)):
-        return ("`%s` is no longer read; its keys live under `settings:` in `%s`"
-                % (LEGACY_CONFIG_JSON, CONFIG_NAMES[0]))
+        return ("`%s` is no longer read by the driver; its keys live under "
+                "`settings:` in `%s`" % (LEGACY_CONFIG_JSON, CONFIG_NAMES[0]))
     return None
 
 
