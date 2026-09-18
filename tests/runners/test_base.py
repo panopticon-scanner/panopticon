@@ -160,6 +160,116 @@ class TestIterBatch(unittest.TestCase):
                 self.assertNotIn("run_batch", vars(runner), name)
 
 
+class TestTheCooperativeStop(unittest.TestCase):
+    """#1721: a host outage that begins mid-batch had to drain the WHOLE
+    checkpoint before the loop could ask whether the host was down -- 78 review
+    cells at one launch each, every one of them charged at dispatch. `stop` is
+    the seam that lets the consumer say "no more": what is still QUEUED is
+    cancelled, what is already IN FLIGHT is drained and yielded exactly as
+    usual, and no child is terminated (that is the interrupt path -- an
+    in-flight launch during an outage fails fast on its own)."""
+
+    def _runner(self, seen):
+        """A runner whose first two entries are fast, and whose entry `ei`
+        (i >= 2) does not come back until the consumer has handled `i` results.
+
+        That chain is what makes the launch bound a FACT rather than a race.
+        Two workers answering instantly outrun a consumer that does real work
+        per result, so a fixture that merely released everything at the moment
+        `stop` fires leaves a window in which both workers pull another entry
+        before the cancel lands. Here the pool is pinned to the consumer's own
+        progress: at the moment `stop` returns true the consumer has handled 2,
+        so `e2` may be free but `e3` (which waits for 3) cannot be, and at most
+        one further entry can start. The chain always makes progress -- `ei`
+        waits on results that arrive from entries launched before it -- so it
+        cannot deadlock, and every wait is deadlined.
+        """
+        launched, terminated = [], []
+
+        def await_consumer(n):
+            deadline = time.monotonic() + 10
+            while len(seen) < n:
+                if time.monotonic() > deadline:
+                    raise AssertionError("the consumer never handled %d results" % n)
+                time.sleep(0.002)
+
+        class Stopping(base.HostRunner):
+            host = "fake"; mode = "headless"; default_concurrency = 2
+
+            def run_entry(self, entry, env):
+                launched.append(entry["id"])
+                index = int(entry["id"][1:])
+                if index >= 2:
+                    await_consumer(index)
+                return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                      cost_usd=None, model=None, session_id=None,
+                                      denials=[], error=None)
+
+            def terminate_children(self, grace=None):
+                terminated.append(grace)
+                return []
+
+        return Stopping(), launched, terminated
+
+    def _drain(self, runner, seen, entries, **kw):
+        with contextlib.closing(runner.iter_batch(entries, 2, lambda e: {}, **kw)) as stream:
+            for entry, _result, _timing in stream:
+                seen.append(entry["id"])
+
+    def test_a_stop_that_says_yes_cancels_what_is_still_queued(self):
+        seen, calls = [], []
+        runner, launched, terminated = self._runner(seen)
+
+        def stop():
+            calls.append(len(seen))
+            return len(seen) >= 2
+
+        self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)], stop=stop)
+        self.assertLess(len(launched), 8, launched)
+        # 2 handled + the pool: `e2`/`e3` were already running and at most one
+        # worker can turn over between the second result and the cancel
+        self.assertLessEqual(len(launched), 5, launched)
+        # every entry that really launched came back to the consumer -- the
+        # in-flight ones included -- and nothing cancelled was yielded
+        self.assertEqual(sorted(launched), sorted(seen))
+        self.assertEqual([], terminated, "an outage is not the interrupt path")
+        # asked once per yield at most, and never before the first result
+        self.assertLessEqual(len(calls), len(seen))
+        self.assertTrue(calls and calls[0] >= 1)
+
+    def test_a_stop_that_raises_is_not_the_interrupt_path(self):
+        # A consumer's predicate is not a Ctrl-C. Unwrapped it fell into the
+        # `except BaseException` arm, which terminates this batch's children --
+        # the one thing the stop path promises never to do -- and re-raised
+        # into the loop. It means "carry on".
+        seen = []
+        runner, launched, terminated = self._runner(seen)
+
+        def stop():
+            raise RuntimeError("the tally blew up")
+
+        self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)], stop=stop)
+        self.assertEqual(8, len(launched), launched)
+        self.assertEqual(sorted(seen), sorted(launched))
+        self.assertEqual([], terminated, "a raising stop terminated the children")
+
+    def test_no_stop_at_all_launches_the_whole_batch(self):
+        seen = []
+        runner, launched, terminated = self._runner(seen)
+        self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)])
+        self.assertEqual(8, len(launched), launched)
+        self.assertEqual(sorted(seen), sorted(launched))
+        self.assertEqual([], terminated)
+
+    def test_a_stop_that_stays_false_launches_the_whole_batch(self):
+        seen = []
+        runner, launched, _terminated = self._runner(seen)
+        self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)],
+                    stop=lambda: False)
+        self.assertEqual(8, len(launched), launched)
+        self.assertEqual(sorted(seen), sorted(launched))
+
+
 class TestRunnerFor(unittest.TestCase):
     def test_session_mode_is_always_available(self):
         r = base.runner_for("gemini", "session")

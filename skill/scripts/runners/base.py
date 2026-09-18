@@ -309,7 +309,7 @@ class HostRunner:
                     pass
         return children
 
-    def iter_batch(self, entries, concurrency, env_for):
+    def iter_batch(self, entries, concurrency, env_for, stop=None):
         """Run every entry through run_entry on a thread pool, yielding
         `(entry, result, timing)` in COMPLETION order; an exception becomes
         RunResult.failed. `timing` is
@@ -354,6 +354,25 @@ class HostRunner:
         Callers that may abandon the generator mid-batch should close it
         deterministically (`contextlib.closing`) rather than leave the
         cancellation to garbage collection.
+
+        #1721 -- `stop` is the COOPERATIVE version of that cancel, for the one
+        thing the consumer knows and this seam cannot: the host has gone down,
+        so launching the rest of the batch is 78 more launches at ~3 s each,
+        each of them charged, before anyone can ask the question. It is
+        evaluated once after each yield returns -- never before the first
+        result -- and when it is true every work item still QUEUED is
+        cancelled, exactly as the interrupt cancels it. Then the difference:
+        the entries already IN FLIGHT are drained, yielded and persisted as
+        usual, and NO child is terminated. An outage is not an interrupt; a
+        launch in flight during one fails fast on its own, and killing it
+        would throw away a reply that may still land.
+
+        The bound on launches after `stop` says yes is the same pool width as
+        above: up to `width` entries were already running when the answer came
+        back, and those are the ones drained. Cancelled futures are skipped,
+        never `.result()`-ed. A `stop` that RAISES is read as "carry on": it is
+        the consumer's own predicate, not an interrupt, and letting it reach
+        the arm below would terminate this batch's children.
         """
         entries = list(entries)
         if not entries:
@@ -378,8 +397,31 @@ class HostRunner:
         futures, stopped = [], False
         try:
             futures = [pool.submit(one, e) for e in entries]
+            yielded, asked = set(), False
             for f in concurrent.futures.as_completed(futures):
+                yielded.add(f)
                 yield f.result()
+                try:
+                    asked = stop is not None and bool(stop())
+                except Exception:      # noqa: BLE001 -- the consumer's own predicate, and
+                    # a broken one means "carry on". Unwrapped it fell into the arm
+                    # below, which terminates this batch's children -- the one thing
+                    # the stop path promises never to do -- and re-raised into the loop.
+                    asked = False
+                if asked:
+                    break
+            if asked:
+                # The cancel has to come first and the SURVIVORS be listed after
+                # it: `shutdown(cancel_futures=True)` leaves a dropped work item
+                # CANCELLED but never notified (nothing ever calls
+                # `set_running_or_notify_cancel` on it), and `as_completed` waits
+                # on such a future for ever. So the second pass is built from what
+                # is left once the queue is provably drained -- the futures still
+                # running, plus any that finished while the consumer was deciding.
+                pool.shutdown(wait=False, cancel_futures=True)
+                for f in concurrent.futures.as_completed(
+                        [x for x in futures if x not in yielded and not x.cancelled()]):
+                    yield f.result()
         except BaseException:      # noqa: BLE001 -- KeyboardInterrupt and GeneratorExit both
             stopped = True
             pool.shutdown(wait=False, cancel_futures=True)

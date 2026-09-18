@@ -216,7 +216,8 @@ def classify_failure(host_error):
     #1623 cost: an outage charged to the cells. A false positive stops a run
     that could have retried AND takes the per-entry cap off that entry, which
     is why the surface is narrowed at the family, anchored here, and acted on
-    by the loop only when EVERY failure in a batch says the same thing.
+    by the loop only when a batch ENDS in a run of them (#1721) -- one of
+    these on its own, with a later launch answering cleanly, decides nothing.
     """
     host_error = _as_object(host_error)
     text = _surface(host_error)
@@ -263,8 +264,8 @@ HOST_OUTAGE_CLAUSE = ("no entry's attempt budget was charged and the failed laun
                       "the loop resumes this run where it stopped")
 HOST_OUTAGE = ("paused: the %s host failed %d of this batch's %d launches with a %s-class "
                "failure (auth, quota, a rate limit, or the provider itself) rather than an "
-               "entry-class one; last: %s; " + HOST_OUTAGE_CLAUSE + ", with the same flags, "
-               "once the host is back: `%s`")
+               "entry-class one, and %d of its entries were never launched; last: %s; "
+               + HOST_OUTAGE_CLAUSE + ", with the same flags, once the host is back: `%s`")
 # The flags a resume has to carry, in the order the parser declares them:
 # (attribute, flag, kind). `value` prints the flag and its value, `flag` prints
 # itself when set, `list` prints every value it holds.
@@ -343,8 +344,28 @@ class FailureTally:
     evidence run were a single 403, and charging each of them the moment it
     arrived is what spent every pending cell's budget on an outage and ended
     the run `complete` with an empty review axis. So a batch is charged when it
-    CLOSES (`settle`), by which time the loop knows whether every failure in it
-    said the same thing.
+    CLOSES (`settle`), by which time the loop knows what the batch as a whole
+    said.
+
+    #1721 replaced the all-or-nothing reading of that with a TRAILING RUN.
+    "Every failure was the host's" made one entry-class failure anywhere in a
+    batch -- a masked 403, a schema refusal, a timeout -- cancel a real outage
+    outright: no pause, no attempt given back, all 78 cells charged. So what is
+    tracked instead is the run of host-class failures the batch is CURRENTLY
+    in, by LAUNCH ORDER (`seq`, the entry's index in the batch's pending list;
+    the pool is FIFO):
+
+    * a host-class failure opens the run if none is open, and extends it;
+    * a success LAUNCHED AFTER the run opened says the host is back and closes
+      it -- but one launched before it merely landed late, and decides nothing;
+    * an entry-class failure neither opens, extends nor closes it. During an
+      outage it is still the entry's own failure, and is still charged.
+
+    Two readings come off that run. `outage(width)` is the live one the loop
+    passes to `iter_batch` as its `stop`: enough corroboration to stop
+    LAUNCHING, which is two failures or a whole pool round, whichever is
+    larger. `settle` is the terminal one: the batch ended inside a run, so the
+    run pauses.
 
     It lives beside the classifier rather than in orchestrate.py so that the
     classification and every decision read off it have one owner -- and because
@@ -361,27 +382,87 @@ class FailureTally:
         self.streaks = {}        # entry id -> consecutive CHARGED failures
         self.last_error = {}     # entry id -> that entry's last failure message
         self._batch = []         # (entry id, message, class or None) for the open batch
+        # #1721, per batch: the launch order (`seq`) of the first host-class
+        # failure of the run the batch is currently in, None when no run is
+        # open, and how many host-class failures that run holds.
+        self._outage_seq, self._trailing = None, 0
+        # The batch's host-class entry ids, as of the last `settle`: the loop
+        # gives each of them its per-dispatch attempt marker back.
+        self.uncharged = []
+        # How many host-class failures the run held when `outage` first said
+        # stop, or None. Read by the loop's "stopped launching after N" line,
+        # and NOT the same as `_trailing` by then: a success drained after the
+        # stop can have closed the run and reset it to zero.
+        self.stopped_at = None
 
-    def record(self, entry_id, result, refusal=None):
-        """One landed entry: `result` as the runner returned it, and `refusal`
-        the loop's own persist refusal -- which is panopticon's verdict on a
-        launch that DID come back, so it is always the entry's own failure
-        whatever the host would have said about it."""
+    def record(self, entry_id, result, refusal=None, seq=None):
+        """One landed entry: `result` as the runner returned it, `refusal` the
+        loop's own persist refusal -- which is panopticon's verdict on a launch
+        that DID come back, so it is always the entry's own failure whatever
+        the host would have said about it -- and `seq` this entry's LAUNCH
+        order in the batch (#1721), which is what tells a success that proves
+        the host is back from one that was merely in flight when it went
+        down."""
         if refusal is not None:
-            self._batch.append((entry_id, refusal, ENTRY_FAILURE))
+            failure = (entry_id, refusal, ENTRY_FAILURE)
         elif getattr(result, "ok", False):
-            self._batch.append((entry_id, None, None))
+            failure = (entry_id, None, None)
         else:
-            self._batch.append((entry_id, getattr(result, "error", None),
-                                getattr(result, "failure_class", None) or ENTRY_FAILURE))
+            failure = (entry_id, getattr(result, "error", None),
+                       getattr(result, "failure_class", None) or ENTRY_FAILURE)
+        self._batch.append(failure)
+        self._track(failure[2], seq)
 
-    def settle(self):
+    def _track(self, cls, seq):
+        """Open, extend or close the trailing run of host-class failures.
+
+        A run is open while `_trailing` is non-zero; `_outage_seq` may still be
+        None there (a caller that passes no `seq` at all), and a success can
+        then prove nothing about ordering, so it is ignored exactly as one from
+        before the run is.
+        """
+        if cls == HOST_FAILURE:
+            if not self._trailing:
+                self._outage_seq = seq
+            self._trailing += 1
+        elif (cls is None and self._trailing and seq is not None
+                and self._outage_seq is not None and seq > self._outage_seq):
+            self._outage_seq, self._trailing = None, 0      # the host is back
+
+    def outage(self, width=1):
+        """Whether the batch is far enough into a run of host-class failures to
+        stop LAUNCHING -- the predicate the loop hands `iter_batch` as its
+        `stop` (#1721).
+
+        Two, or a whole pool round when the pool is wider. Two because one
+        host-class failure is a classification, not a verdict, and the cost of
+        being wrong is a run stopped that could have carried on; a full round
+        because at width `w` the first `w` results are all from launches that
+        overlapped, so anything less would fire on a single moment's worth of
+        evidence however wide the pool.
+
+        The count at the FIRST yes is kept in `stopped_at` for the loop's own
+        line: by the time the batch has drained, a later success may have
+        closed the run, and "stopped launching after 0" says nothing.
+        """
+        if self._trailing < max(2, int(width or 1)):
+            return False
+        if self.stopped_at is None:
+            self.stopped_at = self._trailing
+        return True
+
+    def settle(self, unlaunched=0):
         """Close the batch: charge what it really proved, and return the
-        operator's `paused` message when the whole of it was the host (else
-        None). Called once per batch, whatever the outcome -- it is the charge,
-        not just the verdict."""
+        operator's `paused` message when the batch ENDED inside a run of
+        host-class failures (else None). Called once per batch, whatever the
+        outcome -- it is the charge, not just the verdict. `unlaunched` is how
+        many of the batch's entries the short-circuit never launched, which the
+        message names because they are neither done nor charged."""
         batch, self._batch = self._batch, []
-        failures = [(eid, err, cls) for eid, err, cls in batch if cls is not None]
+        trailing, self._trailing, self._outage_seq = self._trailing, 0, None
+        self.stopped_at = None
+        host = [(eid, err) for eid, err, cls in batch if cls == HOST_FAILURE]
+        self.uncharged = [eid for eid, _err in host]
         for eid, err, cls in batch:
             if cls is None:
                 self.streaks.pop(eid, None)          # a clean launch clears the streak
@@ -389,14 +470,14 @@ class FailureTally:
             self.last_error[eid] = err
             if cls == ENTRY_FAILURE:
                 self.streaks[eid] = self.streaks.get(eid, 0) + 1
-        if not failures or any(cls != HOST_FAILURE for _eid, _err, cls in failures):
+        if not trailing:
             return None
         # M3/item 24: the host's own words reach an operator's terminal and
         # whatever collects it, and the one message whose PURPOSE is to surface
         # an auth failure is the likeliest of all of them to be carrying a
         # credential ("Incorrect API key provided: sk-ant-...").
-        return HOST_OUTAGE % (self.host, len(failures), len(batch), HOST_FAILURE,
-                              redact.redact(failures[-1][1]), self.resume_command())
+        return HOST_OUTAGE % (self.host, len(host), len(batch), HOST_FAILURE,
+                              unlaunched, redact.redact(host[-1][1]), self.resume_command())
 
     def exhausted(self, pending, cap):
         """The `error` message for the first pending entry that has spent `cap`
