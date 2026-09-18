@@ -187,8 +187,18 @@ class LoopCase(unittest.TestCase):
         write_host_evidence(d, _ALL_PROVEN)
         runio._write_json(runio._pano(d, "groups.json"),
                           {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+        # #1681: `panopticon.yml` is a committed ROOT file now, so it is an
+        # ordinary repo file discovery sees. Excluded here so this fixture keeps
+        # its one-group/one-file shape (the loop's entry ids are pinned).
+        matrix = ("groups:\n  app:\n    match: ['src/**']\n"
+                  "exclude_paths: ['panopticon.yml']\n")
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n" + matrix)
+        # INTERIM (#1681 Task 4): the loop re-runs the REAL discovery.py
+        # --repo-scan, which still reads the legacy matrix file. Delete with
+        # its readers.
         with open(runio._pano(d, "groups.yml"), "w") as fh:
-            fh.write("groups:\n  app:\n    match: ['src/**']\n")
+            fh.write(matrix)
         return d, list(floor)
 
     def _args(self, d, *extra):

@@ -770,7 +770,9 @@ class TestBothFileListingsAgree(_VerbCase):
         d = self._git_repo(groups_yml=GROUPS_YML)
         _code, walked = self._json(d, which=READY_CLI)
         _code, listed = self._json(d, which=READY_CLI, path=self._git_only_path())
-        self.assertEqual({"groups": 2, "code_files": 2, "tests_files": 1},
+        # 3 code files, not 2: #1681 moved the config to a committed ROOT
+        # `panopticon.yml`, so it is an ordinary repo file both listings see.
+        self.assertEqual({"groups": 2, "code_files": 3, "tests_files": 1},
                          {k: walked["matrix"][k]
                           for k in ("groups", "code_files", "tests_files")})
         self.assertEqual(walked["matrix"], listed["matrix"])

@@ -19,7 +19,8 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.manifest = {"run_id": "R", "security_mode": "standard"}
 
     def _write_groups_yml(self, body):
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write(body)
 
     def test_missing_groups_yml_raises(self):
@@ -269,7 +270,8 @@ class TestMalformedProducerOutput(unittest.TestCase):
         self.root = os.path.realpath(self._t.name)
         os.makedirs(os.path.join(self.root, ".panopticon"))
         self.addCleanup(self._t.cleanup)
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         self.manifest = {"run_id": "R", "security_mode": "standard"}
 

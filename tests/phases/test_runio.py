@@ -189,32 +189,75 @@ class TestRedactOutput(unittest.TestCase):
 
 class TestCommittedGroupsFailLoud(unittest.TestCase):
     """#1091/#1092: on a RESUME (groups.json present -> discovery done, so its
-    own load_committed_groups gate never re-runs) a missing or corrupt groups.yml
-    must fail loud in coverage/review, not silently drop the committed floor/tests."""
+    own load_committed_groups gate never re-runs) a missing or corrupt root
+    config must fail loud in coverage/review, not silently drop the committed
+    floor/tests."""
 
-    def _root(self, groups_yml=None):
+    def _root(self, config=None):
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         os.makedirs(runio._pano(d))
         runio._write_json(runio._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["a.py"]}]})
-        if groups_yml is not None:
-            with open(runio._pano(d, "groups.yml"), "w") as fh:
-                fh.write(groups_yml)
+        if config is not None:
+            with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+                fh.write("version: 1\n" + config)
         return d
 
-    def test_coverage_raises_on_missing_groups_yml(self):
-        d = self._root(groups_yml=None)   # groups.yml gone after discovery
+    def test_coverage_raises_on_missing_config(self):
+        d = self._root(config=None)   # config gone after discovery
         m = {"run_id": "R", "host": "claude", "security_mode": "standard"}
         with self.assertRaises(runio.DriverError):
             coverage.coverage_execute(d, m)
 
-    def test_review_raises_on_corrupt_groups_yml(self):
-        d = self._root(groups_yml="groups: [broken\n")   # invalid YAML shape
+    def test_review_raises_on_corrupt_config(self):
+        d = self._root(config="groups: [broken\n")   # invalid YAML shape
         m = {"run_id": "R", "host": "claude", "security_mode": "standard"}
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
             with self.assertRaises(runio.DriverError):
                 review.review_execute(d, m)
+
+
+class TestCommittedRootConfig(unittest.TestCase):
+    """#1681 Plan 1: the committed matrix and its grain knobs come from the ROOT
+    `panopticon.yml` through repo_config -- never from `.panopticon/`, which is
+    run artifacts only, and with no fallback to the retired legacy names."""
+
+    def test_load_committed_groups_reads_the_root_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  App:\n    match: ['src/**']\n")
+            groups, errors = runio.load_committed_groups(d)
+            self.assertEqual(errors, [])
+            self.assertIn("App", groups)
+
+    def test_load_committed_groups_refuses_a_legacy_file_with_the_remedy(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
+                fh.write("groups:\n  App:\n    match: ['src/**']\n")
+            groups, errors = runio.load_committed_groups(d)
+            self.assertEqual(groups, {})
+            self.assertIn("migrate-config", errors[0])
+
+    def test_load_committed_groups_without_version_is_authored_but_invalid(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("groups:\n  App:\n    match: ['src/**']\n")
+            groups, errors = runio.load_committed_groups(d)
+            self.assertEqual(groups, {})
+            self.assertIn("version: 1", errors[0])
+
+    def test_committed_settings_come_from_the_root_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  max_verify: 7\n")
+            self.assertEqual(runio.committed_settings(d)["max_verify"], 7)
+            self.assertIsNone(runio.committed_settings(d)["max_per_group"])
+
+    def test_retired_names_are_no_longer_top_level_artifacts(self):
+        for name in ("groups.yml", "groups.yml.draft", "config.json"):
+            self.assertNotIn(name, runio._TOP_LEVEL)
 
 class TestFileListInjectionSafety(unittest.TestCase):
     """#1190 AGT-A1A: the reviewer file list is a newline-joined bullet list,
@@ -417,7 +460,7 @@ class TestPerRunFolders(unittest.TestCase):
     def test_pano_keeps_anchors_and_reports_top_level(self):
         d, _ = self._repo()
         base = os.path.join(d, ".panopticon")
-        for name in ("config.json", "groups.yml", "run-manifest.json",
+        for name in ("run-manifest.json",
                      "setup-manifest.json", "epss-cache.json",
                      "report.json", "report.json.html", "write-allowlist.json"):
             self.assertEqual(runio._pano(d, name), os.path.join(base, name), name)

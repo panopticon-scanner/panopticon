@@ -416,7 +416,8 @@ class TestTheEntryVariesWithTheHostOnlyWhereF4SaysItDoes(unittest.TestCase):
         os.makedirs(runio._pano(self.root))
         runio._write_json(runio._pano(self.root, "groups.json"),
                            {"groups": [{"name": "Auth", "files": ["a.py"]}]})
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  Auth:\n    match: ['a.py']\n")
         runio._write_json(runio._pano(self.root, "coverage-Auth.json"),
                            {"group": "Auth", "effective": ["SEC", "DAT"], "run_id": "R"})

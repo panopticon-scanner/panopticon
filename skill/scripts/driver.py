@@ -89,7 +89,7 @@ PHASES = (
 )
 
 
-def _cli_flags(args):
+def _cli_flags(args, review_root=None):
     if getattr(args, "tools", False) and getattr(args, "no_tools", False):
         raise ValueError("cannot specify both --tools and --no-tools")
     # not `tools`: that name is bound to scripts.phases.tools at module scope,
@@ -97,15 +97,23 @@ def _cli_flags(args):
     # function an UnboundLocalError.
     tools_flag = False if getattr(args, "no_tools", False) else (
         True if getattr(args, "tools", False) else None)
+    # #1681 Plan 1: the grain knobs resolve CLI > `settings:` in the root
+    # config. The manifest's anti-drift keys compare EFFECTIVE values, which is
+    # what this records -- a config edit mid-run drifts exactly like a flag edit.
+    settings = runio.committed_settings(review_root) if review_root else {}
     values = {"fail_on": getattr(args, "fail_on", None),
               "severity": getattr(args, "severity", None),
               "gate_scope": getattr(args, "gate_scope", None),
               "diff_context": getattr(args, "diff_context", None),
               "tools": tools_flag,
               "include_fixtures": True if getattr(args, "include_fixtures", False) else None,
-              "max_per_group": getattr(args, "max_per_group", None),
+              "max_per_group": getattr(args, "max_per_group", None)
+                               if getattr(args, "max_per_group", None) is not None
+                               else settings.get("max_per_group"),
               "allow_unenforced": True if getattr(args, "allow_unenforced", False) else None,
-              "max_verify": getattr(args, "max_verify", None)}
+              "max_verify": getattr(args, "max_verify", None)
+                            if getattr(args, "max_verify", None) is not None
+                            else settings.get("max_verify")}
     return {k: values.get(k) for k in run_manifest._FLAG_KEYS}
 
 
@@ -131,8 +139,9 @@ def _clear_run_artifacts(review_root):
     """--reset: clear the current run's working folder (findings / verdicts /
     coverage / scouts / dispatch / ...) so a fresh run starts, while KEEPING the
     durable top-level tag-named report — reset reclaims the scratch, not the
-    deliverable (§5.1). NEVER touches groups.yml (the committed matrix) or another
-    run's folder/report. MUST run BEFORE the manifest is removed, so the tag still
+    deliverable (§5.1). NEVER touches the committed root config — since #1681
+    the matrix lives outside `.panopticon/` entirely — or another run's
+    folder/report. MUST run BEFORE the manifest is removed, so the tag still
     resolves; with no/corrupt manifest it degrades to the legacy flat sweep."""
     base = os.path.join(review_root, ".panopticon")
     tag = runio._run_tag(review_root)
@@ -281,8 +290,8 @@ def build_parser():
                     choices=list(hosts.driver_hosts()))
     sp.add_argument("--reset", action="store_true")
     # 5.2 size policy (spec §5.3): files per dispatch unit and the leaf
-    # ceiling. Unset = .panopticon/config.json (max_per_group / max_groups),
-    # else the defaults (48; max(4, 2 x ceil(code_files / cap))).
+    # ceiling. Unset = `settings:` in the root config (max_per_group /
+    # max_groups), else the defaults (48; max(4, 2 x ceil(code_files / cap))).
     sp.add_argument("--max-per-group", type=_positive_int, default=None)
     sp.add_argument("--max-groups", type=_positive_int, default=None)
     # #1637 P10: the read-only preflight. It shares `run`/`loop`'s `target` and
@@ -782,11 +791,12 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
             target=args.target, review_root=review_root,
             host=args.host or runio._DEFAULTS["host"],
             security_mode=args.security or runio._DEFAULTS["security"],
-            base=base, flags=_cli_flags(args), worktree=worktree,
+            base=base, flags=_cli_flags(args, review_root=review_root),
+            worktree=worktree,
             scope=scope, pr=args.pr, pr_base=pr_base)
         run_manifest.write_manifest(review_root, manifest)
     else:
-        cli_flags = _cli_flags(args)
+        cli_flags = _cli_flags(args, review_root=review_root)
         conflicts = run_manifest.conflicting_flags(
             manifest, host=args.host, security_mode=args.security,
             base=base, flags=cli_flags, scope=scope, pr=args.pr)
