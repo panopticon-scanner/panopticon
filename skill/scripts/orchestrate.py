@@ -20,6 +20,7 @@ import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
+import scripts.repo_config as repo_config
 import scripts.runners.base as runners_base
 import scripts.runners.batch as batch_mod
 import scripts.runners.outage as outage
@@ -593,19 +594,20 @@ def _finish(status, review_root, guards, ledger, namespace, mode="headless", run
         # command, superseding whatever message run_setup_flow's own `complete` branch composed
         # (that wording is for `driver setup` run directly, not for `driver loop --setup`'s
         # on-rails contract). Fix round 1, item 1: ONLY when a draft actually exists -- the
-        # vocab-absent fallback (phases/setup.py's _scan_fallback) seeds groups.yml directly and
-        # writes NEITHER setup-report.md NOR groups.yml.draft, so unconditionally naming them here
+        # vocab-absent fallback (phases/setup.py's _scan_fallback) seeds the root config directly
+        # and writes NEITHER setup-report.md NOR a draft, so unconditionally naming them here
         # would send the operator to files that were never written and a promotion `mv` that would
         # fail. run_setup_flow's own `complete` branch already composed the right message for that
         # path (readiness gaps and limitations included) -- leave `status["message"]` exactly as
         # it is when there is no draft to promote.
-        draft = runio._pano(review_root, "groups.yml.draft")
+        draft = repo_config.draft_path(review_root)
         if os.path.isfile(draft):
             status = dict(status, message=(
                 "setup complete: read %s, review %s, then promote it: mv %s %s (setup never "
-                "overwrites a committed groups.yml)" % (
+                "overwrites a committed %s)" % (
                     runio._pano(review_root, "setup-report.md"), draft, draft,
-                    runio._pano(review_root, "groups.yml"))))
+                    os.path.join(review_root, repo_config.CONFIG_NAMES[0]),
+                    repo_config.CONFIG_NAMES[0])))
     return status
 
 

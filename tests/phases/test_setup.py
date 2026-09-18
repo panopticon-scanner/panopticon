@@ -22,6 +22,7 @@ import scripts.host_probes as host_probes
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
 import scripts.model_resolver as model_resolver
+import scripts.repo_config as repo_config
 
 from tools.git_repo import make_git_repo
 
@@ -35,6 +36,14 @@ class TestDriverSetup(unittest.TestCase):
             user_email="t@t",
             user_name="t",
         )
+
+    def _write_settings(self, repo, max_per_group, max_groups):
+        """A root config carrying only `settings:` (#1681 retired config.json)."""
+        body = "version: 1\ngroups: {}\nsettings:\n  max_per_group: %d\n" % max_per_group
+        if max_groups is not None:
+            body += "  max_groups: %d\n" % max_groups
+        with open(os.path.join(repo, repo_config.CONFIG_NAMES[0]), "w") as fh:
+            fh.write(body)
 
     def test_setup_verb_parses(self):
         args = driver.build_parser().parse_args(["setup", "."])
@@ -104,16 +113,17 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual("panopticon-entry: setup-scan", entry["marker"])
         self.assertEqual(requests.scope(dirs=[os.path.abspath(d)]), entry["scope"])
 
-    def test_scan_leaves_blanket_gitignore_and_notes_forced_add(self):
+    def test_scan_leaves_a_blanket_gitignore_untouched(self):
         # #1135: a repo already blanket-ignoring .panopticon/ keeps its
-        # .gitignore untouched (no migration to /*), and the scan surfaces that
-        # groups.yml must be `git add -f`-ed.
+        # .gitignore untouched (no migration to /*). #1681 retired the
+        # `git add -f` note with it: the committed config is at the ROOT, so
+        # nothing setup writes under .panopticon/ needs force-adding.
         d = self._repo()
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write(".panopticon/\n")
         args = driver.build_parser().parse_args(["setup", d])
         status = setup.run_setup_flow(args)
-        self.assertIn("git add -f", status["message"])
+        self.assertEqual("setup-scan checkpoint", status["message"])
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
         self.assertIn(".panopticon/", gi)
@@ -129,8 +139,8 @@ class TestDriverSetup(unittest.TestCase):
             json.dump(proposal, fh)
         status = setup.run_setup_flow(args)              # re-invoke -> ingest
         self.assertEqual(status["status"], "complete")
-        self.assertTrue(os.path.isfile(runio._pano(d, "groups.yml.draft")))
-        self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml")))
+        self.assertTrue(os.path.isfile(repo_config.draft_path(d)))
+        self.assertIsNone(repo_config.resolve(d).path)
 
     def test_vocab_absent_falls_back_to_seed_and_completes(self):
         # The bundled fixture is always present, so force absence at the loader
@@ -142,7 +152,8 @@ class TestDriverSetup(unittest.TestCase):
             status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "complete")
         self.assertTrue(runio._json_parses(runio._pano(d, "setup-complete.json")))
-        self.assertTrue(os.path.isfile(runio._pano(d, "groups.yml")))   # flat seed
+        self.assertEqual(os.path.join(d, repo_config.CONFIG_NAMES[0]),
+                         repo_config.resolve(d).path)                   # flat seed
         # no scan checkpoint was emitted
         self.assertFalse(os.path.isfile(runio._pano(d, "setup-proposal.json")))
 
@@ -169,8 +180,8 @@ class TestDriverSetup(unittest.TestCase):
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
 
     def test_completion_message_branches_on_draft_vs_fallback(self):
-        # vocab-absent fallback: flat groups.yml, no draft -> message must not
-        # send the owner looking for a groups.yml.draft that was never written.
+        # vocab-absent fallback: a flat root config, no draft -> the message
+        # must not send the owner looking for a draft that was never written.
         d1 = self._repo()
         args1 = driver.build_parser().parse_args(["setup", d1])
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
@@ -178,7 +189,7 @@ class TestDriverSetup(unittest.TestCase):
             status1 = setup.run_setup_flow(args1)
         self.assertEqual(status1["status"], "complete")
         self.assertNotIn("draft", status1["message"])
-        self.assertIn("groups.yml", status1["message"])
+        self.assertIn(repo_config.CONFIG_NAMES[0], status1["message"])
 
         # vocab-present path: ingest writes a real draft -> message should
         # point the owner at it.
@@ -218,7 +229,7 @@ class TestDriverSetup(unittest.TestCase):
             json.dump({"groups": [{"capability": "", "match": []}]}, fh)
         status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "error")
-        self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml.draft")))
+        self.assertFalse(os.path.isfile(repo_config.draft_path(d)))
 
     def test_reset_clears_setup_artifacts(self):
         d = self._repo()
@@ -266,13 +277,16 @@ class TestDriverSetup(unittest.TestCase):
         self.assertIsNone(m["vocabulary_path"])                    # hostile path dropped
         self.assertIn("ignoring foreign setup-manifest", err.getvalue())
 
-    def test_reset_preserves_committed_groups_yml(self):
+    def test_reset_preserves_the_committed_root_config(self):
         d = self._repo()
-        os.makedirs(runio._pano(d), exist_ok=True)
-        committed_path = runio._pano(d, "groups.yml")
-        content = "groups:\n  checkout:\n    match:\n      - src/checkout/**\n"
+        committed_path = os.path.join(d, repo_config.CONFIG_NAMES[0])
+        content = ("version: 1\ngroups:\n  checkout:\n    match:\n"
+                   "      - src/checkout/**\n")
         with open(committed_path, "w") as fh:
             fh.write(content)
+        draft = repo_config.draft_path(d)
+        with open(draft, "w") as fh:
+            fh.write("version: 1\ngroups: {}\n")
 
         args = driver.build_parser().parse_args(["setup", d])
         setup.run_setup_flow(args)                        # scan checkpoint
@@ -280,6 +294,7 @@ class TestDriverSetup(unittest.TestCase):
         reset_args = driver.build_parser().parse_args(["setup", d, "--reset"])
         setup.run_setup_flow(reset_args)                  # clears setup artifacts only
 
+        self.assertFalse(os.path.isfile(draft))           # the draft is derived
         self.assertTrue(os.path.isfile(committed_path))
         with open(committed_path, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), content)
@@ -321,7 +336,7 @@ class TestDriverSetup(unittest.TestCase):
 
     def test_setup_end_to_end_loop(self):
         """scan checkpoint -> host persists proposal -> re-invoke ingests ->
-        complete, draft present, committed groups.yml never written."""
+        complete, draft present, the committed root config never written."""
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
         s1 = setup.run_setup_flow(args)
@@ -334,8 +349,8 @@ class TestDriverSetup(unittest.TestCase):
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
         s2 = setup.run_setup_flow(args)
         self.assertEqual(s2["status"], "complete")
-        self.assertIn("groups.yml.draft", "".join(os.listdir(runio._pano(d))))
-        self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml")))
+        self.assertIn(repo_config.DRAFT_NAME, os.listdir(d))
+        self.assertIsNone(repo_config.resolve(d).path)
 
     def test_setup_size_flags_pin_the_manifest_and_reach_the_report(self):
         # 5.2: --max-per-group/--max-groups are pinned in setup-manifest.json at
@@ -373,17 +388,14 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(parser.parse_args(["setup", ".", "--max-groups", "5"]).max_groups, 5)
 
     def test_setup_manifest_pins_the_config_numbers_at_creation(self):
-        # config.json is resolved when the manifest is minted: an edit between
+        # `settings:` is resolved when the manifest is minted: an edit between
         # scan and ingest cannot move the cap or the ceiling under the brief.
         d = self._repo()
-        os.makedirs(runio._pano(d), exist_ok=True)
-        with open(os.path.join(runio._pano(d), "config.json"), "w") as fh:
-            json.dump({"max_per_group": 7, "max_groups": 9}, fh)
+        self._write_settings(d, 7, 9)
         setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         manifest = setup.load_setup_manifest(d)
         self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (7, 9))
-        with open(os.path.join(runio._pano(d), "config.json"), "w") as fh:
-            json.dump({"max_per_group": 2, "max_groups": 4}, fh)
+        self._write_settings(d, 2, 4)
         with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
@@ -393,9 +405,7 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual((report["cap"], report["ceiling"]), (7, 9))
         # the CLI still wins over config
         d2 = self._repo()
-        os.makedirs(runio._pano(d2), exist_ok=True)
-        with open(os.path.join(runio._pano(d2), "config.json"), "w") as fh:
-            json.dump({"max_per_group": 7}, fh)
+        self._write_settings(d2, 7, None)
         setup.run_setup_flow(driver.build_parser().parse_args(
             ["setup", d2, "--max-per-group", "3"]))
         self.assertEqual(setup.load_setup_manifest(d2)["max_per_group"], 3)
@@ -454,8 +464,9 @@ class TestDriverSetup(unittest.TestCase):
             self.assertIn(name, runio._TOP_LEVEL)
             self.assertIn(name, setup._SETUP_ARTIFACTS)
         setup.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
-        for name in ("setup-report.md", "setup-report.json", "groups.yml.draft"):
+        for name in ("setup-report.md", "setup-report.json"):
             self.assertFalse(os.path.isfile(runio._pano(d, name)), name)
+        self.assertFalse(os.path.isfile(repo_config.draft_path(d)))
 
 
 class TestSetupOwnsItsDispatchNamespace(unittest.TestCase):

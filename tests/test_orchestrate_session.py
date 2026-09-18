@@ -31,6 +31,7 @@ import scripts.probes.common as probes_common
 import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
+import scripts.repo_config as repo_config
 import scripts.runners.base as base
 from conftest import docker_probe_runner
 from scripts import hosts
@@ -480,13 +481,13 @@ class TestSetupOnRails(LoopCase):
         self.assertEqual(status["status"], "complete", status)
         self.assertEqual(runner.launched, ["setup-scan"])
         self.assertIn("setup-report.md", status["message"])
-        self.assertIn("groups.yml.draft", status["message"])
+        self.assertIn(repo_config.DRAFT_NAME, status["message"])
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-proposal.json")))
 
     def test_setup_vocab_absent_fallback_keeps_its_own_complete_message(self):
         # Fix round 1, item 1: the vocab-absent fallback (phases/setup.py's
-        # _scan_fallback) seeds groups.yml directly and writes neither
-        # setup-report.md nor groups.yml.draft -- _finish must leave
+        # _scan_fallback) seeds the root config directly and writes neither
+        # setup-report.md nor a draft -- _finish must leave
         # run_setup_flow's own "complete" message alone rather than naming
         # files that were never written.
         d, _ = self._repo()
@@ -501,10 +502,11 @@ class TestSetupOnRails(LoopCase):
              contextlib.redirect_stdout(io.StringIO()):
             status = orchestrate.loop(args)
         self.assertEqual(status["status"], "complete", status)
-        self.assertNotIn("groups.yml.draft", status["message"])
+        self.assertNotIn(repo_config.DRAFT_NAME, status["message"])
         self.assertIn("vocab-absent fallback", status["message"])
-        self.assertFalse(os.path.isfile(runio._pano(d, "groups.yml.draft")))
-        self.assertTrue(os.path.isfile(runio._pano(d, "groups.yml")))
+        self.assertFalse(os.path.isfile(repo_config.draft_path(d)))
+        self.assertEqual(os.path.join(d, repo_config.CONFIG_NAMES[0]),
+                         repo_config.resolve(d).path)
 
     def test_setup_never_writes_into_a_stale_review_runs_folder(self):
         # Fix round 1, item 2: a PRIOR review run's run-manifest.json (and its

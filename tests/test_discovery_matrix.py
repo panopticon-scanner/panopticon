@@ -274,14 +274,6 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
     os.makedirs(str(tmp_path / ".git"))
     (tmp_path / "panopticon.yml").write_text(
         "version: 1\ngroups:\n  Bad:\n    match: src/bad/**\n")   # scalar, not a list
-    # INTERIM (#1681 Task 5): setup_flow._check_groups_manifest still gates on
-    # the legacy matrix file before it calls discovery._matrix_catalog, so the
-    # readiness row it returns needs one present. Delete this block (and the
-    # `.panopticon` mkdir) when setup_flow reads the root config.
-    os.makedirs(str(tmp_path / ".panopticon"))
-    (tmp_path / ".panopticon" / "groups.yml").write_text(
-        "groups:\n  Bad:\n    match: src/bad/**\n")
-
     def ok_runner(argv, capture_output, text, timeout=None):
         class R: returncode = 0; stdout = ""; stderr = ""
         return R()

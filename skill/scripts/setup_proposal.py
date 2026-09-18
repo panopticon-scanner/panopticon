@@ -4,8 +4,8 @@ Loads the curated capability vocabulary + affinity table (5.0) and the layer
 catalog (5.2), validates and assembles a setup-scan agent's proposal into a
 matrix groups mapping (panel floors from the affinity table or the profile
 surfaces; custom groups scout-only; aliases canonicalized through the
-catalogs; layers as subgroups), and additive-merges it against a committed
-groups.yml without ever clobbering it. Pure: every function is a total
+catalogs; layers as subgroups), and additive-merges it against the committed
+root config without ever clobbering it. Pure: every function is a total
 function of its inputs (the only I/O is reading a data file whose path it is
 handed). See docs/superpowers/specs/2026-08-14-panopticon-5.0-setup-scan-design.md
 and the 5.2 grouping-engine spec (§3 catalogs, §5.3 assembly).
@@ -407,7 +407,7 @@ def _keep_layers(name, proposed, layer_aliases, warnings):
     not-a-layer names (`Core`, `Tests`, `Config`, `Docs`, ...), names that
     are not a valid subgroup token (groups_schema._invalid_name) and names
     that collide with a sibling's chunk names (`API_1` next to `API`, which
-    groups_schema refuses in a committed groups.yml). Dropping is disclosed
+    groups_schema refuses in a committed config). Dropping is disclosed
     in `warnings`; the group itself is kept. A name the catalog does not
     know is kept verbatim (custom layers are allowed, like custom
     capabilities) and flagged `canonical: False` for the report and the
