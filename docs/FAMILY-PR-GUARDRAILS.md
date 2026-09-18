@@ -202,7 +202,9 @@ pops `CLAUDECODE` so a nested session will start. Every launch also carries
 `.claude/skills/*/SKILL.md` and `.claude/commands` are not read -- the last two
 because `--disable-slash-commands` is "Disable all skills" in `claude --help`; `--settings` is a separate channel that still
 applies under `--setting-sources user`, which is what keeps the two guards
-armed. `--bare` and `--safe-mode` are never passed -- both disable hooks. Confinement is two PreToolUse
+armed. `--bare` and `--safe-mode` are never passed -- both disable hooks. Still open
+on #1657: a target's `.claude/agents/*.md` and its plugin/workflow directories,
+which only `--safe-mode` would close. Confinement is two PreToolUse
 hooks, `skill/scripts/read_guard_hook.py` and
 `skill/scripts/write_guard_hook.py`. Evidence: `driver loop . --host claude
 --reset --no-tools -d skill/scripts/runners` reached `status: complete` with 15
@@ -247,7 +249,9 @@ directory that replaces both auto-discovered skill roots (#1657), and the
 freshness of that home is itself the control on target-planted MCP: kimi reads
 `<git root>/.mcp.json` and `<cwd>/.kimi-code/mcp.json` only for a cwd with a
 workspace-trust record under `KIMI_CODE_HOME`, and a home linking only
-`credentials`/`oauth` has none. Evidence:
+`credentials`/`oauth` has none. Still open on #1657: the target's `AGENTS.md`,
+loaded root-to-leaf into the system prompt, which no flag or config key
+disables. Evidence:
 run `kimi-standard-repo-20260913-88aaffdb` reached `status: complete` -- 284
 ledger rows, 37 launches, 23.2M tokens read off the wire files, all five
 capabilities `proven`. That run was measured before the branch's four
