@@ -1576,12 +1576,19 @@ class TestAHostWideOutage(LoopCase):
         self.assertEqual("error", status["status"], status)
         self.assertIn("3 consecutive launches", status["message"])
 
-    def test_a_mixed_batch_charges_only_the_entry_class_failure(self):
+    def test_a_mixed_batch_blames_the_entry_and_never_the_host(self):
         # The discriminator. Two verify cells in one batch: SEC gets the
         # host's 403 every time, ACC gets a failure of its own. Before #1623
         # both streaks ran up together and the cap tripped on SEC, the entry
-        # that had done nothing wrong; now only ACC is ever charged, and SEC
-        # -- which the host never let run -- is never capped.
+        # that had done nothing wrong.
+        #
+        # #1721 changed the VERDICT this batch reaches, not the blame. ACC's
+        # own failure no longer cancels the outage SEC's 403 opened -- that
+        # cancellation is the defect -- so the batch ends inside a trailing run
+        # and pauses on the first iteration, instead of spending three of them
+        # proving the host is still out. SEC is still never charged, never
+        # capped and never named; `test_an_entry_the_host_failed_never_reaches
+        # _the_cap` in tests/runners/test_outage.py pins the charge directly.
         d, floor = self._repo(floor=("SEC", "ACC"))
 
         class MixedVerify(FakeRunner):
@@ -1597,11 +1604,168 @@ class TestAHostWideOutage(LoopCase):
 
         runner = MixedVerify()
         status = self._run_loop(d, floor, runner)
-        self.assertEqual("error", status["status"], status)
-        self.assertIn("verify-app-ACC-primary", status["message"])
+        self.assertEqual("paused", status["status"], status)
+        self.assertIn(outage.HOST_FAILURE, status["message"])
+        self.assertIn("403 Forbidden", status["message"])       # the host's own words
+        self.assertNotIn("consecutive launches", status["message"])
         self.assertNotIn("verify-app-SEC-primary", status["message"])
-        self.assertIn("3 consecutive launches", status["message"])
-        self.assertIn("last: always", status["message"])
+        self.assertEqual(1, runner.launched.count("verify-app-SEC-primary"),
+                         runner.launched)
+        # ...and the cell the host took down kept its turn: a healthy re-run
+        # dispatches it again rather than finding it capped
+        healthy = FakeRunner()
+        self.assertEqual("complete", self._run_loop(d, floor, healthy, seed=False)["status"])
+        self.assertIn("verify-app-SEC-primary", healthy.launched)
+
+
+class TestAMidBatchHostOutage(LoopCase):
+    """#1721: an outage that begins PART-WAY through a batch.
+
+    Tool-confirmed on the 2026-09-18 kimi run. `settle` runs only once
+    `iter_batch` has drained the whole queue, so a quota 403 that began at
+    entry 12 of 78 cost 66 more launches -- each charged at dispatch -- before
+    the loop could ask whether the host was down. And the verdict was
+    all-or-nothing: the one cell that had refused on its own turned the whole
+    outage into "not an outage", so nothing paused, nothing was given back and
+    every cell was charged.
+    """
+
+    FLOOR = ("SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS")
+    HOST_ERROR = ("provider.auth_error: 403 You've reached your weekly (7-day) "
+                  "usage limit")
+    REFUSAL = "kimi -p exited 1: All files read and cross-checked"
+    WIDTH = 2
+
+    class Outage(FakeRunner):
+        """The kimi run's shape: the first two cells answer, the third refuses
+        on ITS own account (#1719's masked 403 classifies entry-class), and
+        every launch after that is the quota 403.
+
+        Behaviour is keyed on the cell's index in the batch's pending list --
+        which is its launch order, the pool being FIFO -- not on a counter, so
+        no thread interleaving can change which cell does what. And from that
+        index on, a launch does not come back until the LOOP has ledgered every
+        result before it: two workers answering instantly outrun a consumer
+        that persists and ledgers each reply, and "what the short-circuit
+        stopped" would be a race rather than a fact.
+        """
+
+        def __init__(self, floor, host_error, refusal):
+            super().__init__()
+            self.order = ["review-app-%s" % d for d in floor]
+            self.failure, self.refusal = host_error, refusal
+
+        def _await_ledger(self, lines):
+            path = os.path.join(self.run_dir, base.LEDGER_FILE)
+            for _ in range(2000):
+                try:
+                    with open(path) as fh:
+                        if sum(1 for line in fh if line.strip()) >= lines:
+                            return
+                except OSError:
+                    pass
+                time.sleep(0.005)
+            raise AssertionError("the loop never ledgered %d results" % lines)
+
+        def run_entry(self, entry, env):
+            eid = entry["id"]
+            i = self.order.index(eid) if eid in self.order else None
+            if i is None or i < 2:
+                return super().run_entry(entry, env)
+            self.launched.append(eid)
+            if i == 2:
+                return base.RunResult.failed(eid, self.refusal)
+            self._await_ledger(i)
+            return base.RunResult.failed(eid, "kimi -p exited 1: " + self.failure,
+                                         host_error=self.failure)
+
+    def _outage(self):
+        return self.Outage(self.FLOOR, self.HOST_ERROR, self.REFUSAL)
+
+    def _run(self, d, floor, runner, *extra):
+        """`LoopCase._run_loop` with this run's stderr kept: the short-circuit
+        announces itself there, and the redirect inside `_run_loop` throws it
+        away."""
+        err = io.StringIO()
+        with contextlib.ExitStack() as es:
+            es.enter_context(mock.patch.object(
+                orchestrate, "_after_first_run",
+                side_effect=lambda rr: self._seed_coverage(rr, floor)))
+            es.enter_context(mock.patch("scripts.runners.base.runner_for", return_value=runner))
+            es.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            es.enter_context(contextlib.redirect_stderr(err))
+            status = orchestrate.loop(self._args(d, "--concurrency", str(self.WIDTH), *extra))
+        return status, err.getvalue()
+
+    def _reviews(self, runner):
+        return [x for x in runner.launched if x.startswith("review-")]
+
+    def test_the_outage_stops_the_batch_instead_of_draining_it(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self._outage()
+        status, err = self._run(d, floor, runner)
+        self.assertEqual("paused", status["status"], status)
+        reviews = self._reviews(runner)
+        self.assertLess(len(reviews), len(self.FLOOR), reviews)
+        # 2 answered + 1 refused + the corroboration the stop waits for
+        # (max(2, width)) + the pool that was already running (width)
+        self.assertLessEqual(len(reviews), 3 + max(2, self.WIDTH) + self.WIDTH, reviews)
+        unlaunched = len(self.FLOOR) - len(reviews)
+        self.assertIn("%d of %d entries not launched" % (unlaunched, len(self.FLOOR)), err)
+        self.assertIn("host outage detected after", err)
+        self.assertIn("%d of its entries were never launched" % unlaunched, status["message"])
+
+    def test_only_the_cell_that_failed_on_its_own_account_is_charged(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self._outage()
+        status, _err = self._run(d, floor, runner)
+        self.assertEqual("paused", status["status"], status)
+        reviews = self._reviews(runner)
+        attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
+        # the cell that refused on its OWN account keeps the charge it spent
+        self.assertEqual(1, attempts.get("app/%s" % self.FLOOR[2]), attempts)
+        # every cell the host took down, and every cell that never launched at
+        # all, gets its attempt back -- neither was ever given a turn
+        for domain in self.FLOOR[3:]:
+            self.assertEqual(0, attempts.get("app/%s" % domain), (domain, attempts))
+            self.assertFalse(os.path.exists(runio._pano(d, "findings-app-%s.json" % domain)),
+                             domain)
+        # ...and the two the host never touched are simply done
+        for domain in self.FLOOR[:2]:
+            self.assertTrue(os.path.exists(runio._pano(d, "findings-app-%s.json" % domain)),
+                            domain)
+        self.assertEqual(sorted(reviews), sorted(set(reviews)), "a cell was launched twice")
+
+    def test_a_healthy_re_run_picks_up_exactly_the_cells_that_are_not_done(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        status, _err = self._run(d, floor, self._outage())
+        self.assertEqual("paused", status["status"], status)
+        healthy = FakeRunner()
+        again = self._run_loop(d, floor, healthy, "--concurrency", str(self.WIDTH), seed=False)
+        self.assertEqual("complete", again["status"], again)
+        self.assertEqual(sorted("review-app-%s" % x for x in self.FLOOR[2:]),
+                         sorted(x for x in healthy.launched if x.startswith("review-")))
+
+    def test_a_403_a_later_launch_answers_after_is_not_an_outage(self):
+        # The other half of the trailing-run rule: a 403 whose successor came
+        # back clean says the host is up, so the batch is not paused -- and the
+        # 403 still costs its cell no consecutive-failure streak, so the loop's
+        # next iteration re-dispatches it and the run completes.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+
+        class BackUp(FakeRunner):
+            def run_entry(self, entry, env):
+                if entry["id"] == "review-app-SEC" and "review-app-SEC" not in self.launched:
+                    self.launched.append(entry["id"])
+                    return base.RunResult.failed(entry["id"],
+                                                 "kimi -p exited 1: 403 Forbidden",
+                                                 host_error="403 Forbidden")
+                return super().run_entry(entry, env)
+
+        runner = BackUp()
+        status = self._run_loop(d, floor, runner, "--concurrency", "1")
+        self.assertEqual("complete", status["status"], status)
+        self.assertEqual(2, runner.launched.count("review-app-SEC"))
 
 
 class TestFinishTreatsPausedAsTerminal(unittest.TestCase):

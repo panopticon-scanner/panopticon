@@ -381,6 +381,12 @@ def loop(args):
                 return _dispatch_exit(review_root, req, pending, namespace)
             done, total = 0, len(pending)
             handled = []
+            # #1721: the pool is FIFO, so an entry's index in `pending` is its
+            # LAUNCH order -- which is what tells the tally a success that
+            # proves the host is back from one that was merely in flight when
+            # it went down. `width` is the same number iter_batch resolves.
+            width = max(1, int(getattr(args, "concurrency", None) or runner.default_concurrency))
+            order = {e.get("id"): i for i, e in enumerate(pending)}
             # #1662: the list the rollback deletes, written BEFORE the first
             # submit -- taking a cancelled batch back must never be a glob
             # over the run folder, which would reach a prior phase's outputs
@@ -393,14 +399,15 @@ def loop(args):
             # drains the pool now, before `_finish` tears the guards and the runner's scratch area
             # down, rather than at GC's convenience.
             with contextlib.closing(runner.iter_batch(
-                    pending, getattr(args, "concurrency", None), guards.env_for)) as stream:
+                    pending, getattr(args, "concurrency", None), guards.env_for,
+                    stop=lambda: tally.outage(width))) as stream:
                 for entry, result, timing in stream:
                     eid = entry.get("id")
                     refusal = loop_batch.record_entry(
                         entry, result, timing, run_dir, batch, ledger, req,
                         mode, runner)
                     handled.append(eid)
-                    tally.record(eid, result, refusal)
+                    tally.record(eid, result, refusal, seq=order.get(eid))
                     done += 1
                     # Best-effort, exactly as `_finish`'s own call is (F1): derived
                     # from a ledger already on disk, and `_finish` rewrites it. Fatal
@@ -416,6 +423,15 @@ def loop(args):
                     print("driver loop: %s done (%s ms, %d/%d)"
                           % (eid, timing.get("duration_ms"), done, total),
                           file=sys.stderr, flush=True)
+            # #1721: what the short-circuit stopped. Never-launched entries wrote
+            # nothing and are charged nothing, so `batch.close()` and `disarm`
+            # below are unchanged -- there is nothing of theirs to take back.
+            unlaunched = [e for e in pending if e.get("id") not in handled]
+            if unlaunched:
+                print("driver loop: host outage detected after %d host-class failure(s); "
+                      "%d of %d entries not launched"
+                      % (tally.trailing, len(unlaunched), len(pending)),
+                      file=sys.stderr, flush=True)
             for note in batch.close():        # a clean batch leaves no manifest
                 print("driver loop: batch manifest not removed: %s" % note,
                       file=sys.stderr, flush=True)
@@ -429,9 +445,15 @@ def loop(args):
             # nothing, so no ARTIFACT is rolled back; the per-dispatch attempt marker is
             # given back exactly as the interrupt gives it back, or three paused runs
             # exhaust the same budget the automatic iterations used to.
-            paused = tally.settle()
+            paused = tally.settle(len(unlaunched))
             if paused:
-                persist.rollback_markers(review_root, req.get("checkpoint"), pending)
+                # NOT every pending entry (#1721): an entry-class failure during
+                # an outage is still the entry's own and keeps its charge, and a
+                # cell that landed is done. What is given back is what the host
+                # took down, plus what the short-circuit never launched.
+                persist.rollback_markers(review_root, req.get("checkpoint"),
+                                         unlaunched + [e for e in pending
+                                                       if e.get("id") in tally.uncharged])
                 return _finish(_status("paused", paused), review_root, guards, ledger,
                                namespace, mode, runner)
             status = _run(args, namespace, resolved)
