@@ -169,6 +169,7 @@ class Runner(base.HostRunner):
         self.runner = runner
         self.kimi_home = None
         self.run_home = None           # the seam's name for it (base.HostRunner)
+        self.skills_dir = None         # the empty run-owned dir `--skills-dir` names
         self.home_pointer = None
         self._crash_strip = None       # the atexit callback, while one is armed
         self._signal_handlers = {}     # {signum: our wrapper}; it carries what was there
@@ -201,6 +202,13 @@ class Runner(base.HostRunner):
         allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
         self.kimi_home = kimi_home_mod.build_kimi_home(
             kimi_home_mod.new_kimi_home(), scope_path, allowlist_path)
+        # KM-1 (#1657): with no `--skills-dir` the CLI auto-discovers its USER
+        # and PROJECT skill roots, and the project ones are inside the tree
+        # under review -- `.kimi-code/skills/*/SKILL.md`, `.agents/skills/
+        # */SKILL.md` -- so a hostile target ships instructions straight into a
+        # reviewer. One explicit directory replaces both roots, and this one is
+        # empty, run-owned and thrown away with the home.
+        self.skills_dir = kimi_home_mod.new_skills_dir(self.kimi_home)
         # `run_home` is the seam's own name for it: the loop reads it off the
         # runner and hands it to the probes, so an effective-surface probe can
         # find this run's children without opening anything in the target.
@@ -324,8 +332,17 @@ class Runner(base.HostRunner):
         0.42.0 misparses the space form after -p) gives the shell EXPLICIT
         precedence over any project-scoped shadow file in the reviewed tree,
         which is the point of registering enforcement shells. `-m` binds the
-        model on EVERY entry that names one."""
+        model on EVERY entry that names one.
+
+        `--skills-dir=<dir>` ("Load skills from this directory instead of
+        auto-discovered user and project directories", `kimi --help`) points
+        the CLI at THIS run's empty directory, so neither the operator's
+        skills nor the reviewed tree's are loaded (KM-1, #1657). Equals form
+        for the same 0.42.0 reason as `--agent-file=`, and before `-p`, which
+        takes the prompt."""
         cmd = [self.CLI, "--output-format", "stream-json"]
+        if self.skills_dir:
+            cmd.append("--skills-dir=%s" % self.skills_dir)
         if entry.get("enforced") and entry.get("agent"):
             cmd.append("--agent-file=%s" % self._shell_path(entry))
         if alias:

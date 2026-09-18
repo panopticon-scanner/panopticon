@@ -257,6 +257,21 @@ def build_kimi_home(home, scope_path, allowlist_path, real_home=None):
         raise
     return home
 
+def new_skills_dir(home):
+    """An empty, mode-700 skill root inside the per-run home, for the launch's
+    `--skills-dir` (KM-1, #1657).
+
+    INSIDE the home rather than beside it so `teardown` disposes of both at
+    once, and so the directory a reviewer's skill discovery is pointed at is
+    one this run created and nothing else can reach by name. Idempotent: a
+    second `prepare` on the same home gets the same empty directory.
+    """
+    path = os.path.join(home, "no-skills")
+    os.makedirs(path, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
+
+
 def _write_text(path, text):
     """Stage at `<path>.tmp` and rename, mode 0o600, never writing THROUGH a
     symlink planted at the staging name (I2). A private mirror of
