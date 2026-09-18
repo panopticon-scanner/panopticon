@@ -4,10 +4,8 @@ import json
 import os
 import subprocess
 
-import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
 import scripts.runners.outage as outage
-import scripts.write_guard_hook as write_guard_hook
 
 
 # The launcher a Runner built without an injected `runner=` uses. Read at
@@ -44,23 +42,28 @@ class Runner(base.HostRunner):
         self.entry_timeout = 1800          # seconds per entry; a stuck agent is a failed entry
 
     def prepare(self, run_dir, review_root):
-        """Write <run_dir>/host-settings.json: both guards' PreToolUse entries
-        with absolute allowlist/scope paths baked in, nothing else (D3)."""
+        """Resolve this run's three guard paths and make sure the folder the
+        loop writes them into exists.
+
+        It does NOT write host-settings.json (#1616 item 5). `prepare` used to
+        compose both guards' PreToolUse entries there, and
+        `orchestrate.Guards.arm` then rewrote the same file -- through
+        `write_guard_hook.install` / `read_guard_hook.install`, which register
+        exactly the same two entries -- before the first launch of every
+        batch. So the file this wrote was replaced without ever being read,
+        and two writers meant two definitions of the contract to keep in step.
+        Arming is the one that survives: it is what the guards themselves
+        maintain, and it happens per batch rather than once per run.
+
+        The FOLDER is still this method's business -- `probe_write_guard_armed`
+        proves the run folder is writable, and the ledger lands here -- and so
+        is `review_root`, which is the cwd every child is launched in.
+        """
         self.review_root = os.path.abspath(review_root)
         self.settings_path = os.path.join(run_dir, base.SETTINGS_FILE)
         self.allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
         self.scope_path = os.path.join(run_dir, base.SCOPE_FILE)
-        settings = {"hooks": {"PreToolUse": [
-            write_guard_hook._hook_entry(self.allowlist_path),
-            read_guard_hook._hook_entry(self.scope_path)]}}
         os.makedirs(run_dir, exist_ok=True)
-        # I7: through the write guard's own atomic writer, which refuses to
-        # follow a symlink planted at `host-settings.json.tmp`. That path is
-        # INSIDE the scanned tree, so on a redteam target the link is the
-        # attacker's to plant; this module already imports the hook for
-        # `_hook_entry`, so there is one hardened writer rather than a second
-        # open()/replace() pair here to keep in step with it.
-        write_guard_hook._atomic_write_json(self.settings_path, settings, indent=2)
 
     def command(self, entry, settings_path, max_turns):
         """The argv for one entry. No per-entry budget arm (M5, final review):

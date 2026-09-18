@@ -329,6 +329,27 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(manifest["pr_base"], "main")  # gh base -> pr_base channel
         self.assertEqual(manifest["scope"], {"mode": "changed", "target": None})
 
+    def test_the_exhausted_cell_list_in_the_message_is_bounded(self):
+        # Fix round 1, N2: the COUNT is exact and always has been; the named
+        # list was joined uncapped, so a run that lost 100 cells put 100
+        # `group/domain` pairs into one status line that hosts and CI parse.
+        d = self._repo()
+        complete = {"status": "complete", "phase": None, "checkpoint": None,
+                    "group": None, "dispatch_request": None, "advanced": [],
+                    "message": "all phases complete"}
+        cells = ["g%02d/SEC" % i for i in range(12)]
+        with mock.patch("scripts.phases.engine.run_engine", return_value=complete), \
+                mock.patch("scripts.phases.validate._finalize_worktree"), \
+                mock.patch("scripts.phases.review.exhausted_cells", return_value=cells):
+            status = driver.run(self._args(d))
+        self.assertEqual(status["cells_exhausted"], 12)          # exact
+        self.assertIn("cells_exhausted: 12", status["message"])
+        for named in cells[:10]:
+            self.assertIn(named, status["message"])
+        self.assertNotIn(cells[10], status["message"])
+        self.assertNotIn(cells[11], status["message"])
+        self.assertIn("2 more", status["message"])
+
     def test_run_finalizes_worktree_only_on_complete(self):
         # Ruling A wiring: run() surfaces+releases the worktree via
         # _finalize_worktree ONLY when the engine returns status=="complete" --

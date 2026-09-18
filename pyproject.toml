@@ -52,6 +52,12 @@ markers = [
     # tests/conftest.py, so the unit suite runs the same branch on a workstation
     # as it does on a bare CI runner.
     "docker: test genuinely needs the Docker daemon (excluded from the unit suite's refusal)",
+    # #1616 item 8: the ONLY tests allowed to reach
+    # `scripts.runners.claude.Runner.run_entry`. Everything else gets a
+    # LaunchRefused from the autouse fixture in tests/conftest.py, so a test
+    # that builds the default host's runner by accident says so loudly instead
+    # of collecting one more failed entry.
+    "claude_runner: test drives the claude family's own run_entry (with an injected runner=<fake>)",
 ]
 
 [tool.ruff]

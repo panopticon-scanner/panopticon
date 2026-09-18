@@ -398,6 +398,28 @@ def review_done(review_root, manifest):
                or _cell_exhausted(review_root, g, d)
                for g, _ in groups for d in coverage._effective_domains(review_root, g))
 
+def exhausted_cells(review_root, manifest):
+    """The `group/domain` cells that spent their whole retry budget without
+    ever completing, sorted; [] when there are none (#1616 item 2).
+
+    The other half of `review_done`'s "exhausted counts as done": that rule is
+    what stops an unrecoverable cell wedging the run, and the cost of it is a
+    run that ends `complete` reading exactly like one where every cell
+    answered. Exhaustion is already visible in the report (synthesis surfaces
+    the cell as a missing floor cell) and in `cell-attempts.json`; this is the
+    same fact in the terminal STATUS, which is what a host or a CI job reads.
+
+    `_cell_done` as well as `_cell_exhausted`, in that order: a cell can spend
+    its last attempt and still come back with an acceptable file, and that one
+    completed -- counting it here would report a gap the report does not have.
+    """
+    return sorted(_cell_key(group, domain)
+                  for group, _ in coverage._discovered_groups(review_root)
+                  for domain in coverage._effective_domains(review_root, group)
+                  if _cell_exhausted(review_root, group, domain)
+                  and not _cell_done(review_root, manifest, group, domain))
+
+
 def review_execute(review_root, manifest):
     # #5.0-16 H2: declare every review cell before dispatching any, so an
     # injected/undeclared findings file is caught by reconcile at synthesis.

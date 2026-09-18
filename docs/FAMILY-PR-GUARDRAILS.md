@@ -30,10 +30,14 @@ part is a thin seam, and your PR fills in that seam for your family:
 
 The seam's contract, in `skill/scripts/runners/base.py`:
 
-- `Runner.prepare(run_dir, review_root)` is idempotent and arms whatever your
-  host needs for one run under `run_dir` (`.panopticon/runs/<tag>/`). Claude
-  writes `host-settings.json` there; your host may need something else or
-  nothing. Nothing in the loop assumes a hooks file.
+- `Runner.prepare(run_dir, review_root)` is idempotent and acquires whatever
+  your host needs for one run under `run_dir` (`.panopticon/runs/<tag>/`):
+  Claude resolves its three guard paths and creates the folder, Kimi mints a
+  per-run home. It does NOT arm the guards -- `orchestrate.Guards.arm` writes
+  `host-settings.json` through the hooks' own installers before every batch,
+  so a `prepare` that wrote it too would be a second definition of the same
+  contract, immediately overwritten (#1616 item 5). Nothing in the loop
+  assumes a hooks file.
 - `Runner.run_entry(entry, env) -> RunResult` launches one entry as a child
   process and returns `RunResult(entry_id, ok, text, usage, cost_usd, model,
   session_id, denials, error)`. It never raises: a crash is
@@ -190,7 +194,8 @@ shared `registered-shell-tools` probe in `probes/common.py`; the other four by
 `read-guard-armed`, `write-guard-armed`, `entry-model-bound` and `usage-source`
 in `probes/claude.py`. `skill/scripts/runners/claude.py` sets `CLI = "claude"`,
 `ENVELOPE_FLAGS = ("-p", "--output-format")` and `default_concurrency = 8`; its
-`prepare` writes `host-settings.json` into the run folder and its `launch_env`
+`prepare` resolves the run folder's `host-settings.json` / allowlist / scope
+paths (the loop's `Guards.arm` is what writes that file) and its `launch_env`
 pops `CLAUDECODE` so a nested session will start. Confinement is two PreToolUse
 hooks, `skill/scripts/read_guard_hook.py` and
 `skill/scripts/write_guard_hook.py`. Evidence: `driver loop . --host claude

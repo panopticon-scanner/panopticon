@@ -11,6 +11,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 import scripts.driver as driver
 import scripts.ledger as ledger_mod
 import scripts.orchestrate as orchestrate
@@ -885,6 +887,58 @@ class TestHeadlessLoop(LoopCase):
             self.assertEqual(row["finished_at"], row["ts"])
             self.assertLessEqual(row["started_at"], row["ts"])
 
+    def test_the_review_root_is_resolved_once_for_the_whole_loop(self):
+        # #1616 item 6: once per `driver loop` INVOCATION, counted at the
+        # bottom (`runio.resolve_review_root`) rather than at the seam, because
+        # the loop calls `driver.run` once per ITERATION and that was the
+        # dominant term -- fix round 1, F3, measured 5 on this very run (1 in
+        # `loop`, 4 in `driver.run`). On a `--pr` run each one is a
+        # `gh pr view` plus a worktree acquisition.
+        d, floor = self._repo()
+        real, calls = runio.resolve_review_root, []
+
+        def _spy(*a, **kw):
+            calls.append((a, kw))
+            return real(*a, **kw)
+
+        with mock.patch.object(runio, "resolve_review_root", side_effect=_spy):
+            status = self._run(d, floor, FakeRunner())
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(len(calls), 1,
+                         "the loop resolved the review root %d times" % len(calls))
+
+    def test_the_rows_duration_is_the_one_its_own_worker_measured(self):
+        # #1616 item 1 -- "ledger duration_ms is always null" -- is already
+        # closed, by #1636's P07 timing: `iter_batch` measures around
+        # `run_entry` IN THE WORKER and hands the loop a
+        # {started_at, finished_at, duration_ms} per entry, which
+        # `Ledger.record` defaults `duration_ms` from. What was missing was a
+        # test that says so. The assertions beside this one (an int >= 0) hold
+        # just as well for a hard-coded zero or for one batch-wide figure
+        # copied onto every row, so this one pins the fact the item is about:
+        # each row carries the time THAT entry took. Two cells in one batch,
+        # one of them made slow -- concurrent, so a batch-wide measurement
+        # would give them the same number.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+
+        class OneSlowCell(FakeRunner):
+            def run_entry(self, entry, env):
+                if entry["id"] == "review-app-SEC":
+                    time.sleep(0.05)
+                return super().run_entry(entry, env)
+
+        runner = OneSlowCell()
+        self._run(d, floor, runner)
+        rows = {r["entry_id"]: r for r in ledger_mod.Ledger(runner.run_dir).lines()}
+        self.assertIn("review-app-ACC", rows)
+        # Fix round 1, N1: both bounds are CONCRETE. Comparing the two rows
+        # instead raced the sleep -- on a contended runner (this suite launches
+        # at the pool's full width) ACC's own work can exceed 50 ms and invert
+        # the pair, while the fact under test is only that each row carries its
+        # own entry's time.
+        self.assertGreaterEqual(rows["review-app-SEC"]["duration_ms"], 40)
+        self.assertLess(rows["review-app-ACC"]["duration_ms"], 40)
+
     def test_every_completed_entry_prints_one_progress_line(self):
         # The ledger item's "progress visible without inspecting processes":
         # the run-13 operator's only workaround was an external read-only
@@ -1120,6 +1174,72 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(usage["total"], sum(sum(row["usage"].values()) for row in lines))
 
 
+class TestTheClaudeRunnerCannotBeReachedByAccident(LoopCase):
+    """#1616 item 8, fix round 1 (F1): the guard has to bite on the accident it
+    was written for, which is a `driver loop` test that forgets to patch
+    `runner_for` -- claude is the default host, so that test builds the real
+    family runner and dispatches through `iter_batch`.
+
+    `iter_batch`'s worker converts any `Exception` from `run_entry` into a
+    failed RunResult, by contract ("a runner crash is a failed entry, never a
+    crashed loop"), so a refusal raised as one is swallowed and the run still
+    reports `complete` -- the loop goes green on three launches that reached
+    the real runner. The refusal is therefore a BaseException (pytest's own
+    `Failed`), which that `except Exception` cannot hold, and it escapes
+    `orchestrate.loop` too (it catches `KeyboardInterrupt` and `Exception`).
+    """
+
+    def test_a_loop_that_forgets_to_patch_runner_for_fails_the_test(self):
+        d, floor = self._repo()
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(pytest.fail.Exception) as cm:
+                orchestrate.loop(self._args(d))
+        self.assertIn("runner_for", str(cm.exception))      # names the way out
+
+
+class TestExhaustedReviewCellsAreNamedOnComplete(LoopCase):
+    """#1616 item 2: a review cell that spends `MAX_CELL_ATTEMPTS` without
+    ever returning an acceptable findings file leaves the phase DONE --
+    `review_done` counts exhaustion as done so the run advances rather than
+    wedging -- and the run therefore ends `complete`, reading exactly like a
+    clean one. The terminal status has to be able to tell them apart."""
+
+    class NeverAcceptable(FakeRunner):
+        """Self-writes a findings file the contract rejects, every time: the
+        cell never completes, and no LAUNCH ever fails, so the per-entry cap
+        never trips and only the per-cell retry budget bounds the run."""
+
+        def run_entry(self, entry, env):
+            if not entry["id"].startswith("review-"):
+                return super().run_entry(entry, env)
+            self.launched.append(entry["id"])
+            runio._write_json(entry["out_file"], {"findings": [None]})
+            return base.RunResult(entry_id=entry["id"], ok=True, text="written",
+                                  usage={}, cost_usd=0.0, model=None,
+                                  session_id=None, denials=[], error=None)
+
+    def test_a_cell_that_spends_its_retry_budget_is_named_in_the_terminal_status(self):
+        d, floor = self._repo()
+        status = self._run_loop(d, floor, self.NeverAcceptable())
+        self.assertEqual(status["status"], "complete", status)
+        self.assertTrue(review._cell_exhausted(d, "app", "SEC"))
+        self.assertEqual(status["cells_exhausted"], 1, status)
+        self.assertIn("cells_exhausted: 1", status["message"])
+        self.assertIn("app/SEC", status["message"])
+
+    def test_a_clean_run_says_nothing_about_exhausted_cells(self):
+        # The other half: the key is absent, not zero, so a clean run's
+        # terminal status is byte-for-byte the one every host already parses.
+        d, floor = self._repo()
+        status = self._run_loop(d, floor, FakeRunner())
+        self.assertEqual(status["status"], "complete", status)
+        self.assertNotIn("cells_exhausted", status)
+        self.assertEqual(status["message"], "all phases complete")
+
+
 class TestNoRedundantReDeriveOnReview(LoopCase):
     """review round 1, item 2 (plan-mandated bug): `_after_first_run`'s seam
     must gate the second `driver.run` call -- an UNCONDITIONAL one burns a
@@ -1213,192 +1333,6 @@ class TestPendingFilter(unittest.TestCase):
         self.assertFalse(orchestrate.persist.is_done(pending_entry))
         result = orchestrate._pending([done_entry, pending_entry])
         self.assertEqual([e["id"] for e in result], ["scout-pending"])
-
-
-class TestVerifyBundleCompletenessGatesResume(LoopCase):
-    """I3 (final review), the loop half: `_pending` must keep re-launching a
-    verify cell the ENGINE still considers pending.
-
-    `persist.is_done` accepted a verdict bundle on shape + stamp alone, while
-    the engine's predicate (`verify._verify_cell_done`) also requires every
-    dispatched claim to come back adjudicated. A short bundle therefore read
-    as done HERE and pending THERE: `_pending` returned [], `run_batch([])`
-    launched nothing, and each `driver.run` charged one of the cell's three
-    re-dispatch attempts for a round trip that re-ran no advisor. The retry
-    budget was spent without a single retry."""
-
-    def test_a_short_verdict_bundle_keeps_the_cell_pending_and_re_launched(self):
-        d, floor = self._repo()
-
-        class ShortVerifyRunner(FakeRunner):
-            """Self-writes a bundle that adjudicates NONE of the cell's claims
-            -- the A2 (run-9) failure, where an advisor re-coded findings and
-            returned fewer verdicts than it was handed."""
-
-            def run_entry(self, entry, env):
-                if not entry["id"].startswith("verify-"):
-                    return super().run_entry(entry, env)
-                self.launched.append(entry["id"])
-                runio._write_json(entry["out_file"], {
-                    "verdicts": [],
-                    "_panopticon": {"run_id": entry.get("run_id"),
-                                    "role": "domain_advisor",
-                                    "domain": entry["domain"], "group": entry["group"],
-                                    "stage": entry.get("stage", "primary")}})
-                return base.RunResult(entry_id=entry["id"], ok=True, text="written",
-                                      usage={}, cost_usd=0.0, model=None,
-                                      session_id=None, denials=[], error=None)
-
-        runner = ShortVerifyRunner()
-        pending_seen = []
-        real_pending = orchestrate._pending
-
-        def _record(entries):
-            out = real_pending(entries)
-            pending_seen.append([e.get("id") for e in out])
-            return out
-
-        args = self._args(d)
-        with mock.patch.object(orchestrate, "_after_first_run",
-                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
-             mock.patch.object(orchestrate, "_pending", side_effect=_record), \
-             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
-             contextlib.redirect_stdout(io.StringIO()):
-            status = orchestrate.loop(args)
-        # The bounded A2 budget still terminates the run -- but only after the
-        # advisor was actually re-dispatched, which is the whole point of it.
-        self.assertEqual(status["status"], "complete", status)
-        self.assertGreaterEqual(runner.launched.count("verify-app-SEC-primary"), 2)
-        # The defect was an empty pending set on EVERY iteration after the
-        # first short bundle: the cell's whole re-dispatch budget spent on
-        # round trips that launched nothing. The one empty set that remains is
-        # the handoff at the cap -- `verify_execute` bumps to
-        # `_MAX_VERIFY_ATTEMPTS` and writes the request in the SAME call, then
-        # disowns the cell on the next one, so the loop is right to decline an
-        # entry the engine has already given up on.
-        self.assertTrue(pending_seen)
-        self.assertEqual(pending_seen[-1], [])
-        self.assertNotIn([], pending_seen[:-1])
-
-
-class TestPerEntryFailureCap(LoopCase):
-    """Fix round 2: the loop caps CONSECUTIVE failed launches per ENTRY.
-
-    `--max-iterations` bounds the RUN. It does not bound the thing that
-    actually goes wrong, which is one entry that cannot advance while the rest
-    of the run is fine. Two failure kinds count the same here because from the
-    run's point of view they ARE the same -- the runner failed the launch, or
-    the launch came back and persist refused the reply -- and neither becomes
-    likelier on the fortieth attempt.
-
-    This is what bounds the return-persist path, which the I3 completeness fix
-    left uncapped: a refused bundle never reaches disk, so
-    `verify._verify_bundle_labeled` stays false, so the phase's own A2 attempt
-    budget never bumps. Measured before this cap: 11 launches of one advisor
-    at `--max-iterations 12`.
-    """
-
-    def test_a_chronically_refused_reply_stops_at_the_cap(self):
-        d, floor = self._repo()
-
-        class ShortReturnRunner(FakeRunner):
-            """Return-persist advisor that adjudicates none of its claims, every
-            time -- the A2 (run-9) re-coding failure, on a host with no proven
-            write guard."""
-
-            def run_entry(self, entry, env):
-                if not entry["id"].startswith("verify-"):
-                    return super().run_entry(entry, env)
-                self.launched.append(entry["id"])
-                body = {"verdicts": [],
-                        "_panopticon": {"run_id": entry.get("run_id"),
-                                        "role": "domain_advisor",
-                                        "domain": entry["domain"], "group": entry["group"],
-                                        "stage": entry.get("stage", "primary")}}
-                return base.RunResult(
-                    entry_id=entry["id"], ok=True,
-                    text="```json\n" + json.dumps(body) + "\n```",
-                    usage={"input_tokens": 11, "output_tokens": 2,
-                           "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
-                    cost_usd=0.002, model="claude-sonnet-5", session_id="s",
-                    denials=[], error=None)
-
-        runner = ShortReturnRunner()
-        status = self._run_loop(d, floor, runner, "--allow-unenforced",
-                                probes=_write_guard_not_proven)
-        self.assertEqual(status["status"], "error", status)
-        self.assertEqual(runner.launched.count("verify-app-SEC-primary"),
-                         orchestrate.MAX_ENTRY_FAILURES)
-        self.assertIn("verify-app-SEC-primary", status["message"])
-        self.assertIn("3 consecutive launches", status["message"])
-        self.assertIn("persist refused", status["message"])
-        rows = [r for r in ledger_mod.Ledger(runner.run_dir).lines()
-                if r["entry_id"] == "verify-app-SEC-primary"]
-        self.assertEqual(len(rows), orchestrate.MAX_ENTRY_FAILURES)
-        for row in rows:
-            # the runner said ok; the RUN did not advance, and the ledger says so
-            self.assertFalse(row["ok"], row)
-            self.assertTrue(row["error"].startswith("persist refused"), row["error"])
-            self.assertEqual(sum(row["usage"].values()), 13)   # M2: tokens still counted
-            self.assertEqual(row["cost_usd"], 0.002)
-
-    def test_a_clean_launch_resets_the_entrys_streak(self):
-        d, floor = self._repo()
-
-        class FlakyVerifyRunner(FakeRunner):
-            """Fails twice, self-writes a SHORT bundle (a clean launch that does
-            not finish the cell), fails twice more, then writes the real one.
-            Five launches -- the sixth is never dispatched, because the A2
-            attempt budget the short bundle started bumping runs out first and
-            the cell is declared done (exhausted) on the iteration that would
-            have launched it. Never three consecutive failures either way, so
-            the run must reach `complete`; without the reset the third failure
-            lands on launch 4 and the cap trips at four."""
-
-            def run_entry(self, entry, env):
-                if not entry["id"].startswith("verify-"):
-                    return super().run_entry(entry, env)
-                self.launched.append(entry["id"])
-                n = self.launched.count(entry["id"])
-                if n in (1, 2, 4, 5):
-                    return base.RunResult.failed(entry["id"], "flaky")
-                cell = review._load_cell_findings(
-                    self.review_root, {"run_id": entry["run_id"]},
-                    entry["group"], entry["domain"])
-                runio._write_json(entry["out_file"], {
-                    "verdicts": [] if n == 3 else [
-                        {"finding_id": cell[0]["id"], "verdict": "CONFIRMED",
-                         "reasoning": "v"}],
-                    "_panopticon": {"run_id": entry["run_id"], "role": "domain_advisor",
-                                    "domain": entry["domain"], "group": entry["group"],
-                                    "stage": entry.get("stage", "primary")}})
-                return base.RunResult(entry_id=entry["id"], ok=True, text="written",
-                                      usage={}, cost_usd=0.0, model=None,
-                                      session_id=None, denials=[], error=None)
-
-        runner = FlakyVerifyRunner()
-        status = self._run_loop(d, floor, runner)
-        self.assertEqual(status["status"], "complete", status)
-        self.assertEqual(runner.launched.count("verify-app-SEC-primary"), 5)
-
-    def test_repeated_runner_failures_stop_at_the_same_cap(self):
-        d, floor = self._repo()
-
-        class AlwaysFailsVerify(FakeRunner):
-            def run_entry(self, entry, env):
-                if not entry["id"].startswith("verify-"):
-                    return super().run_entry(entry, env)
-                self.launched.append(entry["id"])
-                return base.RunResult.failed(entry["id"], "always")
-
-        runner = AlwaysFailsVerify()
-        status = self._run_loop(d, floor, runner)
-        self.assertEqual(status["status"], "error", status)
-        self.assertEqual(runner.launched.count("verify-app-SEC-primary"),
-                         orchestrate.MAX_ENTRY_FAILURES)
-        self.assertIn("verify-app-SEC-primary", status["message"])
-        self.assertIn("3 consecutive launches", status["message"])
-        self.assertIn("last: always", status["message"])
 
 
 class TestAHostWideOutage(LoopCase):
@@ -1679,12 +1613,12 @@ class TestFinishTreatsPausedAsTerminal(unittest.TestCase):
             self.disarmed.append(entries)
 
     def _finish(self, status, guards=None, ledger=None, writes=None):
-        args = type("Args", (), {"target": "/repo", "base": None, "pr": None})()
+        # #1616 item 6: `_finish` is handed the review root `loop` already
+        # resolved, so there is no `_resolve_target` call left here to patch.
         writes = [] if writes is None else writes
-        with mock.patch.object(orchestrate, "_review_root", return_value="/repo"), \
-             mock.patch.object(orchestrate, "write_usage",
+        with mock.patch.object(orchestrate, "write_usage",
                                side_effect=lambda *a, **k: writes.append(a)):
-            return orchestrate._finish({"status": status, "message": "m"}, args,
+            return orchestrate._finish({"status": status, "message": "m"}, "/repo",
                                        guards, ledger, None, "headless", None)
 
     def test_paused_disarms_exactly_what_this_invocation_armed(self):

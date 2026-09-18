@@ -177,25 +177,47 @@ class TestRunnerFor(unittest.TestCase):
 
 
 class TestBrokenHeadlessModule(unittest.TestCase):
+    """`_headless_module` must tell "no runner for this host" apart from "this
+    host's runner is broken", so the test needs a module that fails to import.
+
+    #1616 item 4: it used to write `brokenhost.py` into `skill/scripts/runners/`
+    -- the LIVE source tree -- and rely on `addCleanup` to take it away again.
+    A crash, a Ctrl-C or a `-x` exit between the two left a stray module in the
+    shipped package, where `_seams()` in tests/test_host_launch_guard.py and
+    `_package_files()` in tests/test_layout.py would both then find it.
+
+    A temp directory APPENDED TO THE PACKAGE'S `__path__` instead. A package
+    path is a list and the import system reads it per lookup, so
+    `scripts.runners.brokenhost` resolves out of the temp directory while the
+    real package keeps its own files; a plain `sys.path` entry could not do
+    this, because `scripts.runners` is already imported and its submodule
+    search never consults `sys.path` again. Nothing is written inside the
+    repository at any point, so there is nothing a crash can leave behind:
+    `mkdtemp` is the only place this test writes, `__pycache__` included.
+    """
+
+    def _temp_package_dir(self, name, source):
+        """`name` importable from `scripts.runners`, out of a temp directory."""
+        import scripts.runners as runners_pkg
+        root = tempfile.mkdtemp(prefix="panopticon-runners-")
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, name + ".py"), "w", encoding="utf-8") as fh:
+            fh.write(source)
+        runners_pkg.__path__.append(root)
+        self.addCleanup(lambda: runners_pkg.__path__.remove(root))
+        self.addCleanup(sys.modules.pop, "scripts.runners." + name, None)
+        # The finder for a directory is cached by path, and this one was
+        # created after the last cache build.
+        importlib.invalidate_caches()
+        return root
+
     def test_a_broken_runner_module_raises_instead_of_reading_as_absent(self):
         pkg_dir = os.path.dirname(os.path.abspath(base.__file__))
-        modname = "scripts.runners.brokenhost"
-        path = os.path.join(pkg_dir, "brokenhost.py")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write("import scripts.runners.does_not_exist_xyz\n")
-
-        def _cleanup():
-            if os.path.exists(path):
-                os.remove(path)
-            sys.modules.pop(modname, None)
-            sys.modules.pop("scripts.runners.does_not_exist_xyz", None)
-            cache_dir = os.path.join(pkg_dir, "__pycache__")
-            if os.path.isdir(cache_dir):
-                for f in os.listdir(cache_dir):
-                    if f.startswith("brokenhost."):
-                        os.remove(os.path.join(cache_dir, f))
-
-        self.addCleanup(_cleanup)
+        self.addCleanup(sys.modules.pop, "scripts.runners.does_not_exist_xyz", None)
+        self._temp_package_dir("brokenhost",
+                               "import scripts.runners.does_not_exist_xyz\n")
+        self.assertFalse(os.path.exists(os.path.join(pkg_dir, "brokenhost.py")),
+                         "the live runners package holds a test's fixture module")
 
         with self.assertRaises(ModuleNotFoundError) as cm:
             base.runner_for("brokenhost", "headless")
@@ -204,16 +226,30 @@ class TestBrokenHeadlessModule(unittest.TestCase):
         with self.assertRaises(ModuleNotFoundError):
             base.headless_available("brokenhost")
 
+    def test_the_temp_package_is_really_what_the_import_resolves(self):
+        # Otherwise the test above could pass on a module that was never
+        # found at all -- both halves of it expect an exception.
+        root = self._temp_package_dir("workinghost", "class Runner:\n    pass\n")
+        self.assertTrue(base.headless_available("workinghost"))
+        mod = importlib.import_module("scripts.runners.workinghost")
+        self.assertEqual(os.path.dirname(os.path.abspath(mod.__file__)), root)
+
 
 class TestGuardFileNameConstants(unittest.TestCase):
     """M5 (final review): the allowlist/scope file NAMES have ONE owner here,
-    read by module attribute everywhere else. Two writers have to agree on
-    them byte-for-byte -- `runners/claude.py`'s `prepare`, which bakes them
-    into the hook commands it writes into host-settings.json, and
-    `orchestrate.Guards`, which writes the files themselves -- and they used
-    to spell both strings separately in three places. A rename that missed
-    one would arm a hook against a file nothing ever writes: fail-closed, so
-    every guarded Read and Write in the fan-out would be denied."""
+    read by module attribute everywhere else. Two readers have to agree on
+    them byte-for-byte -- `runners/claude.py`'s `prepare`, which resolves the
+    paths the launch is built around, and `orchestrate.Guards`, which writes
+    those files and bakes their absolute paths into the hook commands -- and
+    they used to spell both strings separately in three places. A rename that
+    missed one would arm a hook against a file nothing ever writes:
+    fail-closed, so every guarded Read and Write in the fan-out would be
+    denied.
+
+    Two READERS, not two writers, since #1616 item 5: `prepare` no longer
+    writes host-settings.json at all (`arm` did it again immediately after),
+    which is why this test asserts the resolved PATHS on both sides rather
+    than the file either of them produced."""
 
     def test_the_names_are_owned_by_base_and_read_by_attribute(self):
         import tempfile

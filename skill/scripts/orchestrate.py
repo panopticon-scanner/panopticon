@@ -210,9 +210,10 @@ def loop(args):
     # resolve failure (a bad --pr, e.g.) is reported the same way driver.run() itself reports it
     # rather than raising out of loop(), which must never raise.
     try:
-        review_root = _review_root(args)
+        resolved = _resolve_target(args)
     except (RuntimeError, ValueError, OSError) as exc:
         return _status("error", "driver loop: could not resolve review root: %s" % exc)
+    review_root = resolved[0]
     # I5 then I8: the mode fallback asks whether THIS host has a runner, so the
     # host has to be resolved first.
     host, _source = runio.resolve_host(
@@ -287,7 +288,7 @@ def loop(args):
         # settings/allowlist/scope paths it resolves depend only on `session_root`, which does not
         # change across a run.
         guards = Guards(mode, session_root=session_root)
-    status = _first_run(args, namespace)
+    status = _first_run(args, namespace, resolved)
     # `--reset` is CONSUMED by that call. `driver.run` reads `args.reset` on every invocation and
     # the loop hands it the same `args` each iteration, so left set it cleared the run folder and
     # re-minted the manifest on every `_run` below: the run restarted at its first checkpoint
@@ -303,7 +304,7 @@ def loop(args):
     # started, which is what every later iteration is for.
     args.reset = False
     if status.get("status") != "checkpoint":
-        return _finish(status, args, guards, ledger, namespace, mode, runner)
+        return _finish(status, review_root, guards, ledger, namespace, mode, runner)
     if mode == "session":
         # I4: only now. This invocation has a live checkpoint of its own, so its pending set is
         # the authority on what is still running. An entry now done falls away here; one still
@@ -311,7 +312,7 @@ def loop(args):
         # the FRESH request `_first_run` just wrote (Task 6 ruling 3).
         _disarm_previous(guards, prev_req)
     if _after_first_run(review_root):
-        status = _run(args, namespace)                # re-derive after the seam
+        status = _run(args, namespace, resolved)      # re-derive after the seam
     iterations = 0
     # The per-entry failure streaks, and (#1623) the verdict on whether a whole batch was
     # really the HOST going down. `runners.outage.FailureTally` documents and owns both.
@@ -368,7 +369,7 @@ def loop(args):
                 return _finish(_status("error", "driver loop: %d iterations without "
                                        "completing; still pending: %s"
                                        % (max_iterations, pending_ids)),
-                               args, guards, ledger, namespace, mode, runner)
+                               review_root, guards, ledger, namespace, mode, runner)
             if budget is not None:
                 # #1648: exact, and fail-CLOSED. `total_cost` raises rather than
                 # summing past a ledger line it cannot read as money -- the old
@@ -382,15 +383,15 @@ def loop(args):
                                            "; delete or repair that line, or re-run with "
                                            "`--reset`"
                                            % (exc, ledger.path, pending_ids)),
-                                   args, guards, ledger, namespace, mode, runner)
+                                   review_root, guards, ledger, namespace, mode, runner)
                 if spent >= budget:
                     return _finish(_status("error", "driver loop: --max-budget-usd %s reached; "
                                            "ledger at %s; still pending: %s"
                                            % (budget, ledger.path, pending_ids)),
-                                   args, guards, ledger, namespace, mode, runner)
+                                   review_root, guards, ledger, namespace, mode, runner)
             stuck = tally.exhausted(pending, MAX_ENTRY_FAILURES)
             if stuck:
-                return _finish(_status("error", stuck), args, guards, ledger,
+                return _finish(_status("error", stuck), review_root, guards, ledger,
                                namespace, mode, runner)
             guards.arm(pending)
             if mode == "session":
@@ -479,15 +480,15 @@ def loop(args):
             paused = tally.settle()
             if paused:
                 persist.rollback_markers(review_root, req.get("checkpoint"), pending)
-                return _finish(_status("paused", paused), args, guards, ledger,
+                return _finish(_status("paused", paused), review_root, guards, ledger,
                                namespace, mode, runner)
-            status = _run(args, namespace)
+            status = _run(args, namespace, resolved)
     except KeyboardInterrupt:
         status = _rolled_back(review_root, batch, pending, handled, req, ledger,
                               mode, runner, guards, done, total)
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
-    return _finish(status, args, guards, ledger, namespace, mode, runner)
+    return _finish(status, review_root, guards, ledger, namespace, mode, runner)
 
 
 def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
@@ -549,20 +550,23 @@ def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner
                    + ("; rollback incomplete: " + "; ".join(notes) if notes else ""))
 
 
-def _review_root(args):
-    review_root, _wt, _pr = runio.resolve_review_root(args.target, base=args.base, pr=args.pr)
-    return review_root
+def _resolve_target(args):
+    """`(review_root, worktree, pr_base)` -- resolved ONCE per invocation and passed down (#1616 item 6):
+    `driver.run` takes it as `resolved=`, not a `gh pr view` and a worktree acquisition per iteration."""
+    return runio.resolve_review_root(args.target, base=args.base, pr=args.pr)
 
 
-def _run(args, namespace):
+def _run(args, namespace, resolved=None):
     if namespace == "setup":
         import scripts.phases.setup as setup
-        return setup.run_setup_flow(args)
-    return driver.run(args)
+        # #1616 item 3: the posture step `driver.run` does on every invocation, handed in
+        # because `phases/*` may not import an entry script (tests/test_layout.py rule 3).
+        return setup.run_setup_flow(args, posture=driver._establish_host_posture)
+    return driver.run(args, resolved=resolved)
 
 
-def _first_run(args, namespace):
-    return _run(args, namespace)
+def _first_run(args, namespace, resolved=None):
+    return _run(args, namespace, resolved)
 
 
 def _dispatch_exit(review_root, req, pending, namespace):
@@ -590,13 +594,13 @@ def _dispatch_exit(review_root, req, pending, namespace):
                    checkpoint=req.get("checkpoint"))
 
 
-def _finish(status, args, guards, ledger, namespace, mode="headless", runner=None):
+def _finish(status, review_root, guards, ledger, namespace, mode="headless", runner=None):
     """The terminal teardown, executed for every non-checkpoint status. Disarm first, then attempt
     a final write_usage on BOTH `complete` and `error` (review round 2): the `except Exception`
     catch-all (round 1, item 3) can land here after a batch already recorded a ledger line but
     before that iteration's own in-loop write_usage ran, and a `complete`-only write would leave
     usage.json stale against the ledger. Wrapped so a failure here can never mask the real status
-    -- it is appended to the message instead."""
+    -- it is appended to the message instead. `review_root` is `loop`'s own (#1616 item 6)."""
     # C1 (kimi family PR review): the runner's own terminal hook, on EVERY terminal status, before the
     # guards are touched -- a host whose runner holds a scratch area outside the tree (kimi's per-run
     # KIMI_CODE_HOME, which carries the operator's credential surface and the children's verbatim wire
@@ -629,7 +633,7 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
     if (mode == "headless" and ledger is not None
             and status.get("status") in ("complete", "error", "paused")):
         try:
-            write_usage(_review_root(args), ledger, namespace)
+            write_usage(review_root, ledger, namespace)
         except Exception as exc:      # noqa: BLE001 -- must not mask the original status
             status["message"] = "%s; usage.json not written: %s: %s" % (
                 status.get("message"), type(exc).__name__, exc)
@@ -644,7 +648,6 @@ def _finish(status, args, guards, ledger, namespace, mode="headless", runner=Non
         # fail. run_setup_flow's own `complete` branch already composed the right message for that
         # path (readiness gaps and limitations included) -- leave `status["message"]` exactly as
         # it is when there is no draft to promote.
-        review_root = _review_root(args)
         draft = runio._pano(review_root, "groups.yml.draft")
         if os.path.isfile(draft):
             status = dict(status, message=(

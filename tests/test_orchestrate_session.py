@@ -1,10 +1,18 @@
-"""driver loop in SESSION mode, and `driver loop --setup` (spec 4.3/4.6).
+"""driver loop in SESSION mode, `driver loop --setup`, and the two bounded
+FAILURE surfaces the loop has (spec 4.3/4.6).
 
 Split out of tests/test_orchestrate.py, which was approaching the 700-line
-module ceiling: these two classes are the whole non-headless half of the
-loop's surface and share nothing with the headless cases but the fixtures,
-which are imported below rather than duplicated (the `run_probes` patch has
-to be re-established here because setUpModule is per-module).
+module ceiling and is now well past it: everything here shares nothing with
+the cases left there but the fixtures, which are imported below rather than
+duplicated (the `run_probes` patch has to be re-established here because
+setUpModule is per-module).
+
+#1616 item 11 moved `TestVerifyBundleCompletenessGatesResume` and
+`TestPerEntryFailureCap` in. Neither is session-mode -- they are the two
+classes that drive the loop's per-entry failure cap and the engine's own
+verify-completeness predicate, both of which happen to be reached through a
+headless runner -- so this file is now "the loop's edges" rather than
+strictly its non-headless half.
 """
 import contextlib
 import io
@@ -15,8 +23,11 @@ import tempfile
 from unittest import mock
 
 import scripts.driver as driver
+import scripts.host_disclosure as host_disclosure
+import scripts.ledger as ledger_mod
 import scripts.orchestrate as orchestrate
 import scripts.probes.common as probes_common
+import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
@@ -291,6 +302,154 @@ class TestSetupSessionMode(LoopCase):
         self.assertEqual(printed[0]["dispatch_request"], expected)
         self.assertIn("--setup", printed[0]["then"])
         self.assertIn("--setup", printed[0]["persist"])
+
+
+class _ProposalRunner(FakeRunner):
+    """Answers the single `setup-scan` entry with a valid proposal."""
+
+    def run_entry(self, entry, env):
+        self.launched.append(entry["id"])
+        proposal = {"groups": [{"capability": "custom:App", "match": ["src/**"],
+                                "tests": []}]}
+        return base.RunResult(entry_id=entry["id"], ok=True, text=json.dumps(proposal),
+                              usage={}, cost_usd=0.0, model=None, session_id=None,
+                              denials=[], error=None)
+
+
+class TestSetupEstablishesHostPosture(LoopCase):
+    """#1616 item 3: `driver loop --setup --mode headless` arms both guards
+    into `.panopticon/host-settings.json`, and `run_setup_flow` never ran the
+    posture step -- so nothing had probed the file the runner was about to arm,
+    and the evidence a review run left behind (or the absence of any) stood in
+    for a measurement of this invocation."""
+
+    def _setup_loop(self, d, runner=None, **patches):
+        args = driver.build_parser().parse_args(["loop", d, "--setup"])
+        with contextlib.ExitStack() as es:
+            for target, patch in patches.items():
+                es.enter_context(mock.patch(target, **patch))
+            es.enter_context(mock.patch("scripts.runners.base.runner_for",
+                                        return_value=runner or _ProposalRunner()))
+            es.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            es.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            return orchestrate.loop(args)
+
+    def test_the_setup_flow_probes_before_the_runner_arms_anything(self):
+        d, _ = self._repo()
+        seen = []
+
+        def _probes(host, target, **kw):
+            seen.append(host)
+            return _all_proven_artifact(host)
+
+        status = self._setup_loop(d, **{"scripts.host_probes.run_probes":
+                                        {"side_effect": _probes}})
+        self.assertEqual(status["status"], "complete", status)
+        # Once per INVOCATION, exactly as `driver run` probes -- this flow is
+        # re-entered after the batch, and posture is not a once-per-run fact
+        # (spec 5.2: a hook uninstalled mid-run would read `proven` for ever).
+        self.assertEqual(seen, ["claude"] * len(seen))
+        self.assertTrue(seen, "driver loop --setup armed its guards without a probe")
+
+    def test_a_posture_refusal_stops_the_setup_flow(self):
+        # The refusal is the point of probing at all: a posture that moved
+        # mid-run, a planted shadow shell. Before this it could not reach the
+        # setup flow to stop anything.
+        d, _ = self._repo()
+        status = self._setup_loop(d, **{"scripts.driver._establish_host_posture":
+                                        {"return_value": "posture drift: nope"}})
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("posture drift: nope", status["message"])
+
+    def test_setup_writes_its_evidence_flat_and_leaves_a_review_runs_alone(self):
+        # The sibling of `test_setup_never_writes_into_a_stale_review_runs_folder`
+        # below, for the artifact this step writes: `host-capabilities.json`
+        # resolves per-RUN, so a repo that already holds a review run-manifest
+        # would have had setup's own probe overwrite that run's evidence.
+        d, floor = self._repo()
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=FakeRunner()), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(orchestrate.loop(self._args(d))["status"], "complete")
+        per_run = runio._pano(d, runio.HOST_CAPABILITIES)       # runs/<tag>/...
+        flat = os.path.join(d, ".panopticon", runio.HOST_CAPABILITIES)
+        self.assertNotEqual(os.path.realpath(per_run), os.path.realpath(flat))
+        with open(per_run, encoding="utf-8") as fh:
+            before = fh.read()
+        os.remove(flat)                       # the fixture's; setup must write its own
+        self.assertEqual(self._setup_loop(d)["status"], "complete")
+        self.assertTrue(os.path.isfile(flat), "setup wrote no evidence of its own")
+        with open(per_run, encoding="utf-8") as fh:
+            self.assertEqual(before, fh.read(),
+                             "setup overwrote the review run's own evidence")
+
+
+    def test_the_deprecation_notice_is_printed_once_per_invocation(self):
+        # Fix round 1, F4: `run_setup_flow` prints the D4 notice itself ("once
+        # per `driver setup` call") and the injected posture step prints it
+        # again for the same resolved host -- so wiring the step in made
+        # `driver loop --setup --host generic` say it twice per invocation.
+        d, _ = self._repo()
+        args = driver.build_parser().parse_args(
+            ["loop", d, "--setup", "--host", "generic", "--mode", "session",
+             "--session-dir", self._session_root(d)])
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(err):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "dispatch", status)
+        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_DEPRECATION))
+
+    def test_a_posture_change_between_two_setup_invocations_is_not_drift(self):
+        # Fix round 1, F2: the drift refusal is a statement about ONE RUN --
+        # "entries already dispatched were built under the previous posture" --
+        # and `driver loop --setup` is not a run. Its one `setup-scan` entry is
+        # dispatched and consumed inside the invocation, and the flat
+        # host-capabilities.json it compares against outlives every one of
+        # them. The bootstrap sequence itself moves a GATING capability:
+        # tool_policy_enforced is refuted before the operator emits the host
+        # agents and proven after. Refusing would wedge the verb, and the
+        # remedy the refusal names (--reset) did not clear the file.
+        d, _ = self._repo()
+        self.assertEqual(self._setup_loop(d)["status"], "complete")
+        status = self._setup_loop(d, **{"scripts.host_probes.run_probes":
+                                        {"side_effect": _write_guard_not_proven}})
+        self.assertEqual(status["status"], "complete", status)
+        # ...and the record on disk is this invocation's, not the first one's.
+        stored = runio._load_json(os.path.join(d, ".panopticon",
+                                               runio.HOST_CAPABILITIES))
+        self.assertEqual(hosts.UNKNOWN,
+                         stored["capabilities"][hosts.ARTIFACT_WRITE_GUARD]["state"])
+
+    def test_the_guard_probes_measure_the_file_setup_really_arms(self):
+        # #1616 item 10: `headless_settings_path(review_root)` without the
+        # namespace resolves THROUGH the run-manifest, so on a repo that
+        # already holds a review run's manifest the guard probes measured
+        # `runs/<tag>/host-settings.json` while the runner armed the flat
+        # `.panopticon/host-settings.json`. The verdict is unaffected (the
+        # probe measures the directory's writability), and the path the
+        # evidence NAMES -- rendered on three disclosure surfaces -- was a
+        # file this invocation never touches.
+        d, floor = self._repo()
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=FakeRunner()), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(orchestrate.loop(self._args(d))["status"], "complete")
+        seen = []
+
+        def _probes(host, target, **kw):
+            seen.append(kw.get("settings_path"))
+            return _all_proven_artifact(host)
+
+        status = self._setup_loop(d, **{"scripts.host_probes.run_probes":
+                                        {"side_effect": _probes}})
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(set(seen), {probes_common.headless_settings_path(d, "setup")})
+        self.assertEqual(set(seen),
+                         {os.path.abspath(os.path.join(d, ".panopticon",
+                                                       base.SETTINGS_FILE))})
 
 
 class TestSetupOnRails(LoopCase):
@@ -622,3 +781,189 @@ class TestHostAndModeResolution(LoopCase):
         self.assertEqual(status["status"], "complete", status)
         self.assertTrue(seen)
         self.assertEqual(set(seen), {probes_common.headless_settings_path(d)})
+
+
+class TestVerifyBundleCompletenessGatesResume(LoopCase):
+    """I3 (final review), the loop half: `_pending` must keep re-launching a
+    verify cell the ENGINE still considers pending.
+
+    `persist.is_done` accepted a verdict bundle on shape + stamp alone, while
+    the engine's predicate (`verify._verify_cell_done`) also requires every
+    dispatched claim to come back adjudicated. A short bundle therefore read
+    as done HERE and pending THERE: `_pending` returned [], `run_batch([])`
+    launched nothing, and each `driver.run` charged one of the cell's three
+    re-dispatch attempts for a round trip that re-ran no advisor. The retry
+    budget was spent without a single retry."""
+
+    def test_a_short_verdict_bundle_keeps_the_cell_pending_and_re_launched(self):
+        d, floor = self._repo()
+
+        class ShortVerifyRunner(FakeRunner):
+            """Self-writes a bundle that adjudicates NONE of the cell's claims
+            -- the A2 (run-9) failure, where an advisor re-coded findings and
+            returned fewer verdicts than it was handed."""
+
+            def run_entry(self, entry, env):
+                if not entry["id"].startswith("verify-"):
+                    return super().run_entry(entry, env)
+                self.launched.append(entry["id"])
+                runio._write_json(entry["out_file"], {
+                    "verdicts": [],
+                    "_panopticon": {"run_id": entry.get("run_id"),
+                                    "role": "domain_advisor",
+                                    "domain": entry["domain"], "group": entry["group"],
+                                    "stage": entry.get("stage", "primary")}})
+                return base.RunResult(entry_id=entry["id"], ok=True, text="written",
+                                      usage={}, cost_usd=0.0, model=None,
+                                      session_id=None, denials=[], error=None)
+
+        runner = ShortVerifyRunner()
+        pending_seen = []
+        real_pending = orchestrate._pending
+
+        def _record(entries):
+            out = real_pending(entries)
+            pending_seen.append([e.get("id") for e in out])
+            return out
+
+        args = self._args(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             mock.patch.object(orchestrate, "_pending", side_effect=_record), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+        # The bounded A2 budget still terminates the run -- but only after the
+        # advisor was actually re-dispatched, which is the whole point of it.
+        self.assertEqual(status["status"], "complete", status)
+        self.assertGreaterEqual(runner.launched.count("verify-app-SEC-primary"), 2)
+        # The defect was an empty pending set on EVERY iteration after the
+        # first short bundle: the cell's whole re-dispatch budget spent on
+        # round trips that launched nothing. The one empty set that remains is
+        # the handoff at the cap -- `verify_execute` bumps to
+        # `_MAX_VERIFY_ATTEMPTS` and writes the request in the SAME call, then
+        # disowns the cell on the next one, so the loop is right to decline an
+        # entry the engine has already given up on.
+        self.assertTrue(pending_seen)
+        self.assertEqual(pending_seen[-1], [])
+        self.assertNotIn([], pending_seen[:-1])
+
+
+class TestPerEntryFailureCap(LoopCase):
+    """Fix round 2: the loop caps CONSECUTIVE failed launches per ENTRY.
+
+    `--max-iterations` bounds the RUN. It does not bound the thing that
+    actually goes wrong, which is one entry that cannot advance while the rest
+    of the run is fine. Two failure kinds count the same here because from the
+    run's point of view they ARE the same -- the runner failed the launch, or
+    the launch came back and persist refused the reply -- and neither becomes
+    likelier on the fortieth attempt.
+
+    This is what bounds the return-persist path, which the I3 completeness fix
+    left uncapped: a refused bundle never reaches disk, so
+    `verify._verify_bundle_labeled` stays false, so the phase's own A2 attempt
+    budget never bumps. Measured before this cap: 11 launches of one advisor
+    at `--max-iterations 12`.
+    """
+
+    def test_a_chronically_refused_reply_stops_at_the_cap(self):
+        d, floor = self._repo()
+
+        class ShortReturnRunner(FakeRunner):
+            """Return-persist advisor that adjudicates none of its claims, every
+            time -- the A2 (run-9) re-coding failure, on a host with no proven
+            write guard."""
+
+            def run_entry(self, entry, env):
+                if not entry["id"].startswith("verify-"):
+                    return super().run_entry(entry, env)
+                self.launched.append(entry["id"])
+                body = {"verdicts": [],
+                        "_panopticon": {"run_id": entry.get("run_id"),
+                                        "role": "domain_advisor",
+                                        "domain": entry["domain"], "group": entry["group"],
+                                        "stage": entry.get("stage", "primary")}}
+                return base.RunResult(
+                    entry_id=entry["id"], ok=True,
+                    text="```json\n" + json.dumps(body) + "\n```",
+                    usage={"input_tokens": 11, "output_tokens": 2,
+                           "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+                    cost_usd=0.002, model="claude-sonnet-5", session_id="s",
+                    denials=[], error=None)
+
+        runner = ShortReturnRunner()
+        status = self._run_loop(d, floor, runner, "--allow-unenforced",
+                                probes=_write_guard_not_proven)
+        self.assertEqual(status["status"], "error", status)
+        self.assertEqual(runner.launched.count("verify-app-SEC-primary"),
+                         orchestrate.MAX_ENTRY_FAILURES)
+        self.assertIn("verify-app-SEC-primary", status["message"])
+        self.assertIn("3 consecutive launches", status["message"])
+        self.assertIn("persist refused", status["message"])
+        rows = [r for r in ledger_mod.Ledger(runner.run_dir).lines()
+                if r["entry_id"] == "verify-app-SEC-primary"]
+        self.assertEqual(len(rows), orchestrate.MAX_ENTRY_FAILURES)
+        for row in rows:
+            # the runner said ok; the RUN did not advance, and the ledger says so
+            self.assertFalse(row["ok"], row)
+            self.assertTrue(row["error"].startswith("persist refused"), row["error"])
+            self.assertEqual(sum(row["usage"].values()), 13)   # M2: tokens still counted
+            self.assertEqual(row["cost_usd"], 0.002)
+
+    def test_a_clean_launch_resets_the_entrys_streak(self):
+        d, floor = self._repo()
+
+        class FlakyVerifyRunner(FakeRunner):
+            """Fails twice, self-writes a SHORT bundle (a clean launch that does
+            not finish the cell), fails twice more, then writes the real one.
+            Five launches -- the sixth is never dispatched, because the A2
+            attempt budget the short bundle started bumping runs out first and
+            the cell is declared done (exhausted) on the iteration that would
+            have launched it. Never three consecutive failures either way, so
+            the run must reach `complete`; without the reset the third failure
+            lands on launch 4 and the cap trips at four."""
+
+            def run_entry(self, entry, env):
+                if not entry["id"].startswith("verify-"):
+                    return super().run_entry(entry, env)
+                self.launched.append(entry["id"])
+                n = self.launched.count(entry["id"])
+                if n in (1, 2, 4, 5):
+                    return base.RunResult.failed(entry["id"], "flaky")
+                cell = review._load_cell_findings(
+                    self.review_root, {"run_id": entry["run_id"]},
+                    entry["group"], entry["domain"])
+                runio._write_json(entry["out_file"], {
+                    "verdicts": [] if n == 3 else [
+                        {"finding_id": cell[0]["id"], "verdict": "CONFIRMED",
+                         "reasoning": "v"}],
+                    "_panopticon": {"run_id": entry["run_id"], "role": "domain_advisor",
+                                    "domain": entry["domain"], "group": entry["group"],
+                                    "stage": entry.get("stage", "primary")}})
+                return base.RunResult(entry_id=entry["id"], ok=True, text="written",
+                                      usage={}, cost_usd=0.0, model=None,
+                                      session_id=None, denials=[], error=None)
+
+        runner = FlakyVerifyRunner()
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertEqual(runner.launched.count("verify-app-SEC-primary"), 5)
+
+    def test_repeated_runner_failures_stop_at_the_same_cap(self):
+        d, floor = self._repo()
+
+        class AlwaysFailsVerify(FakeRunner):
+            def run_entry(self, entry, env):
+                if not entry["id"].startswith("verify-"):
+                    return super().run_entry(entry, env)
+                self.launched.append(entry["id"])
+                return base.RunResult.failed(entry["id"], "always")
+
+        runner = AlwaysFailsVerify()
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual(status["status"], "error", status)
+        self.assertEqual(runner.launched.count("verify-app-SEC-primary"),
+                         orchestrate.MAX_ENTRY_FAILURES)
+        self.assertIn("verify-app-SEC-primary", status["message"])
+        self.assertIn("3 consecutive launches", status["message"])
+        self.assertIn("last: always", status["message"])

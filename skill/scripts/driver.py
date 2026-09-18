@@ -35,6 +35,7 @@ import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 import scripts.phases.discovery as discovery
+import scripts.phases.persist as persist
 import scripts.phases.readiness as readiness
 import scripts.phases.tools as tools
 import scripts.phases.review as review
@@ -65,6 +66,11 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 # #1513: the per-cell retry budget is run-scoped -- a --reset
                 # must not start with a cell already exhausted.
                 "cell-attempts.json")
+
+
+# How many exhausted cells the terminal `complete` message names before it
+# says "and N more" (the count beside it is always exact).
+_EXHAUSTED_NAMED = 10
 
 
 # #1637 P08 (owner ruling D7): `readiness` leads. `coverage` is the first
@@ -350,7 +356,7 @@ def _emit_posture_disclosure(envelope, since=None):
         sys.stderr.write("driver:   %s\n" % line)
 
 
-def _disclose_posture(review_root, manifest, fresh):
+def _disclose_posture(review_root, manifest, fresh, namespace=None):
     """Surface 1, in full once per posture and as a headline thereafter (#1596).
 
     `driver run` is a resumable loop and this runs on every invocation, so a
@@ -372,11 +378,21 @@ def _disclose_posture(review_root, manifest, fresh):
     and MINTING one here would be worse than not recording: `runio._pano`
     resolves the per-run folder off the manifest, so creating one mid-flow
     would move `host-capabilities.json` out from under this very function.
+
+    ...and never in the setup namespace (#1616 item 3), for the mirror-image
+    reason. `record_posture_disclosure` writes `run-manifest.json` -- that
+    path is unconditional -- while `driver loop --setup` is driving its OWN
+    `setup-manifest.json`, so stamping there would overwrite a prior review
+    run's manifest with setup's body: a new run_id, a new tag, and every
+    `_pano` path of that run pointing somewhere else. The cost of not
+    stamping is that setup prints the full block on each of its two
+    invocations instead of once, which is the cheap half of the trade.
     """
     digest = host_disclosure.disclosure_digest(fresh)
     since = run_manifest.posture_disclosed_at(manifest, digest)
     _emit_posture_disclosure(fresh, since=since)
-    if since is None and os.path.isfile(run_manifest.manifest_path(review_root)):
+    if (since is None and namespace is None
+            and os.path.isfile(run_manifest.manifest_path(review_root))):
         try:
             run_manifest.record_posture_disclosure(review_root, manifest, digest,
                                                    fresh.get("probed_at"))
@@ -396,7 +412,8 @@ def _disclose_posture(review_root, manifest, fresh):
                 % (type(exc).__name__, exc))
 
 
-def _establish_host_posture(review_root, manifest, args, *, registration_dir=None):
+def _establish_host_posture(review_root, manifest, args, *, registration_dir=None,
+                            namespace=None):
     """Probe this host now; write the evidence, or refuse if it moved.
 
     Spec 5.2. Runs on EVERY invocation, not once per run: `driver run` is a
@@ -408,6 +425,18 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     directions: a posture that degraded is alarming, and one that improved
     still leaves the entries already dispatched under the weaker posture, so
     the honest answer to both is a fresh run.
+
+    `namespace` is the artifact namespace this invocation belongs to (#1616
+    item 3): None for a review run, `"setup"` for `driver loop --setup`, which
+    is the one caller that is not a run. `host-capabilities.json` resolves
+    per-RUN, so on a repo that already holds a review run-manifest the flat
+    `driver loop --setup` would otherwise probe and then overwrite THAT run's
+    evidence -- the hazard `phases/persist.run_dir` exists to resolve, and the
+    one `test_setup_never_writes_into_a_stale_review_runs_folder` already pins
+    for setup's other artifacts. Nothing reads host evidence in the setup
+    namespace (`phases/setup._setup_scan_entry` passes the all-unknown posture
+    explicitly, because setup is what runs BEFORE a run exists), so this
+    writes a record rather than feeding a gate.
 
     `registration_dir` (#1609) is a TEST SEAM: None -- the default, and what
     every production caller passes -- keeps the registration probes reading the
@@ -478,7 +507,16 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # folder's host-settings.json, never the session root -- so that file,
     # not the session's, is what the guard probes must prove. `mode` is a
     # `driver loop` flag; `driver run` has none and probes the session root.
-    settings_path = (probes_common.headless_settings_path(review_root)
+    #
+    # #1616 item 10: WITH the namespace. Without it this resolves through
+    # whatever run-manifest.json is on the review root, so `driver loop
+    # --setup` on a repo that already holds a review run's manifest measured
+    # `runs/<tag>/host-settings.json` while `orchestrate.Guards` armed the flat
+    # `.panopticon/host-settings.json`. Both are writable directories, so the
+    # VERDICT was unaffected -- but the evidence's detail names the path ("the
+    # runner will arm at %s"), F3b renders it on three disclosure surfaces, and
+    # it named a file this invocation never touches.
+    settings_path = (probes_common.headless_settings_path(review_root, namespace)
                      if getattr(args, "mode", None) == "headless" else None)
     # N2: the live runner's scratch home, when the loop has one. `driver run`
     # on its own never does, and neither does the first invocation of a loop
@@ -500,7 +538,7 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # thing for this posture (#1596). Emitted even when the shadow refusal
     # below is about to stop the run, so the operator sees the posture the
     # refusal is about.
-    _disclose_posture(review_root, manifest, fresh)
+    _disclose_posture(review_root, manifest, fresh, namespace)
     # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
     # tool_policy_enforced is already REFUTED for an unrelated reason -- no
     # registration directory, i.e. every machine that has not run `driver
@@ -510,9 +548,20 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     refusal = _shadow_refusal(shadow, manifest)
     if refusal:
         return refusal
-    path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+    path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
     stored = runio._load_json(path)
-    if stored is None:
+    # A namespace that is not a run is RECORDED, never compared (fix round 1,
+    # F2). Everything the drift refusal says is about one run -- "entries
+    # already dispatched were built under the previous posture", and the remedy
+    # it names is `--reset`, which starts a fresh one. `driver loop --setup` is
+    # not a run: its single `setup-scan` entry is dispatched and consumed inside
+    # the invocation, while the flat host-capabilities.json outlives every one
+    # of them. Comparing across invocations would therefore refuse the verb for
+    # a difference that is not drift -- and the bootstrap sequence itself makes
+    # one, since `tool_policy_enforced` is REFUTED before the operator emits the
+    # host agents and PROVEN after, and it gates. The record is still written
+    # every time, so the disclosure is this invocation's own.
+    if stored is None or namespace is not None:
         runio._write_json(path, fresh)
         return None
     was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)
@@ -667,13 +716,22 @@ def _shadow_refusal(shadow, manifest):
             "explicitly refuted." % detail)
 
 
-def run(args, runner=subprocess.run, phases=PHASES):
+def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
+    # `resolved` is `runio.resolve_review_root`'s own (review_root, worktree,
+    # pr_base), already computed by a caller that holds it (#1616 item 6, fix
+    # round 1): `orchestrate.loop` calls this once per ITERATION, and on a
+    # `--pr` run every resolution is a `gh pr view` and a worktree
+    # acquisition. Default None keeps the standalone `driver run` entrypoint
+    # resolving exactly as it did -- including its injected `runner`, which is
+    # how the failure path below is tested.
+    #
     # #5.0-14: resolving the review root can fail loudly for a --pr run (gh
     # auth/network, a bad PR number, worktree acquisition) — keep it inside the
     # status protocol instead of letting a raw RuntimeError escape run().
     try:
-        review_root, worktree, pr_base = runio.resolve_review_root(
-            args.target, base=args.base, pr=args.pr, runner=runner)
+        review_root, worktree, pr_base = resolved if resolved is not None else (
+            runio.resolve_review_root(args.target, base=args.base, pr=args.pr,
+                                      runner=runner))
     except (RuntimeError, ValueError, OSError) as exc:
         return runio._error_status("could not resolve review root: %s" % exc)
     if args.pr is not None:
@@ -823,6 +881,29 @@ def run(args, runner=subprocess.run, phases=PHASES):
         return runio._error_status(str(exc))
     if result.get("status") == "complete":
         validate._finalize_worktree(review_root, manifest)
+        # #1616 item 2: `review_done` counts an exhausted cell as done -- which
+        # is what stops one unrecoverable cell wedging the run -- so a run that
+        # lost cells to their retry budget completes with the same status and
+        # the same message as one where every cell answered. Name them, here
+        # rather than in `orchestrate._finish`, because `driver run` reaches
+        # `complete` on its own too and the loop's terminal `complete` IS this
+        # status: one place, both entrypoints. Added ONLY when there are any,
+        # so a clean run's status stays byte-for-byte what every host parses
+        # today.
+        exhausted = review.exhausted_cells(review_root, manifest)
+        if exhausted:
+            # The COUNT is exact; the NAMED list is bounded (fix round 1, N2).
+            # A run that loses 100 cells would otherwise put 100 `group/domain`
+            # pairs into one status line that hosts and CI parse, and the
+            # per-cell detail is on disk either way (`cell-attempts.json`, and
+            # the report's missing floor cells).
+            named, more = exhausted[:_EXHAUSTED_NAMED], len(exhausted) - _EXHAUSTED_NAMED
+            result = dict(result, cells_exhausted=len(exhausted), message=(
+                "%s; cells_exhausted: %d (%s%s) -- these review cells spent their "
+                "retry budget without returning an acceptable findings file, so "
+                "the run completed with them missing from the review axis"
+                % (result.get("message"), len(exhausted), ", ".join(named),
+                   " and %d more" % more if more > 0 else "")))
     return result
 
 
