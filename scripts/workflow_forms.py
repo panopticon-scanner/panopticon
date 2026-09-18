@@ -351,6 +351,23 @@ def scripts(argv):
     name, found = os.path.basename(argv[0]), []
     if name == "eval":
         found = [t for t in argv[1:] if not t.startswith("-")]
-    elif name in _SHELL_STRING and "-c" in argv:
-        found = argv[argv.index("-c") + 1:][:1]
+    elif name in _SHELL_STRING:
+        found = _after_dash_c(argv)
     return [t for t in found if not shell_reader.is_marker(t)]
+
+
+def _after_dash_c(argv):
+    """The script operand of a shell's `-c`, wherever the flag was clustered.
+
+    `sh -ec`, `bash -lc`, `bash -euc` are the ordinary CI idiom, not an
+    obfuscation, and a short-option cluster carrying a lowercase `c` IS `-c`:
+    no shell spells anything else that way, and `-c` consumes the next word
+    whatever else rides along with it. Requiring `-c` as its own token let
+    every clustered spelling through.
+    """
+    for position, token in enumerate(argv[1:], start=1):
+        if token == "--":
+            break
+        if token.startswith("-") and not token.startswith("--") and "c" in token:
+            return argv[position + 1:][:1]
+    return []

