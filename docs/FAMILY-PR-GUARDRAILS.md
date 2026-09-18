@@ -196,7 +196,12 @@ in `probes/claude.py`. `skill/scripts/runners/claude.py` sets `CLI = "claude"`,
 `ENVELOPE_FLAGS = ("-p", "--output-format")` and `default_concurrency = 8`; its
 `prepare` resolves the run folder's `host-settings.json` / allowlist / scope
 paths (the loop's `Guards.arm` is what writes that file) and its `launch_env`
-pops `CLAUDECODE` so a nested session will start. Confinement is two PreToolUse
+pops `CLAUDECODE` so a nested session will start. Every launch also carries
+`--setting-sources user`, `--strict-mcp-config` and `--disable-slash-commands`
+(#1657), so a target's `.claude/settings*.json`, `.mcp.json` and
+`.claude/commands` are not read; `--settings` is a separate channel that still
+applies under `--setting-sources user`, which is what keeps the two guards
+armed. `--bare` and `--safe-mode` are never passed -- both disable hooks. Confinement is two PreToolUse
 hooks, `skill/scripts/read_guard_hook.py` and
 `skill/scripts/write_guard_hook.py`. Evidence: `driver loop . --host claude
 --reset --no-tools -d skill/scripts/runners` reached `status: complete` with 15
@@ -216,7 +221,11 @@ child agents. `skill/scripts/runners/codex.py` sets `CLI = "codex"`,
 `default_concurrency = 4`. Confinement is a read-only sandbox plus the scoped
 MCP read broker `skill/scripts/codex_read_tools.py`, which the emit branch
 registers as `panopticon_scope` with `read_file` / `search` / `list_files` and
-no write tool at all. Evidence: `driver loop . --host codex --mode headless -d
+no write tool at all. The child's process cwd is the same empty, run-owned
+scratch directory `--cd` names, outside the review root (`codex_host.launch_cwd`,
+#1657): both roots are one directory, so whichever the CLI keys discovery off,
+the target's `AGENTS.md`, `.codex/skills` and `.codex/config.toml` are out of
+reach -- `features.skip_host_skill_discovery` is measured NOT to close them. Evidence: `driver loop . --host codex --mode headless -d
 skill/scripts/runners --no-tools --allow-unenforced` reached `status:
 complete`, with both claimed capabilities `proven` and the three unclaimed ones
 `unknown`, each detail saying in as many words that the host does not claim it,
@@ -231,7 +240,13 @@ usage evidence is a session wire file, not a launch envelope -- and its
 `teardown(status)` removes; `launch_env` points `KIMI_CODE_HOME` at it.
 Confinement is `skill/scripts/kimi_guard_hook.py`, registered as two PreToolUse
 hooks in that home's `config.toml`, over a `tools.disabled` deny-list derived
-from the CLI's own vocabulary minus what the role templates grant. Evidence:
+from the CLI's own vocabulary minus what the role templates grant. Each launch
+also carries `--skills-dir=<per-run home>/no-skills`, an empty run-owned
+directory that replaces both auto-discovered skill roots (#1657), and the
+freshness of that home is itself the control on target-planted MCP: kimi reads
+`<git root>/.mcp.json` and `<cwd>/.kimi-code/mcp.json` only for a cwd with a
+workspace-trust record under `KIMI_CODE_HOME`, and a home linking only
+`credentials`/`oauth` has none. Evidence:
 run `kimi-standard-repo-20260913-88aaffdb` reached `status: complete` -- 284
 ledger rows, 37 launches, 23.2M tokens read off the wire files, all five
 capabilities `proven`. That run was measured before the branch's four
