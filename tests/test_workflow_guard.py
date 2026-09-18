@@ -703,12 +703,15 @@ class TestAnUnparseableShellIsNotAPass(unittest.TestCase):
 # `job_defects`, in the smallest step that spells it -- and the assertion is
 # the current answer, whatever that answer is.
 #
-# Every one of them is accepted today; #1697 is the pass that decides, form by
-# form, which of them the guard can reach and must therefore flag.
+# Every one of them was accepted when this class was written. #1697 then ruled
+# each by REACHABILITY: four were reachable and are CLOSED, so their pin is
+# `flagged`; six keep their entry in the docstring with the reason they keep
+# it, so their pin is `accepted` -- the fail-open state said out loud, where a
+# change that starts catching one has to come and edit it.
 
 
 class TestTheGapsTheGuardDocuments(unittest.TestCase):
-    """#1697: the ten forms the module docstring lists, each as a live step."""
+    """#1697: the ten forms the module docstring ruled, each as a live step."""
 
     def accepted(self, *steps):
         """The job is clean -- this form goes unseen, and says so out loud."""

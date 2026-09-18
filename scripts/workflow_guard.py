@@ -48,38 +48,65 @@ What it does not model. Within the shell it reads, the standing requirement is
 to fail CLOSED -- an unparsed form must be REPORTED, not accepted, which is
 precisely what the two regexes did not do, and `tests/test_workflow_guard.py`
 states every form that was probed and found open before it was parsed. The
-classes below fall outside that and are accepted SILENT gaps, deliberately:
+classes below fall outside that and are accepted SILENT gaps, deliberately.
+
+#1697 ruled every entry by REACHABILITY -- can the form appear in a `run:`
+step of this fleet, or does it need a construct the runners never use or a
+grammar this module does not have by design? Four entries were reachable and
+left this list CLOSED rather than documented, each of them shell the reader
+already produced and the rule simply did not look at: a `chmod` over a glob
+and over a walked directory, the `{}` and `xargs` operands that describe a
+file instead of naming it, a fetch inside an `eval`/`sh -c` STRING, and
+`continue-on-error: true`. What remains keeps its entry WITH its reason, and
+`TestTheGapsTheGuardDocuments` runs all of them as live steps -- so a change
+that starts catching one fails there, and this list is edited with it.
 
 * fetchers that are not curl/wget -- `gh release download`, `aws s3 cp`,
   `python3 -c "...urlretrieve..."`, an action that downloads for you. Reporting
   every command that might reach the network would be noise, not a gate, and
   the `uses:` pin rule covers the action half. If one of these lands in a
   workflow, the fetch-and-exec rule will not see it.
+  KEPT: every download this repo writes -- the fleet's two, the Dockerfiles'
+  ten -- is curl. A second tool needs a second option grammar (`gh`'s `-O` is
+  not curl's, and `aws s3 cp` copies locally too), and a fetch inside
+  `python3 -c` needs another language entirely.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard
   tracks the NAME a step writes. A checksum naming the same variable binds; a
   path spelled differently at fetch and at use matches nothing, including its
   own use, so that download goes unseen.
+  KEPT: binding two spellings of one path means EVALUATING the shell, which
+  the reader does not do by design; the fleet puts its variables in the URL
+  and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
+* a digest computed from the download itself: `SHA="$(sha256sum x | cut ...)"`
+  and then `echo "$SHA  x" | sha256sum -c -` clears x with x's own bytes.
+  KEPT: it is the entry above wearing a checksum -- refusing it means
+  following a variable's VALUE. Only this spelling is open: with the digest in
+  a sums file the step wrote, what was recorded is the text `sha256sum x`,
+  which carries no digest, so the check does not count and the fetch is
+  already reported.
 * what runs inside a container: `docker run ... image bash /w/x.sh` (and
-  `podman run`) is one command to this parser. Modelling another executor's
-  argv, its mounts and its entrypoint is a second guard's job; the image the
-  container came from is pinned by digest elsewhere (`tests/test_dockerfile.py`,
-  the `uses:` pin rule).
+  `podman run`) is one command to this parser.
+  KEPT: modelling another executor's argv, its mounts and its entrypoint is a
+  second guard's job; the image the container came from is pinned by digest
+  elsewhere (`tests/test_dockerfile.py`, the `uses:` pin rule), and the fleet's
+  one `docker run` (adapter-integration.yml) runs an image built in that job.
+* an executor that reads the file by convention rather than by argument
+  (`make`, `npm install`): the download is never an operand, so no use names
+  it.
+  KEPT: needs a construct this fleet does not have -- there is no Makefile and
+  no package.json outside a test fixture, no `run:` step invokes either tool,
+  and the repo builds with Python and Docker.
 * bytes modified after a passing check: `sha256sum -c` then `sed -i` then run.
-  The rule is about what ARRIVED from outside, and a workflow editing its own
-  downloaded file is author-deterministic, not an upstream vector.
-
-* a `chmod` over a glob (`chmod +x *.sh`): the guard tracks names, a glob
-  names nothing it can bind, so that use goes unseen.
-* a fetch inside an `eval` STRING (`eval "curl -o x URL"`), an executor that
-  reads the file by convention rather than by argument (`make`, `npm install`),
-  a digest computed from the download itself, and `find -exec` / `xargs`
-  operands: probed and found open on the last review pass, recorded in the
-  follow-up issue rather than modelled here.
+  OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from
+  outside, and a workflow editing its own downloaded file is
+  author-deterministic -- that `sed` is in the repo under review.
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the
   expression is stable between the check's step and the use's step. It is not
   when it reads `env.*` written through `$GITHUB_ENV` in between, or a forward
-  `steps.<id>.*` reference, and `continue-on-error: true` on the check step is
-  not read at all -- the YAML twin of `|| true`.
+  `steps.<id>.*` reference.
+  KEPT: deciding it means EVALUATING a GitHub expression against a context
+  this module never sees. `continue-on-error: true` was the other half of this
+  entry and is now read -- see `job_defects`.
 
 `if` branches inside the shell are read flat: a fetch inside one is a fetch,
 and a check inside a `then` branch is credited although it may not run.
