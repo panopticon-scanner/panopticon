@@ -892,6 +892,23 @@ class TestSetupConvertsAConfinementRefusal(unittest.TestCase):
         os.symlink(victim, runio._pano(root, "setup-spine.json"))
         return victim
 
+    def test_an_invalid_root_config_is_an_error_status_with_nothing_written(self):
+        # I2: `driver run` fails loud on this tree and setup used to walk
+        # straight past it -- the committed matrix reads as {} whenever the
+        # document is unreadable, so the flow would have proposed a draft that
+        # discards the operator's own groups and exclude_paths.
+        d = make_git_repo(test_case=self, files={"src/checkout/pay.py": "x = 1\n"},
+                          branch="main", user_email="t@t", user_name="t")
+        with open(os.path.join(d, repo_config.CONFIG_NAMES[0]), "w",
+                  encoding="utf-8") as fh:
+            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n")
+        args = driver.build_parser().parse_args(["setup", d])
+        status = setup_phase.run_setup_flow(args)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("version: 1", status["message"])
+        self.assertFalse(os.path.isfile(repo_config.draft_path(d)))
+        self.assertFalse(os.path.isfile(runio._pano(d, "setup-report.md")))
+
     def test_a_planted_spine_is_an_error_status_not_a_traceback(self):
         d = make_git_repo(test_case=self, files={"src/checkout/pay.py": "x = 1\n"},
                           branch="main", user_email="t@t", user_name="t")
