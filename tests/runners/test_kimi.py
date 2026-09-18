@@ -895,8 +895,8 @@ class TestHardenedWrites(unittest.TestCase):
             os.symlink(elsewhere, home)
             with self.assertRaises(OSError) as caught:
                 kimi_home.build_kimi_home(home, os.path.join(d, "s.json"),
-                                            os.path.join(d, "a.json"),
-                                            real_home=_fixture_home(d))
+                                          os.path.join(d, "a.json"),
+                                          real_home=_fixture_home(d))
             self.assertIn(home, str(caught.exception))
             self.assertEqual(0o755, os.stat(elsewhere).st_mode & 0o777)
             self.assertFalse(os.path.exists(os.path.join(elsewhere, "config.toml")))
@@ -910,8 +910,8 @@ class TestHardenedWrites(unittest.TestCase):
                 fh.write("untouched")
             os.symlink(victim, os.path.join(home, "config.toml.tmp"))
             kimi_home.build_kimi_home(home, os.path.join(d, "s.json"),
-                                        os.path.join(d, "a.json"),
-                                        real_home=_fixture_home(d))
+                                      os.path.join(d, "a.json"),
+                                      real_home=_fixture_home(d))
             with open(victim, encoding="utf-8") as fh:
                 self.assertEqual("untouched", fh.read())
             self.assertEqual(0o600, os.stat(os.path.join(home, "config.toml")).st_mode & 0o777)
@@ -992,7 +992,7 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
             home = os.path.join(d, "home")
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 kimi_home.build_kimi_home(home, os.path.join(d, "s.json"),
-                                            os.path.join(d, "a.json"), real_home=fixture)
+                                          os.path.join(d, "a.json"), real_home=fixture)
             with open(os.path.join(home, "config.toml"), "rb") as fh:
                 armed = tomllib.load(fh)
         self.assertEqual([], armed["mcp"]["servers"])
@@ -1012,8 +1012,8 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
             home = os.path.join(d, "home")
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 kimi_home.build_kimi_home(home, os.path.join(d, "s.json"),
-                                            os.path.join(d, "a.json"),
-                                            real_home=_fixture_home(d))
+                                          os.path.join(d, "a.json"),
+                                          real_home=_fixture_home(d))
             with open(os.path.join(home, "config.toml"), "rb") as fh:
                 armed = tomllib.load(fh)
         self.assertEqual("", err.getvalue())
@@ -1121,8 +1121,8 @@ class TestDefaultAgentSurface(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             home = os.path.join(d, "home")
             kimi_home.build_kimi_home(home, os.path.join(d, "s.json"),
-                                        os.path.join(d, "a.json"),
-                                        real_home=_fixture_home(d))
+                                      os.path.join(d, "a.json"),
+                                      real_home=_fixture_home(d))
             with open(os.path.join(home, "config.toml"), "rb") as fh:
                 config = tomllib.load(fh)
         vocabulary = set().union(*kimi_home.TOOL_VOCABULARY.values())
@@ -1149,9 +1149,9 @@ class TestOperatorConfigShape(unittest.TestCase):
 
     def _build(self, d, body):
         return kimi_home.build_kimi_home(os.path.join(d, "home"),
-                                           os.path.join(d, "s.json"),
-                                           os.path.join(d, "a.json"),
-                                           real_home=self._fixture(d, body))
+                                         os.path.join(d, "s.json"),
+                                         os.path.join(d, "a.json"),
+                                         real_home=self._fixture(d, body))
 
     def test_a_tools_array_names_the_file_the_key_and_the_shape(self):
         with tempfile.TemporaryDirectory() as d:

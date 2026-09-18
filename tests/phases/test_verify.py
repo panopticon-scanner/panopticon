@@ -657,7 +657,7 @@ class TestPartialDependencyAuditReachesTheAdvisor(unittest.TestCase):
         finding = {"id": "T-1", "severity": "HIGH", "source": source,
                    "location": {"file": "requirements.txt", "line_start": 1}}
         return verify_tools._tool_verify_entry(root, {"run_id": "r"}, "q1",
-                                         finding, "claude")["prompt"]
+                                               finding, "claude")["prompt"]
 
     def test_a_pip_audit_claim_is_told_the_audit_was_partial(self):
         prompt = self._prompt(self._root(self._BLOCK))

@@ -168,7 +168,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
         else:
             measured = ("the last child's %s for %r carries exactly its shell's "
                         "grant %s (%s)" % (kimi_snapshot._TOOLS_SNAPSHOT, agent,
-                                          sorted(grant), where))
+                                           sorted(grant), where))
     else:
         measured = ("%s, so the effective surface rests on the version table"
                     % where)

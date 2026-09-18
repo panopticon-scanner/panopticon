@@ -10,8 +10,8 @@ from scripts.citations import load_cwe_catalog
 import scripts.evidence as evidence_mod
 import scripts.ocrdb as ocrdb
 from . import codes as codes_mod
-from . import delta as delta_mod
 from . import corroborate as corroborate_mod
+from . import delta as delta_mod
 from . import plan as plan_mod
 
 
