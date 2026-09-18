@@ -446,14 +446,19 @@ def loop(args):
             # given back exactly as the interrupt gives it back, or three paused runs
             # exhaust the same budget the automatic iterations used to.
             paused = tally.settle(len(unlaunched))
+            # NOT every pending entry (#1721): an entry-class failure during an
+            # outage is still the entry's own and keeps its charge, and a cell
+            # that landed is done. What is given back is what the host took
+            # down, plus what the short-circuit never launched -- and it is
+            # given back whether or not the batch PAUSED, because the two are
+            # different predicates: a success from a later launch closes the
+            # trailing run, so a batch that stopped launching can still settle
+            # to None, and those cancelled cells would otherwise keep an
+            # attempt charged at dispatch for a launch that never happened.
+            give_back = unlaunched + [e for e in pending if e.get("id") in tally.uncharged]
+            if give_back:
+                persist.rollback_markers(review_root, req.get("checkpoint"), give_back)
             if paused:
-                # NOT every pending entry (#1721): an entry-class failure during
-                # an outage is still the entry's own and keeps its charge, and a
-                # cell that landed is done. What is given back is what the host
-                # took down, plus what the short-circuit never launched.
-                persist.rollback_markers(review_root, req.get("checkpoint"),
-                                         unlaunched + [e for e in pending
-                                                       if e.get("id") in tally.uncharged])
                 return _finish(_status("paused", paused), review_root, guards, ledger,
                                namespace, mode, runner)
             status = _run(args, namespace, resolved)

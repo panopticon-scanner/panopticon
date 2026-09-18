@@ -1630,9 +1630,9 @@ class TestAMidBatchHostOutage(LoopCase):
     every cell was charged.
     """
 
-    # Ten cells, not eight: the launch bound is the POOL (3 + max(2, width) +
-    # width = 7), so widening the batch must not widen it. Seven launched and
-    # three never launched says "constant", where eight cells and one left over
+    # Ten cells, not eight: the launch bound is the POOL, not the checkpoint,
+    # so widening the batch must not widen it. Two or three cells left
+    # unlaunched out of ten says "constant"; eight cells with one left over
     # would read as "proportional".
     FLOOR = ("SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG")
     HOST_ERROR = ("provider.auth_error: 403 You've reached your weekly (7-day) "
@@ -1640,24 +1640,36 @@ class TestAMidBatchHostOutage(LoopCase):
     REFUSAL = "kimi -p exited 1: All files read and cross-checked"
     WIDTH = 2
 
-    class Outage(FakeRunner):
-        """The kimi run's shape: the first two cells answer, the third refuses
-        on ITS own account (#1719's masked 403 classifies entry-class), and
-        every launch after that is the quota 403.
-
-        Behaviour is keyed on the cell's index in the batch's pending list --
-        which is its launch order, the pool being FIFO -- not on a counter, so
-        no thread interleaving can change which cell does what. And from that
-        index on, a launch does not come back until the LOOP has ledgered every
+    class Gated(FakeRunner):
+        """Behaviour keyed on the cell's index in the batch's pending list --
+        which is its LAUNCH order, the pool being FIFO -- not on a counter, so
+        no thread interleaving can change which cell does what. And from index
+        two on, a launch does not come back until the LOOP has ledgered every
         result before it: two workers answering instantly outrun a consumer
         that persists and ledgers each reply, and "what the short-circuit
-        stopped" would be a race rather than a fact.
+        stopped" would be a race rather than a fact. The chain always makes
+        progress (a launch waits only on results from launches before it) and
+        every wait is deadlined.
+
+        One worker turnover is NOT pinned and cannot be: the loop persists,
+        ledgers and counts a result before it asks `stop`, so a worker freed by
+        that result's own ledger line can start one more entry in between. That
+        is a real property of the loop, not the fixture's, which is why the
+        bound below carries it as an explicit `+ 1` rather than being flaky.
         """
 
-        def __init__(self, floor, host_error, refusal):
+        def __init__(self, floor, host_error, refusal=None):
             super().__init__()
             self.order = ["review-app-%s" % d for d in floor]
             self.failure, self.refusal = host_error, refusal
+
+        def _index(self, entry):
+            eid = entry["id"]
+            return self.order.index(eid) if eid in self.order else None
+
+        def _host_failure(self, eid):
+            return base.RunResult.failed(eid, "kimi -p exited 1: " + self.failure,
+                                         host_error=self.failure)
 
         def _await_ledger(self, lines):
             path = os.path.join(self.run_dir, base.LEDGER_FILE)
@@ -1671,20 +1683,48 @@ class TestAMidBatchHostOutage(LoopCase):
                 time.sleep(0.005)
             raise AssertionError("the loop never ledgered %d results" % lines)
 
+    class Outage(Gated):
+        """The kimi run's shape: the first two cells answer, the third refuses
+        on ITS own account (#1719's masked 403 classifies entry-class), and
+        every launch after that is the quota 403."""
+
         def run_entry(self, entry, env):
-            eid = entry["id"]
-            i = self.order.index(eid) if eid in self.order else None
+            i = self._index(entry)
             if i is None or i < 2:
                 return super().run_entry(entry, env)
+            eid = entry["id"]
             self.launched.append(eid)
             if i == 2:
                 return base.RunResult.failed(eid, self.refusal)
             self._await_ledger(i)
-            return base.RunResult.failed(eid, "kimi -p exited 1: " + self.failure,
-                                         host_error=self.failure)
+            return self._host_failure(eid)
+
+    class Recovers(Gated):
+        """The same 403, and then the host comes back. Cells 2 and 3 fail
+        host-class on their FIRST launch -- two in a row, which trips the stop
+        at width two -- and the launch already in flight when it trips (cell 4,
+        a later `seq`) answers cleanly, which closes the trailing run. So the
+        batch settles to "not an outage" even though the stop had already
+        cancelled everything still queued."""
+
+        def run_entry(self, entry, env):
+            i = self._index(entry)
+            if i is None or i < 2:
+                return super().run_entry(entry, env)
+            eid = entry["id"]
+            first = eid not in self.launched
+            if first:
+                self._await_ledger(i)
+            if first and i < 4:
+                self.launched.append(eid)
+                return self._host_failure(eid)
+            return super().run_entry(entry, env)
 
     def _outage(self):
         return self.Outage(self.FLOOR, self.HOST_ERROR, self.REFUSAL)
+
+    def _recovers(self):
+        return self.Recovers(self.FLOOR, self.HOST_ERROR)
 
     def _run(self, d, floor, runner, *extra):
         """`LoopCase._run_loop` with this run's stderr kept: the short-circuit
@@ -1704,6 +1744,17 @@ class TestAMidBatchHostOutage(LoopCase):
     def _reviews(self, runner):
         return [x for x in runner.launched if x.startswith("review-")]
 
+    def _first_batch(self, runner):
+        """The review cells the FIRST checkpoint launched: `launched` in order
+        up to the first repeat, since no cell is launched twice in one batch
+        and the next iteration re-dispatches the ones that failed."""
+        out = []
+        for eid in self._reviews(runner):
+            if eid in out:
+                break
+            out.append(eid)
+        return out
+
     def test_the_outage_stops_the_batch_instead_of_draining_it(self):
         d, floor = self._repo(floor=self.FLOOR)
         runner = self._outage()
@@ -1712,12 +1763,15 @@ class TestAMidBatchHostOutage(LoopCase):
         reviews = self._reviews(runner)
         self.assertLess(len(reviews), len(self.FLOOR), reviews)
         # 2 answered + 1 refused + the corroboration the stop waits for
-        # (max(2, width)) + the pool that was already running (width). A
-        # CONSTANT: the batch is ten cells and the bound is still seven, so
-        # what the outage costs is the pool, not the checkpoint.
-        self.assertLessEqual(len(reviews), 3 + max(2, self.WIDTH) + self.WIDTH, reviews)
+        # (max(2, width)) + the pool that was already running (width) + the one
+        # worker that can turn over while the loop is still persisting,
+        # ledgering and counting the result that trips the stop, since the
+        # decision point is after that work. A CONSTANT either way: the batch
+        # is ten cells and the bound is still eight, so what an outage costs is
+        # the pool, not the checkpoint.
+        self.assertLessEqual(len(reviews), 3 + max(2, self.WIDTH) + self.WIDTH + 1, reviews)
         unlaunched = len(self.FLOOR) - len(reviews)
-        self.assertGreaterEqual(unlaunched, 3, reviews)
+        self.assertGreaterEqual(unlaunched, 2, reviews)
         self.assertIn("%d of %d entries not launched" % (unlaunched, len(self.FLOOR)), err)
         self.assertIn("host outage detected after", err)
         self.assertIn("%d of its entries were never launched" % unlaunched, status["message"])
@@ -1752,6 +1806,50 @@ class TestAMidBatchHostOutage(LoopCase):
         self.assertEqual("complete", again["status"], again)
         self.assertEqual(sorted("review-app-%s" % x for x in self.FLOOR[2:]),
                          sorted(x for x in healthy.launched if x.startswith("review-")))
+
+    def test_a_stop_that_does_not_end_in_a_pause_still_gives_the_markers_back(self):
+        # The stop and the settle verdict are DIFFERENT predicates, and the
+        # give-back used to hang off the pause. Two 403s trip the stop at width
+        # two; the launch already in flight has a later seq and answers
+        # cleanly, so the run closes and `settle` returns None -- and the cells
+        # the stop had already CANCELLED kept the attempt `review_execute`
+        # charged them at dispatch, for a launch that never happened. Three
+        # such batches and those cells are dropped from the review.
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self._recovers()
+        seen = {}
+        real = orchestrate.persist.rollback_markers
+
+        def spy(review_root, checkpoint, entries):
+            cleared = real(review_root, checkpoint, entries)
+            seen.setdefault("calls", []).append(sorted(cleared))
+            # read the document back THROUGH the give-back, which is the only
+            # moment "those cells are at zero" is observable
+            seen["attempts"] = dict(runio._load_json(
+                runio._pano(d, "cell-attempts.json")) or {})
+            return cleared
+
+        with mock.patch.object(orchestrate.persist, "rollback_markers", side_effect=spy):
+            status, err = self._run(d, floor, runner)
+        self.assertEqual("complete", status["status"], status)   # not an outage after all
+        first = self._first_batch(runner)
+        never = [x for x in self.FLOOR if "review-app-%s" % x not in first]
+        self.assertTrue(never, first)
+        # the give-back ran exactly once, off the stop rather than off the pause
+        self.assertEqual(1, len(seen.get("calls") or []), seen)
+        host_failed = [self.FLOOR[2], self.FLOOR[3]]
+        self.assertEqual(sorted("app/%s" % x for x in never + host_failed),
+                         seen["calls"][0])
+        for domain in never + host_failed:
+            self.assertEqual(0, seen["attempts"].get("app/%s" % domain),
+                             (domain, seen["attempts"]))
+        # ...and the next iteration re-dispatches them, so each is charged for
+        # the one launch it really got rather than for two
+        for domain in never:
+            self.assertIn("review-app-%s" % domain, self._reviews(runner)[len(first):])
+        attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
+        self.assertEqual([], [k for k, v in attempts.items() if v != 1], attempts)
+        self.assertNotIn("paused", err)
 
     def test_a_403_a_later_launch_answers_after_is_not_an_outage(self):
         # The other half of the trailing-run rule: a 403 whose successor came
