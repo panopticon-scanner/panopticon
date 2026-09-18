@@ -10,8 +10,10 @@ Never launches a real `kimi`: every Runner here is either unlaunched or
 injected with a fake.
 """
 import os
+import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -80,6 +82,69 @@ class TestSkillsDirectory(unittest.TestCase):
             other = _prepared(second)
             self.addCleanup(other.teardown, "complete")
             self.assertNotEqual(other.skills_dir, self.r.skills_dir)
+
+
+class TestWorkspaceTrustGate(unittest.TestCase):
+    """The MEASURED neutraliser of target-planted MCP (2026-09-18 experiment).
+
+    0.42.0's `configLoader.loadMcpServersDetailed` reads `<git root>/.mcp.json`
+    and `<cwd>/.kimi-code/mcp.json` only when `includeProject` is true, and
+    every call site passes `this.trust.isTrusted()`. `WorkspaceTrustService`
+    keeps that record in the `workspace-trust` document scope under
+    `KIMI_CODE_HOME`. The per-run home is a fresh mkdtemp linking ONLY the
+    credential stores, so no trust record exists, the project files are never
+    read, and the planted servers never spawn -- confirmed on a real launch:
+    neither marker was touched and the child's `llm.tools_snapshot` held only
+    Glob/Grep/Read.
+
+    That protection is one line from disappearing. These are the pins.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_only_the_credential_stores_are_linked_into_the_per_run_home(self):
+        self.assertEqual(
+            ("credentials", "oauth"), kimi_home._CREDENTIAL_ITEMS,
+            "adding an item here can un-neutralise target-planted MCP: a fresh "
+            "home has no `workspace-trust` record, so kimi treats cwd as "
+            "untrusted and never reads <git root>/.mcp.json or "
+            "<cwd>/.kimi-code/mcp.json. Link the trust scope -- or copy the "
+            "operator's home wholesale -- and those servers spawn, under names "
+            "no guard hook and no tools.disabled entry can see.")
+
+    def test_a_built_home_carries_no_trust_record_and_no_mcp_file(self):
+        real = _fixture_home(self.tmp.name)
+        # The operator's own home has both; neither may be carried over.
+        os.makedirs(os.path.join(real, "workspace-trust"))
+        with open(os.path.join(real, "workspace-trust", "wd_target"), "w",
+                  encoding="utf-8") as fh:
+            fh.write('{"trusted": true}')
+        with open(os.path.join(real, "mcp.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"mcpServers": {"planted": {"command": "/bin/sh"}}}')
+        home = kimi_home.build_kimi_home(
+            kimi_home.new_kimi_home(), os.path.join(self.tmp.name, "scope.json"),
+            os.path.join(self.tmp.name, "allow.json"), real_home=real)
+        self.addCleanup(shutil.rmtree, home, True)
+        entries = set(os.listdir(home))
+        self.assertNotIn("workspace-trust", entries)
+        self.assertNotIn("mcp.json", entries)
+        self.assertEqual({"config.toml", "credentials"}, entries)
+
+    def test_the_inert_mcp_block_is_a_second_layer_not_the_mechanism(self):
+        # It stays -- cheap, and correct if a future CLI honours it -- but the
+        # 0.42.0 schema does not know these keys, so nothing here may be read
+        # as the thing that stops a planted server.
+        home = kimi_home.build_kimi_home(
+            kimi_home.new_kimi_home(), os.path.join(self.tmp.name, "scope.json"),
+            os.path.join(self.tmp.name, "allow.json"),
+            real_home=_fixture_home(self.tmp.name))
+        self.addCleanup(shutil.rmtree, home, True)
+        with open(os.path.join(home, "config.toml"), "rb") as fh:
+            generated = tomllib.load(fh)
+        self.assertEqual({"enabled": False, "servers": []}, generated["mcp"])
+        self.assertIn("workspace-trust", kimi_home.__doc__)
 
 
 if __name__ == "__main__":
