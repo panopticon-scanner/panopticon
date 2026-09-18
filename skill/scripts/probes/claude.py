@@ -153,10 +153,12 @@ WRITE_GUARD_ARMED = "write-guard-armed"
 def _headless_subject_dir(settings_path):
     """(writable, probe_dir): the run folder the headless loop writes into.
 
-    The runner creates `settings_path` itself, so the question is only
-    whether its directory exists or can be created, and is writable --
-    answered off the nearest existing ancestor. Shared by the two guard
-    probes and the usage probe, which word the failure differently."""
+    `settings_path` is created by the ARMING (`orchestrate.Guards.arm`, per
+    batch, through the two hooks' own installers), not by this probe and not
+    by the runner's `prepare` -- so the question here is only whether its
+    directory exists or can be created, and is writable, answered off the
+    nearest existing ancestor. Shared by the two guard probes and the usage
+    probe, which word the failure differently."""
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
     probe_dir = settings_dir
     while not os.path.isdir(probe_dir):

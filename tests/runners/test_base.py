@@ -237,13 +237,19 @@ class TestBrokenHeadlessModule(unittest.TestCase):
 
 class TestGuardFileNameConstants(unittest.TestCase):
     """M5 (final review): the allowlist/scope file NAMES have ONE owner here,
-    read by module attribute everywhere else. Two writers have to agree on
-    them byte-for-byte -- `runners/claude.py`'s `prepare`, which bakes them
-    into the hook commands it writes into host-settings.json, and
-    `orchestrate.Guards`, which writes the files themselves -- and they used
-    to spell both strings separately in three places. A rename that missed
-    one would arm a hook against a file nothing ever writes: fail-closed, so
-    every guarded Read and Write in the fan-out would be denied."""
+    read by module attribute everywhere else. Two readers have to agree on
+    them byte-for-byte -- `runners/claude.py`'s `prepare`, which resolves the
+    paths the launch is built around, and `orchestrate.Guards`, which writes
+    those files and bakes their absolute paths into the hook commands -- and
+    they used to spell both strings separately in three places. A rename that
+    missed one would arm a hook against a file nothing ever writes:
+    fail-closed, so every guarded Read and Write in the fan-out would be
+    denied.
+
+    Two READERS, not two writers, since #1616 item 5: `prepare` no longer
+    writes host-settings.json at all (`arm` did it again immediately after),
+    which is why this test asserts the resolved PATHS on both sides rather
+    than the file either of them produced."""
 
     def test_the_names_are_owned_by_base_and_read_by_attribute(self):
         import tempfile
