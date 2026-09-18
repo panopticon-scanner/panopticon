@@ -163,6 +163,16 @@ groups:
       # 700-line instruction. Same parking reasoning as money.py just above
       # -- belongs beside orchestrate.py in `Phases`, full at 48/48.
       - skill/scripts/ledger.py
+      # item 25e: the loop's per-batch bookkeeping -- the resume set, the
+      # per-entry usage rewrite, and what happens to ONE entry that came
+      # back (persist the reply or keep what was refused, then the ledger
+      # row) -- moved out of `orchestrate.py`, which was ON its 700-line
+      # instruction. FLAT rather than `runners/loop_batch.py` because
+      # `runners/*` may not import `scripts.phases.*` and all three do
+      # (tests/test_layout.py rule 3), so it is `money.py`/`ledger.py`'s
+      # shape and lands here the same way: belongs beside orchestrate.py
+      # in `Phases`, which is full at 48/48.
+      - skill/scripts/loop_batch.py
       # item 24: the driver's phase children (spawn, timeout, bounded capture,
       # process-group kill), moved out of `phases/runio.py`. Parked here for the
       # same REASON money.py and ledger.py above are -- `Orchestration:Phases`,

@@ -15,6 +15,7 @@ import pytest
 
 import scripts.driver as driver
 import scripts.ledger as ledger_mod
+import scripts.loop_batch as loop_batch
 import scripts.orchestrate as orchestrate
 import scripts.phases.review as review
 import scripts.runners.batch as batch_mod
@@ -996,7 +997,7 @@ class TestHeadlessLoop(LoopCase):
         # wrapped for the same reason.
         d, floor = self._repo(floor=("SEC", "ACC", "ARC", "TST"))
         runner = FakeRunner()
-        calls, real = [], orchestrate.write_usage
+        calls, real = [], loop_batch.write_usage
 
         def flaky(review_root, ledger, namespace=None):
             calls.append(1)
@@ -1006,7 +1007,7 @@ class TestHeadlessLoop(LoopCase):
 
         err = io.StringIO()
         with contextlib.redirect_stderr(err), \
-             mock.patch.object(orchestrate, "write_usage", side_effect=flaky):
+             mock.patch.object(loop_batch, "write_usage", side_effect=flaky):
             status = self._run(d, floor, runner)
         self.assertEqual(status["status"], "complete", status)
         rows = [row["entry_id"] for row in ledger_mod.Ledger(runner.run_dir).lines()]
@@ -1017,8 +1018,8 @@ class TestHeadlessLoop(LoopCase):
     def test_usage_is_rewritten_after_every_entry_not_once_per_batch(self):
         d, floor = self._repo(floor=("SEC", "ACC"))
         runner = FakeRunner()
-        with mock.patch.object(orchestrate, "write_usage",
-                               wraps=orchestrate.write_usage) as wu:
+        with mock.patch.object(loop_batch, "write_usage",
+                               wraps=loop_batch.write_usage) as wu:
             status = self._run(d, floor, runner)
         self.assertEqual(status["status"], "complete", status)
         # one per launch, plus _finish's terminal write
@@ -1331,7 +1332,7 @@ class TestPendingFilter(unittest.TestCase):
         pending_entry = {"id": "scout-pending", "out_file": pending_out}
         self.assertTrue(orchestrate.persist.is_done(done_entry))
         self.assertFalse(orchestrate.persist.is_done(pending_entry))
-        result = orchestrate._pending([done_entry, pending_entry])
+        result = loop_batch._pending([done_entry, pending_entry])
         self.assertEqual([e["id"] for e in result], ["scout-pending"])
 
 
@@ -1616,7 +1617,7 @@ class TestFinishTreatsPausedAsTerminal(unittest.TestCase):
         # #1616 item 6: `_finish` is handed the review root `loop` already
         # resolved, so there is no `_resolve_target` call left here to patch.
         writes = [] if writes is None else writes
-        with mock.patch.object(orchestrate, "write_usage",
+        with mock.patch.object(loop_batch, "write_usage",
                                side_effect=lambda *a, **k: writes.append(a)):
             return orchestrate._finish({"status": status, "message": "m"}, "/repo",
                                        guards, ledger, None, "headless", None)

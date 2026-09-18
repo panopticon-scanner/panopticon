@@ -176,7 +176,7 @@ class TestVerifyCellCompleteness(unittest.TestCase):
     A2 (run-9) is the reason the phase asks more: an advisor RE-CODED a cell's
     findings and returned 9 verdicts for 10 claims, and a bundle accepted on
     shape alone left two claims silently unadjudicated. persist inherited the
-    laxity, so `orchestrate._pending` dropped a cell the engine still wanted
+    laxity, so `loop_batch._pending` dropped a cell the engine still wanted
     -- `run_batch([])`, zero launches, while each `driver.run` spent one of
     the cell's three re-dispatch attempts on nothing at all.
     """

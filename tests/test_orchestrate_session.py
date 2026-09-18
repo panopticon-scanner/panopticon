@@ -25,6 +25,7 @@ from unittest import mock
 import scripts.driver as driver
 import scripts.host_disclosure as host_disclosure
 import scripts.ledger as ledger_mod
+import scripts.loop_batch as loop_batch
 import scripts.orchestrate as orchestrate
 import scripts.probes.common as probes_common
 import scripts.phases.review as review
@@ -819,7 +820,7 @@ class TestVerifyBundleCompletenessGatesResume(LoopCase):
 
         runner = ShortVerifyRunner()
         pending_seen = []
-        real_pending = orchestrate._pending
+        real_pending = loop_batch._pending
 
         def _record(entries):
             out = real_pending(entries)
@@ -829,7 +830,7 @@ class TestVerifyBundleCompletenessGatesResume(LoopCase):
         args = self._args(d)
         with mock.patch.object(orchestrate, "_after_first_run",
                                side_effect=lambda rr: self._seed_coverage(rr, floor)), \
-             mock.patch.object(orchestrate, "_pending", side_effect=_record), \
+             mock.patch.object(loop_batch, "_pending", side_effect=_record), \
              mock.patch("scripts.runners.base.runner_for", return_value=runner), \
              contextlib.redirect_stdout(io.StringIO()):
             status = orchestrate.loop(args)
