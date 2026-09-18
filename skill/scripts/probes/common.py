@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import stat
+from collections import namedtuple
 
 from scripts import dispatch, hosts
 
@@ -429,3 +430,68 @@ def probe_shadow_shells(host, review_root):
     return (hosts.UNKNOWN, SHADOW_SHELL_SCAN,
             "no shadowing agent files in the reviewed tree's %s"
             % ", ".join(row.project_scope_dirs))
+
+
+# --- the target's discovery surface (#1657 step 3) --------------------------
+DISCOVERY_SURFACE = "target-discovery-surface"
+
+# What CLOSES a surface the registry marks CONTROLLED, and how a test proves
+# it is still there (spec §4). Written here, beside the scan that reports the
+# hit, and pinned by tests/probes/test_discovery_surface.py against the
+# runners' own `command()` argv: a control that stops being passed must fail
+# the suite, because the table would otherwise go on calling its surface
+# closed. `argv` is the token(s) the launch carries -- a token spelled with a
+# trailing `=` matches a `--flag=<value>` argv entry by prefix -- and is empty
+# for a control that is not a flag at all, whose `mechanism` names what a test
+# must assert instead.
+Control = namedtuple("Control", "host argv mechanism")
+CONTROLS = {
+    "claude:setting-sources-user": Control(
+        "claude", ("--setting-sources", "user"),
+        "the launch reads the USER's settings only, so a target-shipped "
+        "`.claude/settings.json` / `settings.local.json` -- and every hook it "
+        "declares -- is never read"),
+    "claude:strict-mcp-config": Control(
+        "claude", ("--strict-mcp-config",),
+        "the loop passes no `--mcp-config`, so the reviewer gets no MCP "
+        "servers at all rather than the target's"),
+    "claude:disable-slash-commands": Control(
+        "claude", ("--disable-slash-commands",),
+        '"Disable all skills" (`claude --help`), which closes a planted '
+        "`.claude/skills/*/SKILL.md` as well as `.claude/commands/**`"),
+    "codex:cwd-outside-target": Control(
+        "codex", (),
+        "`codex_host.launch_cwd` runs the child in the empty, run-owned "
+        "scratch `--cd` names, outside the review root, so whichever root the "
+        "CLI keys discovery off it is not the target's"),
+    "codex:ignore-user-config-and-rules": Control(
+        "codex", ("--ignore-user-config", "--ignore-rules"),
+        "the launch reads neither the user's config nor a `.rules` file"),
+    "kimi:workspace-trust-gate": Control(
+        "kimi", (),
+        "the per-run `$KIMI_CODE_HOME` links only `kimi_home._CREDENTIAL_ITEMS`, "
+        "so it holds no `workspace-trust` record and the CLI never reads the "
+        "target's project MCP files"),
+    "kimi:skills-dir": Control(
+        "kimi", ("--skills-dir=",),
+        "`--skills-dir=<run-owned empty dir>` replaces BOTH auto-discovered "
+        "skill roots, the operator's and the target's"),
+}
+
+
+def control_is_on(control, argv):
+    """Does this launch's argv carry the control's token(s)?
+
+    The matcher the liveness test uses, defined beside the table rather than
+    in the test, so "what counts as carrying this control" has one spelling:
+    an exact token, or -- for a token written with a trailing `=` -- an argv
+    entry starting with it, which is the equals form kimi's 0.42.0 parser
+    requires. A control with no `argv` at all is not a flag and answers False:
+    its `mechanism` is what a test must assert.
+    """
+    row = CONTROLS.get(control)
+    if not row or not row.argv:
+        return False
+    return all(any(a == token or (token.endswith("=") and a.startswith(token))
+                   for a in argv)
+               for token in row.argv)
