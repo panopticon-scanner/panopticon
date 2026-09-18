@@ -169,6 +169,46 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertNotIn("--pr-base", cmd)
         self.assertIn("--base", cmd)
 
+    def test_discovery_threads_pr_worktree_when_the_manifest_has_a_pr(self):
+        # #1681: under --pr the review root IS the throwaway worktree, and
+        # `diff_map._sync_config` has already overwritten its root config with
+        # the operator's copy. `--pr-worktree` is what tells discovery.py to
+        # keep that sync out of diff-hunks.json rather than attribute it to the
+        # PR -- nothing pinned the flag's emission, so a dropped `if` would
+        # have published the operator's own config edit as a reviewable hunk.
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
+                        base=None, pr_base="main", pr=7)
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
+            result = discovery.discovery_execute(self.root, manifest)
+        self.assertEqual(result.kind, "advanced")
+        self.assertIn("--pr-worktree", run.call_args.args[0])
+
+    def test_discovery_omits_pr_worktree_without_a_pr(self):
+        # The other half: a plain -c/--base run in the operator's OWN checkout
+        # carries no `pr`, and excluding the config names there would hide a
+        # real reviewable change to them.
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
+                        base="main")
+
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            with open(out, "w") as fh:
+                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
+            discovery.discovery_execute(self.root, manifest)
+        self.assertNotIn("--pr-worktree", run.call_args.args[0])
+
 
 class TestGroupsArtifactShape(unittest.TestCase):
     """#1643: `discovery_done` was `_json_parses`, so `{}` completed the phase.
