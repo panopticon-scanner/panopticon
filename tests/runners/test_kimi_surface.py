@@ -12,7 +12,6 @@ injected with a fake.
 import os
 import shutil
 import stat
-import subprocess
 import tempfile
 import tomllib
 import unittest
@@ -42,8 +41,13 @@ def _fixture_home(d):
 
 
 def _prepared(d, runner=None):
+    # `runner=runner`, i.e. None by default -- NOT `subprocess.run`. An
+    # explicitly passed launcher routes around tests/conftest.py's autouse
+    # `_no_live_host_launches`, which swaps the module's DEFAULT_RUNNER for a
+    # refusal; leaving it None means any launch from this module hits that
+    # refusal rather than the real `kimi` binary.
     with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
-        r = kimi_runner.Runner("kimi", runner=runner or subprocess.run)
+        r = kimi_runner.Runner("kimi", runner=runner)
         r.prepare(os.path.join(d, "run"), review_root=d)
     return r
 
@@ -74,7 +78,9 @@ class TestSkillsDirectory(unittest.TestCase):
         self.assertTrue(os.path.isdir(self.r.skills_dir))
         self.assertEqual([], os.listdir(self.r.skills_dir))
         self.assertEqual(os.path.dirname(self.r.skills_dir), self.r.kimi_home)
-        self.assertEqual(os.stat(self.r.skills_dir).st_mode & 0o077, 0)
+        # Exactly 700, not merely "nothing for group and other": the second
+        # reading passes for 0o000 and 0o500 too.
+        self.assertEqual(0o700, stat.S_IMODE(os.stat(self.r.skills_dir).st_mode))
 
     def test_an_unprepared_runner_refuses_to_build_an_argv_at_all(self):
         # Failing OPEN here would hand back a launchable argv with NO
