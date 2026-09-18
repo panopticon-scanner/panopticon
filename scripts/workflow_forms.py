@@ -23,7 +23,14 @@ Three questions live here, each one a shape a step writes down:
                                writing its name
     where a script hides       `scripts` finds the shell handed to `eval` or
                                `sh -c` as a STRING, which is the same act one
-                               quote away from a substitution
+                               quote away from a substitution; `in_container`
+                               the operand a `docker run` hands to a shell on
+                               the far side of a bind mount
+    whether a failure matters  `swallowed` reads the separator, the `!` and
+                               the `if`/`while` around a command, and `regions`
+                               the branch bodies it was written inside -- the
+                               two ways the shell says an exit status will not
+                               stop the script
 
 Stdlib only, like everything under it.
 """
@@ -33,7 +40,7 @@ import os
 import re
 
 import shell_reader
-from shell_reader import command
+from shell_reader import command, conditional, negated
 
 
 # A download: the tool that ran, the URL it was given, the file it lands in
@@ -376,3 +383,96 @@ def _after_dash_c(argv):
         if token.startswith("-") and not token.startswith("--") and "c" in token:
             return argv[position + 1:][:1]
     return []
+
+
+# --- whether a command's failure is allowed to matter -------------------------
+
+# The container runners, and the subcommands of theirs that run a command. The
+# image itself is pinned by digest elsewhere; what is read here is the argv
+# after it.
+CONTAINERS = ("docker", "podman", "nerdctl")
+_CONTAINER_RUN = ("run", "exec", "create")
+
+
+def in_container(argv, dest, interpreters):
+    """The interpreter a container command hands `dest` to, or None.
+
+    Mounts are NOT modelled -- `-v /tmp:/w` renames a whole tree, and reading
+    another executor's argv, its mounts and its entrypoint is a second guard's
+    job -- so the binding is by BASENAME, and only inside a container argv.
+    Everywhere else a basename match is exactly the unbound checksum this rule
+    refuses, because the directory is real and a different one is a different
+    file; on the far side of a bind mount the directory is the container's,
+    and `docker run … -v /tmp:/w img bash /w/x.sh` runs the bytes this job
+    downloaded to /tmp/x.sh under a path no step ever wrote.
+    """
+    base = os.path.basename(dest)
+    if not base or len(argv) < 2 or argv[1] not in _CONTAINER_RUN:
+        return None
+    for position, token in enumerate(argv[2:], start=2):
+        if os.path.basename(token) not in interpreters:
+            continue
+        for operand in argv[position + 1:]:
+            if not operand.startswith("-") and os.path.basename(operand) == base:
+                return os.path.basename(token)
+    return None
+
+
+# A check whose non-zero exit nobody sees is not a check. Runners default to
+# `bash -e -o pipefail`, which is what makes `sha256sum -c` a GATE -- and the
+# shell around the command decides whether that survives. `&` detaches it;
+# `||` hands the failure to a branch, which rescues it ONLY if that branch
+# ends the job; `if`/`while`/`!` make it a test, and errexit never applies to
+# a test.
+_SWALLOWING = ("||", "&")
+# The `|| ...` branches that keep a check a check: they fail the step, which
+# is exactly what errexit would have done.
+_FATAL = ("exit", "return", "false")
+_GROUP_OPEN = ("{", "(")
+
+
+def _stops_the_job(stmts, index):
+    """True if the `||` branch after `stmts[index]` fails the step.
+
+    `sha256sum -c - || exit 1` and `... || { echo "::error::"; exit 1; }` are
+    gates, not swallows -- and they are the cheap hardened spellings, so
+    refusing them would push authors toward the exemption list instead.
+    """
+    following = stmts[index + 1:index + 11]
+    if not following:
+        return False
+    first = following[0].stages[0].argv if following[0].stages else []
+    grouped = bool(first) and first[0] in _GROUP_OPEN
+    for statement in following:
+        for stage in statement.stages:
+            argv = command(stage.argv)
+            if argv and os.path.basename(argv[0]) in _FATAL:
+                return True
+        if not grouped or any("}" in t or ")" in t
+                              for stage in statement.stages for t in stage.argv):
+            break
+    return False
+
+
+def swallowed(stmts, index, statement, stage):
+    """Why this check's failure would go nowhere, or None.
+
+    Phrased to follow "the checksum that names <file>", because that is the
+    sentence a reader gets when the check they wrote did not clear the fetch
+    they wrote it for.
+    """
+    if statement.separator == "&":
+        return "is detached with `&`"
+    if statement.separator == "||" and not _stops_the_job(stmts, index):
+        return "hands its failure to a `||` branch that does not fail the step"
+    # `if`, `while` and `!` govern the PIPELINE, and they sit on its head:
+    # in `if echo "<sha>  x" | sha256sum -c -; then` -- the spelling this
+    # module's own remedy text recommends -- the checksum is the second stage
+    # and its own argv says nothing about the test wrapped around it. Ask the
+    # head as well as the stage, because a one-stage statement is both.
+    head = statement.stages[0].argv if statement.stages else stage.argv
+    if negated(head) or negated(stage.argv):
+        return "is negated, so the failing path is the THEN branch"
+    if conditional(head) or conditional(stage.argv):
+        return "is an `if`/`while` test, which errexit does not apply to"
+    return None
