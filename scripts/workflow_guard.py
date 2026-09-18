@@ -123,10 +123,9 @@ import re
 import sys
 
 import shell_reader
-import workflow_forms
 from shell_reader import command, conditional, negated, statements
-from workflow_forms import (FETCHERS, STDOUT, covers, described, parse_fetch,
-                            same_file, scripts)
+from workflow_forms import (FETCHERS, STDOUT, covers, described, names_file,
+                            parse_fetch, regions, same_file, scripts)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -352,7 +351,9 @@ def _unshared(conditions, check, use):
     """Which half of the check's condition the use does not share."""
     when = conditions.get(check) or (None, None)
     theirs = conditions.get(use) or (None, None)
-    return _UNSHARED_BRANCH if when[1] and when[1] != theirs[1] else _UNSHARED_IF
+    if when[1] and when[1] != theirs[1]:
+        return _UNSHARED_BRANCH
+    return _UNSHARED_IF
 
 
 def _checks(stmts, soft=()):
@@ -525,8 +526,8 @@ def _defect(fetch, index, stmts, checks, conditions=None):
     first_use, how = uses[0]
     # A checksum naming any name the file goes by is a checksum of this file.
     conditions = conditions or {}
-    naming = [(i, why) for i, text, why in checks
-              if i > index and any(workflow_forms.names_file(text, name) for name in sorted(names))]
+    naming = [(i, why) for i, text, why in checks if i > index
+              and any(names_file(text, name) for name in sorted(names))]
     cleared = [i for i, why in naming
                if why is None and _binds(conditions, i, first_use)]
     if any(i < first_use for i in cleared):
@@ -575,7 +576,7 @@ def _defects(stmts, conditions=None, soft=()):
 def fetch_exec_defects(script):
     """Every unverified fetch-and-execute in one `run:` script."""
     stmts = read(script)
-    branches = workflow_forms.regions(stmts)
+    branches = regions(stmts)
     return [why for _index, why in
             _defects(stmts, {i: (None, b) for i, b in branches.items()})]
 
@@ -617,7 +618,7 @@ def job_defects(steps):
         # Per step, because each one is its own shell invocation: an `if`
         # left open at the end of step A must not make step B conditional.
         here = read(step.script)
-        branches = workflow_forms.regions(here)
+        branches = regions(here)
         for local, statement in enumerate(here):
             # An `if:` step may not run. Its FETCH still counts -- folding it in
             # can only report more -- but its CHECK counts only for a use that
