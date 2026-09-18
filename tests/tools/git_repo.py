@@ -51,12 +51,11 @@ def make_git_repo(
             is created for parity with the legacy helpers.
         groups_yml: Optional `groups:` body.  Written to the root
             ``panopticon.yml`` (under a ``version: 1`` line) before the initial
-            commit, and -- until #1681 Task 4 repoints discovery.py -- also to
-            the legacy ``.panopticon`` matrix file the ``--repo-scan``
-            subprocess still reads.
-        panopticon: If True, create an empty ``.panopticon`` directory after the
-            initial commit (untracked).  Ignored when ``groups_yml`` is given,
-            which already creates the directory.
+            commit -- the one config discovery reads (#1681).
+        panopticon: If True, create an empty ``.panopticon`` artifact directory
+            after the initial commit (untracked).  ``groups_yml`` implies it:
+            a repo with a config is one a run writes artifacts into, and the
+            legacy matrix write used to create the directory on the way past.
         branch: Branch name to rename the default branch to, or ``None`` to
             leave the default branch name untouched.
         user_email, user_name: Git committer identity for the initial commit.
@@ -103,18 +102,11 @@ def make_git_repo(
     if groups_yml is not None:
         with open(os.path.join(repo, "panopticon.yml"), "w", encoding="utf-8") as fh:
             fh.write("version: 1\n" + groups_yml)
-        # INTERIM (#1681 Task 4): discovery.py's --repo-scan subprocess still
-        # reads the legacy matrix file, so a repo driven end-to-end needs both.
-        # Delete this block with discovery.py's readers.
-        pano = os.path.join(repo, ".panopticon")
-        os.makedirs(pano, exist_ok=True)
-        with open(os.path.join(pano, "groups.yml"), "w", encoding="utf-8") as fh:
-            fh.write(groups_yml)
 
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", commit_msg)
 
-    if panopticon and groups_yml is None:
+    if panopticon or groups_yml is not None:
         os.makedirs(os.path.join(repo, ".panopticon"), exist_ok=True)
 
     if branch:

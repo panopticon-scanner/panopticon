@@ -1,4 +1,4 @@
-"""Groups.yml format-reconciliation tests."""
+"""Root-config format-reconciliation tests."""
 import os
 import tempfile
 import textwrap
@@ -8,7 +8,7 @@ from discovery_test_helpers import orchestrator, setup_flow
 
 
 class TestGroupsFormatReconciliation(unittest.TestCase):
-    """Task 5: groups.yml mapping form is canonical; load_catalog reads a
+    """Task 5: the `groups:` mapping form is canonical; load_catalog reads a
     legacy list form (with a one-time notice) so old seeded files still
     load instead of silently collapsing to {} on raw.items()."""
 
@@ -31,14 +31,21 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
         self.assertNotIn("- name:", text)          # not the legacy list form
+        # INTERIM (#1681 Task 5): the seeder still writes the legacy matrix
+        # file, which discovery no longer reads. Mirror it to the root config
+        # so this test keeps guarding the SEEDED SHAPE; delete the mirror when
+        # _seed_groups_manifest writes `<repo>/panopticon.yml` itself.
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n" + text)
         catalog = orchestrator.load_catalog(d)
         self.assertTrue(catalog)                    # actually loads (was silent {})
         self.assertEqual(catalog["src"]["match"], ["src/**"])
 
     def test_load_catalog_normalizes_legacy_list_form(self):
         d = self._repo()
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
             fh.write(textwrap.dedent("""\
+                version: 1
                 groups:
                   - name: src
                     match:

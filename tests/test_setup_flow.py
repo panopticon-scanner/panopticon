@@ -39,8 +39,15 @@ def _repo(test_case, with_committed=False):
     os.makedirs(os.path.join(d, ".panopticon"))
     test_case.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
     if with_committed:
+        body = "groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n"
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n" + body)
+        # INTERIM (#1681 Task 5): setup_flow still gates `_check_groups_manifest`
+        # (and seeds) on the legacy matrix file, so a fixture that has to look
+        # "already configured" to setup_flow needs one. Delete this write when
+        # setup_flow reads the root config.
         with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
+            fh.write(body)
     return d
 
 
@@ -129,8 +136,8 @@ class TestSetupFlow(unittest.TestCase):
         # 5.2: a #1305 parent must come back as {"subgroups": {...}}, not as an
         # empty leaf that the additive merge would then "extend" into a leaf.
         d = _repo(self)
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout:\n    API:\n      match: ['src/checkout/api/**']\n"
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Checkout:\n    API:\n      match: ['src/checkout/api/**']\n"
                      "      panels: [SEC]\n    Core:\n      match: ['src/checkout/**']\n")
         cm = setup_flow.committed_matrix(d)
         self.assertEqual(list(cm["Checkout"]["subgroups"]), ["API", "Core"])
@@ -371,22 +378,26 @@ class TestSetupFlow(unittest.TestCase):
             with open(os.path.join(d, rel), "w") as fh:
                 fh.write(body)
         os.makedirs(os.path.join(d, ".panopticon"))
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Checkout:\n    match: ['src/checkout/**']\n"
+                     "    panels: [SEC]\n")
         return d
 
     def test_build_spine_tree_languages_frameworks_and_claims(self):
         d = self._spine_repo()
         spine = setup_flow.build_spine(d)
         self.assertEqual(spine["schema_version"], 1)
-        # code = total - commons - test tree, over the shipped classifiers
+        # code = total - commons - test tree, over the shipped classifiers.
+        # 13/6, not 12/5: #1681 made the config a committed ROOT
+        # `panopticon.yml`, which is an ordinary repo file no Commons category
+        # claims, so it counts in `total` and falls through to `code`.
         self.assertEqual(spine["files"],
-                         {"total": 12, "code": 5, "commons": 5, "test_tree": 2})
+                         {"total": 13, "code": 6, "commons": 5, "test_tree": 2})
         self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
                          (48, 4, "formula"))
         # depth-2 rows, most files first, ties by path; deeper files roll up
         self.assertEqual(spine["tree"][:3], [
-            {"path": ".", "files": 3, "ext": ".json"},
+            {"path": ".", "files": 4, "ext": ".json"},   # + panopticon.yml
             {"path": "src/search", "files": 3, "ext": ".go"},
             {"path": "src/checkout", "files": 2, "ext": ".py"}])
         self.assertEqual(spine["tree_more"], 0)
@@ -435,8 +446,8 @@ class TestSetupFlow(unittest.TestCase):
         # 0) -- the agent must not re-propose it -- and the "nothing claimed"
         # wording distinguishes no groups.yml from one without match: globs.
         d = self._spine_repo()
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n"
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Checkout:\n    match: ['src/checkout/**']\n"
                      "  Legacy:\n    match: ['src/gone/**']\n")
         spine = setup_flow.build_spine(d)
         self.assertEqual(spine["claimed"]["committed"], {"Checkout": 2, "Legacy": 0})
@@ -444,11 +455,11 @@ class TestSetupFlow(unittest.TestCase):
         text = setup_flow.format_spine(spine)
         self.assertIn("    Legacy                                       0", text)
         self.assertIn("0 = its globs match nothing today", text)
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout: [src/checkout/pay.py]\n")
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Checkout: [src/checkout/pay.py]\n")
         spine = setup_flow.build_spine(d)
         self.assertEqual(spine["claimed"]["committed"], {"Checkout": 0})
-        os.remove(os.path.join(d, ".panopticon", "groups.yml"))
+        os.remove(os.path.join(d, "panopticon.yml"))
         spine = setup_flow.build_spine(d)
         self.assertEqual(spine["claimed"]["committed"], {})
         self.assertFalse(spine["claimed"]["groups_yml"])
@@ -477,7 +488,7 @@ class TestSetupFlow(unittest.TestCase):
         self.assertIn("the Tests sweep will catch these", text)
         self.assertIn("    tests/search                                 1", text)
         budget = setup_flow.format_budget(spine)
-        self.assertIn("- files: 12 total = 5 code + 5 commons + 2 test tree", budget)
+        self.assertIn("- files: 13 total = 6 code + 5 commons + 2 test tree", budget)
         self.assertIn("--max-per-group): 48", budget)
         self.assertIn("ceiling (CODE review groups this repo affords): 5 from --max-groups", budget)
         self.assertIn("propose `layers` ONLY for a vertical you estimate OVER the cap (48 files)",

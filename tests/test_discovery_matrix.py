@@ -1,4 +1,4 @@
-"""Matrix groups.yml tests: parse_groups normalization, scalar-match guards,
+"""Matrix root-config tests: parse_groups normalization, scalar-match guards,
 and scope integration."""
 import json
 import os
@@ -15,14 +15,13 @@ orchestrator = discovery   # #run7 COD-X0X: one module identity
 
 
 def test_repo_scan_reads_matrix_via_parse_groups(tmp_path, monkeypatch):
-    # A matrix groups.yml (match/panels) drives --repo-scan grouping identically
+    # A matrix root config (match/panels) drives --repo-scan grouping identically
     # whether read by load_catalog or _committed_matrix, since assign_by_catalog
     # keys on `match`. Guards the SEC-3 migration: no grouping regression.
     repo = tmp_path
-    (repo / ".panopticon").mkdir()
     (repo / "src").mkdir(); (repo / "src" / "a.py").write_text("x=1\n")
-    (repo / ".panopticon" / "groups.yml").write_text(
-        "groups:\n  Core:\n    match: ['src/**']\n    panels: [SEC]\n")
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Core:\n    match: ['src/**']\n    panels: [SEC]\n")
     cat = orchestrator._committed_matrix(str(repo))
     assert cat["Core"]["match"] == ["src/**"]
     # assign_by_catalog uses only `match` -> Core claims src/a.py
@@ -31,9 +30,8 @@ def test_repo_scan_reads_matrix_via_parse_groups(tmp_path, monkeypatch):
 
 
 def test_repo_scan_scalar_match_disclosed_not_silently_coerced(tmp_path, capsys):
-    (tmp_path / ".panopticon").mkdir()
-    (tmp_path / ".panopticon" / "groups.yml").write_text(
-        "groups:\n  Bad:\n    match: 'src/**'\n")   # scalar, not a list
+    (tmp_path / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Bad:\n    match: 'src/**'\n")   # scalar, not a list
     orchestrator._committed_matrix(str(tmp_path))   # parse_groups validates
     err = capsys.readouterr().err
     assert "match must be a non-empty list" in err   # disclosed, not silent-coerced
@@ -153,16 +151,15 @@ def test_repo_scan_scope_dir_no_catalog_match_falls_back_to_leftover(tmp_path):
 
 
 def test_matrix_catalog_normalizes_scalar_match_to_empty_list(tmp_path, capsys):
-    (tmp_path / ".panopticon").mkdir()
-    (tmp_path / ".panopticon" / "groups.yml").write_text(
-        "groups:\n  Bad:\n    match: 'src/auth/**'\n")   # scalar, not a list
+    (tmp_path / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Bad:\n    match: 'src/auth/**'\n")   # scalar, not a list
     cat = orchestrator._matrix_catalog(str(tmp_path))
     assert cat["Bad"]["match"] == []                      # never char-split
     err = capsys.readouterr().err
     assert "match must be a non-empty list" in err        # disclosed, not silent
 
 
-def test_matrix_catalog_empty_when_no_groups_yml(tmp_path):
+def test_matrix_catalog_empty_when_no_config(tmp_path):
     assert orchestrator._matrix_catalog(str(tmp_path)) == {}
 
 
@@ -178,9 +175,12 @@ def test_repo_scan_bare_scalar_match_group_does_not_swallow_whole_repo(tmp_path)
     by_name = {g["name"]: g["files"] for g in data["groups"]}
     assert by_name.get("Auth") == ["src/auth/login.py"]
     assert "Bad" not in by_name                     # never grouped -- match=[]
-    assert data["ungrouped_files"] == ["src/bad/thing.py"]
+    # #1681: the committed root config is an ordinary repo file that matches no
+    # group, so it falls to the residual sink alongside the unclaimed source.
+    assert data["ungrouped_files"] == ["panopticon.yml", "src/bad/thing.py"]
     leftover = [g for g in data["groups"] if g["name"].startswith("Ungrouped_")]
-    assert [f for g in leftover for f in g["files"]] == ["src/bad/thing.py"]
+    assert [f for g in leftover for f in g["files"]] == ["panopticon.yml",
+                                                         "src/bad/thing.py"]
 
 
 def test_repo_scan_scope_group_scalar_match_does_not_claim_whole_repo(tmp_path, capsys):
@@ -215,12 +215,14 @@ def test_repo_scan_bare_well_formed_matrix_groups_unchanged(tmp_path):
     assert by_name["Auth"] == ["src/auth/login.py"]
     assert by_name["Checkout"] == ["src/checkout/cart.py", "src/checkout/pay.py"]
     leftover = [g for g in data["groups"] if g["name"].startswith("Ungrouped_")]
-    assert [f for g in leftover for f in g["files"]] == ["src/misc/other.py"]
-    assert data["ungrouped_files"] == ["src/misc/other.py"]
+    # #1681: the committed root config is itself an unclaimed repo file.
+    assert [f for g in leftover for f in g["files"]] == ["panopticon.yml",
+                                                         "src/misc/other.py"]
+    assert data["ungrouped_files"] == ["panopticon.yml", "src/misc/other.py"]
 
 
 def test_repo_scan_fails_loud_when_all_declared_groups_malformed(tmp_path, capsys):
-    # #run8 COD-B1A: a committed groups.yml that DECLARES groups but whose
+    # #run8 COD-B1A: a committed root config that DECLARES groups but whose
     # entries ALL fail schema validation must FAIL LOUD -- not silently degrade
     # to whole-repo default chunking, which would discard the operator's
     # committed scoping with only an easy-to-miss stderr line as evidence.
@@ -234,8 +236,8 @@ def test_repo_scan_fails_loud_when_all_declared_groups_malformed(tmp_path, capsy
     assert not out.exists()                                # no degraded catalog written
 
 
-def test_repo_scan_absent_groups_yml_adopts_whole_repo_default(tmp_path):
-    # Counterpart to the above: an ABSENT groups.yml is NOT an error -- it is
+def test_repo_scan_absent_config_adopts_whole_repo_default(tmp_path):
+    # Counterpart to the above: an ABSENT root config is NOT an error -- it is
     # the adopt-all default. Corrupt-vs-absent must not be conflated (#run8
     # COD-B1A distinguishes them via _declares_groups).
     (tmp_path / "src").mkdir()
@@ -251,14 +253,13 @@ def test_repo_scan_absent_groups_yml_adopts_whole_repo_default(tmp_path):
 
 
 def test_declares_groups_distinguishes_absent_declared_and_exclude_only(tmp_path):
-    (tmp_path / ".panopticon").mkdir()
-    gy = tmp_path / ".panopticon" / "groups.yml"
+    cfg = tmp_path / "panopticon.yml"
     assert discovery._declares_groups(str(tmp_path)) is False   # absent file
-    gy.write_text("groups:\n  Bad:\n    match: src/**\n")
+    cfg.write_text("version: 1\ngroups:\n  Bad:\n    match: src/**\n")
     assert discovery._declares_groups(str(tmp_path)) is True    # declares a group
-    gy.write_text("exclude_paths: ['vendor/**']\n")
+    cfg.write_text("version: 1\nexclude_paths: ['vendor/**']\n")
     assert discovery._declares_groups(str(tmp_path)) is False   # exclude_paths only
-    gy.write_text("groups: {}\n")
+    cfg.write_text("version: 1\ngroups: {}\n")
     assert discovery._declares_groups(str(tmp_path)) is False   # explicit empty mapping
 
 
@@ -271,9 +272,15 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
     # (setup_flow.setup_readiness calls discovery._matrix_catalog directly),
     # so this stays a discovery-side regression test.
     os.makedirs(str(tmp_path / ".git"))
+    (tmp_path / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Bad:\n    match: src/bad/**\n")   # scalar, not a list
+    # INTERIM (#1681 Task 5): setup_flow._check_groups_manifest still gates on
+    # the legacy matrix file before it calls discovery._matrix_catalog, so the
+    # readiness row it returns needs one present. Delete this block (and the
+    # `.panopticon` mkdir) when setup_flow reads the root config.
     os.makedirs(str(tmp_path / ".panopticon"))
     (tmp_path / ".panopticon" / "groups.yml").write_text(
-        "groups:\n  Bad:\n    match: src/bad/**\n")   # scalar, not a list
+        "groups:\n  Bad:\n    match: src/bad/**\n")
 
     def ok_runner(argv, capture_output, text, timeout=None):
         class R: returncode = 0; stdout = ""; stderr = ""
@@ -311,7 +318,8 @@ def test_repo_scan_scope_group_no_tracked_files_errors(tmp_path, capsys):
     # `error` blaming the artifact. The scope is what is wrong, and only
     # discovery.py can say so.
     repo = repo_with_matrix(tmp_path)
-    (repo / ".panopticon" / "groups.yml").write_text(
+    (repo / "panopticon.yml").write_text(
+        "version: 1\n"
         "groups:\n"
         "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
         "  Ghost:\n    match: ['src/ghost/**']\n")
@@ -358,27 +366,51 @@ def test_collect_changed_files_default_branch_fallback():
 
 
 def test_matrix_catalog_fails_loud_on_broken_yaml(tmp_path):
-    (tmp_path / ".panopticon").mkdir()
-    (tmp_path / ".panopticon" / "groups.yml").write_text(
-        "groups:\n  Bad:\n    match: [unclosed\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="groups.yml unreadable"):
+    (tmp_path / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Bad:\n    match: [unclosed\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="unreadable"):
         discovery._matrix_catalog(str(tmp_path))
 
 
 def test_load_catalog_fails_loud_on_broken_yaml(tmp_path):
-    (tmp_path / ".panopticon").mkdir()
-    (tmp_path / ".panopticon" / "groups.yml").write_text(
-        "groups:\n  Bad: [\n", encoding="utf-8")
+    (tmp_path / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Bad: [\n", encoding="utf-8")
     with pytest.raises(ValueError, match="catalog parse error"):
         discovery.load_catalog(str(tmp_path))
 
 
-def test_repo_scan_fails_loud_on_broken_groups_yml(tmp_path):
-    (tmp_path / ".panopticon").mkdir()
-    (tmp_path / ".panopticon" / "groups.yml").write_text(
-        "groups:\n  Bad:\n    match: [unclosed\n", encoding="utf-8")
+def test_repo_scan_fails_loud_on_broken_config(tmp_path):
+    (tmp_path / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Bad:\n    match: [unclosed\n", encoding="utf-8")
     rc = discovery.main(["--repo", str(tmp_path), "--repo-scan"])
     assert rc != 0
+
+
+def test_matrix_catalog_refuses_a_legacy_tree_loud(tmp_path):
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text("groups:\n  A:\n    match: ['a/**']\n")
+    with pytest.raises(ValueError, match="migrate-config"):
+        discovery._matrix_catalog(str(tmp_path))
+
+
+def test_declares_groups_ignores_a_legacy_file(tmp_path):
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text("groups:\n  A:\n    match: ['a/**']\n")
+    assert discovery._declares_groups(str(tmp_path)) is False
+
+
+def test_repo_scan_refuses_a_config_without_version(tmp_path, capsys):
+    (tmp_path / "panopticon.yml").write_text("groups:\n  A:\n    match: ['a/**']\n")
+    rc = discovery.main(["--repo", str(tmp_path), "--repo-scan",
+                         "--out", str(tmp_path / "g.json")])
+    assert rc == 1
+    assert "version: 1" in capsys.readouterr().err
+
+
+def test_committed_exclude_paths_read_the_root_file(tmp_path):
+    (tmp_path / "panopticon.yml").write_text(
+        "version: 1\ngroups: {}\nexclude_paths: ['vendor/**']\n")
+    assert discovery._committed_exclude_paths(str(tmp_path)) == ["vendor/**"]
 
 
 def test_git_helpers_convert_timeout_to_assertion_error(tmp_path):

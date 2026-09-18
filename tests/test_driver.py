@@ -789,10 +789,6 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
                 "    exclude: [ARC, COD, DAT, TST]\n"
                 "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n"
                 "    exclude: [ARC, COD, DAT, TST]\n")
-        # INTERIM (#1681 Task 4): the REAL discovery.py --repo-scan subprocess
-        # below still reads the legacy matrix file. Delete with its readers.
-        shutil.copyfile(os.path.join(d, "panopticon.yml"),
-                        os.path.join(d, ".panopticon", "groups.yml"))
         # discovery_execute subprocesses the REAL discovery.py --repo-scan,
         # which discovers via `git ls-files` -- commit the fixture so it's seen.
         subprocess.run(["git", "init", "-q"], cwd=d, check=True)
@@ -955,10 +951,6 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
                 "groups:\n"
                 "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
                 "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
-        # INTERIM (#1681 Task 4): the REAL discovery.py --repo-scan subprocess
-        # below still reads the legacy matrix file. Delete with its readers.
-        shutil.copyfile(os.path.join(d, "panopticon.yml"),
-                        os.path.join(d, ".panopticon", "groups.yml"))
         subprocess.run(["git", "init", "-q"], cwd=d, check=True)
         subprocess.run(["git", "add", "-A"], cwd=d, check=True)
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",

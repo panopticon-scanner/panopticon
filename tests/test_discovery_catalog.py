@@ -28,7 +28,7 @@ class TestGlobSemantics(unittest.TestCase):
         self.assertTrue(self._m("a/b/c/d.py", ["a/**/d.py"]))
 
     def test_adjacent_double_stars_collapse_no_redos(self):
-        # A repo-supplied groups.yml `match:` pattern with many adjacent `**/`
+        # A repo-supplied root-config `match:` pattern with many adjacent `**/`
         # segments used to compile to sequential `(?:[^/]+/)*` quantifiers --
         # the catastrophic-backtracking ReDoS shape that could hang discovery.
         # Adjacent runs now fold to one; matching stays correct.
@@ -48,7 +48,7 @@ class TestGlobSemantics(unittest.TestCase):
     def test_catastrophic_single_star_pattern_is_capped(self):
         # #run7 SEC-H4A: `a*a*...Z` compiles to `a[^/]*a[^/]*...Z` -- the (.*a)+
         # ReDoS shape, UNaffected by the **-collapse. An over-wildcarded pattern
-        # (from an untrusted target groups.yml) is rejected to a never-matching
+        # (from an untrusted target's root config) is rejected to a never-matching
         # regex instead of hanging discovery before any dispatch.
         import time
         rx = orchestrator._glob_to_re("a*" * 30 + "Z")
@@ -78,8 +78,17 @@ class TestGlobSemantics(unittest.TestCase):
         self.assertFalse(self._m("a/v12.py", ["a/v?.py"]))
 
 
+def _write_config(d, body):
+    """#1681: the committed config is `<repo>/panopticon.yml`. Unlike the
+    legacy `.panopticon/` matrix -- a dot-directory discovery never walked --
+    it is an ordinary repo file, so it shows up in these fixtures' discovered
+    surface and the expectations below name it."""
+    with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+        fh.write("version: 1\n" + body)
+
+
 class TestCatalogMatchGroups(unittest.TestCase):
-    """#499: intensional groups. A groups.yml with match: patterns gives files
+    """#499: intensional groups. A root config with match: patterns gives files
     stable group identities; files matching no group are auto-chunked AND
     disclosed as ungrouped_files — coverage honesty at the discovery layer."""
 
@@ -98,9 +107,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
         for rel in ["skill/scripts/run.py", "skill/scripts/tools/pip.py",
                     "README.md", "docs/notes.md", "orphan/loner.py"]:
             touch(d, rel)
-        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
-            fh.write(self.CATALOG)
+        _write_config(d, self.CATALOG)
 
     def test_files_assigned_to_stable_named_groups(self):
         with tempfile.TemporaryDirectory() as d:
@@ -114,8 +121,9 @@ class TestCatalogMatchGroups(unittest.TestCase):
             self.assertIn("orphan/loner.py",
                           [f for n, fs in by_name.items() if n.startswith("Ungrouped_")
                            for f in fs])
-            self.assertEqual(out["ungrouped_files"], ["orphan/loner.py"])
-            self.assertEqual(out["counts"]["ungrouped"], 1)
+            self.assertEqual(out["ungrouped_files"],
+                             ["orphan/loner.py", "panopticon.yml"])
+            self.assertEqual(out["counts"]["ungrouped"], 2)
             self.assertIn("ungrouped", err)  # loud, not silent
 
     def test_first_matching_group_wins(self):
@@ -133,9 +141,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
                 full = os.path.join(d, "pkg", "m%02d.py" % i)
                 os.makedirs(os.path.dirname(full), exist_ok=True)
                 open(full, "w").close()
-            os.makedirs(os.path.join(d, ".panopticon"))
-            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-                fh.write("groups:\n  pkg:\n    match: ['pkg/**']\n")
+            _write_config(d, "groups:\n  pkg:\n    match: ['pkg/**']\n")
             # Pin the cap rather than relying on the default: this test is
             # about the CHUNKING behaviour (a match group over the cap splits
             # into `<name>_<i>`), not about whatever DEFAULT_MAX_PER_GROUP
@@ -143,11 +149,14 @@ class TestCatalogMatchGroups(unittest.TestCase):
             # default moved 15 -> 64 and 20 files no longer split.
             out, _ = run_scan_with_err(d, "--max-per-group", "15")
             names = [g["name"] for g in out["groups"]]
-            self.assertEqual(names, ["pkg_1", "pkg_2"])
-            self.assertEqual(sum(len(g["files"]) for g in out["groups"]), 20)
+            # panopticon.yml (the committed root config) matches no group and
+            # takes the residual sink; the pkg split is what this pins.
+            self.assertEqual(names[:2], ["pkg_1", "pkg_2"])
+            self.assertEqual(sum(len(g["files"]) for g in out["groups"]
+                                 if g["name"].startswith("pkg_")), 20)
 
     def test_catalog_without_match_keys_fails_loud(self):
-        # #run8 COD-B1A (owner decision 2026-08-26): a committed groups.yml that
+        # #run8 COD-B1A (owner decision 2026-08-26): a committed root config that
         # DECLARES a group but uses an unknown key (`patterns:` instead of
         # `match:`) yields no usable match-group. This used to silently discard
         # the operator's committed catalog and fall back to whole-repo default
@@ -157,9 +166,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
             full = os.path.join(d, "src", "app.py")
             os.makedirs(os.path.dirname(full), exist_ok=True)
             open(full, "w").close()
-            os.makedirs(os.path.join(d, ".panopticon"))
-            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-                fh.write("groups:\n  Products:\n    patterns: ['**/product*']\n")
+            _write_config(d, "groups:\n  Products:\n    patterns: ['**/product*']\n")
             rc, out, err = run_scan_helper(d)
             self.assertEqual(rc, 1)
             self.assertIn("declares groups but none survived", err)
@@ -178,8 +185,8 @@ class TestCatalogMatchGroups(unittest.TestCase):
             self._setup(d)
             touch(d, "docs/secret/leak.md")
             touch(d, "vendor/dep.py")
-            with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
-                fh.write(self.CATALOG + "exclude_paths: ['docs/secret/**', 'vendor/**']\n")
+            _write_config(d, self.CATALOG
+                          + "exclude_paths: ['docs/secret/**', 'vendor/**']\n")
             out, _err = run_scan_with_err(d)
             all_files = [f for g in out["groups"] for f in g["files"]]
             self.assertNotIn("docs/secret/leak.md", all_files)
@@ -194,8 +201,8 @@ class TestCatalogMatchGroups(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._setup(d)
             touch(d, "tests/test_cart.py")
-            with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
-                fh.write("groups:\n  Auth:\n    match: ['src/auth/**']\n    tests: ['tests/**']\n")
+            _write_config(d, "groups:\n  Auth:\n    match: ['src/auth/**']\n"
+                             "    tests: ['tests/**']\n")
             out, err = run_scan_with_err(d)
             self.assertEqual(len(out["scoped_tests_warnings"]), 1)
             self.assertIn("credited none", out["scoped_tests_warnings"][0])
@@ -215,7 +222,8 @@ class TestCatalogMatchGroups(unittest.TestCase):
             out, _err = run_scan_with_err(d)
             self.assertNotIn("exclude_paths", out)
             self.assertNotIn("excluded_count", out)
-            self.assertEqual(out["ungrouped_files"], ["orphan/loner.py"])
+            self.assertEqual(out["ungrouped_files"],
+                             ["orphan/loner.py", "panopticon.yml"])
 
 
 class TestGroupObjParent(unittest.TestCase):
@@ -859,7 +867,7 @@ class TestTestsSweep(unittest.TestCase):
 
 
 class TestGitignoreDivergences(unittest.TestCase):
-    """#1501: `groups.yml` is documented as taking gitignore-flavored globs,
+    """#1501: the root config is documented as taking gitignore-flavored globs,
     but `_glob_to_re` is hand-rolled and two idioms diverged SILENTLY -- a
     miscompiled glob does not error, it produces an empty group and inflates
     `Ungrouped`, the very signal we read as catalog coverage.

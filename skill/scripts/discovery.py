@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Discovery/matrix core (P6.5 Slice A): resolve --repo-scan targets to
-grouped file lists via the committed groups.yml catalog. Stdlib-only; run
+grouped file lists via the committed root-config catalog. Stdlib-only; run
 BEFORE dispatching review subagents.
 
-The focused discovery/matrix module: repo file discovery, `.panopticon/
-groups.yml` matrix assignment, the --repo-scan CLI (whole-repo and the
+The focused discovery/matrix module: repo file discovery, root-config
+matrix assignment, the --repo-scan CLI (whole-repo and the
 --scope-file/--scope-dir/--scope-group/--scope-changed/--scope-files
 filters), and delta review support (--base/--pr-base resolution,
 diff-hunks.json emission). Extracted from the now-retired orchestrator.py
@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402
 import groups_schema  # noqa: E402
 import plan_contract  # noqa: E402
+import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
 
 # Files per review group before it splits into `<name>_<i>` chunks.
@@ -379,7 +380,7 @@ def _glob_to_re(pat):
     """
     # A glob this compiler cannot translate faithfully must never be
     # translated wrongly (#1501). A setup proposal carrying one is refused
-    # outright, but a committed groups.yml's parse errors are disclosed and
+    # outright, but a committed root config's parse errors are disclosed and
     # NOT blocking (this module's standing policy, `_committed_matrix`), so
     # one still reaches this compiler -- where the old behaviour was to
     # `re.escape` the brackets into a literal that claimed the wrong files.
@@ -394,8 +395,8 @@ def _glob_to_re(pat):
     # Collapse runs of adjacent segment-crossing wildcards BEFORE compiling.
     # `**/**/.../x` compiles to sequential `(?:[^/]+/)*` quantifiers -- the
     # textbook catastrophic-backtracking ReDoS shape -- and repo-supplied
-    # `.panopticon/groups.yml` `match:` patterns reach this compiler, so a
-    # hostile repo could hang discovery (run-4 self-scan). Adjacent `**`
+    # root-config `match:` patterns reach this compiler, so a hostile repo
+    # could hang discovery (run-4 self-scan). Adjacent `**`
     # segments are semantically redundant, so fold each run down to one.
     pat = re.sub(r"(?:\*\*/)+", "**/", pat)
     pat = re.sub(r"\*\*\*+", "**", pat)
@@ -407,7 +408,8 @@ def _glob_to_re(pat):
     # complexity AFTER the collapse: a legitimate glob has a handful of wildcards,
     # so an over-long / over-wildcarded pattern is hostile or degenerate --
     # disclose it and compile to a never-matching regex rather than hang discovery
-    # (which reads groups.yml from the untrusted redteam target, BEFORE dispatch).
+    # (which reads the root config from the untrusted redteam target, BEFORE
+    # dispatch).
     if len(pat) > 256 or pat.count("*") > 20:
         print("discovery: ignoring over-complex glob pattern "
               "(len=%d, wildcards=%d): %r"
@@ -674,36 +676,33 @@ def _to_list(val):
     return list(val)
 
 def load_catalog(repo):
-    """Load file group catalog from .panopticon/groups.yml.
+    """Load the file group catalog from the root config (#1681).
 
-    A missing file returns {}; YAML/OSError/ValueError is re-raised as
-    ValueError so callers fail loud on a broken catalog."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
-        return {}
-    with open(path, encoding="utf-8") as fh:
-        text = fh.read()
+    A missing config returns {}; an unreadable/invalid one, or a legacy
+    matrix file with no root config, is raised as ValueError so callers fail
+    loud on a broken catalog."""
     try:
-        try:
-            import yaml
-            data = yaml.safe_load(text) or {}
-            raw = data.get("groups") or {}
-            if isinstance(raw, list):
-                print("groups.yml: legacy list form -- normalizing to mapping; "
-                      "re-run --setup to rewrite", file=sys.stderr)
-                raw = {g.get("name"): g for g in raw
-                       if isinstance(g, dict) and g.get("name")}
-            out = {}
-            for name, body in raw.items():
-                body = body or {}
-                out[name] = {
-                    "patterns": _to_list(body.get("patterns")),
-                    "match": _to_list(body.get("match")),
-                    "facets": {k: _to_list(v) for k, v in (body.get("facets") or {}).items()},
-                }
-            return out
-        except ImportError:
-            return _parse_catalog_yaml(text)
+        doc = repo_config.read_document(repo)
+        if doc.errors:
+            raise ValueError("; ".join(doc.errors))
+        if doc.doc is None:
+            return {}
+        raw = doc.doc.get("groups") or {}
+        if isinstance(raw, list):
+            print("%s: legacy list form -- normalizing to mapping; "
+                  "re-run --setup to rewrite" % repo_config.CONFIG_NAMES[0],
+                  file=sys.stderr)
+            raw = {g.get("name"): g for g in raw
+                   if isinstance(g, dict) and g.get("name")}
+        out = {}
+        for name, body in raw.items():
+            body = body or {}
+            out[name] = {
+                "patterns": _to_list(body.get("patterns")),
+                "match": _to_list(body.get("match")),
+                "facets": {k: _to_list(v) for k, v in (body.get("facets") or {}).items()},
+            }
+        return out
     except (OSError, yaml.YAMLError, ValueError) as e:
         raise ValueError("catalog parse error: %s" % e) from e
 
@@ -1036,11 +1035,11 @@ def _group_obj(name, files, security_mode, parent=None, chunk_of=None):
     at most one level deep (`groups_schema`: subgroups cannot nest). A
     subgroup passes its catalog-declared parent name; a leaf or leftover
     chunk defaults to self-parenting (``parent or name``), so a flat
-    groups.yml (all leaves) yields ``parent == name`` for every group.
+    root config (all leaves) yields ``parent == name`` for every group.
 
     `chunk_of` is the MACHINE axis -- the review unit this group was split
     OUT OF when it outgrew ``max_per_group``. Chunking is an internal
-    performance decision that means nothing to whoever wrote groups.yml, so
+    performance decision that means nothing to whoever wrote the root config, so
     it gets its own field instead of being recovered by parsing ``_<n>`` off
     a name: that inference cannot tell a chunk of `API` from a committed
     group named `API_1` (#1480). A group that was never split is its own
@@ -1274,7 +1273,7 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     """
     named, leftovers, scoped_warnings = assign_scoped(files, catalog)
     for w in scoped_warnings:
-        print("groups.yml: %s" % w, file=sys.stderr)
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], w), file=sys.stderr)
     if warnings is not None:
         warnings.extend(scoped_warnings)
     # 5.2 §4.3: the Tests universal vertical forms LAST, from test-tree files
@@ -1384,18 +1383,18 @@ def _leaf_body(body):
     }
 
 def _committed_matrix(repo):
-    """Committed groups.yml as serializable {name: body}, preserving committed
-    field ORDER verbatim (never-clobber is byte-faithful). A leaf body is
-    {match, tests, panels, exclude}; a PARENT (keys are subgroup names, #1305)
-    is {"subgroups": {sub: leaf body}} so the structure survives the additive
-    merge instead of collapsing to an empty leaf (5.2). Empty when none is
-    committed (first run -> adopt-all)."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
+    """Committed root config's `groups:` as serializable {name: body},
+    preserving committed field ORDER verbatim (never-clobber is
+    byte-faithful). A leaf body is {match, tests, panels, exclude}; a PARENT
+    (keys are subgroup names, #1305) is {"subgroups": {sub: leaf body}} so the
+    structure survives the additive merge instead of collapsing to an empty
+    leaf (5.2). Empty when none is committed (first run -> adopt-all)."""
+    doc = repo_config.read_document(repo)
+    for e in doc.errors:
+        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
+    if doc.doc is None:
         return {}
-    with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    raw = data.get("groups") or {}
+    raw = doc.doc.get("groups") or {}
     if isinstance(raw, list):  # legacy list form (Task 5)
         raw = {g.get("name"): g for g in raw
                if isinstance(g, dict) and g.get("name")}
@@ -1404,7 +1403,7 @@ def _committed_matrix(repo):
     # finds.
     _, errs = groups_schema.parse_groups({"groups": raw})
     for e in errs:
-        print("committed groups.yml: %s" % e, file=sys.stderr)
+        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     out = {}
     for name, body in raw.items():
         if isinstance(body, dict) and body and not (groups_schema.RESERVED & set(body)):
@@ -1414,64 +1413,51 @@ def _committed_matrix(repo):
     return out
 
 def _matrix_catalog(repo):
-    """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan /
-    readiness: {name: {match: [...], tests, floor, exclude}} with `match`
+    """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan
+    / readiness: {name: {match: [...], tests, floor, exclude}} with `match`
     VALIDATED (a scalar/invalid match normalizes to [] -- never char-split).
-    A missing file returns {}; a YAML/OSError is raised as ValueError so the
-    caller fails loud instead of silently degrading to an empty catalog."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
+    A missing config returns {}; an unreadable or invalid document -- and a
+    legacy matrix file with no root config (#1681, no fallback) -- is raised
+    as ValueError so the caller fails loud instead of silently degrading to an
+    empty catalog."""
+    doc = repo_config.read_document(repo)
+    if doc.errors:
+        raise ValueError("; ".join(doc.errors))
+    if doc.doc is None:
         return {}
-    import yaml
-    import groups_schema
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError) as e:
-        raise ValueError("groups.yml unreadable: %s" % e) from e
-    groups, errs = groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
+    for line in doc.disclosures:
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
+    groups, errs = groups_schema.parse_groups(doc.doc)
     for e in errs:
-        print("committed groups.yml: %s" % e, file=sys.stderr)
+        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     return groups
 
 def _declares_groups(repo):
-    """True iff a committed .panopticon/groups.yml actually declares one or more
-    groups. Lets main() tell "no groups.yml -> adopt-all default" apart from
-    "authored a groups.yml whose entries ALL failed schema validation" -- the
-    latter must fail loud rather than silently degrade to whole-repo default
-    chunking (#run8 COD-B1A). A missing/empty file (or an `exclude_paths`-only
-    file) declares nothing; unreadable YAML is already surfaced loud by
-    `_matrix_catalog`, so it is treated as "declares nothing" here."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
+    """True iff the committed root config actually declares one or more groups
+    (#run8 COD-B1A: an authored-but-unusable catalog must fail loud, not
+    degrade to whole-repo chunking). No config, an invalid one, or a
+    legacy-only tree declares nothing here -- `_matrix_catalog` is what
+    surfaces those loud."""
+    doc = repo_config.read_document(repo)
+    if doc.doc is None:
         return False
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError):
-        return False
-    raw = (doc or {}).get("groups")
+    raw = doc.doc.get("groups")
     if isinstance(raw, list):   # legacy list form
         return any(isinstance(g, dict) and g.get("name") for g in raw)
     return bool(isinstance(raw, dict) and raw)
 
 def _committed_exclude_paths(repo):
-    """Committed top-level `exclude_paths:` globs from `.panopticon/groups.yml`
-    (Task 4, #1136), mirroring `_matrix_catalog`'s read: a missing/unreadable/
-    malformed groups.yml is non-fatal here -- ``[]`` (no pruning), never a
-    hard failure. Errors are disclosed (stderr) via `parse_exclude_paths`."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
+    """Committed top-level `exclude_paths:` globs from the root config
+    (Task 4, #1136): a missing/unreadable/invalid config is non-fatal here --
+    ``[]`` (no pruning), never a hard failure; errors are disclosed."""
+    doc = repo_config.read_document(repo)
+    for e in doc.errors:
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
+    if doc.doc is None:
         return []
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError) as e:
-        print("groups.yml unreadable: %s" % e, file=sys.stderr)
-        return []
-    globs, errs = groups_schema.parse_exclude_paths(doc if isinstance(doc, dict) else {})
+    globs, errs = groups_schema.parse_exclude_paths(doc.doc)
     for e in errs:
-        print("committed groups.yml: %s" % e, file=sys.stderr)
+        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     return globs
 
 def _norm_scope_path(repo, p):
@@ -1573,21 +1559,21 @@ def main(argv=None):
     except ValueError as exc:
         print("panopticon: %s" % exc, file=sys.stderr)
         return 1
-    # #run8 COD-B1A: a committed groups.yml that DECLARES groups but whose
+    # #run8 COD-B1A: a committed root config that DECLARES groups but whose
     # entries all fail schema validation leaves `catalog` with no match-bearing
     # group. The guard below (`if any(g.get("match") ...)`) would then silently
     # fall back to whole-repo default chunking, discarding the operator's
     # committed scoping with only an easy-to-miss stderr line -- corrupt and
-    # absent groups.yml treated alike. Fail loud instead: an authored-but-
+    # absent configs treated alike. Fail loud instead: an authored-but-
     # unusable catalog is an error, not a request for the default. (A single bad
     # group among good ones still degrades gracefully -- its files fall to ._N,
     # disclosed via ungrouped_files -- because a match-bearing group survives.)
     if _declares_groups(repo) and not any(
             g.get("match") for g in catalog.values()):
-        print("panopticon: .panopticon/groups.yml declares groups but none "
-              "survived schema validation (see the 'committed groups.yml:' "
-              "errors above); refusing to silently fall back to whole-repo "
-              "default chunking. Fix the groups.yml entries or remove the file.",
+        print("panopticon: %s declares groups but none survived schema validation "
+              "(see the 'committed %s:' errors above); refusing to silently fall "
+              "back to whole-repo default chunking. Fix the entries or remove the "
+              "file." % (repo_config.CONFIG_NAMES[0], repo_config.CONFIG_NAMES[0]),
               file=sys.stderr)
         return 1
     # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
@@ -1696,9 +1682,8 @@ def main(argv=None):
         if leftovers:
             print("catalog coverage: %d file(s) matched no group's `match` "
                   "patterns and fell back to %s_N chunks — see "
-                  "ungrouped_files; extend .panopticon/groups.yml to cover "
-                  "them: %s"
-                  % (len(leftovers), UNGROUPED_SINK,
+                  "ungrouped_files; extend %s to cover them: %s"
+                  % (len(leftovers), UNGROUPED_SINK, repo_config.CONFIG_NAMES[0],
                      ", ".join(leftovers[:10])
                      + (" …" if len(leftovers) > 10 else "")),
                   file=sys.stderr)

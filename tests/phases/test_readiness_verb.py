@@ -121,6 +121,13 @@ class _VerbCase(unittest.TestCase):
                 fh.write(body)
         if groups_yml is not None:
             os.makedirs(os.path.join(root, ".panopticon"), exist_ok=True)
+            with open(os.path.join(root, "panopticon.yml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("version: 1\n" + groups_yml)
+            # INTERIM (#1681 Task 7): phases/readiness._matrix_row still gates
+            # on the legacy matrix file before it reads the catalog through
+            # discovery. Delete this write when readiness resolves the config
+            # through repo_config.
             with open(os.path.join(root, ".panopticon", "groups.yml"), "w",
                       encoding="utf-8") as fh:
                 fh.write(groups_yml)
@@ -132,9 +139,16 @@ class _VerbCase(unittest.TestCase):
         measuring git and cannot substitute for it."""
         if not shutil.which("git"):
             self.skipTest("this case measures `git ls-files`; no git on PATH")
-        return make_git_repo(test_case=self, files=dict(FILES),
+        root = make_git_repo(test_case=self, files=dict(FILES),
                              groups_yml=groups_yml, branch="main",
                              user_email="t@t", user_name="t")
+        if groups_yml is not None:
+            # INTERIM (#1681 Task 7): as in `_repo` above -- readiness still
+            # gates its matrix row on the legacy matrix file. Delete with it.
+            with open(os.path.join(root, ".panopticon", "groups.yml"), "w",
+                      encoding="utf-8") as fh:
+                fh.write(groups_yml)
+        return root
 
     def _run(self, *argv, daemon=0, image=0, which=None, home=None, path=None,
              stub_which=True):
@@ -284,7 +298,10 @@ class TestTheReadyMachine(_VerbCase):
         self.assertEqual(0, code, json.dumps(body, indent=2))
         self.assertIs(True, body["ready"])
         self.assertEqual(2, body["matrix"]["groups"])
-        self.assertEqual(2, body["matrix"]["code_files"])
+        # 3, not 2: #1681 made the config a committed ROOT `panopticon.yml`,
+        # which is an ordinary repo file the listing counts (same reckoning as
+        # TestBothFileListingsAgree below).
+        self.assertEqual(3, body["matrix"]["code_files"])
         self.assertEqual(1, body["matrix"]["tests_files"])
         self.assertEqual(tag, body["existing_run"]["tag"])
         self.assertEqual(0, body["existing_run"]["pending"])

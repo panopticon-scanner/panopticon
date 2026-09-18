@@ -45,8 +45,8 @@ class TestDiscoveryRepoScanParity(unittest.TestCase):
     def test_matrix_catalog_normalizes_scalar_match(self):
         d = self._repo()
         # a scalar match must normalize to [] (SEC-3), never char-split
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
-            fh.write("groups:\n  Bad:\n    match: src/**\n    panels: [SEC]\n")
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\ngroups:\n  Bad:\n    match: src/**\n    panels: [SEC]\n")
         cat = discovery._matrix_catalog(d)
         self.assertEqual(cat.get("Bad", {}).get("match", None), [])
 

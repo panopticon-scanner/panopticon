@@ -208,7 +208,7 @@ def _repo_with_fixture_corpus(tmp_path, exclude_paths=True):
     yml = "groups:\n  Real:\n    match: ['src/**']\n    panels: [SEC]\n"
     if exclude_paths:
         yml += "exclude_paths: ['tests/fixtures/**']\n"
-    (repo / ".panopticon" / "groups.yml").write_text(yml)
+    (repo / "panopticon.yml").write_text("version: 1\n" + yml)
     git_cmd(repo, "init", "-q")
     git_cmd(repo, "add", "-A")
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x")
@@ -230,7 +230,9 @@ def test_redteam_exclude_paths_prunes_fixture_corpus_before_grouping(tmp_path):
     assert rc == 0
     doc = json.loads(out.read_text())
     files = sorted(f for g in doc["groups"] for f in g["files"])
-    assert files == ["src/real.py"]                       # fixture corpus pruned
+    # #1681: `panopticon.yml` is the committed root config -- an ordinary repo
+    # file this catalog claims no group for, hence the residual sink.
+    assert files == ["panopticon.yml", "src/real.py"]     # fixture corpus pruned
     assert "tests/fixtures/vuln/app.py" not in files
     assert doc["exclude_paths"] == ["tests/fixtures/**"]
     assert doc["excluded_count"] == 1

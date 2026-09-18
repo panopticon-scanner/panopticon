@@ -18,17 +18,17 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.addCleanup(self._t.cleanup)
         self.manifest = {"run_id": "R", "security_mode": "standard"}
 
-    def _write_groups_yml(self, body):
+    def _write_config(self, body):
         with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
             fh.write("version: 1\n")
             fh.write(body)
 
-    def test_missing_groups_yml_raises(self):
+    def test_missing_config_raises(self):
         with self.assertRaises(runio.DriverError):
             discovery.discovery_execute(self.root, self.manifest)
 
     def test_discovery_subprocesses_discovery_and_marks_done(self):
-        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
 
         def fake_run(cmd, **kw):   # tolerant: driver passes cwd/env/capture_output
             out = cmd[cmd.index("--out") + 1]
@@ -42,14 +42,14 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertTrue(discovery.discovery_done(self.root, self.manifest))
 
     def test_discovery_raises_when_no_groups_json_produced(self):
-        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         with mock.patch("scripts.phases.child._run_child",
                         return_value=mock.Mock(returncode=1, stdout="", stderr="boom")):
             with self.assertRaises(runio.DriverError):
                 discovery.discovery_execute(self.root, self.manifest)
 
     def test_discovery_threads_scope_group_to_repo_scan(self):
-        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         manifest = dict(self.manifest, scope={"mode": "group", "target": "Auth"})
 
         def fake_run(cmd, **kw):
@@ -66,7 +66,7 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertIn("Auth", cmd)
 
     def test_discovery_repo_scope_appends_no_scope_arg(self):
-        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         manifest = dict(self.manifest, scope={"mode": "repo"})
 
         def fake_run(cmd, **kw):
@@ -83,7 +83,7 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertNotIn("--scope-group", cmd)
 
     def test_discovery_threads_changed_scope_with_base_and_diff_context(self):
-        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
                         base="main", flags={"diff_context": 5})
 
@@ -108,7 +108,7 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertNotIn("--scope-files", cmd)
 
     def test_discovery_threads_files_scope_with_target_list(self):
-        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         manifest = dict(self.manifest,
                         scope={"mode": "files", "target": ["a.py", "b.py"]})
 
@@ -131,7 +131,7 @@ class TestDiscoveryPhase(unittest.TestCase):
     def test_discovery_threads_pr_base_when_present(self):
         # Finding B: a --pr manifest carries the gh-detected base in `pr_base`
         # (not `base`) so discovery.py resolves it with origin/<base> preference.
-        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
                         base=None, pr_base="main")
 
@@ -153,7 +153,7 @@ class TestDiscoveryPhase(unittest.TestCase):
     def test_discovery_omits_pr_base_when_absent(self):
         # A -c/--files manifest (no PR) carries no pr_base -> discovery.py gets
         # no --pr-base and its byte-identical behavior is preserved.
-        self._write_groups_yml("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
                         base="main")
 
