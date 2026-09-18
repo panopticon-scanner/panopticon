@@ -374,12 +374,24 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertIn("--host kimi", message)
 
     def test_a_mixed_batch_charges_only_the_entry_class_failures(self):
+        # #1721: the VERDICT this used to pin -- "a mixed batch is not an
+        # outage" -- is the defect. The run the 403 opened is still open when
+        # the batch ends (an entry-class failure neither extends nor closes
+        # it), so it pauses; what is unchanged, and is what this test is for,
+        # is the CHARGE.
         tally = outage.FailureTally("claude", self._args())
         tally.record("a", self._fail("claude -p exited 1: 403 Forbidden",
-                                     host_error="403 Forbidden"))
-        tally.record("b", self._fail("always"))
-        self.assertIsNone(tally.settle())                    # not an outage
+                                     host_error="403 Forbidden"), seq=0)
+        tally.record("b", self._fail("always"), seq=1)
+        self.assertIsNotNone(tally.settle())
         self.assertEqual({"b": 1}, tally.streaks)
+        # ...and a batch whose run a later success closed is not an outage at all
+        tally.record("a", self._fail("claude -p exited 1: 403 Forbidden",
+                                     host_error="403 Forbidden"), seq=0)
+        tally.record("b", self._fail("always"), seq=1)
+        tally.record("c", self._ok(), seq=2)
+        self.assertIsNone(tally.settle())
+        self.assertEqual({"b": 2}, tally.streaks)
 
     def test_a_batch_with_no_failures_at_all_is_not_an_outage(self):
         tally = outage.FailureTally("claude", self._args())
@@ -391,6 +403,83 @@ class TestTheFailureTally(unittest.TestCase):
         tally.record("a", self._fail("403 Forbidden", host_error="403 Forbidden"))
         self.assertIsNotNone(tally.settle())
         self.assertIsNone(tally.settle())                    # the next batch is empty
+
+    # ---- #1721: the trailing-run rule -------------------------------------
+    #
+    # All-or-nothing made ONE entry-class failure anywhere in a batch cancel a
+    # real outage: no pause, no attempt given back, every cell charged. What
+    # settles a batch now is whether it ENDED in a run of host-class failures.
+
+    def test_a_trailing_run_pauses_despite_an_earlier_entry_class_failure(self):
+        tally = outage.FailureTally("kimi", self._args())
+        tally.record("a", self._ok(), seq=0)
+        tally.record("b", self._fail("kimi -p exited 1: All files read"), seq=1)
+        for i, eid in enumerate(("c", "d", "e")):
+            tally.record(eid, self._fail("kimi -p exited 1: 403 Forbidden",
+                                         host_error="provider.auth_error: 403 Forbidden"),
+                         seq=2 + i)
+        message = tally.settle()
+        self.assertTrue(message.startswith("paused:"), message)
+        self.assertEqual({"b": 1}, tally.streaks)          # only the entry-class one is charged
+        self.assertEqual(["c", "d", "e"], tally.uncharged)
+
+    def test_a_success_that_was_in_flight_before_the_outage_does_not_cancel_it(self):
+        # The pool is FIFO, so a launch that STARTED before the first 403 can
+        # still land after it. That says nothing about the host being back.
+        tally = outage.FailureTally("kimi", self._args())
+        tally.record("b", self._fail("403", host_error="403 Forbidden"), seq=3)
+        tally.record("a", self._ok(), seq=1)               # launched before the outage
+        self.assertIsNotNone(tally.settle())
+
+    def test_a_success_launched_after_the_outage_closes_the_run(self):
+        tally = outage.FailureTally("kimi", self._args())
+        for seq, eid in ((0, "a"), (1, "b")):
+            tally.record(eid, self._fail("403", host_error="403 Forbidden"), seq=seq)
+        self.assertTrue(tally.outage(2))
+        tally.record("c", self._ok(), seq=2)               # the host is back
+        self.assertFalse(tally.outage(2))
+        self.assertIsNone(tally.settle())
+        self.assertEqual({}, tally.streaks)                # ...and the 403s cost nobody
+        self.assertEqual(["a", "b"], tally.uncharged)
+
+    def test_an_entry_class_failure_neither_opens_extends_nor_closes_the_run(self):
+        tally = outage.FailureTally("kimi", self._args())
+        tally.record("a", self._fail("its own fault"), seq=0)
+        self.assertFalse(tally.outage(1))                  # opens nothing
+        self.assertIsNone(tally.settle())
+        tally.record("b", self._fail("403", host_error="403 Forbidden"), seq=0)
+        tally.record("c", self._fail("its own fault"), seq=1)
+        self.assertFalse(tally.outage(2), "an entry-class failure extended the run")
+        tally.record("d", self._fail("403", host_error="403 Forbidden"), seq=2)
+        self.assertTrue(tally.outage(2), "an entry-class failure closed the run")
+
+    def test_the_short_circuit_needs_two_launches_or_a_whole_pool_round(self):
+        for width, threshold in ((None, 2), (1, 2), (2, 2), (4, 4), (8, 8)):
+            tally = outage.FailureTally("kimi", self._args())
+            for seq in range(threshold):
+                self.assertFalse(tally.outage(width), (width, seq))
+                tally.record("e%d" % seq, self._fail("403", host_error="403 Forbidden"),
+                             seq=seq)
+            self.assertTrue(tally.outage(width), width)
+
+    def test_the_pause_says_how_many_entries_were_never_launched(self):
+        tally = outage.FailureTally("kimi", self._args())
+        for seq in range(2):
+            tally.record("e%d" % seq, self._fail("403", host_error="403 Forbidden"), seq=seq)
+        message = tally.settle(70)
+        self.assertIn("70", message)
+        self.assertIn(outage.HOST_OUTAGE_CLAUSE, message)  # the guide quotes this verbatim
+
+    def test_uncharged_lists_the_host_class_ids_and_resets_per_batch(self):
+        tally = outage.FailureTally("kimi", self._args())
+        tally.record("a", self._ok(), seq=0)
+        tally.record("b", self._fail("its own fault"), seq=1)
+        tally.record("c", self._fail("403", host_error="403 Forbidden"), seq=2)
+        tally.settle()
+        self.assertEqual(["c"], tally.uncharged)
+        tally.record("d", self._ok(), seq=0)
+        tally.settle()
+        self.assertEqual([], tally.uncharged)
 
     def test_the_cap_message_names_the_entry_the_count_and_its_last_error(self):
         tally = outage.FailureTally("claude", self._args())
