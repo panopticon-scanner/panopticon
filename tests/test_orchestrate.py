@@ -62,7 +62,7 @@ def setUpModule():
     # missing tools image, so every loop below would stop there instead of at
     # the checkpoint it is about. A fake runner, never a real daemon.
     _readiness_docker_patch = mock.patch(
-        "scripts.phases.readiness.DOCKER_RUNNER", docker_probe_runner())
+        "scripts.phases.readiness_checks.DOCKER_RUNNER", docker_probe_runner())
     _readiness_docker_patch.start()
 
 

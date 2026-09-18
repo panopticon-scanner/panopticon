@@ -178,7 +178,7 @@ def _no_live_scanner_containers(request, monkeypatch):
 # right default and the wrong answer for the dozens of lifecycle tests that
 # need the engine to get PAST readiness and on to the phase they are about.
 # Those state the environment they mean with this fake runner, which answers
-# the two probe argvs and touches no daemon. Handed to `readiness.DOCKER_RUNNER`
+# the two probe argvs and touches no daemon. Handed to `readiness_checks.DOCKER_RUNNER`
 # (a module attribute, so one patch reaches it), never to PATH: a `docker` shim
 # proof over the whole suite must stay at zero lines.
 class _DockerProbe:

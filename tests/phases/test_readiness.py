@@ -12,7 +12,7 @@ Everything here is asserted through `driver.run` / `orchestrate.loop` rather
 than by calling the phase directly: "no scout checkpoint was emitted" is the
 property that matters, and it is only true of the whole engine.
 
-No real Docker. The docker probe is reached through `readiness.DOCKER_RUNNER`,
+No real Docker. The docker probe is reached through `readiness_checks.DOCKER_RUNNER`,
 a module-level seam the tests swap for a fake -- `tests/conftest.py`'s autouse
 `_refuse_setup_docker` delegates an INJECTED runner to the real check and
 refuses only the un-injected default, so a test that wants "image present"
@@ -32,6 +32,7 @@ from tools.git_repo import make_git_repo
 
 
 _READINESS = "scripts.phases.readiness"
+_READINESS_CHECKS = "scripts.phases.readiness_checks"
 
 # The one spelling of the pull remedy the operator is supposed to be able to
 # paste. Pinned here as a literal, not imported from the module under test: a
@@ -104,7 +105,7 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
 
     def test_image_absent_with_tools_enabled_refuses_before_the_scout(self):
         d = self._repo()
-        with mock.patch(_READINESS + ".DOCKER_RUNNER",
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
                         _docker_runner(daemon=0, image=1)):
             status = driver.run(self._args(d))
         self.assertEqual(status["status"], "error", status)
@@ -119,7 +120,7 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
 
     def test_the_refusal_writes_a_ready_false_artifact_naming_the_row(self):
         d = self._repo()
-        with mock.patch(_READINESS + ".DOCKER_RUNNER",
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
                         _docker_runner(daemon=0, image=1)):
             driver.run(self._args(d))
         body = self._readiness_json(d)
@@ -138,9 +139,9 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
         # invalid`, because the completion path's validation is (correctly)
         # fail-closed.
         d = self._repo()
-        with mock.patch(_READINESS + ".DOCKER_RUNNER",
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
                         _docker_runner(daemon=0, image=0)), \
-                mock.patch(_READINESS + "._installed",
+                mock.patch(_READINESS_CHECKS + "._installed",
                            side_effect=lambda name: name != "jsonschema"):
             status = driver.run(self._args(d))
         self.assertEqual(status["status"], "error", status)
@@ -152,7 +153,7 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
 
     def test_a_complete_install_leaves_the_row_green(self):
         d = self._repo()
-        with mock.patch(_READINESS + ".DOCKER_RUNNER",
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
                         _docker_runner(daemon=0, image=0)):
             driver.run(self._args(d))
         rows = self._rows(d)
@@ -161,7 +162,7 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
 
     def test_a_dead_daemon_refuses_too_and_names_its_own_remedy(self):
         d = self._repo()
-        with mock.patch(_READINESS + ".DOCKER_RUNNER",
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
                         _docker_runner(daemon=1, image=1)):
             status = driver.run(self._args(d))
         self.assertEqual(status["status"], "error", status)
@@ -173,7 +174,7 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
         d = self._repo()
         args = driver.build_parser().parse_args(
             ["loop", d, "--mode", "session", "--host", "claude"])
-        with mock.patch(_READINESS + ".DOCKER_RUNNER",
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
                         _docker_runner(daemon=0, image=1)):
             status = orchestrate.loop(args)
         self.assertEqual(status["status"], "error", status)
@@ -227,7 +228,7 @@ class TestTheDonePredicateIsNotACachedPass(_ReadinessCase):
         manifest["flags"]["tools"] = None
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh)
-        with mock.patch(_READINESS + ".DOCKER_RUNNER",
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
                         _docker_runner(daemon=0, image=1)):
             status = driver.run(self._args(d))
         self.assertEqual(status["status"], "error", status)
@@ -254,22 +255,27 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
         every invocation, and `setup_flow._check_host_shells` launches a CLI.
         Asserted on the module's own import graph, because the day someone
         reaches for `run_probes` here is the day readiness starts costing a
-        host launch."""
+        host launch. BOTH halves of the phase: item 25e moved the environment
+        checks -- the half that actually looks at the machine -- into
+        `readiness_checks`, and a guard left pointing at only the assembler
+        would watch the wrong file."""
         import ast
         import scripts.phases.readiness as readiness
-        with open(readiness.__file__, encoding="utf-8") as fh:
-            tree = ast.parse(fh.read(), readiness.__file__)
-        imported = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(a.name for a in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module)
-        for banned in ("scripts.host_probes", "scripts.runners",
-                       "scripts.probes.common", "scripts.dispatch"):
-            self.assertFalse(any(m == banned or m.startswith(banned + ".")
-                                 for m in imported),
-                             "readiness imports %s" % banned)
+        import scripts.phases.readiness_checks as readiness_checks
+        for module in (readiness, readiness_checks):
+            with open(module.__file__, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), module.__file__)
+            imported = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported.update(a.name for a in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module)
+            for banned in ("scripts.host_probes", "scripts.runners",
+                           "scripts.probes.common", "scripts.dispatch"):
+                self.assertFalse(any(m == banned or m.startswith(banned + ".")
+                                     for m in imported),
+                                 "%s imports %s" % (module.__name__, banned))
 
     def test_the_docker_runner_seam_is_none_in_production(self):
         """F4: `DOCKER_RUNNER` is a test-only injection point. A non-None value
@@ -289,7 +295,7 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
             + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
         proc = subprocess.run(  # nosec B603
             [sys.executable, "-c",
-             "import scripts.phases.readiness as r; print(repr(r.DOCKER_RUNNER))"],
+             "import scripts.phases.readiness_checks as r; print(repr(r.DOCKER_RUNNER))"],
             capture_output=True, text=True, env=env, cwd=REPO_ROOT)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "None")
@@ -316,7 +322,7 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
                                     if isinstance(target, ast.Attribute) else None)
                             if name != "DOCKER_RUNNER":
                                 continue
-                            ok = (os.path.basename(path) == "readiness.py"
+                            ok = (os.path.basename(path) == "readiness_checks.py"
                                   and isinstance(node.value, ast.Constant)
                                   and node.value.value is None)
                             if not ok:
@@ -329,8 +335,9 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
 
     def test_the_launch_guard_still_finds_exactly_the_known_seams(self):
         from test_host_launch_guard import _seams
-        self.assertNotIn(os.path.join("phases", "readiness.py"),
-                         [relative for _, relative, _ in _seams()])
+        relatives = [relative for _, relative, _ in _seams()]
+        for name in ("readiness.py", "readiness_checks.py"):
+            self.assertNotIn(os.path.join("phases", name), relatives)
 
 
 if __name__ == "__main__":

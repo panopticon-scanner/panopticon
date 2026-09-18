@@ -81,7 +81,7 @@ def setUpModule():
     # patches this attribute itself (tests/phases/test_readiness.py).
     global _readiness_docker_patch
     _readiness_docker_patch = mock.patch(
-        "scripts.phases.readiness.DOCKER_RUNNER", docker_probe_runner())
+        "scripts.phases.readiness_checks.DOCKER_RUNNER", docker_probe_runner())
     _readiness_docker_patch.start()
 
 

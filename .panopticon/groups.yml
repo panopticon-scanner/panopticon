@@ -110,6 +110,11 @@ groups:
       # what stops the glob above claiming a 49th file. Second `!` entry in
       # this file; the one above it is the precedent.
       - '!skill/scripts/phases/verify_tools.py'
+      # item 25e, same pass: `phases/readiness_checks.py` (the readiness
+      # phase's environment checks, moved out of `phases/readiness.py`)
+      # parks in `Orchestration:Core` by this same negation, for the same
+      # 48/48 reason.
+      - '!skill/scripts/phases/readiness_checks.py'
       - skill/scripts/orchestrate.py
       - skill/scripts/progress.py
       # Deliberately NOT with its four sibling contracts (findings-envelope,
@@ -180,6 +185,14 @@ groups:
       # `tests/phases/**` with `Phases`: the module is parked, its coverage
       # is not. It goes home when the Phases split lands.
       - skill/scripts/phases/verify_tools.py
+      # item 25e: the readiness phase's environment checks -- the docker and
+      # tools-image probes with their `DOCKER_RUNNER` test-only seam, the
+      # runtime-package check and the host-CLI PATH rows -- moved out of
+      # `phases/readiness.py`, which had 12 lines of headroom under the
+      # 700-line ceiling. Same mechanism and same reason as
+      # `phases/verify_tools.py` immediately above; its tests stay under
+      # `tests/phases/**` with `Phases`.
+      - skill/scripts/phases/readiness_checks.py
       # item 25d (#1623): the loop's host-outage verdict -- the failure
       # classifier, the per-entry failure tally and the `paused` message --
       # moved out of `runners/base.py`, which had 32 lines of headroom under

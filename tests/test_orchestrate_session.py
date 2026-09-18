@@ -47,7 +47,7 @@ def setUpModule():
     # phase table now, and a session loop that stops there never reaches the
     # dispatch status these tests read.
     _readiness_docker_patch = mock.patch(
-        "scripts.phases.readiness.DOCKER_RUNNER", docker_probe_runner())
+        "scripts.phases.readiness_checks.DOCKER_RUNNER", docker_probe_runner())
     _readiness_docker_patch.start()
 
 
