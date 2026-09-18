@@ -856,7 +856,29 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             {"name": "check", "continue-on-error": True,
              "run": 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX},
             {"name": "run", "run": "chmod +x /tmp/p\n/tmp/p\n"}]}}}
+        self.flagged(*wg.run_steps(doc))
+
+    def test_a_job_level_continue_on_error_reaches_every_step(self):
+        doc = {"jobs": {"b": {"continue-on-error": True, "steps": [
+            {"name": "get", "run": "curl -sfL https://example.test/p -o /tmp/p\n"},
+            {"name": "check", "run": 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX},
+            {"name": "run", "run": "chmod +x /tmp/p\n/tmp/p\n"}]}}}
+        self.flagged(*wg.run_steps(doc))
+
+    def test_a_check_step_without_it_still_clears_the_fetch(self):
+        doc = {"jobs": {"b": {"steps": [
+            {"name": "get", "run": "curl -sfL https://example.test/p -o /tmp/p\n"},
+            {"name": "check", "continue-on-error": False,
+             "run": 'echo "%s  /tmp/p" | sha256sum -c -\n' % HEX},
+            {"name": "run", "run": "chmod +x /tmp/p\n/tmp/p\n"}]}}}
         self.accepted(*wg.run_steps(doc))
+
+    def test_a_soft_step_still_counts_as_fetching(self):
+        doc = {"jobs": {"b": {"steps": [
+            {"name": "get", "continue-on-error": True,
+             "run": "curl -sfL https://example.test/p -o /tmp/p\n"},
+            {"name": "run", "run": "chmod +x /tmp/p\n/tmp/p\n"}]}}}
+        self.flagged(*wg.run_steps(doc))
 
     def test_a_condition_compared_as_written_is_assumed_stable(self):
         # `env.NEED` is rewritten between the two steps, so the SAME text is

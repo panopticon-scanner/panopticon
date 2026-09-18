@@ -98,10 +98,11 @@ from shell_reader import command, conditional, negated, statements
 # the next pipeline stage (None when the fetch ends the pipeline).
 Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 
-# One `run:` step: its name, its script, the shell it will run under, and the
-# `if:` that decides whether it runs at all.
-Step = collections.namedtuple("Step", "name script shell condition",
-                              defaults=(None, None))
+# One `run:` step: its name, its script, the shell it will run under, the `if:`
+# that decides whether it runs at all, and whether its own failure stops the
+# job -- `continue-on-error: true` is the YAML twin of `|| true`.
+Step = collections.namedtuple("Step", "name script shell condition soft",
+                              defaults=(None, None, False))
 
 FETCHERS = ("curl", "wget")
 # The shells this module has a grammar for. Anything else is reported unread.
@@ -722,14 +723,16 @@ def _defect(fetch, index, stmts, checks, conditions=None):
             % (_describe(fetch), how, _remedy(fetch.dest)))
 
 
-def _defects(stmts, conditions=None):
+def _defects(stmts, conditions=None, soft=()):
     """[(statement index, why)] for every unverified fetch in parsed shell.
 
     `conditions` maps a statement index to the `if:` of the step it came from
     (absent = unconditional), which decides whether a check is allowed to clear
-    a use -- see `_binds`.
+    a use -- see `_binds`. `soft` holds the indexes whose step carries
+    `continue-on-error: true`, whose checks clear nothing at all.
     """
-    checks = _checks(stmts)
+    checks = [(index, text) for index, text in _checks(stmts)
+              if index not in soft]
     conditions = conditions or {}
     found = []
     for index, fetch in _fetch_records(stmts):
@@ -755,7 +758,9 @@ def job_defects(steps):
     A step carrying an `if:` is folded for what it FETCHES and what it RUNS;
     its CHECK is credited only to a use that shares the same condition (see
     `_binds`), because a checksum that may be skipped cannot clear an
-    execution that is not.
+    execution that is not. A step carrying `continue-on-error: true` is folded
+    the same way and its CHECK is credited to nothing: the job carries on past
+    its failure, which is `|| true` spelled in YAML.
 
     THE SCOPE IS THE JOB, not the step. Steps in a job share the workspace,
     /tmp and PATH, so `curl -o /tmp/x` in step A and `chmod +x /tmp/x; /tmp/x`
@@ -769,7 +774,7 @@ def job_defects(steps):
     not reach into the next step's parse. Each defect is attributed to the step
     that performed the fetch.
     """
-    stmts, owner, conditions, found = [], [], {}, []
+    stmts, owner, conditions, soft, found = [], [], {}, set(), []
     for item in steps:
         step = item if isinstance(item, Step) else Step(*item)
         why = unparseable(step.shell)
@@ -780,13 +785,17 @@ def job_defects(steps):
             # An `if:` step may not run. Its FETCH still counts -- folding it in
             # can only report more -- but its CHECK counts only for a use that
             # is skipped with it (`_binds`): a checksum that may not run cannot
-            # clear an execution that always does.
+            # clear an execution that always does. A `continue-on-error` step
+            # DOES run, and its failure is discarded, so its check counts for
+            # nothing.
             if step.condition:
                 conditions[len(stmts)] = step.condition
+            if step.soft:
+                soft.add(len(stmts))
             stmts.append(statement)
             owner.append(step.name)
     found.extend((owner[index], why)
-                 for index, why in _defects(stmts, conditions))
+                 for index, why in _defects(stmts, conditions, soft))
     return found
 
 
@@ -829,10 +838,13 @@ def run_jobs(doc):
                 continue
             shell = (step.get("shell") or _default_shell(job)
                      or _default_shell(doc))
-            # A job-level `if:` makes every one of its steps conditional.
+            # A job-level `if:` makes every one of its steps conditional, and
+            # a job-level `continue-on-error` makes every one of them soft.
             condition = step.get("if") or job.get("if")
+            soft = bool(step.get("continue-on-error")
+                        or job.get("continue-on-error"))
             steps.append(Step(step.get("name") or UNNAMED, step["run"], shell,
-                              condition))
+                              condition, soft))
         if steps:
             jobs.append((name, steps))
     return jobs
