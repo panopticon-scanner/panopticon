@@ -457,7 +457,6 @@ def in_container(argv, dest, interpreters):
 # `||` hands the failure to a branch, which rescues it ONLY if that branch
 # ends the job; `if`/`while`/`!` make it a test, and errexit never applies to
 # a test.
-_SWALLOWING = ("||", "&")
 # The `|| ...` branches that keep a check a check: they fail the step, which
 # is exactly what errexit would have done.
 _FATAL = ("exit", "return", "false")

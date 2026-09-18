@@ -518,10 +518,12 @@ def _defect(fetch, index, stmts, checks, conditions=None):
 def _defects(stmts, conditions=None, soft=()):
     """[(statement index, why)] for every unverified fetch in parsed shell.
 
-    `conditions` maps a statement index to the `if:` of the step it came from
-    (absent = unconditional), which decides whether a check is allowed to clear
-    a use -- see `_binds`. `soft` holds the indexes whose step carries
-    `continue-on-error: true`, whose checks clear nothing at all.
+    `conditions` maps a statement index to the PAIR that decides whether it
+    runs -- the `if:` of the step it came from, and the shell branch it was
+    written inside (`workflow_forms.regions`); absent = unconditional on both
+    counts. A check clears a use only where both halves match -- see `_binds`.
+    `soft` holds the indexes whose step carries `continue-on-error: true`,
+    whose checks clear nothing at all.
     """
     checks = _checks(stmts, soft)
     conditions = conditions or {}
