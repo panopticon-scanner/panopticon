@@ -485,7 +485,7 @@ class TestMergeAdditive(unittest.TestCase):
         groups = {"Checkout": {"match": ["src/checkout/**"],
                                "tests": ["tests/checkout/**"],
                                "panels": ["SEC", "DAT"]}}
-        text = sp.dump_groups_yaml(groups)
+        text = sp.dump_config_yaml(groups)
         doc = yaml.safe_load(text)
         parsed, errors = groups_schema.parse_groups(doc)
         self.assertEqual(errors, [])
@@ -497,7 +497,7 @@ class TestMergeAdditive(unittest.TestCase):
         groups = {"Auth": {"match": ["**/auth/**", "**/login/**"],
                            "tests": [],
                            "panels": ["SEC"]}}
-        text = sp.dump_groups_yaml(groups)
+        text = sp.dump_config_yaml(groups)
         # Must not raise ScannerError on leading '*'
         doc = yaml.safe_load(text)
         # Must parse successfully
@@ -955,7 +955,7 @@ class TestMergeAdditiveV2(unittest.TestCase):
         self.assertEqual(diff["extended_groups"], [])
 
     def test_dump_nests_subgroups_and_round_trips(self):
-        text = sp.dump_groups_yaml({"Auth": self.PARENT,
+        text = sp.dump_config_yaml({"Auth": self.PARENT,
                                     "Search": {"match": ["src/search/**"], "tests": [],
                                                "panels": []}})
         doc = yaml.safe_load(text)

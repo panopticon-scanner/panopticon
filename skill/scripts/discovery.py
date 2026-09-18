@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Discovery/matrix core (P6.5 Slice A): resolve --repo-scan targets to
-grouped file lists via the committed groups.yml catalog. Stdlib-only; run
+grouped file lists via the committed root-config catalog. Stdlib-only; run
 BEFORE dispatching review subagents.
 
-The focused discovery/matrix module: repo file discovery, `.panopticon/
-groups.yml` matrix assignment, the --repo-scan CLI (whole-repo and the
+The focused discovery/matrix module: repo file discovery, root-config
+matrix assignment, the --repo-scan CLI (whole-repo and the
 --scope-file/--scope-dir/--scope-group/--scope-changed/--scope-files
 filters), and delta review support (--base/--pr-base resolution,
 diff-hunks.json emission). Extracted from the now-retired orchestrator.py
@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402
 import groups_schema  # noqa: E402
 import plan_contract  # noqa: E402
+import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
 
 # Files per review group before it splits into `<name>_<i>` chunks.
@@ -208,15 +209,33 @@ def _git(repo, args, timeout=30, text=True):
                           capture_output=True, text=text, check=True,
                           timeout=timeout, env={"PATH": os.environ.get("PATH", "")})
 
-def _worktree_dirty(repo):
+def _worktree_dirty(repo, exclude=()):
     """True when repo's working tree has uncommitted changes (git status
     --porcelain is non-empty) -- used to set diff-hunks.json's
     includes_uncommitted for the P6.3 --repo-scan delta scopes: True for a
-    live tree (e.g. -c usage), False for a clean checkout."""
-    r = _git(repo, ["status", "--porcelain"])
-    return bool(r.stdout.strip())
+    live tree (e.g. -c usage), False for a clean checkout.
 
-def collect_changed_files(repo, base=None):
+    ``exclude`` (#1681 fix round 3, M4): repo-root-relative names whose status
+    lines are not dirt. The ``--pr-worktree`` caller passes the root config
+    names -- the SAME ones `write_diff_hunks` and `collect_changed_files`
+    exclude -- because `diff_map._sync_config` wrote the operator's config into
+    that worktree before this ran: without it the answer is True on every --pr
+    run, and the driver's own sync is declared as the PR author's uncommitted
+    work.
+    """
+    r = _git(repo, ["status", "--porcelain"])
+    names = set(exclude)
+    for line in r.stdout.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:]                     # "XY <path>"; git quotes odd names,
+        if " -> " in path:                  # which then match no plain name here
+            path = path.split(" -> ", 1)[1]   # rename/copy: the NEW path changed
+        if path.strip() not in names:
+            return True
+    return False
+
+def collect_changed_files(repo, base=None, exclude=()):
     """Collect repo-relative paths changed since the merge base (or HEAD~1).
 
     When ``base`` is given (a resolved ref name or sha), the changed set is
@@ -229,6 +248,17 @@ def collect_changed_files(repo, base=None):
     When ``base`` is None (legacy/no-delta callers), tries the default
     upstream branches (main, then master) first and falls back to HEAD~1 only
     as the last resort of THIS no-base path.
+
+    ``exclude`` (fix round 2 item 3, #1681): repo-root-relative names dropped
+    from the changed set before it is returned -- the ``--pr-worktree`` caller
+    passes the root config names here, the SAME ones ``diff_map.hunk_map``
+    excludes, so the reviewed file set and the on-diff hunk map keep agreeing
+    (the invariant this module's ``--find-renames`` comment above already
+    names) instead of diverging on the one file `_sync_config` just
+    overwrote: without this, that file was still dispatched as reviewable PR
+    surface even though the delta map had no hunks for it. A plain (non-PR)
+    delta review passes none, so a real changed root config there is still
+    reviewed exactly like any other file.
 
     Only files that still exist in the working tree are returned. Returns
     None if no git history is available.
@@ -277,6 +307,8 @@ def collect_changed_files(repo, base=None):
                 changed.add(p)
     except Exception:
         pass
+    for name in exclude:
+        changed.discard(name)
     out = []
     for p in sorted(changed):
         full = os.path.join(repo, p)
@@ -358,10 +390,6 @@ def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
     # a chunk happened to land in.
     return sorted((sorted(c) for c in chunks), key=lambda c: c[0])
 
-def _split_inline_list(rest):
-    return [x.strip().strip("'\"") for x in rest[1:-1].split(",") if x.strip()]
-
-
 # One disclosure per distinct pattern: `_glob_to_re` is called per (path,
 # pattern), so an unconditional print would emit a line per file scanned.
 _warned_globs = set()
@@ -379,7 +407,7 @@ def _glob_to_re(pat):
     """
     # A glob this compiler cannot translate faithfully must never be
     # translated wrongly (#1501). A setup proposal carrying one is refused
-    # outright, but a committed groups.yml's parse errors are disclosed and
+    # outright, but a committed root config's parse errors are disclosed and
     # NOT blocking (this module's standing policy, `_committed_matrix`), so
     # one still reaches this compiler -- where the old behaviour was to
     # `re.escape` the brackets into a literal that claimed the wrong files.
@@ -394,8 +422,8 @@ def _glob_to_re(pat):
     # Collapse runs of adjacent segment-crossing wildcards BEFORE compiling.
     # `**/**/.../x` compiles to sequential `(?:[^/]+/)*` quantifiers -- the
     # textbook catastrophic-backtracking ReDoS shape -- and repo-supplied
-    # `.panopticon/groups.yml` `match:` patterns reach this compiler, so a
-    # hostile repo could hang discovery (run-4 self-scan). Adjacent `**`
+    # root-config `match:` patterns reach this compiler, so a hostile repo
+    # could hang discovery (run-4 self-scan). Adjacent `**`
     # segments are semantically redundant, so fold each run down to one.
     pat = re.sub(r"(?:\*\*/)+", "**/", pat)
     pat = re.sub(r"\*\*\*+", "**", pat)
@@ -407,7 +435,8 @@ def _glob_to_re(pat):
     # complexity AFTER the collapse: a legitimate glob has a handful of wildcards,
     # so an over-long / over-wildcarded pattern is hostile or degenerate --
     # disclose it and compile to a never-matching regex rather than hang discovery
-    # (which reads groups.yml from the untrusted redteam target, BEFORE dispatch).
+    # (which reads the root config from the untrusted redteam target, BEFORE
+    # dispatch).
     if len(pat) > 256 or pat.count("*") > 20:
         print("discovery: ignoring over-complex glob pattern "
               "(len=%d, wildcards=%d): %r"
@@ -595,76 +624,6 @@ def assign_by_catalog(files, catalog):
     assigned, leftovers, _ = assign_scoped(files, catalog)
     return assigned, leftovers
 
-def _parse_catalog_yaml(text):
-    """Parse the documented catalog structure (2-space indent):
-
-        groups:
-          <Group>:
-            match:
-              - <glob>            # or: match: [<glob>, ...]
-            facets:
-              <Facet>: [<kw>, ...]  # or block list under the facet name
-
-    ``patterns:`` is accepted as a legacy alias for ``match:``; the modern
-    schema keys (``match``, ``tests``, ``panels``, ``exclude``) are handled by
-    the primary YAML-aware loader in ``load_catalog``.
-    """
-    groups = {}
-    group = None      # current group name
-    section = None    # "patterns" | "facets"
-    facet = None      # current facet name (within facets)
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        stripped = line.strip()
-        if indent == 0:
-            if stripped.rstrip(":") != "groups":
-                raise ValueError("expected top-level 'groups:'")
-            continue
-        if indent == 2 and stripped.endswith(":"):
-            group = stripped[:-1].strip()
-            groups[group] = {"patterns": [], "facets": {}, "match": []}
-            section = None
-            facet = None
-            continue
-        if indent == 4:
-            key, _, rest = stripped.partition(":")
-            key = key.strip()
-            rest = rest.strip()
-            if key in ("patterns", "match"):
-                section = key
-                facet = None
-                if rest.startswith("[") and rest.endswith("]"):
-                    groups[group][key] = _split_inline_list(rest)
-                    section = None
-            elif key == "facets":
-                section = "facets"
-                facet = None
-            else:
-                raise ValueError("unexpected key at indent 4: %r" % key)
-            continue
-        if indent == 6:
-            if section in ("patterns", "match") and stripped.startswith("- "):
-                groups[group][section].append(stripped[2:].strip().strip("'\""))
-                continue
-            if section == "facets":
-                key, _, rest = stripped.partition(":")
-                facet = key.strip()
-                rest = rest.strip()
-                if rest.startswith("[") and rest.endswith("]"):
-                    groups[group]["facets"][facet] = _split_inline_list(rest)
-                    facet = None
-                else:
-                    groups[group]["facets"][facet] = []
-                continue
-        if indent == 8 and section == "facets" and facet and stripped.startswith("- "):
-            groups[group]["facets"][facet].append(stripped[2:].strip().strip("'\""))
-            continue
-        raise ValueError("cannot parse catalog line: %r" % raw)
-    return groups
-
 def _to_list(val):
     """Normalise a YAML scalar, sequence, or None into a list."""
     if val is None:
@@ -674,37 +633,34 @@ def _to_list(val):
     return list(val)
 
 def load_catalog(repo):
-    """Load file group catalog from .panopticon/groups.yml.
+    """Load the file group catalog from the root config (#1681).
 
-    A missing file returns {}; YAML/OSError/ValueError is re-raised as
-    ValueError so callers fail loud on a broken catalog."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
-        return {}
-    with open(path, encoding="utf-8") as fh:
-        text = fh.read()
+    A missing config returns {}; an unreadable/invalid one, or a legacy
+    matrix file with no root config, is raised as ValueError so callers fail
+    loud on a broken catalog."""
     try:
-        try:
-            import yaml
-            data = yaml.safe_load(text) or {}
-            raw = data.get("groups") or {}
-            if isinstance(raw, list):
-                print("groups.yml: legacy list form -- normalizing to mapping; "
-                      "re-run --setup to rewrite", file=sys.stderr)
-                raw = {g.get("name"): g for g in raw
-                       if isinstance(g, dict) and g.get("name")}
-            out = {}
-            for name, body in raw.items():
-                body = body or {}
-                out[name] = {
-                    "patterns": _to_list(body.get("patterns")),
-                    "match": _to_list(body.get("match")),
-                    "facets": {k: _to_list(v) for k, v in (body.get("facets") or {}).items()},
-                }
-            return out
-        except ImportError:
-            return _parse_catalog_yaml(text)
-    except (OSError, yaml.YAMLError, ValueError) as e:
+        doc = repo_config.read_document(repo)
+        if doc.errors:
+            raise ValueError("; ".join(doc.errors))
+        if doc.doc is None:
+            return {}
+        raw = doc.doc.get("groups") or {}
+        if isinstance(raw, list):
+            print("%s: legacy list form -- normalizing to mapping; "
+                  "re-run --setup to rewrite" % repo_config.CONFIG_NAMES[0],
+                  file=sys.stderr)
+            raw = {g.get("name"): g for g in raw
+                   if isinstance(g, dict) and g.get("name")}
+        out = {}
+        for name, body in raw.items():
+            body = body or {}
+            out[name] = {
+                "patterns": _to_list(body.get("patterns")),
+                "match": _to_list(body.get("match")),
+                "facets": {k: _to_list(v) for k, v in (body.get("facets") or {}).items()},
+            }
+        return out
+    except ValueError as e:
         raise ValueError("catalog parse error: %s" % e) from e
 
 @functools.lru_cache(maxsize=None)
@@ -817,14 +773,25 @@ def prune_fixture_files(paths, include_fixtures):
         return list(paths)
     return [p for p in paths if not any(_is_fixture_dir(d) for d in _ancestor_dirs(p))]
 
-def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitted):
+def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitted,
+                     exclude=()):
     """Write .panopticon/diff-hunks.json (#449) for the delta-review synth step.
 
     ``base_commit``/``delta_start``/``delta_end`` anchor the artifact to real
     commits (``diff_map.diff_anchors``) so a later reviewer can reconstruct the
     exact delta even if branch tips move.
+
+    ``exclude`` is passed straight to ``diff_map.hunk_map``: non-empty only
+    for a ``--pr`` worktree, where it names the root config filenames the
+    operator's sync just overwrote there (#1681) -- without it, that overwrite
+    would be attributed to the PR in this very artifact. One disclosure line
+    documents the exclusion so it is never a silent gap.
     """
-    hmap = diff_map.hunk_map(repo, base) if base else {}
+    if exclude:
+        print("panopticon --pr: excluding %s from the delta map (this "
+              "worktree's root config is the operator's, never the PR's)"
+              % ", ".join(sorted(exclude)), file=sys.stderr)
+    hmap = diff_map.hunk_map(repo, base, exclude=exclude) if base else {}
     anchors = diff_map.diff_anchors(repo, base) if base else {
         "base_commit": None, "delta_start": None, "delta_end": None}
     artifact = {"schema_version": 1,
@@ -1036,11 +1003,11 @@ def _group_obj(name, files, security_mode, parent=None, chunk_of=None):
     at most one level deep (`groups_schema`: subgroups cannot nest). A
     subgroup passes its catalog-declared parent name; a leaf or leftover
     chunk defaults to self-parenting (``parent or name``), so a flat
-    groups.yml (all leaves) yields ``parent == name`` for every group.
+    root config (all leaves) yields ``parent == name`` for every group.
 
     `chunk_of` is the MACHINE axis -- the review unit this group was split
     OUT OF when it outgrew ``max_per_group``. Chunking is an internal
-    performance decision that means nothing to whoever wrote groups.yml, so
+    performance decision that means nothing to whoever wrote the root config, so
     it gets its own field instead of being recovered by parsing ``_<n>`` off
     a name: that inference cannot tell a chunk of `API` from a committed
     group named `API_1` (#1480). A group that was never split is its own
@@ -1274,7 +1241,7 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     """
     named, leftovers, scoped_warnings = assign_scoped(files, catalog)
     for w in scoped_warnings:
-        print("groups.yml: %s" % w, file=sys.stderr)
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], w), file=sys.stderr)
     if warnings is not None:
         warnings.extend(scoped_warnings)
     # 5.2 §4.3: the Tests universal vertical forms LAST, from test-tree files
@@ -1384,18 +1351,25 @@ def _leaf_body(body):
     }
 
 def _committed_matrix(repo):
-    """Committed groups.yml as serializable {name: body}, preserving committed
-    field ORDER verbatim (never-clobber is byte-faithful). A leaf body is
-    {match, tests, panels, exclude}; a PARENT (keys are subgroup names, #1305)
-    is {"subgroups": {sub: leaf body}} so the structure survives the additive
-    merge instead of collapsing to an empty leaf (5.2). Empty when none is
-    committed (first run -> adopt-all)."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
+    """Committed root config's `groups:` as serializable {name: body},
+    preserving committed field ORDER verbatim (never-clobber is
+    byte-faithful). A leaf body is {match, tests, panels, exclude}; a PARENT
+    (keys are subgroup names, #1305) is {"subgroups": {sub: leaf body}} so the
+    structure survives the additive merge instead of collapsing to an empty
+    leaf (5.2). Empty when none is committed (first run -> adopt-all).
+
+    Disclosures are printed FIRST, exactly as `_matrix_catalog` prints them
+    (I2): a refused symlink at the config path resolves to no document with NO
+    error, so `{}` was the only thing the operator ever saw of it -- and `{}`
+    here means "nothing committed", which is what setup then merged against."""
+    doc = repo_config.read_document(repo)
+    for line in doc.disclosures:
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
+    for e in doc.errors:
+        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
+    if doc.doc is None:
         return {}
-    with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    raw = data.get("groups") or {}
+    raw = doc.doc.get("groups") or {}
     if isinstance(raw, list):  # legacy list form (Task 5)
         raw = {g.get("name"): g for g in raw
                if isinstance(g, dict) and g.get("name")}
@@ -1404,7 +1378,7 @@ def _committed_matrix(repo):
     # finds.
     _, errs = groups_schema.parse_groups({"groups": raw})
     for e in errs:
-        print("committed groups.yml: %s" % e, file=sys.stderr)
+        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     out = {}
     for name, body in raw.items():
         if isinstance(body, dict) and body and not (groups_schema.RESERVED & set(body)):
@@ -1414,64 +1388,57 @@ def _committed_matrix(repo):
     return out
 
 def _matrix_catalog(repo):
-    """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan /
-    readiness: {name: {match: [...], tests, floor, exclude}} with `match`
+    """The committed matrix as parse_groups-NORMALIZED groups for --repo-scan
+    / readiness: {name: {match: [...], tests, floor, exclude}} with `match`
     VALIDATED (a scalar/invalid match normalizes to [] -- never char-split).
-    A missing file returns {}; a YAML/OSError is raised as ValueError so the
-    caller fails loud instead of silently degrading to an empty catalog."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
+    A missing config returns {}; an unreadable or invalid document -- and a
+    legacy matrix file with no root config (#1681, no fallback) -- is raised
+    as ValueError so the caller fails loud instead of silently degrading to an
+    empty catalog.
+
+    Disclosures are printed FIRST, before either exit. A refused symlink at
+    the config path resolves to no document with NO error (`repo_config`
+    refuses to follow it), so returning {} here is a silent fall back to
+    whole-repo chunking unless the refusal itself is on stderr -- same for a
+    stale `settings`-era JSON beside an absent config."""
+    doc = repo_config.read_document(repo)
+    for line in doc.disclosures:
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
+    if doc.errors:
+        raise ValueError("; ".join(doc.errors))
+    if doc.doc is None:
         return {}
-    import yaml
-    import groups_schema
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError) as e:
-        raise ValueError("groups.yml unreadable: %s" % e) from e
-    groups, errs = groups_schema.parse_groups(doc if isinstance(doc, dict) else {})
+    groups, errs = groups_schema.parse_groups(doc.doc)
     for e in errs:
-        print("committed groups.yml: %s" % e, file=sys.stderr)
+        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     return groups
 
 def _declares_groups(repo):
-    """True iff a committed .panopticon/groups.yml actually declares one or more
-    groups. Lets main() tell "no groups.yml -> adopt-all default" apart from
-    "authored a groups.yml whose entries ALL failed schema validation" -- the
-    latter must fail loud rather than silently degrade to whole-repo default
-    chunking (#run8 COD-B1A). A missing/empty file (or an `exclude_paths`-only
-    file) declares nothing; unreadable YAML is already surfaced loud by
-    `_matrix_catalog`, so it is treated as "declares nothing" here."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
+    """True iff the committed root config actually declares one or more groups
+    (#run8 COD-B1A: an authored-but-unusable catalog must fail loud, not
+    degrade to whole-repo chunking). No config, an invalid one, or a
+    legacy-only tree declares nothing here -- `_matrix_catalog` is what
+    surfaces those loud."""
+    doc = repo_config.read_document(repo)
+    if doc.doc is None:
         return False
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError):
-        return False
-    raw = (doc or {}).get("groups")
+    raw = doc.doc.get("groups")
     if isinstance(raw, list):   # legacy list form
         return any(isinstance(g, dict) and g.get("name") for g in raw)
     return bool(isinstance(raw, dict) and raw)
 
 def _committed_exclude_paths(repo):
-    """Committed top-level `exclude_paths:` globs from `.panopticon/groups.yml`
-    (Task 4, #1136), mirroring `_matrix_catalog`'s read: a missing/unreadable/
-    malformed groups.yml is non-fatal here -- ``[]`` (no pruning), never a
-    hard failure. Errors are disclosed (stderr) via `parse_exclude_paths`."""
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(path):
+    """Committed top-level `exclude_paths:` globs from the root config
+    (Task 4, #1136): a missing/unreadable/invalid config is non-fatal here --
+    ``[]`` (no pruning), never a hard failure; errors are disclosed."""
+    doc = repo_config.read_document(repo)
+    for e in doc.errors:
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
+    if doc.doc is None:
         return []
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError) as e:
-        print("groups.yml unreadable: %s" % e, file=sys.stderr)
-        return []
-    globs, errs = groups_schema.parse_exclude_paths(doc if isinstance(doc, dict) else {})
+    globs, errs = groups_schema.parse_exclude_paths(doc.doc)
     for e in errs:
-        print("committed groups.yml: %s" % e, file=sys.stderr)
+        print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     return globs
 
 def _norm_scope_path(repo, p):
@@ -1510,6 +1477,11 @@ def main(argv=None):
                          "preference (#947).")
     ap.add_argument("--diff-context", type=int, default=5,
                     help="Lines of tolerance for on-diff classification (default 5)")
+    ap.add_argument("--pr-worktree", action="store_true",
+                    help="`target`/`--repo` is a --pr worktree the driver just "
+                         "synced with the operator's root config (#1681): "
+                         "exclude that sync from the delta map instead of "
+                         "attributing it to the PR.")
     ap.add_argument("--repo-scan", action="store_true")
     # Scope filters (P6.2): narrow the discovered file universe to a target
     # BEFORE the same matrix assignment runs, rather than switching modes.
@@ -1573,21 +1545,21 @@ def main(argv=None):
     except ValueError as exc:
         print("panopticon: %s" % exc, file=sys.stderr)
         return 1
-    # #run8 COD-B1A: a committed groups.yml that DECLARES groups but whose
+    # #run8 COD-B1A: a committed root config that DECLARES groups but whose
     # entries all fail schema validation leaves `catalog` with no match-bearing
     # group. The guard below (`if any(g.get("match") ...)`) would then silently
     # fall back to whole-repo default chunking, discarding the operator's
     # committed scoping with only an easy-to-miss stderr line -- corrupt and
-    # absent groups.yml treated alike. Fail loud instead: an authored-but-
+    # absent configs treated alike. Fail loud instead: an authored-but-
     # unusable catalog is an error, not a request for the default. (A single bad
     # group among good ones still degrades gracefully -- its files fall to ._N,
     # disclosed via ungrouped_files -- because a match-bearing group survives.)
     if _declares_groups(repo) and not any(
             g.get("match") for g in catalog.values()):
-        print("panopticon: .panopticon/groups.yml declares groups but none "
-              "survived schema validation (see the 'committed groups.yml:' "
-              "errors above); refusing to silently fall back to whole-repo "
-              "default chunking. Fix the groups.yml entries or remove the file.",
+        print("panopticon: %s declares groups but none survived schema validation "
+              "(see the 'committed %s:' errors above); refusing to silently fall "
+              "back to whole-repo default chunking. Fix the entries or remove the "
+              "file." % (repo_config.CONFIG_NAMES[0], repo_config.CONFIG_NAMES[0]),
               file=sys.stderr)
         return 1
     # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
@@ -1633,7 +1605,9 @@ def main(argv=None):
         if res is None:
             return 2
         base, source = res
-        changed = collect_changed_files(repo, base=base)
+        changed = collect_changed_files(
+            repo, base=base,
+            exclude=repo_config.CONFIG_NAMES if args.pr_worktree else ())
         if changed is None:
             print("could not determine changed files; is %s a git repo?" % repo,
                   file=sys.stderr)
@@ -1668,10 +1642,18 @@ def main(argv=None):
         result["discovery"] = {"method": info.get("method")}
     if _delta is not None:
         base, source = _delta
-        includes_uncommitted = _worktree_dirty(repo)   # True for -c live tree; False for a clean --pr worktree
+        # True for -c live tree; also true for a --pr worktree now that
+        # _sync_config's overwrite of the root config dirties it too (#1681
+        # fix round 2 item 6 -- this used to read "False for a clean --pr
+        # worktree", which stopped being so the moment the sync started
+        # writing into it).
+        # M4: the same exclusion, on the same flag, for all three -- the sync
+        # is not the PR's uncommitted work any more than it is the PR's hunk.
+        _cfg_exclude = repo_config.CONFIG_NAMES if args.pr_worktree else ()
+        includes_uncommitted = _worktree_dirty(repo, exclude=_cfg_exclude)
         write_diff_hunks(repo, base, source,
                          _hunks_path_for(args.out), args.diff_context,
-                         includes_uncommitted)
+                         includes_uncommitted, exclude=_cfg_exclude)
     else:
         # #5.0-07: a NON-delta (whole-repo) scan must be authoritative and drop
         # any stale diff-hunks.json left by a prior -c/--pr run — otherwise the
@@ -1696,9 +1678,8 @@ def main(argv=None):
         if leftovers:
             print("catalog coverage: %d file(s) matched no group's `match` "
                   "patterns and fell back to %s_N chunks — see "
-                  "ungrouped_files; extend .panopticon/groups.yml to cover "
-                  "them: %s"
-                  % (len(leftovers), UNGROUPED_SINK,
+                  "ungrouped_files; extend %s to cover them: %s"
+                  % (len(leftovers), UNGROUPED_SINK, repo_config.CONFIG_NAMES[0],
                      ", ".join(leftovers[:10])
                      + (" …" if len(leftovers) > 10 else "")),
                   file=sys.stderr)

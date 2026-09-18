@@ -428,7 +428,7 @@ class TestSkillMd(unittest.TestCase):
         loop = _section(self.text, "## Driver run-loop", "## Driver setup")
         review = _section(loop, "`review`**", "`synthesize`**")
         self.assertIn("meta.coverage.test_inventory", review)
-        self.assertIn("groups.yml", review)
+        self.assertIn("panopticon.yml", review)
         # Fix round 1, F1: the state is DRIVER-computed and already published;
         # no agent files a finding for it, so the guide must not promise one
         # (an X0X from a non-TST cell was rewritten to that cell's domain and
@@ -839,7 +839,12 @@ class TestSetupDocs(unittest.TestCase):
     def test_skill_documents_driver_setup(self):
         skill = _read_doc()
         self.assertIn("driver setup", skill)
-        self.assertIn("groups.yml.draft", skill)
+        self.assertIn("panopticon.yml.draft", skill)
+        # #1681 Plan 1: the one-way remedy for a tree that still carries the
+        # retired `.panopticon/groups.yml`. Setup, readiness and every run
+        # refuse such a tree, so the verb that unblocks it has to be in the
+        # guide the refusal sends the operator to.
+        self.assertIn("migrate-config", skill)
 
 
 class TestInstalledFlowDocs(unittest.TestCase):

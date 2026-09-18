@@ -159,6 +159,22 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
         self.assertIn("test_todays_shortfall_is_pinned_so_it_moves_consciously",
                       section)
 
+    def test_section_3_points_at_the_root_config_not_the_retired_matrix_path(self):
+        # #1681 Plan 1: the review matrix moved out of `.panopticon/` to the
+        # repo root, so section 3's one exception to "never commit anything
+        # under `.panopticon*/`" no longer exists -- the root file is committed
+        # by construction and nothing is force-added past the ignore. A family
+        # reading the old paragraph would either look for a file that is not
+        # there or reach for `git add -f`, which is exactly the habit the rest
+        # of the paragraph forbids. THIS PR (#1681) is the one that moved it;
+        # no family PR may relax it back.
+        section = _section(_read_doc(), 3)
+        # Lowercased like the two host guards above: the sentence opens a line,
+        # so pinning its leading capital would pin the line wrap too.
+        self.assertIn("the self-scan review matrix lives at the repo root as "
+                      "`panopticon.yml`", section.lower())
+        self.assertNotIn("git add -f", section)
+
     def test_states_the_verification_commands_contributing_uses(self):
         doc = _read_doc()
         self.assertIn("python -m pytest tests/ -q", doc)

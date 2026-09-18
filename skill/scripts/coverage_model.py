@@ -11,7 +11,7 @@ import os
 # so without this the flagship review silently skipped COD/DAT/TST/ARC on every
 # group. Still subject to a per-group exclude (a docs-only group may opt out).
 GLOBAL_FLOOR = frozenset({"COD", "DAT", "TST", "ARC"})
-# #1084: domains a committed groups.yml `exclude` can never silence. SEC is
+# #1084: domains a committed config's `exclude` can never silence. SEC is
 # non-excludable so a target can't commit `exclude: [SEC]` to exempt its own
 # code from security review. Deliberately NOT added to GLOBAL_FLOOR (that would
 # reintroduce the #5.0-19 surfaceless-group noise) -- SEC still runs only where
@@ -40,7 +40,7 @@ _TEST_FILE_HINTS = (".test.", ".spec.", "_test.", "_spec.", "/__tests__/",
 # #5.0-19 surfaceless-group noise), but a group whose FILES carry a security
 # surface must be security-reviewed even when neither the committed `panels:`
 # nor the scout asked for it -- otherwise a mis-reporting scout, or an
-# adversarial/forgetful groups.yml that never lists SEC, silently exempts its
+# adversarial/forgetful root config that never lists SEC, silently exempts its
 # own code from security review (the exact outcome NON_EXCLUDABLE was built to
 # prevent, reached via an unguarded path). Like the global floor this keys ONLY
 # on deterministic signals, never scout-asserted surfaces (#1193). Three
@@ -61,7 +61,7 @@ _SEC_CODE_HINTS = (
 # group can carry the highest-value secret surface of all -- the secret-bearing
 # FILES themselves -- without any of those words appearing. A `.env`, a private
 # key, an `.npmrc` with a token: none match `auth`/`secret`/`password`, so a
-# groups.yml that never lists SEC exempted exactly the files most worth
+# root config that never lists SEC exempted exactly the files most worth
 # reviewing. These are extension/exact-name markers, deliberately unambiguous:
 # a false positive costs one SEC cell, a false negative costs the review.
 _SEC_SECRET_FILE_HINTS = (
@@ -153,7 +153,7 @@ def applicable_sec_floor(files):
     (see _SEC_FILE_HINTS), else an empty frozenset (#run8 SEC-G2A).
 
     Keys ONLY on deterministic file signals, never scout-asserted surfaces
-    (#1193), so a mis-reporting or adversarial scout -- or a groups.yml that
+    (#1193), so a mis-reporting or adversarial scout -- or a root config that
     never lists `panels: [SEC]` -- cannot suppress security review of a group
     whose surface objectively exists. SEC is NON_EXCLUDABLE, so once floored here
     it also cannot be excluded away (#1084). Pure; a surfaceless group with none

@@ -17,7 +17,7 @@ mechanism — the Claude Agent-tool/Workflow fan-out, or the portable `--host ge
 sub-orchestrator. Each cell is reviewed by the `domain-panel` agent
 (`agents/domain-panel.md`); its verifier is `domain-advisor`.
 Review is keyed on the ten OCRDb **domains** (`groups_schema.DOMAINS`: SEC, COD,
-ARC, TST, QAL, AGT, DAT, OPS, ACC, LNG) — a `groups.yml` group's `panels:` key is
+ARC, TST, QAL, AGT, DAT, OPS, ACC, LNG) — a `panopticon.yml` group's `panels:` key is
 parsed as a domain set. The 4.x six-panel vocabulary (code/test/security/
 architecture/database/redteam) survives only as a reporting axis.
 Optionally, findings are grounded with real static-analysis tools from a Docker

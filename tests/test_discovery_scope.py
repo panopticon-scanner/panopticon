@@ -208,7 +208,7 @@ def _repo_with_fixture_corpus(tmp_path, exclude_paths=True):
     yml = "groups:\n  Real:\n    match: ['src/**']\n    panels: [SEC]\n"
     if exclude_paths:
         yml += "exclude_paths: ['tests/fixtures/**']\n"
-    (repo / ".panopticon" / "groups.yml").write_text(yml)
+    (repo / "panopticon.yml").write_text("version: 1\n" + yml)
     git_cmd(repo, "init", "-q")
     git_cmd(repo, "add", "-A")
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x")
@@ -230,7 +230,9 @@ def test_redteam_exclude_paths_prunes_fixture_corpus_before_grouping(tmp_path):
     assert rc == 0
     doc = json.loads(out.read_text())
     files = sorted(f for g in doc["groups"] for f in g["files"])
-    assert files == ["src/real.py"]                       # fixture corpus pruned
+    # #1681: `panopticon.yml` is the committed root config -- an ordinary repo
+    # file this catalog claims no group for, hence the residual sink.
+    assert files == ["panopticon.yml", "src/real.py"]     # fixture corpus pruned
     assert "tests/fixtures/vuln/app.py" not in files
     assert doc["exclude_paths"] == ["tests/fixtures/**"]
     assert doc["excluded_count"] == 1
@@ -295,3 +297,124 @@ def test_repo_scan_scope_changed_explicit_base_ignores_pr_base(tmp_path):
                             str(repo), "--out", str(out)])
     assert rc == 2
     assert not (repo/".panopticon"/"diff-hunks.json").exists()
+
+
+def test_repo_scan_pr_worktree_excludes_root_config_from_diff_hunks(tmp_path):
+    # #1681 fix round 1 item 3: a --pr worktree's root config was just
+    # overwritten with the OPERATOR's copy (diff_map._sync_config), so a
+    # changed root config there must not be attributed to the PR in
+    # diff-hunks.json. --pr-worktree (only ever passed by the driver's --pr
+    # path, phases/discovery.py) tells write_diff_hunks to exclude it.
+    repo = repo_with_matrix(tmp_path)
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "pr ships its own config")
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            "--pr-worktree", str(repo), "--out", str(out)])
+    assert rc == 0
+    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
+    assert "panopticon.yml" not in hunks["hunks"]
+
+
+def test_repo_scan_plain_delta_still_lists_a_changed_root_config(tmp_path):
+    # The exclusion is --pr-worktree-only: a real change to the root config in
+    # a plain (non-PR) -c/--base delta review is legitimately reviewable and
+    # must still appear in the delta map.
+    repo = repo_with_matrix(tmp_path)
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "a real config change")
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
+    assert "panopticon.yml" in hunks["hunks"]
+
+
+def _pr_worktree_after_sync(tmp_path):
+    """A --pr worktree as the driver hands it to discovery: the PR's own commit
+    on top of the base, and the OPERATOR's root config written in (never
+    committed there) by `diff_map._sync_config`."""
+    repo = repo_with_matrix(tmp_path)
+    (repo / "src" / "checkout" / "pay.py").write_text("x=2\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "the PR's own change")
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Auth:\n    match: ['src/auth/**']\n")
+    return repo
+
+
+def _hunks_for_pr_worktree(repo):
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            "--pr-worktree", str(repo), "--out", str(out)])
+    assert rc == 0
+    return json.loads((repo / ".panopticon" / "diff-hunks.json").read_text())
+
+
+def test_repo_scan_pr_worktree_does_not_call_the_synced_config_uncommitted(tmp_path):
+    # M4: `_sync_config` writes the operator's config into the worktree before
+    # discovery ever runs, so `git status --porcelain` is never empty there and
+    # includes_uncommitted came back True on EVERY --pr run -- the driver's own
+    # sync published as the PR author's uncommitted work. The dirty check
+    # excludes the same names the hunk map and the reviewed set already do.
+    hunks = _hunks_for_pr_worktree(_pr_worktree_after_sync(tmp_path))
+    assert hunks["includes_uncommitted"] is False
+
+
+def test_repo_scan_pr_worktree_still_reports_real_uncommitted_work(tmp_path):
+    # The exclusion is the config names and nothing else: anything ELSE
+    # uncommitted in the worktree is still declared.
+    repo = _pr_worktree_after_sync(tmp_path)
+    (repo / "src" / "checkout" / "cart.py").write_text("x=3\n")
+    assert _hunks_for_pr_worktree(repo)["includes_uncommitted"] is True
+
+
+def _reviewed_files(out_path):
+    """Every file discovery.py --repo-scan actually dispatched: grouped, plus
+    the ungrouped leftovers a changed root config (unmatched by any committed
+    group's globs) lands in."""
+    data = json.loads(out_path.read_text())
+    return {f for g in data["groups"] for f in g["files"]} | set(
+        data.get("ungrouped_files") or [])
+
+
+def test_repo_scan_pr_worktree_excludes_root_config_from_the_reviewed_set(tmp_path):
+    # #1681 fix round 2 item 3: the delta map exclusion alone left the
+    # reviewed FILE SET still carrying the synced root config -- it was
+    # dispatched as PR surface with no hunks to justify it, diverging from
+    # diff-hunks.json exactly as the "reviewed file set and on-diff hunk map
+    # never diverge" invariant (this module's collect_changed_files
+    # docstring, and the --find-renames comment below it) says they must not.
+    # collect_changed_files now takes the SAME exclude the --pr-worktree flag
+    # already threads into write_diff_hunks.
+    repo = repo_with_matrix(tmp_path)
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "pr ships its own config")
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            "--pr-worktree", str(repo), "--out", str(out)])
+    assert rc == 0
+    assert "panopticon.yml" not in _reviewed_files(out)
+
+
+def test_repo_scan_plain_delta_still_reviews_a_changed_root_config(tmp_path):
+    # Positive control / non-PR parity: without --pr-worktree, a real changed
+    # root config is still part of the reviewed set, matching the plain-delta
+    # diff-hunks assertion above.
+    repo = repo_with_matrix(tmp_path)
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "a real config change")
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    assert "panopticon.yml" in _reviewed_files(out)

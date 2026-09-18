@@ -155,7 +155,7 @@ def headless_settings_path(review_root, namespace=None):
     Setup keeps its OWN manifest (setup-manifest.json), never
     run-manifest.json -- so if this review_root already holds a run-manifest.json
     from an EARLIER review run (a realistic sequence: review first, refresh
-    groups.yml with `driver loop --setup` later), routing setup's settings
+    the config with `driver loop --setup` later), routing setup's settings
     path through `runio._pano`'s manifest-tag lookup would resolve it into
     that PRIOR run's `runs/<tag>/` folder and clobber its host-settings.json/
     dispatch-ledger.jsonl/usage.json. `namespace == "setup"` bypasses the tag

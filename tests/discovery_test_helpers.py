@@ -149,13 +149,19 @@ class FakeRun:
 
 def _git_repo(repo, files, groups_yml):
     """#run7 QAL-D1C: shared scaffold for the fixture repos below -- create the
-    files under `repo`, write .panopticon/groups.yml, git init + one commit.
-    Fixtures differ only in `files` (the file map) and `groups_yml` (the body)."""
+    files under `repo`, write the root config, git init + one commit.
+    Fixtures differ only in `files` (the file map) and `groups_yml` (the body).
+
+    #1681: the config is `<repo>/panopticon.yml`, an ordinary committed repo
+    file -- so unlike the legacy `.panopticon/` matrix it is part of the
+    discovered surface, and the fixtures' expectations say so. The
+    `.panopticon/` directory is still made: it is where these tests write
+    groups.json."""
     (repo / ".panopticon").mkdir(parents=True)
     for p in files:
         os.makedirs(os.path.dirname(repo / p), exist_ok=True)
         (repo / p).write_text("x=1\n")
-    (repo / ".panopticon" / "groups.yml").write_text(groups_yml)
+    (repo / "panopticon.yml").write_text("version: 1\n" + groups_yml)
     git_cmd(repo, "init", "-q")
     git_cmd(repo, "add", "-A")
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
@@ -183,7 +189,7 @@ def repo_with_scalar_match_group(tmp_path):
 
 
 def repo_with_only_malformed_group(tmp_path):
-    # #run8 COD-B1A: a committed groups.yml whose ONLY group fails schema
+    # #run8 COD-B1A: a committed root config whose ONLY group fails schema
     # validation (scalar match) -> catalog has no match-bearing group. main()
     # must fail loud, not silently fall back to whole-repo default chunking.
     return _git_repo(

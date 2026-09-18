@@ -34,7 +34,8 @@ class TestCoveragePhase(unittest.TestCase):
         runio._write_json(runio._pano(self.root, "groups.json"), {"groups": groups})
 
     def _groups_yml(self, body):
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write(body)
 
     def test_emits_scout_checkpoint_when_scout_absent(self):
@@ -629,7 +630,8 @@ class TestCoverageBridge(unittest.TestCase):
     def _setup(self, floor_yaml, scout_domains):
         runio._write_json(runio._pano(self.root, "groups.json"),
                            {"groups": [{"name": "Auth", "files": ["a.py"]}]})
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write(floor_yaml)
         runio._write_json(runio._pano(self.root, "scout-Auth.json"),
                            {"group": "Auth", "domains": scout_domains})
@@ -669,7 +671,8 @@ class TestCoverageBridge(unittest.TestCase):
         # after the retry cap, never loops.
         runio._write_json(runio._pano(self.root, "groups.json"),
                            {"groups": [{"name": "Auth", "files": ["a.py"]}]})
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
         with mock.patch("scripts.dispatch.render_prompt", return_value="B"), \
              mock.patch("scripts.dispatch.registered_agent_name",
@@ -691,7 +694,8 @@ class TestCoverageBridge(unittest.TestCase):
         # the committed parent (Auth) floor, not fall back to an empty floor.
         runio._write_json(runio._pano(self.root, "groups.json"),
                            {"groups": [{"name": "Auth_1", "files": ["a.py"]}]})
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n")
         runio._write_json(runio._pano(self.root, "scout-Auth_1.json"),
                            {"group": "Auth_1", "domains": []})

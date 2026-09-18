@@ -319,8 +319,8 @@ def _roll_up_to_parent(group_objs, groups_meta, by_panel):
     """Group the report's per-flat-id unit objects by parent for presentation.
 
     A leaf group (flat id == its own parent, i.e. an ordinary un-nested
-    groups.yml entry) passes through unchanged -- this is today's shape,
-    keeping a flat groups.yml's report byte-identical. A genuine subgroup
+    config entry) passes through unchanged -- this is today's shape,
+    keeping a flat config's report byte-identical. A genuine subgroup
     (flat id != parent, e.g. "UI:Admin" under parent "UI") is folded into a
     parent node: the parent's grade is `_worst_grade` over its subgroups'
     grades (per panel), its files are the union of its subgroups' files, and

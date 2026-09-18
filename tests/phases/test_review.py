@@ -31,7 +31,8 @@ class TestCellFanOut(unittest.TestCase):
         write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
         runio._write_json(runio._pano(self.root, "groups.json"),
                            {"groups": [{"name": "Auth", "files": ["a.py"]}]})
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  Auth:\n    match: ['a.py']\n")   # #1092 healthy resume
         runio._write_json(runio._pano(self.root, "coverage-Auth.json"),
                            {"group": "Auth", "effective": ["SEC", "DAT"], "run_id": "R"})
@@ -199,7 +200,8 @@ class TestPanelsRecordWhetherTheySawScannerEvidence(unittest.TestCase):
         write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
         runio._write_json(runio._pano(self.root, "groups.json"),
                           {"groups": [{"name": "Auth", "files": ["a.py"]}]})
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  Auth:\n    match: ['a.py']\n")
         runio._write_json(runio._pano(self.root, "coverage-Auth.json"),
                           {"group": "Auth", "effective": ["SEC"], "run_id": "R"})
@@ -286,7 +288,8 @@ class TestTestInventoryNote(unittest.TestCase):
                               {"name": "Code", "files": ["src/a.py"]},
                               {"name": "Other", "files": ["tests/test_a.py"]},
                               {"name": "Lonely", "files": ["src/z.py"]}]})
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n"
                      "  Code:\n    match: ['src/a.py']\n"
                      "  Other:\n    match: ['other/**']\n"
@@ -458,7 +461,8 @@ class TestChunkedGroupsFoldToTheirParent(unittest.TestCase):
                                "parent": "Big",
                                "files": ["tests/test_m0.py",
                                          "tests/test_m1.py"]}]})
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  Big:\n    match: ['src/**']\n"
                      "    tests: ['tests/test_m0.py', 'tests/test_m1.py']\n")
         for g in ("Big_1", "Big_2"):
@@ -551,7 +555,8 @@ class TestTheInventoryPassIsLinearInUnits(unittest.TestCase):
             runio._write_json(runio._pano(self.root, "coverage-%s.json" % name),
                               {"group": name, "effective": ["TST"], "run_id": "R"})
         runio._write_json(runio._pano(self.root, "groups.json"), {"groups": groups})
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("\n".join(yml) + "\n")
 
     def test_the_classifier_runs_once_per_unit_not_once_per_pair(self):
@@ -595,7 +600,8 @@ class TestInventoryLineInjectionSafety(unittest.TestCase):
         self.manifest = {"run_id": "R", "security_mode": "standard",
                          "host": "claude"}
         write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
-        with open(runio._pano(self.root, "groups.yml"), "w") as fh:
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  Code:\n    match: ['src/**']\n")
 
     def _dispatch(self, groups, cells):

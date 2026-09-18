@@ -20,10 +20,12 @@ states it and one that states nothing reaches nothing.
 """
 import json
 import os
+import tempfile
 import unittest
 from unittest import mock
 
 import scripts.driver as driver
+import scripts.phases.readiness as readiness
 import scripts.phases.runio as runio
 import scripts.run_manifest as run_manifest
 from scripts import hosts
@@ -338,6 +340,38 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
         relatives = [relative for _, relative, _ in _seams()]
         for name in ("readiness.py", "readiness_checks.py"):
             self.assertNotIn(os.path.join("phases", name), relatives)
+
+
+class TestMatrixRowNamesTheResolvedConfig(unittest.TestCase):
+    """#1681 Task 7: `_matrix_row` reads through `repo_config`, so the
+    resolved config path is part of the row -- and a refusal (a legacy-only
+    tree, a symlinked config name) comes back as a failed ROW, never a
+    traceback out of a preflight."""
+
+    def test_matrix_row_names_the_resolved_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, ".panopticon.yml"), "w").write(
+                "version: 1\ngroups:\n  A:\n    match: ['a/**']\n")
+            row = readiness._matrix_row(d)
+            self.assertEqual(row["config"], os.path.join(d, ".panopticon.yml"))
+            self.assertTrue(row["ok"])
+
+    def test_matrix_row_refuses_a_legacy_tree_with_the_remedy(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            open(os.path.join(d, ".panopticon", "groups.yml"), "w").write("groups: {}\n")
+            row = readiness._matrix_row(d)
+            self.assertFalse(row["ok"])
+            self.assertIn("migrate-config", row["detail"])
+            self.assertEqual(row["config"], "none")
+
+    def test_matrix_row_reports_a_symlinked_config_as_a_refusal_not_the_no_groups_row(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.symlink("elsewhere.yml", os.path.join(d, "panopticon.yml"))
+            row = readiness._matrix_row(d)
+            self.assertFalse(row["ok"])
+            self.assertIn("symlink", row["detail"])
+            self.assertEqual(row["config"], "none")
 
 
 if __name__ == "__main__":

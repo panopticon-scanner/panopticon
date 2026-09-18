@@ -1,10 +1,41 @@
-# .panopticon/groups.yml — learned by `panopticon -e`, hand-editable.
-# Lives in the TARGET repo under .panopticon/ (gitignored by default).
+# panopticon.yml — the review matrix. Lives at the TARGET repo's ROOT and is
+# COMMITTED, like any other linter config (`.panopticon.yml` is a read-only
+# alias; `.panopticon/` holds run artifacts only and stays git-ignored).
+# `driver setup` proposes `panopticon.yml.draft`: review it, move it over the
+# real file, commit it. Copy this document as a starting point.
+version: 1
 groups:
+  # A LEAF group: match/tests/panels/exclude. Globs are gitignore-flavored.
+  Billing:
+    match:
+      - "**/billing/**"
+      - "**/*invoice*"
+    tests:                       # the group's test inventory, not its code
+      - "tests/billing/**"
+    panels: [SEC, COD, DAT]      # OCRDb domains; SEC can never be excluded
+  # A PARENT group: its keys are LAYER names, each itself a leaf. Layers roll
+  # up to the parent in the report (`Products:Uploads`, `Products:Pricing`).
   Products:
-    patterns:
-      - "**/product*"
-      - "**/*product*/**"
-    facets:
-      Uploads: [upload, attachment, multipart, storage, blob, s3]
-      Pricing: [price, discount, tax]
+    Uploads:
+      match:
+        - "**/product*/upload*"
+        - "**/storage/**"
+      tests:
+        - "tests/products/test_upload*.py"
+      panels: [SEC, DAT]
+    Pricing:
+      match:
+        - "**/product*"
+        - "**/*product*/**"
+      tests:
+        - "tests/products/**"
+      panels: [COD, DAT]
+      exclude: [LNG]             # drops domains for THIS group only
+# Pruned BEFORE grouping, so these files reach no review cell of any domain --
+# the right lever for a deliberately-vulnerable corpus. It prunes discovery
+# only; tool findings are dropped with synthesize.py's --tools-exclude.
+exclude_paths:
+  - "tests/fixtures/**"
+# Size policy. CLI flags win over these; these win over the defaults.
+settings:
+  max_per_group: 48

@@ -39,7 +39,7 @@ def groups_artifact_errors(doc, manifest=None):
     record the two fields every consumer reads (`_discovered_groups` takes
     `name` and `files`; `coverage_execute` keys the matrix on `name`). Anything
     richer belongs to `groups_schema`, which validates the committed
-    `groups.yml` -- the file this one is DERIVED from, and the only one that had
+    config -- the file this one is DERIVED from, and the only one that had
     a validator.
     """
     manifest = manifest if isinstance(manifest, dict) else {}
@@ -114,6 +114,14 @@ def discovery_execute(review_root, manifest):
         cmd += ["--base", manifest["base"]]
     if manifest.get("pr_base"):
         cmd += ["--pr-base", manifest["pr_base"]]
+    if manifest.get("pr") is not None:
+        # #1681: review_root IS the --pr worktree here, and driver.run already
+        # overwrote its root config with the operator's copy (diff_map._sync_config)
+        # before this phase ever runs -- tell discovery.py's delta computation
+        # to exclude that sync from diff-hunks.json rather than attribute it to
+        # the PR. A plain -c/--base run in the primary checkout never sets
+        # manifest["pr"], so this never touches a real reviewable change there.
+        cmd += ["--pr-worktree"]
     _dc = (manifest.get("flags") or {}).get("diff_context")
     if _dc is not None:
         cmd += ["--diff-context", str(_dc)]

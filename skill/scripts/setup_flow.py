@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Setup/ingest flow: scaffold a target repo (.gitignore, config.json), render
-the setup-scan brief, and ingest a setup-scan proposal into a groups.yml
-draft. Extracted from orchestrator.py (P6.4) so the driver can call it
+"""Setup/ingest flow: scaffold a target repo (.gitignore), render the
+setup-scan brief, and ingest a setup-scan proposal into a draft of the root
+config. Extracted from orchestrator.py (P6.4) so the driver can call it
 directly without going through the orchestrator CLI wrapper.
+
+#1681: the per-repo configuration is the committed root file `repo_config`
+names, and everything setup writes at the root -- the seed and the draft --
+goes through the ONE writer, `setup_proposal.dump_config_yaml`. The retired
+JSON config is neither written nor read here; its size keys live under
+`settings:`, and `migrate_config` below is the only reader of the legacy
+matrix file this project still has.
 """
 import json
 import os
@@ -17,6 +24,7 @@ import plan_contract  # noqa: E402
 import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
 import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
 import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
+import repo_config  # noqa: E402  (#1681: the one place the config names live)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
 from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard type)
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
@@ -31,25 +39,33 @@ from scripts import host_disclosure  # noqa: E402  (#1344 F3b: one voice for the
 from scripts.phases import runio  # noqa: E402
 
 
-# #1135: the committable block ignores run artifacts under .panopticon/ while
-# keeping groups.yml trackable. Applied ONLY to a repo that does not already
-# ignore the .panopticon DIRECTORY outright -- see _ensure_gitignore.
-_PANOPTICON_COMMITTABLE_ENTRIES = [
+# #1135: this block ignores run artifacts under .panopticon/ while leaving the
+# directory itself visible. Applied ONLY to a repo that does not already ignore
+# the .panopticon DIRECTORY outright -- see _ensure_gitignore.
+#
+# #1681: the committed config is at the REPO ROOT now, not under .panopticon/,
+# so nothing under the blanket is meant to be committed -- neither a per-file
+# negation nor the `!.panopticon/` directory one that used to re-include the
+# directory so the legacy matrix file could be committed out of it (fix round
+# 3, M5). `.panopticon/*` ignores the CONTENTS and leaves the directory itself
+# visible on its own, so re-including it buys a target nothing and re-exposes a
+# directory of run artifacts to the next `git add .`. The DRAFT is at the root
+# too, and it is derived, so it joins the always-ignore list below.
+_PANOPTICON_ARTIFACT_ENTRIES = [
     ".panopticon/*",
-    "!.panopticon/",
-    "!.panopticon/groups.yml",
 ]
-_ALWAYS_IGNORE_ENTRIES = [".claude/settings.local.json"]
-# Un-negatable blanket directory ignores: making groups.yml committable under
-# any of these would require REWRITING the line (git cannot re-include a file
-# whose parent directory is excluded). We leave them untouched (#1135). The
-# `.panopticon/*` form is NOT here -- it is committable-compatible, so missing
-# negations are simply appended.
+_DRAFT_IGNORE_ENTRY = repo_config.DRAFT_NAME
+_ALWAYS_IGNORE_ENTRIES = [".claude/settings.local.json", _DRAFT_IGNORE_ENTRY]
+# Un-negatable blanket directory ignores: re-including anything under one of
+# these would require REWRITING the line (git cannot re-include a file whose
+# parent directory is excluded). We leave them untouched (#1135). The
+# `.panopticon/*` form is NOT here -- it is negation-compatible, so a missing
+# negation is simply appended.
 _PANOPTICON_DIR_BLANKET = {
     ".panopticon", ".panopticon/", "/.panopticon", "/.panopticon/",
     # #run7 ARC-A2B: a `**/`-prefixed blanket also excludes the directory, so
-    # git cannot re-include groups.yml out of it -- treat it as un-negatable too
-    # (else provision() would append a committable block that can't take effect
+    # git cannot re-include anything out of it -- treat it as un-negatable too
+    # (else provision() would append an artifact block that can't take effect
     # and spuriously rewrites .gitignore).
     "**/.panopticon", "**/.panopticon/",
 }
@@ -58,9 +74,8 @@ _PANOPTICON_DIR_BLANKET = {
 # `.panopticon*/` -- which this project's own .gitignore uses deliberately, so a
 # preserved run renamed `.panopticon.prev-<stamp>` stays ignored. Setup then read
 # the repo as un-blanketed, appended the committable block, and its
-# `!.panopticon/` negation RE-EXPOSED groups.yml: the #1135 failure mode
-# recurring for a spelling nobody had listed, silently flipping the repo's policy
-# from "groups.yml is local" to "groups.yml is committable".
+# `!.panopticon/` negation RE-EXPOSED the whole directory: a repo's own policy
+# rewritten for a spelling nobody had listed, without being asked.
 #
 # Enumerating one more spelling would just move the goalposts. `git check-ignore`
 # is authoritative and understands every form, so it decides whenever the target
@@ -74,6 +89,10 @@ _CONTENTS_FORM_RE = re.compile(r"^/?(\*\*/)?\.panopticon/\*{1,2}$")
 
 _CHECK_IGNORE_LINE = re.compile(r"^(.*):(\d+):(.*)$")
 
+# The file `_git_blanket_pattern` asks git about: a real setup artifact INSIDE
+# `.panopticon/`, which is what makes the answer meaningful (see its docstring).
+_BLANKET_PROBE_PATH = os.path.join(".panopticon", "setup-report.md")
+
 # The roles the DRIVER dispatches and therefore needs registered shells for.
 # #1606: was a hand-kept three-tuple shadowing probes.common.DRIVER_ROLES and
 # leaving `advisor` unchecked; now the same object, one source of truth
@@ -83,7 +102,7 @@ _driver_roles = probes_common.DRIVER_ROLES
 
 
 def _git_blanket_pattern(repo, runner=subprocess.run):
-    """The .gitignore pattern git says ignores `.panopticon/groups.yml`.
+    """The .gitignore pattern git says ignores a file under `.panopticon/`.
 
     Returns the pattern string, "" when git says nothing ignores it, or None
     when git could not answer (not a checkout, git missing, unexpected exit) --
@@ -97,7 +116,7 @@ def _git_blanket_pattern(repo, runner=subprocess.run):
     what decides negatability."""
     try:
         r = runner(["git", "-C", repo, "check-ignore", "-v", "--",
-                    os.path.join(".panopticon", "groups.yml")],
+                    _BLANKET_PROBE_PATH],
                    capture_output=True, text=True, timeout=10)
     except Exception:                                     # noqa: BLE001
         return None
@@ -127,44 +146,38 @@ def _dir_blanket_ignored(repo, have):
 
 
 def _seed_groups_manifest(repo):
-    """#485(1): write a STARTER committable groups.yml from the repo's
+    """#485(1): write a STARTER committable root config from the repo's
     top-level directory spine -- deterministic, never clobbers an existing
-    manifest. Returns (path, created:bool, group_names)."""
-    artifact_dir = plan_contract.artifact_root(repo)
-    path = os.path.join(artifact_dir, "groups.yml")
-    if os.path.isfile(path):
+    one. Returns (path, created:bool, group_names). Through the ONE writer
+    (setup_proposal.dump_config_yaml), so the seed carries `version: 1`."""
+    path = os.path.join(repo, repo_config.CONFIG_NAMES[0])
+    committed = repo_config.resolve(repo).path      # the alias name wins if it is the one on disk
+    if committed is not None:
         names = list((discovery.load_catalog(repo) or {}).keys())
-        return path, False, names
+        return committed, False, names
     import groups_schema  # noqa: E402
+    import setup_proposal as sp  # noqa: E402
     files = discovery.discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files
                    if "/" in p and not p.startswith(".")})
-    # #1108: a top-level directory name is untrusted target content -- it may
-    # legally contain ':', '#', quotes, even embedded newlines. Build the
-    # manifest as a data structure, drop any name the schema rejects (injection
-    # chars, '..', control chars), and serialize via yaml.safe_dump. Never
-    # hand-format untrusted names into YAML text: the emitted file is the
-    # authoritative routing config consumed in this same setup run.
+    # #1108: a top-level directory name is untrusted target content -- build
+    # the document as a data structure, drop any name the schema rejects, and
+    # serialize via yaml.safe_dump inside the writer. Never hand-format.
     candidate = {t: {"match": ["%s/**" % t]} for t in tops}
     parsed, _errors = groups_schema.parse_groups({"groups": candidate})
     valid = {name: {"match": candidate[name]["match"]} for name in parsed}
-    body = yaml.safe_dump({"groups": valid}, sort_keys=True,
-                          default_flow_style=False, allow_unicode=True)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    header = ("# panopticon groups catalog -- seeded by --setup (#485).\n"
-              "# gitignore-flavored globs; first matching group wins; edit and commit.\n")
-    # #run7 COD-F1B: create atomically. The isfile() guard above is a fast path,
-    # not a lock -- O_EXCL closes the check-then-truncate TOCTOU so a concurrent
-    # seed can never clobber a manifest that appeared after the check. A racing
-    # loser observes FileExistsError and reports the existing manifest (created
-    # False) rather than overwriting it.
+    text = sp.dump_config_yaml(valid)
+    # #run7 COD-F1B: create atomically; O_EXCL closes the check-then-truncate
+    # TOCTOU so a concurrent seed can never clobber a file that appeared after
+    # the check. O_NOFOLLOW: never through a planted link (#1577).
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(path, flags, 0o644)
     except FileExistsError:
         names = list((discovery.load_catalog(repo) or {}).keys())
         return path, False, names
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(header + body)
+        fh.write(text)
     return path, True, list(valid)
 
 
@@ -177,19 +190,23 @@ def _ensure_gitignore(repo):
     get committed, WITHOUT ever rewriting existing .gitignore content -- only
     missing entries are appended.
 
-    Returns (added, groups_yml_committable). If the repo already blanket-ignores
+    Returns the list of entries appended. If the repo already blanket-ignores
     the .panopticon DIRECTORY (``_PANOPTICON_DIR_BLANKET``), that ignore is left
-    exactly as-is: the committable ``.panopticon/*`` + negation block is NOT
-    applied (applying it used to migrate the line in place -- a spurious
-    working-tree modification that also re-exposed the directory, #1135). There
-    groups.yml stays ignored -- still readable by the driver, committable once
-    with ``git add -f``. A fresh repo (or one already using the
-    committable-compatible ``.panopticon/*`` form) gets the full block; any
-    already-present entry is skipped so re-runs are true no-ops.
+    exactly as-is: the ``.panopticon/*`` artifact block is NOT applied (applying
+    it used to migrate the line in place -- a spurious working-tree modification
+    that also re-exposed the directory, #1135). A fresh repo (or one already
+    using the ``.panopticon/*`` form) gets the full block; any already-present
+    entry is skipped so re-runs are true no-ops.
+
+    #1681: the committed config is at the root, so nothing here decides whether
+    it is trackable -- the always-ignore entries (the local hook settings and
+    the derived root DRAFT) are appended either way. Nothing under
+    ``.panopticon/`` is committable, so nothing written here re-includes it
+    (fix round 3, M5).
 
     #1509: "already blanket-ignores" is decided by ``git check-ignore`` where
     possible, not by matching spellings -- the literal set missed the glob form
-    and its negation then re-exposed groups.yml."""
+    and its negation then re-exposed the directory."""
     gi = os.path.join(repo, ".gitignore")
     try:
         with open(gi, encoding="utf-8") as fh:
@@ -200,7 +217,7 @@ def _ensure_gitignore(repo):
     dir_blanket = _dir_blanket_ignored(repo, have)
     wanted = list(_ALWAYS_IGNORE_ENTRIES)
     if not dir_blanket:
-        wanted = _PANOPTICON_COMMITTABLE_ENTRIES + wanted
+        wanted = _PANOPTICON_ARTIFACT_ENTRIES + wanted
     added = [e for e in wanted if e not in have]
     if added:
         with runio._open_a_nofollow(gi) as fh:   # #1577: never append through a link
@@ -209,25 +226,7 @@ def _ensure_gitignore(repo):
             fh.write("# panopticon run artifacts (--setup #485)\n")
             for e in added:
                 fh.write(e + "\n")
-    groups_yml_committable = (not dir_blanket) or (
-        "!.panopticon/groups.yml" in have)
-    return added, groups_yml_committable
-
-
-def _seed_config(repo):
-    """#485/#486: scaffold .panopticon/config.json with the gh-account field
-    (null = inherit ambient) when absent."""
-    # #1577: through `artifact_root`, which the original path expression skipped
-    # entirely -- so this one write got neither the directory-symlink check nor
-    # the containment check its four siblings had.
-    path = os.path.join(plan_contract.artifact_root(repo), "config.json")
-    if os.path.isfile(path):
-        return path, False
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with runio._open_w_nofollow(path) as fh:
-        json.dump({"gh_config_dir": None}, fh, indent=1)
-        fh.write("\n")
-    return path, True
+    return added
 
 
 # Hard bound on each readiness probe so an installed-but-hung tool (Docker
@@ -462,18 +461,40 @@ def _check_host_shells(host, runner, repo_root=None):
 
 
 def _check_groups_manifest(repo):
-    path = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.exists(path):
+    """The readiness row for the committed config. NEVER raises: `phases/
+    readiness` calls this directly, and a refused document (#1681: an invalid
+    one, or a tree still carrying only the legacy matrix file) has to come back
+    as a failed ROW carrying its remedy, not as a traceback out of a preflight.
+    """
+    doc = repo_config.read_document(repo)
+    if doc.errors:
+        return ("groups-manifest", False, "; ".join(doc.errors))
+    if doc.path is None:
+        # A REFUSAL resolves to no document and no error -- a symlink at either
+        # config name is the case that matters (`repo_config.resolve` declines
+        # to follow it). Reading only `doc.doc` would report that planted link
+        # as "nothing configured yet": an informational row for a refusal, and
+        # a silent fall back to whole-repo chunking.
+        #
+        # The RESOLVER's disclosures, not the document's: those are refusals
+        # (and the both-present note, which cannot reach this branch -- it
+        # comes with a path). `read_document` adds informational lines too --
+        # a leftover retired JSON config -- and a stale file an operator has
+        # not deleted is not a fault this row may gate a run on. `scan_execute`
+        # prints that one.
+        refusals = repo_config.resolve(repo).disclosures
+        if refusals:
+            return ("groups-manifest", False, "; ".join(refusals))
+    if doc.doc is None:
         return ("groups-manifest", None,
-                "no committable manifest yet -- --setup seeds one; "
+                "no committable config yet -- --setup seeds one; "
                 "files fall back to ._N chunks until you commit it")
     try:
-        with open(path, encoding="utf-8") as fh:
-            yaml.safe_load(fh)
-    except (OSError, yaml.YAMLError) as exc:
-        return ("groups-manifest", False,
-                "corrupt groups.yml manifest: %s" % exc)
-    catalog = discovery._matrix_catalog(repo) or {}
+        catalog = discovery._matrix_catalog(repo) or {}
+    except ValueError as exc:
+        # Belt and braces: `read_document` above answered without errors, so
+        # this is a refusal only the catalog can see. A row, not a traceback.
+        return ("groups-manifest", False, str(exc))
     empty = [name for name, g in catalog.items() if not g.get("match")]
     return ("groups-manifest", not empty,
             "%d group(s)" % len(catalog) if not empty else
@@ -724,13 +745,13 @@ def format_spine(spine):
             "Manifests: %s" % (", ".join(spine["manifests"]) or "(none)"), ""]
     committed = spine["claimed"]["committed"]
     if committed:
-        out.append("Already claimed by the committed groups.yml (these win; do not re-propose "
+        out.append("Already claimed by the committed root config (these win; do not re-propose "
                    "them; 0 = its globs match nothing today):")
         out += ["    %-40s %5d" % (n, k) for n, k in committed.items()]
     elif spine["claimed"].get("groups_yml"):
-        out.append("Already claimed by the committed groups.yml: nothing (it has no match: globs).")
+        out.append("Already claimed by the committed root config: nothing (it has no match: globs).")
     else:
-        out.append("Already claimed by the committed groups.yml: nothing (no groups.yml).")
+        out.append("Already claimed by the committed root config: nothing (no committed config).")
     commons = spine["claimed"]["commons"]
     if commons:
         out.append("Claimed by the Commons classifier (docs/CI/build/config/deps -- not yours to group):")
@@ -750,7 +771,8 @@ def format_budget(spine):
     """The `{budget}` section of the brief: the size arithmetic and the layer
     instruction (spec §5.1)."""
     f = spine["files"]
-    how = {"cli": "from --max-groups", "config": "from .panopticon/config.json",
+    how = {"cli": "from --max-groups",
+           "config": "from settings: in %s" % repo_config.CONFIG_NAMES[0],
            "formula": "= max(%d, 2 * ceil(code_files / cap))" % grouping_engine.MIN_CEILING
            }[spine["ceiling_source"]]
     return "\n".join([
@@ -894,28 +916,112 @@ def render_scan_brief(repo, vocabulary, layers=None, spine=None, host=None):
 
 
 # _committed_matrix/_matrix_catalog RELOCATED to discovery.py (P6.5 Slice A):
-# they read .panopticon/groups.yml via yaml + groups_schema.parse_groups and
+# they read the committed root config through repo_config + groups_schema and
 # depend on nothing else from setup_flow. Aliases kept so existing callers
 # (setup_flow.committed_matrix / setup_flow.matrix_catalog) still resolve.
 committed_matrix = discovery._committed_matrix
 matrix_catalog = discovery._matrix_catalog
 
 
+def config_refusal(repo):
+    """The reasons SETUP must not write against this tree, or [] (#1681 I2).
+
+    `driver run` fails loud on an authored-but-invalid root config; setup was
+    the one path that proceeded. `discovery._committed_matrix` and
+    `_committed_exclude_paths` answer `{}`/`[]` for ANY unreadable document, so
+    ingest merged against an empty matrix, dropped the operator's
+    `exclude_paths:`, and the completion message told them to move a draft that
+    discards their own matrix over the real file.
+
+    Refuses on the document's ERRORS (no `version: 1`, over-cap, unparseable,
+    a legacy-only tree) and on the RESOLVER's own disclosures -- a refused
+    symlink at either name resolves to no document with no error at all, and
+    both names present is an ambiguity nothing should be written against.
+
+    The informational disclosures `read_document` adds on TOP of a readable
+    document -- the retired JSON config, a legacy matrix file beside a valid
+    root config, unknown top-level keys -- are deliberately not
+    refusals: they are printed elsewhere, and a first run on a tree with no
+    config at all is the ordinary case, not a fault."""
+    doc = repo_config.read_document(repo)
+    reasons = list(doc.errors) + list(repo_config.resolve(repo).disclosures)
+    if not reasons:
+        return []
+    return reasons + ["fix it or delete it; nothing was written"]
+
+
 def provision(repo):
-    """Scaffold .gitignore entries + config.json (idempotent). Returns a summary."""
-    added, groups_yml_committable = _ensure_gitignore(repo)
-    cfg, created = _seed_config(repo)
-    summary = {"gitignore_added": added, "config_path": cfg,
-               "config_created": created,
-               "groups_yml_committable": groups_yml_committable}
-    if not groups_yml_committable:
-        # #1135: we left an existing blanket .panopticon ignore untouched, so
-        # groups.yml is not trackable until the user force-adds it once.
-        summary["gitignore_note"] = (
-            "existing .gitignore already ignores the .panopticon/ directory; left "
-            "it untouched (#1135). Commit the capability manifest with "
-            "`git add -f .panopticon/groups.yml`.")
-    return summary
+    """Scaffold the .gitignore entries (idempotent). Returns a summary.
+    #1681: the JSON config is retired (its keys live under `settings:`), and a
+    tree whose root config cannot be read -- a legacy-only tree, an invalid
+    one, a refused symlink -- is refused with its own remedy before the first
+    byte is written (`config_refusal`); setup does not read the legacy file."""
+    refusal = config_refusal(repo)
+    if refusal:
+        raise ValueError("; ".join(refusal))
+    added = _ensure_gitignore(repo)
+    return {"gitignore_added": added,
+            "legacy_present": repo_config.legacy_present(repo),
+            "stale_config_json": repo_config.stale_config_json(repo)}
+
+
+def migrate_config(repo):
+    """`driver migrate-config`: the ONLY reader of the legacy matrix file
+    `repo_config.LEGACY_GROUPS_PATH` (#1681, ruling 3: no fallback). Reads it
+    through the same cap and schema, writes the root config through the one
+    writer with committed order preserved, leaves the legacy file for the
+    operator to delete, refuses if a root config already exists -- or if the
+    resolver merely DISCLOSED one (a refused symlink at either name resolves
+    to no path, and overwriting it would destroy the operator's link).
+    Returns (path, message)."""
+    import groups_schema  # noqa: E402
+    import setup_proposal as sp  # noqa: E402
+    res = repo_config.resolve(repo)
+    if res.path is not None or res.disclosures:
+        # Not `res.path is not None` alone: a REFUSED symlink at either config
+        # name resolves to no path WITH a disclosure, so that guard read an
+        # operator's own `<config> -> elsewhere` link as "nothing there" and let
+        # the write below through -- and `runio._open_w_nofollow`'s
+        # unlink-and-retry then destroyed the link and wrote a regular file in
+        # its place. Anything the resolver has something to say about is a
+        # config this verb must not overwrite.
+        raise ValueError("; ".join(res.disclosures)
+                         or "%s already exists; nothing to migrate" % res.path)
+    legacy = os.path.join(repo, repo_config.LEGACY_GROUPS_PATH)
+    if not os.path.isfile(legacy) or os.path.islink(legacy):
+        raise ValueError("no `%s` to migrate" % repo_config.LEGACY_GROUPS_PATH)
+    with open(legacy, "rb") as fh:
+        data = fh.read(repo_config.MAX_CONFIG_BYTES + 1)
+    if len(data) > repo_config.MAX_CONFIG_BYTES:
+        raise ValueError("%s exceeds %d bytes; refused" % (legacy, repo_config.MAX_CONFIG_BYTES))
+    try:
+        # The cap, the shape, the schema and the PARSE are all refusals in one
+        # currency: `driver migrate-config` catches ValueError and prints it, so
+        # a YAMLError escaping here would be a traceback where every sibling
+        # refusal is a message.
+        doc = yaml.safe_load(data.decode("utf-8")) or {}
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ValueError("%s unreadable: %s" % (legacy, exc)) from exc
+    if not isinstance(doc, dict):
+        raise ValueError("%s must be a mapping" % legacy)
+    raw = doc.get("groups") or {}
+    if isinstance(raw, list):
+        raw = {g.get("name"): g for g in raw if isinstance(g, dict) and g.get("name")}
+    _, errors = groups_schema.parse_groups({"groups": raw})
+    if errors:
+        raise ValueError("%s: %s" % (legacy, "; ".join(errors)))
+    groups = {}
+    for name, body in raw.items():
+        if isinstance(body, dict) and body and not (groups_schema.RESERVED & set(body)):
+            groups[name] = {"subgroups": {sub: discovery._leaf_body(sb) for sub, sb in body.items()}}
+        else:
+            groups[name] = discovery._leaf_body(body)
+    excludes, _ = groups_schema.parse_exclude_paths(doc)
+    path = os.path.join(repo, repo_config.CONFIG_NAMES[0])
+    with runio._open_w_nofollow(path) as fh:
+        fh.write(sp.dump_config_yaml(groups, exclude_paths=excludes))
+    return path, ("wrote %s from %s; review it, commit it, then delete %s"
+                  % (path, repo_config.LEGACY_GROUPS_PATH, repo_config.LEGACY_GROUPS_PATH))
 
 
 def load_bundled_vocabulary(vocabulary_path=None):
@@ -935,25 +1041,13 @@ _CONFIG_INT_KEYS = ("max_per_group", "max_groups")
 
 
 def config_overrides(repo):
-    """The size-policy overrides from `.panopticon/config.json` (spec §5.3:
-    `max_groups` and the cap are overridable in config). Returns
-    `{"max_per_group": int|None, "max_groups": int|None}`; a key is honoured
-    only as a positive int (bool is not an int here), anything else -- missing
-    file, unparsable JSON, a string, zero -- reads as None so a target repo
-    cannot wedge setup through its config."""
-    out = {k: None for k in _CONFIG_INT_KEYS}
-    try:
-        with open(os.path.join(repo, ".panopticon", "config.json"), encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    except (OSError, ValueError):
-        return out
-    if not isinstance(cfg, dict):
-        return out
-    for key in _CONFIG_INT_KEYS:
-        value = cfg.get(key)
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
-            out[key] = value
-    return out
+    """The size-policy overrides from the root config's `settings:` (#1681;
+    was the retired JSON config, now disclosed if present rather than read).
+    Returns `{"max_per_group": int|None, "max_groups": int|None}`."""
+    import groups_schema  # noqa: E402
+    doc = repo_config.read_document(repo)
+    settings, _errors = groups_schema.parse_settings(doc.doc or {})
+    return {k: settings[k] for k in _CONFIG_INT_KEYS}
 
 
 # #1107: hard cap on the untrusted proposal file (a scanned repo can ship
@@ -962,35 +1056,58 @@ _MAX_PROPOSAL_BYTES = 1_048_576   # 1 MiB -- far above any legitimate proposal
 
 
 def _committed_exclude_paths(repo):
-    """The committed groups.yml's top-level `exclude_paths`, [] when absent.
+    """The committed root config's top-level `exclude_paths`, [] when absent
+    or unusable (a corrupt committed file is disclosed elsewhere).
 
     Read from the raw document rather than from committed_matrix, which returns
-    the `groups:` mapping alone (#1504)."""
-    path = os.path.join(plan_contract.artifact_root(repo), "groups.yml")
-    if not os.path.isfile(path):
-        return []
+    the `groups:` mapping alone (#1504).
+
+    Disclosures go to stderr the way `discovery._matrix_catalog` prints them
+    (I2): a refused symlink at the config path resolves to no document with NO
+    error, so an empty exclude list is otherwise the only trace of it."""
     import groups_schema  # noqa: E402
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError):
-        return []            # a corrupt committed file is disclosed elsewhere
-    globs, _errors = groups_schema.parse_exclude_paths(doc)
+    doc = repo_config.read_document(repo)
+    for line in doc.disclosures:
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
+    if doc.doc is None:
+        return []
+    globs, _errors = groups_schema.parse_exclude_paths(doc.doc)
     return globs
+
+
+def _draft_settings(repo, max_per_group, max_groups):
+    """The `settings:` mapping the draft carries: everything the operator
+    COMMITTED, overlaid by the sizes they passed on this invocation.
+
+    #1504, one key over. The draft is what the completion message tells them
+    to move over the committed file, so a key it does not carry is a key they
+    lose by following our own instructions -- and `settings:` holds one the
+    CLI cannot express at setup time (`max_verify`, read by
+    `driver._cli_flags`). Rebuilding it from the two arguments would drop that
+    silently, exactly as the groups-only draft used to drop `exclude_paths`.
+    The writer omits a None, so an unset key stays unset."""
+    import groups_schema  # noqa: E402
+    settings, _errors = groups_schema.parse_settings(repo_config.read_document(repo).doc or {})
+    for key, value in (("max_per_group", max_per_group), ("max_groups", max_groups)):
+        if value is not None:
+            settings[key] = value
+    return settings
 
 
 def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None):
     """Ingest a setup-scan proposal -> assemble (aliases, layers, floors) ->
     stage 3 (grouping_engine.plan_groups: scoped assignment, Tests sweep,
-    Commons, layers, ceiling) -> additive-merge vs committed groups.yml ->
-    write .panopticon/groups.yml.draft + setup-report.md/.json. Returns a
-    structured result: ok, draft, diff, disclosure, report, report_path.
-    Never clobbers a committed groups.yml; nothing is written on any failure.
-    No printing.
+    Commons, layers, ceiling) -> additive-merge vs the committed root config ->
+    write the root draft + setup-report.md/.json. Returns a structured result:
+    ok, draft, diff, disclosure, report, report_path. Never clobbers the
+    committed config; nothing is written on any failure. No printing.
 
-    The cap and the ceiling resolve CLI argument > config.json > default
+    The cap and the ceiling resolve CLI argument > `settings:` > default
     (`discovery.DEFAULT_MAX_PER_GROUP`; `grouping_engine.ceiling_for`)."""
     import setup_proposal as sp
+    refusal = config_refusal(repo)          # I2: before anything is written
+    if refusal:
+        return {"ok": False, "errors": refusal}
     paths = (_VOCAB_PATH, _AFFINITY_PATH, _LAYERS_PATH)
     if not all(os.path.isfile(p) for p in paths):
         return {"ok": False, "errors": [
@@ -1038,17 +1155,18 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     # Serialize everything BEFORE opening any file: a serializer failure must
     # not leave a truncated draft beside a missing report.
     # #1504: the merge above shapes the `groups:` mapping only. Any top-level
-    # key the operator committed -- today `exclude_paths` (#1136) -- has to be
-    # carried across explicitly, or the draft they are told to move over the
-    # committed file silently drops it and puts an excluded corpus back in
-    # scope for every domain and every tool scan.
-    draft_text = sp.dump_groups_yaml(
-        merged, exclude_paths=_committed_exclude_paths(repo))
+    # key the operator committed -- `exclude_paths` (#1136) and `settings:`
+    # (#1681) -- has to be carried across explicitly, or the draft they are told
+    # to move over the committed file silently drops it and puts an excluded
+    # corpus back in scope for every domain and every tool scan.
+    draft_text = sp.dump_config_yaml(
+        merged, exclude_paths=_committed_exclude_paths(repo),
+        settings=_draft_settings(repo, max_per_group, max_groups))
     report_text = grouping_engine.format_report(report, disclosure)
     report_json = json.dumps({"schema_version": 1, "report": report, "disclosure": disclosure,
                               "diff": diff}, indent=1, sort_keys=True) + "\n"
     root = plan_contract.artifact_root(repo)
-    draft = os.path.join(root, "groups.yml.draft")
+    draft = repo_config.draft_path(repo)
     report_path = os.path.join(root, "setup-report.md")
     for path, text in ((draft, draft_text), (report_path, report_text),
                        (os.path.join(root, "setup-report.json"), report_json)):

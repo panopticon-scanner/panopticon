@@ -5,6 +5,7 @@ import sys
 import scripts.coverage_model as coverage_model
 import scripts.dispatch as dispatch
 import scripts.groups_schema as groups_schema
+import scripts.repo_config as repo_config
 import scripts.run_tools as run_tools
 from scripts import hosts
 from scripts import read_guard_hook
@@ -27,11 +28,11 @@ def _discovered_units(review_root):
     A leaf over `--max-per-group` is split into `Big_1`, `Big_2`, ... at run
     time, and the committed matrix has no entry for either name -- chunking
     is, in discovery's own words, "an internal performance decision that
-    means nothing to whoever wrote groups.yml". Every `groups.json` entry
+    means nothing to whoever wrote the config". Every `groups.json` entry
     already carries `chunk_of` (self-referencing when the group was never
     split), so the fold is one field: a matrix lookup, a "who holds this
     test" comparison, and a report key that names a group the operator can
-    find in their own groups.yml all read the unit, not the chunk.
+    find in their own config all read the unit, not the chunk.
 
     `parent` -- the AUTHORED roll-up axis -- is deliberately NOT folded here:
     `Auth:Core` and `Auth:API` are two matrix entries with two `tests:` axes,
@@ -227,7 +228,7 @@ def coverage_execute(review_root, manifest):
     a coverage file. Re-emits only the still-missing scouts on resume."""
     matrix, errors = runio.load_committed_groups(review_root)
     if errors:
-        # #1091: fail loud like discovery_execute -- a missing/corrupt groups.yml
+        # #1091: fail loud like discovery_execute -- a missing/corrupt config
         # on a RESUME (discovery is already done, so its gate never re-runs) would
         # otherwise silently yield matrix={}, dropping the committed floor/exclude.
         raise runio.DriverError("coverage: " + "; ".join(errors))
@@ -343,7 +344,7 @@ def coverage_execute(review_root, manifest):
         # manifest/CI/Docker file, a db/SQLi file, or an auth/crypto/secrets file
         # -- must get a deterministic SEC review even when neither the committed
         # `panels:` nor the scout asked for it, so a mis-reporting or adversarial
-        # groups.yml cannot silently skip its own security review.
+        # config cannot silently skip its own security review.
         sec_floor = coverage_model.applicable_sec_floor(files)
         effective, disclosure = coverage_model.effective_panels(
             floor, scout_added, spec.get("exclude", set()),
@@ -375,8 +376,9 @@ def coverage_execute(review_root, manifest):
             cov["exclude_rejected"] = rejected
             print("coverage: group %s exclude %s was OVERRIDDEN (non-excludable) "
                   "-- these domains still run. To drop paths entirely (e.g. a "
-                  "fixture corpus), use top-level `exclude_paths:` in groups.yml, "
-                  "not per-group `exclude:`." % (group, ", ".join(rejected)),
+                  "fixture corpus), use top-level `exclude_paths:` in %s, "
+                  "not per-group `exclude:`."
+                  % (group, ", ".join(rejected), repo_config.CONFIG_NAMES[0]),
                   file=sys.stderr)
         runio._write_json(runio._pano(review_root, "coverage-%s.json" % group), cov)
         return engine.PhaseResult(kind="advanced",

@@ -413,7 +413,7 @@ class TestPlanGroups(unittest.TestCase):
         res = ge.plan_groups(REPO, COMMITTED, ASSEMBLED, cap=48, aliases={}, ceiling=8)
         merged, diff = sp.merge_additive(COMMITTED, res["groups"], res["claims"])
         self.assertEqual(diff["dropped_redundant"], ["Billing", "Spelunking"])
-        parsed, errors = groups_schema.parse_groups(yaml.safe_load(sp.dump_groups_yaml(merged)))
+        parsed, errors = groups_schema.parse_groups(yaml.safe_load(sp.dump_config_yaml(merged)))
         self.assertEqual(errors, [])
         catalog = {n: {"match": b["match"], "tests": b["tests"]} for n, b in parsed.items()}
         assigned, leftovers, warnings = discovery.assign_scoped(REPO, catalog, aliases={})

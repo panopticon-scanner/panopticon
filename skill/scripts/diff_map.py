@@ -7,9 +7,24 @@ import json as _json
 import os
 import re
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 import uuid
+
+# This repo has two directories named `scripts` with no __init__.py (repo-root
+# scripts/ and skill/scripts/). When imported flat (skill/scripts on
+# sys.path -- the standalone-script shape, e.g. discovery.py's own bootstrap),
+# the try arm raises ModuleNotFoundError. When `scripts` resolves as a
+# namespace package (pytest via conftest.py, or driver.py's own bootstrap
+# importing this module as `scripts.diff_map`), it succeeds and binds the
+# SAME module object every other caller sees -- see host_disclosure.py for the
+# same fallback on the same seam.
+try:
+    import scripts.repo_config as repo_config
+except ImportError:
+    import repo_config
 
 _NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -73,14 +88,22 @@ def _merge_base_cause(repo, base):
             "in CI); otherwise it is the wrong base" % base)
 
 
-def hunk_map(repo, base):
+def hunk_map(repo, base, exclude=()):
     """Changed new-side line ranges per file (merge-base vs working tree),
     including untracked non-ignored files as whole-file ranges.
 
     RAISES DiffMapError when the base cannot be resolved, when HEAD and the base
     share no common ancestor, or when the diff itself fails — none of these may
     fall through to an empty map that passes the delta gate vacuously
-    (#5.0-08, #1256)."""
+    (#5.0-08, #1256).
+
+    `exclude`: repo-root-relative paths (exact match, no directory component)
+    dropped from the map before it is returned. Only the `--pr` worktree
+    caller passes anything here -- `_sync_config` overwrites the worktree's
+    root config with the OPERATOR's own file after the worktree is built, so
+    without this the on-diff gate would attribute that overwrite to the PR
+    (#1681). A plain non-PR delta review passes none, so a real change to
+    the root config there is classified exactly like any other file."""
     try:
         mb = _run_git(repo, ["merge-base", "HEAD", base])
     except Exception as e:
@@ -164,6 +187,8 @@ def hunk_map(repo, base):
             except OSError:
                 continue
             result[rel] = [(1, max(n, 1))]
+    for name in exclude:
+        result.pop(name, None)
     return result
 
 
@@ -281,46 +306,144 @@ def _worktree_dir(repo, pr_number):
 _PR_TIMEOUT = 180
 
 
-def _sync_groups(repo, wt_path):
-    """Copy the operator's `.panopticon/groups.yml` into the PR worktree so the
-    review runs against the operator's grouping, not whatever the PR shipped.
+def _write_operator_config(path, data):
+    """Create `path` holding `data`, following nothing and overwriting nothing.
 
-    #run8 SEC-D1C: the worktree holds ATTACKER-CONTROLLED checked-out PR content
-    (`git worktree add --detach wt head_sha`). If the PR commits `.panopticon`
-    (or `.panopticon/groups.yml`) as a SYMLINK -- git tracks symlinks, and
-    `git add -f` defeats the `.panopticon/` gitignore -- then makedirs/copy2
-    would resolve THROUGH it and write groups.yml to an attacker-chosen location
-    outside the worktree (CWE-59 improper link resolution). The worktree ROOT is
-    already symlink-checked in acquire_pr; this closes the same hole one level
-    down. Refuse (loud, consistent with the module's fail-loud contract) if the
-    destination dir/file is a symlink or resolves outside the worktree root.
+    #1681 fix round 3 M1. The destination sits in a worktree full of
+    attacker-controlled PR content, and `shutil.copy2` opened the name a
+    SECOND time after `_sync_config` had unlinked it -- a window in which a
+    link planted at that name is followed, carrying the operator's config (and
+    the source file's mode) onto whatever it points at. The same CWE-59 the
+    lstat+unlink loop above exists to close, one call later.
+
+    O_EXCL|O_CREAT|O_NOFOLLOW refuses anything that is already there, link or
+    file, so a destination that came back is a loud RuntimeError in the voice
+    of this module's other refusals rather than a silent write-through.
+    `_sync_config` only ever calls this on a name it has just removed or never
+    found, so EEXIST means exactly that race.
     """
-    src = os.path.join(repo, ".panopticon", "groups.yml")
-    if not os.path.isfile(src):
-        return
-    panop_dir = os.path.join(wt_path, ".panopticon")
-    if os.path.islink(panop_dir):
-        raise RuntimeError(
-            "panopticon --pr: refusing to sync groups.yml through symlinked "
-            ".panopticon in PR worktree (%s)" % panop_dir)
-    real_wt = os.path.realpath(wt_path)
-    real_parent = os.path.realpath(panop_dir)   # non-existent tail resolves literally
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
-        contained = os.path.commonpath([real_parent, real_wt]) == real_wt
-    except ValueError:
-        contained = False
-    if not contained:
+        fd = os.open(path, flags, 0o644)
+    except OSError as exc:
         raise RuntimeError(
-            "panopticon --pr: refusing to sync groups.yml outside the worktree "
-            "(destination %s escapes %s)" % (real_parent, real_wt))
-    dst = os.path.join(panop_dir, "groups.yml")
-    if os.path.islink(dst):
+            "panopticon --pr: refusing to write %s in the worktree -- the path "
+            "reappeared after it was removed (%s)" % (path, exc)) from exc
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+
+
+def _sync_config(repo, wt_path):
+    """Copy the OPERATOR's root config into the PR worktree so the review runs
+    against the operator's grouping, never the PR's (#1681; was `_sync_groups`).
+
+    #run8 SEC-D1C: the worktree holds ATTACKER-CONTROLLED checked-out PR
+    content. Its root is symlink-checked in acquire_pr and again here; a
+    PR-shipped copy of the root config (file OR symlink) under either
+    recognized config name at the worktree root is REMOVED with lstat+unlink
+    -- never opened, never followed (CWE-59) -- before the operator's file is
+    copied in under the operator's own name. Overwriting is the point (the
+    old copy-if-absent let the PR's file govern its own review); every
+    removal, refresh, and overwrite is returned as a disclosure line for the
+    caller to print.
+
+    #1681 fix round 2 item 5 (controller ruling R18): the removal loop runs
+    UNCONDITIONALLY, even when the operator has no config (or a refused one)
+    -- a PR-shipped file at either name must never govern its own review just
+    because the operator's own repo has none. Only the final copy is
+    conditional on `res.path`. `res.disclosures` (an operator-side symlink
+    refusal, or a "both present" note) is always prepended to the returned
+    notes -- fix round 1 item 2 and fix round 2 item 4 -- so neither branch
+    goes silent on the caller, who prints exactly this list.
+
+    An existing regular file at the destination whose bytes already match the
+    operator's copy (the reuse/resume call site: a PREVIOUS `_sync_config`
+    already wrote it) is left alone -- not removed, and not rewritten either:
+    the final write is skipped for it -- and disclosed as "refreshed", never
+    "removed". Three guards on that fast path (fix round 2 items 1-2):
+    the size from the already-done `lstat` must match before anything is
+    opened at all (a large PR-planted file at the config name is never read
+    just to prove it differs); reading what does match sizes uses O_NOFOLLOW
+    so the compare can't be tricked into opening through a same-named symlink
+    an attacker raced in after the `lstat`; and the fast path only ever
+    applies to the destination name that matches the operator's OWN file
+    (`os.path.basename(res.path)`) -- a fluke-identical file under the
+    OTHER name is still removed, so the worktree never ends up with both
+    names present (which would raise its own "both present" disclosure the
+    next time something reads config from the worktree).
+
+    Fix round 3, M1/M3. The copy is `_write_operator_config`, an EXCLUSIVE
+    O_NOFOLLOW create of bytes already in hand, not a second `shutil.copy2`
+    open of the same name: removal and copy were a TOCTOU pair in a directory
+    full of attacker-controlled PR content, and copy2 follows whatever is at
+    the path when it opens it. And the operator's file is read under
+    `repo_config.MAX_CONFIG_BYTES` like every other reader -- an over-cap file
+    is refused there, so it is disclosed and not copied here rather than
+    shipped into the worktree for `read_document` to refuse again.
+    """
+    res = repo_config.resolve(repo)
+    if os.path.islink(wt_path):
         raise RuntimeError(
-            "panopticon --pr: refusing to write groups.yml through a symlinked "
-            "destination (%s)" % dst)
-    if not os.path.isfile(dst):
-        os.makedirs(panop_dir, exist_ok=True)
-        shutil.copy2(src, dst)
+            "panopticon --pr: refusing to sync into a symlinked worktree (%s)" % wt_path)
+    if not os.path.isdir(wt_path):
+        raise RuntimeError(
+            "panopticon --pr: refusing to sync into a missing worktree (%s)" % wt_path)
+    notes = []
+    src, operator_bytes = res.path, None
+    if src is not None:
+        with open(src, "rb") as fh:
+            operator_bytes = fh.read(repo_config.MAX_CONFIG_BYTES + 1)
+        if len(operator_bytes) > repo_config.MAX_CONFIG_BYTES:
+            # M3: the resolver's own cap, read-then-check, never partially
+            # copied. A refused operator config is exactly like NO operator
+            # config from here on (R18): the removal loop still runs.
+            notes.append("%s exceeds %d bytes; refused -- not copied into the "
+                         "worktree" % (src, repo_config.MAX_CONFIG_BYTES))
+            src, operator_bytes = None, None
+    removed, refreshed = set(), set()
+    for name in repo_config.CONFIG_NAMES:
+        dst = os.path.join(wt_path, name)
+        try:
+            st = os.lstat(dst)
+        except FileNotFoundError:
+            continue
+        existing = None
+        if (operator_bytes is not None
+                and name == os.path.basename(src)
+                and stat.S_ISREG(st.st_mode)
+                and st.st_size == len(operator_bytes)):
+            try:
+                fd = os.open(dst, os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError:
+                fd = None
+            if fd is not None:
+                try:
+                    with os.fdopen(fd, "rb") as fh:
+                        existing = fh.read()
+                except OSError:
+                    existing = None
+        if existing is not None and existing == operator_bytes:
+            refreshed.add(name)
+            notes.append("refreshed the operator's %s in the worktree (unchanged)" % name)
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            shutil.rmtree(dst)
+        else:
+            os.unlink(dst)
+        removed.add(name)
+        notes.append("removed the PR's %s from the worktree "
+                     "(target content must not govern its own review)" % name)
+    if src is not None:
+        name = os.path.basename(src)
+        if name not in refreshed:           # M2: identical == left alone, truly
+            _write_operator_config(os.path.join(wt_path, name), operator_bytes)
+            if name in removed:
+                notes.append("overwrote %s in the worktree with the operator's copy"
+                             % name)
+    elif removed:
+        notes.append("no operator config; PR-shipped config removed, "
+                     "reviewing with defaults")
+    return list(res.disclosures) + notes
 
 
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
@@ -372,7 +495,8 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     if any(line.split()[:1] == [wt]
            for line in listing_out.splitlines() if line.strip()):
         head_sha = _run(["git", "-C", wt, "rev-parse", "HEAD"]).strip()
-        _sync_groups(repo, wt)
+        for line in _sync_config(repo, wt):
+            print("panopticon --pr: %s" % line, file=sys.stderr)
         return {"worktree": wt, "base": base, "head_sha": head_sha}   # reuse (resume)
 
     fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
@@ -386,7 +510,8 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
             _run(["git", "-C", repo, "update-ref", "-d", fetch_ref])
         except RuntimeError:
             pass
-    _sync_groups(repo, wt)
+    for line in _sync_config(repo, wt):
+        print("panopticon --pr: %s" % line, file=sys.stderr)
     return {"worktree": wt, "base": base, "head_sha": head_sha}
 
 

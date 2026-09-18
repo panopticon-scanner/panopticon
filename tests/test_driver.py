@@ -3,6 +3,7 @@ end-to-end loops. Per-phase tests live in tests/phases/test_<module>.py, mirrori
 skill/scripts/phases/ (WS-0 D5). This file carried a TECH DEBT note about being an
 unsplittable monolith from 5.0 until then.
 """
+import argparse
 import contextlib
 import dataclasses
 import decimal
@@ -200,6 +201,30 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(status["status"], "error")
         self.assertIn("drift", status["message"])
 
+    def _settings(self, root, max_verify):
+        """Rewrite the fixture's root config with a `settings:` grain knob."""
+        with open(os.path.join(root, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n"
+                     "groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
+                     "settings:\n  max_verify: %d\n" % max_verify)
+
+    def test_changing_a_settings_knob_between_resumes_is_flag_drift(self):
+        # #1681 Plan 1: the grain knobs resolve CLI > `settings:` and the
+        # manifest pins the EFFECTIVE value, so editing the committed config
+        # between resumes drifts exactly like editing the flag would -- the
+        # anti-drift keys would be a lie otherwise. (DELETING the knob is not
+        # drift: an incoming None never conflicts, so the run resumes on the
+        # value the manifest already pinned.)
+        d = self._repo()
+        self._settings(d, 5)
+        driver.run(self._args(d))
+        self.assertEqual(run_manifest.load_manifest(d)["flags"]["max_verify"], 5)
+        self._settings(d, 7)
+        status = driver.run(self._args(d))
+        self.assertEqual(status["status"], "error")
+        self.assertIn("drift", status["message"])
+        self.assertIn("max_verify", status["message"])
+
     def test_flag_drift_refused_no_synthesize_divergence(self):
         # RETIRED HAZARD (#957 both-pass flag mismatch): the manifest pins the
         # gate flags once; a conflicting re-invocation is refused, so pass-1 and
@@ -267,8 +292,9 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         status = driver.run(self._args(d, "--no-tools", "--reset"))
         self.assertEqual(status["status"], "checkpoint")
         self.assertEqual(status["checkpoint"], "scout")
-        # reset never deletes the committed matrix
-        self.assertTrue(os.path.isfile(runio._pano(d, "groups.yml")))
+        # reset never deletes the committed matrix (#1681: it lives at the
+        # repo root, outside the `.panopticon` scratch reset clears at all)
+        self.assertTrue(os.path.isfile(os.path.join(d, "panopticon.yml")))
 
     def test_main_prints_status_and_returns_exit_code(self):
         d = self._repo()
@@ -486,7 +512,8 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         write_host_evidence(d, _ALL_PROVEN)
         runio._write_json(runio._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
-        with open(runio._pano(d, "groups.yml"), "w") as fh:
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  app:\n    match: ['src/**']\n")   # #1092 healthy resume
         runio._write_json(runio._pano(d, "coverage-app.json"),
                            {"group": "app", "floor": floor, "effective": floor,
@@ -606,7 +633,8 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         write_host_evidence(d, _ALL_PROVEN)
         runio._write_json(runio._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
-        with open(runio._pano(d, "groups.yml"), "w") as fh:
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  app:\n    match: ['src/**']\n")   # #1092 healthy resume
         runio._write_json(runio._pano(d, "coverage-app.json"),
                            {"group": "app", "floor": floor, "effective": floor,
@@ -691,7 +719,8 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         os.makedirs(os.path.join(d, ".panopticon"))
         runio._write_json(runio._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
-        with open(runio._pano(d, "groups.yml"), "w") as fh:
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  app:\n    match: ['src/**']\n")   # #1091 healthy resume
         manifest = self._manifest()
 
@@ -711,6 +740,22 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         result2 = coverage.coverage_execute(d, manifest)
         self.assertEqual(result2.kind, "advanced")
         self.assertTrue(coverage.coverage_done(d, manifest))
+
+class TestCliFlagsGrainKnobs(unittest.TestCase):
+    """#1681 Plan 1: the grain knobs resolve CLI > `settings:` in the root
+    config. The manifest's anti-drift keys record the EFFECTIVE value, so a
+    config edit between resumes is caught the same way a flag edit is."""
+
+    def test_flags_take_grain_knobs_from_settings_when_the_cli_is_silent(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 12\n  max_verify: 9\n")
+            args = argparse.Namespace(max_per_group=None, max_verify=None)
+            flags = driver._cli_flags(args, review_root=d)
+            self.assertEqual((flags["max_per_group"], flags["max_verify"]), (12, 9))
+            args = argparse.Namespace(max_per_group=3, max_verify=None)
+            self.assertEqual(driver._cli_flags(args, review_root=d)["max_per_group"], 3)
+
 
 class TestDriverSingleScopeEndToEnd(unittest.TestCase):
     """P6.2: a committed multi-group matrix + `manifest["scope"]` restricts
@@ -733,7 +778,8 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
                 fh.write("def f():\n    return 1\n")
         os.makedirs(os.path.join(d, ".panopticon"))
         write_host_evidence(d, _ALL_PROVEN)
-        with open(runio._pano(d, "groups.yml"), "w") as fh:
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             # #5.0-11: GLOBAL_FLOOR folds ARC/COD/DAT/TST into every group's
             # effective panel set; exclude all four so each group's fixture
             # keeps its original single-cell (SEC-only) shape.
@@ -888,7 +934,8 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
             fh.write("\n".join(pay_lines) + "\n")
         os.makedirs(os.path.join(d, ".panopticon"))
         write_host_evidence(d, _ALL_PROVEN)
-        with open(runio._pano(d, "groups.yml"), "w") as fh:
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             # #5.0-11: GLOBAL_FLOOR folds ARC/COD/DAT/TST into every group's
             # effective panel set. Deliberately NOT excluded here (unlike the
             # other two matrix e2e fixtures): audit_floor_cells checks the
@@ -1143,6 +1190,26 @@ class TestDriverEntrypoint(unittest.TestCase):
                          "`driver.py run --help` exited %d:\n%s"
                          % (r.returncode, r.stderr))
 
+    def test_migrate_config_verb_writes_the_root_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            open(os.path.join(d, ".panopticon", "groups.yml"), "w").write(
+                "groups:\n  A:\n    match: ['a/**']\n")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = driver.main(["migrate-config", d])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.isfile(os.path.join(d, "panopticon.yml")))
+            self.assertIn("delete", out.getvalue())
+
+    def test_migrate_config_verb_refuses_loud(self):
+        with tempfile.TemporaryDirectory() as d:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = driver.main(["migrate-config", d])
+            self.assertEqual(rc, 1)
+            self.assertIn("no `.panopticon/groups.yml`", err.getvalue())
+
 class TestResetGlobs(unittest.TestCase):
     def test_reset_clears_stale_delta_artifacts(self):
         # #5.0-07: --reset must clear stale delta artifacts so they can't
@@ -1222,7 +1289,8 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         write_host_evidence(d, _ALL_PROVEN)
         runio._write_json(runio._pano(d, "groups.json"),
                            {"groups": [{"name": "app", "files": ["src/app.py"]}]})
-        with open(runio._pano(d, "groups.yml"), "w") as fh:
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  app:\n    match: ['src/**']\n")   # #1092 healthy resume
         runio._write_json(runio._pano(d, "coverage-app.json"),
                            {"group": "app", "floor": effective,
@@ -1355,7 +1423,8 @@ class TestDriverHardening(unittest.TestCase):
 
     def test_committed_groups_parsed_once_per_version(self):   # #7
         d = self._pano_dir()
-        with open(runio._pano(d, "groups.yml"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         runio._parse_committed_groups.cache_clear()
         self.addCleanup(runio._parse_committed_groups.cache_clear)
@@ -1392,7 +1461,8 @@ class TestDriverHardening(unittest.TestCase):
 
     def test_spawn_oserror_becomes_driver_error(self):   # #6
         d = self._pano_dir()
-        with open(runio._pano(d, "groups.yml"), "w", encoding="utf-8") as fh:
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n")
             fh.write("groups:\n  Auth:\n    match: ['**/*.py']\n")
         with mock.patch("scripts.phases.child._run_child",
                         side_effect=runio.DriverError("could not spawn: ENOENT")):

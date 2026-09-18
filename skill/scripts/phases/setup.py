@@ -6,6 +6,7 @@ import sys
 from scripts import hosts
 from scripts import read_guard_hook
 import scripts.host_disclosure as host_disclosure
+import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
 from . import engine
@@ -68,10 +69,13 @@ def scan_execute(review_root, manifest):
     or flat-seed + readiness + a fallback-complete marker (vocab absent, Task 3)."""
     host = manifest.get("host", "claude")
     prov = setup_flow.provision(review_root)
-    note = prov.get("gitignore_note")   # #1135: groups.yml needs `git add -f`
+    if prov["stale_config_json"]:
+        # #1681: the retired JSON config is never read again. Say so once, here,
+        # rather than leaving an operator editing a file nothing consults.
+        print("driver setup: " + prov["stale_config_json"], file=sys.stderr, flush=True)
     vocab, present = setup_flow.load_bundled_vocabulary(manifest.get("vocabulary_path"))
     if not present:
-        return _scan_fallback(review_root, manifest, host, note=note)   # Task 3
+        return _scan_fallback(review_root, manifest, host)   # Task 3
     # 5.2 stage 1: the spine is computed once, with the sizes the manifest
     # pinned, persisted for the record and rendered into the brief.
     spine = setup_flow.build_spine(review_root, max_per_group=manifest.get("max_per_group"),
@@ -85,12 +89,11 @@ def scan_execute(review_root, manifest):
     # this into whatever runs/latest pointed at and clobbered that run's request.
     req = requests.write_dispatch_request(review_root, manifest["run_id"], "scan",
                                           None, [entry], namespace="setup")
-    msg = "setup-scan checkpoint" + ((" — " + note) if note else "")
     return engine.PhaseResult(kind="checkpoint", checkpoint="scan", group=None,
-                       dispatch_request=req, message=msg)
+                       dispatch_request=req, message="setup-scan checkpoint")
 
 def ingest_done(review_root, manifest):
-    return (os.path.isfile(runio._pano(review_root, "groups.yml.draft"))
+    return (os.path.isfile(repo_config.draft_path(review_root))
             or runio._json_parses(runio._pano(review_root, "setup-complete.json")))
 
 def ingest_execute(review_root, manifest):
@@ -109,7 +112,7 @@ SETUP_PHASES = (
 )
 
 _SETUP_ARTIFACTS = ("setup-scan-brief.md", "setup-spine.json", "setup-proposal.json",
-                    "groups.yml.draft", "setup-report.md", "setup-report.json",
+                    "setup-report.md", "setup-report.json",
                     "setup-complete.json", SETUP_MANIFEST)
 
 def _setup_capabilities_path(review_root):
@@ -127,15 +130,18 @@ def _setup_capabilities_path(review_root):
 
 def _clear_setup_artifacts(review_root):
     """Remove derived setup artifacts + the setup-manifest for --reset. NEVER
-    touches the committed groups.yml.
+    touches the committed root config -- only the DRAFT beside it, which this
+    flow derives and rewrites on every ingest (#1681).
 
     The capability evidence is cleared too (fix round 1, F2): `driver loop
     --setup` reads it back on every later invocation, and `driver.run`'s own
     `--reset` cannot reach it -- that one clears the REVIEW namespace, i.e. the
     per-run folder. A file the verb consults with no way to discard it is a
     remedy the refusal message names and does not deliver."""
+    draft = repo_config.draft_path(review_root)
     for path in ([runio._pano(review_root, name) for name in _SETUP_ARTIFACTS]
-                 + [_setup_capabilities_path(review_root)]):
+                 + [_setup_capabilities_path(review_root)]
+                 + ([draft] if os.path.isfile(draft) else [])):
         try:
             os.remove(path)
         except OSError:
@@ -211,7 +217,7 @@ def _stored_limitations(marker):
     return [(row[0], row[1]) for row in ((marker or {}).get("limitations") or [])
             if isinstance(row, (list, tuple)) and len(row) == 2]
 
-def _scan_fallback(review_root, manifest, host, note=None):
+def _scan_fallback(review_root, manifest, host):
     """Vocab-absent path (parity with orchestrator.run_setup): flat top-dir seed
     + readiness gate, then a fallback-complete marker so both setup phases'
     done-predicates are satisfied -> run_engine completes without a checkpoint
@@ -231,8 +237,6 @@ def _scan_fallback(review_root, manifest, host, note=None):
         "run_id": manifest["run_id"]})
     msg = ("setup: vocab-absent fallback — flat seed %s; readiness %s"
            % (path, "OK" if not gaps else "gaps: " + ", ".join(gaps)))
-    if note:   # #1135: surface the "groups.yml needs `git add -f`" note
-        msg += " — " + note
     # LAST, and on its own lines (#1601): the clause is a list now, so
     # anything appended after it would land on the final remedy's line.
     if limitations:
@@ -298,7 +302,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
     if manifest is None:
         # 5.2 size policy, pinned at scan time so the brief's arithmetic and
         # the ingest's layers agree (anti-drift, like the run manifest's
-        # max_per_group). CLI > config.json, resolved HERE so a config edit
+        # max_per_group). CLI > `settings:`, resolved HERE so a config edit
         # between scan and ingest cannot move the numbers; None = default.
         overrides = setup_flow.config_overrides(review_root)
         manifest = {"schema_version": 1, "run_id": run_manifest.new_run_id(),
@@ -346,16 +350,17 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
         # here than it is there.
         return runio._error_status(str(exc))
     if result.get("status") == "complete":
-        if os.path.isfile(runio._pano(review_root, "groups.yml.draft")):
+        if os.path.isfile(repo_config.draft_path(review_root)):
             result["message"] = (
-                "setup complete — read .panopticon/setup-report.md, then DIFF "
-                ".panopticon/groups.yml.draft against .panopticon/groups.yml "
-                "before moving it over: the draft rebuilds `groups:` and "
-                "carries a committed `exclude_paths:` across, but any other "
-                "hand-kept top-level key is yours to re-apply")
+                "setup complete -- read .panopticon/setup-report.md, then DIFF "
+                "%s against %s before moving it over: the draft rebuilds "
+                "`groups:`, carries a committed `exclude_paths:` and "
+                "`settings:` across and records the sizes you passed, but any "
+                "other hand-kept top-level key is yours to re-apply"
+                % (repo_config.DRAFT_NAME, repo_config.CONFIG_NAMES[0]))
         else:
-            msg = ("setup complete — vocab-absent fallback seeded a flat "
-                  ".panopticon/groups.yml; review, edit, and commit it")
+            msg = ("setup complete -- vocab-absent fallback seeded a flat %s; "
+                   "review, edit, and commit it" % repo_config.CONFIG_NAMES[0])
             marker = runio._load_json(
                 runio._pano(review_root, "setup-complete.json")) or {}
             gaps = marker.get("gaps") or []

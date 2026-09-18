@@ -37,3 +37,6 @@ CodeReviewReport_*.json
 # No trailing slash: git's dir-only match ("docs/superpowers/") would not ignore
 # the symlink itself, so a fresh checkout would show it untracked.
 docs/superpowers
+
+# panopticon setup draft (promote with mv, never commit)
+panopticon.yml.draft

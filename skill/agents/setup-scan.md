@@ -1,6 +1,6 @@
 ---
 name: setup-scan
-description: One-time setup classifier that proposes business-capability groups (with layers and a profile) for the matrix groups.yml
+description: One-time setup classifier that proposes business-capability groups (with layers and a profile) for the root panopticon.yml matrix
 tool_policy:
   allowed: [Read, Grep, Glob]
   forbidden: [Bash, Edit, Write, Agent]
@@ -67,7 +67,7 @@ NOT layers: tests are the `tests` axis, config and docs are Commons.
 1. Explore the spine: read the tree, entrypoints/routes, models, dependency
    manifests, and README. Grep for route registrations, model definitions,
    and directory conventions. Files already claimed by the committed
-   groups.yml or by the Commons classifier are not yours to re-propose.
+   config or by the Commons classifier are not yours to re-propose.
 2. Map source files onto verticals from the capability catalog. Propose
    `match` globs (gitignore-flavored: `src/checkout/**`) per capability you
    find evidence for. Do not invent capabilities the code does not show;

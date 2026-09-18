@@ -45,8 +45,8 @@ class TestDiscoveryRepoScanParity(unittest.TestCase):
     def test_matrix_catalog_normalizes_scalar_match(self):
         d = self._repo()
         # a scalar match must normalize to [] (SEC-3), never char-split
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w", encoding="utf-8") as fh:
-            fh.write("groups:\n  Bad:\n    match: src/**\n    panels: [SEC]\n")
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\ngroups:\n  Bad:\n    match: src/**\n    panels: [SEC]\n")
         cat = discovery._matrix_catalog(d)
         self.assertEqual(cat.get("Bad", {}).get("match", None), [])
 
@@ -353,3 +353,22 @@ class TestWorktreeDirty(unittest.TestCase):
         with open(os.path.join(repo, "b.py"), "w", encoding="utf-8") as fh:
             fh.write("new\n")
         self.assertTrue(discovery._worktree_dirty(repo))
+
+    def test_excluded_names_do_not_count_as_dirt(self):
+        # M4: the --pr-worktree caller passes the root config names, which the
+        # driver itself wrote into that tree (diff_map._sync_config).
+        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
+        names = discovery.repo_config.CONFIG_NAMES
+        with open(os.path.join(repo, names[0]), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\ngroups: {}\n")
+        self.assertTrue(discovery._worktree_dirty(repo))
+        self.assertFalse(discovery._worktree_dirty(repo, exclude=names))
+
+    def test_an_excluded_name_does_not_mask_other_dirt(self):
+        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
+        names = discovery.repo_config.CONFIG_NAMES
+        with open(os.path.join(repo, names[0]), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\ngroups: {}\n")
+        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("changed\n")
+        self.assertTrue(discovery._worktree_dirty(repo, exclude=names))

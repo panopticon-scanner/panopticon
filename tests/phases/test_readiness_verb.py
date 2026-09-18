@@ -121,9 +121,9 @@ class _VerbCase(unittest.TestCase):
                 fh.write(body)
         if groups_yml is not None:
             os.makedirs(os.path.join(root, ".panopticon"), exist_ok=True)
-            with open(os.path.join(root, ".panopticon", "groups.yml"), "w",
+            with open(os.path.join(root, "panopticon.yml"), "w",
                       encoding="utf-8") as fh:
-                fh.write(groups_yml)
+                fh.write("version: 1\n" + groups_yml)
         return root
 
     def _git_repo(self, groups_yml=None):
@@ -284,6 +284,9 @@ class TestTheReadyMachine(_VerbCase):
         self.assertEqual(0, code, json.dumps(body, indent=2))
         self.assertIs(True, body["ready"])
         self.assertEqual(2, body["matrix"]["groups"])
+        # #1681 Task 7 (R12): the committed root `panopticon.yml` is claimed
+        # by the Commons `Config` category, so it does not inflate code_files
+        # (same reckoning as TestBothFileListingsAgree below).
         self.assertEqual(2, body["matrix"]["code_files"])
         self.assertEqual(1, body["matrix"]["tests_files"])
         self.assertEqual(tag, body["existing_run"]["tag"])
@@ -770,6 +773,9 @@ class TestBothFileListingsAgree(_VerbCase):
         d = self._git_repo(groups_yml=GROUPS_YML)
         _code, walked = self._json(d, which=READY_CLI)
         _code, listed = self._json(d, which=READY_CLI, path=self._git_only_path())
+        # #1681 Task 7 (R12): the committed root `panopticon.yml` is an
+        # ordinary repo file both listings see, but the Commons `Config`
+        # category claims it, so it does not count as a code file.
         self.assertEqual({"groups": 2, "code_files": 2, "tests_files": 1},
                          {k: walked["matrix"][k]
                           for k in ("groups", "code_files", "tests_files")})

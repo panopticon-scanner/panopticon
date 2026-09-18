@@ -339,7 +339,7 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
             # prompt is rendered rather than reconstructed afterwards. Read
             # back at synthesis as meta.coverage.test_inventory.
             "inventory_note": inventory_state,
-            # The groups.yml entry this cell's inventory verdict belongs to --
+            # The config entry this cell's inventory verdict belongs to --
             # `group` itself unless the run chunked it. The durable tally is
             # keyed by THIS, so the report names a group the operator can find
             # in their own matrix (#1638 P13 fix round 1, F3).
@@ -429,7 +429,7 @@ def review_execute(review_root, manifest):
     # group tests come from the committed matrix (parse_groups tests field)
     matrix, errors = runio.load_committed_groups(review_root)
     if errors:
-        # #1092: same resume-reachable gap as coverage -- a corrupt groups.yml
+        # #1092: same resume-reachable gap as coverage -- a corrupt config
         # would silently drop every group's committed tests from the prompts.
         raise runio.DriverError("review: " + "; ".join(errors))
     # #5: batch EVERY pending review cell across ALL groups into one checkpoint
@@ -443,7 +443,7 @@ def review_execute(review_root, manifest):
     tools_context = _tools_context(review_root)
     # Read once for the whole batch: the inventory verdict for any one unit is
     # computed against every OTHER unit's assigned files (#1638 P13). `units`
-    # folds run-time chunks back onto the groups.yml entry they came from, so
+    # folds run-time chunks back onto the config entry they came from, so
     # the matrix lookup, the "who holds this test" comparison and the report
     # key all name a group the operator authored (fix round 1, F3).
     units, unit_of = coverage._discovered_units(review_root)

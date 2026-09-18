@@ -49,11 +49,13 @@ def make_git_repo(
         files: Optional dict mapping relative paths to file contents.  A value
             of ``None`` creates an empty file.  When omitted, an empty ``a.py``
             is created for parity with the legacy helpers.
-        groups_yml: Optional string written to ``.panopticon/groups.yml``
-            before the initial commit.
-        panopticon: If True, create an empty ``.panopticon`` directory after the
-            initial commit (untracked).  Ignored when ``groups_yml`` is given,
-            which already creates the directory.
+        groups_yml: Optional `groups:` body.  Written to the root
+            ``panopticon.yml`` (under a ``version: 1`` line) before the initial
+            commit -- the one config discovery reads (#1681).
+        panopticon: If True, create an empty ``.panopticon`` artifact directory
+            after the initial commit (untracked).  ``groups_yml`` implies it:
+            a repo with a config is one a run writes artifacts into, and the
+            legacy matrix write used to create the directory on the way past.
         branch: Branch name to rename the default branch to, or ``None`` to
             leave the default branch name untouched.
         user_email, user_name: Git committer identity for the initial commit.
@@ -98,15 +100,13 @@ def make_git_repo(
             fh.write("" if content is None else content)
 
     if groups_yml is not None:
-        pano = os.path.join(repo, ".panopticon")
-        os.makedirs(pano, exist_ok=True)
-        with open(os.path.join(pano, "groups.yml"), "w", encoding="utf-8") as fh:
-            fh.write(groups_yml)
+        with open(os.path.join(repo, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n" + groups_yml)
 
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", commit_msg)
 
-    if panopticon and groups_yml is None:
+    if panopticon or groups_yml is not None:
         os.makedirs(os.path.join(repo, ".panopticon"), exist_ok=True)
 
     if branch:

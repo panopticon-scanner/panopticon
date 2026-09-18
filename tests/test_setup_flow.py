@@ -1,4 +1,5 @@
 import ast
+import contextlib
 import dataclasses
 import json
 import os
@@ -6,6 +7,8 @@ import subprocess
 import tempfile
 import unittest
 from unittest import mock
+
+import yaml
 
 import scripts.coverage_model as coverage_model
 import scripts.grouping_engine as grouping_engine
@@ -39,18 +42,87 @@ def _repo(test_case, with_committed=False):
     os.makedirs(os.path.join(d, ".panopticon"))
     test_case.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
     if with_committed:
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
+        body = "groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n"
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n" + body)
     return d
 
 
-def test_check_groups_manifest_reports_corrupt_yaml(tmp_path):
-    (tmp_path / ".panopticon").mkdir()
-    (tmp_path / ".panopticon" / "groups.yml").write_text("not: [valid yaml: [")
+def test_check_groups_manifest_reports_an_unreadable_root_config(tmp_path):
+    (tmp_path / "panopticon.yml").write_text("not: [valid yaml: [")
     name, ok, detail = setup_flow._check_groups_manifest(str(tmp_path))
     assert name == "groups-manifest"
     assert ok is False
-    assert "corrupt" in detail.lower() or "parse" in detail.lower()
+    assert "unreadable" in detail.lower()
+
+
+def test_check_groups_manifest_reports_a_refused_symlink_not_absence(tmp_path):
+    # A symlink at the config path resolves to NO document and NO error
+    # (`repo_config` refuses to follow it), so reading only `doc.doc` reports
+    # the planted link as "nothing configured yet" -- an informational row for
+    # a refusal, and a silent fall back to whole-repo chunking.
+    (tmp_path / "elsewhere.yml").write_text("version: 1\ngroups: {}\n")
+    (tmp_path / "panopticon.yml").symlink_to(tmp_path / "elsewhere.yml")
+    name, ok, detail = setup_flow._check_groups_manifest(str(tmp_path))
+    assert name == "groups-manifest"
+    assert ok is False
+    assert "symlink" in detail
+
+
+def test_check_groups_manifest_does_not_gate_on_a_stale_config_json(tmp_path):
+    # The other side of the line above: a leftover retired JSON config is
+    # INFORMATIONAL -- `scan_execute` prints it -- and must not turn an
+    # un-set-up tree's row into a readiness failure. Only a refusal does that.
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "config.json").write_text('{"max_per_group": 5}')
+    name, ok, detail = setup_flow._check_groups_manifest(str(tmp_path))
+    assert name == "groups-manifest"
+    assert ok is None
+    assert "no committable config yet" in detail
+
+
+def test_check_groups_manifest_never_raises_on_a_legacy_tree(tmp_path):
+    # #1681: `phases/readiness` calls this directly, so a tree still carrying
+    # the legacy matrix file and no root config must produce a readiness ROW
+    # naming the migration remedy -- not a ValueError out of discovery.
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text("groups: {}\n")
+
+    class _Ok:
+        returncode, stdout, stderr = 0, "", ""
+
+    def ok_runner(argv, capture_output, text, timeout=None):
+        return _Ok()
+
+    checks = setup_flow.setup_readiness(str(tmp_path), host="claude",
+                                        runner=ok_runner,
+                                        environ={"NVD_API_KEY": "k"})
+    row = {c[0]: c for c in checks}["groups-manifest"]
+    assert row[1] is False
+    assert "migrate-config" in row[2]
+
+
+def test_committed_matrix_prints_the_symlink_disclosure(tmp_path, capsys):
+    # `_committed_matrix` printed doc.ERRORS and returned {} on no document.
+    # A refused symlink resolves to no document with no error at all, so the
+    # one signal the operator had was never printed and the empty matrix read
+    # as "nothing committed" -- `_matrix_catalog` prints disclosures first for
+    # exactly this reason.
+    (tmp_path / "elsewhere.yml").write_text("version: 1\ngroups: {}\n")
+    (tmp_path / "panopticon.yml").symlink_to(tmp_path / "elsewhere.yml")
+    assert setup_flow.committed_matrix(str(tmp_path)) == {}
+    err = capsys.readouterr().err
+    assert "symlink" in err
+    assert "panopticon.yml" in err
+
+
+def test_committed_exclude_paths_prints_the_symlink_disclosure(tmp_path, capsys):
+    (tmp_path / "elsewhere.yml").write_text("version: 1\nexclude_paths: ['vendor/**']\n")
+    (tmp_path / "panopticon.yml").symlink_to(tmp_path / "elsewhere.yml")
+    assert setup_flow._committed_exclude_paths(str(tmp_path)) == []
+    err = capsys.readouterr().err
+    assert "symlink" in err
 
 
 class TestSetupFlow(unittest.TestCase):
@@ -61,20 +133,25 @@ class TestSetupFlow(unittest.TestCase):
         with open(os.path.join(repo, ".gitignore"), encoding="utf-8") as fh:
             return fh.read()
 
-    def test_provision_seeds_gitignore_and_config(self):
+    def test_provision_ignores_the_draft_and_never_writes_config_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            summary = setup_flow.provision(d)
+            with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
+                gi = fh.read()
+            self.assertIn("panopticon.yml.draft", gi)
+            self.assertNotIn("!.panopticon/groups.yml", gi)
+            self.assertFalse(os.path.exists(os.path.join(d, ".panopticon", "config.json")))
+            self.assertIsNone(summary["stale_config_json"])
+            self.assertFalse(summary["legacy_present"])
+
+    def test_provision_discloses_a_stale_config_json(self):
+        # #1681: the retired file is never read and never deleted for the
+        # operator -- it is DISCLOSED, so nobody keeps editing a dead file.
         d = _repo(self)
-        res = setup_flow.provision(d)
-        cfg_path = os.path.join(d, ".panopticon", "config.json")
-        self.assertTrue(os.path.isfile(cfg_path))
-        with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
-            self.assertIn(".panopticon/*", fh.read())
-        self.assertTrue(res["config_created"])
-        # #run7 TST-B1C: assert the seeded CONTENT, not just existence -- the
-        # gh_config_dir=null (inherit-ambient) default is the contract driver
-        # reads, and a regression to the wrong shape would pass an existence-only
-        # check.
-        with open(cfg_path, encoding="utf-8") as fh:
-            self.assertEqual(json.load(fh), {"gh_config_dir": None})
+        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
+            json.dump({"max_per_group": 5}, fh)
+        summary = setup_flow.provision(d)
+        self.assertIn("settings:", summary["stale_config_json"])
 
     def test_provision_leaves_blanket_panopticon_ignore_untouched(self):
         # #1135: a repo that already blanket-ignores .panopticon/ must NOT have
@@ -83,33 +160,192 @@ class TestSetupFlow(unittest.TestCase):
         d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write("node_modules/\n.panopticon/\n")
-        res = setup_flow.provision(d)
+        setup_flow.provision(d)
         gi = self._gitignore(d)
         self.assertIn(".panopticon/", gi)
         self.assertNotIn(".panopticon/*", gi)   # not migrated
         self.assertNotIn("!.panopticon/", gi)   # dir not re-exposed
-        self.assertFalse(res["groups_yml_committable"])
-        self.assertIn("git add -f", res.get("gitignore_note", ""))
+        # the draft lives at the ROOT now, so it is ignored either way
+        self.assertIn(setup_flow.repo_config.DRAFT_NAME, gi)
 
-    def test_provision_fresh_repo_adds_committable_block(self):
+    def test_provision_never_re_exposes_the_artifact_directory(self):
+        # M5: `!.panopticon/` existed to re-include the directory so that
+        # `.panopticon/groups.yml` could be committed out of it. Since #1681
+        # nothing under there is committable -- the config is a root file --
+        # so the negation buys a target nothing and re-exposes a directory of
+        # run artifacts to the next `git add .`.
+        d = _repo(self)
+        setup_flow.provision(d)
+        gi = self._gitignore(d)
+        self.assertIn(".panopticon/*", gi)       # run artifacts still ignored
+        self.assertNotIn("!", gi)                # and nothing re-included
+
+    def test_provision_fresh_repo_adds_the_artifact_block(self):
         d = _repo(self)  # no .gitignore
-        res = setup_flow.provision(d)
+        setup_flow.provision(d)
         gi = self._gitignore(d)
         self.assertIn(".panopticon/*", gi)
-        self.assertIn("!.panopticon/groups.yml", gi)
-        self.assertTrue(res["groups_yml_committable"])
+        # M5: no negation of any kind -- neither the per-file one the legacy
+        # matrix needed nor the directory one that re-included it.
+        self.assertNotIn("!.panopticon/", gi)
+        self.assertNotIn("!.panopticon/groups.yml", gi)   # nothing there is committed
 
-    def test_provision_appends_negations_to_star_form(self):
-        # .panopticon/* already present (committable-compatible), negations
-        # missing -> append them (pure append), never rewrite the existing line.
+    def test_provision_leaves_an_existing_star_form_alone(self):
+        # .panopticon/* already present -> nothing to add for it (pure append,
+        # never a rewrite). M5: there is no directory negation to append after
+        # it any more, so the only new lines are the always-ignore entries.
         d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write(".panopticon/*\n")
-        res = setup_flow.provision(d)
+        setup_flow.provision(d)
         gi = self._gitignore(d)
         self.assertEqual(gi.count(".panopticon/*"), 1)   # not duplicated
-        self.assertIn("!.panopticon/groups.yml", gi)
-        self.assertTrue(res["groups_yml_committable"])
+        self.assertNotIn("!.panopticon/", gi)
+        self.assertIn(setup_flow.repo_config.DRAFT_NAME, gi)
+
+    def test_seed_writes_a_versioned_root_config_through_the_one_writer(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "src"))
+            open(os.path.join(d, "src", "a.py"), "w").close()
+            path, created, names = setup_flow.seed_flat_manifest(d)
+            self.assertEqual(path, os.path.join(d, "panopticon.yml"))
+            self.assertTrue(created)
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertIn("version: 1\n", text)
+            self.assertIn("src", names)
+
+    def test_seed_never_clobbers_and_reads_the_root_file_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  Kept:\n    match: ['k/**']\n")
+            path, created, names = setup_flow.seed_flat_manifest(d)
+            self.assertFalse(created)
+            self.assertEqual(names, ["Kept"])
+
+    def test_seed_never_creates_through_a_planted_link(self):
+        # `repo_config.resolve` refuses to follow a symlink at either config
+        # name, and the O_EXCL|O_NOFOLLOW create then refuses it a second time
+        # -- so a planted link is reported as an existing config, never written
+        # through (the dangling-creation primitive #1577 closed for the seed).
+        with tempfile.TemporaryDirectory() as d:
+            outside = os.path.join(d, "not-yet-there.yml")
+            os.symlink(outside, os.path.join(d, "panopticon.yml"))
+            _path, created, _names = setup_flow.seed_flat_manifest(d)
+            self.assertFalse(created)
+            self.assertFalse(os.path.exists(outside), "the link's target was created")
+
+    def test_provision_refuses_a_legacy_tree(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+                fh.write("groups: {}\n")
+            with self.assertRaisesRegex(ValueError, "migrate-config"):
+                setup_flow.provision(d)
+
+    def test_migrate_config_round_trips_the_legacy_groups(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            legacy = ("groups:\n  Orchestration:\n    Phases:\n      match: ['skill/scripts/phases/**']\n"
+                      "      tests: ['tests/phases/**']\n  CI:\n    match: ['.github/**']\n"
+                      "exclude_paths: ['vendor/**']\n")
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+                fh.write(legacy)
+            path, message = setup_flow.migrate_config(d)
+            self.assertEqual(path, os.path.join(d, "panopticon.yml"))
+            self.assertTrue(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml")))  # left for the operator
+            self.assertIn("delete", message)
+            with open(path, encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual(doc["version"], 1)
+            self.assertEqual(list(doc["groups"]), ["Orchestration", "CI"])       # order preserved
+            self.assertEqual(doc["groups"]["Orchestration"]["Phases"]["tests"], ["tests/phases/**"])
+            self.assertEqual(doc["exclude_paths"], ["vendor/**"])
+
+    def test_migrate_config_normalizes_the_legacy_list_form(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+                fh.write("groups:\n  - name: App\n    match: ['app/**']\n"
+                         "  - name: Web\n    match: ['web/**']\n")
+            path, _message = setup_flow.migrate_config(d)
+            with open(path, encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual(list(doc["groups"]), ["App", "Web"])
+            self.assertEqual(doc["groups"]["App"]["match"], ["app/**"])
+
+    def _legacy(self, d, body, mode="w"):
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        path = os.path.join(d, ".panopticon", "groups.yml")
+        with open(path, mode) as fh:
+            fh.write(body)
+        return path
+
+    def test_migrate_config_refuses_an_unreadable_legacy_file(self):
+        # The cap, the shape and the parse are all refusals in the SAME
+        # currency -- ValueError -- so `driver migrate-config` has one thing
+        # to catch and the operator one kind of message to read.
+        with tempfile.TemporaryDirectory() as d:
+            self._legacy(d, "groups: [valid yaml: [")
+            with self.assertRaisesRegex(ValueError, "unreadable"):
+                setup_flow.migrate_config(d)
+        with tempfile.TemporaryDirectory() as d:
+            self._legacy(d, "- just\n- a list\n")
+            with self.assertRaisesRegex(ValueError, "must be a mapping"):
+                setup_flow.migrate_config(d)
+        cap = setup_flow.repo_config.MAX_CONFIG_BYTES
+        with tempfile.TemporaryDirectory() as d:
+            self._legacy(d, "groups:\n  App:\n    match: ['a/**']\n#" + "x" * cap)
+            with self.assertRaisesRegex(ValueError, "exceeds %d bytes" % cap):
+                setup_flow.migrate_config(d)
+
+    def test_migrate_config_refuses_a_symlinked_legacy_file(self):
+        # A target repo can commit `.panopticon/groups.yml` as a link to any
+        # file the invoking user can read; migrate would otherwise parse it and
+        # publish whatever it found as the repo's own config.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, "elsewhere.yml"), "w") as fh:
+                fh.write("groups:\n  Sneaky:\n    match: ['**']\n")
+            os.symlink(os.path.join(d, "elsewhere.yml"),
+                       os.path.join(d, ".panopticon", "groups.yml"))
+            with self.assertRaisesRegex(ValueError, "to migrate"):
+                setup_flow.migrate_config(d)
+            self.assertIsNone(setup_flow.repo_config.resolve(d).path)
+
+    def test_migrate_config_refuses_when_a_root_file_exists_or_no_legacy(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaisesRegex(ValueError, "no `.panopticon/groups.yml`"):
+                setup_flow.migrate_config(d)
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+                fh.write("groups: {}\n")
+            with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+                fh.write("version: 1\ngroups: {}\n")
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                setup_flow.migrate_config(d)
+
+    def test_migrate_config_refuses_a_symlinked_root_config(self):
+        # A REFUSED symlink at either config name resolves to `path is None`
+        # WITH a disclosure. Guarding on the path alone read that as "no root
+        # config", migration proceeded, and the one writer's unlink-and-retry
+        # then destroyed the operator's link and wrote a regular file over it.
+        legacy = "groups:\n  App:\n    match: ['app/**']\n"
+        outside_text = "version: 1\ngroups: {}\n"
+        with tempfile.TemporaryDirectory() as d:
+            self._legacy(d, legacy)
+            outside = os.path.join(d, "elsewhere.yml")
+            with open(outside, "w") as fh:
+                fh.write(outside_text)
+            link = os.path.join(d, "panopticon.yml")
+            os.symlink(outside, link)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                setup_flow.migrate_config(d)
+            self.assertTrue(os.path.islink(link), "the operator's symlink was replaced")
+            with open(outside, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), outside_text)   # never written through
+            with open(os.path.join(d, ".panopticon", "groups.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), legacy)         # legacy file untouched
 
     def test_provision_gitignore_idempotent_second_run_noop(self):
         d = _repo(self)
@@ -129,8 +365,8 @@ class TestSetupFlow(unittest.TestCase):
         # 5.2: a #1305 parent must come back as {"subgroups": {...}}, not as an
         # empty leaf that the additive merge would then "extend" into a leaf.
         d = _repo(self)
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout:\n    API:\n      match: ['src/checkout/api/**']\n"
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Checkout:\n    API:\n      match: ['src/checkout/api/**']\n"
                      "      panels: [SEC]\n    Core:\n      match: ['src/checkout/**']\n")
         cm = setup_flow.committed_matrix(d)
         self.assertEqual(list(cm["Checkout"]["subgroups"]), ["API", "Core"])
@@ -141,8 +377,8 @@ class TestSetupFlow(unittest.TestCase):
 
     def test_ingest_never_flattens_a_committed_parent(self):
         d = _repo(self)
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout:\n    API:\n      match: ['src/checkout/api/**']\n"
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Checkout:\n    API:\n      match: ['src/checkout/api/**']\n"
                      "    Core:\n      match: ['src/checkout/**']\n")
         os.makedirs(os.path.join(d, "src", "search"))
         with open(os.path.join(d, "src", "search", "q.py"), "w") as fh:
@@ -163,29 +399,142 @@ class TestSetupFlow(unittest.TestCase):
         self.assertEqual(list(drafted["Checkout"]), ["API", "Core"])     # parent intact
         self.assertEqual(drafted["Search"]["match"], ["src/search/**"])
 
-    def test_ingest_writes_draft_with_affinity_floor(self):
+    @contextlib.contextmanager
+    def _ingest_fixture(self):
+        """A temp repo with a valid setup-proposal.json on disk, yielded as
+        (repo, proposal_path). One proposal body, shared by every test that
+        needs a successful ingest."""
         d = _repo(self)
         proposal = {"groups": [{"capability": "Checkout",
                                 "match": ["src/checkout/**"], "tests": []}]}
         pp = os.path.join(d, ".panopticon", "setup-proposal.json")
         with open(pp, "w") as fh:
             json.dump(proposal, fh)
-        res = setup_flow.ingest_proposal(d, pp)
-        self.assertTrue(res["ok"])
-        draft = os.path.join(d, ".panopticon", "groups.yml.draft")
-        self.assertTrue(os.path.isfile(draft))
-        self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml")))
-        # #run7 TST-B1A: assert the affinity FLOOR the test is named for actually
-        # lands in the draft -- Checkout -> [SEC, ACC] per capability_affinity.yml.
-        # The old test checked only ok/draft-exists, so an empty-panels regression
-        # (the exact failure the setup-scan floor guards against) stayed green.
-        import yaml as _yaml
-        with open(draft, encoding="utf-8") as fh:
-            drafted = _yaml.safe_load(fh)
-        self.assertEqual(drafted["groups"]["Checkout"]["panels"], ["SEC", "ACC"])
-        floor_sources = {g["name"]: g["floor_source"]
-                         for g in res["disclosure"]["groups"]}
-        self.assertEqual(floor_sources["Checkout"], "affinity")
+        yield d, pp
+
+    def test_ingest_writes_draft_with_affinity_floor(self):
+        with self._ingest_fixture() as (d, pp):
+            res = setup_flow.ingest_proposal(d, pp)
+            self.assertTrue(res["ok"])
+            draft = setup_flow.repo_config.draft_path(d)
+            self.assertTrue(os.path.isfile(draft))
+            self.assertIsNone(setup_flow.repo_config.resolve(d).path)
+            # #run7 TST-B1A: assert the affinity FLOOR the test is named for
+            # actually lands in the draft -- Checkout -> [SEC, ACC] per
+            # capability_affinity.yml. The old test checked only ok/draft-exists,
+            # so an empty-panels regression (the exact failure the setup-scan
+            # floor guards against) stayed green.
+            with open(draft, encoding="utf-8") as fh:
+                drafted = yaml.safe_load(fh)
+            self.assertEqual(drafted["groups"]["Checkout"]["panels"], ["SEC", "ACC"])
+            floor_sources = {g["name"]: g["floor_source"]
+                             for g in res["disclosure"]["groups"]}
+            self.assertEqual(floor_sources["Checkout"], "affinity")
+
+    def test_ingest_writes_the_draft_at_the_root_with_version_and_settings(self):
+        with self._ingest_fixture() as (d, pp):
+            result = setup_flow.ingest_proposal(d, pp, max_per_group=12)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["draft"], os.path.join(d, "panopticon.yml.draft"))
+            with open(result["draft"], encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertIn("version: 1\n", text)
+            self.assertIn("settings:\n  max_per_group: 12\n", text)
+            self.assertTrue(os.path.isfile(os.path.join(d, ".panopticon", "setup-report.md")))
+
+    def test_the_draft_carries_a_committed_setting_the_cli_cannot_express(self):
+        # The #1504 failure one key over: the draft used to be told the two
+        # numbers the CLI passes and nothing else, so a committed `max_verify`
+        # -- live, read by driver._cli_flags -- vanished the moment the
+        # operator followed the completion message and moved the draft over.
+        # The draft is the committed settings OVERLAID by what was passed.
+        with self._ingest_fixture() as (d, pp):
+            with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+                fh.write("version: 1\ngroups: {}\n"
+                         "settings:\n  max_per_group: 8\n  max_verify: 4\n")
+            result = setup_flow.ingest_proposal(d, pp, max_per_group=12)
+            self.assertTrue(result["ok"], result.get("errors"))
+            with open(result["draft"], encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual(doc["settings"], {"max_per_group": 12, "max_verify": 4})
+
+    def test_the_draft_keeps_the_committed_sizes_when_no_flags_were_passed(self):
+        with self._ingest_fixture() as (d, pp):
+            with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+                fh.write("version: 1\ngroups: {}\n"
+                         "settings:\n  max_per_group: 8\n  max_groups: 3\n")
+            result = setup_flow.ingest_proposal(d, pp)
+            with open(result["draft"], encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual(doc["settings"], {"max_per_group": 8, "max_groups": 3})
+
+    def test_the_draft_omits_settings_a_repo_never_asked_for(self):
+        with self._ingest_fixture() as (d, pp):
+            result = setup_flow.ingest_proposal(d, pp)
+            with open(result["draft"], encoding="utf-8") as fh:
+                self.assertNotIn("settings", yaml.safe_load(fh))
+
+    def test_ingest_refuses_an_authored_but_invalid_root_config(self):
+        # `driver run` fails loud on this tree; setup was the only path that
+        # proceeded -- `_committed_matrix` returns {} for any unreadable
+        # document, so the merge ran against an EMPTY matrix, dropped the
+        # operator's `exclude_paths:`, and the completion message told them to
+        # move a draft that discards what they authored over the real file.
+        with self._ingest_fixture() as (d, pp):
+            with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+                fh.write("groups:\n  Auth:\n    match: ['src/auth/**']\n"
+                         "exclude_paths: ['vendor/**']\n")      # no `version: 1`
+            res = setup_flow.ingest_proposal(d, pp)
+            self.assertFalse(res["ok"])
+            self.assertTrue(any("version: 1" in e for e in res["errors"]), res["errors"])
+            self.assertFalse(os.path.isfile(setup_flow.repo_config.draft_path(d)))
+            self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "setup-report.md")))
+
+    def test_ingest_refuses_a_symlinked_root_config_and_leaves_the_link(self):
+        with self._ingest_fixture() as (d, pp):
+            outside = os.path.join(d, "elsewhere.yml")
+            with open(outside, "w") as fh:
+                fh.write("version: 1\ngroups: {}\n")
+            link = os.path.join(d, "panopticon.yml")
+            os.symlink(outside, link)
+            res = setup_flow.ingest_proposal(d, pp)
+            self.assertFalse(res["ok"])
+            self.assertTrue(any("symlink" in e for e in res["errors"]), res["errors"])
+            self.assertTrue(os.path.islink(link))
+            self.assertFalse(os.path.isfile(setup_flow.repo_config.draft_path(d)))
+            self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "setup-report.md")))
+
+    def test_provision_refuses_an_authored_but_invalid_root_config(self):
+        # The `scan` half of the same hole: setup's first write is the
+        # .gitignore scaffold, and it went ahead against a config nothing
+        # downstream can read.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+                fh.write("groups: {}\n")                        # no `version: 1`
+            with self.assertRaisesRegex(ValueError, "version: 1"):
+                setup_flow.provision(d)
+
+    def test_provision_refuses_a_symlinked_root_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "elsewhere.yml"), "w") as fh:
+                fh.write("version: 1\ngroups: {}\n")
+            link = os.path.join(d, "panopticon.yml")
+            os.symlink(os.path.join(d, "elsewhere.yml"), link)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                setup_flow.provision(d)
+            self.assertTrue(os.path.islink(link))
+
+    def test_provision_still_scaffolds_a_tree_with_no_config(self):
+        # The other side of the line: a FIRST run has no root config at all,
+        # and a leftover retired JSON config beside it is informational (it is
+        # printed, not refused). Neither may turn setup into a refusal.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
+                fh.write('{"max_per_group": 5}')
+            summary = setup_flow.provision(d)
+            self.assertIn(".panopticon/*", self._gitignore(d))
+            self.assertIn("no longer read", summary["stale_config_json"])
 
     def test_ingest_malformed_proposal_fails_no_draft(self):
         d = _repo(self)
@@ -195,13 +544,13 @@ class TestSetupFlow(unittest.TestCase):
         res = setup_flow.ingest_proposal(d, pp)
         self.assertFalse(res["ok"])
         self.assertTrue(res["errors"])
-        self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
+        self.assertFalse(os.path.isfile(setup_flow.repo_config.draft_path(d)))
 
     def test_ingest_missing_proposal_fails_no_draft(self):
         d = _repo(self)
         res = setup_flow.ingest_proposal(d, os.path.join(d, ".panopticon", "nope.json"))
         self.assertFalse(res["ok"])
-        self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
+        self.assertFalse(os.path.isfile(setup_flow.repo_config.draft_path(d)))
 
     def test_ingest_oversized_proposal_refused(self):
         # #1107: a target-shipped proposal over the byte cap is refused before parse
@@ -212,7 +561,7 @@ class TestSetupFlow(unittest.TestCase):
         res = setup_flow.ingest_proposal(d, pp)
         self.assertFalse(res["ok"])
         self.assertTrue(any("exceeds" in e for e in res["errors"]))
-        self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
+        self.assertFalse(os.path.isfile(setup_flow.repo_config.draft_path(d)))
 
     def test_ingest_cap_bounds_the_read_not_a_prior_stat(self):
         # #run10 COD-F1B: the cap was os.path.getsize() followed by a SEPARATE
@@ -371,22 +720,26 @@ class TestSetupFlow(unittest.TestCase):
             with open(os.path.join(d, rel), "w") as fh:
                 fh.write(body)
         os.makedirs(os.path.join(d, ".panopticon"))
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Checkout:\n    match: ['src/checkout/**']\n"
+                     "    panels: [SEC]\n")
         return d
 
     def test_build_spine_tree_languages_frameworks_and_claims(self):
         d = self._spine_repo()
         spine = setup_flow.build_spine(d)
         self.assertEqual(spine["schema_version"], 1)
-        # code = total - commons - test tree, over the shipped classifiers
+        # code = total - commons - test tree, over the shipped classifiers.
+        # #1681 Task 7 (R12): the committed root `panopticon.yml` is an
+        # ordinary repo file (it counts in `total`), and the Commons vocabulary
+        # claims it under `Config`, so it falls through to `commons`, not `code`.
         self.assertEqual(spine["files"],
-                         {"total": 12, "code": 5, "commons": 5, "test_tree": 2})
+                         {"total": 13, "code": 5, "commons": 6, "test_tree": 2})
         self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
                          (48, 4, "formula"))
         # depth-2 rows, most files first, ties by path; deeper files roll up
         self.assertEqual(spine["tree"][:3], [
-            {"path": ".", "files": 3, "ext": ".json"},
+            {"path": ".", "files": 4, "ext": ".json"},   # + panopticon.yml
             {"path": "src/search", "files": 3, "ext": ".go"},
             {"path": "src/checkout", "files": 2, "ext": ".py"}])
         self.assertEqual(spine["tree_more"], 0)
@@ -397,22 +750,28 @@ class TestSetupFlow(unittest.TestCase):
         self.assertEqual(spine["frameworks"], ["Django", "React"])
         # committed groups claim first; Commons is counted on the leftovers
         self.assertEqual(spine["claimed"]["committed"], {"Checkout": 2})
-        self.assertEqual(spine["claimed"]["commons"], {"Build": 2, "CI": 1, "Docs": 2})
+        self.assertEqual(spine["claimed"]["commons"],
+                         {"Build": 2, "CI": 1, "Config": 1, "Docs": 2})
         self.assertEqual(spine["test_trees"], [{"path": "tests/checkout", "files": 1},
                                                {"path": "tests/search", "files": 1}])
         json.dumps(spine)                                  # serializable
 
+    def _settings(self, d, body):
+        """Re-write the spine repo's root config with `settings:` appended."""
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Checkout:\n    match: ['src/checkout/**']\n"
+                     "    panels: [SEC]\n" + body)
+
     def test_build_spine_size_precedence_matches_ingest(self):
         d = self._spine_repo()
-        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
-            json.dump({"max_per_group": 2, "max_groups": 6}, fh)
+        self._settings(d, "settings:\n  max_per_group: 2\n  max_groups: 6\n")
         spine = setup_flow.build_spine(d)
         self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
                          (2, 6, "config"))
         spine = setup_flow.build_spine(d, max_per_group=3, max_groups=9)
         self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
                          (3, 9, "cli"))
-        os.remove(os.path.join(d, ".panopticon", "config.json"))
+        self._settings(d, "")
         spine = setup_flow.build_spine(d, max_per_group=2)
         # 5 code files at cap 2 -> max(4, 2 * ceil(5 / 2)) = 6
         self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
@@ -433,10 +792,10 @@ class TestSetupFlow(unittest.TestCase):
     def test_spine_lists_every_committed_leaf_and_says_why_nothing_is_claimed(self):
         # A committed group whose globs match nothing today still appears (as
         # 0) -- the agent must not re-propose it -- and the "nothing claimed"
-        # wording distinguishes no groups.yml from one without match: globs.
+        # wording distinguishes no committed config from one without match: globs.
         d = self._spine_repo()
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n"
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Checkout:\n    match: ['src/checkout/**']\n"
                      "  Legacy:\n    match: ['src/gone/**']\n")
         spine = setup_flow.build_spine(d)
         self.assertEqual(spine["claimed"]["committed"], {"Checkout": 2, "Legacy": 0})
@@ -444,15 +803,15 @@ class TestSetupFlow(unittest.TestCase):
         text = setup_flow.format_spine(spine)
         self.assertIn("    Legacy                                       0", text)
         self.assertIn("0 = its globs match nothing today", text)
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n  Checkout: [src/checkout/pay.py]\n")
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Checkout: [src/checkout/pay.py]\n")
         spine = setup_flow.build_spine(d)
         self.assertEqual(spine["claimed"]["committed"], {"Checkout": 0})
-        os.remove(os.path.join(d, ".panopticon", "groups.yml"))
+        os.remove(os.path.join(d, "panopticon.yml"))
         spine = setup_flow.build_spine(d)
         self.assertEqual(spine["claimed"]["committed"], {})
         self.assertFalse(spine["claimed"]["groups_yml"])
-        self.assertIn("nothing (no groups.yml)", setup_flow.format_spine(spine))
+        self.assertIn("nothing (no committed config)", setup_flow.format_spine(spine))
         self.assertIn("nothing (it has no match: globs)",
                       setup_flow.format_spine(dict(spine, claimed={
                           "committed": {}, "commons": {}, "groups_yml": True})))
@@ -471,13 +830,13 @@ class TestSetupFlow(unittest.TestCase):
         self.assertIn("src/search                                   3  .go", text)
         self.assertIn("Languages (code files): Go (3), Python (2)", text)
         self.assertIn("Frameworks (from manifests): Django, React", text)
-        self.assertIn("Already claimed by the committed groups.yml", text)
+        self.assertIn("Already claimed by the committed root config", text)
         self.assertIn("    Checkout                                     2", text)
         self.assertIn("Claimed by the Commons classifier", text)
         self.assertIn("the Tests sweep will catch these", text)
         self.assertIn("    tests/search                                 1", text)
         budget = setup_flow.format_budget(spine)
-        self.assertIn("- files: 12 total = 5 code + 5 commons + 2 test tree", budget)
+        self.assertIn("- files: 13 total = 5 code + 6 commons + 2 test tree", budget)
         self.assertIn("--max-per-group): 48", budget)
         self.assertIn("ceiling (CODE review groups this repo affords): 5 from --max-groups", budget)
         self.assertIn("propose `layers` ONLY for a vertical you estimate OVER the cap (48 files)",
@@ -632,7 +991,7 @@ class TestSetupFlow(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertTrue(any("missing" in e for e in res["errors"]))
         self.assertFalse(os.path.isfile(
-            os.path.join(d, ".panopticon", "groups.yml.draft")))
+            setup_flow.repo_config.draft_path(d)))
 
     def test_ingest_malformed_bundled_vocab_fails_no_draft(self):
         # #run7 TST-A2B: the vocab/affinity load-error branch (verr/aerr) -- a
@@ -650,21 +1009,20 @@ class TestSetupFlow(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertTrue(any("data error" in e for e in res["errors"]))
         self.assertFalse(os.path.isfile(
-            os.path.join(d, ".panopticon", "groups.yml.draft")))
+            setup_flow.repo_config.draft_path(d)))
 
     def test_provision_treats_globstar_panopticon_ignore_as_blanket(self):
         # #run7 ARC-A2B: a `**/`-prefixed blanket ignore also excludes the
-        # .panopticon directory, so git can't re-include groups.yml out of it.
+        # .panopticon directory, so git can't re-include anything out of it.
         # Provision must leave it untouched (not append a committable block that
-        # can't take effect) and report groups.yml not committable.
+        # can't take effect).
         d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write("node_modules/\n**/.panopticon/\n")
-        res = setup_flow.provision(d)
+        setup_flow.provision(d)
         gi = self._gitignore(d)
         self.assertNotIn(".panopticon/*", gi)   # not migrated
         self.assertNotIn("!.panopticon/", gi)   # dir not re-exposed
-        self.assertFalse(res["groups_yml_committable"])
 
 
     # --- 5.2 stage 3 wiring: size policy, layers, the setup report -----------
@@ -675,27 +1033,41 @@ class TestSetupFlow(unittest.TestCase):
             json.dump(proposal, fh)
         return pp
 
+    def _root_settings(self, d, body):
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups: {}\n" + body)
+
     def test_config_overrides_honour_positive_ints_only(self):
         d = _repo(self)
         self.assertEqual(setup_flow.config_overrides(d),
                          {"max_per_group": None, "max_groups": None})
-        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
-            json.dump({"max_per_group": 32, "max_groups": "8"}, fh)
+        self._root_settings(d, "settings:\n  max_per_group: 32\n  max_groups: '8'\n")
         self.assertEqual(setup_flow.config_overrides(d),
                          {"max_per_group": 32, "max_groups": None})
-        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
-            json.dump({"max_per_group": True, "max_groups": 0}, fh)
+        self._root_settings(d, "settings:\n  max_per_group: true\n  max_groups: 0\n")
         self.assertEqual(setup_flow.config_overrides(d),
                          {"max_per_group": None, "max_groups": None})
-        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
-            fh.write("not json")
+        self._root_settings(d, "settings: not-a-mapping\n")
         self.assertEqual(setup_flow.config_overrides(d),
                          {"max_per_group": None, "max_groups": None})
 
+    def test_config_overrides_read_settings_from_the_root_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 12\n  max_groups: 0\n")
+            self.assertEqual(setup_flow.config_overrides(d),
+                             {"max_per_group": 12, "max_groups": None})
+
+    def test_config_overrides_ignore_a_stale_config_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
+                fh.write('{"max_per_group": 5}')
+            self.assertEqual(setup_flow.config_overrides(d), {"max_per_group": None, "max_groups": None})
+
     def test_ingest_writes_the_report_and_resolves_cap_cli_over_config(self):
         d = _repo(self)
-        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
-            json.dump({"max_per_group": 2, "max_groups": 6}, fh)
+        self._root_settings(d, "settings:\n  max_per_group: 2\n  max_groups: 6\n")
         pp = self._write_proposal(d, {"groups": [{"capability": "Checkout",
                                                   "match": ["src/checkout/**"], "tests": []}]})
         res = setup_flow.ingest_proposal(d, pp)
@@ -749,13 +1121,13 @@ class TestSetupFlow(unittest.TestCase):
             res = setup_flow.ingest_proposal(d, pp)
         self.assertFalse(res["ok"])
         self.assertIn("layer data is missing", res["errors"][0])
-        self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml.draft")))
+        self.assertFalse(os.path.isfile(setup_flow.repo_config.draft_path(d)))
         self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "setup-report.md")))
 
 
 class TestSeedGroupsManifestInjection(unittest.TestCase):
     """#1108: hostile top-level directory names must not inject YAML structure
-    into the seeded groups.yml -- the seeder validates via the schema and
+    into the seeded root config -- the seeder validates via the schema and
     serializes with yaml.safe_dump instead of hand-formatting untrusted text."""
 
     def test_injection_dir_names_are_dropped_and_file_parses(self):
@@ -769,7 +1141,6 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
             os.makedirs(os.path.join(d, sub))
             with open(os.path.join(d, sub, fname), "w") as fh:
                 fh.write("x = 1\n")
-        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
         path, created, names = setup_flow._seed_groups_manifest(d)
         self.assertTrue(created)
         with open(path, encoding="utf-8") as fh:
@@ -779,30 +1150,26 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
         self.assertEqual(names, ["app"])
 
     def test_atomic_create_never_clobbers_a_racing_manifest(self):
-        # #run7 COD-F1B: the top-of-function isfile() guard is a fast path, not a
-        # lock. If a manifest appears AFTER that check (a concurrent seed), the
-        # O_EXCL create must refuse to truncate it -- created=False, bytes intact.
-        # Simulate the race by masking ONLY the manifest path on the fast-path
-        # check so execution falls through to the atomic create against a file
-        # that already exists on disk.
+        # #run7 COD-F1B: the top-of-function resolve() guard is a fast path, not
+        # a lock. If a config appears AFTER that check (a concurrent seed), the
+        # O_EXCL create must refuse to truncate it -- created=False, bytes
+        # intact. Simulate the race by making the fast-path resolve answer
+        # "nothing committed" so execution falls through to the atomic create
+        # against a file that already exists on disk.
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         os.makedirs(os.path.join(d, "app"))
         with open(os.path.join(d, "app", "main.py"), "w") as fh:
             fh.write("x = 1\n")
-        os.makedirs(os.path.join(d, ".panopticon"))
-        path = os.path.join(d, ".panopticon", "groups.yml")
+        path = os.path.join(d, "panopticon.yml")
         with open(path, "w", encoding="utf-8") as fh:
-            fh.write("groups:\n  Winner:\n    match: ['src/**']\n")
-        real_isfile = os.path.isfile
-        target = os.path.realpath(path)
-        def masked(p):
-            return False if os.path.realpath(p) == target else real_isfile(p)
-        with mock.patch("os.path.isfile", side_effect=masked):
+            fh.write("version: 1\ngroups:\n  Winner:\n    match: ['src/**']\n")
+        absent = setup_flow.repo_config.Resolution(None, [])
+        with mock.patch.object(setup_flow.repo_config, "resolve", return_value=absent):
             _p, created, _names = setup_flow._seed_groups_manifest(d)
         self.assertFalse(created)
         with open(path, encoding="utf-8") as fh:
-            self.assertIn("Winner", fh.read())   # existing manifest not clobbered
+            self.assertIn("Winner", fh.read())   # existing config not clobbered
 
 
 if __name__ == "__main__":
@@ -835,21 +1202,20 @@ class TestGlobFormBlanketIgnore(unittest.TestCase):
     """#1509: this repo's own .gitignore blanket-ignores the directory with the
     GLOB form `.panopticon*/` -- deliberately, so a preserved run renamed
     `.panopticon.prev-<stamp>` stays ignored. `_PANOPTICON_DIR_BLANKET` knew
-    only the literal spellings, so setup read the repo as un-blanketed, appended
-    the committable block, and its `!.panopticon/` negations then RE-EXPOSED
-    groups.yml. That is the #1135 failure mode recurring for a new spelling --
-    and it silently flipped the repo's policy from "groups.yml is local" to
-    "groups.yml is committable" without being asked.
+    only the literal spellings, so setup read the repo as un-blanketed and
+    appended a committable block its `!.panopticon/` negation then RE-EXPOSED
+    the directory with -- rewriting a policy nobody had asked it to touch.
+    Since #1681 nothing committable lives under there, but the rule stands:
+    provision APPENDS, and never rewrites what a repo already decided.
     """
 
     def test_glob_form_blanket_is_left_untouched(self):
         d = _git_repo(self, "node_modules/\n.panopticon*/\n")
-        res = setup_flow.provision(d)
+        setup_flow.provision(d)
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
         self.assertNotIn(".panopticon/*", gi)      # no committable block
         self.assertNotIn("!.panopticon/", gi)      # directory not re-exposed
-        self.assertFalse(res["groups_yml_committable"])
 
     def test_setup_leaves_a_glob_blanketed_tree_clean(self):
         # The first thing a new adopter sees after `driver setup` must not be an
@@ -857,33 +1223,35 @@ class TestGlobFormBlanketIgnore(unittest.TestCase):
         # straight after setup would start on a dirty tree, which validate reads
         # as a tamper signal.
         d = _git_repo(self, "node_modules/\n.panopticon*/\n"
-                            ".claude/settings.local.json\n")
+                            ".claude/settings.local.json\n"
+                            + setup_flow.repo_config.DRAFT_NAME + "\n")
         setup_flow.provision(d)
         self.assertEqual(_status(d), "")
 
     def test_the_literal_form_still_behaves_as_before(self):
-        d = _git_repo(self, ".panopticon/\n.claude/settings.local.json\n")
-        res = setup_flow.provision(d)
+        d = _git_repo(self, ".panopticon/\n.claude/settings.local.json\n"
+                            + setup_flow.repo_config.DRAFT_NAME + "\n")
+        setup_flow.provision(d)
         self.assertEqual(_status(d), "")
-        self.assertFalse(res["groups_yml_committable"])
 
-    def test_a_committable_form_repo_still_gets_its_negations(self):
-        # `.panopticon/*` ignores the CONTENTS, not the directory, so a negation
-        # can still re-include groups.yml -- this form must keep working.
+    def test_a_contents_form_repo_gets_no_negation(self):
+        # `.panopticon/*` ignores the CONTENTS, not the directory, so the
+        # directory is visible without being re-included -- and since M5
+        # nothing under it is committable, so nothing re-includes it.
         d = _git_repo(self, ".panopticon/*\n")
-        res = setup_flow.provision(d)
+        setup_flow.provision(d)
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
-        self.assertIn("!.panopticon/groups.yml", gi)
-        self.assertTrue(res["groups_yml_committable"])
+        self.assertNotIn("!.panopticon/", gi)
+        self.assertEqual(gi.count(".panopticon/*"), 1)
 
     def test_a_fresh_git_repo_still_gets_the_full_block(self):
         d = _git_repo(self, "node_modules/\n")
-        res = setup_flow.provision(d)
+        setup_flow.provision(d)
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
         self.assertIn(".panopticon/*", gi)
-        self.assertTrue(res["groups_yml_committable"])
+        self.assertIn(setup_flow.repo_config.DRAFT_NAME, gi)
 
     def test_glob_form_is_recognised_without_git(self):
         # Not every target is a checkout; the pattern fallback must know the
@@ -891,11 +1259,10 @@ class TestGlobFormBlanketIgnore(unittest.TestCase):
         d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write(".panopticon*/\n")
-        res = setup_flow.provision(d)
+        setup_flow.provision(d)
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
         self.assertNotIn("!.panopticon/", gi)
-        self.assertFalse(res["groups_yml_committable"])
 
 
 class TestDraftPreservesTopLevelKeys(unittest.TestCase):
@@ -915,7 +1282,7 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
         import scripts.setup_proposal as sp
         import scripts.groups_schema as groups_schema
         import yaml
-        text = sp.dump_groups_yaml(
+        text = sp.dump_config_yaml(
             {"Checkout": {"match": ["src/checkout/**"], "panels": ["SEC"]}},
             exclude_paths=["tests/fixtures/**", "vendor/**"])
         doc = yaml.safe_load(text)
@@ -926,26 +1293,49 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
     def test_dump_omits_the_key_when_there_is_nothing_to_carry(self):
         import scripts.setup_proposal as sp
         import yaml
-        text = sp.dump_groups_yaml({"G": {"match": ["a/**"], "panels": ["SEC"]}})
+        text = sp.dump_config_yaml({"G": {"match": ["a/**"], "panels": ["SEC"]}})
         self.assertNotIn("exclude_paths", yaml.safe_load(text))
 
     def test_the_groups_mapping_still_round_trips(self):
         import scripts.setup_proposal as sp
         import scripts.groups_schema as groups_schema
         import yaml
-        text = sp.dump_groups_yaml(
+        text = sp.dump_config_yaml(
             {"Checkout": {"match": ["src/checkout/**"], "panels": ["SEC"]}},
             exclude_paths=["tests/fixtures/**"])
         groups, errors = groups_schema.parse_groups(yaml.safe_load(text))
         self.assertEqual(errors, [])
         self.assertIn("Checkout", groups)
 
+    def test_dump_config_yaml_puts_version_first_and_settings_last(self):
+        import setup_proposal as sp
+        import yaml
+        text = sp.dump_config_yaml({"App": {"match": ["src/**"]}},
+                                   exclude_paths=["vendor/**"],
+                                   settings={"max_per_group": 48, "max_groups": None})
+        body = text.split(
+            "# parent; its subgroups are its layers and roll up to it in the report.\n"
+            "# settings: max_per_group / max_groups / max_verify (positive ints).\n", 1)[1]
+        self.assertTrue(body.startswith("version: 1\n"))
+        self.assertLess(body.index("groups:"), body.index("exclude_paths:"))
+        self.assertLess(body.index("exclude_paths:"), body.index("settings:"))
+        self.assertIn("  max_per_group: 48\n", body)
+        self.assertNotIn("max_groups", body)          # None is omitted
+        doc = yaml.safe_load(body)
+        self.assertEqual(doc["version"], 1)
+
+    def test_dump_config_yaml_omits_empty_settings_and_exclusions(self):
+        import setup_proposal as sp
+        body = sp.dump_config_yaml({"App": {"match": ["src/**"]}}, header=False)
+        self.assertEqual(body, "version: 1\ngroups:\n  App:\n    match:\n    - src/**\n")
+
     def test_ingest_carries_the_committed_exclusions_into_the_draft(self):
         import scripts.groups_schema as groups_schema
         import yaml
         d = _repo(self)
-        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
-            fh.write("groups:\n"
+        with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\n"
+                     "groups:\n"
                      "  Checkout:\n"
                      "    match: ['src/checkout/**']\n"
                      "    panels: [SEC]\n"
@@ -1406,20 +1796,6 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
         with open(gi, encoding="utf-8") as fh:
             self.assertIn(".panopticon/*", fh.read())
 
-    def test_seed_config_does_not_create_through_a_planted_link(self):
-        # `_seed_config` guards with `os.path.isfile`, which FOLLOWS the link, so
-        # its primitive is a DANGLING one: creation at an attacker-chosen path
-        # with fixed content, not an overwrite. It also never went through
-        # `artifact_root` at all -- the one write here that had no guard of any
-        # kind -- so the refusal below is new in both halves.
-        d = _repo(self)
-        outside = os.path.join(d, "not-yet-there.json")
-        cfg = os.path.join(d, ".panopticon", "config.json")
-        os.symlink(outside, cfg)
-        with self.assertRaises(ValueError):
-            setup_flow._seed_config(d)
-        self.assertFalse(os.path.exists(outside), "the link's target was created")
-
     def test_write_spine_does_not_write_through_a_planted_link(self):
         d = _repo(self)
         victim = self._victim(d)
@@ -1444,16 +1820,29 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
                   encoding="utf-8") as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
-        for name in ("groups.yml.draft", "setup-report.md", "setup-report.json"):
-            victim = self._victim(d, "victim-%s" % name)
-            os.symlink(victim, os.path.join(root, name))
+        # #1681: the draft is at the ROOT now, so the two halves of the guard
+        # answer differently and BOTH are asserted here. `_confine_artifact_path`
+        # raises only for a path that escapes `.panopticon` through a symlinked
+        # component, so the ValueError below comes from the REPORT plants; at
+        # the root the link is refused by O_NOFOLLOW and then unlinked and
+        # replaced with a fresh regular file (#1095's contract, the one
+        # `.gitignore` has always had). Either way nothing is written THROUGH a
+        # link -- which is what every victim staying SECRET proves.
+        draft = setup_flow.repo_config.draft_path(d)
+        plants = {setup_flow.repo_config.DRAFT_NAME: draft}
+        for name in ("setup-report.md", "setup-report.json"):
+            plants[name] = os.path.join(root, name)
+        for name, planted in plants.items():
+            os.symlink(self._victim(d, "victim-%s" % name), planted)
         with self.assertRaises(ValueError):
             setup_flow.ingest_proposal(d)
-        for name in ("groups.yml.draft", "setup-report.md", "setup-report.json"):
+        for name in plants:
             self._assert_untouched(os.path.join(d, "victim-%s" % name))
+        self.assertFalse(os.path.islink(draft), "the root link survived the write")
+        self.assertTrue(os.path.isfile(draft))
 
     def test_the_writes_still_land_on_an_honest_tree(self):
-        # The guard must not be the thing that breaks setup: same five artifacts,
+        # The guard must not be the thing that breaks setup: same artifacts,
         # no plants, all written.
         d = _repo(self)
         with open(os.path.join(d, ".panopticon", "setup-proposal.json"), "w",
@@ -1461,15 +1850,13 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
         setup_flow._ensure_gitignore(d)
-        setup_flow._seed_config(d)
         setup_flow.write_spine(d, setup_flow.build_spine(d))
         vocab, _present = setup_flow.load_bundled_vocabulary()
         setup_flow.render_scan_brief(d, vocab)
         self.assertTrue(setup_flow.ingest_proposal(d)["ok"])
-        for rel in (".gitignore", ".panopticon/config.json",
+        for rel in (".gitignore", setup_flow.repo_config.DRAFT_NAME,
                     ".panopticon/setup-spine.json", ".panopticon/setup-scan-brief.md",
-                    ".panopticon/groups.yml.draft", ".panopticon/setup-report.md",
-                    ".panopticon/setup-report.json"):
+                    ".panopticon/setup-report.md", ".panopticon/setup-report.json"):
             self.assertTrue(os.path.isfile(os.path.join(d, rel)), rel)
 
     def test_a_planted_intermediate_panopticon_directory_is_refused(self):
