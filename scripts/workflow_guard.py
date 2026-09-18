@@ -291,9 +291,57 @@ def _substituted(argv, stage):
     return found
 
 
+# A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`.
+# The text is shell and this module reads shell, so the quotes are not a
+# grammar it lacks -- only one it was not looking through. `python3 -c` and
+# `perl -e` are NOT here: that text is another language, and the gap list says
+# so.
+_SHELL_STRING = ("sh", "bash", "dash", "ash", "ksh", "zsh")
+
+
+def _scripts(argv):
+    """The shell scripts this command is handed as a string, in order.
+
+    A lifted `$(...)` or heredoc marker is never one: it stands for text held
+    in the parse it came from, and `_substituted` already credits what is
+    inside it.
+    """
+    if not argv:
+        return []
+    name, found = os.path.basename(argv[0]), []
+    if name == "eval":
+        found = [t for t in argv[1:] if not t.startswith("-")]
+    elif name in _SHELL_STRING and "-c" in argv:
+        found = argv[argv.index("-c") + 1:][:1]
+    return [t for t in found if not shell_reader.is_marker(t)]
+
+
+def _flattened(stmts):
+    """`eval "<script>"` expanded, in place, into the statements it runs.
+
+    In place and in ORDER, rather than harvested separately, so the fetch, the
+    checksum and the `chmod` written inside one quoted script are read as the
+    sequence they are: a step hardened inside its own string must come out
+    hardened, not unread. The wrapper is kept -- its redirections and the stage
+    it pipes into are still the wrapper's.
+    """
+    out = []
+    for statement in stmts:
+        for stage in statement.stages:
+            for text in _scripts(command(stage.argv)):
+                out.extend(_flattened(statements(text)))
+        out.append(statement)
+    return out
+
+
+def read(script):
+    """Every statement a `run:` script runs, quoted scripts expanded."""
+    return _flattened(statements(script))
+
+
 def fetches(script):
     """Every download a `run:` script performs, in order."""
-    return [fetch for _index, fetch in _fetch_records(statements(script))]
+    return [fetch for _index, fetch in _fetch_records(read(script))]
 
 
 # --- which statements check, and what they check -----------------------------
@@ -693,7 +741,7 @@ def _defects(stmts, conditions=None):
 
 def fetch_exec_defects(script):
     """Every unverified fetch-and-execute in one `run:` script."""
-    return [why for _index, why in _defects(statements(script))]
+    return [why for _index, why in _defects(read(script))]
 
 
 def fetch_exec_defect(script):
@@ -728,7 +776,7 @@ def job_defects(steps):
         if why:
             found.append((step.name, why))
             continue
-        for statement in statements(step.script):
+        for statement in read(step.script):
             # An `if:` step may not run. Its FETCH still counts -- folding it in
             # can only report more -- but its CHECK counts only for a use that
             # is skipped with it (`_binds`): a checksum that may not run cannot

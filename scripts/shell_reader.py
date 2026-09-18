@@ -384,5 +384,10 @@ def readable(text):
 
 
 def is_marker(token):
-    """True for a token that is (or contains) a lifted substitution."""
-    return bool(SUBST_REF.search(token))
+    """True for a token that is (or contains) something this parse lifted out.
+
+    A `@@substN@@` or `@@heredocN@@` stands for text held in THIS parse's
+    tables, so it means nothing to any other parse: a reader that re-reads a
+    token as a script of its own has to ask this first.
+    """
+    return bool(SUBST_REF.search(token) or _HEREDOC_REF.match(token))
