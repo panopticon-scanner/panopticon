@@ -85,6 +85,7 @@ classes below fall outside that and are accepted SILENT gaps, deliberately:
 and a check inside a `then` branch is credited although it may not run.
 """
 import collections
+import fnmatch
 import os
 import re
 import sys
@@ -485,11 +486,84 @@ def _uses(stmts, dest, after):
     return names, out
 
 
+# An operand that carries a glob metacharacter DESCRIBES files rather than
+# naming one, which is the whole of what `chmod +x *.sh` had over this rule.
+_GLOB = re.compile(r"[*?\[]")
+# `find`'s ways of running a command over what it walked. The operand is `{}`,
+# which names nothing at all.
+_FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+_RECURSIVE = ("-R", "-r", "--recursive")
+
+
+def _covers(token, dest, recursive=False):
+    """Does this operand stand for `dest`, even without naming it?
+
+    Three spellings, and the guard binds by NAME, so each one hid a use:
+    exactly (`chmod +x /tmp/payload`), by a glob (`chmod +x /tmp/*.sh`), and by
+    the directory a recursive command walks (`chmod -R +x /tmp`). A glob is
+    matched against the whole path and, for a bare dest, its basename -- the
+    same asymmetry `_names` draws, and for the same reason.
+    """
+    if _same_file(token, dest):
+        return True
+    if _GLOB.search(token):
+        return (fnmatch.fnmatch(dest, token)
+                or (not os.path.dirname(dest)
+                    and fnmatch.fnmatch(os.path.basename(dest), token)))
+    if recursive and not token.startswith("-"):
+        prefix = os.path.normpath(token)
+        if prefix == ".":
+            return not os.path.isabs(dest)
+        return os.path.normpath(dest).startswith(prefix + os.sep)
+    return False
+
+
+def _walked(argv):
+    """The roots a `find` walks: its operands before the first predicate."""
+    roots = []
+    for token in argv[1:]:
+        if token.startswith("-") or token in ("(", "!"):
+            break
+        roots.append(token)
+    return roots
+
+
+def _described(statement, position, stage, argv):
+    r"""(the command that really runs, the operands it is handed, is it a walk).
+
+    Two shapes give a command its operands without writing them down, and both
+    made a download runnable with no use this rule could read: `find <roots>
+    ... -exec chmod +x {} \;` substitutes each hit for `{}`, and `... | xargs
+    chmod +x` reads them off the pipe -- where `command()` strips `xargs` as a
+    wrapper, leaving a `chmod +x` with no operands at all. The roots stand in
+    for what was walked, and a walk binds like a recursive flag.
+    """
+    for predicate in _FIND_EXEC:
+        if os.path.basename(argv[0]) == "find" and predicate in argv:
+            inner = [t for t in argv[argv.index(predicate) + 1:]
+                     if t not in ("{}", ";", "+")]
+            if inner:
+                return inner, _walked(argv), True
+    # `command()` strips what stands in FRONT of the command, and `argv` is
+    # what it left: so the wrappers are the prefix, and an `xargs` anywhere
+    # else is an operand -- a file that happens to be called `xargs` hands
+    # nothing over.
+    lead = stage.argv[:len(stage.argv) - len(argv)]
+    if position and any(os.path.basename(t) == "xargs" for t in lead):
+        previous = command(statement.stages[position - 1].argv)
+        if previous and os.path.basename(previous[0]) == "find":
+            return argv, _walked(previous), True
+        return argv, previous[1:] if previous else [], False
+    return argv, [], False
+
+
 def _use(statement, position, stage, argv, dest):
     if not argv:
         return None
+    argv, handed, walk = _described(statement, position, stage, argv)
     name, rest = os.path.basename(argv[0]), argv[1:]
-    mentions = [t for t in rest if _same_file(t, dest)]
+    recursive = walk or any(t in _RECURSIVE for t in rest)
+    mentions = [t for t in rest + handed if _covers(t, dest, recursive)]
     if name in INTERPRETERS and any(_same_file(r, dest) for r in stage.reads):
         # `bash < payload`, `sh -s -- --yes < payload`: the file is never an
         # argument, so argv alone shows an interpreter with nothing after it.

@@ -711,9 +711,15 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
     """#1697: the ten forms the module docstring lists, each as a live step."""
 
     def accepted(self, *steps):
-        """The job is clean today -- this form goes unseen."""
+        """The job is clean -- this form goes unseen, and says so out loud."""
         found = wg.job_defects(list(steps))
         self.assertEqual([], found, found)
+
+    def flagged(self, *steps):
+        """The form was ruled reachable and the guard now reports it."""
+        found = wg.job_defects(list(steps))
+        self.assertEqual(1, len(found), found)
+        return found[0][1]
 
     # 1. a fetcher that is not curl/wget.
     def test_a_fetcher_that_is_not_curl_or_wget(self):
@@ -739,13 +745,29 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                       ("run", "sed -i s/a/b/ /tmp/p\nchmod +x /tmp/p\n/tmp/p\n"))
 
     # 5. a chmod over a glob -- and over a directory, which is the same act.
-    def test_a_chmod_over_a_glob_binds_nothing(self):
-        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
-                      ("run", "chmod +x /tmp/d/*.sh\n"))
+    # CLOSED: ordinary bash, and the fleet writes both spellings
+    # (`chmod -R a+rX odc-data` in nvd-cache.yml, `find ... | xargs` in both
+    # Dockerfiles). A glob names nothing, but it DESIGNATES the download.
+    def test_a_chmod_over_a_glob_is_making_it_executable(self):
+        self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                     ("run", "chmod +x /tmp/d/*.sh\n"))
 
-    def test_a_recursive_chmod_over_the_directory_binds_nothing(self):
+    def test_a_recursive_chmod_over_the_directory_is_making_it_executable(self):
+        self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                     ("run", "chmod -R +x /tmp/d\n"))
+
+    def test_a_glob_that_does_not_match_the_download_is_left_alone(self):
         self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
-                      ("run", "chmod -R +x /tmp/d\n"))
+                      ("run", "chmod +x /tmp/d/*.py\n"))
+
+    def test_a_recursive_chmod_over_another_directory_is_left_alone(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                      ("run", "chmod -R +x /tmp/e\n"))
+
+    def test_a_glob_bound_download_can_still_be_cleared(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                      ("check", 'echo "%s  /tmp/d/x.sh" | sha256sum -c -\n' % HEX),
+                      ("run", "chmod +x /tmp/d/*.sh\n"))
 
     # 6. a fetch inside an `eval` STRING (not a substitution).
     def test_a_fetch_inside_an_eval_string(self):
@@ -780,14 +802,30 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
              ("run", "chmod +x /tmp/p\n")])
         self.assertEqual(1, len(found), found)
 
-    # 9. `find -exec` and `xargs` operands.
-    def test_a_find_exec_operand_binds_nothing(self):
-        self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
-                      ("run", r"find /tmp -name p -exec chmod +x {} \;" "\n"))
+    # 9. `find -exec` and `xargs` operands. CLOSED with 5: the same act, the
+    # operand describing the file instead of naming it.
+    def test_a_find_exec_operand_is_making_it_executable(self):
+        self.flagged(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                     ("run", r"find /tmp -name p -exec chmod +x {} \;" "\n"))
 
-    def test_an_xargs_operand_binds_nothing(self):
+    def test_an_xargs_operand_is_making_it_executable(self):
+        self.flagged(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                     ("run", "echo /tmp/p | xargs chmod +x\n"))
+
+    def test_a_find_piped_into_xargs_is_making_it_executable(self):
+        self.flagged(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                     ("run", "find /tmp -name p | xargs chmod +x\n"))
+
+    def test_a_stage_that_merely_names_xargs_inherits_nothing(self):
+        # `xargs` counts where it stands IN FRONT of the command, which is
+        # where `command()` strips it. A file that happens to be called
+        # `xargs` is an operand, and operands hand nothing over.
         self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
-                      ("run", "echo /tmp/p | xargs chmod +x\n"))
+                      ("run", "echo /tmp/p | chmod +x xargs\n"))
+
+    def test_a_find_over_another_tree_is_left_alone(self):
+        self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
+                      ("run", r"find /opt -name p -exec chmod +x {} \;" "\n"))
 
     # 10. the `if:` comparison, and its YAML twin of `|| true`.
     def test_a_check_step_carrying_continue_on_error(self):
