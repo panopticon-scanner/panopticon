@@ -169,21 +169,38 @@ class TestTheCooperativeStop(unittest.TestCase):
     usual, and no child is terminated (that is the interrupt path -- an
     in-flight launch during an outage fails fast on its own)."""
 
-    def _runner(self):
-        """A runner whose first two entries are fast and whose every later one
-        blocks until `released`. With width two that pins how far the pool can
-        run ahead of the consumer: the two workers are inside a blocked entry
-        until the consumer's `stop` releases them."""
-        released, launched, terminated = threading.Event(), [], []
-        self.addCleanup(released.set)
+    def _runner(self, seen):
+        """A runner whose first two entries are fast, and whose entry `ei`
+        (i >= 2) does not come back until the consumer has handled `i` results.
+
+        That chain is what makes the launch bound a FACT rather than a race.
+        Two workers answering instantly outrun a consumer that does real work
+        per result, so a fixture that merely released everything at the moment
+        `stop` fires leaves a window in which both workers pull another entry
+        before the cancel lands. Here the pool is pinned to the consumer's own
+        progress: at the moment `stop` returns true the consumer has handled 2,
+        so `e2` may be free but `e3` (which waits for 3) cannot be, and at most
+        one further entry can start. The chain always makes progress -- `ei`
+        waits on results that arrive from entries launched before it -- so it
+        cannot deadlock, and every wait is deadlined.
+        """
+        launched, terminated = [], []
+
+        def await_consumer(n):
+            deadline = time.monotonic() + 10
+            while len(seen) < n:
+                if time.monotonic() > deadline:
+                    raise AssertionError("the consumer never handled %d results" % n)
+                time.sleep(0.002)
 
         class Stopping(base.HostRunner):
             host = "fake"; mode = "headless"; default_concurrency = 2
 
             def run_entry(self, entry, env):
                 launched.append(entry["id"])
-                if int(entry["id"][1:]) >= 2:
-                    released.wait(10)
+                index = int(entry["id"][1:])
+                if index >= 2:
+                    await_consumer(index)
                 return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
                                       cost_usd=None, model=None, session_id=None,
                                       denials=[], error=None)
@@ -192,25 +209,26 @@ class TestTheCooperativeStop(unittest.TestCase):
                 terminated.append(grace)
                 return []
 
-        return Stopping(), released, launched, terminated
+        return Stopping(), launched, terminated
+
+    def _drain(self, runner, seen, entries, **kw):
+        with contextlib.closing(runner.iter_batch(entries, 2, lambda e: {}, **kw)) as stream:
+            for entry, _result, _timing in stream:
+                seen.append(entry["id"])
 
     def test_a_stop_that_says_yes_cancels_what_is_still_queued(self):
-        runner, released, launched, terminated = self._runner()
-        entries = [{"id": "e%d" % i} for i in range(8)]
         seen, calls = [], []
+        runner, launched, terminated = self._runner(seen)
 
         def stop():
             calls.append(len(seen))
-            if len(seen) < 2:
-                return False
-            released.set()          # the in-flight pair may now finish and be yielded
-            return True
+            return len(seen) >= 2
 
-        with contextlib.closing(runner.iter_batch(entries, 2, lambda e: {}, stop=stop)) as stream:
-            for entry, _result, _timing in stream:
-                seen.append(entry["id"])
+        self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)], stop=stop)
         self.assertLess(len(launched), 8, launched)
-        self.assertLessEqual(len(launched), 5, launched)    # 2 seen + width + slack
+        # 2 handled + the pool: `e2`/`e3` were already running and at most one
+        # worker can turn over between the second result and the cancel
+        self.assertLessEqual(len(launched), 5, launched)
         # every entry that really launched came back to the consumer -- the
         # in-flight ones included -- and nothing cancelled was yielded
         self.assertEqual(sorted(launched), sorted(seen))
@@ -220,20 +238,18 @@ class TestTheCooperativeStop(unittest.TestCase):
         self.assertTrue(calls and calls[0] >= 1)
 
     def test_no_stop_at_all_launches_the_whole_batch(self):
-        runner, released, launched, terminated = self._runner()
-        released.set()
-        entries = [{"id": "e%d" % i} for i in range(8)]
-        seen = [e["id"] for e, _r, _t in runner.iter_batch(entries, 2, lambda e: {})]
+        seen = []
+        runner, launched, terminated = self._runner(seen)
+        self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)])
         self.assertEqual(8, len(launched), launched)
         self.assertEqual(sorted(seen), sorted(launched))
         self.assertEqual([], terminated)
 
     def test_a_stop_that_stays_false_launches_the_whole_batch(self):
-        runner, released, launched, _terminated = self._runner()
-        released.set()
-        entries = [{"id": "e%d" % i} for i in range(8)]
-        seen = [e["id"] for e, _r, _t
-                in runner.iter_batch(entries, 2, lambda e: {}, stop=lambda: False)]
+        seen = []
+        runner, launched, _terminated = self._runner(seen)
+        self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)],
+                    stop=lambda: False)
         self.assertEqual(8, len(launched), launched)
         self.assertEqual(sorted(seen), sorted(launched))
 
