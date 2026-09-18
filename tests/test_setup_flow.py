@@ -69,6 +69,18 @@ def test_check_groups_manifest_reports_a_refused_symlink_not_absence(tmp_path):
     assert "symlink" in detail
 
 
+def test_check_groups_manifest_does_not_gate_on_a_stale_config_json(tmp_path):
+    # The other side of the line above: a leftover retired JSON config is
+    # INFORMATIONAL -- `scan_execute` prints it -- and must not turn an
+    # un-set-up tree's row into a readiness failure. Only a refusal does that.
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "config.json").write_text('{"max_per_group": 5}')
+    name, ok, detail = setup_flow._check_groups_manifest(str(tmp_path))
+    assert name == "groups-manifest"
+    assert ok is None
+    assert "no committable config yet" in detail
+
+
 def test_check_groups_manifest_never_raises_on_a_legacy_tree(tmp_path):
     # #1681: `phases/readiness` calls this directly, so a tree still carrying
     # the legacy matrix file and no root config must produce a readiness ROW

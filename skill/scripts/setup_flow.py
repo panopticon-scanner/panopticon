@@ -464,13 +464,22 @@ def _check_groups_manifest(repo):
     doc = repo_config.read_document(repo)
     if doc.errors:
         return ("groups-manifest", False, "; ".join(doc.errors))
-    if doc.path is None and doc.disclosures:
+    if doc.path is None:
         # A REFUSAL resolves to no document and no error -- a symlink at either
         # config name is the case that matters (`repo_config.resolve` declines
         # to follow it). Reading only `doc.doc` would report that planted link
         # as "nothing configured yet": an informational row for a refusal, and
         # a silent fall back to whole-repo chunking.
-        return ("groups-manifest", False, "; ".join(doc.disclosures))
+        #
+        # The RESOLVER's disclosures, not the document's: those are refusals
+        # (and the both-present note, which cannot reach this branch -- it
+        # comes with a path). `read_document` adds informational lines too --
+        # a leftover retired JSON config -- and a stale file an operator has
+        # not deleted is not a fault this row may gate a run on. `scan_execute`
+        # prints that one.
+        refusals = repo_config.resolve(repo).disclosures
+        if refusals:
+            return ("groups-manifest", False, "; ".join(refusals))
     if doc.doc is None:
         return ("groups-manifest", None,
                 "no committable config yet -- --setup seeds one; "
