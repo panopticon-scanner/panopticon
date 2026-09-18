@@ -24,6 +24,7 @@ is the single intended behavior change and it is tested on its own. A capability
 that is claimed but unproven is `UNKNOWN`, and `UNKNOWN` gates as `REFUTED`.
 """
 import os
+from collections import namedtuple
 from dataclasses import dataclass, field
 
 # --- capabilities ----------------------------------------------------------
@@ -113,6 +114,56 @@ def guide_path():
     return os.path.join(_SKILL_DIR, "docs", GUIDE)
 
 
+# --- the target's discovery surface (#1657 step 3) -------------------------
+# What the REVIEWED tree can ship that this host's CLI would DISCOVER from it
+# -- as configuration, as instructions, or as a process beside the reviewer --
+# and whether anything the launch passes closes that channel.
+#
+# The table lives HERE, on the registry that already owns `project_scope_dirs`
+# and the registration directories, for the reason the module docstring gives:
+# `probes/common.probe_discovery_surface` is the scan, and a scan that carried
+# per-host paths would be a second place a host is defined. A host with an
+# empty tuple is a no-op that costs nothing.
+Surface = namedtuple("Surface", "pattern kind control cell")
+# pattern: a TUPLE of paths relative to the review root -- the spec's row,
+#          which lists one or several (`CLAUDE.md`, `**/CLAUDE.md`) under ONE
+#          cell id. One `*` segment means "any single directory name"; `**`,
+#          at the head or at the tail, means "at any depth" (bounded by
+#          probes/common's DEPTH_CAP / ENTRY_CAP).
+# kind:    OPEN       -- nothing in the launch closes it; a hit REFUTES
+#          CONTROLLED -- a launch control closes it; a hit is DISCLOSED
+# control: for CONTROLLED, the id of the control (probes/common.CONTROLS);
+#          None for OPEN
+# cell:    the #1657 spike's cell id (CL-n / CX-n / KM-n), for the report and
+#          the tests. Unique per host.
+OPEN, CONTROLLED = "open", "controlled"
+SURFACE_KINDS = (OPEN, CONTROLLED)
+
+
+def supported_surface_pattern(pattern):
+    """Is this one of the three shapes the scan resolves (R2)?
+
+    A plain path is one `stat`; a `*` SEGMENT is one `listdir` on its parent;
+    `**` -- at the head or at the tail, never in the middle, never twice -- is
+    the bounded walk. Anything else is rejected here, by the registry test,
+    rather than silently resolving to nothing on the one tree it matters for.
+
+    Pure and on the registry because it describes what a ROW may say. The
+    resolver in `probes/common` reads the same three shapes and nothing else.
+    """
+    if not isinstance(pattern, str) or not pattern or pattern.startswith("/"):
+        return False
+    segments = pattern.split("/")
+    if any(s in ("", ".", "..") for s in segments):
+        return False
+    stars = [i for i, s in enumerate(segments) if s == "**"]
+    if len(stars) > 1 or (stars and stars[0] not in (0, len(segments) - 1)):
+        return False
+    # `*` is a whole segment or nothing: `pre*fix.md` would need a glob match
+    # this scan deliberately does not do (one listdir, exact names).
+    return not any("*" in s and s not in ("*", "**") for s in segments)
+
+
 @dataclass(frozen=True)
 class HostSpec:
     """One host's static facts.
@@ -131,6 +182,10 @@ class HostSpec:
     registration_dir: str = ""      # "" when the host registers no shells
     shell_format: str = ""          # "md" | "toml" | ""
     project_scope_dirs: tuple = ()
+    # The `Surface` rows above: what a TARGET can ship that this host's CLI
+    # discovers from the reviewed tree (#1657). Empty for a host no runner of
+    # ours launches at a target, which makes the probe a no-op for it.
+    discovery_surface: tuple = ()
     detect_env: tuple = ()          # env vars that identify an active session
     driver_selectable: bool = False
     probes: dict = field(default_factory=dict)
@@ -173,6 +228,22 @@ HOSTS = {
         registration_dir=CLAUDE_AGENTS_DIR,
         shell_format="md",
         project_scope_dirs=(os.path.join(".claude", "agents"),),
+        # #1657 spike cells CL-1..CL-8, as #1717 narrowed them. CL-5 and CL-8
+        # are the OPEN residual the step-2 launch fixes could not close: the
+        # only flag that removes project agents, plugins, hooks and workflows
+        # is `--safe-mode`, which also disables hooks and would un-arm both
+        # guards -- hardening that reads like hardening and is not.
+        discovery_surface=(
+            Surface(("CLAUDE.md", "**/CLAUDE.md"), OPEN, None, "CL-1"),
+            Surface((".claude/settings.json", ".claude/settings.local.json"),
+                    CONTROLLED, "claude:setting-sources-user", "CL-2/CL-4"),
+            Surface((".mcp.json",), CONTROLLED, "claude:strict-mcp-config", "CL-3"),
+            Surface((".claude/agents/*",), OPEN, None, "CL-5"),
+            Surface((".claude/skills/*/SKILL.md", ".claude/commands/**"),
+                    CONTROLLED, "claude:disable-slash-commands", "CL-6/CL-7"),
+            Surface((".claude/hooks/**", ".claude/workflows/**",
+                     ".claude/plugins/**"), OPEN, None, "CL-8"),
+        ),
         detect_env=("CLAUDECODE",),
         driver_selectable=True,
         probes={TOOL_POLICY_ENFORCED: "registered-shell-tools",
@@ -190,6 +261,20 @@ HOSTS = {
         shell_format="md",
         project_scope_dirs=(os.path.join(".agents", "agents"),
                             os.path.join(".kimi-code", "agents")),
+        # KM-1..KM-4. KM-3 is the largest OPEN residual on any host: the
+        # binary loads `AGENTS.md` root-to-leaf into the reviewer's system
+        # prompt, no flag disables it, and the kimi child's cwd is still the
+        # review root. Refusing on it is the point of this probe.
+        discovery_surface=(
+            Surface((".mcp.json", ".kimi-code/mcp.json"), CONTROLLED,
+                    "kimi:workspace-trust-gate", "KM-4"),
+            Surface(("AGENTS.md", "agents.md", "**/AGENTS.md",
+                     "**/.kimi-code/AGENTS.md"), OPEN, None, "KM-3"),
+            Surface((".kimi-code/skills/*/SKILL.md", ".agents/skills/*/SKILL.md"),
+                    CONTROLLED, "kimi:skills-dir", "KM-1"),
+            Surface((".kimi-code/agents/*", ".agents/agents/*"), OPEN, None,
+                    "KM-2"),
+        ),
         detect_env=("KIMI_CODE_VERSION", "KIMI_SESSION_ID"),
         driver_selectable=True,
         probes={TOOL_POLICY_ENFORCED: "kimi-shell-surface",
@@ -204,6 +289,20 @@ HOSTS = {
         registration_dir=CODEX_AGENTS_DIR,
         shell_format="toml",
         project_scope_dirs=(os.path.join(".codex", "agents"),),
+        # CX-1..CX-6. CX-1..CX-3 are CONTROLLED by the cwd move (#1717), a
+        # control with no positive post-run evidence -- the scratch dirs are
+        # removed -- so this probe's DISCLOSURE is that evidence's substitute
+        # until a measurement exists. The row's `kind` moves to OPEN the day
+        # one refutes it.
+        discovery_surface=(
+            Surface(("AGENTS.md", "**/AGENTS.md"), CONTROLLED,
+                    "codex:cwd-outside-target", "CX-1"),
+            Surface((".codex/skills/*/SKILL.md", ".agents/skills/*/SKILL.md"),
+                    CONTROLLED, "codex:cwd-outside-target", "CX-2/CX-3"),
+            Surface((".codex/agents/*", ".agents/agents/*"), OPEN, None, "CX-6"),
+            Surface((".codex/config.toml", ".rules"), CONTROLLED,
+                    "codex:ignore-user-config-and-rules", "CX-4/CX-5"),
+        ),
         detect_env=("CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED"),
         driver_selectable=True,
         probes={TOOL_POLICY_ENFORCED: "codex-effective-tools",
