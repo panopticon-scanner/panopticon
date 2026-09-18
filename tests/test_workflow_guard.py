@@ -584,6 +584,24 @@ class TestASwallowedCheckIsNotACheck(unittest.TestCase):
                 'echo "%s  /tmp/payload" | sha256sum -c - %s\n' % (HEX, branch)),
                 branch)
 
+    def test_an_if_test_whose_check_is_the_second_pipeline_stage(self):
+        # #1697 item 2, and the FIRST one the issue asks for: the `if` sits on
+        # the pipeline HEAD (`echo`), so asking the checksum's own stage
+        # whether it is a test answers no -- and this is the spelling the
+        # guard's own remedy text recommends, so it is the one an author is
+        # most likely to wrap.
+        self.assertIsNotNone(self.swallowed(
+            'if echo "%s  /tmp/payload" | sha256sum -c -; then :; fi\n' % HEX))
+
+    def test_a_negation_on_the_pipeline_head(self):
+        self.assertIsNotNone(self.swallowed(
+            '! echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX))
+
+    def test_a_while_test_whose_check_is_the_second_pipeline_stage(self):
+        self.assertIsNotNone(self.swallowed(
+            'while echo "%s  /tmp/payload" | sha256sum -c -; do break; done\n'
+            % HEX))
+
     def test_a_plain_check_still_counts(self):
         self.assertIsNone(
             self.swallowed('echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX))

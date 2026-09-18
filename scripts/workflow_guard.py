@@ -268,9 +268,15 @@ def _swallowed(stmts, index, statement, stage):
         return "is detached with `&`"
     if statement.separator == "||" and not _stops_the_job(stmts, index):
         return "hands its failure to a `||` branch that does not fail the step"
-    if negated(stage.argv):
+    # `if`, `while` and `!` govern the PIPELINE, and they sit on its head:
+    # in `if echo "<sha>  x" | sha256sum -c -; then` -- the spelling this
+    # module's own remedy text recommends -- the checksum is the second stage
+    # and its own argv says nothing about the test wrapped around it. Ask the
+    # head as well as the stage, because a one-stage statement is both.
+    head = statement.stages[0].argv if statement.stages else stage.argv
+    if negated(head) or negated(stage.argv):
         return "is negated, so the failing path is the THEN branch"
-    if conditional(stage.argv):
+    if conditional(head) or conditional(stage.argv):
         return "is an `if`/`while` test, which errexit does not apply to"
     return None
 
