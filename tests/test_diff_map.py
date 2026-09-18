@@ -153,6 +153,11 @@ class TestHunkMap(unittest.TestCase):
         # untracked-others path: same exclusion applies to an uncommitted file
         with open(os.path.join(d, ".panopticon.yml"), "w", encoding="utf-8") as fh:
             fh.write("version: 1\ngroups: {}\n")
+        # positive control (fix round 2 item 6): without exclude, the untracked
+        # file IS in the map -- proves the assertion below is actually testing
+        # the exclusion, not an untracked-others path that never picks it up.
+        m3_control = diff_map.hunk_map(d, "main")
+        self.assertIn(".panopticon.yml", m3_control)
         m3 = diff_map.hunk_map(d, "main", exclude=("panopticon.yml", ".panopticon.yml"))
         self.assertNotIn(".panopticon.yml", m3)
 
@@ -546,11 +551,29 @@ class TestSyncConfig(unittest.TestCase):
                 self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
 
     def test_noop_when_operator_has_no_config(self):
+        # #1681 fix round 2 item 5 (R18): still holds after the restructure --
+        # a BARE worktree (nothing for the unconditional removal loop to find)
+        # plus no operator config yields [] and writes nothing.
         with tempfile.TemporaryDirectory() as d:
             repo = os.path.join(d, "repo"); os.makedirs(repo)
             wt = os.path.join(d, "wt"); os.makedirs(wt)
             self.assertEqual(diff_map._sync_config(repo, wt), [])
             self.assertFalse(os.path.exists(os.path.join(wt, "panopticon.yml")))
+
+    def test_no_operator_config_but_pr_ships_one_is_still_removed(self):
+        # #1681 fix round 2 item 5 (controller ruling R18): even with NO
+        # operator config anywhere, a PR-shipped file at either name must
+        # never govern its own review -- the removal loop runs regardless,
+        # and the caller is told why nothing was copied back.
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo"); os.makedirs(repo)
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            with open(os.path.join(wt, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+            notes = diff_map._sync_config(repo, wt)
+            self.assertFalse(os.path.exists(os.path.join(wt, "panopticon.yml")))
+            self.assertTrue(any("removed the PR's panopticon.yml" in n for n in notes), notes)
+            self.assertTrue(any("no operator config" in n for n in notes), notes)
 
     def test_operator_file_overwrites_a_pr_shipped_one_and_says_so(self):
         with tempfile.TemporaryDirectory() as d:
@@ -630,11 +653,78 @@ class TestSyncConfig(unittest.TestCase):
             with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
 
-    def test_operator_side_symlinked_config_no_ops_and_says_why(self):
-        # #1681 fix round 1 item 2: repo_config.resolve refuses an OPERATOR-side
-        # symlinked config and discloses why. That disclosure must reach the
-        # caller (who prints it) rather than being swallowed as an empty []
-        # that leaves the PR's own file governing its own review.
+    def test_a_size_mismatched_file_is_removed_without_being_read(self):
+        # #1681 fix round 2 item 1: the size from the already-done `lstat`
+        # must rule a byte-compare out before anything is opened at all -- a
+        # large PR-planted file at the config name is never read just to
+        # prove it differs from the (small) operator copy.
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_config(d)
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            big = os.path.join(wt, "panopticon.yml")
+            with open(big, "wb") as fh:
+                fh.write(b"x" * (3 * 1024 * 1024))
+            real_open = os.open
+            def guarded_open(path, *a, **kw):
+                if os.path.abspath(path) == os.path.abspath(big):
+                    raise AssertionError("must not open a size-mismatched file")
+                return real_open(path, *a, **kw)
+            with mock.patch("os.open", side_effect=guarded_open):
+                notes = diff_map._sync_config(repo, wt)
+            # the 3MB blob is gone -- `big` IS the destination name, so the
+            # operator's copy legitimately lands there afterward; what proves
+            # the size guard worked is that it is now the SMALL operator
+            # content, not the original blob (and the guard above proves it
+            # got there without ever being read for a byte-compare).
+            with open(big, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
+            self.assertTrue(any("removed the PR's panopticon.yml" in n for n in notes), notes)
+
+    def test_refresh_only_applies_to_the_operators_own_name(self):
+        # #1681 fix round 2 item 2: a BYTE-IDENTICAL file under the OTHER
+        # (non-canonical) name is still removed, never "refreshed" -- that
+        # fast path only ever applies to the destination matching the
+        # operator's own file, so the worktree never ends up with both names
+        # present (which would raise its own "both present" disclosure the
+        # next time something reads config from the worktree).
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_config(d)   # operator's file is "panopticon.yml"
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            with open(os.path.join(wt, ".panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\n")   # byte-identical, WRONG name
+            notes = diff_map._sync_config(repo, wt)
+            self.assertFalse(os.path.exists(os.path.join(wt, ".panopticon.yml")))
+            self.assertTrue(any("removed the PR's .panopticon.yml" in n for n in notes), notes)
+            self.assertFalse(any("refreshed" in n for n in notes), notes)
+            with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
+
+    def test_both_names_present_in_the_operators_repo_discloses_on_success_too(self):
+        # #1681 fix round 2 item 4: `res.disclosures` used to reach the caller
+        # only on the no-config branch -- the "both present" note is exactly
+        # as real on a successful sync and must not go missing there.
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo"); os.makedirs(repo)
+            with open(os.path.join(repo, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\n")
+            with open(os.path.join(repo, ".panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\n")
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            notes = diff_map._sync_config(repo, wt)
+            self.assertTrue(any("both" in n and "present" in n for n in notes), notes)
+            with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
+
+    def test_operator_side_symlinked_config_still_removes_the_prs_file(self):
+        # #1681 fix round 1 item 2 + fix round 2 item 5 (controller ruling
+        # R18, which closes the re-review's O1 and supersedes this test's
+        # original round-1 assertion that the worktree was left "untouched"):
+        # repo_config.resolve refuses an OPERATOR-side symlinked config and
+        # discloses why -- that disclosure must still reach the caller -- but
+        # a REFUSED operator config is exactly like NO operator config for
+        # the removal loop: the PR's own file must never govern its own
+        # review, so it is removed regardless of whether the operator has a
+        # usable config.
         with tempfile.TemporaryDirectory() as d:
             repo = os.path.join(d, "repo"); os.makedirs(repo)
             elsewhere = os.path.join(d, "elsewhere.yml")
@@ -646,7 +736,6 @@ class TestSyncConfig(unittest.TestCase):
                 fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
             notes = diff_map._sync_config(repo, wt)
             self.assertTrue(any("symlink" in n for n in notes), notes)
-            # the PR's own file is untouched -- no sync happened
-            with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
-                self.assertEqual(fh.read(), "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+            self.assertTrue(any("removed the PR's panopticon.yml" in n for n in notes), notes)
+            self.assertFalse(os.path.exists(os.path.join(wt, "panopticon.yml")))
 

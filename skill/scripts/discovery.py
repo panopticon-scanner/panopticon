@@ -217,7 +217,7 @@ def _worktree_dirty(repo):
     r = _git(repo, ["status", "--porcelain"])
     return bool(r.stdout.strip())
 
-def collect_changed_files(repo, base=None):
+def collect_changed_files(repo, base=None, exclude=()):
     """Collect repo-relative paths changed since the merge base (or HEAD~1).
 
     When ``base`` is given (a resolved ref name or sha), the changed set is
@@ -230,6 +230,17 @@ def collect_changed_files(repo, base=None):
     When ``base`` is None (legacy/no-delta callers), tries the default
     upstream branches (main, then master) first and falls back to HEAD~1 only
     as the last resort of THIS no-base path.
+
+    ``exclude`` (fix round 2 item 3, #1681): repo-root-relative names dropped
+    from the changed set before it is returned -- the ``--pr-worktree`` caller
+    passes the root config names here, the SAME ones ``diff_map.hunk_map``
+    excludes, so the reviewed file set and the on-diff hunk map keep agreeing
+    (the invariant this module's ``--find-renames`` comment above already
+    names) instead of diverging on the one file `_sync_config` just
+    overwrote: without this, that file was still dispatched as reviewable PR
+    surface even though the delta map had no hunks for it. A plain (non-PR)
+    delta review passes none, so a real changed root config there is still
+    reviewed exactly like any other file.
 
     Only files that still exist in the working tree are returned. Returns
     None if no git history is available.
@@ -278,6 +289,8 @@ def collect_changed_files(repo, base=None):
                 changed.add(p)
     except Exception:
         pass
+    for name in exclude:
+        changed.discard(name)
     out = []
     for p in sorted(changed):
         full = os.path.join(repo, p)
@@ -1567,7 +1580,9 @@ def main(argv=None):
         if res is None:
             return 2
         base, source = res
-        changed = collect_changed_files(repo, base=base)
+        changed = collect_changed_files(
+            repo, base=base,
+            exclude=repo_config.CONFIG_NAMES if args.pr_worktree else ())
         if changed is None:
             print("could not determine changed files; is %s a git repo?" % repo,
                   file=sys.stderr)
@@ -1602,7 +1617,12 @@ def main(argv=None):
         result["discovery"] = {"method": info.get("method")}
     if _delta is not None:
         base, source = _delta
-        includes_uncommitted = _worktree_dirty(repo)   # True for -c live tree; False for a clean --pr worktree
+        # True for -c live tree; also true for a --pr worktree now that
+        # _sync_config's overwrite of the root config dirties it too (#1681
+        # fix round 2 item 6 -- this used to read "False for a clean --pr
+        # worktree", which stopped being so the moment the sync started
+        # writing into it).
+        includes_uncommitted = _worktree_dirty(repo)
         write_diff_hunks(repo, base, source,
                          _hunks_path_for(args.out), args.diff_context,
                          includes_uncommitted,

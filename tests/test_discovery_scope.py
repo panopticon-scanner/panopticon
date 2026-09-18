@@ -333,3 +333,49 @@ def test_repo_scan_plain_delta_still_lists_a_changed_root_config(tmp_path):
     assert rc == 0
     hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
     assert "panopticon.yml" in hunks["hunks"]
+
+
+def _reviewed_files(out_path):
+    """Every file discovery.py --repo-scan actually dispatched: grouped, plus
+    the ungrouped leftovers a changed root config (unmatched by any committed
+    group's globs) lands in."""
+    data = json.loads(out_path.read_text())
+    return {f for g in data["groups"] for f in g["files"]} | set(
+        data.get("ungrouped_files") or [])
+
+
+def test_repo_scan_pr_worktree_excludes_root_config_from_the_reviewed_set(tmp_path):
+    # #1681 fix round 2 item 3: the delta map exclusion alone left the
+    # reviewed FILE SET still carrying the synced root config -- it was
+    # dispatched as PR surface with no hunks to justify it, diverging from
+    # diff-hunks.json exactly as the "reviewed file set and on-diff hunk map
+    # never diverge" invariant (this module's collect_changed_files
+    # docstring, and the --find-renames comment below it) says they must not.
+    # collect_changed_files now takes the SAME exclude the --pr-worktree flag
+    # already threads into write_diff_hunks.
+    repo = repo_with_matrix(tmp_path)
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "pr ships its own config")
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            "--pr-worktree", str(repo), "--out", str(out)])
+    assert rc == 0
+    assert "panopticon.yml" not in _reviewed_files(out)
+
+
+def test_repo_scan_plain_delta_still_reviews_a_changed_root_config(tmp_path):
+    # Positive control / non-PR parity: without --pr-worktree, a real changed
+    # root config is still part of the reviewed set, matching the plain-delta
+    # diff-hunks assertion above.
+    repo = repo_with_matrix(tmp_path)
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "a real config change")
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    assert "panopticon.yml" in _reviewed_files(out)

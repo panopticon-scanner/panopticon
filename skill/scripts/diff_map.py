@@ -318,31 +318,43 @@ def _sync_config(repo, wt_path):
     copied in under the operator's own name. Overwriting is the point (the
     old copy-if-absent let the PR's file govern its own review); every
     removal, refresh, and overwrite is returned as a disclosure line for the
-    caller to print. Returns [] when the operator has no config -- except an
-    operator-side symlink at either name, which `repo_config.resolve` already
-    refuses and discloses; those disclosures are returned as-is (fix round 1
-    item 2) rather than swallowed, since the caller prints exactly this list
-    and would otherwise say nothing about a refusal that leaves the PR's own
-    file governing its own review.
+    caller to print.
+
+    #1681 fix round 2 item 5 (controller ruling R18): the removal loop runs
+    UNCONDITIONALLY, even when the operator has no config (or a refused one)
+    -- a PR-shipped file at either name must never govern its own review just
+    because the operator's own repo has none. Only the final copy is
+    conditional on `res.path`. `res.disclosures` (an operator-side symlink
+    refusal, or a "both present" note) is always prepended to the returned
+    notes -- fix round 1 item 2 and fix round 2 item 4 -- so neither branch
+    goes silent on the caller, who prints exactly this list.
 
     An existing regular file at the destination whose bytes already match the
     operator's copy (the reuse/resume call site: a PREVIOUS `_sync_config`
     already wrote it) is left alone and disclosed as "refreshed", never
-    "removed" -- reading it uses O_NOFOLLOW so the compare itself can never be
-    tricked into opening through a same-named symlink an attacker raced in
-    after the lstat (fix round 1 item 1).
+    "removed". Three guards on that fast path (fix round 2 items 1-2):
+    the size from the already-done `lstat` must match before anything is
+    opened at all (a large PR-planted file at the config name is never read
+    just to prove it differs); reading what does match sizes uses O_NOFOLLOW
+    so the compare can't be tricked into opening through a same-named symlink
+    an attacker raced in after the `lstat`; and the fast path only ever
+    applies to the destination name that matches the operator's OWN file
+    (`os.path.basename(res.path)`) -- a fluke-identical file under the
+    OTHER name is still removed, so the worktree never ends up with both
+    names present (which would raise its own "both present" disclosure the
+    next time something reads config from the worktree).
     """
     res = repo_config.resolve(repo)
-    if res.path is None:
-        return list(res.disclosures)
     if os.path.islink(wt_path):
         raise RuntimeError(
             "panopticon --pr: refusing to sync into a symlinked worktree (%s)" % wt_path)
     if not os.path.isdir(wt_path):
         raise RuntimeError(
             "panopticon --pr: refusing to sync into a missing worktree (%s)" % wt_path)
-    with open(res.path, "rb") as fh:
-        operator_bytes = fh.read()
+    operator_bytes = None
+    if res.path is not None:
+        with open(res.path, "rb") as fh:
+            operator_bytes = fh.read()
     notes = []
     removed = set()
     for name in repo_config.CONFIG_NAMES:
@@ -352,7 +364,10 @@ def _sync_config(repo, wt_path):
         except FileNotFoundError:
             continue
         existing = None
-        if stat.S_ISREG(st.st_mode):
+        if (operator_bytes is not None
+                and name == os.path.basename(res.path)
+                and stat.S_ISREG(st.st_mode)
+                and st.st_size == len(operator_bytes)):
             try:
                 fd = os.open(dst, os.O_RDONLY | os.O_NOFOLLOW)
             except OSError:
@@ -373,12 +388,16 @@ def _sync_config(repo, wt_path):
         removed.add(name)
         notes.append("removed the PR's %s from the worktree "
                      "(target content must not govern its own review)" % name)
-    dst = os.path.join(wt_path, os.path.basename(res.path))
-    shutil.copy2(res.path, dst)
-    if os.path.basename(res.path) in removed:
-        notes.append("overwrote %s in the worktree with the operator's copy"
-                     % os.path.basename(res.path))
-    return notes
+    if res.path is not None:
+        dst = os.path.join(wt_path, os.path.basename(res.path))
+        shutil.copy2(res.path, dst)
+        if os.path.basename(res.path) in removed:
+            notes.append("overwrote %s in the worktree with the operator's copy"
+                         % os.path.basename(res.path))
+    elif removed:
+        notes.append("no operator config; PR-shipped config removed, "
+                     "reviewing with defaults")
+    return list(res.disclosures) + notes
 
 
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
