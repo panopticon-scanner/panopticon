@@ -470,6 +470,20 @@ class TestTheFormsThatHideAFetch(unittest.TestCase):
             self.assertEqual([], wg.fetches(script), script)
             self.assertIsNone(wg.fetch_exec_defect(script), script)
 
+    def test_a_substitution_carrying_a_heredoc_marker_does_not_crash(self):
+        # #1697 review F7: the OUTER parse lifts the heredoc body and leaves
+        # `@@heredoc0@@` inside the substitution's text; re-reading that text
+        # is a second parse whose tables are empty. A guard that raises
+        # reports nothing at all, which is worse than reporting a gap.
+        for script in ('eval "$(cat <<\'EOF\'\n'
+                       "curl -sfL https://example.test/p -o /tmp/p\n"
+                       "chmod +x /tmp/p\n"
+                       'EOF\n)"\n',
+                       'sh -c "$(cat <<\'EOF\'\nhello\nEOF\n)"\n',
+                       'X="$(cat <<\'EOF\'\nhello\nEOF\n)"\n'):
+            wg.fetch_exec_defect(script)        # must not raise
+            wg.fetches(script)
+
     def test_a_shifted_left_string_is_not_a_heredoc(self):
         # `<<` inside a quoted string has no terminator line; reading it as a
         # heredoc swallows the rest of the step, and every statement after it
@@ -1018,6 +1032,14 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
     def test_a_find_over_another_tree_is_left_alone(self):
         self.accepted(("get", "curl -sfL https://example.test/p -o /tmp/p\n"),
                       ("run", r"find /opt -name p -exec chmod +x {} \;" "\n"))
+
+    # a heredoc body consumed inside a substitution (added by #1697's review:
+    # it used to CRASH, and now it is read as a word).
+    def test_a_heredoc_body_inside_a_substitution_is_unread(self):
+        self.accepted(("run", 'eval "$(cat <<\'EOF\'\n'
+                              "curl -sfL https://example.test/p -o /tmp/p\n"
+                              "chmod +x /tmp/p\n"
+                              'EOF\n)"\n'))
 
     # 10. the `if:` comparison, and its YAML twin of `|| true`.
     def test_a_check_step_carrying_continue_on_error(self):

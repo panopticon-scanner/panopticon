@@ -267,7 +267,11 @@ def _stage(text, bodies, inners):
         # A redirection TARGET can be a command too (`bash < <(curl ...)`), so
         # the substitutions come off the token before it is filed away as a
         # path -- otherwise the whole command inside it is discarded unread.
-        substitutions.extend(inners[int(n)] for n in SUBST_REF.findall(token))
+        # An index past the end belongs to ANOTHER parse: a caller re-reading
+        # a substitution's text hands over markers this parse never made, and
+        # a guard that raises on them reports nothing at all.
+        substitutions.extend(inners[int(n)] for n in SUBST_REF.findall(token)
+                             if int(n) < len(inners))
 
     for token in tokens:
         if pending is not None:
@@ -276,7 +280,7 @@ def _stage(text, bodies, inners):
             pending = None
             continue
         ref = _HEREDOC_REF.match(token)
-        if ref:
+        if ref and int(ref.group(1)) < len(bodies):
             heredoc, expands = bodies[int(ref.group(1))]
             if expands:
                 # `<<EOF` expands, `<<'EOF'` does not: the body of an expanding

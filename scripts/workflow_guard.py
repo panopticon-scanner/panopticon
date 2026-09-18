@@ -102,6 +102,15 @@ that starts catching one fails there, and this list is edited with it.
   OUT OF SCOPE rather than unreached: the rule is about what ARRIVED from
   outside, and a workflow editing its own downloaded file is
   author-deterministic -- that `sed` is in the repo under review.
+* a heredoc body consumed inside a command substitution:
+  `eval "$(cat <<'EOF' … EOF)"`. The OUTER parse lifts the body into its own
+  table and leaves a marker behind, so the text a re-read sees carries a word
+  that means nothing to it -- what the `eval` runs is unread.
+  KEPT: resolving it means handing one parse's tables to another, or teaching
+  the reader that a heredoc read by `cat` inside a substitution is a SCRIPT --
+  a second expansion model. The fleet writes one heredoc-ish construct (a
+  `<<<` here-string in docker-publish.yml) and no `cat <<EOF` at all. It no
+  longer CRASHES, which is what it did until #1697's review.
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the
   expression is stable between the check's step and the use's step. It is not
   when it reads `env.*` written through `$GITHUB_ENV` in between, or a forward
