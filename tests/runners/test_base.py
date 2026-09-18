@@ -684,9 +684,11 @@ class TestAnInterruptStopsTheBatch(unittest.TestCase):
 class TestTheBatchManifest(unittest.TestCase):
     """#1662: the list a Ctrl-C rolls back, written before the batch's first
     launch. Its own module (`runners/batch.py`) but not its own test file:
-    `Orchestration:Hosts` is at 47 of its 48-file cap, and a 49th file chunks
-    the leaf into a name the review matrix has no entry for (the #1638 P13
-    defect). Same parking reasoning as `money.py`/`ledger.py` in groups.yml."""
+    when this was written the host leaf of the review matrix was one file
+    short of its cap, and a file past the cap chunks the leaf into a name the
+    matrix has no entry for (the #1638 P13 defect). #1718 has since split the
+    runner seam into its own `Orchestration:Runners` layer, so a
+    `test_batch.py` would fit today; this class stays here by inertia only."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
