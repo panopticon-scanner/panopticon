@@ -433,6 +433,51 @@ class TestTheScan(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("CL-5", detail)
 
+    def test_a_hard_linked_file_is_reported_by_every_row_that_names_it(self):
+        # THE fail-open the per-host dedupe had: one `ln` made a CONTROLLED
+        # row claim the inode first (kimi's KM-4 is declared before KM-3), and
+        # the OPEN row that also named it went silent -- so the flagship
+        # `AGENTS.md` refusal became "closed by kimi:workspace-trust-gate".
+        # De-duplication is per ROW (one sentence per file inside a
+        # multi-pattern row); a file two rows name is reported twice, which is
+        # the non-permissive direction.
+        _plant(self.root, "AGENTS.md")
+        os.link(os.path.join(self.root, "AGENTS.md"),
+                os.path.join(self.root, ".mcp.json"))
+        state, _by, detail = probes_common.probe_discovery_surface("kimi", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("KM-3", detail)
+        self.assertIn("no launch control closes it", detail)
+        self.assertIn("closed by kimi:workspace-trust-gate (KM-4)", detail)
+
+    def test_a_hard_link_between_two_claude_rows_still_refutes(self):
+        # The same lever on claude: `.claude/commands/**` is CONTROLLED and
+        # declared before CL-8's `.claude/hooks/**`.
+        _plant(self.root, ".claude/commands/x.md")
+        os.makedirs(os.path.join(self.root, ".claude", "hooks"))
+        os.link(os.path.join(self.root, ".claude", "commands", "x.md"),
+                os.path.join(self.root, ".claude", "hooks", "x.md"))
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("CL-8", detail)
+
+    def test_an_unreadable_candidate_refutes_rather_than_reading_as_absent(self):
+        # `hit_identity` used to swallow every OSError as "not there". A
+        # directory a target ships mode 0o400 is listable and its entries are
+        # not stattable (EACCES), so every candidate under it vanished and the
+        # scan reported "no target-authored discovery files" -- the reassuring
+        # answer, reached by not looking.
+        import getpass
+        if getpass.getuser() == "root":
+            self.skipTest("running as root, permissions are not enforced")
+        _plant(self.root, ".claude/agents/theirs.md")
+        directory = os.path.join(self.root, ".claude", "agents")
+        os.chmod(directory, 0o400)
+        self.addCleanup(os.chmod, directory, 0o700)
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("could not read", detail)
+
     def test_the_controlled_hits_are_disclosed_on_the_stream_once(self):
         # §6: the same channel `kimi_toml.MCP_DISCLOSURE` uses. One line per
         # cell, not per file: this shares the operator's stderr with the run's

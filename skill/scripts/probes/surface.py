@@ -151,7 +151,7 @@ def candidates(review_root, segments, walk):
     yield from candidates(os.path.join(review_root, head), rest, walk)
 
 
-def hit_identity(path):
+def hit_identity(path, walk):
     """(dev, ino) when this path is something the host would LOAD, else None.
 
     R3: a regular file counts, and so does a SYMLINK -- the CLI follows it, so
@@ -160,14 +160,23 @@ def hit_identity(path):
     from the link itself and is never followed, so a link pointing at a named
     pipe cannot block this scan the way `open()` on the pipe would.
 
-    The identity, rather than a bare True, is what de-duplicates a file two
-    patterns both name -- `AGENTS.md` and `**/AGENTS.md`, or `AGENTS.md` and
-    `agents.md` on a case-insensitive filesystem, which are one inode and
-    must be one sentence.
+    The identity, rather than a bare True, is what de-duplicates a file named
+    twice inside ONE row -- `AGENTS.md` and `**/AGENTS.md`, or `AGENTS.md` and
+    `agents.md` on a case-insensitive filesystem, which are one inode and must
+    be one sentence.
+
+    A FAILED `lstat` goes through `walk.failed`, exactly like a failed
+    `listdir`: absent is absent, and everything else (EACCES on a directory a
+    target shipped mode 0o400, ELOOP, ENAMETOOLONG) is a candidate we could
+    not LOOK at. Swallowing those as "not there" turned an unreadable subtree
+    into "no target-authored discovery files" -- the reassuring answer,
+    reached by not looking, which is the failure this whole probe is written
+    against.
     """
     try:
         info = os.lstat(path)
-    except OSError:
+    except OSError as exc:
+        walk.failed(exc)
         return None
     if stat.S_ISLNK(info.st_mode) or stat.S_ISREG(info.st_mode):
         return (info.st_dev, info.st_ino)

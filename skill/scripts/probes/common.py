@@ -567,16 +567,24 @@ def probe_discovery_surface(host, review_root, disclose=None):
     if not row or not row.discovery_surface:
         return (hosts.UNKNOWN, DISCOVERY_SURFACE,
                 "host %r discovers no target-authored configuration" % host)
-    open_hits, controlled, problems, seen = [], [], [], set()
+    open_hits, controlled, problems = [], [], []
     patterns = 0
     for entry in row.discovery_surface:
-        found = []
+        # PER ROW, not per host. A file two ROWS both name is reported twice,
+        # because they say different things about it -- and a host-wide set
+        # was a fail-open one `ln` wide: kimi declares KM-4 (CONTROLLED)
+        # before KM-3 (OPEN), so `ln AGENTS.md .mcp.json` let the CONTROLLED
+        # row claim the inode and the flagship AGENTS.md refusal became
+        # "closed by kimi:workspace-trust-gate". Inside one row it still
+        # de-duplicates, which is what keeps `AGENTS.md` and `**/AGENTS.md`
+        # (and, on a case-insensitive filesystem, `agents.md`) one sentence.
+        found, seen = [], set()
         for pattern in entry.pattern:
             patterns += 1
             walk = surface.Walk(pattern)
             for path in surface.candidates(review_root,
                                            pattern.split("/"), walk):
-                identity = surface.hit_identity(path)
+                identity = surface.hit_identity(path, walk)
                 if identity is None or identity in seen:
                     continue
                 if (entry.kind == hosts.OPEN
