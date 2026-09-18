@@ -1338,8 +1338,15 @@ def _committed_matrix(repo):
     byte-faithful). A leaf body is {match, tests, panels, exclude}; a PARENT
     (keys are subgroup names, #1305) is {"subgroups": {sub: leaf body}} so the
     structure survives the additive merge instead of collapsing to an empty
-    leaf (5.2). Empty when none is committed (first run -> adopt-all)."""
+    leaf (5.2). Empty when none is committed (first run -> adopt-all).
+
+    Disclosures are printed FIRST, exactly as `_matrix_catalog` prints them
+    (I2): a refused symlink at the config path resolves to no document with NO
+    error, so `{}` was the only thing the operator ever saw of it -- and `{}`
+    here means "nothing committed", which is what setup then merged against."""
     doc = repo_config.read_document(repo)
+    for line in doc.disclosures:
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
     for e in doc.errors:
         print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     if doc.doc is None:

@@ -103,6 +103,28 @@ def test_check_groups_manifest_never_raises_on_a_legacy_tree(tmp_path):
     assert "migrate-config" in row[2]
 
 
+def test_committed_matrix_prints_the_symlink_disclosure(tmp_path, capsys):
+    # `_committed_matrix` printed doc.ERRORS and returned {} on no document.
+    # A refused symlink resolves to no document with no error at all, so the
+    # one signal the operator had was never printed and the empty matrix read
+    # as "nothing committed" -- `_matrix_catalog` prints disclosures first for
+    # exactly this reason.
+    (tmp_path / "elsewhere.yml").write_text("version: 1\ngroups: {}\n")
+    (tmp_path / "panopticon.yml").symlink_to(tmp_path / "elsewhere.yml")
+    assert setup_flow.committed_matrix(str(tmp_path)) == {}
+    err = capsys.readouterr().err
+    assert "symlink" in err
+    assert "panopticon.yml" in err
+
+
+def test_committed_exclude_paths_prints_the_symlink_disclosure(tmp_path, capsys):
+    (tmp_path / "elsewhere.yml").write_text("version: 1\nexclude_paths: ['vendor/**']\n")
+    (tmp_path / "panopticon.yml").symlink_to(tmp_path / "elsewhere.yml")
+    assert setup_flow._committed_exclude_paths(str(tmp_path)) == []
+    err = capsys.readouterr().err
+    assert "symlink" in err
+
+
 class TestSetupFlow(unittest.TestCase):
     def setUp(self):
         _isolate_codex_probes(self)
@@ -435,6 +457,68 @@ class TestSetupFlow(unittest.TestCase):
             result = setup_flow.ingest_proposal(d, pp)
             with open(result["draft"], encoding="utf-8") as fh:
                 self.assertNotIn("settings", yaml.safe_load(fh))
+
+    def test_ingest_refuses_an_authored_but_invalid_root_config(self):
+        # `driver run` fails loud on this tree; setup was the only path that
+        # proceeded -- `_committed_matrix` returns {} for any unreadable
+        # document, so the merge ran against an EMPTY matrix, dropped the
+        # operator's `exclude_paths:`, and the completion message told them to
+        # move a draft that discards what they authored over the real file.
+        with self._ingest_fixture() as (d, pp):
+            with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+                fh.write("groups:\n  Auth:\n    match: ['src/auth/**']\n"
+                         "exclude_paths: ['vendor/**']\n")      # no `version: 1`
+            res = setup_flow.ingest_proposal(d, pp)
+            self.assertFalse(res["ok"])
+            self.assertTrue(any("version: 1" in e for e in res["errors"]), res["errors"])
+            self.assertFalse(os.path.isfile(setup_flow.repo_config.draft_path(d)))
+            self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "setup-report.md")))
+
+    def test_ingest_refuses_a_symlinked_root_config_and_leaves_the_link(self):
+        with self._ingest_fixture() as (d, pp):
+            outside = os.path.join(d, "elsewhere.yml")
+            with open(outside, "w") as fh:
+                fh.write("version: 1\ngroups: {}\n")
+            link = os.path.join(d, "panopticon.yml")
+            os.symlink(outside, link)
+            res = setup_flow.ingest_proposal(d, pp)
+            self.assertFalse(res["ok"])
+            self.assertTrue(any("symlink" in e for e in res["errors"]), res["errors"])
+            self.assertTrue(os.path.islink(link))
+            self.assertFalse(os.path.isfile(setup_flow.repo_config.draft_path(d)))
+            self.assertFalse(os.path.isfile(os.path.join(d, ".panopticon", "setup-report.md")))
+
+    def test_provision_refuses_an_authored_but_invalid_root_config(self):
+        # The `scan` half of the same hole: setup's first write is the
+        # .gitignore scaffold, and it went ahead against a config nothing
+        # downstream can read.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+                fh.write("groups: {}\n")                        # no `version: 1`
+            with self.assertRaisesRegex(ValueError, "version: 1"):
+                setup_flow.provision(d)
+
+    def test_provision_refuses_a_symlinked_root_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "elsewhere.yml"), "w") as fh:
+                fh.write("version: 1\ngroups: {}\n")
+            link = os.path.join(d, "panopticon.yml")
+            os.symlink(os.path.join(d, "elsewhere.yml"), link)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                setup_flow.provision(d)
+            self.assertTrue(os.path.islink(link))
+
+    def test_provision_still_scaffolds_a_tree_with_no_config(self):
+        # The other side of the line: a FIRST run has no root config at all,
+        # and a leftover retired JSON config beside it is informational (it is
+        # printed, not refused). Neither may turn setup into a refusal.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
+                fh.write('{"max_per_group": 5}')
+            summary = setup_flow.provision(d)
+            self.assertIn(".panopticon/*", self._gitignore(d))
+            self.assertIn("no longer read", summary["stale_config_json"])
 
     def test_ingest_malformed_proposal_fails_no_draft(self):
         d = _repo(self)

@@ -918,13 +918,42 @@ committed_matrix = discovery._committed_matrix
 matrix_catalog = discovery._matrix_catalog
 
 
+def config_refusal(repo):
+    """The reasons SETUP must not write against this tree, or [] (#1681 I2).
+
+    `driver run` fails loud on an authored-but-invalid root config; setup was
+    the one path that proceeded. `discovery._committed_matrix` and
+    `_committed_exclude_paths` answer `{}`/`[]` for ANY unreadable document, so
+    ingest merged against an empty matrix, dropped the operator's
+    `exclude_paths:`, and the completion message told them to move a draft that
+    discards their own matrix over the real file.
+
+    Refuses on the document's ERRORS (no `version: 1`, over-cap, unparseable,
+    a legacy-only tree) and on the RESOLVER's own disclosures -- a refused
+    symlink at either name resolves to no document with no error at all, and
+    both names present is an ambiguity nothing should be written against.
+
+    The informational disclosures `read_document` adds on TOP of a readable
+    document -- the retired JSON config, a legacy matrix file beside a valid
+    root config, unknown top-level keys -- are deliberately not
+    refusals: they are printed elsewhere, and a first run on a tree with no
+    config at all is the ordinary case, not a fault."""
+    doc = repo_config.read_document(repo)
+    reasons = list(doc.errors) + list(repo_config.resolve(repo).disclosures)
+    if not reasons:
+        return []
+    return reasons + ["fix it or delete it; nothing was written"]
+
+
 def provision(repo):
     """Scaffold the .gitignore entries (idempotent). Returns a summary.
     #1681: the JSON config is retired (its keys live under `settings:`), and a
-    tree still carrying only the legacy matrix file is refused with the
-    migration remedy -- setup does not read it."""
-    if repo_config.legacy_present(repo) and repo_config.resolve(repo).path is None:
-        raise ValueError(repo_config.legacy_message(repo))
+    tree whose root config cannot be read -- a legacy-only tree, an invalid
+    one, a refused symlink -- is refused with its own remedy before the first
+    byte is written (`config_refusal`); setup does not read the legacy file."""
+    refusal = config_refusal(repo)
+    if refusal:
+        raise ValueError("; ".join(refusal))
     added = _ensure_gitignore(repo)
     return {"gitignore_added": added,
             "legacy_present": repo_config.legacy_present(repo),
@@ -946,7 +975,7 @@ def migrate_config(repo):
     if res.path is not None or res.disclosures:
         # Not `res.path is not None` alone: a REFUSED symlink at either config
         # name resolves to no path WITH a disclosure, so that guard read an
-        # operator's `panopticon.yml -> elsewhere` as "nothing there" and let
+        # operator's own `<config> -> elsewhere` link as "nothing there" and let
         # the write below through -- and `runio._open_w_nofollow`'s
         # unlink-and-retry then destroyed the link and wrote a regular file in
         # its place. Anything the resolver has something to say about is a
@@ -1026,9 +1055,15 @@ def _committed_exclude_paths(repo):
     or unusable (a corrupt committed file is disclosed elsewhere).
 
     Read from the raw document rather than from committed_matrix, which returns
-    the `groups:` mapping alone (#1504)."""
+    the `groups:` mapping alone (#1504).
+
+    Disclosures go to stderr the way `discovery._matrix_catalog` prints them
+    (I2): a refused symlink at the config path resolves to no document with NO
+    error, so an empty exclude list is otherwise the only trace of it."""
     import groups_schema  # noqa: E402
     doc = repo_config.read_document(repo)
+    for line in doc.disclosures:
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
     if doc.doc is None:
         return []
     globs, _errors = groups_schema.parse_exclude_paths(doc.doc)
@@ -1065,6 +1100,9 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     The cap and the ceiling resolve CLI argument > `settings:` > default
     (`discovery.DEFAULT_MAX_PER_GROUP`; `grouping_engine.ceiling_for`)."""
     import setup_proposal as sp
+    refusal = config_refusal(repo)          # I2: before anything is written
+    if refusal:
+        return {"ok": False, "errors": refusal}
     paths = (_VOCAB_PATH, _AFFINITY_PATH, _LAYERS_PATH)
     if not all(os.path.isfile(p) for p in paths):
         return {"ok": False, "errors": [
