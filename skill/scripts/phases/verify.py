@@ -8,6 +8,7 @@ import scripts.dispatch as dispatch
 import scripts.evidence as evidence
 import scripts.ingest_tools as ingest_tools
 import scripts.score_gate as score_gate
+import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 from scripts import hosts
 from scripts import read_guard_hook
@@ -567,8 +568,8 @@ def _tool_verify_queue(review_root, manifest):
     inputs through the identical functions makes the (queue_id, id) pair the tool
     findings carry here byte-identical to what synthesize's report exports.
 
-    Additive only: this CALLS findings_mod.load_findings/normalize_finding/
-    prepare_for_queue and evidence.build_verify_queue; it changes none of them.
+    Additive only: it CALLS findings_mod.load_findings/normalize_finding,
+    corroborate_mod.prepare_for_queue and evidence.build_verify_queue unchanged.
     include_fixtures/group/exclude are pinned to synthesize's main() tool-ingest
     call (group=None, exclude_globs=None) for identity; _tools_include_fixtures
     is the value synthesize_execute forwards. `target_root` is passed rather
@@ -587,7 +588,7 @@ def _tool_verify_queue(review_root, manifest):
         target_root=review_root)
     for tf in tool_findings:
         findings.append(findings_mod.normalize_finding(tf))
-    prepared, _integration = findings_mod.prepare_for_queue(findings)
+    prepared, _integration = corroborate_mod.prepare_for_queue(findings)
     flags = manifest.get("flags") or {}
     # #18: match synthesize's --max-verify DEFAULT (None = uncapped), not a
     # hardcoded 100. build_verify_queue caps the COMBINED queue and this method

@@ -10,6 +10,7 @@ import unittest
 import scripts.phases.runio as runio
 
 import scripts.synthesize as syn
+import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.report as report_mod
@@ -225,7 +226,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "a.rb", "line_start": 10},
             },
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["severity"], "HIGH")
 
@@ -247,7 +248,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "a.rb", "line_start": 10},
             },
         ]
-        self.assertEqual(len(findings_mod.dedupe(findings)), 2)
+        self.assertEqual(len(corroborate_mod.dedupe(findings)), 2)
 
     def test_two_agent_findings_same_line_both_kept(self):
         # Two agent-sourced findings (different panels/categories) at the same
@@ -270,7 +271,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "a.py", "line_start": 5},
             },
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 2)
         self.assertFalse(any(f.get("reinforced") for f in out))
 
@@ -289,14 +290,14 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "b.rb", "line_start": 10},
             },
         ]
-        self.assertEqual(len(findings_mod.dedupe(findings)), 2)
+        self.assertEqual(len(corroborate_mod.dedupe(findings)), 2)
 
     def test_no_file_findings_not_merged(self):
         findings = [
             {"severity": "LOW", "confidence": "NOTE", "category": "x", "location": {}},
             {"severity": "LOW", "confidence": "NOTE", "category": "x", "location": {}},
         ]
-        self.assertEqual(len(findings_mod.dedupe(findings)), 2)
+        self.assertEqual(len(corroborate_mod.dedupe(findings)), 2)
 
     def test_no_line_same_category_both_kept(self):
         # CD-001 regression: two distinct issues in the same file that both omit
@@ -318,7 +319,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "a.py"},
             },
         ]
-        self.assertEqual(len(findings_mod.dedupe(findings)), 2)
+        self.assertEqual(len(corroborate_mod.dedupe(findings)), 2)
 
     def test_reinforce_sourceless_agent_with_tool(self):
         # Production shape: real panel findings carry NO 'source' field; only
@@ -345,7 +346,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "db.py", "line_start": 10},
             },
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
         # confidence is never mutated by the pipeline (amended spec) — the
@@ -375,7 +376,7 @@ class TestDedupe(unittest.TestCase):
                 "citations": {"cwe": [{"id": "CWE-352", "name": "CSRF", "verified": True}]},
             },
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
 
@@ -411,7 +412,7 @@ class TestDedupe(unittest.TestCase):
                 "location": {"file": "db.py", "line_start": 10},
             },
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         cats = sorted(f.get("category") for f in out)
         self.assertIn("structure", cats)  # unrelated finding NOT dropped
         self.assertEqual(len(out), 2)  # sql-injection (collapsed) + structure
@@ -435,7 +436,7 @@ class TestReinforceMerge(unittest.TestCase):
             "cvss": {"score": 1.0, "vector": "AGENT"},
             "exploit_scenario": "agent scenario",
         }
-        findings_mod._reinforce_merge(tool_best, agent_other)
+        corroborate_mod._reinforce_merge(tool_best, agent_other)
         self.assertEqual(tool_best["cvss"]["vector"], "TOOL")
         self.assertEqual(tool_best["exploit_scenario"], "agent scenario")
 
@@ -452,7 +453,7 @@ class TestReinforceMerge(unittest.TestCase):
             "category": "sqli",
             "cvss": {"score": 8.5, "vector": "AGENT"},
         }
-        findings_mod._reinforce_merge(tool_best, agent_other)
+        corroborate_mod._reinforce_merge(tool_best, agent_other)
         self.assertEqual(tool_best["cvss"]["vector"], "AGENT")
 
 class TestReinforce(unittest.TestCase):
@@ -478,7 +479,7 @@ class TestReinforce(unittest.TestCase):
                 "citations": {"cwe": [{"id": "CWE-89", "name": "SQLi", "verified": True}]},
             },
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
         self.assertEqual(out[0]["confidence"], "CERTAIN")
@@ -511,7 +512,7 @@ class TestReinforce(unittest.TestCase):
                 "exploit_scenario": "Attacker injects SQL via the search box.",
             },
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
         self.assertEqual(out[0]["confidence"], "CERTAIN")
@@ -551,7 +552,7 @@ class TestReinforce(unittest.TestCase):
                 "exploit_scenario": "agent scenario",
             },
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["cvss"]["score"], 8.5)
         self.assertEqual(out[0]["exploit_scenario"], "agent scenario")
@@ -583,7 +584,7 @@ class TestReinforce(unittest.TestCase):
                 "remediation": "Use parameterized queries",
             },
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["impact"], "Data exfiltration")
         self.assertEqual(out[0]["references"], ["https://example.com"])
@@ -676,7 +677,7 @@ class TestDedupeRuleIdDiscrimination(unittest.TestCase):
             self._dep("OS-002", "GHSA-bbbb"),
             self._dep("OS-003", "GHSA-cccc", sev="CRITICAL"),
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 3)
         self.assertEqual(
             {f["tool_evidence"]["rule_id"] for f in out}, {"GHSA-aaaa", "GHSA-bbbb", "GHSA-cccc"}
@@ -688,7 +689,7 @@ class TestDedupeRuleIdDiscrimination(unittest.TestCase):
             self._dep("OS-002", "GHSA-aaaa", sev="HIGH"),
             self._dep("OS-003", "GHSA-bbbb"),
         ]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 2)
         kept = {f["tool_evidence"]["rule_id"]: f["severity"] for f in out}
         self.assertEqual(kept["GHSA-aaaa"], "HIGH")
@@ -708,7 +709,7 @@ class TestDedupeRuleIdDiscrimination(unittest.TestCase):
             },
         }
         findings = [self._dep("OS-001", "GHSA-aaaa"), self._dep("OS-002", "GHSA-bbbb"), agent]
-        out = findings_mod.dedupe(findings)
+        out = corroborate_mod.dedupe(findings)
         self.assertEqual(len(out), 3)  # two rules + the agent bucket
         self.assertTrue(all(f.get("reinforced") for f in out))
 
@@ -938,7 +939,7 @@ class TestToolFindingAggregation(unittest.TestCase):
         self.assertEqual(tool_survivor[0]["occurrences"], 3)
         # The survivor sits on the corroborated line, not the lowest one.
         self.assertEqual(tool_survivor[0]["location"]["line_start"], 20)
-        deduped, _ = findings_mod.prepare_findings(aggregated)
+        deduped, _ = corroborate_mod.prepare_findings(aggregated)
         self.assertTrue(any(f.get("reinforced") for f in deduped))
 
 class TestShortTitle(unittest.TestCase):
@@ -1091,14 +1092,14 @@ class TestPathVariantClustering(unittest.TestCase):
         }
 
     def test_dedupe_merges_dot_slash_variant(self):
-        out = findings_mod.dedupe(
+        out = corroborate_mod.dedupe(
             [self._agent("SE-001", "./src/auth.py", 10), self._tool("SG-001", "src/auth.py", 10)]
         )
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
 
     def test_dedupe_merges_backslash_variant(self):
-        out = findings_mod.dedupe(
+        out = corroborate_mod.dedupe(
             [self._agent("SE-001", "src/auth.py", 10), self._tool("SG-001", "src\\auth.py", 10)]
         )
         self.assertEqual(len(out), 1)
@@ -1107,7 +1108,7 @@ class TestPathVariantClustering(unittest.TestCase):
     def test_corroboration_across_path_variants(self):
         a = self._agent("SE-001", "./app/resolver.py", 42)
         b = self._agent("TS-001", "app/resolver.py", 43, panel="test", category="test-coverage")
-        integration = findings_mod.cross_panel_corroboration([a, b])
+        integration = corroborate_mod.cross_panel_corroboration([a, b])
         self.assertEqual(len(integration), 1)
         self.assertTrue(a.get("corroborated"))
         self.assertTrue(b.get("corroborated"))
