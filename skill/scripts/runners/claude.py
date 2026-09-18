@@ -80,12 +80,16 @@ class Runner(base.HostRunner):
 
         * `--setting-sources user` drops the project and local settings, and
           with them any hooks those files declare. `--settings` is a SEPARATE
-          channel that still applies under it (`--restricted`'s own help text
-          says so in as many words) -- which is the only reason THIS run's
-          `host-settings.json`, where `Guards.arm` registers the read and write
-          PreToolUse hooks, still arms. That is the observable to check on one
-          real launch: the guards' denials in the run ledger, and
-          `read-guard-armed` / `write-guard-armed` proven in host-capabilities.
+          channel that still applies under it -- MEASURED 2026-09-18: on a real
+          launch carrying all three flags, a PreToolUse hook registered only in
+          the `--settings` file fired and denied a `Read`, and the envelope's
+          `permission_denials` named it (`--restricted`'s own help text says
+          the same in as many words). So THIS run's `host-settings.json`, where
+          `Guards.arm` registers the read and write hooks, still arms. The
+          standing regression check is the `denials` field of
+          `runs/<tag>/dispatch-ledger.jsonl`: it is fed from that same
+          `permission_denials` array, so a run whose rows are all `[]` while
+          the replies carry findings is an unarmed guard.
         * `--strict-mcp-config` -- the loop passes no `--mcp-config`, so this
           leaves the reviewer with no MCP servers at all rather than the
           target's.
