@@ -682,10 +682,15 @@ class TestSyncConfig(unittest.TestCase):
             with open(big, "wb") as fh:
                 fh.write(b"x" * (3 * 1024 * 1024))
             real_open = os.open
-            def guarded_open(path, *a, **kw):
-                if os.path.abspath(path) == os.path.abspath(big):
-                    raise AssertionError("must not open a size-mismatched file")
-                return real_open(path, *a, **kw)
+            def guarded_open(path, flags=os.O_RDONLY, *a, **kw):
+                # READS only: since fix round 3 M1 the operator's copy is
+                # written through `os.open` too, and that write is the point of
+                # the call -- what must never happen is OPENING the blob to
+                # compare bytes with it.
+                if (os.path.abspath(path) == os.path.abspath(big)
+                        and flags & os.O_ACCMODE == os.O_RDONLY):
+                    raise AssertionError("must not read a size-mismatched file")
+                return real_open(path, flags, *a, **kw)
             with mock.patch("os.open", side_effect=guarded_open):
                 notes = diff_map._sync_config(repo, wt)
             # the 3MB blob is gone -- `big` IS the destination name, so the
@@ -714,6 +719,77 @@ class TestSyncConfig(unittest.TestCase):
             self.assertTrue(any("removed the PR's .panopticon.yml" in n for n in notes), notes)
             self.assertFalse(any("refreshed" in n for n in notes), notes)
             with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
+
+    def test_a_link_planted_after_the_removal_is_not_written_through(self):
+        # M1: the destination was `os.unlink(dst)` and then
+        # `shutil.copy2(src, dst)` -- two opens of one name in a directory
+        # holding attacker-controlled PR content. copy2 FOLLOWS whatever is at
+        # the path when it opens it, so a link planted in that window carried
+        # the operator's config onto its target. The write is an exclusive
+        # O_NOFOLLOW create now: a path that came back is refused, loudly.
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_config(d)
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            dst = os.path.join(wt, "panopticon.yml")
+            with open(dst, "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+            outside = os.path.join(d, "outside.yml")
+            with open(outside, "w", encoding="utf-8") as fh:
+                fh.write("i must not be written through the link\n")
+            real_unlink = os.unlink
+
+            def racing_unlink(path, *a, **kw):
+                real_unlink(path, *a, **kw)
+                if os.path.abspath(path) == os.path.abspath(dst):
+                    os.symlink(outside, dst)        # planted inside the window
+
+            with mock.patch("os.unlink", side_effect=racing_unlink):
+                with self.assertRaisesRegex(RuntimeError, "reappeared"):
+                    diff_map._sync_config(repo, wt)
+            self.assertTrue(os.path.islink(dst))
+            with open(outside, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "i must not be written through the link\n")
+
+    def test_an_over_cap_operator_config_is_disclosed_and_not_copied(self):
+        # M3: this read the operator's file unbounded while every other reader
+        # takes MAX_CONFIG_BYTES + 1 and refuses the extra byte. Same cap, same
+        # refusal -- copying a file `read_document` will refuse would hand the
+        # review a config nothing downstream can read.
+        cap = diff_map.repo_config.MAX_CONFIG_BYTES
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo"); os.makedirs(repo)
+            with open(os.path.join(repo, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\n#" + "x" * cap + "\n")
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            with open(os.path.join(wt, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+            notes = diff_map._sync_config(repo, wt)
+            self.assertTrue(any("exceeds" in n for n in notes), notes)
+            # refused == absent for the removal loop (R18): the PR's own file
+            # still must not govern its own review.
+            self.assertFalse(os.path.exists(os.path.join(wt, "panopticon.yml")))
+            self.assertTrue(any("no operator config" in n for n in notes), notes)
+
+    def test_an_unchanged_destination_is_not_rewritten(self):
+        # M2: the docstring said a byte-identical destination was "left
+        # alone" while the code fell through to an unconditional copy2 that
+        # rewrote it. The skip is real now -- proved by the file's identity
+        # (inode + mtime) surviving the second sync.
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_config(d)
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            dst = os.path.join(wt, "panopticon.yml")
+            diff_map._sync_config(repo, wt)
+            before = os.stat(dst)
+            notes = diff_map._sync_config(repo, wt)
+            after = os.stat(dst)
+            self.assertTrue(any("refreshed" in n for n in notes), notes)
+            # ctime, not mtime: copy2 restores the SOURCE's mtime, so only the
+            # inode-change stamp tells a rewrite from a genuine skip.
+            self.assertEqual((before.st_ino, before.st_ctime_ns),
+                             (after.st_ino, after.st_ctime_ns))
+            with open(dst, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
 
     def test_both_names_present_in_the_operators_repo_discloses_on_success_too(self):

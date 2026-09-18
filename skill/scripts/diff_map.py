@@ -306,6 +306,33 @@ def _worktree_dir(repo, pr_number):
 _PR_TIMEOUT = 180
 
 
+def _write_operator_config(path, data):
+    """Create `path` holding `data`, following nothing and overwriting nothing.
+
+    #1681 fix round 3 M1. The destination sits in a worktree full of
+    attacker-controlled PR content, and `shutil.copy2` opened the name a
+    SECOND time after `_sync_config` had unlinked it -- a window in which a
+    link planted at that name is followed, carrying the operator's config (and
+    the source file's mode) onto whatever it points at. The same CWE-59 the
+    lstat+unlink loop above exists to close, one call later.
+
+    O_EXCL|O_CREAT|O_NOFOLLOW refuses anything that is already there, link or
+    file, so a destination that came back is a loud RuntimeError in the voice
+    of this module's other refusals rather than a silent write-through.
+    `_sync_config` only ever calls this on a name it has just removed or never
+    found, so EEXIST means exactly that race.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o644)
+    except OSError as exc:
+        raise RuntimeError(
+            "panopticon --pr: refusing to write %s in the worktree -- the path "
+            "reappeared after it was removed (%s)" % (path, exc)) from exc
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+
+
 def _sync_config(repo, wt_path):
     """Copy the OPERATOR's root config into the PR worktree so the review runs
     against the operator's grouping, never the PR's (#1681; was `_sync_groups`).
@@ -331,7 +358,8 @@ def _sync_config(repo, wt_path):
 
     An existing regular file at the destination whose bytes already match the
     operator's copy (the reuse/resume call site: a PREVIOUS `_sync_config`
-    already wrote it) is left alone and disclosed as "refreshed", never
+    already wrote it) is left alone -- not removed, and not rewritten either:
+    the final write is skipped for it -- and disclosed as "refreshed", never
     "removed". Three guards on that fast path (fix round 2 items 1-2):
     the size from the already-done `lstat` must match before anything is
     opened at all (a large PR-planted file at the config name is never read
@@ -343,6 +371,15 @@ def _sync_config(repo, wt_path):
     OTHER name is still removed, so the worktree never ends up with both
     names present (which would raise its own "both present" disclosure the
     next time something reads config from the worktree).
+
+    Fix round 3, M1/M3. The copy is `_write_operator_config`, an EXCLUSIVE
+    O_NOFOLLOW create of bytes already in hand, not a second `shutil.copy2`
+    open of the same name: removal and copy were a TOCTOU pair in a directory
+    full of attacker-controlled PR content, and copy2 follows whatever is at
+    the path when it opens it. And the operator's file is read under
+    `repo_config.MAX_CONFIG_BYTES` like every other reader -- an over-cap file
+    is refused there, so it is disclosed and not copied here rather than
+    shipped into the worktree for `read_document` to refuse again.
     """
     res = repo_config.resolve(repo)
     if os.path.islink(wt_path):
@@ -351,12 +388,19 @@ def _sync_config(repo, wt_path):
     if not os.path.isdir(wt_path):
         raise RuntimeError(
             "panopticon --pr: refusing to sync into a missing worktree (%s)" % wt_path)
-    operator_bytes = None
-    if res.path is not None:
-        with open(res.path, "rb") as fh:
-            operator_bytes = fh.read()
     notes = []
-    removed = set()
+    src, operator_bytes = res.path, None
+    if src is not None:
+        with open(src, "rb") as fh:
+            operator_bytes = fh.read(repo_config.MAX_CONFIG_BYTES + 1)
+        if len(operator_bytes) > repo_config.MAX_CONFIG_BYTES:
+            # M3: the resolver's own cap, read-then-check, never partially
+            # copied. A refused operator config is exactly like NO operator
+            # config from here on (R18): the removal loop still runs.
+            notes.append("%s exceeds %d bytes; refused -- not copied into the "
+                         "worktree" % (src, repo_config.MAX_CONFIG_BYTES))
+            src, operator_bytes = None, None
+    removed, refreshed = set(), set()
     for name in repo_config.CONFIG_NAMES:
         dst = os.path.join(wt_path, name)
         try:
@@ -365,7 +409,7 @@ def _sync_config(repo, wt_path):
             continue
         existing = None
         if (operator_bytes is not None
-                and name == os.path.basename(res.path)
+                and name == os.path.basename(src)
                 and stat.S_ISREG(st.st_mode)
                 and st.st_size == len(operator_bytes)):
             try:
@@ -379,6 +423,7 @@ def _sync_config(repo, wt_path):
                 except OSError:
                     existing = None
         if existing is not None and existing == operator_bytes:
+            refreshed.add(name)
             notes.append("refreshed the operator's %s in the worktree (unchanged)" % name)
             continue
         if stat.S_ISDIR(st.st_mode):
@@ -388,12 +433,13 @@ def _sync_config(repo, wt_path):
         removed.add(name)
         notes.append("removed the PR's %s from the worktree "
                      "(target content must not govern its own review)" % name)
-    if res.path is not None:
-        dst = os.path.join(wt_path, os.path.basename(res.path))
-        shutil.copy2(res.path, dst)
-        if os.path.basename(res.path) in removed:
-            notes.append("overwrote %s in the worktree with the operator's copy"
-                         % os.path.basename(res.path))
+    if src is not None:
+        name = os.path.basename(src)
+        if name not in refreshed:           # M2: identical == left alone, truly
+            _write_operator_config(os.path.join(wt_path, name), operator_bytes)
+            if name in removed:
+                notes.append("overwrote %s in the worktree with the operator's copy"
+                             % name)
     elif removed:
         notes.append("no operator config; PR-shipped config removed, "
                      "reviewing with defaults")
