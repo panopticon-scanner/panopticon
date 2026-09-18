@@ -418,10 +418,15 @@ class Runner(base.HostRunner):
                 return base.RunResult.failed(
                     entry_id, "entry model %r does not resolve to a model alias "
                     "the installed Kimi CLI has configured" % entry["model"])
-        run_env = self.launch_env(env)
-        cmd = self.command(entry, alias)
         launcher = DEFAULT_RUNNER if self.runner is None else self.runner
         try:
+            # Inside the try on purpose: `command()` refuses an unprepared
+            # runner (no `--skills-dir`), and that refusal is a launch failure
+            # like any other -- a failed RunResult, never an exception out of
+            # run_entry (spec 4.4; codex's "not prepared" raise sits in its
+            # try for the same reason).
+            run_env = self.launch_env(env)
+            cmd = self.command(entry, alias)
             proc = launcher(cmd, cwd=self.review_root, env=run_env, capture_output=True,
                             text=True, timeout=self.entry_timeout)
         except base.LaunchRefused:        # I3: the suite's guard, never a run state

@@ -113,6 +113,22 @@ class TestSkillsDirectory(unittest.TestCase):
             self.assertNotEqual(other.skills_dir, self.r.skills_dir)
 
 
+class TestAnUnpreparedRunnerFailsTheEntryNotTheCaller(unittest.TestCase):
+    def test_run_entry_turns_the_refusal_into_a_failed_result(self):
+        # `command()` refuses to build an argv without `--skills-dir`; that
+        # refusal must reach the caller the way every other launch failure
+        # does -- as a failed RunResult -- because run_entry never raises
+        # (spec 4.4) and the dispatch pool's `one()` wrapper is not the
+        # contract. An UNENFORCED, model-less entry is the shape that reaches
+        # `command()` without needing a registered shell or a CLI alias.
+        launcher = mock.Mock(side_effect=AssertionError("nothing may launch"))
+        unprepared = kimi_runner.Runner("kimi", runner=launcher)
+        result = unprepared.run_entry(_entry(False, model=None), {})
+        self.assertFalse(result.ok)
+        self.assertIn("not prepared", result.error)
+        launcher.assert_not_called()
+
+
 class TestSkillsDirectoryIsNotBuiltThroughALink(unittest.TestCase):
     def test_a_link_planted_at_the_name_is_refused_not_chmodded(self):
         # The file's own I2 rule, twenty lines above `new_skills_dir`:
