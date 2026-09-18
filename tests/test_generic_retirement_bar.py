@@ -1,9 +1,17 @@
-"""Spec 8.1: F5's entry criterion as a test, shipped AHEAD of the deletion.
+"""Spec 8.1's security clause, kept as a standing NO-REGRESSION GUARD.
 
-    F5 may delete `--host generic` when every host remaining in HOSTS has
-    tool_policy_enforced = proven and read_scope_confined = proven, and has
+    Originally shipped AHEAD of F5 as its entry criterion: F5 could delete
+    `--host generic` once every host remaining in HOSTS had
+    tool_policy_enforced = proven and read_scope_confined = proven, and had
     artifact_write_guard either proven or explicitly bridged by
     delivery: return_json.
+
+Owner ruling D1 (2026-09-15, spec 8.3 option 1) retired F5: `--host generic`
+stays as the permanent, unenforced fallback, so there is no deletion left for
+this criterion to gate. The bar itself is kept -- not as an entry criterion
+but as a NO-REGRESSION GUARD: every driver-selectable host other than the
+fallback must go on clearing both security capabilities, and a host that
+regresses on either one fails this test.
 
 "proven" here is the STATIC proxy (plan 4, R-F5-3): the host CLAIMS the
 capability and maps it to a SHIPPED probe id. Live proof is per run (spec
@@ -38,7 +46,7 @@ import scripts.phases.verify_tools as verify_tools
 import scripts.read_guard_hook as read_guard_hook
 
 SECURITY_BAR = (hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED)
-DEPRECATED = "generic"
+FALLBACK = "generic"
 
 
 def _statically_proven(row, capability):
@@ -48,11 +56,11 @@ def _statically_proven(row, capability):
 
 def retirement_shortfalls():
     """{host: [capability, ...]} for every driver-selectable host other than the
-    deprecated one that fails a security clause of spec 8.1. Empty means the
-    deletion may ship."""
+    permanent fallback that fails a security clause of spec 8.1. Empty means no
+    remaining host has regressed on either security capability."""
     out = {}
     for name in hosts.driver_hosts():
-        if name == DEPRECATED:
+        if name == FALLBACK:
             continue
         row = hosts.spec(name)
         missing = [c for c in SECURITY_BAR if not _statically_proven(row, c)]
@@ -64,45 +72,44 @@ def retirement_shortfalls():
 class TestGenericRetirementBar(unittest.TestCase):
 
     def test_generic_retirement_bar(self):
-        # The criterion itself. While the deprecated row is present the bar is
-        # not yet enforced and the row must be exactly the deprecated shape --
-        # claiming nothing, still selectable (D4: ack-gated, not removed).
-        # The moment the row is gone, every remaining host must clear the bar.
-        examined = [n for n in hosts.driver_hosts() if n != DEPRECATED]
+        # The guard itself. While the fallback row is present it only checks
+        # its own shape -- claiming nothing, still selectable (owner ruling
+        # D1: permanent and ack-gated, not a candidate for removal). If that
+        # row is ever removed, every remaining host must clear the bar.
+        examined = [n for n in hosts.driver_hosts() if n != FALLBACK]
         self.assertTrue(examined, "a bar over zero hosts proves nothing")
-        if DEPRECATED in hosts.HOSTS:
-            row = hosts.spec(DEPRECATED)
+        if FALLBACK in hosts.HOSTS:
+            row = hosts.spec(FALLBACK)
             self.assertEqual(frozenset(), row.claims)
             self.assertTrue(row.driver_selectable)
         else:
             self.assertEqual({}, retirement_shortfalls(),
-                             "spec 8.1: --host generic was deleted while a remaining "
-                             "host falls short; #1070 must close first (spec 7.2)")
+                             "spec 8.1: the fallback row was removed while a remaining "
+                             "host falls short; every remaining host must clear the "
+                             "bar (spec 7.2)")
 
     def test_todays_shortfall_is_pinned_so_it_moves_consciously(self):
         # Measured on THIS tree, not inherited from either side of the merge:
-        # every driver-selectable host but the deprecated row clears both
+        # every driver-selectable host but the fallback row clears both
         # security clauses. claude clears it on read-guard-armed (#1070, plan
         # 5); codex's family PR (#1619) flipped its row with
         # codex-effective-tools and codex-read-scope; kimi's (#1620) flipped
         # its row with all five kimi-* probes; gemini left the selectable set
         # entirely (#1621, retired 2026-09-13). So the shortfall is {}.
         #
-        # This `{}` is also F5's ENTRY CRITERION, met. `test_the_bar_would_
+        # This `{}` used to be F5's ENTRY CRITERION. `test_the_bar_would_
         # refuse_the_deletion_today` used to sit beside this pin and simulate
-        # F5's one-line removal of the deprecated row; its replacement was
+        # F5's one-line removal of the fallback row; its replacement was
         # deleted rather than kept, because `retirement_shortfalls()` already
-        # skips DEPRECATED (see the `continue` above), so patching that row
-        # out of HOSTS cannot change the answer -- the simulation proved
-        # exactly what this line proves and no more.
+        # skips FALLBACK (see the `continue` above), so patching that row out
+        # of HOSTS cannot change the answer -- the simulation proved exactly
+        # what this line proves and no more.
         #
-        # Met is not due. Deleting `--host generic` is an OWNER decision, not
-        # a mechanical consequence of this assertion reading `{}`: generic is
-        # the only path left for a Gemini operator and for any other host
-        # whose family has not shipped a runner. The bar answers "does a
-        # remaining SELECTABLE host still fall short"; it cannot answer "is
-        # there anywhere else for those operators to go". The deprecated row
-        # stays until someone decides it, not until this test says {}.
+        # Owner ruling D1 (spec 8.3 option 1) retired F5: `--host generic`
+        # stays as the permanent fallback, so there is no deletion left for
+        # this `{}` to gate. The bar survives as a NO-REGRESSION GUARD: it
+        # answers "does a remaining SELECTABLE host still fall short", and
+        # today it does not.
         #
         # A later family PR that flips a row moves this pin in the same PR.
         # If it ever reads non-empty, name the host and the capability here
