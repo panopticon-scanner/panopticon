@@ -11,6 +11,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 import scripts.driver as driver
 import scripts.ledger as ledger_mod
 import scripts.orchestrate as orchestrate
@@ -1164,6 +1166,32 @@ class TestHeadlessLoop(LoopCase):
         with open(os.path.join(runner.run_dir, "dispatch-ledger.jsonl"), encoding="utf-8") as fh:
             lines = [json.loads(x) for x in fh if x.strip()]
         self.assertEqual(usage["total"], sum(sum(row["usage"].values()) for row in lines))
+
+
+class TestTheClaudeRunnerCannotBeReachedByAccident(LoopCase):
+    """#1616 item 8, fix round 1 (F1): the guard has to bite on the accident it
+    was written for, which is a `driver loop` test that forgets to patch
+    `runner_for` -- claude is the default host, so that test builds the real
+    family runner and dispatches through `iter_batch`.
+
+    `iter_batch`'s worker converts any `Exception` from `run_entry` into a
+    failed RunResult, by contract ("a runner crash is a failed entry, never a
+    crashed loop"), so a refusal raised as one is swallowed and the run still
+    reports `complete` -- the loop goes green on three launches that reached
+    the real runner. The refusal is therefore a BaseException (pytest's own
+    `Failed`), which that `except Exception` cannot hold, and it escapes
+    `orchestrate.loop` too (it catches `KeyboardInterrupt` and `Exception`).
+    """
+
+    def test_a_loop_that_forgets_to_patch_runner_for_fails_the_test(self):
+        d, floor = self._repo()
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(pytest.fail.Exception) as cm:
+                orchestrate.loop(self._args(d))
+        self.assertIn("runner_for", str(cm.exception))      # names the way out
 
 
 class TestExhaustedReviewCellsAreNamedOnComplete(LoopCase):

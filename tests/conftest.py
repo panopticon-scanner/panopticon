@@ -297,12 +297,23 @@ def _no_live_host_launches(monkeypatch):
 
 
 def _refuse_claude_run_entry(self, entry, env):
-    raise _runners_base.LaunchRefused(
+    # `pytest.fail`, not `LaunchRefused`. Fix round 1 (F1): the refusal has to
+    # survive the code it is refusing. `iter_batch`'s worker turns any
+    # `Exception` out of `run_entry` into a failed RunResult -- "a runner crash
+    # is a failed entry, never a crashed loop", which is the right production
+    # contract -- and `LaunchRefused` is a RuntimeError, so a `driver loop` test
+    # that forgot to patch `runner_for` swallowed this and still reported
+    # `complete`: three launches through the real family runner, green. pytest's
+    # `Failed` is a BaseException, which neither that `except Exception` nor
+    # `orchestrate.loop`'s own catch-all can hold, so it comes out as a test
+    # failure wherever it is reached from. The DEFAULT_RUNNER seam above keeps
+    # LaunchRefused, which several `except` clauses in the probes depend on.
+    pytest.fail(
         "the test suite must not drive scripts.runners.claude.Runner.run_entry "
         "(family guardrails section 3): patch scripts.runners.base.runner_for "
         "to return a fake runner, or mark the test `@pytest.mark.claude_runner` "
         "if it means to exercise the family's own run_entry with an injected "
-        "runner=<fake>")
+        "runner=<fake>. Entry %r" % (entry or {}).get("id"))
 
 
 @pytest.fixture(autouse=True)

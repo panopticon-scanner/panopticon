@@ -260,9 +260,13 @@ class TestAClaudeEntryIsRefusedUnlessTheTestOptsIn(unittest.TestCase):
     """
 
     def test_run_entry_raises_rather_than_returning_a_failed_result(self):
+        import pytest
         import scripts.runners.claude as claude_runner
-        import scripts.runners.base as runners_base
-        with self.assertRaises(runners_base.LaunchRefused) as cm:
+        # pytest's own `Failed`, not `LaunchRefused`: a BaseException is the
+        # only kind `iter_batch`'s `except Exception` (and `orchestrate.loop`'s)
+        # cannot turn back into the failed RunResult this fixture exists to
+        # replace. tests/test_orchestrate.py drives that path end to end.
+        with self.assertRaises(pytest.fail.Exception) as cm:
             claude_runner.Runner("claude").run_entry(
                 {"id": "review-app-SEC", "prompt": "p"}, {})
         self.assertIn("claude_runner", str(cm.exception))    # names the way out
