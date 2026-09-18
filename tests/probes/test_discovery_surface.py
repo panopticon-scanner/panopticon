@@ -10,14 +10,18 @@ Three things are under test here and they fail for different reasons:
 
 No host binary, no docker, no network: every fixture is a temp directory.
 """
+import io
 import json
 import os
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from scripts import hosts
 import scripts.probes.common as probes_common
+import scripts.probes.surface as probes_surface
 
 
 # The §3 table, as the spec writes it. Pinned VERBATIM rather than derived:
@@ -206,3 +210,244 @@ class TestTheControlsAreLive(unittest.TestCase):
                     "codex:cwd-outside-target: %s is under %s" % (cwd, root))
             finally:
                 codex_host.cleanup_command(argv)
+
+
+def _plant(root, relative, body="x"):
+    path = os.path.join(root, *relative.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(body)
+    return path
+
+
+# One OPEN and one CONTROLLED file per host with a surface, with the cell and
+# control each must be reported under. Per host rather than claude-only: the
+# probe is registry-driven, and a host whose rows were never exercised is a
+# host whose table nobody has read.
+_PLANTED = (
+    ("claude", "CLAUDE.md", "CL-1",
+     ".claude/settings.json", "claude:setting-sources-user"),
+    ("codex", ".codex/agents/theirs.toml", "CX-6",
+     ".rules", "codex:ignore-user-config-and-rules"),
+    ("kimi", "AGENTS.md", "KM-3",
+     ".kimi-code/mcp.json", "kimi:workspace-trust-gate"),
+)
+
+
+class TestTheScan(unittest.TestCase):
+    """§5: what the reviewed tree ships, and what that does to the verdict."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+
+    def test_a_clean_tree_is_unknown_and_says_how_much_it_looked_at(self):
+        # Like the shadow scan, this probe can only REFUTE: finding nothing
+        # proves no capability. The pattern COUNT is the honest part -- "we
+        # looked at n things and they were not there".
+        state, by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertEqual("target-discovery-surface", by)
+        self.assertIn("no target-authored discovery files in", detail)
+
+    def test_a_host_with_no_surface_is_a_no_op(self):
+        state, by, detail = probes_common.probe_discovery_surface("generic", self.root)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertEqual("target-discovery-surface", by)
+        self.assertIn("discovers no target-authored configuration", detail)
+
+    def test_an_unregistered_host_name_is_unknown_not_a_crash(self):
+        state, _by, detail = probes_common.probe_discovery_surface("no-such", self.root)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("no-such", detail)
+
+    def test_one_open_file_refutes_and_names_its_cell(self):
+        for host, open_file, cell, _controlled, _control in _PLANTED:
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as root:
+                _plant(root, open_file)
+                state, by, detail = probes_common.probe_discovery_surface(host, root)
+                self.assertEqual(hosts.REFUTED, state)
+                self.assertEqual("target-discovery-surface", by)
+                self.assertIn(open_file, detail)
+                self.assertIn(cell, detail)
+                self.assertIn("no launch control closes it", detail)
+
+    def test_one_controlled_file_is_disclosed_not_refuted(self):
+        for host, _open_file, _cell, controlled, control in _PLANTED:
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as root:
+                _plant(root, controlled)
+                state, _by, detail = probes_common.probe_discovery_surface(host, root)
+                self.assertEqual(hosts.UNKNOWN, state)
+                self.assertIn(controlled, detail)
+                self.assertIn("closed by %s" % control, detail)
+
+    def test_both_refuses_with_the_open_hit_first_and_the_other_disclosed(self):
+        # §5.4's order: what nothing closes is what an operator has to act on,
+        # so it leads; the closed one still appears, because "we saw it and it
+        # did not matter" is the disclosure this probe exists to make.
+        for host, open_file, cell, controlled, control in _PLANTED:
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as root:
+                _plant(root, open_file)
+                _plant(root, controlled)
+                state, _by, detail = probes_common.probe_discovery_surface(host, root)
+                self.assertEqual(hosts.REFUTED, state)
+                self.assertLess(detail.index(cell), detail.index(control))
+                self.assertIn("closed by %s" % control, detail)
+
+    def test_a_file_at_depth_is_found_by_the_head_star_star_pattern(self):
+        _plant(self.root, "packages/api/src/CLAUDE.md")
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn(os.path.join("packages", "api", "src", "CLAUDE.md"), detail)
+
+    def test_a_file_under_a_tail_star_star_pattern_is_found(self):
+        _plant(self.root, ".claude/hooks/nested/evil.sh")
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("CL-8", detail)
+
+    def test_a_single_star_segment_is_one_listdir_on_its_parent(self):
+        _plant(self.root, ".claude/skills/evil/SKILL.md")
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.UNKNOWN, state)          # CONTROLLED: CL-6/CL-7
+        self.assertIn("claude:disable-slash-commands", detail)
+
+    def test_a_hit_is_reported_once_even_when_two_patterns_match_it(self):
+        # kimi's KM-3 lists `AGENTS.md` and `**/AGENTS.md`, and on a
+        # case-insensitive filesystem `agents.md` names the same inode again.
+        # One file, one sentence: a detail that repeats itself is a detail an
+        # operator stops reading.
+        _plant(self.root, "AGENTS.md")
+        _state, _by, detail = probes_common.probe_discovery_surface("kimi", self.root)
+        self.assertEqual(1, detail.lower().count("agents.md"), detail)
+
+    def test_the_excluded_directories_are_pruned_from_the_walk(self):
+        # `.git`, `node_modules`, `.panopticon`, `.worktrees` and friends are
+        # not the target's authored surface; walking them is how a scan gets
+        # slow enough that somebody turns it off.
+        _plant(self.root, "node_modules/pkg/CLAUDE.md")
+        _plant(self.root, ".worktrees/wt/CLAUDE.md")
+        state, _by, _detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.UNKNOWN, state)
+
+    def test_an_unreadable_directory_refutes(self):
+        # Not being able to LOOK is not the same as looking and finding
+        # nothing -- the shadow scan's rule, for the same reason: UNKNOWN
+        # loses to PROVEN in resolve_state and the miss would be invisible.
+        import getpass
+        if getpass.getuser() == "root":
+            self.skipTest("running as root, os.listdir ignores permissions")
+        directory = os.path.join(self.root, ".claude", "skills")
+        os.makedirs(directory)
+        os.chmod(directory, 0o000)
+        self.addCleanup(os.chmod, directory, 0o700)
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("could not read", detail)
+
+    def test_the_depth_cap_refutes_rather_than_giving_up_quietly(self):
+        deep = self.root
+        for level in range(probes_surface.DEPTH_CAP + 2):
+            deep = os.path.join(deep, "d%d" % level)
+        os.makedirs(deep)
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("past the cap", detail)
+
+    def test_the_entry_cap_refutes_rather_than_giving_up_quietly(self):
+        for index in range(6):
+            _plant(self.root, "dir%d/file" % index)
+        with mock.patch.object(probes_surface, "ENTRY_CAP", 4):
+            state, _by, detail = probes_common.probe_discovery_surface(
+                "claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("past the cap", detail)
+
+    def test_a_planted_fifo_is_skipped_and_does_not_hang_the_scan(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("platform has no named pipes")
+        os.makedirs(os.path.join(self.root, ".claude", "agents"))
+        os.mkfifo(os.path.join(self.root, ".claude", "agents", "evil.md"))
+        box = {}
+        worker = threading.Thread(
+            target=lambda: box.update(
+                result=probes_common.probe_discovery_surface("claude", self.root)),
+            daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+        self.assertFalse(worker.is_alive(), "the probe hung on a planted FIFO")
+        self.assertEqual(hosts.UNKNOWN, box["result"][0])
+
+    def test_a_symlink_candidate_counts_and_is_never_opened(self):
+        # R3: the CLI would follow it, so it is a hit -- but a symlink to a
+        # FIFO must not block, which is what "never opened" buys.
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("platform has no named pipes")
+        os.makedirs(os.path.join(self.root, ".claude", "agents"))
+        pipe = os.path.join(self.root, "pipe")
+        os.mkfifo(pipe)
+        os.symlink(pipe, os.path.join(self.root, ".claude", "agents", "link.md"))
+        box = {}
+        worker = threading.Thread(
+            target=lambda: box.update(
+                result=probes_common.probe_discovery_surface("claude", self.root)),
+            daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+        self.assertFalse(worker.is_alive(), "the probe followed a symlinked FIFO")
+        self.assertEqual(hosts.REFUTED, box["result"][0])
+        self.assertIn("link.md", box["result"][2])
+
+    def test_the_walk_does_not_follow_directory_symlinks(self):
+        # A link back to the root is an infinite walk; `followlinks=False` is
+        # what the cap should never have to catch.
+        os.makedirs(os.path.join(self.root, "sub"))
+        os.symlink(self.root, os.path.join(self.root, "sub", "loop"))
+        state, _by, _detail = probes_common.probe_discovery_surface(
+            "claude", self.root)
+        self.assertEqual(hosts.UNKNOWN, state)
+
+    def test_a_shadow_shell_hit_is_not_double_reported(self):
+        # §5.3: `probe_shadow_shells` already refuses on these, and one file
+        # named twice in one artifact reads as two attacks. Both shapes it
+        # catches -- the prefix and the declared identity -- are excluded.
+        _plant(self.root, ".claude/agents/panopticon-scout.md")
+        _plant(self.root, ".claude/agents/innocuous.md",
+               "---\nname: panopticon-scout\ntools: Bash\n---\n")
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.REFUTED,
+                         probes_common.probe_shadow_shells("claude", self.root)[0])
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertNotIn("panopticon-scout.md", detail)
+        self.assertNotIn("innocuous.md", detail)
+
+    def test_a_target_agent_file_that_is_not_a_shadow_is_still_open(self):
+        # The exclusion is narrow on purpose: only what the shadow scan
+        # ALREADY reported. A target's own agent still gets loaded beside the
+        # reviewer, and only `--safe-mode` removes it -- which unarms the
+        # guards, so nothing closes this one.
+        _plant(self.root, ".claude/agents/theirs.md")
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("CL-5", detail)
+
+    def test_the_controlled_hits_are_disclosed_on_the_stream_once(self):
+        # §6: the same channel `kimi_toml.MCP_DISCLOSURE` uses. One line per
+        # cell, not per file: this shares the operator's stderr with the run's
+        # own progress output.
+        _plant(self.root, ".claude/settings.json")
+        _plant(self.root, ".claude/settings.local.json")
+        stream = io.StringIO()
+        probes_common.probe_discovery_surface("claude", self.root, disclose=stream)
+        lines = [line for line in stream.getvalue().splitlines() if line.strip()]
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("driver: target ships "), lines[0])
+        self.assertIn("closed by claude:setting-sources-user (CL-2/CL-4)", lines[0])
+        self.assertIn("settings.local.json", lines[0])
+
+    def test_a_clean_tree_discloses_nothing(self):
+        # A line on every run teaches its reader to skip the ones that matter.
+        stream = io.StringIO()
+        probes_common.probe_discovery_surface("claude", self.root, disclose=stream)
+        self.assertEqual("", stream.getvalue())
