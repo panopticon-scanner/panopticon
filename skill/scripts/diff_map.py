@@ -88,14 +88,22 @@ def _merge_base_cause(repo, base):
             "in CI); otherwise it is the wrong base" % base)
 
 
-def hunk_map(repo, base):
+def hunk_map(repo, base, exclude=()):
     """Changed new-side line ranges per file (merge-base vs working tree),
     including untracked non-ignored files as whole-file ranges.
 
     RAISES DiffMapError when the base cannot be resolved, when HEAD and the base
     share no common ancestor, or when the diff itself fails — none of these may
     fall through to an empty map that passes the delta gate vacuously
-    (#5.0-08, #1256)."""
+    (#5.0-08, #1256).
+
+    `exclude`: repo-root-relative paths (exact match, no directory component)
+    dropped from the map before it is returned. Only the `--pr` worktree
+    caller passes anything here -- `_sync_config` overwrites the worktree's
+    root config with the OPERATOR's own file after the worktree is built, so
+    without this the on-diff gate would attribute that overwrite to the PR
+    (#1681). A plain non-PR delta review passes none, so a real change to
+    the root config there is classified exactly like any other file."""
     try:
         mb = _run_git(repo, ["merge-base", "HEAD", base])
     except Exception as e:
@@ -179,6 +187,8 @@ def hunk_map(repo, base):
             except OSError:
                 continue
             result[rel] = [(1, max(n, 1))]
+    for name in exclude:
+        result.pop(name, None)
     return result
 
 
@@ -307,31 +317,65 @@ def _sync_config(repo, wt_path):
     -- never opened, never followed (CWE-59) -- before the operator's file is
     copied in under the operator's own name. Overwriting is the point (the
     old copy-if-absent let the PR's file govern its own review); every
-    removal and overwrite is returned as a disclosure line for the caller to
-    print. Returns [] when the operator has no config.
+    removal, refresh, and overwrite is returned as a disclosure line for the
+    caller to print. Returns [] when the operator has no config -- except an
+    operator-side symlink at either name, which `repo_config.resolve` already
+    refuses and discloses; those disclosures are returned as-is (fix round 1
+    item 2) rather than swallowed, since the caller prints exactly this list
+    and would otherwise say nothing about a refusal that leaves the PR's own
+    file governing its own review.
+
+    An existing regular file at the destination whose bytes already match the
+    operator's copy (the reuse/resume call site: a PREVIOUS `_sync_config`
+    already wrote it) is left alone and disclosed as "refreshed", never
+    "removed" -- reading it uses O_NOFOLLOW so the compare itself can never be
+    tricked into opening through a same-named symlink an attacker raced in
+    after the lstat (fix round 1 item 1).
     """
     res = repo_config.resolve(repo)
     if res.path is None:
-        return []
-    if os.path.islink(wt_path) or not os.path.isdir(wt_path):
+        return list(res.disclosures)
+    if os.path.islink(wt_path):
         raise RuntimeError(
             "panopticon --pr: refusing to sync into a symlinked worktree (%s)" % wt_path)
+    if not os.path.isdir(wt_path):
+        raise RuntimeError(
+            "panopticon --pr: refusing to sync into a missing worktree (%s)" % wt_path)
+    with open(res.path, "rb") as fh:
+        operator_bytes = fh.read()
     notes = []
+    removed = set()
     for name in repo_config.CONFIG_NAMES:
         dst = os.path.join(wt_path, name)
         try:
             st = os.lstat(dst)
         except FileNotFoundError:
             continue
+        existing = None
+        if stat.S_ISREG(st.st_mode):
+            try:
+                fd = os.open(dst, os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError:
+                fd = None
+            if fd is not None:
+                try:
+                    with os.fdopen(fd, "rb") as fh:
+                        existing = fh.read()
+                except OSError:
+                    existing = None
+        if existing is not None and existing == operator_bytes:
+            notes.append("refreshed the operator's %s in the worktree (unchanged)" % name)
+            continue
         if stat.S_ISDIR(st.st_mode):
             shutil.rmtree(dst)
         else:
             os.unlink(dst)
+        removed.add(name)
         notes.append("removed the PR's %s from the worktree "
                      "(target content must not govern its own review)" % name)
     dst = os.path.join(wt_path, os.path.basename(res.path))
     shutil.copy2(res.path, dst)
-    if any("removed the PR's %s" % os.path.basename(res.path) in n for n in notes):
+    if os.path.basename(res.path) in removed:
         notes.append("overwrote %s in the worktree with the operator's copy"
                      % os.path.basename(res.path))
     return notes

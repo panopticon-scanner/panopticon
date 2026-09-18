@@ -114,6 +114,14 @@ def discovery_execute(review_root, manifest):
         cmd += ["--base", manifest["base"]]
     if manifest.get("pr_base"):
         cmd += ["--pr-base", manifest["pr_base"]]
+    if manifest.get("pr") is not None:
+        # #1681: review_root IS the --pr worktree here, and driver.run already
+        # overwrote its root config with the operator's copy (diff_map._sync_config)
+        # before this phase ever runs -- tell discovery.py's delta computation
+        # to exclude that sync from diff-hunks.json rather than attribute it to
+        # the PR. A plain -c/--base run in the primary checkout never sets
+        # manifest["pr"], so this never touches a real reviewable change there.
+        cmd += ["--pr-worktree"]
     _dc = (manifest.get("flags") or {}).get("diff_context")
     if _dc is not None:
         cmd += ["--diff-context", str(_dc)]

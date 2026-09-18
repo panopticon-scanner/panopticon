@@ -1,5 +1,5 @@
 # tests/test_diff_map.py
-import os, unittest, subprocess, tempfile, shutil
+import contextlib, io, os, unittest, subprocess, tempfile, shutil
 from unittest import mock
 
 import scripts.diff_map as diff_map
@@ -134,6 +134,27 @@ class TestHunkMap(unittest.TestCase):
         with mock.patch.object(diff_map, "_run_git", side_effect=raising):
             with self.assertRaises(diff_map.DiffMapError):
                 diff_map.hunk_map(".", "main")
+
+    def test_exclude_drops_named_paths_from_the_map(self):
+        # #1681 fix round 1 item 3: the --pr worktree caller (write_diff_hunks)
+        # excludes the root config names so the operator's post-acquire
+        # overwrite is never attributed to the PR in diff-hunks.json. A plain
+        # (non-PR) caller passes none and sees a real change normally.
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\ngroups: {}\n")
+        _git(d, "add", "panopticon.yml")
+        _git(d, "commit", "-qm", "add root config")
+        m = diff_map.hunk_map(d, "main")
+        self.assertIn("panopticon.yml", m)
+        m2 = diff_map.hunk_map(d, "main", exclude=("panopticon.yml", ".panopticon.yml"))
+        self.assertNotIn("panopticon.yml", m2)
+        # untracked-others path: same exclusion applies to an uncommitted file
+        with open(os.path.join(d, ".panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\ngroups: {}\n")
+        m3 = diff_map.hunk_map(d, "main", exclude=("panopticon.yml", ".panopticon.yml"))
+        self.assertNotIn(".panopticon.yml", m3)
 
     def test_diff_flags_are_pinned(self):
         # #5.0-08: pin mnemonicPrefix/quotepath/prefixes so a user's gitconfig
@@ -414,6 +435,33 @@ class TestPrWorktree(unittest.TestCase):
         diff_map.release_worktree("/tmp/x", runner=runner)   # must not raise
         self.assertEqual(seen, [diff_map._PR_TIMEOUT])
 
+    def test_acquire_pr_prints_sync_notes_with_the_pr_prefix(self):
+        # minor 7: acquire_pr's own print (not _sync_config's return value) must
+        # carry the "panopticon --pr: " prefix for whatever _sync_config reports.
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo"); os.makedirs(repo)
+            with open(os.path.join(repo, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\n")
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            with open(os.path.join(wt, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+
+            def runner(argv, **kw):
+                out = ""
+                if argv[:3] == ["gh", "pr", "view"]:
+                    out = '{"baseRefName": "main"}'
+                elif "rev-parse" in argv:
+                    out = "deadbeef\n"
+                class R: returncode = 0; stdout = out; stderr = ""
+                return R()
+
+            buf = io.StringIO()
+            with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+                with contextlib.redirect_stderr(buf):
+                    diff_map.acquire_pr(7, repo=repo, runner=runner)
+            self.assertIn("panopticon --pr: ", buf.getvalue())
+            self.assertIn("overwrote", buf.getvalue())
+
 
 class TestDiffMapFailures(unittest.TestCase):
     def test_hunk_map_fallback_parser_and_failures(self):
@@ -511,17 +559,20 @@ class TestSyncConfig(unittest.TestCase):
             with open(os.path.join(wt, "panopticon.yml"), "w") as fh:
                 fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
             notes = diff_map._sync_config(repo, wt)
-            self.assertEqual(open(os.path.join(wt, "panopticon.yml")).read(), "version: 1\ngroups: {}\n")
+            with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
             self.assertTrue(any("overwrote" in n and "panopticon.yml" in n for n in notes))
 
     def test_both_names_in_the_worktree_are_removed_before_the_copy(self):
         with tempfile.TemporaryDirectory() as d:
             repo = self._repo_with_config(d, name=".panopticon.yml")
             wt = os.path.join(d, "wt"); os.makedirs(wt)
-            open(os.path.join(wt, "panopticon.yml"), "w").write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+            with open(os.path.join(wt, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
             notes = diff_map._sync_config(repo, wt)
             self.assertFalse(os.path.exists(os.path.join(wt, "panopticon.yml")))
-            self.assertEqual(open(os.path.join(wt, ".panopticon.yml")).read(), "version: 1\ngroups: {}\n")
+            with open(os.path.join(wt, ".panopticon.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
             self.assertTrue(any("removed" in n for n in notes))
 
     def test_a_symlink_at_either_name_in_the_worktree_is_unlinked_not_followed(self):
@@ -535,7 +586,11 @@ class TestSyncConfig(unittest.TestCase):
             os.symlink(outside, os.path.join(wt, ".panopticon.yml"))
             diff_map._sync_config(repo, wt)
             self.assertFalse(os.path.islink(os.path.join(wt, "panopticon.yml")))
-            self.assertEqual(open(os.path.join(wt, "panopticon.yml")).read(), "version: 1\ngroups: {}\n")
+            with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
+            # minor 6: the OTHER name's symlink was unlinked too, not just the
+            # one that got recreated -- it must not still be lying around.
+            self.assertFalse(os.path.lexists(os.path.join(wt, ".panopticon.yml")))
             # the link was unlinked, never followed: the file it pointed at is untouched
             with open(outside, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "i must not be read or written through the link\n")
@@ -548,4 +603,50 @@ class TestSyncConfig(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "symlinked worktree"):
                 diff_map._sync_config(repo, wt)
             self.assertFalse(os.path.exists(os.path.join(escape, "panopticon.yml")))
+
+    def test_rejects_a_missing_worktree_with_its_own_message(self):
+        # minor 5: a MISSING worktree is not a SYMLINKED one -- the two used to
+        # share one message, which would call a plain typo'd/never-created
+        # path "symlinked".
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_config(d)
+            wt = os.path.join(d, "does-not-exist")
+            with self.assertRaisesRegex(RuntimeError, "missing worktree"):
+                diff_map._sync_config(repo, wt)
+
+    def test_resuming_a_previous_sync_refreshes_rather_than_removes(self):
+        # #1681 fix round 1 item 1: the reuse/resume acquire_pr call site finds
+        # the operator's file ALREADY in the worktree from a prior sync in the
+        # same run. Re-syncing must not claim it "removed the PR's" file --
+        # the PR never shipped it; a previous _sync_config call wrote it.
+        with tempfile.TemporaryDirectory() as d:
+            repo = self._repo_with_config(d)
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            first = diff_map._sync_config(repo, wt)
+            self.assertEqual(first, [])   # empty worktree: plain copy, nothing to report
+            second = diff_map._sync_config(repo, wt)
+            self.assertTrue(any("refreshed" in n for n in second), second)
+            self.assertFalse(any("removed the PR's" in n for n in second), second)
+            with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
+
+    def test_operator_side_symlinked_config_no_ops_and_says_why(self):
+        # #1681 fix round 1 item 2: repo_config.resolve refuses an OPERATOR-side
+        # symlinked config and discloses why. That disclosure must reach the
+        # caller (who prints it) rather than being swallowed as an empty []
+        # that leaves the PR's own file governing its own review.
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo"); os.makedirs(repo)
+            elsewhere = os.path.join(d, "elsewhere.yml")
+            with open(elsewhere, "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\n")
+            os.symlink(elsewhere, os.path.join(repo, "panopticon.yml"))
+            wt = os.path.join(d, "wt"); os.makedirs(wt)
+            with open(os.path.join(wt, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+            notes = diff_map._sync_config(repo, wt)
+            self.assertTrue(any("symlink" in n for n in notes), notes)
+            # the PR's own file is untouched -- no sync happened
+            with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
 

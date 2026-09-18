@@ -297,3 +297,39 @@ def test_repo_scan_scope_changed_explicit_base_ignores_pr_base(tmp_path):
                             str(repo), "--out", str(out)])
     assert rc == 2
     assert not (repo/".panopticon"/"diff-hunks.json").exists()
+
+
+def test_repo_scan_pr_worktree_excludes_root_config_from_diff_hunks(tmp_path):
+    # #1681 fix round 1 item 3: a --pr worktree's root config was just
+    # overwritten with the OPERATOR's copy (diff_map._sync_config), so a
+    # changed root config there must not be attributed to the PR in
+    # diff-hunks.json. --pr-worktree (only ever passed by the driver's --pr
+    # path, phases/discovery.py) tells write_diff_hunks to exclude it.
+    repo = repo_with_matrix(tmp_path)
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "pr ships its own config")
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            "--pr-worktree", str(repo), "--out", str(out)])
+    assert rc == 0
+    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
+    assert "panopticon.yml" not in hunks["hunks"]
+
+
+def test_repo_scan_plain_delta_still_lists_a_changed_root_config(tmp_path):
+    # The exclusion is --pr-worktree-only: a real change to the root config in
+    # a plain (non-PR) -c/--base delta review is legitimately reviewable and
+    # must still appear in the delta map.
+    repo = repo_with_matrix(tmp_path)
+    (repo / "panopticon.yml").write_text(
+        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-aqm", "a real config change")
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
+                            str(repo), "--out", str(out)])
+    assert rc == 0
+    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
+    assert "panopticon.yml" in hunks["hunks"]

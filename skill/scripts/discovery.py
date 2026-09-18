@@ -742,14 +742,25 @@ def prune_fixture_files(paths, include_fixtures):
         return list(paths)
     return [p for p in paths if not any(_is_fixture_dir(d) for d in _ancestor_dirs(p))]
 
-def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitted):
+def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitted,
+                     exclude=()):
     """Write .panopticon/diff-hunks.json (#449) for the delta-review synth step.
 
     ``base_commit``/``delta_start``/``delta_end`` anchor the artifact to real
     commits (``diff_map.diff_anchors``) so a later reviewer can reconstruct the
     exact delta even if branch tips move.
+
+    ``exclude`` is passed straight to ``diff_map.hunk_map``: non-empty only
+    for a ``--pr`` worktree, where it names the root config filenames the
+    operator's sync just overwrote there (#1681) -- without it, that overwrite
+    would be attributed to the PR in this very artifact. One disclosure line
+    documents the exclusion so it is never a silent gap.
     """
-    hmap = diff_map.hunk_map(repo, base) if base else {}
+    if exclude:
+        print("panopticon --pr: excluding %s from the delta map (this "
+              "worktree's root config is the operator's, never the PR's)"
+              % ", ".join(sorted(exclude)), file=sys.stderr)
+    hmap = diff_map.hunk_map(repo, base, exclude=exclude) if base else {}
     anchors = diff_map.diff_anchors(repo, base) if base else {
         "base_commit": None, "delta_start": None, "delta_end": None}
     artifact = {"schema_version": 1,
@@ -1428,6 +1439,11 @@ def main(argv=None):
                          "preference (#947).")
     ap.add_argument("--diff-context", type=int, default=5,
                     help="Lines of tolerance for on-diff classification (default 5)")
+    ap.add_argument("--pr-worktree", action="store_true",
+                    help="`target`/`--repo` is a --pr worktree the driver just "
+                         "synced with the operator's root config (#1681): "
+                         "exclude that sync from the delta map instead of "
+                         "attributing it to the PR.")
     ap.add_argument("--repo-scan", action="store_true")
     # Scope filters (P6.2): narrow the discovered file universe to a target
     # BEFORE the same matrix assignment runs, rather than switching modes.
@@ -1589,7 +1605,8 @@ def main(argv=None):
         includes_uncommitted = _worktree_dirty(repo)   # True for -c live tree; False for a clean --pr worktree
         write_diff_hunks(repo, base, source,
                          _hunks_path_for(args.out), args.diff_context,
-                         includes_uncommitted)
+                         includes_uncommitted,
+                         exclude=repo_config.CONFIG_NAMES if args.pr_worktree else ())
     else:
         # #5.0-07: a NON-delta (whole-repo) scan must be authoritative and drop
         # any stale diff-hunks.json left by a prior -c/--pr run — otherwise the
