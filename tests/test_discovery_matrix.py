@@ -175,12 +175,13 @@ def test_repo_scan_bare_scalar_match_group_does_not_swallow_whole_repo(tmp_path)
     by_name = {g["name"]: g["files"] for g in data["groups"]}
     assert by_name.get("Auth") == ["src/auth/login.py"]
     assert "Bad" not in by_name                     # never grouped -- match=[]
-    # #1681: the committed root config is an ordinary repo file that matches no
-    # group, so it falls to the residual sink alongside the unclaimed source.
-    assert data["ungrouped_files"] == ["panopticon.yml", "src/bad/thing.py"]
+    # #1681 Task 7: the committed root config is an ordinary repo file, but the
+    # Commons vocabulary claims it under `Config` -- it is not a genuine
+    # leftover, only the unclaimed source file is.
+    assert by_name.get("Config") == ["panopticon.yml"]
+    assert data["ungrouped_files"] == ["src/bad/thing.py"]
     leftover = [g for g in data["groups"] if g["name"].startswith("Ungrouped_")]
-    assert [f for g in leftover for f in g["files"]] == ["panopticon.yml",
-                                                         "src/bad/thing.py"]
+    assert [f for g in leftover for f in g["files"]] == ["src/bad/thing.py"]
 
 
 def test_repo_scan_scope_group_scalar_match_does_not_claim_whole_repo(tmp_path, capsys):
@@ -214,11 +215,12 @@ def test_repo_scan_bare_well_formed_matrix_groups_unchanged(tmp_path):
     by_name = {g["name"]: sorted(g["files"]) for g in data["groups"]}
     assert by_name["Auth"] == ["src/auth/login.py"]
     assert by_name["Checkout"] == ["src/checkout/cart.py", "src/checkout/pay.py"]
+    # #1681 Task 7: the committed root config is claimed by the Commons
+    # `Config` category, not left as a genuine leftover.
+    assert by_name.get("Config") == ["panopticon.yml"]
     leftover = [g for g in data["groups"] if g["name"].startswith("Ungrouped_")]
-    # #1681: the committed root config is itself an unclaimed repo file.
-    assert [f for g in leftover for f in g["files"]] == ["panopticon.yml",
-                                                         "src/misc/other.py"]
-    assert data["ungrouped_files"] == ["panopticon.yml", "src/misc/other.py"]
+    assert [f for g in leftover for f in g["files"]] == ["src/misc/other.py"]
+    assert data["ungrouped_files"] == ["src/misc/other.py"]
 
 
 def test_repo_scan_fails_loud_when_all_declared_groups_malformed(tmp_path, capsys):

@@ -13,7 +13,6 @@ SCRIPTS = os.path.join(REPO_ROOT, "skill", "scripts")
 OWNER = os.path.join(SCRIPTS, "repo_config.py")
 LITERALS = re.compile(r"""(?<![\w-])(\.?panopticon\.yml(\.draft)?|groups\.yml(\.draft)?|config\.json)(?![\w-])""")
 PENDING = frozenset({
-    "phases/readiness.py",
     "coverage_model.py", "grouping_engine.py", "groups_schema.py",
     "ingest_tools.py", "phases/coverage.py", "phases/discovery.py",
     "phases/inventory.py", "phases/review.py", "phases/verify_tools.py",

@@ -121,9 +121,11 @@ class TestCatalogMatchGroups(unittest.TestCase):
             self.assertIn("orphan/loner.py",
                           [f for n, fs in by_name.items() if n.startswith("Ungrouped_")
                            for f in fs])
-            self.assertEqual(out["ungrouped_files"],
-                             ["orphan/loner.py", "panopticon.yml"])
-            self.assertEqual(out["counts"]["ungrouped"], 2)
+            # #1681 Task 7: the Commons vocabulary claims the root config under
+            # `Config` -- it is not a genuine leftover.
+            self.assertEqual(by_name.get("Config"), ["panopticon.yml"])
+            self.assertEqual(out["ungrouped_files"], ["orphan/loner.py"])
+            self.assertEqual(out["counts"]["ungrouped"], 1)
             self.assertIn("ungrouped", err)  # loud, not silent
 
     def test_first_matching_group_wins(self):
@@ -151,11 +153,12 @@ class TestCatalogMatchGroups(unittest.TestCase):
             names = [g["name"] for g in out["groups"]]
             # The WHOLE list, so a spurious extra group fails here: the pkg
             # split is what this pins, and `panopticon.yml` (the committed
-            # root config, #1681) matches no group and takes the sink.
-            self.assertEqual(names, ["pkg_1", "pkg_2", "Ungrouped_1"])
+            # root config, #1681) is claimed by the Commons `Config`
+            # category (Task 7 R12) rather than the true-leftover sink.
+            self.assertEqual(names, ["pkg_1", "pkg_2", "Config"])
             self.assertEqual({g["name"]: len(g["files"]) for g in out["groups"]},
-                             {"pkg_1": 10, "pkg_2": 10, "Ungrouped_1": 1})
-            self.assertEqual(out["ungrouped_files"], ["panopticon.yml"])
+                             {"pkg_1": 10, "pkg_2": 10, "Config": 1})
+            self.assertEqual(out["ungrouped_files"], [])
 
     def test_catalog_without_match_keys_fails_loud(self):
         # #run8 COD-B1A (owner decision 2026-08-26): a committed root config that
@@ -224,8 +227,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
             out, _err = run_scan_with_err(d)
             self.assertNotIn("exclude_paths", out)
             self.assertNotIn("excluded_count", out)
-            self.assertEqual(out["ungrouped_files"],
-                             ["orphan/loner.py", "panopticon.yml"])
+            self.assertEqual(out["ungrouped_files"], ["orphan/loner.py"])
 
 
 class TestGroupObjParent(unittest.TestCase):
@@ -930,6 +932,33 @@ class TestGitignoreDivergences(unittest.TestCase):
                 for glob in body.get("match") or []:
                     with self.subTest(group=name, glob=glob):
                         self.assertIsNone(groups_schema.glob_defect(glob))
+
+
+class TestRootConfigJoinsTheCommonsVocabulary(unittest.TestCase):
+    """Controller ruling R12 (#1681 Task 7): since the config moved to a
+    committed root file, `panopticon.yml` is an ordinary repo file discovery
+    walks -- and before this the Config category did not claim it, so every
+    repo picked up a stray `Ungrouped` file for its own linter config. The
+    Commons vocabulary now claims both spellings the way it claims every other
+    linter config (`.eslintrc`, `.flake8`, ...)."""
+
+    def test_root_config_lands_in_commons_config_not_ungrouped(self):
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "src/app.py")
+            # six OTHER Config-category files, so the category clears the
+            # tiny-universal-group fold (COMMONS_MIN_FILES=6) and reports
+            # under its own name rather than merging into `Commons`.
+            for rel in (".gitignore", ".editorconfig", ".flake8", ".npmrc",
+                       ".prettierrc", ".yarnrc"):
+                touch(d, rel)
+            touch(d, "orphan/loner.py")
+            _write_config(d, "groups:\n  src:\n    match: ['src/**']\n")
+            out, _err = run_scan_with_err(d)
+            by_name = {g["name"]: g["files"] for g in out["groups"]}
+            self.assertIn("panopticon.yml", by_name.get("Config", []))
+            self.assertNotIn("panopticon.yml", out["ungrouped_files"])
+            self.assertEqual(by_name["src"], ["src/app.py"])
+            self.assertIn("orphan/loner.py", out["ungrouped_files"])
 
 
 class TestGithubTopLevelFilesAreClaimed(unittest.TestCase):

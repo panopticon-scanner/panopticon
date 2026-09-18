@@ -31,6 +31,7 @@ import scripts.host_disclosure as host_disclosure  # noqa: E402
 import scripts.host_probes as host_probes  # noqa: E402
 import scripts.money as money  # noqa: E402
 import scripts.probes.common as probes_common  # noqa: E402
+import scripts.setup_flow as setup_flow  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
@@ -320,6 +321,10 @@ def build_parser():
     # resolve_review_root.
     pp.add_argument("--base", default=None)
     pp.add_argument("--pr", type=int, default=None)
+    # #1681 Task 7: the one-shot legacy-tree migrator. No `--host`/scope flags
+    # -- it writes one file and says what it wrote, it is not a review.
+    mp = sub.add_parser("migrate-config")
+    mp.add_argument("target", nargs="?", default=".")
     return parser
 
 
@@ -949,6 +954,16 @@ def main(argv=None):
                                         as_json=args.json)
     if args.verb == "setup":
         return engine.emit_status(setup.run_setup_flow(args))
+    if args.verb == "migrate-config":
+        # Its own exit code, like `readiness`: this verb writes one file and
+        # says what it wrote, it is not a review and speaks no status protocol.
+        try:
+            _path, message = setup_flow.migrate_config(os.path.abspath(args.target))
+        except ValueError as exc:
+            print("driver migrate-config: %s" % exc, file=sys.stderr)
+            return 1
+        print(message)
+        return 0
     if args.verb in ("loop", "persist"):
         import scripts.orchestrate as orchestrate   # R-P6-2: lazy, no cycle
         return orchestrate.main_verb(args)

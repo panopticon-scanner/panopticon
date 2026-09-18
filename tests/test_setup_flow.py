@@ -608,11 +608,11 @@ class TestSetupFlow(unittest.TestCase):
         spine = setup_flow.build_spine(d)
         self.assertEqual(spine["schema_version"], 1)
         # code = total - commons - test tree, over the shipped classifiers.
-        # 13/6, not 12/5: #1681 made the config a committed ROOT
-        # `panopticon.yml`, which is an ordinary repo file no Commons category
-        # claims, so it counts in `total` and falls through to `code`.
+        # #1681 Task 7 (R12): the committed root `panopticon.yml` is an
+        # ordinary repo file (it counts in `total`), and the Commons vocabulary
+        # claims it under `Config`, so it falls through to `commons`, not `code`.
         self.assertEqual(spine["files"],
-                         {"total": 13, "code": 6, "commons": 5, "test_tree": 2})
+                         {"total": 13, "code": 5, "commons": 6, "test_tree": 2})
         self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
                          (48, 4, "formula"))
         # depth-2 rows, most files first, ties by path; deeper files roll up
@@ -628,7 +628,8 @@ class TestSetupFlow(unittest.TestCase):
         self.assertEqual(spine["frameworks"], ["Django", "React"])
         # committed groups claim first; Commons is counted on the leftovers
         self.assertEqual(spine["claimed"]["committed"], {"Checkout": 2})
-        self.assertEqual(spine["claimed"]["commons"], {"Build": 2, "CI": 1, "Docs": 2})
+        self.assertEqual(spine["claimed"]["commons"],
+                         {"Build": 2, "CI": 1, "Config": 1, "Docs": 2})
         self.assertEqual(spine["test_trees"], [{"path": "tests/checkout", "files": 1},
                                                {"path": "tests/search", "files": 1}])
         json.dumps(spine)                                  # serializable
@@ -713,7 +714,7 @@ class TestSetupFlow(unittest.TestCase):
         self.assertIn("the Tests sweep will catch these", text)
         self.assertIn("    tests/search                                 1", text)
         budget = setup_flow.format_budget(spine)
-        self.assertIn("- files: 13 total = 6 code + 5 commons + 2 test tree", budget)
+        self.assertIn("- files: 13 total = 5 code + 6 commons + 2 test tree", budget)
         self.assertIn("--max-per-group): 48", budget)
         self.assertIn("ceiling (CODE review groups this repo affords): 5 from --max-groups", budget)
         self.assertIn("propose `layers` ONLY for a vertical you estimate OVER the cap (48 files)",

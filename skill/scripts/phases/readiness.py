@@ -48,6 +48,7 @@ import scripts.discovery as discovery
 import scripts.grouping_engine as grouping_engine
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
+import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
 from . import engine
@@ -233,9 +234,9 @@ NOT_MEASURED = "not measured — first `driver run` probes"
 # fallback); only the whole-repo scope degrades to `._N` chunking. The verb
 # shares no scope flag -- deliberately -- so it reports the whole-repo answer
 # and says which scopes that answer does not apply to.
-NO_GROUPS = ("no groups.yml — run `driver setup`; a whole-repo review needs it, "
+NO_GROUPS = ("no %s -- run `driver setup`; a whole-repo review needs it, "
              "the -f / -d / -g / --pr scopes do not (this verb takes no scope "
-             "flag, so it reports the whole-repo answer)")
+             "flag, so it reports the whole-repo answer)" % repo_config.CONFIG_NAMES[0])
 
 # Fix round 1, F2. `--host H` is a statement about how the run will be DRIVEN,
 # and `orchestrate._resolve_mode` resolves it to headless whenever
@@ -296,11 +297,31 @@ def _guide_row():
 
 def _matrix_row(review_root):
     """The committed matrix and what it has to review. Gating: without a
-    committed `groups.yml` every file falls back to `._N` chunks, which is a
-    different review from the one the operator thinks they asked for."""
-    counts = {"groups": 0, "code_files": 0, "tests_files": 0}
-    if not os.path.isfile(os.path.join(review_root, ".panopticon", "groups.yml")):
+    committed root config every file falls back to `._N` chunks, which is a
+    different review from the one the operator thinks they asked for. Names
+    the resolved config path (or "none") so the operator sees WHICH of
+    `repo_config.CONFIG_NAMES` -- the primary name or its dot-prefixed
+    alias -- the run will read.
+
+    NEVER raises: `repo_config.resolve`/`read_document` hand back refusals
+    (invalid document, legacy-only tree, a symlinked config name) as data, and
+    this reports every one of them as a failed row rather than a traceback out
+    of a preflight."""
+    counts = {"groups": 0, "code_files": 0, "tests_files": 0, "config": "none"}
+    doc = repo_config.read_document(review_root)
+    if doc.errors:
+        return dict(counts, ok=False, detail="%s -- fix it or re-run `driver setup`"
+                    % "; ".join(doc.errors))
+    if doc.path is None:
+        # A REFUSAL resolves to no document and no error -- a symlink at
+        # either config name is the case that matters (`repo_config.resolve`
+        # declines to follow it). Falling through to NO_GROUPS would report
+        # that planted link as "nothing configured yet".
+        refusals = repo_config.resolve(review_root).disclosures
+        if refusals:
+            return dict(counts, ok=False, detail="; ".join(refusals))
         return dict(counts, ok=False, detail=NO_GROUPS)
+    counts["config"] = doc.path
     try:
         catalog = discovery._matrix_catalog(review_root) or {}
     except ValueError as exc:
@@ -308,11 +329,12 @@ def _matrix_row(review_root):
                     detail="%s -- fix it or re-run `driver setup`" % exc)
     code_files, _commons, tests_files = grouping_engine.count_code_files(
         discovery.discover_repo_files(review_root))
-    counts = {"groups": len(catalog), "code_files": code_files,
-              "tests_files": tests_files}
+    counts = dict(counts, groups=len(catalog), code_files=code_files,
+                  tests_files=tests_files)
     if not catalog:
         return dict(counts, ok=False,
-                    detail="groups.yml declares no groups — run `driver setup`")
+                    detail="%s declares no groups — run `driver setup`"
+                           % repo_config.CONFIG_NAMES[0])
     unmatched = sorted(name for name, group in catalog.items()
                        if not (group or {}).get("match"))
     if unmatched:
@@ -466,7 +488,8 @@ def _row_lines(document):
             ("dependencies", document["dependencies"]["ok"],
              document["dependencies"]["detail"]),
             ("sub-skills", None, sub_skills),
-            ("matrix", document["matrix"]["ok"], document["matrix"]["detail"]),
+            ("matrix", document["matrix"]["ok"],
+             "%s · %s" % (document["matrix"]["detail"], document["matrix"]["config"])),
             ("existing-run", None, document["existing_run"]["detail"]),
             ("cli", readiness_checks._cli_gate(document["cli"]),
              _cli_cell(document["cli"])),

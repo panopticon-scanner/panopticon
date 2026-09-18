@@ -1190,6 +1190,26 @@ class TestDriverEntrypoint(unittest.TestCase):
                          "`driver.py run --help` exited %d:\n%s"
                          % (r.returncode, r.stderr))
 
+    def test_migrate_config_verb_writes_the_root_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            open(os.path.join(d, ".panopticon", "groups.yml"), "w").write(
+                "groups:\n  A:\n    match: ['a/**']\n")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = driver.main(["migrate-config", d])
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.isfile(os.path.join(d, "panopticon.yml")))
+            self.assertIn("delete", out.getvalue())
+
+    def test_migrate_config_verb_refuses_loud(self):
+        with tempfile.TemporaryDirectory() as d:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = driver.main(["migrate-config", d])
+            self.assertEqual(rc, 1)
+            self.assertIn("no `.panopticon/groups.yml`", err.getvalue())
+
 class TestResetGlobs(unittest.TestCase):
     def test_reset_clears_stale_delta_artifacts(self):
         # #5.0-07: --reset must clear stale delta artifacts so they can't
