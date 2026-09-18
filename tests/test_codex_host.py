@@ -560,3 +560,27 @@ def test_an_output_schema_outside_the_published_reference_dir_is_refused(tmp_pat
             codex_host.validate_command(forged, env, root)
     with pytest.raises(ValueError, match="output schema"):
         codex_host.validate_command([*argv[:-3], "--output-schema"], env, root)
+
+
+def test_launch_cwd_is_the_registered_scratch_this_module_allocated(tmp_path):
+    # #1657 step 2 / CX-9: the child PROCESS must run in the same directory
+    # `--cd` names, so "which root drives discovery" stops being a question.
+    # The value is taken off argv only to LOOK IT UP, exactly as
+    # cleanup_command does -- an argv naming a directory this process never
+    # allocated is refused rather than launched in.
+    root, entry, env = _case(tmp_path)
+    argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog)
+    assert codex_host.launch_cwd(argv) == argv[argv.index("--cd") + 1]
+    codex_host.cleanup_command(argv)
+    with pytest.raises(ValueError, match="not allocated"):
+        codex_host.launch_cwd(argv)
+
+
+def test_launch_cwd_refuses_an_unregistered_or_absent_scratch(tmp_path):
+    foreign = tmp_path / "not-ours"
+    foreign.mkdir()
+    with pytest.raises(ValueError, match="not allocated"):
+        codex_host.launch_cwd(["codex", "exec", "--cd", str(foreign), "-"])
+    for argv in ([], ["codex", "exec", "-"], ["codex", "exec", "--cd"]):
+        with pytest.raises(ValueError, match="--cd"):
+            codex_host.launch_cwd(argv)

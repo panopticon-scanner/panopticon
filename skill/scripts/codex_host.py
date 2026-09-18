@@ -79,6 +79,13 @@ def safety_config():
         "check_for_update_on_startup": False, "history": {"persistence": "none"},
         "project_doc_max_bytes": 0, "suppress_unstable_features_warning": True,
         "otel": {"exporter": "none", "metrics_exporter": "none"},
+        # `skip_host_skill_discovery` is kept, but it is NOT what closes a
+        # target's project skills: the #1657 spike MEASURED a planted
+        # `.codex/skills/<x>/SKILL.md` and `.agents/skills/<x>/SKILL.md`
+        # reaching the developer-role message with this flag set (CX-2/CX-3),
+        # and `codex features list` calls it "under development". What keeps
+        # the target's files out of reach is the launch running in an empty
+        # run-owned directory -- `--cd` AND the process cwd, see `launch_cwd`.
         "features": {**dict.fromkeys(_POLICY_FEATURES, False),
                      "skip_host_skill_discovery": True, "code_mode_host": True},
         "mcp_servers": {"panopticon_scope": {
@@ -286,6 +293,35 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
             "--strict-config", "--sandbox", "read-only", "--skip-git-repo-check",
             "--cd", cwd, *(["--model", model] if model else []), "--json", *overrides,
             *schema_argv, "-"]
+
+
+def launch_cwd(argv):
+    """The directory the child PROCESS must run in: the `--cd` scratch this
+    module allocated for that same launch.
+
+    CX-9 (the #1657 spike): `codex debug prompt-input` takes no `--cd`, so
+    "which root drives discovery -- `--cd` or the process cwd" could not be
+    settled read-only. Making the two the SAME directory removes the question:
+    whichever root the CLI keys off, it is this empty, run-owned scratch and
+    not the reviewed tree. `_dump_catalog` already launches that way, and says
+    why; this is the same rule for the entry launch.
+
+    Lookup discipline is `cleanup_command`'s: the value is read off argv ONLY
+    to look up what this process recorded in `_COMMAND_DIRS`. An argv naming a
+    directory nothing here allocated is refused -- a launch is not the place to
+    trust a path someone else chose.
+    """
+    if not argv or "--cd" not in argv:
+        raise ValueError("Codex argv carries no --cd scratch directory to launch in")
+    index = argv.index("--cd") + 1
+    if index >= len(argv):
+        raise ValueError("Codex argv ends at --cd with no scratch directory after it")
+    cwd = argv[index]
+    with _COMMAND_LOCK:
+        known = cwd in _COMMAND_DIRS
+    if not known:
+        raise ValueError("Codex --cd directory was not allocated by this process: %s" % cwd)
+    return cwd
 
 
 def cleanup_command(argv):
