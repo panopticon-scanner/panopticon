@@ -432,15 +432,20 @@ def _stops_the_job(stmts, index):
 
 
 def _swallowed(stmts, index, statement, stage):
-    """Why this check's failure would go nowhere, or None."""
+    """Why this check's failure would go nowhere, or None.
+
+    Phrased to follow "the checksum that names <file>", because that is the
+    sentence a reader gets when the check they wrote did not clear the fetch
+    they wrote it for.
+    """
     if statement.separator == "&":
-        return "detached with `&`"
+        return "is detached with `&`"
     if statement.separator == "||" and not _stops_the_job(stmts, index):
-        return "handed to a `||` branch that does not fail the step"
+        return "hands its failure to a `||` branch that does not fail the step"
     if negated(stage.argv):
-        return "negated, so the failing path is the THEN branch"
+        return "is negated, so the failing path is the THEN branch"
     if conditional(stage.argv):
-        return "an `if`/`while` test, which errexit does not apply to"
+        return "is an `if`/`while` test, which errexit does not apply to"
     return None
 
 
@@ -493,8 +498,20 @@ def _record_writes(statement, written):
             written[target] = text
 
 
-def _checks(stmts):
-    """[(statement index, checked text)] for every bound checksum check."""
+# Why a checksum this job ran clears nothing. A refused check is KEPT with its
+# reason rather than dropped, because "no checksum in the job names this file"
+# and "the checksum that names it was handed to a `|| true`" are different
+# sentences, and only one of them is true of any given step.
+_SOFT_STEP = ("is in a step carrying `continue-on-error: true`, so the job "
+              "carries on past its failure")
+_NO_DIGEST = ("carries no digest, so it says which file to read and not what "
+              "should have arrived")
+_UNSHARED_IF = ("runs under an `if:` the use does not share, so it may be "
+                "skipped while the use is not")
+
+
+def _checks(stmts, soft=()):
+    """[(statement index, checked text, why it clears nothing or None)]."""
     found, written = [], {}
     for index, statement in enumerate(stmts):
         for position, stage in enumerate(statement.stages):
@@ -503,11 +520,13 @@ def _checks(stmts):
                 continue
             if not _has_check_flag(argv):
                 continue
-            if _swallowed(stmts, index, statement, stage):
-                continue                        # its failure goes nowhere
-            text = _checked_text(statement, position, stage, argv, written)
-            if text and _DIGEST.search(text):
-                found.append((index, text))
+            text = _checked_text(statement, position, stage, argv, written) or ""
+            why = _swallowed(stmts, index, statement, stage)
+            if why is None and index in soft:
+                why = _SOFT_STEP
+            if why is None and not _DIGEST.search(text):
+                why = _NO_DIGEST
+            found.append((index, text, why))
         _record_writes(statement, written)
     return found
 
@@ -730,19 +749,27 @@ def _defect(fetch, index, stmts, checks, conditions=None):
     first_use, how = uses[0]
     # A checksum naming any name the file goes by is a checksum of this file.
     conditions = conditions or {}
-    naming = [i for i, text in checks if i > index
-              and any(_names(text, name) for name in sorted(names))
-              and _binds(conditions, i, first_use)]
-    if any(i < first_use for i in naming):
+    naming = [(i, why) for i, text, why in checks
+              if i > index and any(_names(text, name) for name in sorted(names))]
+    cleared = [i for i, why in naming
+               if why is None and _binds(conditions, i, first_use)]
+    if any(i < first_use for i in cleared):
         return None
-    if naming:
+    if cleared:
         # Ordering is the substance: a checksum that runs after the bytes are
         # made runnable is theatre.
         return ("verifies %s only AFTER %s -- fetches %s, so %s"
                 % (shell_reader.readable(fetch.dest), how, _describe(fetch),
                    _remedy(fetch.dest)))
-    if [i for i, _text in checks if i > index]:
-        return ("fetches %s and %s; the step's checksum does not name %s, and a "
+    if naming:
+        # It NAMED the file. Saying "does not name" here sends the author
+        # hunting a spelling bug in a line that is spelled right.
+        why = next((w for _i, w in naming if w), None) or _UNSHARED_IF
+        return ("fetches %s and %s; the checksum that names %s %s -- %s"
+                % (_describe(fetch), how, shell_reader.readable(fetch.dest),
+                   why, _remedy(fetch.dest)))
+    if [i for i, _text, why in checks if i > index and why is None]:
+        return ("fetches %s and %s; no checksum in the job names %s, and a "
                 "checksum of a different file verifies nothing -- %s"
                 % (_describe(fetch), how, shell_reader.readable(fetch.dest),
                    _remedy(fetch.dest)))
@@ -758,8 +785,7 @@ def _defects(stmts, conditions=None, soft=()):
     a use -- see `_binds`. `soft` holds the indexes whose step carries
     `continue-on-error: true`, whose checks clear nothing at all.
     """
-    checks = [(index, text) for index, text in _checks(stmts)
-              if index not in soft]
+    checks = _checks(stmts, soft)
     conditions = conditions or {}
     found = []
     for index, fetch in _fetch_records(stmts):

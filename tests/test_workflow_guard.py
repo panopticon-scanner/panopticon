@@ -592,6 +592,72 @@ class TestASwallowedCheckIsNotACheck(unittest.TestCase):
             'echo "%s  /tmp/payload" | sha256sum -c - && echo verified\n' % HEX))
 
 
+class TestTheMessageSaysWhatWasChecked(unittest.TestCase):
+    """#1697: one sentence was doing four jobs.
+
+    "the step's checksum does not name X" was printed whenever no checksum
+    CLEARED the fetch -- including when one named it exactly and was refused
+    for a different reason (swallowed, soft, under another `if:`). The author
+    reading it goes looking for a naming bug in a line that names the file
+    correctly, and the control's real objection never reaches them. And the
+    scope has been the JOB since M5, so "the step's" was wrong twice over.
+    """
+
+    FETCH = "curl -sfL https://example.test/payload -o /tmp/payload\n"
+    CHECK = 'echo "%s  /tmp/payload" | sha256sum -c -\n' % HEX
+    EXEC = "chmod +x /tmp/payload\n"
+
+    def why(self, *steps):
+        found = wg.job_defects(list(steps))
+        self.assertEqual(1, len(found), found)
+        return found[0][1]
+
+    def test_no_checksum_in_the_job_names_it(self):
+        why = self.why(("get", self.FETCH),
+                       ("check", 'echo "%s  /tmp/other" | sha256sum -c -\n'
+                                 % OTHER_HEX),
+                       ("run", self.EXEC))
+        self.assertIn("no checksum in the job names", why)
+
+    def test_a_checksum_that_names_it_and_was_swallowed(self):
+        why = self.why(("get", self.FETCH),
+                       ("check", self.CHECK.rstrip("\n") + " || true\n"),
+                       ("run", self.EXEC))
+        self.assertIn("the checksum that names", why)
+        self.assertIn("`||` branch", why)
+        self.assertNotIn("does not name", why)
+
+    def test_a_checksum_that_names_it_and_carries_no_digest(self):
+        # `$FILE` is an expansion, not an expectation: the checked text names
+        # the download and says nothing about what should have arrived.
+        why = self.why(("get", self.FETCH),
+                       ("check", 'echo "$FILE  /tmp/payload" | sha256sum -c -\n'),
+                       ("run", self.EXEC))
+        self.assertIn("the checksum that names", why)
+        self.assertIn("no digest", why)
+
+    def test_a_checksum_that_names_it_under_another_condition(self):
+        why = self.why(wg.Step("get", self.FETCH),
+                       wg.Step("check", self.CHECK, None, "github.ref == 'main'"),
+                       wg.Step("run", self.EXEC))
+        self.assertIn("the checksum that names", why)
+        self.assertIn("`if:`", why)
+
+    def test_a_checksum_that_names_it_in_a_soft_step(self):
+        why = self.why(wg.Step("get", self.FETCH),
+                       wg.Step("check", self.CHECK, None, None, True),
+                       wg.Step("run", self.EXEC))
+        self.assertIn("continue-on-error", why)
+
+    def test_the_scope_is_never_called_the_step(self):
+        for why in (self.why(("get", self.FETCH), ("run", self.EXEC)),
+                    self.why(("get", self.FETCH),
+                             ("check", 'echo "%s  /tmp/other" | sha256sum -c -\n'
+                                       % OTHER_HEX),
+                             ("run", self.EXEC))):
+            self.assertNotIn("the step's checksum", why)
+
+
 class TestTheJobIsTheScope(unittest.TestCase):
     """M5: steps in one job share the workspace, /tmp and PATH.
 
