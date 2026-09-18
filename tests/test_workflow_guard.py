@@ -973,6 +973,21 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
                       ("run", "docker build -f x.sh .\n"))
 
+    # The three shapes the container entry still names as unread, each one a
+    # pin so the docstring cannot drift from what the code does.
+    def test_a_file_renamed_by_the_mount_is_unread(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker run --rm -v /tmp/x.sh:/w/y.sh img "
+                              "bash /w/y.sh\n"))
+
+    def test_an_argument_the_entrypoint_supplies_is_unread(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker run --rm -v /tmp:/w img\n"))
+
+    def test_what_the_image_runs_on_its_own_is_unread(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/x.sh\n"),
+                      ("run", "docker run --rm -v /tmp:/w img /w/x.sh\n"))
+
     def test_the_fleets_own_container_line_is_still_clean(self):
         # adapter-integration.yml's shape, which fetches nothing: the scan must
         # not invent a use out of an `--entrypoint sh` and an image name.
