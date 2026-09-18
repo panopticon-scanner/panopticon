@@ -160,6 +160,84 @@ class TestIterBatch(unittest.TestCase):
                 self.assertNotIn("run_batch", vars(runner), name)
 
 
+class TestTheCooperativeStop(unittest.TestCase):
+    """#1721: a host outage that begins mid-batch had to drain the WHOLE
+    checkpoint before the loop could ask whether the host was down -- 78 review
+    cells at one launch each, every one of them charged at dispatch. `stop` is
+    the seam that lets the consumer say "no more": what is still QUEUED is
+    cancelled, what is already IN FLIGHT is drained and yielded exactly as
+    usual, and no child is terminated (that is the interrupt path -- an
+    in-flight launch during an outage fails fast on its own)."""
+
+    def _runner(self):
+        """A runner whose first two entries are fast and whose every later one
+        blocks until `released`. With width two that pins how far the pool can
+        run ahead of the consumer: the two workers are inside a blocked entry
+        until the consumer's `stop` releases them."""
+        released, launched, terminated = threading.Event(), [], []
+        self.addCleanup(released.set)
+
+        class Stopping(base.HostRunner):
+            host = "fake"; mode = "headless"; default_concurrency = 2
+
+            def run_entry(self, entry, env):
+                launched.append(entry["id"])
+                if int(entry["id"][1:]) >= 2:
+                    released.wait(10)
+                return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                      cost_usd=None, model=None, session_id=None,
+                                      denials=[], error=None)
+
+            def terminate_children(self, grace=None):
+                terminated.append(grace)
+                return []
+
+        return Stopping(), released, launched, terminated
+
+    def test_a_stop_that_says_yes_cancels_what_is_still_queued(self):
+        runner, released, launched, terminated = self._runner()
+        entries = [{"id": "e%d" % i} for i in range(8)]
+        seen, calls = [], []
+
+        def stop():
+            calls.append(len(seen))
+            if len(seen) < 2:
+                return False
+            released.set()          # the in-flight pair may now finish and be yielded
+            return True
+
+        with contextlib.closing(runner.iter_batch(entries, 2, lambda e: {}, stop=stop)) as stream:
+            for entry, _result, _timing in stream:
+                seen.append(entry["id"])
+        self.assertLess(len(launched), 8, launched)
+        self.assertLessEqual(len(launched), 5, launched)    # 2 seen + width + slack
+        # every entry that really launched came back to the consumer -- the
+        # in-flight ones included -- and nothing cancelled was yielded
+        self.assertEqual(sorted(launched), sorted(seen))
+        self.assertEqual([], terminated, "an outage is not the interrupt path")
+        # asked once per yield at most, and never before the first result
+        self.assertLessEqual(len(calls), len(seen))
+        self.assertTrue(calls and calls[0] >= 1)
+
+    def test_no_stop_at_all_launches_the_whole_batch(self):
+        runner, released, launched, terminated = self._runner()
+        released.set()
+        entries = [{"id": "e%d" % i} for i in range(8)]
+        seen = [e["id"] for e, _r, _t in runner.iter_batch(entries, 2, lambda e: {})]
+        self.assertEqual(8, len(launched), launched)
+        self.assertEqual(sorted(seen), sorted(launched))
+        self.assertEqual([], terminated)
+
+    def test_a_stop_that_stays_false_launches_the_whole_batch(self):
+        runner, released, launched, _terminated = self._runner()
+        released.set()
+        entries = [{"id": "e%d" % i} for i in range(8)]
+        seen = [e["id"] for e, _r, _t
+                in runner.iter_batch(entries, 2, lambda e: {}, stop=lambda: False)]
+        self.assertEqual(8, len(launched), launched)
+        self.assertEqual(sorted(seen), sorted(launched))
+
+
 class TestRunnerFor(unittest.TestCase):
     def test_session_mode_is_always_available(self):
         r = base.runner_for("gemini", "session")
