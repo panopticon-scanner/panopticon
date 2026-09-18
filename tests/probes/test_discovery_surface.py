@@ -629,10 +629,20 @@ class TestTheRefusal(unittest.TestCase):
             with self.subTest(results=results[0][1]):
                 self.assertIsNone(self._refusal(results, allow=True))
 
-    def test_both_refuting_names_the_first_and_keeps_its_detail(self):
+    def test_both_refuting_names_both_probes_and_keeps_both_details(self):
+        # Two findings, two remedies. Naming only the first would have the
+        # operator delete an agent file, re-run, and be refused again by a
+        # probe they were never told about.
         message = self._refusal((self._SHADOW, self._SURFACE))
         self.assertIn("refusing to run: shadow-shell-scan: ", message)
         self.assertIn("panopticon-scout.md", message)
+        self.assertIn("target-discovery-surface: ", message)
+        self.assertIn("CL-1", message)
+        for sentence in ("takes precedence over the registered enforcement shell",
+                         "no launch control closes"):
+            self.assertIn(sentence, message)
+        # One remedy, not one per probe: it is the same flag either way.
+        self.assertEqual(1, message.count("--allow-unenforced"))
 
 
 class TestTheRoundTrip(unittest.TestCase):

@@ -719,6 +719,7 @@ _REFUSAL_REASON = {
         "A target-authored file the host would load reaches the reviewer "
         "through a channel no launch control closes.",
 }
+_REFUSAL_FALLBACK = "The reviewed tree supplies part of the reviewer."
 _REFUSAL_REMEDY = ("Remove the file(s), or re-run with --allow-unenforced to "
                    "proceed with enforcement explicitly refuted.")
 
@@ -740,10 +741,12 @@ def _surface_refusal(results, manifest):
     result is immune to whatever else ties with it -- and with two probes on
     one capability it is now also the only way to say WHICH one refused.
 
-    Any REFUTED refuses, and the message names the probe and repeats its
-    detail: the two remedies differ (delete an agent file; delete, or accept,
-    a file the host would load), and an operator who is told only "refused"
-    has to go find out which tree fact is meant.
+    Any REFUTED refuses, and the message names EVERY probe that refused and
+    repeats each one's detail: the two findings differ (an agent file that
+    replaces a shell; a file the host would load beside one), and an operator
+    told only about the first would delete it, re-run, and be refused again by
+    a probe they were never told about. The remedy is one sentence at the end,
+    because it is the same flag either way.
 
     `--allow-unenforced` downgrades rather than silences: the run proceeds with
     tool_policy_enforced REFUTED (resolve_state ranks refuted over proven), so
@@ -756,11 +759,10 @@ def _surface_refusal(results, manifest):
         return None
     if (manifest.get("flags") or {}).get("allow_unenforced"):
         return None
-    _state, by, detail = refuted[0]
-    return "refusing to run: %s: %s. %s %s" % (
-        by, detail,
-        _REFUSAL_REASON.get(by, "The reviewed tree supplies part of the "
-                                "reviewer."), _REFUSAL_REMEDY)
+    clauses = ["%s: %s. %s" % (by, detail,
+                               _REFUSAL_REASON.get(by, _REFUSAL_FALLBACK))
+               for _state, by, detail in refuted]
+    return "refusing to run: %s %s" % (" ".join(clauses), _REFUSAL_REMEDY)
 
 
 def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
