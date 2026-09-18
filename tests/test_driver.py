@@ -201,6 +201,30 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(status["status"], "error")
         self.assertIn("drift", status["message"])
 
+    def _settings(self, root, max_verify):
+        """Rewrite the fixture's root config with a `settings:` grain knob."""
+        with open(os.path.join(root, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n"
+                     "groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
+                     "settings:\n  max_verify: %d\n" % max_verify)
+
+    def test_changing_a_settings_knob_between_resumes_is_flag_drift(self):
+        # #1681 Plan 1: the grain knobs resolve CLI > `settings:` and the
+        # manifest pins the EFFECTIVE value, so editing the committed config
+        # between resumes drifts exactly like editing the flag would -- the
+        # anti-drift keys would be a lie otherwise. (DELETING the knob is not
+        # drift: an incoming None never conflicts, so the run resumes on the
+        # value the manifest already pinned.)
+        d = self._repo()
+        self._settings(d, 5)
+        driver.run(self._args(d))
+        self.assertEqual(run_manifest.load_manifest(d)["flags"]["max_verify"], 5)
+        self._settings(d, 7)
+        status = driver.run(self._args(d))
+        self.assertEqual(status["status"], "error")
+        self.assertIn("drift", status["message"])
+        self.assertIn("max_verify", status["message"])
+
     def test_flag_drift_refused_no_synthesize_divergence(self):
         # RETIRED HAZARD (#957 both-pass flag mismatch): the manifest pins the
         # gate flags once; a conflicting re-invocation is refused, so pass-1 and

@@ -394,50 +394,67 @@ def _load_return_json(path):
 def _return_json_parses(path):
     return _load_return_json(path) is not None
 
+def _disclose(lines):
+    for line in lines:
+        print("driver: %s" % line, file=sys.stderr)
+
 @functools.lru_cache(maxsize=8)
 def _parse_committed_groups(path, _mtime):
     """Parse + validate the root config, memoized on (path, mtime) so a single
     `driver run` re-parses the file at most once per content version instead
-    of once per group/phase (#1033). Never mutate the returned structures;
-    callers get deep copies via load_committed_groups."""
+    of once per group/phase (#1033). The disclosures print HERE, where a cache
+    MISS is what runs -- that is what makes "once per content version" true
+    rather than once per caller. The key covers this file's own content only:
+    whether the OTHER accepted name, or a retired `.panopticon/` settings file,
+    is ALSO present is not part of it, so such a disclosure can go stale until
+    this file's mtime moves (accepted -- the parsed content is always fresh).
+    Never mutate the returned structures; callers get deep copies via
+    load_committed_groups."""
     doc = repo_config.read_document(os.path.dirname(path))
+    _disclose(doc.disclosures)
     if doc.doc is None:
-        return {}, list(doc.errors), list(doc.disclosures)
-    groups, errors = groups_schema.parse_groups(doc.doc)
-    return groups, errors, list(doc.disclosures)
+        return {}, list(doc.errors)
+    return groups_schema.parse_groups(doc.doc)
 
 def load_committed_groups(review_root):
-    """Parse the committed root config via groups_schema (P1). A MISSING file
-    is an error (the driver run requires a committed matrix -- `driver setup`
-    produces it), not an empty success; a legacy `.panopticon/` matrix file
-    with no root file is refused with the migration remedy (#1681, no
-    fallback). Disclosures (both root names present, a retired `.panopticon/`
-    settings file, unknown keys) are printed once per content version, on
-    stderr -- repo_config owns every one of those names."""
-    res = repo_config.resolve(review_root)
-    if res.path is None:
-        if repo_config.legacy_present(review_root):
-            return {}, [repo_config.legacy_message(review_root)]
+    """Parse the committed root config via groups_schema (P1). Every branch is
+    repo_config's to decide -- this reads the document ONCE and reports what it
+    says. A MISSING file is an error (the driver run requires a committed
+    matrix -- `driver setup` produces it), not an empty success; a legacy
+    `.panopticon/` matrix file with no root file is refused with the migration
+    remedy (#1681, no fallback); and a REFUSED candidate -- a symlink at either
+    accepted name -- is disclosed on stderr before that missing-file error, so
+    a config sitting right there is never silently reported as absent."""
+    doc = repo_config.read_document(review_root)
+    if doc.path is None:
+        if doc.errors:
+            # Legacy-only tree: read_document already carries the remedy.
+            return {}, list(doc.errors)
+        # Nothing accepted and nothing authored -- but a candidate may have
+        # been REFUSED (a symlink at either name), and that refusal is the
+        # whole reason there is no config to read. Say it out loud.
+        _disclose(doc.disclosures)
         return {}, ["no committed %s at %s -- run `panopticon setup` first"
                     % (repo_config.CONFIG_NAMES[0], review_root)]
     try:
-        mtime = os.path.getmtime(res.path)
+        mtime = os.path.getmtime(doc.path)
     except OSError as exc:
-        return {}, ["%s unreadable: %s" % (res.path, exc)]
-    groups, errors, disclosures = _parse_committed_groups(res.path, mtime)
-    for line in disclosures:
-        print("driver: %s" % line, file=sys.stderr)
+        return {}, ["%s unreadable: %s" % (doc.path, exc)]
+    groups, errors = _parse_committed_groups(doc.path, mtime)
     # Deep-copy so a caller mutating its result can never corrupt the shared
     # cache entry the next phase reads.
     return copy.deepcopy(groups), list(errors)
 
 def committed_settings(review_root):
     """The root config's `settings:` grain knobs (#1681 Plan 1), Nones when
-    there is no usable config. Disclosed refusals go to stderr."""
+    there is no usable config (missing, refused, or legacy-only -- none of
+    which raises). A refusal is named after the file it actually came from,
+    since either accepted name may be the one that was read."""
     doc = repo_config.read_document(review_root)
     settings, errors = groups_schema.parse_settings(doc.doc or {})
+    named = os.path.basename(doc.path) if doc.path else repo_config.CONFIG_NAMES[0]
     for line in errors:
-        print("driver: %s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
+        print("driver: %s: %s" % (named, line), file=sys.stderr)
     return settings
 
 def _load_ocrdb_bundle():

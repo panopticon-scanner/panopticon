@@ -197,7 +197,7 @@ class LoopCase(unittest.TestCase):
         # INTERIM (#1681 Task 4): the loop re-runs the REAL discovery.py
         # --repo-scan, which still reads the legacy matrix file. Delete with
         # its readers.
-        with open(runio._pano(d, "groups.yml"), "w") as fh:
+        with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
             fh.write(matrix)
         return d, list(floor)
 
