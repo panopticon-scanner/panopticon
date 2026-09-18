@@ -12,6 +12,7 @@ from unittest import mock
 from scripts import dispatch, host_probes, hosts
 import scripts.probes.common as probes_common
 import scripts.probes.kimi as kimi_probes
+import scripts.probes.kimi_snapshot as kimi_snapshot
 from tests.probes.helpers import _shell
 
 
@@ -583,7 +584,7 @@ class TestKimiShellSurfaceIsAnAllowList(unittest.TestCase):
         # tucked into its detail.
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)
-            with mock.patch.object(kimi_probes, "_kimi_armed_home",
+            with mock.patch.object(kimi_snapshot, "_kimi_armed_home",
                                    side_effect=OSError("no space left on device")):
                 state, _by, detail = kimi_probes.probe_kimi_shell_surface(
                     "kimi", registration_dir=d, version="0.42")

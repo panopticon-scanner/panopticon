@@ -179,6 +179,22 @@ groups:
       # attempt budget, the resume command's flag surface), not the family
       # seam. It moves to `Hosts` when the Hosts split lands.
       - skill/scripts/runners/outage.py
+      # item 25e: `probes/kimi_snapshot.py` -- the two readings a kimi probe
+      # measures against (the child's `llm.tools_snapshot`, and the
+      # config.toml the runner generates), moved out of `probes/kimi.py` to
+      # get it off the 700-line ceiling. Parked here for the same REASON as
+      # the four above, and measured: that same item moved
+      # `runners/kimi_home.py` out of `runners/kimi.py`, which took
+      # `Orchestration:Hosts` from 47 to exactly its 48-file cap, so THIS file
+      # is the 49th and would chunk that leaf into `Orchestration:Hosts_1`, a
+      # name the matrix has no entry for (the #1638 P13 defect). Same
+      # MECHANISM as `runners/outage.py` above -- a literal path in a group
+      # listed BEFORE `Hosts`, which claims `probes/**` by glob; catalog order
+      # settles it and no `!` negation is needed. Its tests are
+      # `tests/probes/test_kimi.py`, which stays with `Hosts`: the module is
+      # parked, its coverage is not. It moves to `Hosts` when the Hosts split
+      # lands.
+      - skill/scripts/probes/kimi_snapshot.py
       - skill/scripts/group_runner.py
       - skill/scripts/model_resolver.py
       - skill/scripts/run_manifest.py
