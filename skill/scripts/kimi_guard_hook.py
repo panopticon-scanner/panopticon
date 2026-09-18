@@ -73,8 +73,8 @@ def hook_command(*argv):
 
 # ReadMediaFile is a READ tool and belongs here (I1): a read tool the guard
 # does not adjudicate returns (True, "") and reads any file on the machine from
-# an entry whose Read is confined. runners/kimi.py's READ_MATCHER names it so
-# the hook is actually invoked for it.
+# an entry whose Read is confined. runners/kimi_home.py's READ_MATCHER names
+# it so the hook is actually invoked for it.
 _READ_TOOLS = frozenset({"Read", "ReadMediaFile", "Grep", "Glob"})
 _WRITE_TOOLS = frozenset({"Write", "Edit"})
 

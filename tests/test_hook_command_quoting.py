@@ -4,9 +4,9 @@ STRING, so every element interpolated into one must be shell-quoted.
 Claude Code and Kimi Code both run a registered PreToolUse `command` through
 `sh -c`. Three builders interpolate paths into such a string --
 `write_guard_hook._hook_entry` (the allowlist), `read_guard_hook._hook_entry`
-(the read scope) and `runners/kimi._hook_entry` (the guard script, the mode and
-the per-run data file) -- and each of them also interpolates the script path the
-command runs. All of them used `"%s"`: double quotes stop a SPACE and nothing
+(the read scope) and `runners/kimi_home._hook_entry` (the guard script, the
+mode and the per-run data file) -- and each of them also interpolates the
+script path the command runs. All of them used `"%s"`: double quotes stop a SPACE and nothing
 else, so `$(...)`, backticks and a `"` of its own in the path are live shell
 syntax that the host then executes on every PreToolUse event.
 
@@ -29,7 +29,7 @@ from _test_helpers import argv_through_shell
 import scripts.kimi_guard_hook as kimi_guard_hook
 import scripts.kimi_toml as kimi_toml
 import scripts.read_guard_hook as rg
-import scripts.runners.kimi as kimi_runner
+import scripts.runners.kimi_home as kimi_home
 import scripts.write_guard_hook as wg
 
 MARKER = "PANOPTICON_HOOK_INJECTION_MARKER"
@@ -94,12 +94,12 @@ class TestKimiPerRunConfigHookCommands(HookCommandCase):
             scope = os.path.join(d, "read-" + HOSTILE_NAME)
             allowlist = os.path.join(d, "write-" + HOSTILE_NAME)
             config = tomllib.loads(kimi_toml.dump_toml(
-                kimi_runner.build_merged_config({}, scope, allowlist)))
+                kimi_home.build_merged_config({}, scope, allowlist)))
             commands = {h["matcher"]: h["command"] for h in config["hooks"]}
             guard = os.path.abspath(kimi_guard_hook.__file__)
             for matcher, mode, data in (
-                    (kimi_runner.READ_MATCHER, "read", scope),
-                    (kimi_runner.WRITE_MATCHER, "write", allowlist)):
+                    (kimi_home.READ_MATCHER, "read", scope),
+                    (kimi_home.WRITE_MATCHER, "write", allowlist)):
                 argv = argv_through_shell(commands[matcher], cwd=d)
                 self.assertEqual([guard, mode, os.path.abspath(data)], argv,
                                  "the %s hook's argv did not survive the shell"

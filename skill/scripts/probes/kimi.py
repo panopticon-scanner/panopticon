@@ -53,7 +53,7 @@ KIMI_MODEL_ALIAS = "kimi-model-alias-bound"
 KIMI_USAGE_WIRE = "kimi-usage-wire"
 
 # The CLI's builtin tool vocabulary lives with the RUNNER
-# (runners.kimi.TOOL_VOCABULARY), because the runner is what has to deny it:
+# (runners.kimi_home.TOOL_VOCABULARY), the side that has to deny it:
 # Kimi's config offers a deny-list and no allow-list, so the per-run
 # `tools.disabled` is derived from that table minus the templates' grants (I1).
 # The probe reads the same table back. A version it does not cover resolves
@@ -151,7 +151,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     surface confirmation (a writer-role child measured carrying exactly
     ['Read', 'Write']).
     """
-    import scripts.runners.kimi as kimi_runner
+    import scripts.runners.kimi_home as kimi_home
     registration_dir = registration_dir or (hosts.spec(host).registration_dir
                                             if hosts.spec(host) else "")
     base_state, base_by, base_detail = common.probe_registered_shell_tools(host, registration_dir)
@@ -165,7 +165,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
         return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
                 "shells match their templates, but the installed kimi version "
                 "could not be determined, so its tool vocabulary is unverified")
-    vocabulary = kimi_runner.TOOL_VOCABULARY.get(version)
+    vocabulary = kimi_home.TOOL_VOCABULARY.get(version)
     if vocabulary is None:
         return (hosts.UNKNOWN, KIMI_SHELL_SURFACE,
                 "shells match their templates, but the probe's vocabulary table "
@@ -188,7 +188,7 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     # not recomputed from `disabled_tools()`. Recomputing subtracted the
     # templates' union from a vocabulary it had just subtracted the same union
     # from: empty by construction, an identity wearing a measurement's clothes.
-    allowed = kimi_runner.allowed_tool_union()
+    allowed = kimi_home.allowed_tool_union()
     disabled, where = _kimi_generated_disabled()
     if disabled is None:
         # R2-4: not a fallback. I5 falls back on an unrecognised record shape --
@@ -277,7 +277,7 @@ def _kimi_armed_home(sandbox):
     temp root; the probe passes a home inside its sandbox instead, so nothing
     survives the probe. The operator's real home is never read.
     """
-    import scripts.runners.kimi as kimi_runner
+    import scripts.runners.kimi_home as kimi_home
     fixture_home = os.path.join(sandbox, "fixture-home")
     os.makedirs(fixture_home, exist_ok=True)
     with open(os.path.join(fixture_home, "config.toml"), "w", encoding="utf-8") as fh:
@@ -286,9 +286,9 @@ def _kimi_armed_home(sandbox):
     os.makedirs(run_dir, exist_ok=True)
     scope_path = os.path.join(run_dir, "read-scope.json")
     allowlist_path = os.path.join(run_dir, "write-allowlist.json")
-    home = kimi_runner.build_kimi_home(os.path.join(sandbox, "kimi-home"),
-                                       scope_path, allowlist_path,
-                                       real_home=fixture_home)
+    home = kimi_home.build_kimi_home(os.path.join(sandbox, "kimi-home"),
+                                     scope_path, allowlist_path,
+                                     real_home=fixture_home)
     return home, scope_path, allowlist_path
 
 
@@ -349,7 +349,7 @@ def _kimi_hooks_are_armed(sandbox, mode):
     present in `tools.disabled`.
     """
     import scripts.kimi_guard_hook as kimi_guard_hook
-    import scripts.runners.kimi as kimi_runner
+    import scripts.runners.kimi_home as kimi_home
     try:
         home, scope_path, allowlist_path = _kimi_armed_home(sandbox)
         with open(os.path.join(home, "config.toml"), "rb") as fh:
@@ -366,8 +366,8 @@ def _kimi_hooks_are_armed(sandbox, mode):
     tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
     disabled = set(tools.get("disabled") or [])
     faults, notes, mine, mine_file = [], [], None, ""
-    for matcher, this_mode, data_path in ((kimi_runner.READ_MATCHER, "read", scope_path),
-                                          (kimi_runner.WRITE_MATCHER, "write", allowlist_path)):
+    for matcher, this_mode, data_path in ((kimi_home.READ_MATCHER, "read", scope_path),
+                                          (kimi_home.WRITE_MATCHER, "write", allowlist_path)):
         problems = []
         matching = [h for h in hooks
                     if h.get("event") == "PreToolUse" and h.get("matcher") == matcher]
@@ -388,7 +388,7 @@ def _kimi_hooks_are_armed(sandbox, mode):
         elif problems:
             notes.append("%s (the %s owns that one)"
                          % ("; ".join(problems), _KIMI_GUARD_PROBE[this_mode]))
-    missing = sorted(set(kimi_runner.disabled_tools()) - disabled)
+    missing = sorted(set(kimi_home.disabled_tools()) - disabled)
     if missing:
         faults.append("tools.disabled omits %s" % ", ".join(missing))
     # #1640: read back off the FILE, like every other fault here -- the

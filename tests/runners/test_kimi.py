@@ -20,6 +20,7 @@ import scripts.kimi_guard_hook as kimi_guard_hook
 import scripts.runners.base as base
 import scripts.kimi_toml as kimi_toml
 import scripts.runners.kimi as kimi_runner
+import scripts.runners.kimi_home as kimi_home
 import scripts.runners.outage as outage
 
 STREAM = "\n".join([
@@ -189,7 +190,7 @@ class TestPrepare(unittest.TestCase):
                 home = r.kimi_home
                 # C1: the home is a temp dir outside the reviewed tree; the run
                 # folder keeps only the pointer file that names it.
-                self.assertTrue(kimi_runner.is_temp_home(home))
+                self.assertTrue(kimi_home.is_temp_home(home))
                 self.assertNotIn(os.path.realpath(d), os.path.realpath(home))
                 self.assertTrue(os.path.islink(os.path.join(home, "credentials")))
                 self.assertEqual(os.readlink(os.path.join(home, "credentials")),
@@ -204,16 +205,16 @@ class TestPrepare(unittest.TestCase):
                 self.assertEqual(len(hooks), 2)
                 matchers = sorted(h["matcher"] for h in hooks)
                 # I1 widened the read matcher to carry ReadMediaFile.
-                self.assertEqual(matchers, [kimi_runner.READ_MATCHER,
-                                            kimi_runner.WRITE_MATCHER])
+                self.assertEqual(matchers, [kimi_home.READ_MATCHER,
+                                            kimi_home.WRITE_MATCHER])
                 for h in hooks:
                     self.assertIn(os.path.abspath(kimi_guard_hook.__file__), h["command"])
                 self.assertIn(os.path.join(run_dir, "read-scope.json"),
                               [h["command"] for h in hooks
-                               if h["matcher"] == kimi_runner.READ_MATCHER][0])
+                               if h["matcher"] == kimi_home.READ_MATCHER][0])
                 self.assertIn(os.path.join(run_dir, "write-allowlist.json"),
                               [h["command"] for h in hooks
-                               if h["matcher"] == kimi_runner.WRITE_MATCHER][0])
+                               if h["matcher"] == kimi_home.WRITE_MATCHER][0])
                 # the fixture's own values survive the merge
                 self.assertEqual(config["models"]["kimi-code/k3"]["model"], "k3")
                 self.assertEqual(r.configured, {"kimi-code/k3", "kimi-code/kimi-for-coding"})
@@ -557,7 +558,7 @@ class TestHomeLocation(unittest.TestCase):
                           "left there carries a credential", line)
             # R3-6: the names strip_secrets returned are never echoed (CodeQL
             # read the interpolated list as clear-text logging of a credential).
-            for name in kimi_runner._CREDENTIAL_ITEMS:
+            for name in kimi_home._CREDENTIAL_ITEMS:
                 self.assertNotIn(name, line.replace(home, ""))
 
     def test_an_errored_teardown_after_a_strip_says_it_held_nothing(self):
@@ -573,7 +574,7 @@ class TestHomeLocation(unittest.TestCase):
             line = err.getvalue()
             self.assertIn(home, line)
             self.assertIn("; it held no credential files", line)
-            for name in kimi_runner._CREDENTIAL_ITEMS:
+            for name in kimi_home._CREDENTIAL_ITEMS:
                 self.assertNotIn(name, line.replace(home, ""))
 
     def test_a_removed_home_takes_its_pointer_file_with_it(self):
@@ -710,7 +711,7 @@ class TestHomeLocation(unittest.TestCase):
                 body = fh.read()
             with open(config, "w", encoding="utf-8") as fh:
                 fh.write("hooks = [1, 2]\n" + body)      # top level, before any table
-            pattern = os.path.join(root, kimi_runner.HOME_PREFIX + "*")
+            pattern = os.path.join(root, kimi_home.HOME_PREFIX + "*")
             self.assertEqual([], glob.glob(pattern))
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": fixture}):
                 r = kimi_runner.Runner("kimi")
@@ -767,7 +768,7 @@ class TestHomeLocation(unittest.TestCase):
                 self.addCleanup(r._disarm_crash_strippers)
             armed = r._crash_strip
             self.assertIsNotNone(armed)
-            with mock.patch.object(kimi_runner, "strip_secrets", side_effect=KeyboardInterrupt), \
+            with mock.patch.object(kimi_home, "strip_secrets", side_effect=KeyboardInterrupt), \
                  mock.patch.object(atexit, "unregister", wraps=atexit.unregister) as unregister:
                 with self.assertRaises(KeyboardInterrupt):
                     r.teardown("error")
@@ -840,7 +841,7 @@ class TestHomeLocation(unittest.TestCase):
                 second.prepare(run_dir, review_root=d)         # resume: same run dir
                 self.addCleanup(second.teardown, "complete")
             self.assertNotEqual(first.kimi_home, second.kimi_home)
-            self.assertTrue(kimi_runner.is_temp_home(second.kimi_home))
+            self.assertTrue(kimi_home.is_temp_home(second.kimi_home))
             self.assertTrue(os.path.isfile(os.path.join(second.kimi_home, "config.toml")))
             with open(os.path.join(run_dir, "kimi-home-path"), encoding="utf-8") as fh:
                 self.assertEqual(second.kimi_home, fh.read().strip())
@@ -872,7 +873,7 @@ class TestHomeLocation(unittest.TestCase):
             os.makedirs(planted)
             with open(os.path.join(planted, "keep-me"), "w", encoding="utf-8") as fh:
                 fh.write("x")
-            self.assertFalse(kimi_runner.is_temp_home(planted))
+            self.assertFalse(kimi_home.is_temp_home(planted))
             r = kimi_runner.Runner("kimi")
             r.kimi_home = planted
             r.teardown("complete")
@@ -893,7 +894,7 @@ class TestHardenedWrites(unittest.TestCase):
             home = os.path.join(d, "kimi-home")
             os.symlink(elsewhere, home)
             with self.assertRaises(OSError) as caught:
-                kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+                kimi_home.build_kimi_home(home, os.path.join(d, "s.json"),
                                             os.path.join(d, "a.json"),
                                             real_home=_fixture_home(d))
             self.assertIn(home, str(caught.exception))
@@ -908,7 +909,7 @@ class TestHardenedWrites(unittest.TestCase):
             with open(victim, "w", encoding="utf-8") as fh:
                 fh.write("untouched")
             os.symlink(victim, os.path.join(home, "config.toml.tmp"))
-            kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+            kimi_home.build_kimi_home(home, os.path.join(d, "s.json"),
                                         os.path.join(d, "a.json"),
                                         real_home=_fixture_home(d))
             with open(victim, encoding="utf-8") as fh:
@@ -990,7 +991,7 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
                          '\n[mcp]\nenabled = true\n')
             home = os.path.join(d, "home")
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+                kimi_home.build_kimi_home(home, os.path.join(d, "s.json"),
                                             os.path.join(d, "a.json"), real_home=fixture)
             with open(os.path.join(home, "config.toml"), "rb") as fh:
                 armed = tomllib.load(fh)
@@ -1010,7 +1011,7 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             home = os.path.join(d, "home")
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+                kimi_home.build_kimi_home(home, os.path.join(d, "s.json"),
                                             os.path.join(d, "a.json"),
                                             real_home=_fixture_home(d))
             with open(os.path.join(home, "config.toml"), "rb") as fh:
@@ -1091,7 +1092,7 @@ class TestTomlEmissionRoundTrips(unittest.TestCase):
         # carries the same two keys. Preferring the block-level switch over a
         # per-server one is deliberate: it is one fact, and the probes refute
         # it by reading two keys rather than walking a list.
-        merged = kimi_runner.build_merged_config(
+        merged = kimi_home.build_merged_config(
             {"mcp": "whatever the operator put here"}, "s.json", "a.json")
         self.assertEqual({"enabled": False, "servers": []}, merged["mcp"])
 
@@ -1103,13 +1104,13 @@ class TestDefaultAgentSurface(unittest.TestCase):
     live, including an unguarded read tool and two egress tools."""
 
     def test_the_disabled_set_is_derived_as_the_complement_of_the_templates(self):
-        vocabulary = set().union(*kimi_runner.TOOL_VOCABULARY.values())
-        allowed = kimi_runner.allowed_tool_union()
-        self.assertEqual(sorted(vocabulary - allowed), kimi_runner.disabled_tools())
+        vocabulary = set().union(*kimi_home.TOOL_VOCABULARY.values())
+        allowed = kimi_home.allowed_tool_union()
+        self.assertEqual(sorted(vocabulary - allowed), kimi_home.disabled_tools())
         self.assertEqual({"Read", "Grep", "Glob", "Write"}, allowed)
 
     def test_the_egress_persistence_and_unguarded_read_tools_are_closed(self):
-        disabled = set(kimi_runner.disabled_tools())
+        disabled = set(kimi_home.disabled_tools())
         for tool in ("FetchURL", "WebSearch", "CronCreate", "CronDelete",
                      "ReadMediaFile", "Skill", "Agent", "AgentSwarm", "Bash"):
             self.assertIn(tool, disabled)
@@ -1119,18 +1120,18 @@ class TestDefaultAgentSurface(unittest.TestCase):
     def test_the_armed_config_disables_everything_no_template_grants(self):
         with tempfile.TemporaryDirectory() as d:
             home = os.path.join(d, "home")
-            kimi_runner.build_kimi_home(home, os.path.join(d, "s.json"),
+            kimi_home.build_kimi_home(home, os.path.join(d, "s.json"),
                                         os.path.join(d, "a.json"),
                                         real_home=_fixture_home(d))
             with open(os.path.join(home, "config.toml"), "rb") as fh:
                 config = tomllib.load(fh)
-        vocabulary = set().union(*kimi_runner.TOOL_VOCABULARY.values())
+        vocabulary = set().union(*kimi_home.TOOL_VOCABULARY.values())
         self.assertEqual(vocabulary,
-                         set(config["tools"]["disabled"]) | kimi_runner.allowed_tool_union())
+                         set(config["tools"]["disabled"]) | kimi_home.allowed_tool_union())
 
     def test_the_read_matcher_covers_every_read_tool_the_hook_adjudicates(self):
         for tool in kimi_guard_hook._READ_TOOLS:
-            self.assertIn(tool, kimi_runner.READ_MATCHER.split("|"))
+            self.assertIn(tool, kimi_home.READ_MATCHER.split("|"))
 
 
 class TestOperatorConfigShape(unittest.TestCase):
@@ -1147,7 +1148,7 @@ class TestOperatorConfigShape(unittest.TestCase):
         return home
 
     def _build(self, d, body):
-        return kimi_runner.build_kimi_home(os.path.join(d, "home"),
+        return kimi_home.build_kimi_home(os.path.join(d, "home"),
                                            os.path.join(d, "s.json"),
                                            os.path.join(d, "a.json"),
                                            real_home=self._fixture(d, body))
