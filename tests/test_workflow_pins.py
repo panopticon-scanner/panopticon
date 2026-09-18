@@ -25,6 +25,10 @@ from workflow_guard import UNNAMED, fetches, job_defects, run_jobs
 # as an act flags the explanation. One definition, two rules.
 # `tests/test_security_workflow.py` imports this name from this module.
 from shell_reader import without_comments as _without_comments
+# #1697: the continuation-joiner and the statement split came from there too,
+# rather than being hand-rolled a second time in this file.
+from shell_reader import join_continuations
+from shell_reader import statements as _statements
 
 WORKFLOW_DIR = os.path.join(REPO_ROOT, ".github", "workflows")
 
@@ -319,10 +323,12 @@ EXEMPT_INSTALLS = (
      "nothing. It installs the project itself from the checkout, so a lockfile "
      "here would pin the dependency set the matrix exists to test across four "
      "Python versions."),
-    ("ci.yml", 'pip install -e ".[dev]"',
+    # Quotes are shell syntax and the scan reports the parsed argv, so the
+    # fragment is the command as `pip_install_commands` spells it.
+    ("ci.yml", "pip install -e .[dev]",
      "installs THIS repo from THIS checkout; its dependency floors are "
      "pyproject.toml's and Dependabot bumps them."),
-    ("ci.yml", 'pip install -e ".[test]"',
+    ("ci.yml", "pip install -e .[test]",
      "same, for the test matrix."),
     ("Dockerfile", "semgrep==${SEMGREP_VERSION}",
      "version-pinned by ARG in the same file and rebuilt from a digest-pinned "
@@ -391,19 +397,30 @@ def install_pin_defect(command):
     return None
 
 
-def _join_lines(script):
-    """`\\`-continuations folded in, so an install written across five lines
-    reads as the one command it is."""
-    return re.sub(r"\\\s*\n\s*", " ", script)
-
-
 def pip_install_commands(script):
-    """Every `pip install` command in a shell script, one per shell command."""
+    """Every `pip install` command in a shell script, one per shell command.
+
+    On `shell_reader.statements()` -- the reader the fetch-and-exec rule next
+    door already uses -- rather than a private `re.split` over the text. The
+    split cut on every `&&`, `||`, `;` and newline it could SEE, including the
+    ones inside quotes, and a PEP 508 environment marker puts a `;` inside the
+    requirement exactly where it has to be quoted: `pip install "black;
+    python_version>='3.9'" --require-hashes -r reqs.txt` arrived as
+    `pip install "black`, its own pin sheared off, reported as an unpinned
+    install of a package called `"black`. Continuations, whole-line comments
+    and quoting are one reader's job, and this file had a second copy of two
+    of the three (#1641 already shared the comment-stripper).
+
+    The command is the ARGV, joined: quoting is shell syntax that says where a
+    word ends, and what this rule reads -- `--require-hashes`, `-r <file>` --
+    are words. `EXEMPT_INSTALLS` matches against the same spelling.
+    """
     out = []
-    for segment in re.split(r"&&|\|\||;|\n", _join_lines(_without_comments(script))):
-        seg = " ".join(segment.split())
-        if _PIP_INSTALL.search(seg):
-            out.append(seg)
+    for statement in _statements(script):
+        for stage in statement.stages:
+            command = " ".join(stage.argv)
+            if _PIP_INSTALL.search(command):
+                out.append(command)
     return out
 
 
@@ -452,7 +469,7 @@ def _resolve_requirements(ref):
 def requirements_defects(text):
     """Why this requirements file does not pin what it installs, or []."""
     defects = []
-    for line in _join_lines(text).splitlines():
+    for line in join_continuations(text).splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -517,6 +534,24 @@ class TestInstallPinRule(unittest.TestCase):
 
     def test_a_script_with_no_install_is_left_alone(self):
         self.assertEqual([], pip_install_commands("python -m pytest tests/ -q\n"))
+
+    def test_an_environment_marker_does_not_split_the_command(self):
+        # #1697: a PEP 508 marker puts a `;` INSIDE the requirement, where it
+        # must be quoted -- and the private `re.split(r"&&|\|\||;|\n", ...)`
+        # this rule used cut on every `;` in the TEXT. The install arrived as
+        # `pip install "black`, with its own `--require-hashes -r` sheared off
+        # and reported as an unpinned install of a package named `"black`.
+        script = ('pip install "black; python_version>=\'3.9\'" '
+                  "--require-hashes -r reqs.txt\n")
+        found = pip_install_commands(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIn("--require-hashes", found[0])
+        self.assertIsNone(install_pin_defect(found[0]))
+
+    def test_a_separator_inside_quotes_is_not_a_separator(self):
+        script = 'echo "one && two"\npip install --require-hashes -r reqs.txt\n'
+        self.assertEqual(["pip install --require-hashes -r reqs.txt"],
+                         pip_install_commands(script))
 
 
 class TestRequirementsRule(unittest.TestCase):
@@ -649,7 +684,7 @@ class TestEveryPinnedRequirementsFileIsHashed(unittest.TestCase):
     def test_the_gate_never_downgrades_pip(self):
         path = os.path.join(REPO_ROOT, ".github", "requirements-gate.txt")
         with open(path, encoding="utf-8") as fh:
-            m = re.search(r"^pip==(\S+)", _join_lines(fh.read()), re.M)
+            m = re.search(r"^pip==(\S+)", join_continuations(fh.read()), re.M)
         self.assertIsNotNone(m, "the gate's requirements file pins no pip; the "
                                 "unpinned `--upgrade pip` it replaced is back")
         pinned = tuple(int(p) for p in m.group(1).split(".") if p.isdigit())
@@ -706,7 +741,7 @@ def pytest_argvs(script):
     """
     found, pending = [], [script]
     while pending:
-        text = _join_lines(_without_comments(pending.pop(0)))
+        text = join_continuations(_without_comments(pending.pop(0)))
         for segment in re.split(r"&&|\|\||;|\n", text):
             seg = " ".join(segment.split())
             if not seg:
@@ -854,7 +889,7 @@ def step_env(doc, job, step_name, script):
     for step in ((doc.get("jobs") or {}).get(job) or {}).get("steps") or []:
         if isinstance(step, dict) and (step.get("name") or UNNAMED) == step_name:
             env.update({k: str(v) for k, v in (step.get("env") or {}).items()})
-    env.update(dict(_DOCKER_ENV.findall(_join_lines(_without_comments(script)))))
+    env.update(dict(_DOCKER_ENV.findall(join_continuations(_without_comments(script)))))
     return env
 
 
