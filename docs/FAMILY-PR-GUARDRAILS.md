@@ -376,23 +376,33 @@ and merges. If the guardrails and the code disagree, say so in the PR rather
 than picking silently.
 ```
 
-## 7. Open owner decision
+## 7. Owner decision (2026-09-15, D1)
 
 Spec 8.1 made deleting `--host generic` (F5) mechanical: it ships once every
 remaining driver-selectable host has `tool_policy_enforced` and
 `read_scope_confined` proven, with `artifact_write_guard` bridged by
-construction. On this base that criterion is **met** -- the pin in section 2
+construction. On this base that criterion was **met** -- the pin in section 2
 reads `{}`.
 
-Met is not due. `--host generic` is the only path left for a Gemini operator
-and for any host whose family has not shipped a runner, so deleting it is an
+Met was not due. `--host generic` is the only path left for a Gemini operator
+and for any host whose family has not shipped a runner, so deleting it was an
 owner **policy** decision rather than a consequence of the bar clearing: the
-bar can say that no remaining selectable host falls short, but it cannot say
-there is anywhere else for those operators to go. The row is therefore still
-registered, still selectable, and prints a deprecation notice
-(`hosts.is_deprecated`, `host_disclosure.GENERIC_DEPRECATION`).
+bar could say that no remaining selectable host fell short, but it could not
+say there was anywhere else for those operators to go. The decision, its
+options and a recommendation were written up as section 8.3 of the
+first-class-hosts design spec in the private docs repo (panopticon-docs #55).
 
-The decision, its options and a recommendation are written up as section 8.3
-of the first-class-hosts design spec in the private docs repo (panopticon-docs
-#55). Nothing in this document changes until it is made; a family PR that lands
-before then still gets `--host generic` as the fallback it describes.
+The owner's ruling, D1 (2026-09-15), chose **option 1**: keep `--host generic`
+as the permanent, unenforced, ack-gated fallback, and retire F5 -- there is no
+deletion left to ship. The row stays registered and selectable, and its notice was reworded
+from a deprecation to a posture statement (`hosts.is_unenforced_fallback`,
+`host_disclosure.GENERIC_FALLBACK_NOTICE`): it names the capability it lacks
+and the role it plays, and drops the promise of a removal the bar was never
+able to trigger on its own. Spec 8.1's bar itself is **kept**, reframed from
+F5's entry criterion into a standing NO-REGRESSION GUARD: every remaining
+driver-selectable host must go on clearing both security capabilities. Two
+tests carry it -- `test_generic_retirement_bar` states the criterion, and
+`test_todays_shortfall_is_pinned_so_it_moves_consciously` pins today's
+shortfall at `{}`, so a family PR that regresses a capability fails the pin
+(the criterion itself is only enforced once the fallback row is gone). A family PR that lands after this decision still gets `--host
+generic` as the fallback it describes, permanently.

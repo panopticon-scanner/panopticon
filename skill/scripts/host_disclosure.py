@@ -38,22 +38,25 @@ ALL_PROVEN = ("all measured and PROVEN -- "
 NO_EVIDENCE = ("NO EVIDENCE -- nobody looked. Nothing this "
                "run reports about enforcement is verified (spec 5.1)")
 
-# Spec D4: "deprecate now, remove when the families land". Printed once per
-# `driver run` / `driver setup` under --host generic. It is a notice, not a
-# gate (spec 10): the run proceeds, ack-gated and disclosed exactly as before.
+# Owner ruling D1 (2026-09-15, spec 8.3 option 1): keep --host generic as the
+# permanent ack-gated fallback and retire F5 (its planned deletion). Printed
+# once per `driver run` / `driver setup` under --host generic. It is a
+# posture notice, not a gate (spec 10): the run proceeds, ack-gated and
+# disclosed exactly as before.
 #
-# It used to end "removed once every remaining host clears the retirement bar".
-# That promise stopped being true at #1621: with gemini out of the selectable
-# set, claude is the only host the bar examines and it clears it -- so the bar
-# is MET while generic is still the only path a Gemini operator has, and the
-# only path for any host whose family has not shipped a runner. A notice that
-# names a trigger which has already fired and changed nothing teaches the
-# operator to ignore the notice. It says what generic is still FOR instead.
-GENERIC_DEPRECATION = (
-    "driver: NOTICE: --host generic is deprecated -- it claims no capability, so every "
-    "dispatch under it is unenforced and ack-gated. It remains the path for any host "
-    "with no family runner, gemini among them (#1621), so removing it is an owner "
-    "decision, not something the retirement bar triggers on its own (spec 8.1).")
+# Spec D4 first shipped this notice and said it would end "once every
+# remaining host clears the retirement bar". That stopped being true at
+# #1621: with gemini out of the selectable set, claude is the only host the
+# bar examines and it clears it -- so the bar is MET while generic is still
+# the only path a Gemini operator has, and the only path for any host whose
+# family has not shipped a runner. D1 settles it for good: this row is not
+# going away, so the notice says what it is FOR rather than naming a trigger
+# that already fired and changed nothing.
+GENERIC_FALLBACK_NOTICE = (
+    "driver: NOTICE: --host generic claims no capability, so every dispatch "
+    "under it is unenforced and ack-gated. It is the permanent path for any "
+    "host with no family runner, gemini among them (#1621); it is not going "
+    "away (owner ruling D1, spec 8.3 option 1).")
 
 # The remedy is the whole point of the line. A capability nobody can act on
 # gets an honest "there is nothing to do yet" rather than an invented command.

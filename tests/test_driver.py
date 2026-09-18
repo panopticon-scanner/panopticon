@@ -278,15 +278,15 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(buf.getvalue())["status"], "checkpoint")
 
-    def test_host_generic_prints_the_deprecation_once(self):
-        # D4: this fixture's first checkpoint is `scout`, which carries no
+    def test_host_generic_prints_the_fallback_notice_once(self):
+        # D1: this fixture's first checkpoint is `scout`, which carries no
         # write-capable role, so the unenforced-ack gate (review-only) never
         # fires and --allow-unenforced is not needed to reach it.
         d = self._repo()
         err, out = io.StringIO(), io.StringIO()
         with contextlib.redirect_stderr(err), mock.patch("sys.stdout", out):
             driver.main(["run", d, "--host", "generic"])
-        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_DEPRECATION))
+        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_FALLBACK_NOTICE))
 
     def test_a_resumed_generic_run_prints_it_again_without_the_flag(self):
         # Resume path: --host is absent and the manifest is authoritative. The
@@ -297,14 +297,14 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             driver.main(["run", d, "--host", "generic"])
         with contextlib.redirect_stderr(err), mock.patch("sys.stdout", out):
             driver.main(["run", d])
-        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_DEPRECATION))
+        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_FALLBACK_NOTICE))
 
-    def test_host_claude_prints_no_deprecation(self):
+    def test_host_claude_prints_no_fallback_notice(self):
         d = self._repo()
         err, out = io.StringIO(), io.StringIO()
         with contextlib.redirect_stderr(err), mock.patch("sys.stdout", out):
             driver.main(["run", d])
-        self.assertNotIn(host_disclosure.GENERIC_DEPRECATION, err.getvalue())
+        self.assertNotIn(host_disclosure.GENERIC_FALLBACK_NOTICE, err.getvalue())
 
     def test_pr_acquires_worktree_and_records_manifest(self):
         # C1 flip: driver --pr now acquires the deterministic PR worktree via
@@ -1506,7 +1506,7 @@ class TestARegisteredButUnselectableHostGetsARemedy(unittest.TestCase):
     selection simply drops out of it. An operator who spells a name still in
     the set has named a host this repo genuinely knows and there IS something
     to do about it, so the parser says what: `--host generic`, the
-    deprecated-but-present path for any host without a family runner. A name
+    permanent fallback path for any host without a family runner. A name
     the registry has never heard of is a typo, and argparse's own
     invalid-choice list is the right answer for it -- so `choices` must still
     be the thing that rejects it.
@@ -1606,9 +1606,9 @@ class TestDriverRunRefusesAnUnselectableManifestHost(unittest.TestCase):
 
         Minted under `claude` -- which CLAIMS every capability -- so that the
         pair below can tell selectability from claims. The near-miss this
-        guards is named in `hosts.is_deprecated`'s own docstring: gemini
-        claims nothing AND is unselectable, so a refusal keyed on the claim
-        set passes for exactly the wrong reason. `_untouched` therefore
+        guards is named in `hosts.is_unenforced_fallback`'s own docstring:
+        gemini claims nothing AND is unselectable, so a refusal keyed on the
+        claim set passes for exactly the wrong reason. `_untouched` therefore
         resumes as `generic`, the row that claims nothing and IS selectable,
         which a claims-keyed refusal would wrongly stop.
         """

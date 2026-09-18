@@ -137,20 +137,27 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
             with self.subTest(host=host):
                 self.assertNotIn(host, section.lower(), host)
 
-    def test_section_7_records_the_open_owner_decision_on_generic(self):
-        # #1625 left F5 met but not due: the bar reads {} while `--host
-        # generic` is still the only path for a host with no family runner, so
-        # deleting it is an owner policy call. Section 7 says so and points at
-        # the spec section that carries the write-up (panopticon-docs #55).
-        # When someone deletes the row, this guard goes with the section: F5 is
-        # the PR that moves it, and it is an OWNER decision, never a family
-        # PR's to take (section 3).
+    def test_section_7_records_the_owner_decision_on_generic(self):
+        # #1625 left F5 met but not due: the bar read {} while `--host
+        # generic` was still the only path for a host with no family runner,
+        # so deleting it was an owner policy call. D1 (2026-09-15) made that
+        # call: keep generic as the permanent fallback and retire F5 (spec
+        # 8.3 option 1). Section 7 records the decision and points at the
+        # spec section that carries the write-up (panopticon-docs #55); the
+        # bar itself survives as a no-regression guard, never a family PR's
+        # to retire (section 3).
         section = _section(_read_doc(), 7)
         self.assertTrue(hosts.spec("generic").driver_selectable)
-        self.assertTrue(hosts.is_deprecated("generic"))
+        self.assertTrue(hosts.is_unenforced_fallback("generic"))
         self.assertIn("--host generic", section)
         self.assertIn("owner", section.lower())
         self.assertIn("8.3", section)
+        self.assertIn("D1", section)
+        self.assertIn("test_generic_retirement_bar", section)
+        # Review round 1: the method that FAILS on a capability regression is
+        # the shortfall pin, not the criterion, so the prose must name both.
+        self.assertIn("test_todays_shortfall_is_pinned_so_it_moves_consciously",
+                      section)
 
     def test_states_the_verification_commands_contributing_uses(self):
         doc = _read_doc()

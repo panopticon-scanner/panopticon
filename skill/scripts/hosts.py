@@ -220,10 +220,11 @@ HOSTS = {
     # as kimi's and codex's rows did above.
     "gemini": HostSpec(name="gemini", claims=frozenset(),
                        driver_selectable=False),
-    # The deprecated fallback (spec D4). Its deletion in F5 is an OWNER
-    # decision, not a mechanical one: the spec §8.1 bar is a floor (see
-    # `test_generic_retirement_bar`), and generic is the only path left for
-    # gemini and for any other host without a family runner.
+    # The permanent, unenforced fallback (owner ruling D1, spec 8.3 option 1,
+    # superseding D4's planned F5 deletion). It stays because the spec 8.1
+    # bar is a floor, not a trigger (see `test_generic_retirement_bar`), and
+    # generic is the only path left for gemini and for any other host
+    # without a family runner.
     "generic": HostSpec(name="generic", claims=frozenset(),
                         driver_selectable=True),
 }
@@ -268,13 +269,14 @@ def unselectable_host_message(host, verb):
             "would dispatch for a host --host refuses to name." % (verb, host))
 
 
-def is_deprecated(host):
-    """Spec D4: `--host generic` is deprecated now, and remains the fallback
-    for any host without a family runner. Deleting it is an OWNER decision,
-    not something spec 8.1's bar triggers on its own: that bar asks whether a
-    remaining SELECTABLE host falls short (it does not, on this base -- see
-    `test_generic_retirement_bar`), and it cannot ask whether the operators
-    who depend on this row have anywhere else to go.
+def is_unenforced_fallback(host):
+    """Owner ruling D1 (spec 8.3 option 1): `--host generic` is the permanent,
+    unenforced fallback for any host without a family runner. D4's "deprecate
+    now, remove when the families land" is superseded: D1 retired F5 (the
+    deletion it planned), so there is no longer anything for spec 8.1's bar
+    to trigger -- that bar asks whether a remaining SELECTABLE host falls
+    short (it does not, on this base -- see `test_generic_retirement_bar`),
+    and it never spoke to whether this row itself goes away.
 
     A named predicate rather than a bare `host == "generic"` at each call
     site: `tests/test_host_posture_wiring.py`'s AST guard exists precisely so
@@ -282,7 +284,7 @@ def is_deprecated(host):
     registry -- "the one table that knows what a host is" -- is where that
     one comparison belongs. `gemini` also claims nothing, and since #1621 is
     not selectable either, but it is still not this: this predicate gates the
-    deprecation NOTICE, which describes the fallback specifically.
+    fallback NOTICE, which describes the fallback specifically.
     """
     return host == "generic"
 
