@@ -936,12 +936,23 @@ def migrate_config(repo):
     `repo_config.LEGACY_GROUPS_PATH` (#1681, ruling 3: no fallback). Reads it
     through the same cap and schema, writes the root config through the one
     writer with committed order preserved, leaves the legacy file for the
-    operator to delete, refuses if a root config already exists. Returns
-    (path, message)."""
+    operator to delete, refuses if a root config already exists -- or if the
+    resolver merely DISCLOSED one (a refused symlink at either name resolves
+    to no path, and overwriting it would destroy the operator's link).
+    Returns (path, message)."""
     import groups_schema  # noqa: E402
     import setup_proposal as sp  # noqa: E402
-    if repo_config.resolve(repo).path is not None:
-        raise ValueError("%s already exists; nothing to migrate" % repo_config.resolve(repo).path)
+    res = repo_config.resolve(repo)
+    if res.path is not None or res.disclosures:
+        # Not `res.path is not None` alone: a REFUSED symlink at either config
+        # name resolves to no path WITH a disclosure, so that guard read an
+        # operator's `panopticon.yml -> elsewhere` as "nothing there" and let
+        # the write below through -- and `runio._open_w_nofollow`'s
+        # unlink-and-retry then destroyed the link and wrote a regular file in
+        # its place. Anything the resolver has something to say about is a
+        # config this verb must not overwrite.
+        raise ValueError("; ".join(res.disclosures)
+                         or "%s already exists; nothing to migrate" % res.path)
     legacy = os.path.join(repo, repo_config.LEGACY_GROUPS_PATH)
     if not os.path.isfile(legacy) or os.path.islink(legacy):
         raise ValueError("no `%s` to migrate" % repo_config.LEGACY_GROUPS_PATH)

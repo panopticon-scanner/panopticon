@@ -287,6 +287,28 @@ class TestSetupFlow(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "already exists"):
                 setup_flow.migrate_config(d)
 
+    def test_migrate_config_refuses_a_symlinked_root_config(self):
+        # A REFUSED symlink at either config name resolves to `path is None`
+        # WITH a disclosure. Guarding on the path alone read that as "no root
+        # config", migration proceeded, and the one writer's unlink-and-retry
+        # then destroyed the operator's link and wrote a regular file over it.
+        legacy = "groups:\n  App:\n    match: ['app/**']\n"
+        outside_text = "version: 1\ngroups: {}\n"
+        with tempfile.TemporaryDirectory() as d:
+            self._legacy(d, legacy)
+            outside = os.path.join(d, "elsewhere.yml")
+            with open(outside, "w") as fh:
+                fh.write(outside_text)
+            link = os.path.join(d, "panopticon.yml")
+            os.symlink(outside, link)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                setup_flow.migrate_config(d)
+            self.assertTrue(os.path.islink(link), "the operator's symlink was replaced")
+            with open(outside, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), outside_text)   # never written through
+            with open(os.path.join(d, ".panopticon", "groups.yml"), encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), legacy)         # legacy file untouched
+
     def test_provision_gitignore_idempotent_second_run_noop(self):
         d = _repo(self)
         setup_flow.provision(d)
