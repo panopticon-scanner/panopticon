@@ -310,6 +310,20 @@ def described(statement, position, stage, argv):
 _BRANCH_OPEN = ("then", "do", "case")
 _BRANCH_ALTERNATE = ("else", "elif")
 _BRANCH_CLOSE = ("fi", "done", "esac")
+_ARM = re.compile(r"^[^\s]*[^\s(]\)$")
+
+
+def _arm(statement):
+    """Does this statement open a `case` arm?
+
+    The `;;` that ends an arm does not survive the statement split (it is two
+    empty separators), but the PATTERN that starts the next one does, as the
+    first word where a command was expected: `a)`, `*)`, `(a)`, and -- because
+    the split cuts on `|` -- the `b)` of an `a|b)` alternation, which is why
+    every stage is asked and not only the first.
+    """
+    return any(stage.argv and _ARM.match(stage.argv[0])
+               for stage in statement.stages)
 
 
 def regions(stmts):
@@ -322,6 +336,12 @@ def regions(stmts):
     one, and `else`/`elif` end the body before them rather than nesting inside
     it, which is what makes two arms of one `if` different answers.
 
+    A `case` arm is a body of exactly that kind, and it is the one the reader
+    has to be told about: `esac` is the only word that closes anything, so
+    without the arm patterns every arm of one `case` shares a region and a
+    checksum in `a)` clears a use in `b)` -- the last spelling left that bought
+    the credit `if`/`else` had just stopped giving.
+
     Read at the head of the statement only. A keyword is a keyword where a
     command was expected; `echo then` is an argument, and counting it would
     open a body that never closes.
@@ -330,14 +350,27 @@ def regions(stmts):
     for index, statement in enumerate(stmts):
         head = statement.stages[0].argv if statement.stages else []
         token = head[0] if head else None
-        if token in _BRANCH_CLOSE or token in _BRANCH_ALTERNATE:
+        if token in _BRANCH_CLOSE:
+            while stack and stack[-1][1] == "arm":
+                stack.pop()                     # `esac` ends the open arm too
             if stack:
                 stack.pop()
-        if token in _BRANCH_OPEN or token == "else":
+        elif token in _BRANCH_ALTERNATE:
+            if stack:
+                stack.pop()
+            if token == "else":
+                opened += 1
+                stack.append((opened, "branch"))
+        elif token in _BRANCH_OPEN:
             opened += 1
-            stack.append(opened)
+            stack.append((opened, "case" if token == "case" else "branch"))
+        elif stack and stack[-1][1] in ("case", "arm") and _arm(statement):
+            if stack[-1][1] == "arm":
+                stack.pop()                     # this pattern ends the last arm
+            opened += 1
+            stack.append((opened, "arm"))
         if stack:
-            where[index] = tuple(stack)
+            where[index] = tuple(identity for identity, _kind in stack)
     return where
 
 

@@ -737,6 +737,59 @@ class TestABranchIsNotAlwaysTaken(unittest.TestCase):
             self.FETCH + "if true; then\n" + "if true; then\n" + self.CHECK +
             "fi\n" + self.EXEC + "fi\n"))
 
+    # `case` arms are branch bodies too, and after the `if`/`else` twin was
+    # refused this was the one spelling left that still bought the credit.
+    CASE_SPLIT = ("case $x in\n"
+                  " a)\n"
+                  "   curl -sfL https://example.test/payload -o /tmp/payload\n"
+                  '   echo "%s  /tmp/payload" | sha256sum -c -\n'
+                  "   ;;\n"
+                  " b)\n"
+                  "   chmod +x /tmp/payload\n"
+                  "   ;;\n"
+                  "esac\n") % HEX
+
+    def test_one_arm_of_a_case_does_not_clear_another(self):
+        self.assertIsNotNone(wg.fetch_exec_defect(self.CASE_SPLIT))
+
+    def test_an_arm_written_on_one_line_is_read_at_all(self):
+        # `a) curl …` puts the pattern where the command was expected, which
+        # hid the fetch itself -- the same class as `then` and `f() {`.
+        script = ("case $x in\n"
+                  " a) curl -sfL https://example.test/payload -o /tmp/payload\n"
+                  '    echo "%s  /tmp/payload" | sha256sum -c - ;;\n'
+                  " b) chmod +x /tmp/payload ;;\n"
+                  "esac\n") % HEX
+        self.assertEqual(1, len(wg.fetches(script)), wg.fetches(script))
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_one_arm_holding_all_three_still_binds(self):
+        script = ("case $x in\n"
+                  " a)\n"
+                  "   curl -sfL https://example.test/payload -o /tmp/payload\n"
+                  '   echo "%s  /tmp/payload" | sha256sum -c -\n'
+                  "   chmod +x /tmp/payload\n"
+                  "   ;;\n"
+                  "esac\n") % HEX
+        self.assertIsNone(wg.fetch_exec_defect(script))
+
+    def test_an_alternation_pattern_still_opens_a_new_arm(self):
+        script = ("case $x in\n"
+                  " a|b)\n"
+                  "   curl -sfL https://example.test/payload -o /tmp/payload\n"
+                  '   echo "%s  /tmp/payload" | sha256sum -c -\n'
+                  "   ;;\n"
+                  " c)\n"
+                  "   chmod +x /tmp/payload\n"
+                  "   ;;\n"
+                  "esac\n") % HEX
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_a_check_after_the_esac_still_binds(self):
+        self.assertIsNone(wg.fetch_exec_defect(
+            self.FETCH + "case $x in\n a)\n   :\n   ;;\nesac\n" +
+            self.CHECK + self.EXEC))
+
     def test_the_message_says_it_was_the_branch(self):
         why = wg.fetch_exec_defect(
             self.FETCH + "if true; then\n" + self.CHECK + "fi\n" + self.EXEC)

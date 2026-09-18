@@ -125,10 +125,10 @@ that starts catching one fails there, and this list is edited with it.
 
 `if` branches inside the shell are read flat for what they FETCH and what they
 RUN -- folding those in can only report more. Not for what they CHECK:
-`workflow_forms.regions` reads the `then`/`else`/`do` bodies back out of the
-statement stream, and a checksum written inside a branch clears only a use
-written inside the same branch (#1697 item 3), which is `_binds` again in the
-shell's own grammar.
+`workflow_forms.regions` reads the `then`/`else`/`do` bodies -- and each arm of
+a `case` -- back out of the statement stream, and a checksum written inside a
+branch clears only a use written inside the same branch (#1697 item 3), which
+is `_binds` again in the shell's own grammar.
 """
 import collections
 import os
