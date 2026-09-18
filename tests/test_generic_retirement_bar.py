@@ -10,8 +10,10 @@ Owner ruling D1 (2026-09-15, spec 8.3 option 1) retired F5: `--host generic`
 stays as the permanent, unenforced fallback, so there is no deletion left for
 this criterion to gate. The bar itself is kept -- not as an entry criterion
 but as a NO-REGRESSION GUARD: every driver-selectable host other than the
-fallback must go on clearing both security capabilities, and a host that
-regresses on either one fails this test.
+fallback must go on clearing both security capabilities. While the fallback
+row is present the criterion below is not enforced; the regression is caught
+by `test_todays_shortfall_is_pinned_so_it_moves_consciously`, which pins the
+measured shortfall at `{}`.
 
 "proven" here is the STATIC proxy (plan 4, R-F5-3): the host CLAIMS the
 capability and maps it to a SHIPPED probe id. Live proof is per run (spec

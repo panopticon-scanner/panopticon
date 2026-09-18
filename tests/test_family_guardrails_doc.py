@@ -154,6 +154,10 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
         self.assertIn("8.3", section)
         self.assertIn("D1", section)
         self.assertIn("test_generic_retirement_bar", section)
+        # Review round 1: the method that FAILS on a capability regression is
+        # the shortfall pin, not the criterion, so the prose must name both.
+        self.assertIn("test_todays_shortfall_is_pinned_so_it_moves_consciously",
+                      section)
 
     def test_states_the_verification_commands_contributing_uses(self):
         doc = _read_doc()

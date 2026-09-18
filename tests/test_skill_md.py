@@ -148,10 +148,16 @@ class TestSkillMd(unittest.TestCase):
 
     def test_documents_the_retirement_bar_and_the_generic_fallback_history(self):
         section = _section(self.text, "## Host capabilities (5.2)", "\n## ")
-        # Tokens that exist only in the sentences this task adds. "deprecated"
-        # survives only as history (D4's original wording, superseded by D1
-        # -- spec 8.3 option 1); the current posture is "permanent fallback".
+        # Tokens that exist only in the sentences D1 rewrote (review round 1:
+        # the base paragraph passed the old three assertions verbatim, so
+        # they guarded nothing). "deprecated" survives only as history (D4's
+        # original wording, superseded by D1 -- spec 8.3 option 1).
+        self.assertIn("permanent, unenforced fallback", section)
+        self.assertIn("owner ruling D1", section)
+        self.assertIn("NO-REGRESSION GUARD", section)
         self.assertIn("test_generic_retirement_bar", section)
+        self.assertIn("test_todays_shortfall_is_pinned_so_it_moves_consciously",
+                      section)
         self.assertIn("deprecated", section)
         self.assertIn("#1070", section)
 

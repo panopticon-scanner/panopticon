@@ -392,15 +392,17 @@ say there was anywhere else for those operators to go. The decision, its
 options and a recommendation were written up as section 8.3 of the
 first-class-hosts design spec in the private docs repo (panopticon-docs #55).
 
-The owner's ruling, D1 (2026-09-15), chose **option 1**: keep `--host generic` as the permanent,
-unenforced, ack-gated fallback, and retire F5 -- there is no deletion left to
-ship. The row stays registered and selectable, and its notice was reworded
+The owner's ruling, D1 (2026-09-15), chose **option 1**: keep `--host generic`
+as the permanent, unenforced, ack-gated fallback, and retire F5 -- there is no
+deletion left to ship. The row stays registered and selectable, and its notice was reworded
 from a deprecation to a posture statement (`hosts.is_unenforced_fallback`,
 `host_disclosure.GENERIC_FALLBACK_NOTICE`): it names the capability it lacks
 and the role it plays, and drops the promise of a removal the bar was never
 able to trigger on its own. Spec 8.1's bar itself is **kept**, reframed from
-F5's entry criterion into a standing NO-REGRESSION GUARD
-(`test_generic_retirement_bar`): every remaining driver-selectable host must
-go on clearing both security capabilities, and a family PR that regresses one
-fails it. A family PR that lands after this decision still gets `--host
+F5's entry criterion into a standing NO-REGRESSION GUARD: every remaining
+driver-selectable host must go on clearing both security capabilities. Two
+tests carry it -- `test_generic_retirement_bar` states the criterion, and
+`test_todays_shortfall_is_pinned_so_it_moves_consciously` pins today's
+shortfall at `{}`, so a family PR that regresses a capability fails the pin
+(the criterion itself is only enforced once the fallback row is gone). A family PR that lands after this decision still gets `--host
 generic` as the fallback it describes, permanently.
