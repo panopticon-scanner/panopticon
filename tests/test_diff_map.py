@@ -296,10 +296,14 @@ class TestPrWorktree(unittest.TestCase):
 
     def test_acquire_is_idempotent_deterministic_path(self):
         repo = "."
-        wt = diff_map._worktree_dir(repo, 7)
-        # Same reason as the test above: the fake `worktree add` creates the
-        # directory, so `_sync_config` has a real tree to sync into on the
-        # create pass and the reuse pass alike.
+        # M9: a temp dir with `_worktree_dir` stubbed at it, like this test's
+        # three siblings -- this used to compute the REAL deterministic
+        # `panopticon-pr-7-<hash>` path and rmtree it on cleanup, which is a
+        # live --pr worktree on any machine that happens to have one open.
+        # The path's own determinism is pinned by
+        # test_worktree_dir_does_not_resolve_leaf_symlink, against a stubbed
+        # tempdir; what THIS test is about is create-once/reuse-after.
+        wt = tempfile.mkdtemp(prefix="panopticon-test-wt-")
         self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
         calls = {"fetch": 0, "wtadd": 0}
         def runner(argv, **kw):
@@ -320,8 +324,9 @@ class TestPrWorktree(unittest.TestCase):
                 out = "deadbeef\n"
             class R: returncode = 0; stdout = out; stderr = ""
             return R()
-        a = diff_map.acquire_pr(7, repo=repo, runner=runner)
-        b = diff_map.acquire_pr(7, repo=repo, runner=runner)
+        with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+            a = diff_map.acquire_pr(7, repo=repo, runner=runner)
+            b = diff_map.acquire_pr(7, repo=repo, runner=runner)
         self.assertEqual(a["worktree"], b["worktree"])
         self.assertEqual(a["worktree"], wt)
         self.assertEqual(a["base"], "main")
