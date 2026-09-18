@@ -413,6 +413,40 @@ def test_committed_exclude_paths_read_the_root_file(tmp_path):
     assert discovery._committed_exclude_paths(str(tmp_path)) == ["vendor/**"]
 
 
+def test_matrix_catalog_discloses_a_refused_symlink_config(tmp_path, capsys):
+    # `repo_config` refuses to FOLLOW a symlink at the config path, which
+    # resolves to "no document" with NO error -- the one shape that reaches
+    # _matrix_catalog's `{}` exit without an exception. Returning {} silently
+    # is a fall back to whole-repo chunking on a target that authored a
+    # config, so the refusal has to be on stderr.
+    (tmp_path / "real.yml").write_text(
+        "version: 1\ngroups:\n  A:\n    match: ['a/**']\n")
+    os.symlink("real.yml", str(tmp_path / "panopticon.yml"))
+    assert discovery._matrix_catalog(str(tmp_path)) == {}
+    assert "symlink" in capsys.readouterr().err
+    assert discovery._declares_groups(str(tmp_path)) is False
+
+
+def test_committed_matrix_ignores_a_legacy_tree(tmp_path, capsys):
+    # The non-raising half of the legacy refusal: `_committed_matrix` feeds
+    # the never-clobber merge, so it degrades to "nothing committed" rather
+    # than raise -- but it must say why, or setup silently proposes a catalog
+    # over one the operator already wrote.
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text(
+        "groups:\n  A:\n    match: ['a/**']\n")
+    assert discovery._committed_matrix(str(tmp_path)) == {}
+    assert "migrate-config" in capsys.readouterr().err
+
+
+def test_committed_exclude_paths_ignores_a_legacy_tree(tmp_path, capsys):
+    (tmp_path / ".panopticon").mkdir()
+    (tmp_path / ".panopticon" / "groups.yml").write_text(
+        "exclude_paths: ['vendor/**']\n")
+    assert discovery._committed_exclude_paths(str(tmp_path)) == []
+    assert "migrate-config" in capsys.readouterr().err
+
+
 def test_git_helpers_convert_timeout_to_assertion_error(tmp_path):
     """TimeoutExpired from a hung git subprocess must become AssertionError."""
     import subprocess

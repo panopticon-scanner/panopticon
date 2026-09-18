@@ -149,11 +149,13 @@ class TestCatalogMatchGroups(unittest.TestCase):
             # default moved 15 -> 64 and 20 files no longer split.
             out, _ = run_scan_with_err(d, "--max-per-group", "15")
             names = [g["name"] for g in out["groups"]]
-            # panopticon.yml (the committed root config) matches no group and
-            # takes the residual sink; the pkg split is what this pins.
-            self.assertEqual(names[:2], ["pkg_1", "pkg_2"])
-            self.assertEqual(sum(len(g["files"]) for g in out["groups"]
-                                 if g["name"].startswith("pkg_")), 20)
+            # The WHOLE list, so a spurious extra group fails here: the pkg
+            # split is what this pins, and `panopticon.yml` (the committed
+            # root config, #1681) matches no group and takes the sink.
+            self.assertEqual(names, ["pkg_1", "pkg_2", "Ungrouped_1"])
+            self.assertEqual({g["name"]: len(g["files"]) for g in out["groups"]},
+                             {"pkg_1": 10, "pkg_2": 10, "Ungrouped_1": 1})
+            self.assertEqual(out["ungrouped_files"], ["panopticon.yml"])
 
     def test_catalog_without_match_keys_fails_loud(self):
         # #run8 COD-B1A (owner decision 2026-08-26): a committed root config that

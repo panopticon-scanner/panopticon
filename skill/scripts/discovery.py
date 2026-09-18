@@ -629,7 +629,7 @@ def load_catalog(repo):
                 "facets": {k: _to_list(v) for k, v in (body.get("facets") or {}).items()},
             }
         return out
-    except (OSError, yaml.YAMLError, ValueError) as e:
+    except ValueError as e:
         raise ValueError("catalog parse error: %s" % e) from e
 
 @functools.lru_cache(maxsize=None)
@@ -1345,14 +1345,20 @@ def _matrix_catalog(repo):
     A missing config returns {}; an unreadable or invalid document -- and a
     legacy matrix file with no root config (#1681, no fallback) -- is raised
     as ValueError so the caller fails loud instead of silently degrading to an
-    empty catalog."""
+    empty catalog.
+
+    Disclosures are printed FIRST, before either exit. A refused symlink at
+    the config path resolves to no document with NO error (`repo_config`
+    refuses to follow it), so returning {} here is a silent fall back to
+    whole-repo chunking unless the refusal itself is on stderr -- same for a
+    stale `settings`-era JSON beside an absent config."""
     doc = repo_config.read_document(repo)
+    for line in doc.disclosures:
+        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
     if doc.errors:
         raise ValueError("; ".join(doc.errors))
     if doc.doc is None:
         return {}
-    for line in doc.disclosures:
-        print("%s: %s" % (repo_config.CONFIG_NAMES[0], line), file=sys.stderr)
     groups, errs = groups_schema.parse_groups(doc.doc)
     for e in errs:
         print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
