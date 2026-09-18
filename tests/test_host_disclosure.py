@@ -161,18 +161,21 @@ class TestTheWordingRule(unittest.TestCase):
         self.assertIn("settings.local.json",
                       host_disclosure.remedy(hosts.ARTIFACT_WRITE_GUARD, "claude"))
 
-    def test_the_generic_deprecation_says_what_and_why_it_is_still_here(self):
+    def test_the_generic_fallback_notice_says_what_and_why_it_is_still_here(self):
         # D4 said "deprecate now, remove when the families land", and the line
         # said generic was "removed once every remaining host clears the
         # retirement bar". That became misleading at #1621: the bar is met on
         # this base (claude, codex and kimi are the hosts it examines and
         # all three clear it) and generic is still the only path a Gemini
-        # operator has. The line must name the flag, say it is deprecated,
-        # say why it is unsafe to rely on, and say what it is still FOR --
-        # never promise a removal the bar cannot trigger on its own.
-        text = host_disclosure.GENERIC_DEPRECATION
-        for token in ("--host generic", "deprecated", "unenforced",
-                      "ack-gated", "family runner", "gemini"):
+        # operator has. Owner ruling D1 (spec 8.3 option 1) settled it: keep
+        # generic as the permanent ack-gated fallback and retire F5. The line
+        # must name the flag, say it is unenforced and ack-gated, say what it
+        # is still FOR, and never call it deprecated or promise a removal the
+        # bar cannot trigger on its own.
+        text = host_disclosure.GENERIC_FALLBACK_NOTICE
+        self.assertNotIn("deprecat", text.lower())
+        for token in ("--host generic", "unenforced", "ack-gated",
+                      "family runner", "gemini", "not going away"):
             self.assertIn(token, text, token)
         self.assertNotIn("removed once every remaining host", text)
         self.assertLess(len(text), 400, "one line, not a paragraph")

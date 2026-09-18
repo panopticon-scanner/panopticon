@@ -54,8 +54,8 @@ class TestDriverSetup(unittest.TestCase):
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
         self.assertEqual("return_json", entry["delivery"])
 
-    def test_setup_host_generic_prints_the_deprecation_once(self):
-        # D4: run_setup_flow resolves `host` itself (a manifest field it pins
+    def test_setup_host_generic_prints_the_fallback_notice_once(self):
+        # D1: run_setup_flow resolves `host` itself (a manifest field it pins
         # at creation, not driver.py's run() path), so the notice is printed
         # here rather than from driver.py. Pin the count, not presence: a
         # single `driver setup` invocation must not repeat it per phase.
@@ -64,7 +64,7 @@ class TestDriverSetup(unittest.TestCase):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             setup.run_setup_flow(args)
-        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_DEPRECATION))
+        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_FALLBACK_NOTICE))
 
     def test_setup_scan_is_deliberately_not_model_bound(self):
         # R-F4-2. setup-scan has no role in dispatch.ROLE_FILES and no profile

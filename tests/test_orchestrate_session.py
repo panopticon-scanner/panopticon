@@ -386,11 +386,12 @@ class TestSetupEstablishesHostPosture(LoopCase):
                              "setup overwrote the review run's own evidence")
 
 
-    def test_the_deprecation_notice_is_printed_once_per_invocation(self):
-        # Fix round 1, F4: `run_setup_flow` prints the D4 notice itself ("once
-        # per `driver setup` call") and the injected posture step prints it
-        # again for the same resolved host -- so wiring the step in made
-        # `driver loop --setup --host generic` say it twice per invocation.
+    def test_the_fallback_notice_is_printed_once_per_invocation(self):
+        # Fix round 1, F4: `run_setup_flow` prints the fallback notice itself
+        # ("once per `driver setup` call") and the injected posture step
+        # prints it again for the same resolved host -- so wiring the step in
+        # made `driver loop --setup --host generic` say it twice per
+        # invocation.
         d, _ = self._repo()
         args = driver.build_parser().parse_args(
             ["loop", d, "--setup", "--host", "generic", "--mode", "session",
@@ -400,7 +401,7 @@ class TestSetupEstablishesHostPosture(LoopCase):
              contextlib.redirect_stderr(err):
             status = orchestrate.loop(args)
         self.assertEqual(status["status"], "dispatch", status)
-        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_DEPRECATION))
+        self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_FALLBACK_NOTICE))
 
     def test_a_posture_change_between_two_setup_invocations_is_not_drift(self):
         # Fix round 1, F2: the drift refusal is a statement about ONE RUN --
