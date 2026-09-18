@@ -370,7 +370,9 @@ class HostRunner:
         The bound on launches after `stop` says yes is the same pool width as
         above: up to `width` entries were already running when the answer came
         back, and those are the ones drained. Cancelled futures are skipped,
-        never `.result()`-ed.
+        never `.result()`-ed. A `stop` that RAISES is read as "carry on": it is
+        the consumer's own predicate, not an interrupt, and letting it reach
+        the arm below would terminate this batch's children.
         """
         entries = list(entries)
         if not entries:
@@ -399,8 +401,14 @@ class HostRunner:
             for f in concurrent.futures.as_completed(futures):
                 yielded.add(f)
                 yield f.result()
-                if stop is not None and stop():
-                    asked = True
+                try:
+                    asked = stop is not None and bool(stop())
+                except Exception:      # noqa: BLE001 -- the consumer's own predicate, and
+                    # a broken one means "carry on". Unwrapped it fell into the arm
+                    # below, which terminates this batch's children -- the one thing
+                    # the stop path promises never to do -- and re-raised into the loop.
+                    asked = False
+                if asked:
                     break
             if asked:
                 # The cancel has to come first and the SURVIVORS be listed after

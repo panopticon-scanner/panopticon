@@ -237,6 +237,22 @@ class TestTheCooperativeStop(unittest.TestCase):
         self.assertLessEqual(len(calls), len(seen))
         self.assertTrue(calls and calls[0] >= 1)
 
+    def test_a_stop_that_raises_is_not_the_interrupt_path(self):
+        # A consumer's predicate is not a Ctrl-C. Unwrapped it fell into the
+        # `except BaseException` arm, which terminates this batch's children --
+        # the one thing the stop path promises never to do -- and re-raised
+        # into the loop. It means "carry on".
+        seen = []
+        runner, launched, terminated = self._runner(seen)
+
+        def stop():
+            raise RuntimeError("the tally blew up")
+
+        self._drain(runner, seen, [{"id": "e%d" % i} for i in range(8)], stop=stop)
+        self.assertEqual(8, len(launched), launched)
+        self.assertEqual(sorted(seen), sorted(launched))
+        self.assertEqual([], terminated, "a raising stop terminated the children")
+
     def test_no_stop_at_all_launches_the_whole_batch(self):
         seen = []
         runner, launched, terminated = self._runner(seen)
