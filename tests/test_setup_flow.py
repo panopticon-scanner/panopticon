@@ -915,7 +915,7 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
         import scripts.setup_proposal as sp
         import scripts.groups_schema as groups_schema
         import yaml
-        text = sp.dump_groups_yaml(
+        text = sp.dump_config_yaml(
             {"Checkout": {"match": ["src/checkout/**"], "panels": ["SEC"]}},
             exclude_paths=["tests/fixtures/**", "vendor/**"])
         doc = yaml.safe_load(text)
@@ -926,19 +926,41 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
     def test_dump_omits_the_key_when_there_is_nothing_to_carry(self):
         import scripts.setup_proposal as sp
         import yaml
-        text = sp.dump_groups_yaml({"G": {"match": ["a/**"], "panels": ["SEC"]}})
+        text = sp.dump_config_yaml({"G": {"match": ["a/**"], "panels": ["SEC"]}})
         self.assertNotIn("exclude_paths", yaml.safe_load(text))
 
     def test_the_groups_mapping_still_round_trips(self):
         import scripts.setup_proposal as sp
         import scripts.groups_schema as groups_schema
         import yaml
-        text = sp.dump_groups_yaml(
+        text = sp.dump_config_yaml(
             {"Checkout": {"match": ["src/checkout/**"], "panels": ["SEC"]}},
             exclude_paths=["tests/fixtures/**"])
         groups, errors = groups_schema.parse_groups(yaml.safe_load(text))
         self.assertEqual(errors, [])
         self.assertIn("Checkout", groups)
+
+    def test_dump_config_yaml_puts_version_first_and_settings_last(self):
+        import setup_proposal as sp
+        import yaml
+        text = sp.dump_config_yaml({"App": {"match": ["src/**"]}},
+                                   exclude_paths=["vendor/**"],
+                                   settings={"max_per_group": 48, "max_groups": None})
+        body = text.split(
+            "# parent; its subgroups are its layers and roll up to it in the report.\n"
+            "# settings: max_per_group / max_groups / max_verify (positive ints).\n", 1)[1]
+        self.assertTrue(body.startswith("version: 1\n"))
+        self.assertLess(body.index("groups:"), body.index("exclude_paths:"))
+        self.assertLess(body.index("exclude_paths:"), body.index("settings:"))
+        self.assertIn("  max_per_group: 48\n", body)
+        self.assertNotIn("max_groups", body)          # None is omitted
+        doc = yaml.safe_load(body)
+        self.assertEqual(doc["version"], 1)
+
+    def test_dump_config_yaml_omits_empty_settings_and_exclusions(self):
+        import setup_proposal as sp
+        body = sp.dump_config_yaml({"App": {"match": ["src/**"]}}, header=False)
+        self.assertEqual(body, "version: 1\ngroups:\n  App:\n    match:\n    - src/**\n")
 
     def test_ingest_carries_the_committed_exclusions_into_the_draft(self):
         import scripts.groups_schema as groups_schema

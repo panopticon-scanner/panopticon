@@ -2,6 +2,7 @@
 import unittest
 
 import scripts.groups_schema as gs
+import scripts.groups_schema as groups_schema
 
 
 class TestGroupsSchema(unittest.TestCase):
@@ -260,3 +261,32 @@ class TestGlobsAreRefusedRatherThanMiscompiled(unittest.TestCase):
                      "**/vendor/**", "/README.md", "LICENSE*", "docs/"):
             with self.subTest(glob=glob):
                 self.assertIsNone(gs.glob_defect(glob))
+
+
+class TestParseSettings(unittest.TestCase):
+    def test_absent_is_all_none_no_errors(self):
+        self.assertEqual(groups_schema.parse_settings({}),
+                         ({"max_per_group": None, "max_groups": None, "max_verify": None}, []))
+
+    def test_positive_ints_are_honoured(self):
+        s, errs = groups_schema.parse_settings(
+            {"settings": {"max_per_group": 48, "max_groups": 40, "max_verify": 30}})
+        self.assertEqual(s, {"max_per_group": 48, "max_groups": 40, "max_verify": 30})
+        self.assertEqual(errs, [])
+
+    def test_bad_values_are_ignored_with_a_disclosure(self):
+        s, errs = groups_schema.parse_settings(
+            {"settings": {"max_per_group": 0, "max_groups": "40", "max_verify": True}})
+        self.assertEqual(s, {"max_per_group": None, "max_groups": None, "max_verify": None})
+        self.assertEqual(len(errs), 3)
+
+    def test_unknown_settings_keys_are_disclosed_and_ignored(self):
+        s, errs = groups_schema.parse_settings({"settings": {"security": "standard", "max_verify": 5}})
+        self.assertEqual(s["max_verify"], 5)
+        self.assertNotIn("security", s)
+        self.assertIn("security", errs[0])
+
+    def test_non_mapping_settings_is_an_error(self):
+        s, errs = groups_schema.parse_settings({"settings": [1, 2]})
+        self.assertEqual(s, {"max_per_group": None, "max_groups": None, "max_verify": None})
+        self.assertIn("mapping", errs[0])

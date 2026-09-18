@@ -17,6 +17,7 @@ import yaml
 
 import coverage_model
 import groups_schema
+import repo_config  # noqa: E402
 
 # 5.2: names the engine mints itself -- the Tests sweep, the Commons fold, the
 # residual sink, and the residual LAYER. A catalog entry or alias carrying one
@@ -700,18 +701,14 @@ def _yaml_leaf(body):
     return entry
 
 
-def dump_groups_yaml(groups, header=True, exclude_paths=None):
-    """Serialize a groups mapping to canonical mapping-form groups.yml text.
-    Insertion order preserved; only non-empty fields emitted; a parent body
-    (`subgroups`) nests its leaves under the parent name (the #1305 schema);
-    round-trips through groups_schema.parse_groups. yaml.safe_dump handles
-    quoting of indicator-leading scalars (e.g. '**/auth/**').
-
-    `exclude_paths` (#1504) is carried through as a top-level sibling of
-    `groups:`. It is NOT part of the mapping this function otherwise shapes, so
-    a draft written without it silently dropped a committed exclusion -- and
-    the operator is told to move the draft over the committed file. Omitted
-    entirely when empty, so a repo that never had the key does not gain one."""
+def dump_config_yaml(groups, exclude_paths=None, settings=None, header=True):
+    """Serialize the ROOT config document (#1681): `version: 1` first, then
+    the groups mapping in insertion order, then `exclude_paths:` and
+    `settings:` when non-empty. The ONE writer: the setup draft, the flat
+    seed, and `migrate-config` all go through it, so there is one schema.
+    Round-trips through repo_config.read_document + groups_schema.parse_*.
+    A `settings` value of None is omitted so a repo never gains a key it did
+    not ask for."""
     cleaned = {}
     for name, body in groups.items():
         subs = body.get("subgroups")
@@ -719,15 +716,20 @@ def dump_groups_yaml(groups, header=True, exclude_paths=None):
             cleaned[name] = {sub: _yaml_leaf(leaf) for sub, leaf in subs.items()}
         else:
             cleaned[name] = _yaml_leaf(body)
-    document = {"groups": cleaned}
+    document = {"version": repo_config.VERSION, "groups": cleaned}
     if exclude_paths:
         document["exclude_paths"] = list(exclude_paths)
+    kept = {k: v for k, v in (settings or {}).items() if v is not None}
+    if kept:
+        document["settings"] = kept
     body_text = yaml.safe_dump(document, sort_keys=False,
                                default_flow_style=False, allow_unicode=True)
     if not header:
         return body_text
-    return ("# panopticon groups catalog (matrix form) -- match/tests/panels/exclude.\n"
-            "# gitignore-flavored globs; first matching group wins; edit and commit.\n"
-            "# A group whose keys are names (no match:) is a parent; its subgroups\n"
-            "# are its layers and roll up to it in the report.\n"
+    return ("# %s -- reviewed and committed like any other linter config.\n"
+            % repo_config.CONFIG_NAMES[0]
+            + "# groups: match/tests/panels/exclude, gitignore-flavored globs; first\n"
+            "# matching group wins. A group whose keys are names (no match:) is a\n"
+            "# parent; its subgroups are its layers and roll up to it in the report.\n"
+            "# settings: max_per_group / max_groups / max_verify (positive ints).\n"
             + body_text)
