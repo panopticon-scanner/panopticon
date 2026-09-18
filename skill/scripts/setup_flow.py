@@ -464,6 +464,13 @@ def _check_groups_manifest(repo):
     doc = repo_config.read_document(repo)
     if doc.errors:
         return ("groups-manifest", False, "; ".join(doc.errors))
+    if doc.path is None and doc.disclosures:
+        # A REFUSAL resolves to no document and no error -- a symlink at either
+        # config name is the case that matters (`repo_config.resolve` declines
+        # to follow it). Reading only `doc.doc` would report that planted link
+        # as "nothing configured yet": an informational row for a refusal, and
+        # a silent fall back to whole-repo chunking.
+        return ("groups-manifest", False, "; ".join(doc.disclosures))
     if doc.doc is None:
         return ("groups-manifest", None,
                 "no committable config yet -- --setup seeds one; "
@@ -933,7 +940,14 @@ def migrate_config(repo):
         data = fh.read(repo_config.MAX_CONFIG_BYTES + 1)
     if len(data) > repo_config.MAX_CONFIG_BYTES:
         raise ValueError("%s exceeds %d bytes; refused" % (legacy, repo_config.MAX_CONFIG_BYTES))
-    doc = yaml.safe_load(data.decode("utf-8")) or {}
+    try:
+        # The cap, the shape, the schema and the PARSE are all refusals in one
+        # currency: `driver migrate-config` catches ValueError and prints it, so
+        # a YAMLError escaping here would be a traceback where every sibling
+        # refusal is a message.
+        doc = yaml.safe_load(data.decode("utf-8")) or {}
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ValueError("%s unreadable: %s" % (legacy, exc)) from exc
     if not isinstance(doc, dict):
         raise ValueError("%s must be a mapping" % legacy)
     raw = doc.get("groups") or {}
@@ -1001,6 +1015,25 @@ def _committed_exclude_paths(repo):
     return globs
 
 
+def _draft_settings(repo, max_per_group, max_groups):
+    """The `settings:` mapping the draft carries: everything the operator
+    COMMITTED, overlaid by the sizes they passed on this invocation.
+
+    #1504, one key over. The draft is what the completion message tells them
+    to move over the committed file, so a key it does not carry is a key they
+    lose by following our own instructions -- and `settings:` holds one the
+    CLI cannot express at setup time (`max_verify`, read by
+    `driver._cli_flags`). Rebuilding it from the two arguments would drop that
+    silently, exactly as the groups-only draft used to drop `exclude_paths`.
+    The writer omits a None, so an unset key stays unset."""
+    import groups_schema  # noqa: E402
+    settings, _errors = groups_schema.parse_settings(repo_config.read_document(repo).doc or {})
+    for key, value in (("max_per_group", max_per_group), ("max_groups", max_groups)):
+        if value is not None:
+            settings[key] = value
+    return settings
+
+
 def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None):
     """Ingest a setup-scan proposal -> assemble (aliases, layers, floors) ->
     stage 3 (grouping_engine.plan_groups: scoped assignment, Tests sweep,
@@ -1059,13 +1092,13 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     # Serialize everything BEFORE opening any file: a serializer failure must
     # not leave a truncated draft beside a missing report.
     # #1504: the merge above shapes the `groups:` mapping only. Any top-level
-    # key the operator committed -- today `exclude_paths` (#1136) -- has to be
-    # carried across explicitly, or the draft they are told to move over the
-    # committed file silently drops it and puts an excluded corpus back in
-    # scope for every domain and every tool scan.
+    # key the operator committed -- `exclude_paths` (#1136) and `settings:`
+    # (#1681) -- has to be carried across explicitly, or the draft they are told
+    # to move over the committed file silently drops it and puts an excluded
+    # corpus back in scope for every domain and every tool scan.
     draft_text = sp.dump_config_yaml(
         merged, exclude_paths=_committed_exclude_paths(repo),
-        settings={"max_per_group": max_per_group, "max_groups": max_groups})
+        settings=_draft_settings(repo, max_per_group, max_groups))
     report_text = grouping_engine.format_report(report, disclosure)
     report_json = json.dumps({"schema_version": 1, "report": report, "disclosure": disclosure,
                               "diff": diff}, indent=1, sort_keys=True) + "\n"

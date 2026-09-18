@@ -129,6 +129,21 @@ class TestDriverSetup(unittest.TestCase):
         self.assertIn(".panopticon/", gi)
         self.assertNotIn(".panopticon/*", gi)   # not migrated in place
 
+    def test_scan_discloses_a_stale_config_json_on_stderr(self):
+        # #1681 retired the JSON config. It is never read and never deleted for
+        # the operator -- so the one thing setup owes them is saying so, once,
+        # where they will see it. (`provision` returns the line; this is the
+        # only place that prints it.)
+        d = self._repo()
+        os.makedirs(runio._pano(d), exist_ok=True)
+        with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
+            json.dump({"max_per_group": 5}, fh)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertIn("config.json", err.getvalue())
+        self.assertIn("settings:", err.getvalue())
+
     def test_ingest_writes_draft_then_completes(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])

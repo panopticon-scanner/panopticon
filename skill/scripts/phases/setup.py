@@ -354,9 +354,9 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
             result["message"] = (
                 "setup complete -- read .panopticon/setup-report.md, then DIFF "
                 "%s against %s before moving it over: the draft rebuilds "
-                "`groups:`, carries a committed `exclude_paths:` across and "
-                "records the `settings:` you passed, but any other hand-kept "
-                "top-level key is yours to re-apply"
+                "`groups:`, carries a committed `exclude_paths:` and "
+                "`settings:` across and records the sizes you passed, but any "
+                "other hand-kept top-level key is yours to re-apply"
                 % (repo_config.DRAFT_NAME, repo_config.CONFIG_NAMES[0]))
         else:
             msg = ("setup complete -- vocab-absent fallback seeded a flat %s; "

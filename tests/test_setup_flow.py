@@ -56,6 +56,19 @@ def test_check_groups_manifest_reports_an_unreadable_root_config(tmp_path):
     assert "unreadable" in detail.lower()
 
 
+def test_check_groups_manifest_reports_a_refused_symlink_not_absence(tmp_path):
+    # A symlink at the config path resolves to NO document and NO error
+    # (`repo_config` refuses to follow it), so reading only `doc.doc` reports
+    # the planted link as "nothing configured yet" -- an informational row for
+    # a refusal, and a silent fall back to whole-repo chunking.
+    (tmp_path / "elsewhere.yml").write_text("version: 1\ngroups: {}\n")
+    (tmp_path / "panopticon.yml").symlink_to(tmp_path / "elsewhere.yml")
+    name, ok, detail = setup_flow._check_groups_manifest(str(tmp_path))
+    assert name == "groups-manifest"
+    assert ok is False
+    assert "symlink" in detail
+
+
 def test_check_groups_manifest_never_raises_on_a_legacy_tree(tmp_path):
     # #1681: `phases/readiness` calls this directly, so a tree still carrying
     # the legacy matrix file and no root config must produce a readiness ROW
@@ -199,6 +212,57 @@ class TestSetupFlow(unittest.TestCase):
             self.assertEqual(doc["groups"]["Orchestration"]["Phases"]["tests"], ["tests/phases/**"])
             self.assertEqual(doc["exclude_paths"], ["vendor/**"])
 
+    def test_migrate_config_normalizes_the_legacy_list_form(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
+                fh.write("groups:\n  - name: App\n    match: ['app/**']\n"
+                         "  - name: Web\n    match: ['web/**']\n")
+            path, _message = setup_flow.migrate_config(d)
+            with open(path, encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual(list(doc["groups"]), ["App", "Web"])
+            self.assertEqual(doc["groups"]["App"]["match"], ["app/**"])
+
+    def _legacy(self, d, body, mode="w"):
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        path = os.path.join(d, ".panopticon", "groups.yml")
+        with open(path, mode) as fh:
+            fh.write(body)
+        return path
+
+    def test_migrate_config_refuses_an_unreadable_legacy_file(self):
+        # The cap, the shape and the parse are all refusals in the SAME
+        # currency -- ValueError -- so `driver migrate-config` has one thing
+        # to catch and the operator one kind of message to read.
+        with tempfile.TemporaryDirectory() as d:
+            self._legacy(d, "groups: [valid yaml: [")
+            with self.assertRaisesRegex(ValueError, "unreadable"):
+                setup_flow.migrate_config(d)
+        with tempfile.TemporaryDirectory() as d:
+            self._legacy(d, "- just\n- a list\n")
+            with self.assertRaisesRegex(ValueError, "must be a mapping"):
+                setup_flow.migrate_config(d)
+        cap = setup_flow.repo_config.MAX_CONFIG_BYTES
+        with tempfile.TemporaryDirectory() as d:
+            self._legacy(d, "groups:\n  App:\n    match: ['a/**']\n#" + "x" * cap)
+            with self.assertRaisesRegex(ValueError, "exceeds %d bytes" % cap):
+                setup_flow.migrate_config(d)
+
+    def test_migrate_config_refuses_a_symlinked_legacy_file(self):
+        # A target repo can commit `.panopticon/groups.yml` as a link to any
+        # file the invoking user can read; migrate would otherwise parse it and
+        # publish whatever it found as the repo's own config.
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".panopticon"))
+            with open(os.path.join(d, "elsewhere.yml"), "w") as fh:
+                fh.write("groups:\n  Sneaky:\n    match: ['**']\n")
+            os.symlink(os.path.join(d, "elsewhere.yml"),
+                       os.path.join(d, ".panopticon", "groups.yml"))
+            with self.assertRaisesRegex(ValueError, "to migrate"):
+                setup_flow.migrate_config(d)
+            self.assertIsNone(setup_flow.repo_config.resolve(d).path)
+
     def test_migrate_config_refuses_when_a_root_file_exists_or_no_legacy(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaisesRegex(ValueError, "no `.panopticon/groups.yml`"):
@@ -305,6 +369,38 @@ class TestSetupFlow(unittest.TestCase):
             self.assertIn("version: 1\n", text)
             self.assertIn("settings:\n  max_per_group: 12\n", text)
             self.assertTrue(os.path.isfile(os.path.join(d, ".panopticon", "setup-report.md")))
+
+    def test_the_draft_carries_a_committed_setting_the_cli_cannot_express(self):
+        # The #1504 failure one key over: the draft used to be told the two
+        # numbers the CLI passes and nothing else, so a committed `max_verify`
+        # -- live, read by driver._cli_flags -- vanished the moment the
+        # operator followed the completion message and moved the draft over.
+        # The draft is the committed settings OVERLAID by what was passed.
+        with self._ingest_fixture() as (d, pp):
+            with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+                fh.write("version: 1\ngroups: {}\n"
+                         "settings:\n  max_per_group: 8\n  max_verify: 4\n")
+            result = setup_flow.ingest_proposal(d, pp, max_per_group=12)
+            self.assertTrue(result["ok"], result.get("errors"))
+            with open(result["draft"], encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual(doc["settings"], {"max_per_group": 12, "max_verify": 4})
+
+    def test_the_draft_keeps_the_committed_sizes_when_no_flags_were_passed(self):
+        with self._ingest_fixture() as (d, pp):
+            with open(os.path.join(d, "panopticon.yml"), "w") as fh:
+                fh.write("version: 1\ngroups: {}\n"
+                         "settings:\n  max_per_group: 8\n  max_groups: 3\n")
+            result = setup_flow.ingest_proposal(d, pp)
+            with open(result["draft"], encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+            self.assertEqual(doc["settings"], {"max_per_group": 8, "max_groups": 3})
+
+    def test_the_draft_omits_settings_a_repo_never_asked_for(self):
+        with self._ingest_fixture() as (d, pp):
+            result = setup_flow.ingest_proposal(d, pp)
+            with open(result["draft"], encoding="utf-8") as fh:
+                self.assertNotIn("settings", yaml.safe_load(fh))
 
     def test_ingest_malformed_proposal_fails_no_draft(self):
         d = _repo(self)
@@ -1587,10 +1683,16 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
                   encoding="utf-8") as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
-        # #1681: the draft is at the ROOT now; the two report artifacts stay
-        # under .panopticon/. Both plants have to be refused.
-        plants = {setup_flow.repo_config.DRAFT_NAME:
-                  setup_flow.repo_config.draft_path(d)}
+        # #1681: the draft is at the ROOT now, so the two halves of the guard
+        # answer differently and BOTH are asserted here. `_confine_artifact_path`
+        # raises only for a path that escapes `.panopticon` through a symlinked
+        # component, so the ValueError below comes from the REPORT plants; at
+        # the root the link is refused by O_NOFOLLOW and then unlinked and
+        # replaced with a fresh regular file (#1095's contract, the one
+        # `.gitignore` has always had). Either way nothing is written THROUGH a
+        # link -- which is what every victim staying SECRET proves.
+        draft = setup_flow.repo_config.draft_path(d)
+        plants = {setup_flow.repo_config.DRAFT_NAME: draft}
         for name in ("setup-report.md", "setup-report.json"):
             plants[name] = os.path.join(root, name)
         for name, planted in plants.items():
@@ -1599,6 +1701,8 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
             setup_flow.ingest_proposal(d)
         for name in plants:
             self._assert_untouched(os.path.join(d, "victim-%s" % name))
+        self.assertFalse(os.path.islink(draft), "the root link survived the write")
+        self.assertTrue(os.path.isfile(draft))
 
     def test_the_writes_still_land_on_an_honest_tree(self):
         # The guard must not be the thing that breaks setup: same artifacts,
