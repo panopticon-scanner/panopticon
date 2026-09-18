@@ -305,7 +305,10 @@ class Runner(base.HostRunner):
             if status == "complete":
                 shutil.rmtree(home, ignore_errors=True)
                 self._drop_pointer()
-                self.kimi_home = self.run_home = None
+                # skills_dir too: it lives inside the tree just removed, and
+                # a runner holding a deleted path beside two honest `None`s is
+                # how a later `--skills-dir=<gone>` would get built (R1-7).
+                self.kimi_home = self.run_home = self.skills_dir = None
             else:
                 removed = kimi_home_mod.strip_secrets(home)   # R3-6: fixed text below, never the names it returned
                 note = ("its config.toml and credential links were removed, so nothing left "

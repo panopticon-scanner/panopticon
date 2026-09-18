@@ -85,6 +85,18 @@ class TestSkillsDirectory(unittest.TestCase):
             unprepared.command(_entry(True), "kimi-code/k3")
         self.assertIn("not prepared", str(raised.exception))
 
+    def test_a_clean_teardown_forgets_the_directory_it_deleted(self):
+        # `skills_dir` lives INSIDE the home `teardown("complete")` removes, so
+        # a runner that kept the path would hold a name that no longer exists
+        # while `kimi_home`/`run_home` say None -- and a later `command()`
+        # would emit `--skills-dir=<deleted path>`, whose effect on the CLI is
+        # unmeasured (a fall-back to auto-discovery being the worst case).
+        directory = self.r.skills_dir
+        self.r.teardown("complete")
+        self.assertFalse(os.path.exists(directory))
+        self.assertIsNone(self.r.skills_dir)
+        self.assertIsNone(self.r.kimi_home)
+
     def test_it_is_a_real_directory_the_run_minted_not_a_reused_path(self):
         # `prepare` mints a fresh home every time (N2), so the skills dir
         # cannot be a path a previous run -- or the reviewed tree -- named.
