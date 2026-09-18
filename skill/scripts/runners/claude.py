@@ -70,8 +70,40 @@ class Runner(base.HostRunner):
         `--max-budget-usd` is a WHOLE-RUN knob the loop enforces itself off
         the dispatch ledger (spec 4.3), and the per-entry parameter this used
         to carry was set by nobody -- a flag that could never reach a launch,
-        reading like a live cap."""
-        cmd = [self.CLI, "-p", "--settings", settings_path, "--output-format", "json",
+        reading like a live cap.
+
+        THE THREE DISCOVERY FLAGS (#1657 step 2). The child is launched in the
+        REVIEWED TREE, which is exactly where `claude` looks for
+        `.claude/settings.json`, `.claude/settings.local.json`, `.mcp.json`,
+        `.claude/skills/*/SKILL.md` and `.claude/commands/**`. A hostile target
+        ships any of those and they arrive as configuration, not as data:
+
+        * `--setting-sources user` drops the project and local settings, and
+          with them any hooks those files declare. `--settings` is a SEPARATE
+          channel that still applies under it -- MEASURED 2026-09-18: on a real
+          launch carrying all three flags, a PreToolUse hook registered only in
+          the `--settings` file fired and denied a `Read`, and the envelope's
+          `permission_denials` named it (`--restricted`'s own help text says
+          the same in as many words). So THIS run's `host-settings.json`, where
+          `Guards.arm` registers the read and write hooks, still arms. The
+          standing regression check is the `denials` field of
+          `runs/<tag>/dispatch-ledger.jsonl`: it is fed from that same
+          `permission_denials` array, so a run whose rows are all `[]` while
+          the replies carry findings is an unarmed guard.
+        * `--strict-mcp-config` -- the loop passes no `--mcp-config`, so this
+          leaves the reviewer with no MCP servers at all rather than the
+          target's.
+        * `--disable-slash-commands` -- "Disable all skills" (`claude --help`),
+          so it is what closes the target's `.claude/skills/*/SKILL.md` as well
+          as `.claude/commands/**`. Reviewers run registered `--agent` shells
+          and invoke neither, so it costs nothing.
+
+        NEVER `--bare` or `--safe-mode`: both disable hooks, so either one
+        would silently un-arm both guards while reading like hardening.
+        """
+        cmd = [self.CLI, "-p", "--settings", settings_path,
+               "--setting-sources", "user", "--strict-mcp-config",
+               "--disable-slash-commands", "--output-format", "json",
                "--no-session-persistence", "--max-turns", str(int(max_turns))]
         if entry.get("enforced") and entry.get("agent"):
             cmd += ["--agent", entry["agent"]]

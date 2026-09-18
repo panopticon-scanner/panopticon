@@ -6,6 +6,7 @@ from unittest import mock
 
 import pytest
 
+from scripts import codex_host
 from scripts.runners import base, codex, outage
 
 
@@ -150,6 +151,75 @@ def entry():
             "scope": {"files": [], "dirs": [], "reads": []}}
 
 
+def scratch_argv(tmp_path, name="codex-cwd"):
+    """An argv shaped like `codex_host.command`'s, whose `--cd` scratch is
+    registered exactly as a real launch registers it.
+
+    #1657 step 2: the launch cwd is now looked up in codex_host's own registry
+    (`codex_host.launch_cwd`), so a fake argv with no `--cd` is no longer a
+    launchable one. `run_entry`'s `finally` releases the registration through
+    `cleanup_command`, the same way a real launch does.
+    """
+    scratch = tmp_path / name
+    scratch.mkdir()
+    runtime = tmp_path / (name + "-runtime")
+    runtime.mkdir()
+    with codex_host._COMMAND_LOCK:
+        codex_host._COMMAND_DIRS[str(scratch)] = (str(runtime), str(tmp_path))
+    return ["codex", "exec", "--cd", str(scratch), "--json", "-"]
+
+
+@pytest.fixture(autouse=True)
+def _release_registered_scratches(tmp_path):
+    yield
+    for path in tuple(codex_host._COMMAND_DIRS):
+        if path.startswith(str(tmp_path)):
+            codex_host.cleanup_command(["--cd", path])
+
+
+def test_the_launch_runs_in_the_scratch_directory_cd_names(tmp_path):
+    # #1657 step 2 / CX-9: the process cwd used to be the REVIEW ROOT while
+    # `--cd` named an external scratch, so a target's `.codex/skills`,
+    # `AGENTS.md` and `.codex/config.toml` were still one discovery walk away
+    # from the child, depending on which root the CLI keys off. Same directory
+    # now, and the question stops mattering.
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen.update(command=command, **kwargs)
+        return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)
+
+    argv = scratch_argv(tmp_path)
+    overlay = {base.ENV_ENTRY_ID: entry()["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
+               base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
+    review_root = tmp_path / "review"
+    review_root.mkdir()
+    with mock.patch.object(codex.codex_host, "command", return_value=argv), \
+            mock.patch.object(codex.codex_host, "validate_command"):
+        runner = codex.Runner(runner=fake_run)
+        runner.prepare(str(tmp_path), str(review_root))
+        assert runner.run_entry(entry(), overlay).ok
+    assert seen["cwd"] == argv[argv.index("--cd") + 1]
+    assert seen["cwd"] != str(review_root)
+
+
+def test_an_unregistered_scratch_is_never_launched_in(tmp_path):
+    # The refusal is codex_host.launch_cwd's, and `run_entry` turns it into a
+    # failed entry rather than a launch in a directory nothing allocated.
+    fake_run = mock.Mock(side_effect=AssertionError("must not launch"))
+    foreign = tmp_path / "not-ours"
+    foreign.mkdir()
+    with mock.patch.object(codex.codex_host, "command",
+                           return_value=["codex", "exec", "--cd", str(foreign), "-"]), \
+            mock.patch.object(codex.codex_host, "validate_command"):
+        runner = codex.Runner(runner=fake_run)
+        runner.prepare(str(tmp_path), str(tmp_path))
+        result = runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]})
+    assert not result.ok
+    assert "not allocated" in result.error
+    fake_run.assert_not_called()
+
+
 def test_run_entry_inherits_environment_and_passes_prompt_on_stdin(tmp_path):
     seen = {}
 
@@ -160,7 +230,7 @@ def test_run_entry_inherits_environment_and_passes_prompt_on_stdin(tmp_path):
     overlay = {base.ENV_ENTRY_ID: entry()["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
                base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
     with mock.patch.dict(os.environ, {"PATH": "/fixture/bin", "HOME": str(tmp_path)}, clear=True), \
-            mock.patch.object(codex.codex_host, "command", return_value=["codex", "exec", "-"]) as command, \
+            mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)) as command, \
             mock.patch.object(codex.codex_host, "validate_command") as validate:
         runner = codex.Runner(runner=fake_run)
         runner.prepare(str(tmp_path), str(tmp_path))
@@ -169,7 +239,10 @@ def test_run_entry_inherits_environment_and_passes_prompt_on_stdin(tmp_path):
     assert seen["env"] == {"PATH": "/fixture/bin", "HOME": str(tmp_path), **overlay}
     assert seen["input"] == entry()["prompt"]
     assert entry()["prompt"] not in seen["command"]
-    assert seen["cwd"] == str(tmp_path)
+    # The child runs in the run-owned `--cd` scratch, never the review root
+    # (#1657 step 2); test_the_launch_runs_in_the_scratch_directory_cd_names
+    # is where that rule is stated.
+    assert seen["cwd"] == seen["command"][seen["command"].index("--cd") + 1]
     assert seen["timeout"] == runner.entry_timeout
     # D10 ruling 3: the schema pair is computed by the SEAM helper and handed
     # to codex_host, which owns the argv -- empty here, since this entry names
@@ -192,7 +265,7 @@ def test_run_entry_prepares_its_environment_through_launch_env(tmp_path):
 
     runner = codex.Runner(runner=fake_run)
     runner.prepare(str(tmp_path), str(tmp_path))
-    with mock.patch.object(codex.codex_host, "command", return_value=["codex", "exec", "-"]), \
+    with mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)), \
             mock.patch.object(codex.codex_host, "validate_command"), \
             mock.patch.object(runner, "launch_env", wraps=runner.launch_env) as prepared:
         assert runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]}).ok
@@ -206,7 +279,7 @@ def test_launch_exceptions_never_escape(tmp_path, error):
         raise error
     runner = codex.Runner(runner=fake_run)
     runner.prepare(str(tmp_path), str(tmp_path))
-    with mock.patch.object(codex.codex_host, "command", return_value=["codex", "exec", "-"]), \
+    with mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)), \
             mock.patch.object(codex.codex_host, "validate_command"):
         result = runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]})
     assert not result.ok
@@ -391,7 +464,7 @@ def test_a_review_cell_launch_hands_the_published_schema_to_the_argv_builder(tmp
 
     overlay = {base.ENV_ENTRY_ID: cell["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
                base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
-    with mock.patch.object(codex.codex_host, "command", return_value=["codex", "exec", "-"]) as command, \
+    with mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)) as command, \
             mock.patch.object(codex.codex_host, "validate_command"):
         runner = codex.Runner(runner=fake_run)
         runner.prepare(str(tmp_path), str(tmp_path))
@@ -411,7 +484,7 @@ def test_a_timed_out_launch_keeps_its_partial_jsonl_and_the_usage_in_it(tmp_path
 
     overlay = {base.ENV_ENTRY_ID: entry()["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
                base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
-    with mock.patch.object(codex.codex_host, "command", return_value=["codex", "exec", "-"]), \
+    with mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)), \
             mock.patch.object(codex.codex_host, "validate_command"):
         runner = codex.Runner(runner=slow)
         runner.prepare(str(tmp_path), str(tmp_path))

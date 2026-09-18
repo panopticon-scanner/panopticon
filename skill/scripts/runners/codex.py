@@ -182,8 +182,15 @@ class Runner(base.HostRunner):
                                          runner=self.runner,
                                          schema_argv=base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry))
             codex_host.validate_command(command, child_env, self.review_root)
+            # #1657 step 2 / CX-9: the child's PROCESS cwd is the same
+            # run-owned scratch `--cd` names, never the review root. A codex
+            # launch discovers `AGENTS.md`, `.codex/skills`, `.agents/skills`
+            # and `.codex/config.toml` by walking up from a root the spike
+            # could not pin down read-only; pointing both at one empty
+            # directory outside the target settles it. `launch_cwd` takes the
+            # value from codex_host's own registry, not from argv.
             proc = self.runner(command, input=entry["prompt"], text=True,
-                             capture_output=True, cwd=self.review_root,
+                             capture_output=True, cwd=codex_host.launch_cwd(command),
                              env=child_env, timeout=self.entry_timeout)
             return self.parse_envelope(entry_id, proc.stdout, proc.returncode,
                                        stderr=proc.stderr)
