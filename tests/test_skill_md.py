@@ -146,9 +146,11 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("profile model", section)
         self.assertIn("calling session's model", section)
 
-    def test_documents_the_retirement_bar_and_the_generic_deprecation(self):
+    def test_documents_the_retirement_bar_and_the_generic_fallback_history(self):
         section = _section(self.text, "## Host capabilities (5.2)", "\n## ")
-        # Tokens that exist only in the sentences this task adds.
+        # Tokens that exist only in the sentences this task adds. "deprecated"
+        # survives only as history (D4's original wording, superseded by D1
+        # -- spec 8.3 option 1); the current posture is "permanent fallback".
         self.assertIn("test_generic_retirement_bar", section)
         self.assertIn("deprecated", section)
         self.assertIn("#1070", section)

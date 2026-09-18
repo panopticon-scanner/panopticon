@@ -1506,7 +1506,7 @@ class TestARegisteredButUnselectableHostGetsARemedy(unittest.TestCase):
     selection simply drops out of it. An operator who spells a name still in
     the set has named a host this repo genuinely knows and there IS something
     to do about it, so the parser says what: `--host generic`, the
-    deprecated-but-present path for any host without a family runner. A name
+    permanent fallback path for any host without a family runner. A name
     the registry has never heard of is a typo, and argparse's own
     invalid-choice list is the right answer for it -- so `choices` must still
     be the thing that rejects it.
