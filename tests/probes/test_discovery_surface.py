@@ -563,3 +563,88 @@ class TestTheRefusal(unittest.TestCase):
         message = self._refusal((self._SHADOW, self._SURFACE))
         self.assertIn("refusing to run: shadow-shell-scan: ", message)
         self.assertIn("panopticon-scout.md", message)
+
+
+class TestTheRoundTrip(unittest.TestCase):
+    """§8's end-to-end: the driver refuses, and the artifact it leaves behind
+    says who refused and why. Through `_establish_host_posture`, because the
+    thing worth proving is that the ONE result the driver computed is the one
+    both the refusal and the file carry."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+        self.registration = os.path.join(self.root, "registration")
+        _register_perfect_shells(self.registration)
+        # The session root is pinned to this fixture, never cwd: the guard
+        # probes resolve off it, and inside a real checkout their answer would
+        # swing with whatever the developer's own `.claude/` holds.
+        claude = os.path.join(self.root, ".claude")
+        os.makedirs(claude, exist_ok=True)
+        with open(os.path.join(claude, "settings.local.json"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("{}")
+
+    def _establish(self, allow=False):
+        import dataclasses
+        from unittest import mock as _mock
+        import scripts.driver as driver
+        manifest = {"host": "claude", "run_id": "r1" * 4,
+                    "created": "2026-09-18", "security_mode": "standard",
+                    "session_dir": self.root}
+        if allow:
+            manifest["flags"] = {"allow_unenforced": True}
+        args = type("_Args", (), {"target": os.path.join(self.root, "elsewhere"),
+                                  "session_dir": self.root})()
+        os.makedirs(args.target, exist_ok=True)
+        with _mock.patch.dict(hosts.HOSTS, {"claude": dataclasses.replace(
+                hosts.HOSTS["claude"], registration_dir=self.registration)}):
+            return driver._establish_host_posture(self.root, manifest, args)
+
+    def _artifact(self):
+        """The host-capabilities.json this invocation left behind, wherever the
+        run folder put it."""
+        from scripts.phases import runio
+        import glob
+        found = glob.glob(os.path.join(self.root, ".panopticon", "**",
+                                       runio.HOST_CAPABILITIES), recursive=True)
+        self.assertEqual(1, len(found), found)
+        return runio._load_json(found[0])
+
+    def test_the_refusal_names_the_probe_that_found_it(self):
+        _plant(self.root, "packages/app/CLAUDE.md")
+        message = self._establish()
+        self.assertIsNotNone(message)
+        self.assertIn("refusing to run: target-discovery-surface: ", message)
+        self.assertIn("CL-1", message)
+        self.assertIn("--allow-unenforced", message)
+
+    def test_an_unenforced_run_records_who_refused_and_why(self):
+        # `--allow-unenforced` downgrades rather than silences: the run
+        # proceeds and the artifact carries the refutation, which is what
+        # makes the report say plainly that it was not enforced.
+        _plant(self.root, "packages/app/CLAUDE.md")
+        self.assertIsNone(self._establish(allow=True))
+        row = self._artifact()["capabilities"][hosts.TOOL_POLICY_ENFORCED]
+        self.assertEqual(hosts.REFUTED, row["state"])
+        self.assertEqual("target-discovery-surface", row["by"])
+        self.assertIn("CLAUDE.md", row["detail"])
+
+    def test_readiness_reads_that_row_back_in_its_posture_block(self):
+        # §6: readiness never re-probes (it would start a host CLI); it reads
+        # the last run's artifact. So the probe reaches its posture block the
+        # way every other probe does -- through the row `run_probes` wrote.
+        import scripts.phases.readiness as readiness
+        from scripts.phases import runio
+        _plant(self.root, "CLAUDE.md")
+        self._establish(allow=True)
+        envelope = self._artifact()
+        tag = "t1"
+        folder = os.path.join(self.root, ".panopticon", "runs", tag)
+        os.makedirs(folder, exist_ok=True)
+        runio._write_json(os.path.join(folder, runio.HOST_CAPABILITIES), envelope)
+        row = readiness._capabilities_row(self.root, tag)
+        self.assertTrue(row["measured"])
+        self.assertEqual(hosts.REFUTED, row["states"][hosts.TOOL_POLICY_ENFORCED])
+        self.assertIn(hosts.TOOL_POLICY_ENFORCED, row["detail"])
