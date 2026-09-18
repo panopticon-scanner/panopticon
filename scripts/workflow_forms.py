@@ -224,6 +224,11 @@ def covers(token, dest, recursive=False):
         prefix = os.path.normpath(token)
         if prefix == ".":
             return not os.path.isabs(dest)
+        if prefix == os.sep:
+            # `normpath("/")` is `/`, so the plain prefix test would ask
+            # whether the path starts with `//`: the widest walk of all bound
+            # nothing at all.
+            return os.path.isabs(dest)
         return os.path.normpath(dest).startswith(prefix + os.sep)
     return False
 

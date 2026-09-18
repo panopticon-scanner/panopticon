@@ -918,6 +918,16 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
                      ("run", "chmod -R +x /tmp/d\n"))
 
+    def test_a_recursive_chmod_over_the_root_is_the_widest_of_all(self):
+        # `os.path.normpath("/")` is `/`, so the prefix test asked whether the
+        # path starts with `//`: the single widest spelling bound nothing.
+        self.flagged(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
+                     ("run", "chmod -R +x /\n"))
+
+    def test_a_recursive_chmod_over_the_root_leaves_a_relative_file_alone(self):
+        self.accepted(("get", "curl -sfL https://example.test/x.sh -o x.sh\n"),
+                      ("run", "chmod -R +x /\n"))
+
     def test_a_glob_that_does_not_match_the_download_is_left_alone(self):
         self.accepted(("get", "curl -sfL https://example.test/x.sh -o /tmp/d/x.sh\n"),
                       ("run", "chmod +x /tmp/d/*.py\n"))
