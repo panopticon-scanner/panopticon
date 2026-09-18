@@ -414,6 +414,11 @@ def pip_install_commands(script):
     The command is the ARGV, joined: quoting is shell syntax that says where a
     word ends, and what this rule reads -- `--require-hashes`, `-r <file>` --
     are words. `EXEMPT_INSTALLS` matches against the same spelling.
+
+    The reader lifts `$(...)`, backticks and heredoc bodies into side tables
+    and leaves a marker in the argv, so they are walked back in here: reading
+    the argv alone would have let `X=$(pip install evil)` and a `cat <<EOF`
+    installer script past a gate whose standing requirement is to fail CLOSED.
     """
     out = []
     for statement in _statements(script):
@@ -421,6 +426,10 @@ def pip_install_commands(script):
             command = " ".join(stage.argv)
             if _PIP_INSTALL.search(command):
                 out.append(command)
+            for inner in stage.substitutions:
+                out.extend(pip_install_commands(inner))
+            if stage.heredoc:
+                out.extend(pip_install_commands(stage.heredoc))
     return out
 
 
@@ -531,6 +540,27 @@ class TestInstallPinRule(unittest.TestCase):
                   "python -m pip install --require-hashes -r reqs.txt\n")
         self.assertEqual(["python -m pip install --require-hashes -r reqs.txt"],
                          pip_install_commands(script))
+
+    def test_an_install_inside_a_command_substitution_is_seen(self):
+        # #1697 review F6: the reader lifts `$(...)`, backticks and heredoc
+        # bodies into side tables and leaves a marker in the argv, so moving
+        # off the raw text silently narrowed a supply-chain gate. A rule whose
+        # standing requirement is to fail CLOSED does not get to lose scope
+        # quietly.
+        for script in ("X=$(pip install evil)\n", "X=`pip install evil`\n"):
+            found = pip_install_commands(script)
+            self.assertEqual(1, len(found), script)
+            self.assertIsNotNone(install_pin_defect(found[0]), script)
+
+    def test_an_install_inside_a_heredoc_body_is_seen(self):
+        script = "cat <<EOF > setup.sh\npip install evil\nEOF\n"
+        found = pip_install_commands(script)
+        self.assertEqual(1, len(found), found)
+        self.assertIsNotNone(install_pin_defect(found[0]))
+
+    def test_an_install_inside_a_quoted_heredoc_body_is_seen(self):
+        script = "cat <<'EOF' > setup.sh\npip install evil\nEOF\n"
+        self.assertEqual(1, len(pip_install_commands(script)))
 
     def test_a_script_with_no_install_is_left_alone(self):
         self.assertEqual([], pip_install_commands("python -m pytest tests/ -q\n"))
