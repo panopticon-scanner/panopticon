@@ -1630,7 +1630,11 @@ class TestAMidBatchHostOutage(LoopCase):
     every cell was charged.
     """
 
-    FLOOR = ("SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS")
+    # Ten cells, not eight: the launch bound is the POOL (3 + max(2, width) +
+    # width = 7), so widening the batch must not widen it. Seven launched and
+    # three never launched says "constant", where eight cells and one left over
+    # would read as "proportional".
+    FLOOR = ("SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG")
     HOST_ERROR = ("provider.auth_error: 403 You've reached your weekly (7-day) "
                   "usage limit")
     REFUSAL = "kimi -p exited 1: All files read and cross-checked"
@@ -1708,9 +1712,12 @@ class TestAMidBatchHostOutage(LoopCase):
         reviews = self._reviews(runner)
         self.assertLess(len(reviews), len(self.FLOOR), reviews)
         # 2 answered + 1 refused + the corroboration the stop waits for
-        # (max(2, width)) + the pool that was already running (width)
+        # (max(2, width)) + the pool that was already running (width). A
+        # CONSTANT: the batch is ten cells and the bound is still seven, so
+        # what the outage costs is the pool, not the checkpoint.
         self.assertLessEqual(len(reviews), 3 + max(2, self.WIDTH) + self.WIDTH, reviews)
         unlaunched = len(self.FLOOR) - len(reviews)
+        self.assertGreaterEqual(unlaunched, 3, reviews)
         self.assertIn("%d of %d entries not launched" % (unlaunched, len(self.FLOOR)), err)
         self.assertIn("host outage detected after", err)
         self.assertIn("%d of its entries were never launched" % unlaunched, status["message"])
