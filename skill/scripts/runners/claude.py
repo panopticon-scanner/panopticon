@@ -93,8 +93,10 @@ class Runner(base.HostRunner):
         * `--strict-mcp-config` -- the loop passes no `--mcp-config`, so this
           leaves the reviewer with no MCP servers at all rather than the
           target's.
-        * `--disable-slash-commands` -- reviewers run registered `--agent`
-          shells and never invoke a command, so it costs nothing.
+        * `--disable-slash-commands` -- "Disable all skills" (`claude --help`),
+          so it is what closes the target's `.claude/skills/*/SKILL.md` as well
+          as `.claude/commands/**`. Reviewers run registered `--agent` shells
+          and invoke neither, so it costs nothing.
 
         NEVER `--bare` or `--safe-mode`: both disable hooks, so either one
         would silently un-arm both guards while reading like hardening.

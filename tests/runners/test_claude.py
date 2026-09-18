@@ -76,8 +76,10 @@ class TestCommand(unittest.TestCase):
         # `--setting-sources user` drops the project and local settings (and
         # the hooks they declare); `--strict-mcp-config` leaves a launch that
         # passes no `--mcp-config` with no MCP at all; `--disable-slash-
-        # commands` costs nothing, since reviewers run registered `--agent`
-        # shells. All three are `claude --help`-attested.
+        # commands` is "Disable all skills" (`claude --help`), so it is what
+        # closes a planted `.claude/skills/*/SKILL.md` as well as
+        # `.claude/commands/**`, and it costs nothing because reviewers run
+        # registered `--agent` shells. All three are `claude --help`-attested.
         for enforced in (True, False):
             with self.subTest(enforced=enforced):
                 cmd = self.r.command(_entry(enforced), "/run/host-settings.json", max_turns=40)

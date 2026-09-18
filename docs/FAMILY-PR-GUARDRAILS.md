@@ -198,8 +198,9 @@ in `probes/claude.py`. `skill/scripts/runners/claude.py` sets `CLI = "claude"`,
 paths (the loop's `Guards.arm` is what writes that file) and its `launch_env`
 pops `CLAUDECODE` so a nested session will start. Every launch also carries
 `--setting-sources user`, `--strict-mcp-config` and `--disable-slash-commands`
-(#1657), so a target's `.claude/settings*.json`, `.mcp.json` and
-`.claude/commands` are not read; `--settings` is a separate channel that still
+(#1657), so a target's `.claude/settings*.json`, `.mcp.json`,
+`.claude/skills/*/SKILL.md` and `.claude/commands` are not read -- the last two
+because `--disable-slash-commands` is "Disable all skills" in `claude --help`; `--settings` is a separate channel that still
 applies under `--setting-sources user`, which is what keeps the two guards
 armed. `--bare` and `--safe-mode` are never passed -- both disable hooks. Confinement is two PreToolUse
 hooks, `skill/scripts/read_guard_hook.py` and
