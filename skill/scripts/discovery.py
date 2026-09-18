@@ -359,10 +359,6 @@ def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
     # a chunk happened to land in.
     return sorted((sorted(c) for c in chunks), key=lambda c: c[0])
 
-def _split_inline_list(rest):
-    return [x.strip().strip("'\"") for x in rest[1:-1].split(",") if x.strip()]
-
-
 # One disclosure per distinct pattern: `_glob_to_re` is called per (path,
 # pattern), so an unconditional print would emit a line per file scanned.
 _warned_globs = set()
@@ -596,76 +592,6 @@ def assign_by_catalog(files, catalog):
     dropped here; ``catalog_groups`` (the scan path) reports them."""
     assigned, leftovers, _ = assign_scoped(files, catalog)
     return assigned, leftovers
-
-def _parse_catalog_yaml(text):
-    """Parse the documented catalog structure (2-space indent):
-
-        groups:
-          <Group>:
-            match:
-              - <glob>            # or: match: [<glob>, ...]
-            facets:
-              <Facet>: [<kw>, ...]  # or block list under the facet name
-
-    ``patterns:`` is accepted as a legacy alias for ``match:``; the modern
-    schema keys (``match``, ``tests``, ``panels``, ``exclude``) are handled by
-    the primary YAML-aware loader in ``load_catalog``.
-    """
-    groups = {}
-    group = None      # current group name
-    section = None    # "patterns" | "facets"
-    facet = None      # current facet name (within facets)
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        stripped = line.strip()
-        if indent == 0:
-            if stripped.rstrip(":") != "groups":
-                raise ValueError("expected top-level 'groups:'")
-            continue
-        if indent == 2 and stripped.endswith(":"):
-            group = stripped[:-1].strip()
-            groups[group] = {"patterns": [], "facets": {}, "match": []}
-            section = None
-            facet = None
-            continue
-        if indent == 4:
-            key, _, rest = stripped.partition(":")
-            key = key.strip()
-            rest = rest.strip()
-            if key in ("patterns", "match"):
-                section = key
-                facet = None
-                if rest.startswith("[") and rest.endswith("]"):
-                    groups[group][key] = _split_inline_list(rest)
-                    section = None
-            elif key == "facets":
-                section = "facets"
-                facet = None
-            else:
-                raise ValueError("unexpected key at indent 4: %r" % key)
-            continue
-        if indent == 6:
-            if section in ("patterns", "match") and stripped.startswith("- "):
-                groups[group][section].append(stripped[2:].strip().strip("'\""))
-                continue
-            if section == "facets":
-                key, _, rest = stripped.partition(":")
-                facet = key.strip()
-                rest = rest.strip()
-                if rest.startswith("[") and rest.endswith("]"):
-                    groups[group]["facets"][facet] = _split_inline_list(rest)
-                    facet = None
-                else:
-                    groups[group]["facets"][facet] = []
-                continue
-        if indent == 8 and section == "facets" and facet and stripped.startswith("- "):
-            groups[group]["facets"][facet].append(stripped[2:].strip().strip("'\""))
-            continue
-        raise ValueError("cannot parse catalog line: %r" % raw)
-    return groups
 
 def _to_list(val):
     """Normalise a YAML scalar, sequence, or None into a list."""
