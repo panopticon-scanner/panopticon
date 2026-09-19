@@ -125,6 +125,18 @@ class TestSkillMd(unittest.TestCase):
             with self.subTest(capability=capability):
                 self.assertIn(capability, section)
 
+    def test_documents_the_discovery_surface_probe_and_its_override(self):
+        # #1657 step 3. The step-2 paragraph (#1717) promised a probe that
+        # "will report a target's discoverable files run by run"; it exists
+        # now, and it REFUSES. An operator whose run stops on a file their
+        # target ships has to be able to find out here what stopped it and
+        # what the override is -- the same pairing the shadow-shell refusal
+        # already documents.
+        for token in ["`target-discovery-surface`", "--allow-unenforced",
+                      "refuses the run when the target ships a file no "
+                      "control closes"]:
+            self.assertIn(token, self.text, token)
+
     def test_documents_f4_model_binding_scope_and_the_return_persist_bridge(self):
         # #1344 F4. Three contract sentences changed: the entry shape gained
         # `files` and a derived `delivery`; the return-persist exception is no

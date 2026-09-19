@@ -179,6 +179,7 @@ groups:
       - tests/probes/test_claude.py
       - tests/probes/test_codex.py
       - tests/probes/test_common.py
+      - tests/probes/test_discovery_surface.py
       - tests/probes/test_kimi.py
       - tests/test_hosts.py
       - tests/test_host_probes.py

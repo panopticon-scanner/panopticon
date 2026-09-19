@@ -17,8 +17,11 @@ import os
 import re
 import shutil
 import stat
+from collections import namedtuple
 
 from scripts import dispatch, hosts
+
+from . import surface
 
 
 # The roles the DRIVER dispatches and therefore needs registered shells for:
@@ -429,3 +432,187 @@ def probe_shadow_shells(host, review_root):
     return (hosts.UNKNOWN, SHADOW_SHELL_SCAN,
             "no shadowing agent files in the reviewed tree's %s"
             % ", ".join(row.project_scope_dirs))
+
+
+# --- the target's discovery surface (#1657 step 3) --------------------------
+DISCOVERY_SURFACE = "target-discovery-surface"
+
+# What CLOSES a surface the registry marks CONTROLLED, and how a test proves
+# it is still there (spec §4). Written here, beside the scan that reports the
+# hit, and pinned by tests/probes/test_discovery_surface.py against the
+# runners' own `command()` argv: a control that stops being passed must fail
+# the suite, because the table would otherwise go on calling its surface
+# closed. `argv` is the token(s) the launch carries -- a token spelled with a
+# trailing `=` matches a `--flag=<value>` argv entry by prefix -- and is empty
+# for a control that is not a flag at all, whose `mechanism` names what a test
+# must assert instead.
+Control = namedtuple("Control", "host argv mechanism")
+CONTROLS = {
+    "claude:setting-sources-user": Control(
+        "claude", ("--setting-sources", "user"),
+        "the launch reads the USER's settings only, so a target-shipped "
+        "`.claude/settings.json` / `settings.local.json` -- and every hook it "
+        "declares -- is never read"),
+    "claude:strict-mcp-config": Control(
+        "claude", ("--strict-mcp-config",),
+        "the loop passes no `--mcp-config`, so the reviewer gets no MCP "
+        "servers at all rather than the target's"),
+    "claude:disable-slash-commands": Control(
+        "claude", ("--disable-slash-commands",),
+        '"Disable all skills" (`claude --help`), which closes a planted '
+        "`.claude/skills/*/SKILL.md` as well as `.claude/commands/**`"),
+    "codex:cwd-outside-target": Control(
+        "codex", (),
+        "`codex_host.launch_cwd` runs the child in the empty, run-owned "
+        "scratch `--cd` names, outside the review root, so whichever root the "
+        "CLI keys discovery off it is not the target's"),
+    "codex:ignore-user-config-and-rules": Control(
+        "codex", ("--ignore-user-config", "--ignore-rules"),
+        "the launch reads neither the user's config nor a `.rules` file"),
+    "kimi:workspace-trust-gate": Control(
+        "kimi", (),
+        "the per-run `$KIMI_CODE_HOME` links only `kimi_home._CREDENTIAL_ITEMS`, "
+        "so it holds no `workspace-trust` record and the CLI never reads the "
+        "target's project MCP files"),
+    "kimi:skills-dir": Control(
+        "kimi", ("--skills-dir=",),
+        "`--skills-dir=<run-owned empty dir>` replaces BOTH auto-discovered "
+        "skill roots, the operator's and the target's"),
+}
+
+
+def control_is_on(control, argv):
+    """Does this launch's argv carry the control's token(s)?
+
+    The matcher the liveness test uses, defined beside the table rather than
+    in the test, so "what counts as carrying this control" has one spelling:
+    an exact token, or -- for a token written with a trailing `=` -- an argv
+    entry starting with it, which is the equals form kimi's 0.42.0 parser
+    requires. A control with no `argv` at all is not a flag and answers False:
+    its `mechanism` is what a test must assert.
+    """
+    row = CONTROLS.get(control)
+    if not row or not row.argv:
+        return False
+    return all(any(a == token or (token.endswith("=") and a.startswith(token))
+                   for a in argv)
+               for token in row.argv)
+
+
+def _already_shadow_reported(row, review_root, path):
+    """§5.3: `probe_shadow_shells` has already refused on this file.
+
+    Only inside the host's OWN `project_scope_dirs`, and only for the two
+    shapes that scan reports: the `panopticon-` filename prefix and a declared
+    shell name. Registry-driven, so no cell id appears here -- CL-5, KM-2 and
+    CX-6 are simply the rows whose patterns reach those directories.
+
+    A symlink is never opened for the second check (R3); the cheap name check
+    still applies to it, which is the same order `probe_shadow_shells` uses.
+    """
+    directory, name = os.path.split(path)
+    inside = any(os.path.abspath(directory) == os.path.abspath(
+        os.path.join(review_root, relative)) for relative in row.project_scope_dirs)
+    if not inside:
+        return False
+    if name.lower().startswith(_SHELL_PREFIX):
+        return True
+    try:
+        if stat.S_ISLNK(os.lstat(path).st_mode):
+            return False
+    except OSError:
+        return False
+    return _declares_a_shell_name(path)
+
+
+_OPEN_HIT = "the reviewed tree ships %s (%s: no launch control closes it)"
+_CONTROLLED_HIT = "target ships %s; closed by %s (%s)"
+# §6: the CONTROLLED disclosure on the run's stderr, one line per CELL rather
+# than per file -- this shares the operator's stderr with the run's own
+# progress output, and a target with a hundred planted commands must not
+# crowd out the thing they are watching (the rule `kimi_toml.MCP_DISCLOSURE`
+# is written under). The artifact's `detail` keeps the per-file sentences.
+SURFACE_DISCLOSURE = "driver: target ships %s; closed by %s (%s)"
+
+
+def probe_discovery_surface(host, review_root, disclose=None):
+    """What the REVIEWED tree ships that this host's CLI would DISCOVER.
+
+    The shadow-shell scan's generalisation (spec §7.3 / D8 covers one class of
+    file, `panopticon-*` agent shells; this covers the whole surface the #1657
+    spike mapped and #1717 narrowed). Same shape, same reasoning, same tree:
+    `review_root` is `runio.resolve_review_root`'s answer -- the PR WORKTREE
+    under `--pr` -- and never `args.target`, the one checkout guaranteed clean.
+
+    Registry-driven: every path comes from `HostSpec.discovery_surface`, so a
+    host with an empty tuple is a no-op and this module holds no host
+    knowledge. A hit on an OPEN row REFUTES `tool_policy_enforced`: a target
+    that can put text into the reviewer's system prompt, or start a process
+    beside it, controls the reviewer's policy as surely as one that replaces
+    its shell. A hit on a CONTROLLED row is DISCLOSED and changes nothing --
+    the launch already closed that channel, and saying what was there is how
+    an operator learns the control earned its keep.
+
+    Can only REFUTE, for the shadow scan's reason: finding nothing says
+    nothing about whether the host enforces anything. Not being able to LOOK
+    -- an unreadable directory, or a tree so deep or so wide that a cap
+    stopped the walk -- refutes too, because UNKNOWN loses to PROVEN in
+    `hosts.resolve_state` and the miss would be invisible.
+
+    `disclose` is the run's stderr (§6); given, the CONTROLLED hits are
+    written to it once per run, the same channel and the same discipline as
+    `kimi_toml.MCP_DISCLOSURE`. Nothing is written for a clean tree.
+    """
+    row = hosts.spec(host)
+    if not row or not row.discovery_surface:
+        return (hosts.UNKNOWN, DISCOVERY_SURFACE,
+                "host %r discovers no target-authored configuration" % host)
+    open_hits, controlled, problems = [], [], []
+    patterns = 0
+    for entry in row.discovery_surface:
+        # PER ROW, not per host. A file two ROWS both name is reported twice,
+        # because they say different things about it -- and a host-wide set
+        # was a fail-open one `ln` wide: kimi declares KM-4 (CONTROLLED)
+        # before KM-3 (OPEN), so `ln AGENTS.md .mcp.json` let the CONTROLLED
+        # row claim the inode and the flagship AGENTS.md refusal became
+        # "closed by kimi:workspace-trust-gate". Inside one row it still
+        # de-duplicates, which is what keeps `AGENTS.md` and `**/AGENTS.md`
+        # (and, on a case-insensitive filesystem, `agents.md`) one sentence.
+        found, seen = [], set()
+        for pattern in entry.pattern:
+            patterns += 1
+            walk = surface.Walk(pattern)
+            for path in surface.candidates(review_root,
+                                           pattern.split("/"), walk):
+                identity = surface.hit_identity(path, walk)
+                if identity is None or identity in seen:
+                    continue
+                if (entry.kind == hosts.OPEN
+                        and _already_shadow_reported(row, review_root, path)):
+                    continue           # the shadow scan already refused on it
+                seen.add(identity)
+                found.append(os.path.relpath(path, review_root))
+            problems.extend(walk.unreadable)
+            if walk.capped:
+                problems.append("%s was not scanned past the cap (%s)"
+                                % (pattern, walk.capped))
+        if not found:
+            continue
+        if entry.kind == hosts.OPEN:
+            open_hits.extend(_OPEN_HIT % (hit, entry.cell) for hit in found)
+        else:
+            controlled.extend(_CONTROLLED_HIT % (hit, entry.control, entry.cell)
+                              for hit in found)
+            if disclose is not None:
+                print(SURFACE_DISCLOSURE % (", ".join(found), entry.control,
+                                            entry.cell),
+                      file=disclose, flush=True)
+    if open_hits or problems:
+        # OPEN hits first: they are what an operator has to act on. Then what
+        # could not be scanned, then the disclosure.
+        return (hosts.REFUTED, DISCOVERY_SURFACE,
+                "; ".join(open_hits + problems + controlled))
+    if controlled:
+        return (hosts.UNKNOWN, DISCOVERY_SURFACE, "; ".join(controlled))
+    return (hosts.UNKNOWN, DISCOVERY_SURFACE,
+            "no target-authored discovery files in %d patterns" % patterns)
