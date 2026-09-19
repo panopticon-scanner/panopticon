@@ -2203,3 +2203,149 @@ class TestATimedOutEntryKeepsItsEvidence(LoopCase):
         self.assertFalse(os.path.exists(os.path.join(runner.run_dir, "rejected")))
         row = next(r for r in ledger_mod.Ledger(runner.run_dir).lines() if not r["ok"])
         self.assertIsNone(row["rejected_file"])
+
+
+def _refuted_artifact(host="claude"):
+    """host_probes.run_probes stand-in whose tool policy is REFUTED -- the
+    `--allow-unenforced` posture, where the phases legitimately emit
+    `enforced: False` and the loop must let the run through unchanged."""
+    body = _all_proven_artifact(host)
+    body["capabilities"][hosts.TOOL_POLICY_ENFORCED] = {
+        "state": hosts.REFUTED, "by": "fixture",
+        "detail": "fixture: tool policy deliberately refuted"}
+    return body
+
+
+class TestTheRequestsEnforcedFlagIsDerived(LoopCase):
+    """#1720: `enforced` travels in `.panopticon/dispatch-request.json`, inside
+    the reviewed tree, and every family read it as the launch's posture. The
+    loop re-derives it from THIS run's own capability evidence and refuses the
+    whole request when the two disagree -- before the batch opens, so nothing
+    launches and nothing is charged. It is a request-integrity refusal, not a
+    cell failure."""
+
+    def _tampered(self, **fields):
+        """Flip a field on every entry between the phase that wrote the
+        request and the loop that reads it -- the on-disk hop the reviewed
+        tree could tamper with."""
+        real = orchestrate.requests.load_dispatch_request
+
+        def fake(review_root, namespace=None):
+            req = real(review_root, namespace)
+            for entry in (req or {}).get("entries") or []:
+                entry.update(fields)
+            return req
+
+        return mock.patch.object(orchestrate.requests, "load_dispatch_request", fake)
+
+    def test_a_proven_run_refuses_a_request_that_claims_an_unenforced_launch(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        with self._tampered(enforced=False, agent=None):
+            status = self._run_loop(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("review-app-SEC", status["message"])
+        self.assertIn("claims unenforced launch", status["message"])
+        self.assertIn("posture is enforced", status["message"])
+        self.assertIn("--reset", status["message"])
+        self.assertEqual([], runner.launched)          # nothing launched...
+        run_dir = orchestrate.persist.run_dir(d, None)
+        self.assertFalse(os.path.exists(os.path.join(run_dir, base.LEDGER_FILE)))
+        # ...and no cell was charged a second attempt: the one on disk is the
+        # one review_execute booked when it WROTE the request.
+        attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
+        self.assertEqual([1], sorted(set(attempts.values())) or [1])
+
+    def test_a_proven_run_refuses_a_request_that_claims_an_enforced_launch_on_a_refuted_host(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        with self._tampered(enforced=True):
+            status = self._run_loop(d, floor, runner, "--allow-unenforced",
+                                    probes=lambda host, target, **kw: _refuted_artifact(host))
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("claims enforced launch", status["message"])
+        self.assertIn("posture is unenforced", status["message"])
+        self.assertEqual([], runner.launched)
+
+    def test_an_allow_unenforced_run_launches_bare_exactly_as_before(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        status = self._run_loop(d, floor, runner, "--allow-unenforced",
+                                probes=lambda host, target, **kw: _refuted_artifact(host))
+        self.assertEqual("complete", status["status"], status)
+        self.assertEqual(["review-app-SEC", "verify-app-SEC-primary"],
+                         sorted(runner.launched))
+
+    def test_an_untampered_proven_run_is_unaffected(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        status = self._run_loop(d, floor, runner)
+        self.assertEqual("complete", status["status"], status)
+        self.assertEqual(["review-app-SEC", "verify-app-SEC-primary"],
+                         sorted(runner.launched))
+
+
+class TestExpectedEnforced(unittest.TestCase):
+    """`loop_batch.expected_enforced` on its own: the two postures that are
+    NOT read off the capability evidence at all."""
+
+    def _root(self, states):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, ".panopticon"))
+        write_host_evidence(d, states)
+        return d
+
+    def test_the_setup_namespace_is_never_enforced(self):
+        # phases/setup.py dispatches `setup-scan` shell-less BY DESIGN: it is
+        # not in dispatch.ROLE_FILES, so no host registers a shell for it, and
+        # a fresh machine runs `--setup` before it has registered anything.
+        d = self._root(_ALL_PROVEN)
+        self.assertTrue(loop_batch.expected_enforced(d, "claude", None))
+        self.assertFalse(loop_batch.expected_enforced(d, "claude", "setup"))
+        self.assertEqual([], loop_batch.refuse_disagreeing(
+            [{"id": "setup-scan", "agent": None, "enforced": False}],
+            loop_batch.expected_enforced(d, "claude", "setup")))
+
+    def test_the_unenforced_fallback_host_is_never_enforced(self):
+        d = self._root(_ALL_PROVEN)
+        self.assertFalse(loop_batch.expected_enforced(d, "generic", None))
+
+    def test_refuse_disagreeing_names_only_the_entries_that_disagree(self):
+        pending = [{"id": "a", "enforced": True}, {"id": "b", "enforced": False},
+                   {"id": "c"}, {"id": "d", "enforced": 1}]
+        self.assertEqual(["b", "c"], loop_batch.refuse_disagreeing(pending, True))
+        self.assertEqual(["a", "d"], loop_batch.refuse_disagreeing(pending, False))
+
+
+class TestEnforcedIsDerivedInOnePlace(unittest.TestCase):
+    """#1720 drift guard. The loop re-derives `enforced` to CHECK the request;
+    the phases derive it to WRITE the request. Two copies of one expression is
+    exactly the drift that would make a run refuse itself (or quietly stop
+    refusing), so the driver-plan side calls the loop's function rather than
+    keeping its own."""
+
+    def test_the_driver_plan_calls_the_loops_derivation_and_keeps_no_copy(self):
+        import ast
+        import inspect
+
+        import scripts.phases.requests as requests_mod
+        tree = ast.parse(inspect.getsource(requests_mod._driver_plan_entries).lstrip())
+        calls = {ast.unparse(node.func) for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)}
+        self.assertIn("loop_batch.expected_enforced", calls)
+        self.assertNotIn("hosts.posture", calls)
+
+    def test_both_sides_answer_the_same_over_proven_refuted_and_unknown(self):
+        for state, expected in ((hosts.PROVEN, True), (hosts.REFUTED, False),
+                                (hosts.UNKNOWN, False)):
+            d = os.path.realpath(tempfile.mkdtemp())
+            self.addCleanup(lambda p=d: shutil.rmtree(p, ignore_errors=True))
+            os.makedirs(os.path.join(d, ".panopticon"))
+            write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: state})
+            # The expression the four remaining phase call sites still spell
+            # inline (coverage, review, verify, verify_tools).
+            phases_answer = (hosts.posture("claude", runio.host_evidence(d))
+                             [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
+            self.assertIs(expected, phases_answer, state)
+            self.assertIs(expected, loop_batch.expected_enforced(d, "claude", None), state)

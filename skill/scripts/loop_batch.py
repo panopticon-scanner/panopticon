@@ -14,8 +14,55 @@ does. Same shape, and the same reason, as `money.py` and `ledger.py`.
 import os
 import sys
 
+import scripts.hosts as hosts
 import scripts.phases.persist as persist
 import scripts.phases.runio as runio
+
+SETUP_NAMESPACE = "setup"
+
+
+def expected_enforced(review_root, host, namespace=None):
+    """Whether THIS run's own evidence says its entries launch enforced (#1720).
+
+    The one owner of the expression. `enforced` travels to the runners in
+    `.panopticon/dispatch-request.json`, a file inside the reviewed tree, and
+    every family read it as the launch's posture -- so a request that said
+    `false` got a bare launch (no shell, no tool policy) while the ledger
+    recorded the entry the driver had dispatched. It is fully re-derivable:
+    the phases set it from exactly this, so the loop can check the request
+    against the run rather than take its word.
+
+    Two postures are not read off the capability evidence at all:
+
+    * the `setup` namespace, whose single `setup-scan` entry is dispatched
+      SHELL-LESS by design (phases/setup.py: it is not in
+      `dispatch.ROLE_FILES`, so no host registers a shell for it, and a fresh
+      machine runs `--setup` before it has registered anything);
+    * `hosts.is_unenforced_fallback` -- `--host generic` is the permanent
+      unenforced fallback (owner ruling D1), ack-gated and disclosed.
+    """
+    if namespace == SETUP_NAMESPACE or hosts.is_unenforced_fallback(host):
+        return False
+    return (hosts.posture(host, runio.host_evidence(review_root))
+            [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
+
+
+def refuse_disagreeing(pending, expected):
+    """The ids of the pending entries whose self-asserted `enforced` does not
+    match what this run's evidence says (`expected`)."""
+    return [entry.get("id") for entry in pending
+            if isinstance(entry, dict) and bool(entry.get("enforced")) != expected]
+
+
+def enforcement_refusal(disagreeing, expected):
+    """The operator's message for such a request. A REQUEST-INTEGRITY refusal,
+    raised before the batch opens: nothing has launched and nothing is
+    charged, so it is not any entry's failure -- and the remedy is to rebuild
+    the request from evidence, not to retry the cell."""
+    claimed, actual = ("unenforced", "enforced") if expected else ("enforced", "unenforced")
+    return ("driver loop: entry %s claims %s launch on a host whose posture is %s; "
+            "the dispatch request does not match this run's own evidence -- re-run "
+            "with --reset, or re-run readiness" % (disagreeing[0], claimed, actual))
 
 
 def write_usage(review_root, ledger, namespace=None):

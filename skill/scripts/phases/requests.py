@@ -6,6 +6,10 @@ import sys
 
 import scripts.dispatch as dispatch
 import scripts.group_runner as group_runner
+# #1720: the loop re-derives `enforced` to CHECK the dispatch request against
+# this run's evidence; this module derives it to WRITE that request. One
+# function, so the two can never disagree about what the run's posture is.
+import scripts.loop_batch as loop_batch
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.plan as plan_mod
 from scripts import hosts
@@ -263,9 +267,7 @@ def _driver_plan_entries(review_root, manifest):
     declaration of which out_files must exist, not a scope grant or a cost row;
     the dispatch entries carry scope (F4 `files`, plan 5 `scope`) and this
     deliberately does not (R-P5-6)."""
-    enforced = (hosts.posture(manifest.get("host", "claude"),
-                              runio.host_evidence(review_root))
-                [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
+    enforced = loop_batch.expected_enforced(review_root, manifest.get("host", "claude"))
     entries = []
     for group, _files in coverage._discovered_groups(review_root):
         for domain in coverage._effective_domains(review_root, group):

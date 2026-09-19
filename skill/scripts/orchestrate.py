@@ -343,6 +343,14 @@ def loop(args):
             req = requests.load_dispatch_request(review_root, namespace) or {}
             entries = [e for e in req.get("entries") or [] if isinstance(e, dict)]
             pending = loop_batch._pending(entries)
+            # #1720: the request is a file in the reviewed tree, so its
+            # `enforced` flag is checked against this run's own evidence
+            # before anything is armed or launched.
+            expected = loop_batch.expected_enforced(review_root, host, namespace)
+            disagreeing = loop_batch.refuse_disagreeing(pending, expected)
+            if disagreeing:
+                return _finish(_status("error", loop_batch.enforcement_refusal(
+                    disagreeing, expected)), review_root, guards, ledger, namespace, mode, runner)
             pending_ids = ", ".join(e.get("id") for e in pending)
             if iterations > max_iterations:
                 return _finish(_status("error", "driver loop: %d iterations without "
