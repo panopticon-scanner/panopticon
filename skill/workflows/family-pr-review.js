@@ -1,7 +1,11 @@
 // Review a family first-class-host branch against docs/FAMILY-PR-GUARDRAILS.md
 // (Panopticon #1344). Saved here so the review is a template, not an ad-hoc
-// fan-out: `Workflow({ name: "family-pr-review", args: { host: "codex" } })`
-// from the repo root, on the branch under review.
+// fan-out: `Workflow({ scriptPath: "skill/workflows/family-pr-review.js",
+// args: { host: "codex" } })` from the repo root, on the branch under review.
+// It lives beside `dispatch.js` rather than under `.claude/workflows/`: that
+// directory is a Claude Code discovery surface (#1657 CL-8), and a file the
+// host would load from the reviewed tree makes the target-discovery-surface
+// probe refuse this repo's own claude self-scan.
 //
 // Shape: one finder per guardrail dimension over `git diff <base>...HEAD`
 // (pipeline, no barrier), each finding then adversarially verified by three
