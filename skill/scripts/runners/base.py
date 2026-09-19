@@ -513,7 +513,11 @@ def schema_argv(flag, entry):
 REGISTERED_AGENT_NAMES = frozenset(
     dispatch.registered_agent_name(role_file)
     for role_file in dispatch.ROLE_FILES.values())
-UNREGISTERED_AGENT = "entry names an agent that is not a registered panopticon shell: %s"
+# `%r`, never `%s`: the value is the TARGET's, and this message is printed to
+# the operator's stderr and stored in the ledger row. repr() renders a control
+# character, an ANSI escape or an embedded newline as its escape sequence, so a
+# refused value cannot repaint the terminal or forge a second log line.
+UNREGISTERED_AGENT = "entry names an agent that is not a registered panopticon shell: %r"
 
 
 def registered_agent(entry):
@@ -530,7 +534,12 @@ def registered_agent(entry):
     silently downgraded to a bare launch.
     """
     name = entry.get("agent") if isinstance(entry, dict) else None
-    return name if name in REGISTERED_AGENT_NAMES else None
+    # `isinstance` FIRST. The request is JSON from inside the reviewed tree, so
+    # `agent` is as likely to arrive as an array or an object as it is a
+    # string -- and `value in <frozenset>` raises `TypeError: unhashable type`
+    # on either, straight out of `run_entry`, which never raises (spec 4.4).
+    # A type check is what makes this a refusal rather than a crash.
+    return name if isinstance(name, str) and name in REGISTERED_AGENT_NAMES else None
 
 
 def refuse_unregistered_agent(entry):

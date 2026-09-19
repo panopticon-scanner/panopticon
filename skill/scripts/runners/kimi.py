@@ -451,7 +451,7 @@ class Runner(base.HostRunner):
             if shell is None:
                 return base.RunResult.failed(
                     entry_id, "entry's enforcement shell resolves outside the registered "
-                    "shell directory %s: %s"
+                    "shell directory %s: %r"
                     % (hosts.spec(self.host).registration_dir,
                        redact.redact(str(entry.get("agent"))[:200])))
             if not os.path.isfile(shell):

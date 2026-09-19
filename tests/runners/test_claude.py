@@ -425,7 +425,7 @@ class TestTheEntryAgentIsAllowlisted(unittest.TestCase):
             res, launched = self._refuse(agent)
             self.assertFalse(res.ok, agent)
             self.assertIn("not a registered panopticon shell", res.error)
-            self.assertIn(agent, res.error)
+            self.assertIn(repr(agent), res.error)
             self.assertEqual([], launched)
 
     def test_an_enforced_entry_with_no_agent_is_refused_not_downgraded(self):
@@ -433,6 +433,32 @@ class TestTheEntryAgentIsAllowlisted(unittest.TestCase):
         self.assertFalse(res.ok)
         self.assertIn("not a registered panopticon shell", res.error)
         self.assertEqual([], launched)
+
+    def test_a_json_array_or_object_agent_is_refused_rather_than_raising(self):
+        # Fix round 1, item 1: `run_entry` never raises (spec 4.4), and an
+        # array or object `agent` used to escape it as a TypeError.
+        for agent in ([], {}, {"a": {"b": "panopticon-domain-panel"}},
+                      ["panopticon-domain-panel"]):
+            res, launched = self._refuse(agent)
+            self.assertFalse(res.ok, agent)
+            self.assertIn("not a registered panopticon shell", res.error)
+            self.assertIn(repr(str(agent)), res.error)
+            self.assertEqual([], launched)
+
+    def test_command_gives_an_enforced_foreign_agent_neither_agent_nor_model(self):
+        # Fix round 1, item 2. `command()` is latent behind `run_entry`'s
+        # refusal today, but its fall-through still BUILT a bare `--model`
+        # argv for an enforced entry -- an unenforced launch one caller away.
+        # An enforced entry gets the registered shell or no launch at all.
+        r = claude_runner.Runner("claude")
+        for agent in ("panopticon-scout-evil", None):
+            cmd = r.command(dict(_entry(True), agent=agent),
+                            "/run/host-settings.json", max_turns=40)
+            self.assertNotIn("--agent", cmd, agent)
+            self.assertNotIn("--model", cmd, agent)
+        # ...and an UNENFORCED entry is untouched: it still binds its model.
+        cmd = r.command(_entry(False), "/run/host-settings.json", max_turns=40)
+        self.assertIn("--model", cmd)
 
     def test_a_registered_agent_still_launches(self):
         res, launched = self._refuse("panopticon-domain-panel")

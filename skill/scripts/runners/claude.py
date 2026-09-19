@@ -109,13 +109,17 @@ class Runner(base.HostRunner):
         # resolves among the OPERATOR's user-scope agents, so a foreign value
         # is a shell swap rather than a traversal -- still a reviewer running
         # under instructions and tool grants nobody in this run chose.
-        # `run_entry` refuses such an entry outright (it must not reach the
-        # `--model` branch below and launch bare); this call is what keeps the
-        # value on the argv and the value that was checked the same one.
+        # `run_entry` refuses such an entry outright; this call is what keeps
+        # the value on the argv and the value that was checked the same one.
+        # The fall-through is gated on `not enforced` rather than left as a
+        # bare `elif` (fix round 1, item 2): an ENFORCED entry whose agent is
+        # not registered gets the registered shell or no launch -- never a
+        # `--model`-only argv, which is an unenforced launch. Latent behind
+        # `run_entry` today; a second caller is all it would take.
         agent = base.registered_agent(entry)
         if entry.get("enforced") and agent:
             cmd += ["--agent", agent]
-        elif entry.get("model"):
+        elif not entry.get("enforced") and entry.get("model"):
             cmd += ["--model", entry["model"]]
         cmd += base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)
         cmd.append(entry["prompt"])

@@ -1299,13 +1299,26 @@ class TestTheEntryAgentIsAllowlistedAndContained(unittest.TestCase):
             res = self._run(agent)
             self.assertFalse(res.ok, agent)
             self.assertIn("not a registered panopticon shell", res.error)
-            self.assertIn(agent, res.error)
+            self.assertIn(repr(agent), res.error)
         self.assertEqual([], self.launched)
 
     def test_an_enforced_entry_with_no_agent_is_refused_not_downgraded(self):
         res = self._run(None)
         self.assertFalse(res.ok)
         self.assertIn("not a registered panopticon shell", res.error)
+        self.assertEqual([], self.launched)
+
+    def test_a_json_array_or_object_agent_is_refused_rather_than_raising(self):
+        # Fix round 1, item 1. The request is JSON, so `agent` can be an array
+        # or an object -- and the membership test used to raise `TypeError:
+        # unhashable type` out of `run_entry`, which never raises (spec 4.4).
+        # It is a SECURITY refusal, not a crash.
+        for agent in ([], {}, {"a": {"b": "panopticon-domain-panel"}},
+                      ["panopticon-domain-panel"]):
+            res = self._run(agent)
+            self.assertFalse(res.ok, agent)
+            self.assertIn("not a registered panopticon shell", res.error)
+            self.assertIn(repr(str(agent)), res.error)
         self.assertEqual([], self.launched)
 
     def test_a_registered_name_whose_shell_escapes_the_directory_is_refused(self):

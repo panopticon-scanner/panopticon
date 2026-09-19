@@ -514,7 +514,7 @@ def test_a_foreign_agent_name_is_refused_before_any_launch(tmp_path):
     result = runner.run_entry(foreign, {base.ENV_ENTRY_ID: foreign["id"]})
     assert not result.ok
     assert "not a registered panopticon shell" in result.error
-    assert "panopticon-domain-panel-evil" in result.error
+    assert repr("panopticon-domain-panel-evil") in result.error
     assert launched == []
 
 
@@ -531,4 +531,27 @@ def test_an_enforced_entry_with_no_agent_is_refused_before_any_launch(tmp_path):
                               {base.ENV_ENTRY_ID: entry()["id"]})
     assert not result.ok
     assert "not a registered panopticon shell" in result.error
+    assert launched == []
+
+
+def test_a_json_array_or_object_agent_is_refused_rather_than_crashing(tmp_path):
+    """Fix round 1, item 1: the membership test used to raise `TypeError:
+    unhashable type` on an array or object `agent`. Codex's `run_entry` catches
+    everything, so it did not escape -- it became a crash-shaped failure whose
+    message named a Python type instead of the security refusal it is."""
+    launched = []
+
+    def fake_run(command, **kwargs):
+        launched.append(command)
+        return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)
+
+    runner = codex.Runner(runner=fake_run)
+    runner.prepare(str(tmp_path), str(tmp_path))
+    for agent in ([], {}, {"a": {"b": "panopticon-domain-panel"}},
+                  ["panopticon-domain-panel"]):
+        result = runner.run_entry(dict(entry(), agent=agent),
+                                  {base.ENV_ENTRY_ID: entry()["id"]})
+        assert not result.ok
+        assert "not a registered panopticon shell" in result.error, agent
+        assert repr(str(agent)) in result.error
     assert launched == []

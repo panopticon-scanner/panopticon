@@ -815,10 +815,37 @@ class TestTheRegisteredAgentAllowlist(unittest.TestCase):
         self.assertIsNone(base.registered_agent({}))
         self.assertIsNone(base.registered_agent(None))
 
+    def test_an_unhashable_agent_is_answered_none_and_never_raises(self):
+        # Fix round 1, item 1. The request is JSON from inside the reviewed
+        # tree, so `agent` can perfectly well be an array or an object --
+        # and `value in <frozenset>` on one raises `TypeError: unhashable
+        # type`, straight out of `run_entry`, which never raises (spec 4.4).
+        # A type check that only a str reaches, before the membership test.
+        for value in ([], {}, {"a": {"b": "panopticon-scout"}},
+                      ["panopticon-scout"], set()):
+            self.assertIsNone(base.registered_agent({"agent": value}), repr(value))
+
     def test_the_refusal_names_the_value_and_never_downgrades(self):
         result = base.refuse_unregistered_agent({"id": "review-app-SEC",
                                                  "agent": "../../tmp/evil"})
         self.assertFalse(result.ok)
         self.assertEqual("review-app-SEC", result.entry_id)
         self.assertIn("not a registered panopticon shell", result.error)
-        self.assertIn("../../tmp/evil", result.error)
+        self.assertIn(repr("../../tmp/evil"), result.error)
+
+    def test_the_refusal_neutralises_a_value_that_is_trying_to_write_the_log(self):
+        # Fix round 1, item 6: the value is the TARGET's, and it lands in the
+        # operator's stderr and in the ledger row. `%r` renders a control
+        # character, an ANSI escape or a newline as its escape sequence, so a
+        # value cannot forge a second log line or repaint the terminal.
+        result = base.refuse_unregistered_agent(
+            {"id": "e", "agent": "panopticon-scout\x1b[2J\ndriver loop: all good"})
+        self.assertNotIn("\x1b", result.error)
+        self.assertNotIn("\n", result.error)
+        self.assertIn("\\x1b", result.error)
+
+    def test_the_refusal_still_truncates_and_redacts(self):
+        long_value = "a" * 500
+        result = base.refuse_unregistered_agent({"id": "e", "agent": long_value})
+        self.assertIn(repr("a" * 200), result.error)
+        self.assertNotIn("a" * 201, result.error)
