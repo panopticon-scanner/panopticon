@@ -178,6 +178,15 @@ class Runner(base.HostRunner):
                 raise ValueError("missing or mismatched Codex entry binding")
             if entry.get("delivery") != "return_json":
                 raise ValueError("Codex requires delivery: return_json; it cannot self-write")
+            # #1720: the same allowlist every family applies. This family
+            # looks its shell up by NAME in a TOML registry (`codex_host._shell`
+            # already refuses a name that is not `panopticon-[a-z0-9-]+` and
+            # opens it O_NOFOLLOW), so a foreign name could not traverse -- it
+            # failed later, as an unreadable registration file, which reads as
+            # a broken machine rather than as a request that named an agent
+            # this driver never registered.
+            if entry.get("enforced") and base.registered_agent(entry) is None:
+                return base.refuse_unregistered_agent(entry)
             command = codex_host.command(entry, child_env, self.review_root, self.run_dir,
                                          runner=self.runner,
                                          schema_argv=base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry))

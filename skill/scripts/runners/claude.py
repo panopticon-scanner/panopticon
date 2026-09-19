@@ -105,8 +105,16 @@ class Runner(base.HostRunner):
                "--setting-sources", "user", "--strict-mcp-config",
                "--disable-slash-commands", "--output-format", "json",
                "--no-session-persistence", "--max-turns", str(int(max_turns))]
-        if entry.get("enforced") and entry.get("agent"):
-            cmd += ["--agent", entry["agent"]]
+        # #1720: the allowlisted name, never the entry's raw string. `--agent`
+        # resolves among the OPERATOR's user-scope agents, so a foreign value
+        # is a shell swap rather than a traversal -- still a reviewer running
+        # under instructions and tool grants nobody in this run chose.
+        # `run_entry` refuses such an entry outright (it must not reach the
+        # `--model` branch below and launch bare); this call is what keeps the
+        # value on the argv and the value that was checked the same one.
+        agent = base.registered_agent(entry)
+        if entry.get("enforced") and agent:
+            cmd += ["--agent", agent]
         elif entry.get("model"):
             cmd += ["--model", entry["model"]]
         cmd += base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)
@@ -181,6 +189,14 @@ class Runner(base.HostRunner):
         # no HOME, and `claude` was then unfindable: every entry of every run
         # failed with FileNotFoundError. `launch_env` is where that merge --
         # and this family's CLAUDECODE pop -- now lives, once.
+        # #1720, before the environment is built and before anything is spent:
+        # an enforced entry whose `agent` is not one of this driver's four
+        # registered shells is REFUSED, never downgraded. The old
+        # `enforced and agent` gate in `command` sent both an absent agent and
+        # a foreign one to the `--model` branch -- a bare launch, ledgered as
+        # the enforced entry it was dispatched as.
+        if entry.get("enforced") and base.registered_agent(entry) is None:
+            return base.refuse_unregistered_agent(entry)
         run_env = self.launch_env(env)
         cmd = self.command(entry, self.settings_path, self.max_turns)
         try:

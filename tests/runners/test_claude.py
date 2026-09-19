@@ -393,3 +393,49 @@ class TestATimedOutLaunchKeepsWhatItPrinted(unittest.TestCase):
         # killed launch's stdout carries no figure to read. Recorded as the
         # empty truth rather than a fabricated zero-cost success.
         self.assertEqual({}, res.usage)
+
+
+class TestTheEntryAgentIsAllowlisted(unittest.TestCase):
+    """#1720. `entry["agent"]` arrives through
+    `.panopticon/dispatch-request.json`, inside the REVIEWED TREE, and goes
+    on the argv as `--agent <name>`. It resolves only among the operator's own
+    user-scope agents, so this family's exposure is a SWAP, not a traversal --
+    but a swapped shell is still a reviewer running under instructions and
+    tool grants nobody in this run chose. And an enforced entry carrying no
+    agent at all used to fall through to the bare `--model` branch: an
+    unenforced launch reported as an enforced one.
+    """
+
+    def _refuse(self, agent):
+        launched = []
+
+        def fake_run(cmd, **kw):
+            launched.append(cmd)
+            class P: returncode = 0; stdout = json.dumps(ENVELOPE); stderr = ""
+            return P()
+
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=fake_run)
+            r.prepare(d, review_root=d)
+            res = r.run_entry(dict(_entry(True), agent=agent), {})
+        return res, launched
+
+    def test_a_wrong_but_plausible_agent_is_refused_before_any_launch(self):
+        for agent in ("panopticon-scout-evil", "some-operator-agent"):
+            res, launched = self._refuse(agent)
+            self.assertFalse(res.ok, agent)
+            self.assertIn("not a registered panopticon shell", res.error)
+            self.assertIn(agent, res.error)
+            self.assertEqual([], launched)
+
+    def test_an_enforced_entry_with_no_agent_is_refused_not_downgraded(self):
+        res, launched = self._refuse(None)
+        self.assertFalse(res.ok)
+        self.assertIn("not a registered panopticon shell", res.error)
+        self.assertEqual([], launched)
+
+    def test_a_registered_agent_still_launches(self):
+        res, launched = self._refuse("panopticon-domain-panel")
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(1, len(launched))
+        self.assertIn("panopticon-domain-panel", launched[0])

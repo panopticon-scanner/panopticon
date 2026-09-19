@@ -1251,3 +1251,78 @@ class TestAgentFileChildrenAreBoundGlobally(unittest.TestCase):
                 config = tomllib.load(fh)
         self.assertIn("Bash", config["tools"]["disabled"])          # top-level table
         self.assertNotIn("agents", config)                          # no per-agent override
+
+
+class TestTheEntryAgentIsAllowlistedAndContained(unittest.TestCase):
+    """#1720. `entry["agent"]` reaches this runner through
+    `.panopticon/dispatch-request.json` -- a file inside the REVIEWED TREE --
+    and `_shell_path` joined it into a filesystem path that `--agent-file=`
+    then hands the CLI as the reviewer's GOVERNING INSTRUCTIONS. An absolute
+    or `../` value loaded an attacker-chosen markdown file; a registered name
+    symlinked out of the registration directory did the same thing one step
+    later. Two rules, both fail-closed: the name must be one of the four
+    registered shells, and the path it resolves to must stay inside the
+    registration directory (`base.published_schema`'s containment rule,
+    second application).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.registration_dir = os.path.join(self.tmp.name, "kimi-agents")
+        os.makedirs(self.registration_dir)
+        self.launched = []
+        self.r = _prepared(self.tmp.name, runner=self._fake())
+        self.addCleanup(self.r.teardown, "complete")
+
+    def _fake(self):
+        def fake(cmd, **kw):
+            self.launched.append(cmd)
+            class P:
+                returncode = 0
+                stdout = STREAM
+                stderr = ""
+            return P()
+        return fake
+
+    def _run(self, agent):
+        row = dataclasses.replace(hosts.HOSTS["kimi"],
+                                  registration_dir=self.registration_dir)
+        with mock.patch.dict(hosts.HOSTS, {"kimi": row}):
+            return self.r.run_entry(dict(_entry(True), agent=agent), {})
+
+    def _shell(self, name="panopticon-domain-panel"):
+        return os.path.join(self.registration_dir, name + ".md")
+
+    def test_a_traversal_or_foreign_agent_never_reaches_a_launch(self):
+        for agent in ("../../tmp/evil", "/tmp/x", "panopticon-domain-panel-evil"):
+            res = self._run(agent)
+            self.assertFalse(res.ok, agent)
+            self.assertIn("not a registered panopticon shell", res.error)
+            self.assertIn(agent, res.error)
+        self.assertEqual([], self.launched)
+
+    def test_an_enforced_entry_with_no_agent_is_refused_not_downgraded(self):
+        res = self._run(None)
+        self.assertFalse(res.ok)
+        self.assertIn("not a registered panopticon shell", res.error)
+        self.assertEqual([], self.launched)
+
+    def test_a_registered_name_whose_shell_escapes_the_directory_is_refused(self):
+        outside = os.path.join(self.tmp.name, "planted.md")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("# whatever the target wanted the reviewer to be told\n")
+        os.symlink(outside, self._shell())
+        res = self._run("panopticon-domain-panel")
+        self.assertFalse(res.ok)
+        self.assertIn("outside", res.error)
+        self.assertEqual([], self.launched)
+
+    def test_a_registered_shell_inside_the_directory_still_launches(self):
+        with open(self._shell(), "w", encoding="utf-8") as fh:
+            fh.write("# the registered shell\n")
+        res = self._run("panopticon-domain-panel")
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(1, len(self.launched))
+        self.assertIn("--agent-file=%s" % os.path.realpath(self._shell()),
+                      self.launched[0])

@@ -787,3 +787,38 @@ class TestTheBatchManifest(unittest.TestCase):
         self.assertEqual(([], []), (batch.entry_ids(), batch.artifacts()))
         self.assertEqual(([], []), batch.roll_back())
 
+
+
+class TestTheRegisteredAgentAllowlist(unittest.TestCase):
+    """#1720: `entry["agent"]` arrives through
+    `.panopticon/dispatch-request.json`, a file inside the REVIEWED TREE, and
+    every family puts it on a launch's argv (kimi joins it into a filesystem
+    path). The allowlist is the same containment idea `published_schema`
+    applies to the one other entry-derived argv value -- and it is DERIVED
+    from `dispatch.ROLE_FILES`, so a role added or renamed there cannot leave
+    a second, stale spelling here.
+    """
+
+    def test_the_allowlist_is_exactly_the_four_dispatch_role_shells(self):
+        import scripts.dispatch as dispatch
+        self.assertEqual(
+            base.REGISTERED_AGENT_NAMES,
+            frozenset(dispatch.registered_agent_name(role_file)
+                      for role_file in dispatch.ROLE_FILES.values()))
+        self.assertIn("panopticon-scout", base.REGISTERED_AGENT_NAMES)
+
+    def test_registered_agent_answers_the_name_or_none(self):
+        self.assertEqual("panopticon-scout",
+                         base.registered_agent({"agent": "panopticon-scout"}))
+        for value in ("panopticon-scout-evil", "../../tmp/evil", "/tmp/x", "", None, 7):
+            self.assertIsNone(base.registered_agent({"agent": value}), value)
+        self.assertIsNone(base.registered_agent({}))
+        self.assertIsNone(base.registered_agent(None))
+
+    def test_the_refusal_names_the_value_and_never_downgrades(self):
+        result = base.refuse_unregistered_agent({"id": "review-app-SEC",
+                                                 "agent": "../../tmp/evil"})
+        self.assertFalse(result.ok)
+        self.assertEqual("review-app-SEC", result.entry_id)
+        self.assertIn("not a registered panopticon shell", result.error)
+        self.assertIn("../../tmp/evil", result.error)
