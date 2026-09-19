@@ -5,10 +5,13 @@ import os
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
 import scripts.ingest_tools as ingest_tools
+# #1720: ONE owner for the enforcement posture -- the loop re-derives it
+# to CHECK the dispatch request this module writes, so both sides must
+# read the same function or a run can refuse itself.
+import scripts.loop_batch as loop_batch
 import scripts.ocrdb as ocrdb
 import scripts.synth.findings as findings_mod
 import scripts._version as _version
-from scripts import hosts
 from scripts import read_guard_hook
 from . import engine
 import scripts.findings_contract as findings_contract
@@ -309,7 +312,7 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
         "security_checklist": _render_security_checklist(domain),
         "out_file": out_file}, host)
     host_ev = runio.host_evidence(review_root)
-    enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
+    enforced = loop_batch.expected_enforced(review_root, host)
     # #1344 F4 (a): a host with no PROVEN artifact_write_guard gets return-persist
     # instead of unguarded self-write -- see requests.delivery.
     mode, prefix = requests.delivery(host, host_ev, "domain-panel.md", out_file)

@@ -24,9 +24,12 @@ import os
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
 import scripts.ingest_tools as ingest_tools
+# #1720: ONE owner for the enforcement posture -- the loop re-derives it
+# to CHECK the dispatch request this module writes, so both sides must
+# read the same function or a run can refuse itself.
+import scripts.loop_batch as loop_batch
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
-from scripts import hosts
 from scripts import read_guard_hook
 from . import coverage
 from . import engine
@@ -179,7 +182,7 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
               "default checkout.\n\n%s" % (os.path.abspath(review_root), prompt))
     prompt = tools.partial_audit_note(review_root, safe_finding) + prompt
     host_ev = runio.host_evidence(review_root)
-    enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
+    enforced = loop_batch.expected_enforced(review_root, host)
     # #1344 F4 (a): derived, not a literal -- advisor.md grants no Write, so
     # requests.delivery always answers "return_json" with no preamble here,
     # but the derivation is the one this module shares with the two

@@ -1,4 +1,5 @@
 """driver loop (spec 4.3): the engine driven by a process, with a fake runner."""
+import ast
 import contextlib
 import dataclasses
 import io
@@ -2252,9 +2253,11 @@ class TestTheRequestsEnforcedFlagIsDerived(LoopCase):
         run_dir = orchestrate.persist.run_dir(d, None)
         self.assertFalse(os.path.exists(os.path.join(run_dir, base.LEDGER_FILE)))
         # ...and no cell was charged a second attempt: the one on disk is the
-        # one review_execute booked when it WROTE the request.
-        attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
-        self.assertEqual([1], sorted(set(attempts.values())) or [1])
+        # one review_execute booked when it WROTE the request. Asserted as the
+        # whole document -- `sorted(set(values)) or [1]` read as green for a
+        # missing or empty file, which is every way this could go wrong.
+        attempts = runio._load_json(runio._pano(d, "cell-attempts.json"))
+        self.assertEqual({"app/SEC": 1}, attempts)
 
     def test_a_proven_run_refuses_a_request_that_claims_an_enforced_launch_on_a_refuted_host(self):
         d, floor = self._repo()
@@ -2311,6 +2314,14 @@ class TestExpectedEnforced(unittest.TestCase):
         d = self._root(_ALL_PROVEN)
         self.assertFalse(loop_batch.expected_enforced(d, "generic", None))
 
+    def test_each_posture_state_maps_to_one_answer(self):
+        # PROVEN is the only state that enforces. UNKNOWN gates exactly as
+        # REFUTED (spec 5.1) -- "we did not measure" grants nothing.
+        for state, expected in ((hosts.PROVEN, True), (hosts.REFUTED, False),
+                                (hosts.UNKNOWN, False)):
+            d = self._root({hosts.TOOL_POLICY_ENFORCED: state})
+            self.assertIs(expected, loop_batch.expected_enforced(d, "claude", None), state)
+
     def test_refuse_disagreeing_names_only_the_entries_that_disagree(self):
         pending = [{"id": "a", "enforced": True}, {"id": "b", "enforced": False},
                    {"id": "c"}, {"id": "d", "enforced": 1}]
@@ -2319,33 +2330,55 @@ class TestExpectedEnforced(unittest.TestCase):
 
 
 class TestEnforcedIsDerivedInOnePlace(unittest.TestCase):
-    """#1720 drift guard. The loop re-derives `enforced` to CHECK the request;
-    the phases derive it to WRITE the request. Two copies of one expression is
-    exactly the drift that would make a run refuse itself (or quietly stop
-    refusing), so the driver-plan side calls the loop's function rather than
-    keeping its own."""
+    """#1720 drift guard. The loop re-derives `enforced` to CHECK the dispatch
+    request; the phases derive it to WRITE that request. A second copy of the
+    expression is exactly the drift that would make a run refuse itself -- or
+    quietly stop refusing -- so every site calls `loop_batch.expected_enforced`
+    and none of them spells `hosts.posture(...)[...] == hosts.PROVEN` again.
 
-    def test_the_driver_plan_calls_the_loops_derivation_and_keeps_no_copy(self):
-        import ast
-        import inspect
+    AST, not text: the expression is written across two source lines at some
+    of these sites, and a grep for it returns a false zero (the `git grep \\b`
+    trap, one shape over)."""
 
-        import scripts.phases.requests as requests_mod
-        tree = ast.parse(inspect.getsource(requests_mod._driver_plan_entries).lstrip())
-        calls = {ast.unparse(node.func) for node in ast.walk(tree)
-                 if isinstance(node, ast.Call)}
-        self.assertIn("loop_batch.expected_enforced", calls)
-        self.assertNotIn("hosts.posture", calls)
+    PHASES = os.path.join(os.path.dirname(orchestrate.__file__), "phases")
+    # The four builders that STAMP `enforced` onto dispatch entries, plus the
+    # driver plan that declares it for the same cells.
+    SITES = ("coverage.py", "review.py", "verify.py", "verify_tools.py", "requests.py")
 
-    def test_both_sides_answer_the_same_over_proven_refuted_and_unknown(self):
-        for state, expected in ((hosts.PROVEN, True), (hosts.REFUTED, False),
-                                (hosts.UNKNOWN, False)):
-            d = os.path.realpath(tempfile.mkdtemp())
-            self.addCleanup(lambda p=d: shutil.rmtree(p, ignore_errors=True))
-            os.makedirs(os.path.join(d, ".panopticon"))
-            write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: state})
-            # The expression the four remaining phase call sites still spell
-            # inline (coverage, review, verify, verify_tools).
-            phases_answer = (hosts.posture("claude", runio.host_evidence(d))
-                             [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
-            self.assertIs(expected, phases_answer, state)
-            self.assertIs(expected, loop_batch.expected_enforced(d, "claude", None), state)
+    def _tree(self, name):
+        path = os.path.join(self.PHASES, name)
+        with open(path, encoding="utf-8") as fh:
+            return path, ast.parse(fh.read(), path)
+
+    def test_every_site_calls_the_loops_derivation(self):
+        for name in self.SITES:
+            path, tree = self._tree(name)
+            calls = {ast.unparse(node.func) for node in ast.walk(tree)
+                     if isinstance(node, ast.Call)}
+            self.assertIn("loop_batch.expected_enforced", calls, path)
+
+    def test_no_phase_module_keeps_its_own_copy_of_the_expression(self):
+        offenders = []
+        for name in sorted(os.listdir(self.PHASES)):
+            if not name.endswith(".py"):
+                continue
+            path, tree = self._tree(name)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Compare):
+                    continue
+                if not isinstance(node.left, ast.Subscript):
+                    continue
+                inner = node.left.value
+                # THIS capability only: the other `hosts.posture(...)[cap]`
+                # comparisons in phases/ (artifact_write_guard in
+                # requests.delivery, usage_ledger in synthesize) are different
+                # decisions with no second owner, and #1720 did not touch them.
+                if (isinstance(inner, ast.Call)
+                        and ast.unparse(inner.func) == "hosts.posture"
+                        and ast.unparse(node.left.slice) == "hosts.TOOL_POLICY_ENFORCED"):
+                    offenders.append("%s:%d: %s"
+                                     % (path, node.lineno, ast.unparse(node)))
+        self.assertEqual([], offenders,
+                         "a phase re-derives the enforcement posture instead of "
+                         "calling loop_batch.expected_enforced; two copies is the "
+                         "drift #1720 closed:\n" + "\n".join(offenders))
