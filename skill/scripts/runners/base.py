@@ -12,7 +12,9 @@ import sys
 import time
 
 import scripts._version as version
+import scripts.dispatch as dispatch
 import scripts.read_guard_hook as read_guard_hook
+import scripts.redact as redact
 import scripts.runners.outage as outage
 
 # An alias of a definition from OUTSIDE this package (read_guard_hook is a
@@ -501,6 +503,55 @@ def schema_argv(flag, entry):
     result unconditionally."""
     schema = published_schema(entry.get("output_schema") if isinstance(entry, dict) else None)
     return [*flag, schema] if (flag and schema) else []
+
+
+# The four registered enforcement shells, DERIVED from the one table that
+# decides what a driver role is (#1720). Not a hand-kept list: a role added,
+# renamed or retired in `dispatch.ROLE_FILES` moves the emitter, the
+# readiness probe and this allowlist together, and a second spelling here
+# would fail closed on exactly the shells the run had just registered.
+REGISTERED_AGENT_NAMES = frozenset(
+    dispatch.registered_agent_name(role_file)
+    for role_file in dispatch.ROLE_FILES.values())
+# `%r`, never `%s`: the value is the TARGET's, and this message is printed to
+# the operator's stderr and stored in the ledger row. repr() renders a control
+# character, an ANSI escape or an embedded newline as its escape sequence, so a
+# refused value cannot repaint the terminal or forge a second log line.
+UNREGISTERED_AGENT = "entry names an agent that is not a registered panopticon shell: %r"
+
+
+def registered_agent(entry):
+    """`entry["agent"]` when it is one of the four registered shells; None
+    otherwise (#1720).
+
+    The second containment rule on this seam, and for the same reason as
+    `published_schema`: an entry travels through
+    `.panopticon/dispatch-request.json`, which lives INSIDE the reviewed
+    tree, so `agent` is a value a target can choose. Every family puts it on
+    a launch's argv -- kimi joins it into a filesystem path and hands the
+    result to `--agent-file=`, which IS the reviewer's governing
+    instructions -- so a name outside this set is never launched and never
+    silently downgraded to a bare launch.
+    """
+    name = entry.get("agent") if isinstance(entry, dict) else None
+    # `isinstance` FIRST. The request is JSON from inside the reviewed tree, so
+    # `agent` is as likely to arrive as an array or an object as it is a
+    # string -- and `value in <frozenset>` raises `TypeError: unhashable type`
+    # on either, straight out of `run_entry`, which never raises (spec 4.4).
+    # A type check is what makes this a refusal rather than a crash.
+    return name if isinstance(name, str) and name in REGISTERED_AGENT_NAMES else None
+
+
+def refuse_unregistered_agent(entry):
+    """The refusal every family returns for an enforced entry whose `agent` is
+    not a registered shell -- including one carrying no `agent` at all, which
+    used to fall through to the bare branch and launch unenforced while the
+    ledger recorded an enforced entry. One message, one owner: three families
+    refusing the same thing in three wordings is how a grep for this control
+    finds two of them."""
+    value = entry.get("agent") if isinstance(entry, dict) else None
+    entry_id = entry.get("id") if isinstance(entry, dict) else None
+    return RunResult.failed(entry_id, UNREGISTERED_AGENT % redact.redact(str(value)[:200]))
 
 
 def _headless_module(host):

@@ -105,9 +105,21 @@ class Runner(base.HostRunner):
                "--setting-sources", "user", "--strict-mcp-config",
                "--disable-slash-commands", "--output-format", "json",
                "--no-session-persistence", "--max-turns", str(int(max_turns))]
-        if entry.get("enforced") and entry.get("agent"):
-            cmd += ["--agent", entry["agent"]]
-        elif entry.get("model"):
+        # #1720: the allowlisted name, never the entry's raw string. `--agent`
+        # resolves among the OPERATOR's user-scope agents, so a foreign value
+        # is a shell swap rather than a traversal -- still a reviewer running
+        # under instructions and tool grants nobody in this run chose.
+        # `run_entry` refuses such an entry outright; this call is what keeps
+        # the value on the argv and the value that was checked the same one.
+        # The fall-through is gated on `not enforced` rather than left as a
+        # bare `elif` (fix round 1, item 2): an ENFORCED entry whose agent is
+        # not registered gets the registered shell or no launch -- never a
+        # `--model`-only argv, which is an unenforced launch. Latent behind
+        # `run_entry` today; a second caller is all it would take.
+        agent = base.registered_agent(entry)
+        if entry.get("enforced") and agent:
+            cmd += ["--agent", agent]
+        elif not entry.get("enforced") and entry.get("model"):
             cmd += ["--model", entry["model"]]
         cmd += base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)
         cmd.append(entry["prompt"])
@@ -181,6 +193,14 @@ class Runner(base.HostRunner):
         # no HOME, and `claude` was then unfindable: every entry of every run
         # failed with FileNotFoundError. `launch_env` is where that merge --
         # and this family's CLAUDECODE pop -- now lives, once.
+        # #1720, before the environment is built and before anything is spent:
+        # an enforced entry whose `agent` is not one of this driver's four
+        # registered shells is REFUSED, never downgraded. The old
+        # `enforced and agent` gate in `command` sent both an absent agent and
+        # a foreign one to the `--model` branch -- a bare launch, ledgered as
+        # the enforced entry it was dispatched as.
+        if entry.get("enforced") and base.registered_agent(entry) is None:
+            return base.refuse_unregistered_agent(entry)
         run_env = self.launch_env(env)
         cmd = self.command(entry, self.settings_path, self.max_turns)
         try:

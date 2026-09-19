@@ -5,9 +5,12 @@ import sys
 import scripts.coverage_model as coverage_model
 import scripts.dispatch as dispatch
 import scripts.groups_schema as groups_schema
+# #1720: ONE owner for the enforcement posture -- the loop re-derives it
+# to CHECK the dispatch request this module writes, so both sides must
+# read the same function or a run can refuse itself.
+import scripts.loop_batch as loop_batch
 import scripts.repo_config as repo_config
 import scripts.run_tools as run_tools
-from scripts import hosts
 from scripts import read_guard_hook
 from . import engine
 from . import runio
@@ -89,7 +92,7 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
                 "if none apply; never invent a tool name:\n%s\n" % registry
               + "\nReturn the ScopeProfile JSON for this group.")
     host_ev = runio.host_evidence(review_root)
-    enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
+    enforced = loop_batch.expected_enforced(review_root, host)
     out_file = os.path.abspath(runio._pano(review_root, "scout-%s.json" % group))
     # #1608: return-persist by construction (scout.md grants no Write), and the
     # entry now carries the key that says so -- one field for every entry a host

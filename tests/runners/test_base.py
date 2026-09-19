@@ -787,3 +787,65 @@ class TestTheBatchManifest(unittest.TestCase):
         self.assertEqual(([], []), (batch.entry_ids(), batch.artifacts()))
         self.assertEqual(([], []), batch.roll_back())
 
+
+
+class TestTheRegisteredAgentAllowlist(unittest.TestCase):
+    """#1720: `entry["agent"]` arrives through
+    `.panopticon/dispatch-request.json`, a file inside the REVIEWED TREE, and
+    every family puts it on a launch's argv (kimi joins it into a filesystem
+    path). The allowlist is the same containment idea `published_schema`
+    applies to the one other entry-derived argv value -- and it is DERIVED
+    from `dispatch.ROLE_FILES`, so a role added or renamed there cannot leave
+    a second, stale spelling here.
+    """
+
+    def test_the_allowlist_is_exactly_the_four_dispatch_role_shells(self):
+        import scripts.dispatch as dispatch
+        self.assertEqual(
+            base.REGISTERED_AGENT_NAMES,
+            frozenset(dispatch.registered_agent_name(role_file)
+                      for role_file in dispatch.ROLE_FILES.values()))
+        self.assertIn("panopticon-scout", base.REGISTERED_AGENT_NAMES)
+
+    def test_registered_agent_answers_the_name_or_none(self):
+        self.assertEqual("panopticon-scout",
+                         base.registered_agent({"agent": "panopticon-scout"}))
+        for value in ("panopticon-scout-evil", "../../tmp/evil", "/tmp/x", "", None, 7):
+            self.assertIsNone(base.registered_agent({"agent": value}), value)
+        self.assertIsNone(base.registered_agent({}))
+        self.assertIsNone(base.registered_agent(None))
+
+    def test_an_unhashable_agent_is_answered_none_and_never_raises(self):
+        # Fix round 1, item 1. The request is JSON from inside the reviewed
+        # tree, so `agent` can perfectly well be an array or an object --
+        # and `value in <frozenset>` on one raises `TypeError: unhashable
+        # type`, straight out of `run_entry`, which never raises (spec 4.4).
+        # A type check that only a str reaches, before the membership test.
+        for value in ([], {}, {"a": {"b": "panopticon-scout"}},
+                      ["panopticon-scout"], set()):
+            self.assertIsNone(base.registered_agent({"agent": value}), repr(value))
+
+    def test_the_refusal_names_the_value_and_never_downgrades(self):
+        result = base.refuse_unregistered_agent({"id": "review-app-SEC",
+                                                 "agent": "../../tmp/evil"})
+        self.assertFalse(result.ok)
+        self.assertEqual("review-app-SEC", result.entry_id)
+        self.assertIn("not a registered panopticon shell", result.error)
+        self.assertIn(repr("../../tmp/evil"), result.error)
+
+    def test_the_refusal_neutralises_a_value_that_is_trying_to_write_the_log(self):
+        # Fix round 1, item 6: the value is the TARGET's, and it lands in the
+        # operator's stderr and in the ledger row. `%r` renders a control
+        # character, an ANSI escape or a newline as its escape sequence, so a
+        # value cannot forge a second log line or repaint the terminal.
+        result = base.refuse_unregistered_agent(
+            {"id": "e", "agent": "panopticon-scout\x1b[2J\ndriver loop: all good"})
+        self.assertNotIn("\x1b", result.error)
+        self.assertNotIn("\n", result.error)
+        self.assertIn("\\x1b", result.error)
+
+    def test_the_refusal_still_truncates_and_redacts(self):
+        long_value = "a" * 500
+        result = base.refuse_unregistered_agent({"id": "e", "agent": long_value})
+        self.assertIn(repr("a" * 200), result.error)
+        self.assertNotIn("a" * 201, result.error)

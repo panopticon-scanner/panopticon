@@ -33,6 +33,7 @@ import sys
 import scripts.dispatch as dispatch
 import scripts.hosts as hosts
 import scripts.model_resolver as model_resolver
+import scripts.redact as redact
 import scripts.runners.base as base
 # `kimi_home_mod`, not `kimi_home`: `wire_path`'s first parameter and
 # `Runner.kimi_home` already own that name in this file.
@@ -327,8 +328,29 @@ class Runner(base.HostRunner):
             pass
 
     def _shell_path(self, entry):
+        """The registered shell this entry names, or None when there is no
+        such shell inside the registration directory (#1720).
+
+        Two gates, because the value comes out of
+        `.panopticon/dispatch-request.json` inside the reviewed tree and is
+        the ONE entry-derived path this family puts on an argv --
+        `--agent-file=` is the reviewer's governing instructions, so a target
+        that chose it would be writing the reviewer's charter:
+
+        * the name must be one of `base.REGISTERED_AGENT_NAMES` (that alone
+          stops `../../tmp/evil` and `/tmp/x`);
+        * the path it RESOLVES to must still be under the registration
+          directory -- `base.published_schema`'s realpath containment, second
+          application -- so a registered name symlinked out of that directory
+          fails closed too.
+        """
+        name = base.registered_agent(entry)
+        if name is None:
+            return None
         directory = hosts.spec(self.host).registration_dir
-        return os.path.join(directory, "%s.md" % entry["agent"])
+        root = os.path.realpath(directory)
+        real = os.path.realpath(os.path.join(directory, "%s.md" % name))
+        return real if real.startswith(root + os.sep) else None
 
     def command(self, entry, alias):
         """The argv for one entry. `--agent-file=<abs shell>` (equals form:
@@ -354,8 +376,19 @@ class Runner(base.HostRunner):
                 "skill discovery would fall back to the target's project roots (KM-1, #1657)")
         cmd = [self.CLI, "--output-format", "stream-json",
                "--skills-dir=%s" % self.skills_dir]
-        if entry.get("enforced") and entry.get("agent"):
-            cmd.append("--agent-file=%s" % self._shell_path(entry))
+        if entry.get("enforced"):
+            shell = self._shell_path(entry)
+            if shell is None:
+                # LOUD, like the `--skills-dir` refusal above and for the same
+                # reason: an enforced entry whose shell does not resolve has no
+                # legal argv, and the one thing that must NOT happen is the
+                # `--agent-file=` flag quietly falling off -- that is a bare,
+                # unenforced launch reported as an enforced one. `run_entry`
+                # refuses such an entry before it ever gets here; this is the
+                # second wall, for any other caller.
+                raise RuntimeError(base.UNREGISTERED_AGENT
+                                   % redact.redact(str(entry.get("agent"))[:200]))
+            cmd.append("--agent-file=%s" % shell)
         if alias:
             cmd += ["-m", alias]
         cmd += ["-p", entry["prompt"]]
@@ -405,8 +438,22 @@ class Runner(base.HostRunner):
         # goes ON TOP (C1: an overlay-only child has no PATH and cannot start).
         # `launch_env` above is where that merge and this family's own go, once.
         entry_id = entry.get("id")
-        if entry.get("enforced") and entry.get("agent"):
+        if entry.get("enforced"):
+            # #1720, in order: is the NAME one of ours, does the path it
+            # resolves to stay inside the registration directory, and only
+            # then is there a file there. `enforced and entry.get("agent")`
+            # used to gate all three -- so an enforced entry with no agent,
+            # or with one this driver never registers, skipped the check and
+            # launched bare.
+            if base.registered_agent(entry) is None:
+                return base.refuse_unregistered_agent(entry)
             shell = self._shell_path(entry)
+            if shell is None:
+                return base.RunResult.failed(
+                    entry_id, "entry's enforcement shell resolves outside the registered "
+                    "shell directory %s: %r"
+                    % (hosts.spec(self.host).registration_dir,
+                       redact.redact(str(entry.get("agent"))[:200])))
             if not os.path.isfile(shell):
                 return base.RunResult.failed(
                     entry_id, "enforcement shell not registered at %s "

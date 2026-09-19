@@ -393,3 +393,75 @@ class TestATimedOutLaunchKeepsWhatItPrinted(unittest.TestCase):
         # killed launch's stdout carries no figure to read. Recorded as the
         # empty truth rather than a fabricated zero-cost success.
         self.assertEqual({}, res.usage)
+
+
+class TestTheEntryAgentIsAllowlisted(unittest.TestCase):
+    """#1720. `entry["agent"]` arrives through
+    `.panopticon/dispatch-request.json`, inside the REVIEWED TREE, and goes
+    on the argv as `--agent <name>`. It resolves only among the operator's own
+    user-scope agents, so this family's exposure is a SWAP, not a traversal --
+    but a swapped shell is still a reviewer running under instructions and
+    tool grants nobody in this run chose. And an enforced entry carrying no
+    agent at all used to fall through to the bare `--model` branch: an
+    unenforced launch reported as an enforced one.
+    """
+
+    def _refuse(self, agent):
+        launched = []
+
+        def fake_run(cmd, **kw):
+            launched.append(cmd)
+            class P: returncode = 0; stdout = json.dumps(ENVELOPE); stderr = ""
+            return P()
+
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=fake_run)
+            r.prepare(d, review_root=d)
+            res = r.run_entry(dict(_entry(True), agent=agent), {})
+        return res, launched
+
+    def test_a_wrong_but_plausible_agent_is_refused_before_any_launch(self):
+        for agent in ("panopticon-scout-evil", "some-operator-agent"):
+            res, launched = self._refuse(agent)
+            self.assertFalse(res.ok, agent)
+            self.assertIn("not a registered panopticon shell", res.error)
+            self.assertIn(repr(agent), res.error)
+            self.assertEqual([], launched)
+
+    def test_an_enforced_entry_with_no_agent_is_refused_not_downgraded(self):
+        res, launched = self._refuse(None)
+        self.assertFalse(res.ok)
+        self.assertIn("not a registered panopticon shell", res.error)
+        self.assertEqual([], launched)
+
+    def test_a_json_array_or_object_agent_is_refused_rather_than_raising(self):
+        # Fix round 1, item 1: `run_entry` never raises (spec 4.4), and an
+        # array or object `agent` used to escape it as a TypeError.
+        for agent in ([], {}, {"a": {"b": "panopticon-domain-panel"}},
+                      ["panopticon-domain-panel"]):
+            res, launched = self._refuse(agent)
+            self.assertFalse(res.ok, agent)
+            self.assertIn("not a registered panopticon shell", res.error)
+            self.assertIn(repr(str(agent)), res.error)
+            self.assertEqual([], launched)
+
+    def test_command_gives_an_enforced_foreign_agent_neither_agent_nor_model(self):
+        # Fix round 1, item 2. `command()` is latent behind `run_entry`'s
+        # refusal today, but its fall-through still BUILT a bare `--model`
+        # argv for an enforced entry -- an unenforced launch one caller away.
+        # An enforced entry gets the registered shell or no launch at all.
+        r = claude_runner.Runner("claude")
+        for agent in ("panopticon-scout-evil", None):
+            cmd = r.command(dict(_entry(True), agent=agent),
+                            "/run/host-settings.json", max_turns=40)
+            self.assertNotIn("--agent", cmd, agent)
+            self.assertNotIn("--model", cmd, agent)
+        # ...and an UNENFORCED entry is untouched: it still binds its model.
+        cmd = r.command(_entry(False), "/run/host-settings.json", max_turns=40)
+        self.assertIn("--model", cmd)
+
+    def test_a_registered_agent_still_launches(self):
+        res, launched = self._refuse("panopticon-domain-panel")
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(1, len(launched))
+        self.assertIn("panopticon-domain-panel", launched[0])

@@ -494,3 +494,64 @@ def test_a_timed_out_launch_keeps_its_partial_jsonl_and_the_usage_in_it(tmp_path
     assert result.text == partial
     assert result.usage == {"input_tokens": 40, "output_tokens": 20,
                             "cache_read_input_tokens": 60, "cache_creation_input_tokens": 0}
+
+
+def test_a_foreign_agent_name_is_refused_before_any_launch(tmp_path):
+    """#1720. Codex is enforced-only and looks its shell up by name in a TOML
+    registry, so a foreign name could not traverse -- but it failed LATER, as
+    an unreadable registration file, and only after the launch machinery had
+    been built. The allowlist refuses it here, for the same reason and in the
+    same shape as every other family."""
+    launched = []
+
+    def fake_run(command, **kwargs):
+        launched.append(command)
+        return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)
+
+    runner = codex.Runner(runner=fake_run)
+    runner.prepare(str(tmp_path), str(tmp_path))
+    foreign = dict(entry(), agent="panopticon-domain-panel-evil")
+    result = runner.run_entry(foreign, {base.ENV_ENTRY_ID: foreign["id"]})
+    assert not result.ok
+    assert "not a registered panopticon shell" in result.error
+    assert repr("panopticon-domain-panel-evil") in result.error
+    assert launched == []
+
+
+def test_an_enforced_entry_with_no_agent_is_refused_before_any_launch(tmp_path):
+    launched = []
+
+    def fake_run(command, **kwargs):
+        launched.append(command)
+        return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)
+
+    runner = codex.Runner(runner=fake_run)
+    runner.prepare(str(tmp_path), str(tmp_path))
+    result = runner.run_entry(dict(entry(), agent=None),
+                              {base.ENV_ENTRY_ID: entry()["id"]})
+    assert not result.ok
+    assert "not a registered panopticon shell" in result.error
+    assert launched == []
+
+
+def test_a_json_array_or_object_agent_is_refused_rather_than_crashing(tmp_path):
+    """Fix round 1, item 1: the membership test used to raise `TypeError:
+    unhashable type` on an array or object `agent`. Codex's `run_entry` catches
+    everything, so it did not escape -- it became a crash-shaped failure whose
+    message named a Python type instead of the security refusal it is."""
+    launched = []
+
+    def fake_run(command, **kwargs):
+        launched.append(command)
+        return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)
+
+    runner = codex.Runner(runner=fake_run)
+    runner.prepare(str(tmp_path), str(tmp_path))
+    for agent in ([], {}, {"a": {"b": "panopticon-domain-panel"}},
+                  ["panopticon-domain-panel"]):
+        result = runner.run_entry(dict(entry(), agent=agent),
+                                  {base.ENV_ENTRY_ID: entry()["id"]})
+        assert not result.ok
+        assert "not a registered panopticon shell" in result.error, agent
+        assert repr(str(agent)) in result.error
+    assert launched == []

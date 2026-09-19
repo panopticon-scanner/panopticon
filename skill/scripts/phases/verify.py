@@ -9,7 +9,10 @@ import sys
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
 import scripts.score_gate as score_gate
-from scripts import hosts
+# #1720: ONE owner for the enforcement posture -- the loop re-derives it
+# to CHECK the dispatch request this module writes, so both sides must
+# read the same function or a run can refuse itself.
+import scripts.loop_batch as loop_batch
 from scripts import read_guard_hook
 from . import engine
 from . import evidence_scope
@@ -239,7 +242,7 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
            "default checkout.\n\n" % os.path.abspath(review_root))
     prompt = pin + (_grant_block(review_root, grant, ambiguous) if grant else "") + prompt
     host_ev = runio.host_evidence(review_root)
-    enforced = hosts.posture(host, host_ev)[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN
+    enforced = loop_batch.expected_enforced(review_root, host)
     # #1344 F4 (a): a host with no PROVEN artifact_write_guard gets return-persist
     # instead of unguarded self-write -- see requests.delivery. This preamble
     # goes OUTSIDE (before) the #975 repo-root pin above.
