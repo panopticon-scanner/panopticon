@@ -25,8 +25,10 @@ class Runner(base.HostRunner):
     # ledger; the rest of the argv (`--max-turns`, e.g.) is not in `--help`
     # and not the envelope's business.
     ENVELOPE_FLAGS = ("-p", "--output-format")
-    # D10 ruling 3: `claude -p --json-schema <file>` ("JSON Schema for
-    # structured output"). Appended only for an entry whose role publishes one.
+    # D10 ruling 3: `claude -p --json-schema <schema>` ("JSON Schema for
+    # structured output") -- the schema's TEXT, not a file (MEASURED on
+    # 2.1.276; see base.inline_schema). Appended only for an entry whose role
+    # publishes one.
     OUTPUT_SCHEMA_FLAG = ("--json-schema",)
     mode = "headless"
     default_concurrency = 8
@@ -121,7 +123,9 @@ class Runner(base.HostRunner):
             cmd += ["--agent", agent]
         elif not entry.get("enforced") and entry.get("model"):
             cmd += ["--model", entry["model"]]
-        cmd += base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)
+        # `--json-schema <schema>` takes the JSON text, not a file (see
+        # base.inline_schema for the measurement and the run it cost).
+        cmd += base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry, inline=True)
         cmd.append(entry["prompt"])
         return cmd
 

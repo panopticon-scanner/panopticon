@@ -73,12 +73,20 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   never do is read `proven` from an empty list (#1626).
 - `OUTPUT_SCHEMA_FLAG` is optional and empty by default. Set it to the argv
   token(s) that make ONE launch constrain its final message to a JSON Schema
-  **file** (claude: `("--json-schema",)`; codex: `("--output-schema",)`), and
-  append `base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)` to the argv your
+  (claude: `("--json-schema",)`; codex: `("--output-schema",)`), and append
+  `base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)` to the argv your
   `command()` builds — that helper returns the flag plus the entry's
   `output_schema` only when the entry names one AND the path is one of the
   schemas published under `skill/reference/`, and `[]` otherwise, so you append
-  it unconditionally. Leaving it empty is the right answer for a CLI that
+  it unconditionally. **Check what your CLI wants after the flag — a path or
+  the text.** codex's `--output-schema <FILE>` takes the path, which is what
+  `schema_argv` hands over by default; claude's `--json-schema <schema>` takes
+  the JSON itself and refuses a path (`--json-schema is not valid JSON`, exit
+  1, no envelope — run 14 burned 3 × 103 launches on it), so the claude runner
+  passes `inline=True` and gets the published file as one line of JSON. The
+  `--help` probe that marks the flag `advertised` cannot see this: it reads the
+  flag's name, not its shape (#1732), so prove the shape with one real launch
+  before you ship the runner. Leaving it empty is the right answer for a CLI that
   advertises no such flag (Kimi): nothing is stamped on your entries and your
   `command()` is unchanged. Do **not** pass the flag on your own authority: a
   CLI that does not know the option exits non-zero on it and takes every entry

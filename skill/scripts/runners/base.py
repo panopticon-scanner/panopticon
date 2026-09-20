@@ -7,6 +7,7 @@ contract lives here rather than in __init__ (layout rule: docstring-only).
 import concurrent.futures
 import dataclasses
 import importlib
+import json
 import os
 import sys
 import time
@@ -145,8 +146,10 @@ class HostRunner:
     CLI = ""
     ENVELOPE_FLAGS = ()
     # The argv flag that makes ONE launch constrain its final message to a
-    # JSON Schema file, as a tuple of tokens the schema path follows
-    # (`("--json-schema",)` for claude, `("--output-schema",)` for codex).
+    # JSON Schema, as a tuple of tokens the schema follows. Two shapes: codex's
+    # `("--output-schema",)` takes the schema's PATH, claude's
+    # `("--json-schema",)` takes its TEXT -- `schema_argv(..., inline=True)`,
+    # see `inline_schema` for the measurement.
     #
     # D10 ruling 3, and the ONE optional attribute this seam gained for it
     # (docs/FAMILY-PR-GUARDRAILS.md section 3). Empty is the default and needs
@@ -496,13 +499,70 @@ def published_schema(path):
     return real
 
 
-def schema_argv(flag, entry):
+# The largest token `inline_schema` will put on an argv. Linux caps a single
+# argv string at MAX_ARG_STRLEN (128 KiB) and `execve` answers E2BIG, which
+# the runner reports as a failed entry -- three burned launches per entry,
+# the exact failure this helper exists to prevent. `skill/reference/` also
+# publishes `ocrdb-0.5.0.json` (176 KB compacted), and a rewritten
+# `dispatch-request.json` can name any published file (#1727 is unshipped),
+# so the cap is what keeps "published" from meaning "launchable". Half the
+# kernel limit, well above every schema stamped on an entry today (the
+# largest, report-schema.json, compacts to ~40 KB).
+INLINE_SCHEMA_MAX = 65536
+
+
+def inline_schema(path):
+    """The published schema at `path` as one line of JSON, for a CLI that takes
+    the schema TEXT on its argv; None when `path` is not a published schema
+    (`published_schema` is applied HERE, not only by the caller: a helper that
+    opened whatever it was handed would turn the one target-chosen argv value
+    into an arbitrary-file read that reaches the CLI), when the file is not a
+    JSON object, or when the text exceeds `INLINE_SCHEMA_MAX`.
+
+    Two CLIs, two shapes, one helper that used to know only one of them:
+    codex's `--output-schema <FILE>` takes a path, claude's `--json-schema
+    <schema>` takes the JSON itself. MEASURED 2026-09-20 on claude 2.1.276:
+    the path form is refused ("--json-schema is not valid JSON: JSON Parse
+    error: Unrecognized token '/'"), exit 1 in ~120 ms with no envelope -- so
+    every return_json entry of every checkpoint burned its three launches, and
+    run 14's tool-verify round (103 entries) stopped the driver. The `--help`
+    probe that marks the flag `advertised` reads the flag's NAME and cannot
+    see its shape; this is where the shape lives.
+
+    None, not a raise, for a file that does not parse: the persist layer
+    validates the reply against the same schema on receipt, so a launch
+    without the flag is the fail-safe and a launch the CLI refuses is not."""
+    path = published_schema(path)
+    if path is None:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    text = json.dumps(data, separators=(",", ":"))
+    if len(text) > INLINE_SCHEMA_MAX:
+        return None
+    return text
+
+
+def schema_argv(flag, entry, inline=False):
     """The two argv tokens that constrain one launch's output, or [] (D10
     ruling 3). Empty whenever the family declares no flag, the entry names no
     schema, or the path it names is not published -- so a caller can append the
-    result unconditionally."""
+    result unconditionally. `inline=True` hands the CLI the schema's JSON text
+    instead of its path (`inline_schema`); the containment rule is the same
+    either way, only a published file is ever read."""
     schema = published_schema(entry.get("output_schema") if isinstance(entry, dict) else None)
-    return [*flag, schema] if (flag and schema) else []
+    if not (flag and schema):
+        return []
+    if inline:
+        schema = inline_schema(schema)
+        if schema is None:
+            return []
+    return [*flag, schema]
 
 
 # The four registered enforcement shells, DERIVED from the one table that
