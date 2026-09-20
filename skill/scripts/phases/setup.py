@@ -114,10 +114,11 @@ def scan_execute(review_root, manifest):
     entry = _setup_scan_entry(review_root, _read_text(brief_path), host)
     # #1507: setup's own namespace -- never the per-run resolver, which routed
     # this into whatever runs/latest pointed at and clobbered that run's request.
-    req = requests.write_dispatch_request(review_root, manifest["run_id"], "scan",
-                                          None, [entry], namespace="setup")
+    req, sha = requests.write_dispatch_request_bound(
+        review_root, manifest["run_id"], "scan", None, [entry], namespace="setup")
     return engine.PhaseResult(kind="checkpoint", checkpoint="scan", group=None,
-                       dispatch_request=req, message="setup-scan checkpoint")
+                       dispatch_request=req, request_sha256=sha,
+                       message="setup-scan checkpoint")
 
 def ingest_done(review_root, manifest):
     return (os.path.isfile(repo_config.draft_path(review_root))

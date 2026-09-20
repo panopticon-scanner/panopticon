@@ -487,10 +487,10 @@ def review_execute(review_root, manifest):
                                        if e.get("group") and e.get("domain")])
         _record_tools_context(review_root, all_entries)
         _record_test_inventory(review_root, all_entries)
-        req = requests.write_dispatch_request(review_root, manifest["run_id"], "review",
-                                     None, all_entries)
+        req, sha = requests.write_dispatch_request_bound(
+            review_root, manifest["run_id"], "review", None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="review", group=None,
-                           dispatch_request=req,
+                           dispatch_request=req, request_sha256=sha,
                            message="review: %d cell(s) across %d group(s)"
                                    % (len(all_entries), ngroups))
     return engine.PhaseResult(kind="advanced", message="review: all cells complete")

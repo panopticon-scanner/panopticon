@@ -82,3 +82,38 @@ class TestEmitStatus(unittest.TestCase):
         buf = io.StringIO()
         engine.emit_status({"status": "complete", "phase": None}, stream=buf)
         self.assertEqual(json.loads(buf.getvalue())["status"], "complete")
+
+
+class TestTheCheckpointStatusCarriesTheRequestHash(unittest.TestCase):
+    """#1727: the loop compares the request it reads off disk against the hash
+    the PHASE computed while writing it. That hash has to travel in process,
+    on the status, or the comparison is two reads of the same tamperable file."""
+
+    def _checkpoint(self, **kw):
+        def done(root, manifest):
+            return False
+
+        def execute(root, manifest):
+            return engine.PhaseResult(kind="checkpoint", checkpoint="review",
+                                      dispatch_request="/abs/req.json", **kw)
+
+        phase = engine.Phase(name="p", kind="checkpoint", done=done, execute=execute)
+        return engine.run_engine("/root", {}, [phase])
+
+    def test_the_hash_reaches_the_status(self):
+        self.assertEqual(self._checkpoint(request_sha256="a" * 64)["request_sha256"],
+                         "a" * 64)
+
+    def test_a_phase_result_defaults_to_no_hash(self):
+        self.assertIsNone(engine.PhaseResult(kind="advanced").request_sha256)
+
+    def test_every_terminal_status_carries_the_key_for_shape_parity(self):
+        # A host (and `loop`, which reads `status.get`) must not have to tell
+        # "no checkpoint" from "this key does not exist on this status kind".
+        import scripts.phases.runio as runio
+        a, _ = _fake_phase("a")
+        for status in (engine.run_engine("/root", {}, [a]),
+                       runio._error_status("boom")):
+            with self.subTest(status=status["status"]):
+                self.assertIn("request_sha256", status)
+                self.assertIsNone(status["request_sha256"])

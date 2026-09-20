@@ -36,6 +36,10 @@ class SessionRunner(base.HostRunner):
             "pending": ids,
             "return_persist": rp,
             "dispatch_request": self.dispatch_request,
+            # #1727: what that file must hash to. The host reads the request
+            # out of the REVIEWED tree, so it is given the anchor the driver
+            # itself checks against -- `sha256sum` on the path above.
+            "request_sha256": self.request_sha256,
             "prompt_files": {e.get("id"): e.get("prompt_file") for e in entries},
             "persist": "driver persist <id>%s --file <reply.txt>   "
                        "# once per return-persist id, e.g. `driver persist %s%s`"

@@ -2,6 +2,7 @@
 import ast
 import contextlib
 import dataclasses
+import hashlib
 import io
 import json
 import os
@@ -2426,3 +2427,52 @@ class TestEnforcedIsDerivedInOnePlace(unittest.TestCase):
                          "a phase re-derives the enforcement posture instead of "
                          "calling loop_batch.expected_enforced; two copies is the "
                          "drift #1720 closed:\n" + "\n".join(offenders))
+
+
+class TestTheRequestHashTravelsOnTheStatus(LoopCase):
+    """#1727: the phase that WRITES the dispatch request is the only code that
+    has seen its bytes before the reviewed tree could touch them. The hash it
+    computed travels to the loop in process, on the checkpoint status."""
+
+    def test_the_checkpoint_status_carries_the_hash_of_the_request_it_wrote(self):
+        d, _floor = self._repo()
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = driver.run(self._args(d))
+        self.assertEqual(status["status"], "checkpoint", status)
+        self.assertEqual(status["checkpoint"], "scout")
+        with open(status["dispatch_request"], "rb") as fh:
+            self.assertEqual(hashlib.sha256(fh.read()).hexdigest(),
+                             status["request_sha256"])
+        self.assertEqual(driver.run_manifest.load_manifest(d)["dispatch_request"],
+                         {"checkpoint": "scout", "sha256": status["request_sha256"],
+                          "at": driver.run_manifest.load_manifest(d)
+                          ["dispatch_request"]["at"]})
+
+    def test_every_checkpoint_phase_result_carries_one(self):
+        # The anti-drift pin for all six writers (coverage, review, verify x2,
+        # verify_tools, setup) and for the seventh somebody adds: a checkpoint
+        # that names a dispatch_request and no request_sha256 would reach the
+        # loop with nothing to compare, and `load_bound_request` would fall
+        # back to the manifest alone -- silently weaker, and nothing would say so.
+        phases_dir = os.path.join(os.path.dirname(orchestrate.__file__), "phases")
+        missing = []
+        for name in sorted(os.listdir(phases_dir)):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(phases_dir, name)
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), path)
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "PhaseResult"):
+                    continue
+                kw = {k.arg: k.value for k in node.keywords}
+                kind = kw.get("kind")
+                if not (isinstance(kind, ast.Constant) and kind.value == "checkpoint"):
+                    continue
+                if "request_sha256" not in kw:
+                    missing.append("%s:%d" % (name, node.lineno))
+        self.assertEqual(missing, [],
+                         "checkpoint PhaseResult with no request_sha256:\n"
+                         + "\n".join(missing))

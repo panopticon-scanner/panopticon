@@ -116,7 +116,8 @@ class Guards:
 
 def _status(kind, message, **extra):
     st = {"status": kind, "phase": None, "checkpoint": None, "group": None,
-          "dispatch_request": None, "advanced": [], "message": message}
+          "dispatch_request": None, "request_sha256": None, "advanced": [],
+          "message": message}
     st.update(extra)
     return st
 

@@ -310,10 +310,10 @@ def verify_execute(review_root, manifest):
                               host, bundle, "primary", part)
                 for d, c, part in pending)
     if all_entries:
-        req = requests.write_dispatch_request(review_root, manifest["run_id"], "verify",
-                                     None, all_entries)
+        req, sha = requests.write_dispatch_request_bound(
+            review_root, manifest["run_id"], "verify", None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
-                           dispatch_request=req,
+                           dispatch_request=req, request_sha256=sha,
                            message="verify: %d primary advisor(s) across %d group(s)"
                            % (len(all_entries), ngroups))
     # BACKUP round (Task 4 fills this branch).
@@ -491,10 +491,10 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
                                   grant["granted"], c, host, bundle, "backup",
                                   part, grant=grant, ambiguous=ambiguous))
     if all_entries:
-        req = requests.write_dispatch_request(review_root, manifest["run_id"], "verify",
-                                     None, all_entries)
+        req, sha = requests.write_dispatch_request_bound(
+            review_root, manifest["run_id"], "verify", None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
-                           dispatch_request=req,
+                           dispatch_request=req, request_sha256=sha,
                            message="verify: %d backup advisor(s) across %d group(s)"
                            % (len(all_entries), ngroups))
     return None

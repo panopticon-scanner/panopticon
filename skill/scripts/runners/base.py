@@ -192,6 +192,12 @@ class HostRunner:
     # runner is given them and the Codex runner reads `namespace` in prepare().
     dispatch_request = None
     namespace = None
+    # #1727: the sha256 the run manifest recorded for THAT file. Session mode
+    # prints it so a host that reads the request itself can check it is
+    # reading what this run wrote; a headless runner is handed its entries in
+    # memory and needs nothing from it. Re-set per checkpoint, because the
+    # request is rolling.
+    request_sha256 = None
     # M-9: whether `--max-turns` reaches anything on this host. The loop sets
     # `runner.max_turns` unconditionally, so a runner with no native turn
     # limit accepted the flag and ignored it in silence. True by default --

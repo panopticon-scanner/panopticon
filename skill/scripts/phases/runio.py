@@ -590,7 +590,8 @@ def resolve_host(host, review_root, reset=False):
 
 def _error_status(message):
     return {"status": "error", "phase": None, "checkpoint": None, "group": None,
-            "dispatch_request": None, "advanced": [], "message": message}
+            "dispatch_request": None, "request_sha256": None, "advanced": [],
+            "message": message}
 
 def _manifest_committed(review_root, manifest_file):
     """True if `manifest_file` is TRACKED by git in review_root -- i.e. it was
