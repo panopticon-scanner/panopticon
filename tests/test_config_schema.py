@@ -180,6 +180,18 @@ class TestTheRatchet(unittest.TestCase):
                          .effective["max_verify"], 30)
         self.assertEqual(_resolve({"max_verify": 4}, defaults=defaults).effective, {})
 
+    def test_a_partial_defaults_dict_still_ratchets_every_key_it_omits(self):
+        # A caller overriding only `security` must not blow away the built-in
+        # baseline for every OTHER gate key: `tools` still ratchets against
+        # the real default (True), and the named override actually takes.
+        r = _resolve({"tools": False, "security": "standard"},
+                     defaults={"security": "redteam"})
+        self.assertNotIn("tools", r.effective)
+        self.assertNotIn("security", r.effective)
+        reasons = {x["key"]: x["reason"] for x in r.refused}
+        self.assertIn("true", reasons["tools"])
+        self.assertIn("redteam", reasons["security"])
+
     def test_the_cli_wins_over_a_tightening_gate_value_too(self):
         r = _resolve({"security": "redteam"}, cli={"security": "standard"})
         self.assertEqual(r.effective, {})

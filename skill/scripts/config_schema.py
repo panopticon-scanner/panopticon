@@ -227,7 +227,7 @@ def resolve_settings(cli, parsed, defaults=None):
     `defaults` exists for the tests and for the day a built-in default moves;
     production always passes None and gets DEFAULTS.
     """
-    defaults = DEFAULTS if defaults is None else defaults
+    defaults = DEFAULTS if defaults is None else dict(DEFAULTS, **defaults)
     cli = cli or {}
     effective, clamped = {}, []
     refused = [dict(r) for r in parsed.refused]
