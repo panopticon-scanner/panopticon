@@ -1,5 +1,6 @@
 """`runners/outage.py`: whose failure was that, and what the loop does about a
 batch of them (#1623)."""
+import time
 import unittest
 from unittest import mock
 
@@ -268,15 +269,110 @@ class TestTheSubscriptionLimitLine(unittest.TestCase):
                 self.assertIsNone(outage.cli_error(text))
                 self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
 
-    # "usage limit exceeded" is its own KIND rendering (`limit {reached
-    # |exceeded|hit}`, the neighbour of "rate limit exceeded") and so is
-    # ACCEPTED as a host surface once it reaches the classifier -- but it must
-    # still fail the `cli_error` gate, the same as any other prose sentence
-    # that happens to open with vocabulary the CLI also uses.
-    def test_usage_limit_exceeded_prose_fails_the_gate_but_matches_the_kind(self):
+    # Superseded by fix round 1 (coordinator review, Critical 2): this used to
+    # be ACCEPTED as a host surface on the theory that "usage limit exceeded"
+    # is its own KIND rendering, the neighbour of "rate limit exceeded" --
+    # but that same unguarded tail is what let `raise QuotaError('weekly
+    # limit reached')` and four other tool/test-output strings through too
+    # (see `TestTheSubscriptionLimitLineFixRound1` below). The end guard now
+    # on this KIND as well means a prose CONTINUATION past "exceeded" sinks
+    # it exactly the way one past "limit" always did on the first pattern.
+    def test_usage_limit_exceeded_prose_fails_the_gate_and_the_kind(self):
         text = "usage limit exceeded responses are not handled"
         self.assertIsNone(outage.cli_error(text))
-        self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(text))
+        self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
+
+
+class TestTheSubscriptionLimitLineFixRound1(unittest.TestCase):
+    """Coordinator review round 1 on #1729. Four findings against the first
+    cut: a cubic-backtracking filler (Critical 1), new host-class false
+    positives on ordinary tool/test output because `_S` admits `_`/`.`/`-`
+    (Critical 2), the end guard firing before the `· resets` delimiter is
+    even considered when a name (a model, a plan) sits between "limit" and
+    the middot (Important 3), and a curly apostrophe the CLI may print
+    instead of a straight one (Important 4). Also folds in two more real
+    renderings of the same class the reviewer flagged as out of scope for a
+    strict read of the brief: the older `Claude AI usage limit
+    reached|<epoch>` form, and `<N>-hour limit reached`.
+    """
+
+    # Item 3: a rendering with descriptive text between "limit" and the
+    # middot must still pass -- the CONTENT there does not matter, but the
+    # eventual `· resets` delimiter still must arrive (within a bounded
+    # lookahead, so this stays cheap).
+    # Item 4: the CLI may print a curly apostrophe (U+2019) rather than a
+    # straight one.
+    # Item 5: the two additional renderings.
+    GENUINE = (
+        "You've reached your usage limit for Claude Opus 4.5 · resets 3:10pm (America/Chicago)",
+        "You’ve hit your session limit · resets 10:10am (America/Chicago)",
+        "Claude AI usage limit reached|1758400000",
+        "5-hour limit reached · resets 3pm",
+    )
+
+    def test_the_round_1_renderings_pass_both_the_gate_and_the_classifier(self):
+        for text in self.GENUINE:
+            with self.subTest(text=text):
+                self.assertEqual(text, outage.cli_error(text))
+                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(text))
+                self.assertEqual(outage.HOST_FAILURE,
+                                 outage.classify_failure(outage.cli_error(text)))
+
+    # Item 2: `_S` (`[\s_.-]`) let a Python identifier or a pytest node id
+    # stand in for a real space, so a `{s}`-separated KIND read straight
+    # through `test_usage_limit_reached` and `hit_your_plan_limit()`. And the
+    # bare `(?!\s*[a-z])` guard from the first cut let a directly-attached
+    # quote (`'weekly limit reached'`, no space before the closing `'`)
+    # through, because a quote character is not `[a-z]`.
+    TOOL_AND_TEST_OUTPUT = (
+        "pytest: FAILED tests/test_quota.py::test_usage_limit_reached",
+        "ruff: `hit_your_plan_limit()` is unused",
+        "mypy: the daily limit reached branch is unreachable",
+        "The monthly limit exceeded banner is never shown",
+        "raise QuotaError('weekly limit reached')",
+    )
+    # Item 5's own negatives: the two new renderings' own vocabulary, quoted
+    # or continued into ordinary prose rather than the CLI's own line.
+    NEW_RENDERING_NEGATIVES = (
+        "The 5-hour limit reached counter is reset nightly (src/quota.py)",
+        "Claude AI usage limit reached is shown as a toast",
+    )
+
+    def test_tool_and_test_output_never_reads_as_the_host(self):
+        for text in self.TOOL_AND_TEST_OUTPUT + self.NEW_RENDERING_NEGATIVES:
+            with self.subTest(text=text):
+                self.assertIsNone(outage.cli_error(text))
+                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
+
+
+class TestNoCatastrophicBacktrackingInTheFiller(unittest.TestCase):
+    """Coordinator review round 1, Critical 1: `(?:\\S+{s}){0,3}?` with
+    `{s} = [\\s_.-]` overlaps `\\S` on `_`/`.`/`-`, so a long separator-free
+    token backtracks cubically trying every way to split it between the
+    filler's `\\S+` and its own separator class. Reachable from
+    `classify_failure` directly (kimi/codex hand over their whole stderr) and
+    from `cli_error` (`_HOST_HEAD`, which `_CLI_ERROR` embeds, is built out of
+    `_KINDS`). Fixed by making the filler's own separator whitespace-only
+    (`\\s`), which is disjoint from `\\S` -- there is no character either side
+    can claim, so there is nothing left to backtrack over.
+    """
+
+    def test_a_50kb_pathological_filler_stays_well_under_a_second(self):
+        # Shaped like the reviewer's own repro (`"exceeded your " + "a-"*n`),
+        # ~50 KB total, with an `API Error: 500` head so this ALSO drives
+        # `cli_error` down its own vulnerable path: `_HOST_HEAD` (embedding
+        # `_KINDS`) is what its first branch's lookahead tries once a status
+        # is seen, so the same filler backtracking is reachable there too,
+        # not only through `classify_failure`'s direct KIND search.
+        payload = "API Error: 500 exceeded your " + "a-" * 25000
+        start = time.monotonic()
+        outage.classify_failure(payload)
+        elapsed_classify = time.monotonic() - start
+        start = time.monotonic()
+        outage.cli_error(payload)
+        elapsed_cli_error = time.monotonic() - start
+        self.assertLess(elapsed_classify, 1.0, elapsed_classify)
+        self.assertLess(elapsed_cli_error, 1.0, elapsed_cli_error)
 
 
 class TestTheClassifierAfterTheR2ReReview(unittest.TestCase):

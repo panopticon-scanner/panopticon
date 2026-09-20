@@ -1438,8 +1438,16 @@ class TestAHostWideOutage(LoopCase):
         self.assertIn("resets 10:10am", message)
         self.assertIn("driver loop", message)
         self.assertIn("--host claude", message)
-        # no cell charged: a healthy re-run dispatches every cell again
-        attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
+        # no cell charged: a healthy re-run dispatches every cell again.
+        # (coordinator review, Nit 6: `_load_json(...) or {}` would make this
+        # vacuously true if the file were never written at all, so the file's
+        # existence and shape are asserted first.)
+        attempts_path = runio._pano(d, "cell-attempts.json")
+        self.assertTrue(os.path.exists(attempts_path), "no cell-attempts.json was written")
+        attempts = runio._load_json(attempts_path)
+        self.assertIsInstance(attempts, dict)
+        for domain in self.FLOOR:
+            self.assertIn("app/%s" % domain, attempts, attempts)
         self.assertEqual([], [k for k, v in attempts.items() if v],
                          "a session-limit pause charged the cells: %s" % attempts)
         healthy = FakeRunner()
