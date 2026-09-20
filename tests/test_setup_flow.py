@@ -1371,7 +1371,8 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
                                    settings={"max_per_group": 48, "max_groups": None})
         body = text.split(
             "# parent; its subgroups are its layers and roll up to it in the report.\n"
-            "# settings: max_per_group / max_groups / max_verify (positive ints).\n", 1)[1]
+            "# settings: max_per_group (8-48) / max_groups (4-64) / include_fixtures;\n"
+            "# gate keys only tighten the review, operator flags are refused.\n", 1)[1]
         self.assertTrue(body.startswith("version: 1\n"))
         self.assertLess(body.index("groups:"), body.index("exclude_paths:"))
         self.assertLess(body.index("exclude_paths:"), body.index("settings:"))
