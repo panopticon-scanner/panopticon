@@ -296,8 +296,105 @@ def write_dispatch_request(review_root, run_id, checkpoint, group, entries,
 def load_dispatch_request(review_root, namespace=None):
     """The parsed .panopticon/dispatch-request.json (or None if absent/invalid).
     The host reads req['entries'] to install the write-guard
-    (write_guard_hook.install(entries)) and to dispatch the checkpoint's cells."""
+    (write_guard_hook.install(entries)) and to dispatch the checkpoint's cells.
+
+    #1727: this is the UNBOUND read -- it proves nothing about who wrote the
+    file. Every driver reader goes through `load_bound_request` below; this
+    stays for the host-facing/inspection callers that only want the document.
+    """
     return runio._load_json(request_path(review_root, namespace))
+
+
+# #1727. Printed to an operator's stderr and stored in a status, so: hashes
+# only (they are not secrets and they are not attacker text), never a byte of
+# the file's own contents -- a refused request is the target's document, and
+# quoting it back is how a refusal repaints a terminal or forges a log line.
+# Both hashes are abbreviated to _HASH_CHARS: enough to be unambiguous in a
+# bug report, short enough to read.
+_HASH_CHARS = 12
+REQUEST_MISSING = ("dispatch request missing: %s; this run recorded one, so it was "
+                   "removed after it was written -- re-run `driver run`/`driver loop` "
+                   "to regenerate it")
+REQUEST_UNRECORDED = ("dispatch request has no recorded hash in %s; re-run `driver "
+                      "run`/`driver loop` to regenerate it")
+REQUEST_MISMATCH = ("dispatch-request.json does not match the request this run wrote "
+                    "(sha256 %s... != recorded %s...); a target-writable copy was "
+                    "altered -- re-run `driver run`/`driver loop` to regenerate it")
+RECORD_ALTERED = ("%s's recorded dispatch request hash was altered after it was "
+                  "written (recorded %s... != %s... this run wrote); re-run `driver "
+                  "run`/`driver loop` to regenerate it")
+REQUEST_UNREADABLE = ("%s is not a readable dispatch request; re-run `driver "
+                      "run`/`driver loop` to regenerate it")
+
+
+def recorded_request_hash(review_root, namespace=None):
+    """`(sha256_or_None, manifest filename)` for this namespace (#1727).
+
+    The filename travels with the hash because it is what the refusals name,
+    and setup anchors in its own manifest (#1507). A record of the wrong shape
+    -- anything a target could put there if it reached the manifest -- reads
+    as no record at all, which is the fail-closed answer."""
+    if namespace == loop_batch.SETUP_NAMESPACE:
+        import scripts.phases.setup as setup_mod
+        manifest, name = setup_mod.load_setup_manifest(review_root), setup_mod.SETUP_MANIFEST
+    else:
+        manifest = run_manifest.load_manifest(review_root)
+        name = run_manifest.MANIFEST_NAME
+    record = (manifest or {}).get(run_manifest.DISPATCH_REQUEST)
+    sha = record.get("sha256") if isinstance(record, dict) else None
+    return (sha if isinstance(sha, str) and sha else None), name
+
+
+def load_bound_request(review_root, namespace=None, expected_sha256=None):
+    """`(request_or_None, refusal_or_None)` -- the read every driver reader uses.
+
+    The request travels through a file in the REVIEWED tree while the hash of
+    what the driver wrote travels through the run manifest (and, for the
+    loop's own iteration, in memory on the checkpoint status). This is where
+    the three are compared, and every disagreement is a refusal: nothing is
+    dispatched, armed or persisted from a request this run cannot prove it
+    wrote.
+
+    `expected_sha256` is the IN-MEMORY hash the phase handed back on the
+    status. It is checked against the RECORD, not against the file, because
+    that is the pair no on-disk edit can reconcile: an attacker who rewrites
+    both the request and the manifest still cannot reach the value the loop
+    is holding. Checked first for exactly that reason -- it names the right
+    file.
+
+    The one non-refusal absence is a fresh tree: no file AND no record is "no
+    previous request", which is what `driver loop`'s re-entry read sees before
+    `_first_run` has written one.
+    """
+    recorded, manifest_name = recorded_request_hash(review_root, namespace)
+    path = request_path(review_root, namespace)
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        raw = None
+    if raw is None:
+        if recorded is None:
+            return None, None
+        return None, REQUEST_MISSING % os.path.abspath(path)
+    if recorded is None:
+        return None, REQUEST_UNRECORDED % manifest_name
+    if expected_sha256 is not None and expected_sha256 != recorded:
+        return None, RECORD_ALTERED % (manifest_name, recorded[:_HASH_CHARS],
+                                       expected_sha256[:_HASH_CHARS])
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != recorded:
+        return None, REQUEST_MISMATCH % (digest[:_HASH_CHARS], recorded[:_HASH_CHARS])
+    try:
+        request = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        request = None
+    if not isinstance(request, dict):
+        # Unreachable through the driver -- it wrote these bytes and they
+        # hash-match -- so this is the "the record was forged to match a
+        # planted file" corner, and it fails closed like every other.
+        return None, REQUEST_UNREADABLE % os.path.abspath(path)
+    return request, None
 
 def _driver_plan_entries(review_root, manifest):
     """The declared review cells as a matrix domain-cell dispatch plan

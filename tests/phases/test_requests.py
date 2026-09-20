@@ -465,3 +465,114 @@ class TestTheWriterRecordsTheHash(RequestIntegrityCase):
         path, digest = self._write()
         self.assertTrue(os.path.isfile(path))
         self.assertTrue(digest)
+
+
+class TestLoadBoundRequest(RequestIntegrityCase):
+    """Fail-closed, every case: a reader that cannot prove the file is the one
+    this run wrote gets `(None, <refusal>)` and never an entry."""
+
+    def test_a_clean_file_loads_with_no_refusal(self):
+        self._run_manifest()
+        _path, digest = self._write()
+        req, refusal = requests.load_bound_request(self.root)
+        self.assertIsNone(refusal)
+        self.assertEqual(req["checkpoint"], "scout")
+        self.assertEqual([e["id"] for e in req["entries"]], ["scout-app"])
+        # the in-memory hash the loop carries must agree too
+        req2, refusal2 = requests.load_bound_request(self.root, expected_sha256=digest)
+        self.assertIsNone(refusal2)
+        self.assertEqual(req2["run_id"], req["run_id"])
+
+    def test_a_fresh_tree_with_no_file_and_no_record_is_not_a_refusal(self):
+        # The `driver loop` re-entry read: before `_first_run` there may be no
+        # previous request at all, which is "no previous entries", not an error.
+        self._run_manifest()
+        self.assertEqual((None, None), requests.load_bound_request(self.root))
+
+    def test_a_tampered_byte_is_refused_with_both_hashes(self):
+        self._run_manifest()
+        path, digest = self._write()
+        self._tamper(path)
+        req, refusal = requests.load_bound_request(self.root)
+        self.assertIsNone(req)
+        self.assertIn("dispatch-request.json does not match the request this run wrote",
+                      refusal)
+        self.assertIn(digest[:12], refusal)
+        self.assertIn("re-run", refusal)
+        # never the file's contents, only hashes
+        self.assertNotIn("scout-evil", refusal)
+
+    def test_a_request_with_no_recorded_hash_is_refused(self):
+        # A request on disk that this run's manifest does not vouch for: a
+        # planted file, or one left by a manifest that was reset under it.
+        self._run_manifest()
+        self._write()
+        manifest = run_manifest.load_manifest(self.root)
+        manifest.pop("dispatch_request")
+        run_manifest._rewrite(self.root, manifest)
+        req, refusal = requests.load_bound_request(self.root)
+        self.assertIsNone(req)
+        self.assertIn("no recorded hash in run-manifest.json", refusal)
+
+    def test_a_missing_file_with_a_record_is_refused(self):
+        self._run_manifest()
+        path, _digest = self._write()
+        os.remove(path)
+        req, refusal = requests.load_bound_request(self.root)
+        self.assertIsNone(req)
+        self.assertIn("dispatch request missing", refusal)
+        self.assertIn(path, refusal)
+
+    def test_a_record_altered_after_the_write_is_refused_by_the_in_memory_hash(self):
+        # The manifest is outside the reviewed tree, but the operator's own
+        # checkout is not beyond reach; the loop also carries the hash the
+        # phase returned IN MEMORY, which no on-disk edit can reach.
+        self._run_manifest()
+        path, digest = self._write()
+        forged = hashlib.sha256(b"forged").hexdigest()
+        with open(path, "wb") as fh:
+            fh.write(b"forged")
+        manifest = run_manifest.load_manifest(self.root)
+        manifest["dispatch_request"]["sha256"] = forged
+        run_manifest._rewrite(self.root, manifest)
+        # the file now matches the RECORD, and only the in-memory hash knows better
+        req, refusal = requests.load_bound_request(self.root, expected_sha256=digest)
+        self.assertIsNone(req)
+        self.assertIn("run-manifest.json's recorded dispatch request hash was altered",
+                      refusal)
+        self.assertIn(digest[:12], refusal)
+        self.assertIn(forged[:12], refusal)
+
+    def test_the_setup_namespace_reads_its_own_manifest(self):
+        self._setup_manifest()
+        path, digest = self._write(checkpoint="scan", namespace="setup")
+        req, refusal = requests.load_bound_request(self.root, "setup",
+                                                   expected_sha256=digest)
+        self.assertIsNone(refusal)
+        self.assertEqual(req["checkpoint"], "scan")
+        self._tamper(path)
+        req, refusal = requests.load_bound_request(self.root, "setup")
+        self.assertIsNone(req)
+        self.assertIn("does not match the request this run wrote", refusal)
+
+    def test_a_setup_record_altered_names_the_setup_manifest(self):
+        self._setup_manifest()
+        _path, digest = self._write(checkpoint="scan", namespace="setup")
+        manifest = setup.load_setup_manifest(self.root)
+        manifest["dispatch_request"]["sha256"] = hashlib.sha256(b"x").hexdigest()
+        runio._write_json(setup._setup_manifest_path(self.root), manifest)
+        req, refusal = requests.load_bound_request(self.root, "setup",
+                                                   expected_sha256=digest)
+        self.assertIsNone(req)
+        self.assertIn("setup-manifest.json's recorded dispatch request hash", refusal)
+
+    def test_unparseable_json_that_matches_its_record_is_still_refused(self):
+        self._run_manifest()
+        path, _digest = self._write()
+        with open(path, "wb") as fh:
+            fh.write(b"{not json")
+        run_manifest.record_dispatch_request(
+            self.root, None, "scout", hashlib.sha256(b"{not json").hexdigest())
+        req, refusal = requests.load_bound_request(self.root)
+        self.assertIsNone(req)
+        self.assertIn("is not a readable dispatch request", refusal)
