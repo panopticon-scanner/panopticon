@@ -118,6 +118,15 @@ _SCALARS = (str, int, float, bool, type(None))
 # except the one float shape that is not JSON at all; see parse_settings.
 MAX_RECORDED_CHARS = 200
 MAX_SETTINGS_KEYS = 32
+# What an INTEGER value may weigh. A YAML int has no width, and past 2**53 it
+# is not a number this pipeline can carry: `float()` -- which the ratchet's
+# `_rank` runs to compare `max_verify` against its baseline -- raises
+# OverflowError somewhere past 1e308, and CPython 3.11 refuses int->str past
+# `sys.get_int_max_str_digits()`. A 400-digit committed `max_verify:` crashed
+# `driver run` out of `_resolve_config` before any reviewer was dispatched
+# (final review F1), so magnitude is bounded where every other shape rule
+# lives: at the type layer, as a refusal.
+MAX_INT_BITS = 53
 _ELLIPSIS = "\u2026"
 
 Parsed = namedtuple("Parsed", "requested typed refused disclosures")
@@ -130,10 +139,32 @@ def _bounded(text):
             else text[:MAX_RECORDED_CHARS] + _ELLIPSIS)
 
 
+def _oversized(value):
+    """True for an int (never a bool) past MAX_INT_BITS -- see the constant."""
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and value.bit_length() > MAX_INT_BITS)
+
+
+def _text(value):
+    """`str(value)` that cannot raise. CPython 3.11+ caps int->str at
+    `sys.get_int_max_str_digits()` (4300) and raises ValueError past it, and
+    this module records whatever the file spelled without ever failing."""
+    try:
+        return str(value)
+    except ValueError:
+        return "<integer of %d bits>" % value.bit_length()
+
+
 def _recorded(value):
     """A value on its way into `requested` or a refusal: bounded if it is a
-    string, unchanged otherwise (an int or a bool is its own bound)."""
-    return _bounded(value) if isinstance(value, str) else value
+    string or an oversized int (which records as its bounded decimal form,
+    the same escape a non-finite float takes), unchanged otherwise -- an
+    in-range int or a bool is its own bound."""
+    if isinstance(value, str):
+        return _bounded(value)
+    if _oversized(value):
+        return _bounded(_text(value))
+    return value
 
 
 def _refusal(key, value, reason):
@@ -143,7 +174,7 @@ def _refusal(key, value, reason):
 def _fmt(value):
     if isinstance(value, bool):
         return "true" if value else "false"
-    return "null" if value is None else _bounded(str(value))
+    return "null" if value is None else _bounded(_text(value))
 
 
 def _line(key, value, tail):
@@ -163,7 +194,10 @@ def _typed(key, value):
     """
     if key in INT_KEYS:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
-            return True, value, ""
+            # Magnitude is a TYPE property here: a value the rest of the
+            # pipeline cannot represent is the wrong shape, whatever its sign.
+            return ((False, None, "value is out of range") if _oversized(value)
+                    else (True, value, ""))
         return False, None, "expected a positive integer"
     if key in BOOL_KEYS:
         if isinstance(value, bool):
@@ -267,7 +301,15 @@ def _rank(key, value):
     which cannot happen for a parsed value and keeps the comparison total.
     """
     if key == "max_verify":
-        return float("inf") if value is None else float(value)
+        if value is None:
+            return float("inf")
+        # `_typed` already refuses a value `float()` would choke on, so this
+        # is the second lock on the same door: the ranking must stay TOTAL,
+        # because a raise here escapes `resolve_settings` and ends the run.
+        try:
+            return float(value)
+        except (OverflowError, ValueError, TypeError):
+            return -1.0
     order = STRICTNESS[key]
     return float(order.index(value)) if value in order else -1.0
 

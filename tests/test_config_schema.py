@@ -182,6 +182,42 @@ class TestWhatIsRecordedIsBounded(unittest.TestCase):
         self.assertIn("positive integer", p.refused[0]["reason"])
         self.assertEqual(p.requested["max_verify"], 1.5)
 
+    def test_an_int_past_the_magnitude_bound_is_refused_and_never_ranked(self):
+        # Final review F1: a ~400-digit committed integer used to type-check
+        # fine and then reach `_rank`'s `float(value)`, which raises
+        # OverflowError -- out of `resolve_settings`, out of
+        # `driver._resolve_config`, out of `driver run`. Four lines of YAML in
+        # the reviewed repository crashed the review. Magnitude is bounded at
+        # the TYPE layer instead: past 2**53 an int cannot survive a float
+        # comparison or a JSON consumer, so it is refused like any other
+        # out-of-shape value and recorded as its bounded STRING form.
+        huge = int("9" * 400)
+        p = cs.parse_settings({"settings": {"max_verify": huge,
+                                            "max_per_group": huge}})
+        self.assertEqual(p.typed, {})
+        reasons = {r["key"]: r["reason"] for r in p.refused}
+        self.assertEqual(set(reasons), {"max_verify", "max_per_group"})
+        self.assertTrue(all("out of range" in r for r in reasons.values()), reasons)
+        for key, value in p.requested.items():
+            self.assertIsInstance(value, str, key)
+            self.assertLessEqual(len(value), cs.MAX_RECORDED_CHARS + 1, key)
+        for refusal in p.refused:
+            self.assertIsInstance(refusal["value"], str, refusal["key"])
+        self.assertEqual(cs.resolve_settings({}, p).effective, {})
+
+    def test_an_int_a_float_represents_exactly_still_types(self):
+        # The bound truncates the unrepresentable tail, it does not refuse
+        # every number: 2**53 - 1 is the largest int a float holds exactly.
+        p = cs.parse_settings({"settings": {"max_verify": 2 ** 53 - 1}})
+        self.assertEqual(p.typed, {"max_verify": 2 ** 53 - 1})
+        self.assertEqual(p.refused, [])
+
+    def test_rank_is_total_even_on_a_value_float_refuses(self):
+        # Belt-and-braces: `_rank` is the crash SITE, so it stays safe even if
+        # a second road ever hands it a value `float()` will not take.
+        self.assertEqual(cs._rank("max_verify", int("9" * 400)), -1.0)
+        self.assertEqual(cs._rank("max_verify", "not a number"), -1.0)
+
 
 def _resolve(settings, cli=None, defaults=None):
     return cs.resolve_settings(cli or {}, cs.parse_settings({"settings": settings}),

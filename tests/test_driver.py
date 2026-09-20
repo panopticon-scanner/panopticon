@@ -254,6 +254,25 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                          (first["status"], first["checkpoint"]))
         self.assertEqual(first["status"], "checkpoint")
 
+    def test_a_huge_committed_integer_cannot_crash_the_run(self):
+        # Final review F1: `settings: {max_verify: <400 digits>}` reached
+        # `config_schema._rank`'s `float(value)` and raised OverflowError out
+        # of `driver._resolve_config` -- the target crashed the driver before
+        # a single reviewer was dispatched. `driver run` must answer with a
+        # STATUS, and the number must land in the manifest as a refusal.
+        d = self._repo()
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n"
+                     "groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
+                     "settings:\n  max_verify: %s\n" % ("9" * 400))
+        status = driver.run(self._args(d, "--no-tools"))
+        self.assertEqual(status["status"], "checkpoint", status.get("message"))
+        m = run_manifest.load_manifest(d)
+        self.assertEqual(m["config_effective"], {})
+        self.assertEqual([r["key"] for r in m["config_refused"]], ["max_verify"])
+        self.assertIn("out of range", m["config_refused"][0]["reason"])
+        self.assertIsInstance(m["config_requested"]["max_verify"], str)
+
     def test_flag_drift_refused_no_synthesize_divergence(self):
         # RETIRED HAZARD (#957 both-pass flag mismatch): the manifest pins the
         # gate flags once; a conflicting re-invocation is refused, so pass-1 and
