@@ -68,6 +68,22 @@ _KINDS = (
     r"rate_limit",                               # the wire key, underscore only
     r"rate{s}limit(?:ed|{s}(?:error|exceeded|reached))",
     r"exceeded{s}(?:your{s})?rate{s}limit",
+    # #1729: Claude's own subscription-limit line, printed with NO `error`
+    # object -- run 14's 225 wasted launches were entirely this
+    # (`You've hit your session limit · resets 10:10am (America/Chicago)`,
+    # and the same shape for a usage, weekly/7-day, daily, monthly or plan
+    # limit). Phrase-shaped like the neighbours: never a bare `limit`, and
+    # never a bare `usage limit`/`session limit` on their own -- an agent's
+    # finding can say "the per-user usage limit is never enforced" and a
+    # tool's stderr can say "session limit". The first pattern additionally
+    # refuses to run on into ordinary prose ("...limit handling is wrong in
+    # src/quota.py") by requiring the phrase not continue into another word;
+    # the second ("usage limit exceeded", the neighbour of "rate limit
+    # exceeded" above) does not need that guard for the fixtures at hand, so
+    # it is left as narrow as the rest of this tuple already makes it.
+    r"(?:hit|reached|exceeded){s}(?:your|the){s}(?:\S+{s}){{0,3}}?"
+    r"(?:session|usage|weekly|daily|monthly|plan){s}limit(?!\s*[a-z])",
+    r"(?:session|usage|weekly|daily|monthly|plan){s}limit{s}(?:reached|exceeded|hit)",
     r"too{s}many{s}requests",
     r"overloaded(?:{s}error)?",
     r"(?:service|api){s}unavailable",
@@ -141,11 +157,23 @@ _HOST_ERROR_STATUS_OBJECT = _status_rule(_OBJECT_STATUS, _OBJECT_REASONS)
 # followed by its reason, a JSON or parenthetical body, another delimiter or
 # the end of the line; and a bare prefix by the end of the line, or by a
 # delimiter and then a KIND or a REASON -- host-shaped content, not prose.
+#
+# #1729 adds a fifth: `You've hit your session limit \u00b7 resets 10:10am
+# (America/Chicago)`, the subscription-limit line a Claude CLI prints with NO
+# `error` object at all, so this gate is the ONLY place that surfaces it. Same
+# discipline again -- "You've hit your session limit handling is wrong in
+# src/quota.py" is a finding, not an outage -- so the opening is only CLI
+# framing when it is followed by the middot delimiter this rendering actually
+# uses, or the end of the line; and the middot itself must lead to host-shaped
+# content (`resets ...`) or nothing, never more prose.
 _HOST_HEAD = r"(?:%s|%s)" % (_alt(_KINDS), _alt(_REASONS))
 _CLI_ERROR = re.compile(
     r"^(?:(?:api\s+)?error\s*:\s*[45]\d\d(?!\w)(?=\s*(?:$|[{(\[\u00b7,;-]|" + _HOST_HEAD + r"))"
     r"|(?:api\s+error|invalid\s+api\s+key|overloaded)"
-    r"(?=\s*(?:$|[:\u00b7,-]\s*(?:[{\[]|" + _HOST_HEAD + r"))))", re.I)
+    r"(?=\s*(?:$|[:\u00b7,-]\s*(?:[{\[]|" + _HOST_HEAD + r")))"
+    r"|you'?ve\s+(?:hit|reached)\s+(?:your|the)\s+(?:\S+\s+){0,3}?"
+    r"(?:session|usage|weekly|daily|monthly|plan)\s+limit"
+    r"(?=\s*(?:$|\u00b7\s*(?:resets\b|$))))", re.I)
 
 
 # The keys a provider error object carries its own verdict in, across the
@@ -240,7 +268,7 @@ def cli_error(text):
     on a good turn and the CLI's `API Error: ...` line on a refused one. The
     envelope's own `error` OBJECT is preferred wherever the CLI emits one; this
     is the fallback, and it is deliberately the narrowest thing that still
-    recognises the four renderings the CLI really prints.
+    recognises the five renderings the CLI really prints.
 
     Matched at the START of the stripped text AND up to the delimiter that
     follows it, so neither a findings body that quotes an error message inside
@@ -263,7 +291,8 @@ HOST_OUTAGE_CLAUSE = ("no entry's attempt budget was charged and the failed laun
                       "nothing behind, so every reply that did land is kept and re-running "
                       "the loop resumes this run where it stopped")
 HOST_OUTAGE = ("paused: the %s host failed %d of this batch's %d launches with a %s-class "
-               "failure (auth, quota, a rate limit, or the provider itself) rather than an "
+               "failure (auth, quota, a plan or session limit, a rate limit, or the provider "
+               "itself) rather than an "
                "entry-class one, and %d of its entries were never launched; last: %s; "
                + HOST_OUTAGE_CLAUSE + ", with the same flags, once the host is back: `%s`")
 # The flags a resume has to carry, in the order the parser declares them:
