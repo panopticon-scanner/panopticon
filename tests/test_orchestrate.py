@@ -1412,6 +1412,42 @@ class TestAHostWideOutage(LoopCase):
         report = runio._load_json(runio._pano(d, "report.json"))
         self.assertNotEqual("INCONCLUSIVE", report["summary"]["gate"])
 
+    def test_claudes_subscription_limit_line_pauses_the_run(self):
+        # #1729, tool-confirmed on run 14: three episodes, 225 wasted
+        # launches. The envelope carries NO `error` object -- only the CLI's
+        # own `result` string -- so this goes through the REAL claude runner's
+        # `parse_envelope` rather than a `host_error=` shortcut, the same way
+        # `test_an_agents_own_opening_words_do_not_stop_the_run` does for N1.
+        d, floor = self._repo(floor=self.FLOOR)
+        line = "You've hit your session limit · resets 10:10am (America/Chicago)"
+
+        class SessionLimit(FakeRunner):
+            def run_entry(self, entry, env):
+                self.launched.append(entry["id"])
+                return claude_runner.Runner("claude").parse_envelope(
+                    entry["id"], json.dumps({"type": "result", "subtype": "success",
+                                             "is_error": True, "result": line,
+                                             "session_id": "x", "total_cost_usd": 0,
+                                             "usage": {}}), 1)
+
+        runner = SessionLimit()
+        status = self._run_loop(d, floor, runner)
+        message = status["message"]
+        self.assertEqual("paused", status["status"], status)
+        self.assertIn(outage.HOST_FAILURE, message)
+        self.assertIn("resets 10:10am", message)
+        self.assertIn("driver loop", message)
+        self.assertIn("--host claude", message)
+        # no cell charged: a healthy re-run dispatches every cell again
+        attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
+        self.assertEqual([], [k for k, v in attempts.items() if v],
+                         "a session-limit pause charged the cells: %s" % attempts)
+        healthy = FakeRunner()
+        again = self._run_loop(d, floor, healthy, seed=False)
+        self.assertEqual("complete", again["status"], again)
+        self.assertEqual(sorted(["review-app-%s" % x for x in self.FLOOR]),
+                         sorted(x for x in healthy.launched if x.startswith("review-")))
+
     def test_a_failure_that_only_MENTIONS_a_quota_is_still_the_entrys_own(self):
         # #1623 C1. A batch of one, whose failure text names a file under
         # src/billing/: read off the composed message it stopped the whole run

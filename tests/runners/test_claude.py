@@ -145,6 +145,26 @@ class TestEnvelope(unittest.TestCase):
         self.assertEqual(outage.HOST_FAILURE,
                          r.parse_envelope("e1", json.dumps(envelope), 0).failure_class)
 
+    def test_the_subscription_limit_line_is_host_class_with_no_error_object(self):
+        # #1729, tool-confirmed on run 14: the envelope carries NO `error`
+        # object at all -- only the CLI's own `result` string -- so
+        # `host_error` must come from `outage.cli_error(text)` alone.
+        r = claude_runner.Runner("claude")
+        line = "You've hit your session limit · resets 10:10am (America/Chicago)"
+        envelope = {"type": "result", "subtype": "success", "is_error": True,
+                    "result": line, "session_id": "x", "total_cost_usd": 0, "usage": {}}
+        res = r.parse_envelope("e1", json.dumps(envelope), 1)
+        self.assertFalse(res.ok)
+        self.assertEqual(line, res.host_error)
+        self.assertEqual(outage.HOST_FAILURE, res.failure_class)
+        # ...and the same envelope reported through a clean exit is still
+        # host-class: `is_error` is the CLI's own verdict on the turn,
+        # independent of the process's exit code.
+        res0 = r.parse_envelope("e1", json.dumps(dict(envelope)), 0)
+        self.assertFalse(res0.ok)
+        self.assertEqual(line, res0.host_error)
+        self.assertEqual(outage.HOST_FAILURE, res0.failure_class)
+
     def test_an_agents_own_opening_words_are_never_the_host(self):
         # N1: `result` is the AGENT's reply, and the gate used to accept
         # anything that merely STARTED with one of its prefixes -- so a review
