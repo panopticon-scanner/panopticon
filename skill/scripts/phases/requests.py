@@ -1,4 +1,5 @@
 """Dispatch requests: prompt materialization, dispatch-request.json, the driver plan."""
+import hashlib
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import scripts.group_runner as group_runner
 # this run's evidence; this module derives it to WRITE that request. One
 # function, so the two can never disagree about what the run's posture is.
 import scripts.loop_batch as loop_batch
+import scripts.run_manifest as run_manifest
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.plan as plan_mod
 from scripts import hosts
@@ -229,6 +231,56 @@ def request_path(review_root, namespace=None):
     return runio._pano(review_root, "dispatch-request.json")
 
 
+def record_request_hash(review_root, checkpoint, sha256, namespace=None):
+    """Anchor `sha256` in THIS namespace's manifest (#1727).
+
+    The one place the two manifests are told apart. `--setup` keeps its own
+    request and its own `setup-manifest.json` (#1507), and
+    `run_manifest._rewrite` writes `run-manifest.json` unconditionally -- so
+    routing setup's hash through the run manifest would stamp whatever review
+    run's manifest happens to be on the tree.
+
+    `phases/setup` is imported at CALL time, in the function, exactly as
+    `orchestrate._run` imports it: `setup` imports this module at module
+    level, and a second module-level cycle here would buy nothing that a
+    one-line local import does not (layout rule 1 is satisfied either way --
+    the name bound is the MODULE)."""
+    if namespace == loop_batch.SETUP_NAMESPACE:
+        import scripts.phases.setup as setup_mod
+        return setup_mod.record_dispatch_request(review_root, checkpoint, sha256)
+    return run_manifest.record_dispatch_request(review_root, None, checkpoint, sha256)
+
+
+def write_dispatch_request_bound(review_root, run_id, checkpoint, group, entries,
+                                 namespace=None):
+    """`(absolute path, sha256)` for the request this writes (#1727).
+
+    The hash is taken over the EXACT BYTES about to be written -- serialise,
+    hash, write -- never by re-reading the file afterwards: a target that can
+    swap the file can swap it between those two operations, and the driver
+    would then record the attacker's hash as its own. It is recorded in this
+    namespace's manifest, OUTSIDE the reviewed tree, so that every reader can
+    ask whether the file it is about to trust is the one this run wrote.
+
+    `write_dispatch_request` below is the same call for the callers that want
+    only the path. Two names rather than a module-level stash of the last
+    hash: a global would be one more piece of mutable state two concurrent
+    runs in one process would share."""
+    if checkpoint not in runio.CHECKPOINT_KINDS:
+        raise ValueError("unknown checkpoint kind: %r" % checkpoint)
+    entries = _materialize_prompts(review_root, entries, namespace)
+    request = {"schema_version": 1, "run_id": run_id, "checkpoint": checkpoint,
+               "group": group, "entries": list(entries)}
+    body = json.dumps(request, indent=2)
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    path = request_path(review_root, namespace)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with runio._open_w_nofollow(path) as fh:
+        fh.write(body)
+    record_request_hash(review_root, checkpoint, digest, namespace)
+    return os.path.abspath(path), digest
+
+
 def write_dispatch_request(review_root, run_id, checkpoint, group, entries,
                            namespace=None):
     """Write the single per-(group, checkpoint) dispatch-request.json and return
@@ -238,16 +290,8 @@ def write_dispatch_request(review_root, run_id, checkpoint, group, entries,
 
     Each entry also gets a `prompt_file` (#run10 B2) — the same text, addressable
     — so a host can hand an agent a path instead of echoing the whole prompt."""
-    if checkpoint not in runio.CHECKPOINT_KINDS:
-        raise ValueError("unknown checkpoint kind: %r" % checkpoint)
-    entries = _materialize_prompts(review_root, entries, namespace)
-    request = {"schema_version": 1, "run_id": run_id, "checkpoint": checkpoint,
-               "group": group, "entries": list(entries)}
-    path = request_path(review_root, namespace)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with runio._open_w_nofollow(path) as fh:
-        json.dump(request, fh, indent=2)
-    return os.path.abspath(path)
+    return write_dispatch_request_bound(review_root, run_id, checkpoint, group,
+                                        entries, namespace=namespace)[0]
 
 def load_dispatch_request(review_root, namespace=None):
     """The parsed .panopticon/dispatch-request.json (or None if absent/invalid).

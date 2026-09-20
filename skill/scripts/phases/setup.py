@@ -1,4 +1,5 @@
 """The `driver setup` flow: scan + ingest, its manifest and SETUP_PHASES."""
+import json
 import os
 import subprocess
 import sys
@@ -22,6 +23,32 @@ def _setup_manifest_path(review_root):
 
 def load_setup_manifest(review_root):
     return runio._load_json(_setup_manifest_path(review_root))
+
+def record_dispatch_request(review_root, checkpoint, sha256, at=None):
+    """`--setup`'s half of #1727: anchor the setup dispatch request's sha256 in
+    `setup-manifest.json`, under the SAME key the run manifest uses.
+
+    Setup is not a run (#1507): it keeps its own request
+    (`.panopticon/setup-dispatch-request.json`) and its own manifest, and
+    `run_manifest._rewrite` writes `run-manifest.json` unconditionally -- so
+    recording there would stamp a prior REVIEW run's manifest with setup's
+    hash. Same tmp + `os.replace` shape as that helper, through this package's
+    own confining opener (the manifest is a `.panopticon` artifact and the
+    target may have planted a symlink at either name). A tree with no setup
+    manifest records nothing, exactly as the run-manifest side does.
+    """
+    manifest = load_setup_manifest(review_root)
+    if manifest is None:
+        return None
+    manifest[run_manifest.DISPATCH_REQUEST] = {
+        "checkpoint": checkpoint, "sha256": sha256,
+        "at": at or run_manifest._now_iso()}
+    path = _setup_manifest_path(review_root)
+    tmp = path + ".tmp"
+    with runio._open_w_nofollow(tmp) as fh:
+        json.dump(manifest, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+    return manifest
 
 def _read_text(path):
     with open(path, encoding="utf-8") as fh:

@@ -1,6 +1,7 @@
 """Tests for scripts.phases.requests: dispatch-request.json, the driver plan and the
 prompt file lists every checkpoint emits.
 """
+import hashlib
 import json
 import os
 import tempfile
@@ -13,6 +14,8 @@ import scripts.phases.runio as runio
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage
+import scripts.phases.setup as setup
+import scripts.run_manifest as run_manifest
 import scripts.phases.review as review
 import scripts.phases.verify as verify
 
@@ -371,3 +374,94 @@ class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
                                  "delivery": "return_json",
                                  "out_file": runio._pano(self.root, "scout-app.json")})
         self.assertNotIn("output_schema", written)
+
+
+class RequestIntegrityCase(unittest.TestCase):
+    """#1727: `.panopticon/dispatch-request.json` lives INSIDE the reviewed
+    tree, and several readers trust every field on it. Its integrity is
+    anchored outside that tree instead -- a sha256 over the exact bytes the
+    driver wrote, recorded in the run (or setup) manifest as it writes them.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(runio._pano(self.root))
+
+    def _run_manifest(self):
+        run_manifest.write_manifest(self.root, {
+            "schema_version": 1, "run_id": "0123456789abcdef", "host": "claude",
+            "security_mode": "standard", "created": "2026-09-20T00:00:00Z",
+            "review_root": self.root, "target": self.root})
+        return run_manifest.load_manifest(self.root)
+
+    def _setup_manifest(self):
+        runio._write_json(setup._setup_manifest_path(self.root),
+                          {"schema_version": 1, "run_id": "RID", "host": "claude",
+                           "review_root": self.root, "target": self.root})
+
+    def _entries(self):
+        return [{"id": "scout-app", "agent": "panopticon-scout", "enforced": True,
+                 "model": None, "prompt": "p",
+                 "out_file": os.path.join(self.root, ".panopticon", "scout-app.json")}]
+
+    def _write(self, checkpoint="scout", namespace=None):
+        return requests.write_dispatch_request_bound(
+            self.root, "RID", checkpoint, None, self._entries(), namespace=namespace)
+
+    def _tamper(self, path):
+        with open(path, "r+b") as fh:
+            body = fh.read().replace(b'"scout-app"', b'"scout-evil"', 1)
+            fh.seek(0)
+            fh.write(body)
+            fh.truncate()
+
+
+class TestTheWriterRecordsTheHash(RequestIntegrityCase):
+    def test_the_recorded_hash_is_the_sha256_of_the_file_bytes(self):
+        self._run_manifest()
+        path, digest = self._write()
+        with open(path, "rb") as fh:
+            self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), digest)
+        record = run_manifest.load_manifest(self.root)["dispatch_request"]
+        self.assertEqual(record["sha256"], digest)
+        self.assertEqual(record["checkpoint"], "scout")
+        self.assertTrue(record["at"])
+
+    def test_the_old_name_still_returns_only_the_path(self):
+        self._run_manifest()
+        path = requests.write_dispatch_request(self.root, "RID", "scout", None,
+                                               self._entries())
+        self.assertEqual(path, os.path.abspath(path))
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(run_manifest.load_manifest(self.root)["dispatch_request"]["sha256"],
+                         hashlib.sha256(open(path, "rb").read()).hexdigest())
+
+    def test_the_setup_namespace_records_into_the_setup_manifest(self):
+        self._setup_manifest()
+        path, digest = self._write(checkpoint="scan", namespace="setup")
+        self.assertTrue(path.endswith("setup-dispatch-request.json"), path)
+        record = setup.load_setup_manifest(self.root)["dispatch_request"]
+        self.assertEqual((record["sha256"], record["checkpoint"]), (digest, "scan"))
+        # ...and never into the review namespace's manifest
+        self.assertIsNone(run_manifest.load_manifest(self.root))
+
+    def test_every_write_overwrites_the_record(self):
+        # The request is ROLLING -- regenerated every iteration -- so the
+        # record is not an anti-drift key: it says what the driver last wrote.
+        self._run_manifest()
+        _p1, first = self._write()
+        _p2, second = self._write(checkpoint="review")
+        self.assertNotEqual(first, second)
+        self.assertEqual(run_manifest.load_manifest(self.root)["dispatch_request"],
+                         {"checkpoint": "review", "sha256": second,
+                          "at": run_manifest.load_manifest(self.root)
+                          ["dispatch_request"]["at"]})
+
+    def test_a_tree_with_no_manifest_records_nothing_and_still_writes(self):
+        # Unit callers (and the pre-manifest window) have no manifest to
+        # anchor to; the writer must not raise, and the reader then refuses.
+        path, digest = self._write()
+        self.assertTrue(os.path.isfile(path))
+        self.assertTrue(digest)
