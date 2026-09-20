@@ -105,6 +105,83 @@ class TestParseSettings(unittest.TestCase):
         self.assertIn("mapping", p.refused[0]["reason"])
 
 
+class TestWhatIsRecordedIsBounded(unittest.TestCase):
+    """A `settings:` section is TARGET-authored, and every string it spells is
+    copied into `run-manifest.json` (`config_requested` / `config_refused` /
+    `config_disclosures`) and echoed to the terminal. YAML anchors amplify
+    what the 1 MiB source cap allows: one 50 KB string aliased 2000 times is a
+    73 KB file and a 300 MB record. So the parse boundary -- the one place
+    that decides what is worth recording -- bounds both the LENGTH of any
+    recorded string and the NUMBER of keys it will look at, and refuses the
+    one float shape that is not JSON at all.
+    """
+
+    def test_a_long_string_value_is_truncated_everywhere_it_is_recorded(self):
+        p = cs.parse_settings({"settings": {"fail_on": "x" * 10000}})
+        bounded = "x" * cs.MAX_RECORDED_CHARS + "\u2026"
+        self.assertEqual(p.requested["fail_on"], bounded)
+        self.assertEqual(p.refused[0]["value"], bounded)
+        self.assertIn(bounded, p.disclosures[0])
+        self.assertLess(len(p.disclosures[0]), 2 * cs.MAX_RECORDED_CHARS)
+
+    def test_a_string_within_the_limit_is_recorded_whole(self):
+        # The bound truncates; it does not mangle every value it sees.
+        value = "x" * cs.MAX_RECORDED_CHARS
+        p = cs.parse_settings({"settings": {"fail_on": value}})
+        self.assertEqual(p.requested["fail_on"], value)
+        self.assertEqual(p.refused[0]["value"], value)
+
+    def test_a_long_key_name_is_truncated_everywhere_it_is_recorded(self):
+        # The key is target-authored too, and it is recorded three times over:
+        # as a `requested` key, as a refusal's `key`, and inside the line.
+        p = cs.parse_settings({"settings": {"k" * 10000: 1}})
+        bounded = "k" * cs.MAX_RECORDED_CHARS + "\u2026"
+        self.assertEqual(list(p.requested), [bounded])
+        self.assertEqual(p.refused[0]["key"], bounded)
+        self.assertLess(len(p.disclosures[0]), 2 * cs.MAX_RECORDED_CHARS)
+
+    def test_only_the_first_keys_are_processed_and_the_rest_are_one_line(self):
+        p = cs.parse_settings({"settings": {"k%02d" % i: 1 for i in range(40)}})
+        self.assertEqual(len(p.requested), cs.MAX_SETTINGS_KEYS)
+        self.assertEqual(len(p.refused), cs.MAX_SETTINGS_KEYS)
+        self.assertEqual(len(p.disclosures), cs.MAX_SETTINGS_KEYS + 1)
+        self.assertIn("8 more settings keys ignored", "\n".join(p.disclosures))
+
+    def test_a_settings_section_at_the_cap_says_nothing_about_ignoring_any(self):
+        p = cs.parse_settings(
+            {"settings": {"k%02d" % i: 1 for i in range(cs.MAX_SETTINGS_KEYS)}})
+        self.assertEqual(len(p.refused), cs.MAX_SETTINGS_KEYS)
+        self.assertNotIn("ignored", "\n".join(p.disclosures))
+
+    def test_the_cap_keeps_the_keys_the_document_spelled_first(self):
+        # DOCUMENT order, not sorted order: a target's real settings sit at the
+        # top of its file, and every one of these filler names sorts ahead of
+        # `security`, so a sorted cut would drop the only key that matters.
+        doc = {"settings": dict([("security", "redteam")]
+                                + [("k%02d" % i, 1) for i in range(40)])}
+        self.assertEqual(cs.parse_settings(doc).typed, {"security": "redteam"})
+
+    def test_a_non_finite_float_is_refused_and_never_recorded_as_a_float(self):
+        # json.dump defaults to allow_nan=True and writes a BARE NaN /
+        # Infinity, which no non-Python reader of run-manifest.json accepts.
+        p = cs.parse_settings({"settings": {"max_verify": float("inf"),
+                                            "fail_on": float("nan"),
+                                            "max_groups": float("-inf")}})
+        self.assertEqual(p.typed, {})
+        reasons = {r["key"]: r["reason"] for r in p.refused}
+        self.assertEqual(set(reasons), {"max_verify", "fail_on", "max_groups"})
+        self.assertTrue(all("finite number" in r for r in reasons.values()), reasons)
+        for key, value in p.requested.items():
+            self.assertIsInstance(value, str, key)
+        self.assertEqual(p.requested["max_verify"], "inf")
+        self.assertIn("`max_verify: inf`", "\n".join(p.disclosures))
+
+    def test_a_finite_float_is_refused_by_its_type_as_before(self):
+        p = cs.parse_settings({"settings": {"max_verify": 1.5}})
+        self.assertIn("positive integer", p.refused[0]["reason"])
+        self.assertEqual(p.requested["max_verify"], 1.5)
+
+
 def _resolve(settings, cli=None, defaults=None):
     return cs.resolve_settings(cli or {}, cs.parse_settings({"settings": settings}),
                                defaults=defaults)

@@ -177,6 +177,23 @@ class TestRunManifest(unittest.TestCase):
         self.assertEqual(m["config_refused"][0]["key"], "allow_unenforced")
         self.assertTrue(m["config_disclosures"])
 
+    def test_a_hostile_config_still_leaves_the_manifest_strict_json(self):
+        # `settings:` is TARGET-authored and lands in the manifest verbatim.
+        # A non-finite float would reach json.dump (allow_nan=True by default)
+        # as a bare Infinity -- valid to Python, invalid JSON to every other
+        # reader of run-manifest.json -- and an unbounded string would be
+        # copied into it whole (YAML aliases amplify past the source cap).
+        # config_schema bounds both at the parse boundary; this is the end of
+        # that pipe, where the damage would actually be written.
+        settings = cs.resolve_settings({}, cs.parse_settings(
+            {"settings": {"max_verify": float("inf"), "severity": "s" * 10000}}))
+        m = rm.build_manifest(**self._params(), config=settings)
+        strict = json.loads(json.dumps(m, allow_nan=False, sort_keys=True))
+        self.assertEqual(strict["config_requested"]["max_verify"], "inf")
+        self.assertEqual(len(strict["config_requested"]["severity"]),
+                         cs.MAX_RECORDED_CHARS + 1)
+        self.assertLess(len(json.dumps(strict["config_disclosures"])), 2000)
+
     def test_the_config_blocks_are_not_anti_drift_keys(self):
         for key in ("config_requested", "config_effective", "config_refused",
                     "config_clamped", "config_disclosures"):

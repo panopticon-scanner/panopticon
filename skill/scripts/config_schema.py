@@ -21,12 +21,13 @@ line changes nothing about posture -- `tool_policy_enforced` is not refuted
 by a config key -- but the refusal is visible in `meta.config`, in the run
 manifest and on the terminal summary.
 
-Pure: two stdlib imports, nothing from the tree, no file I/O except the
+Pure: three stdlib imports, nothing from the tree, no file I/O except the
 run-artifact reader at the bottom, so any module may import it. The config
 FILENAMES live in `repo_config.py` and are never spelled here
 (tests/test_repo_config_literals.py).
 """
 import json
+import math
 import os
 from collections import namedtuple
 
@@ -96,24 +97,60 @@ DEFAULTS = {"fail_on": None, "gate_scope": "on-diff", "max_verify": None,
 
 _SCALARS = (str, int, float, bool, type(None))
 
+# What a RECORD of a target-authored value may cost. `settings:` is written by
+# the repository under review, and every string in it is copied into
+# run-manifest.json (`config_requested` / `config_refused` /
+# `config_disclosures`), into `meta.config` and onto the terminal. YAML
+# anchors amplify past repo_config's source cap -- one 50 KB scalar aliased
+# 2000 times is a 73 KB file that expands to a 300 MB record -- so the parse
+# boundary, the one place that decides what is worth recording, bounds it:
+#   MAX_RECORDED_CHARS  every recorded string (a key name, a scalar value, and
+#                       the disclosure line that quotes either) is cut to this
+#                       many characters, with a trailing ellipsis when it was
+#                       cut. A bound, not a validator: the value is still
+#                       classified and type-checked in full.
+#   MAX_SETTINGS_KEYS   how many keys of the mapping are looked at AT ALL, in
+#                       DOCUMENT order -- a target's real settings sit at the
+#                       top of its file, so a sorted cut would be the one that
+#                       drops them. The rest are one disclosure line, not one
+#                       refusal each: the whole point is to stop counting.
+# A non-string scalar needs no bound -- an int or a bool records as itself --
+# except the one float shape that is not JSON at all; see parse_settings.
+MAX_RECORDED_CHARS = 200
+MAX_SETTINGS_KEYS = 32
+_ELLIPSIS = "\u2026"
+
 Parsed = namedtuple("Parsed", "requested typed refused disclosures")
 EMPTY_PARSED = Parsed({}, {}, [], [])
 
 
+def _bounded(text):
+    """`text` cut to MAX_RECORDED_CHARS, with an ellipsis when it was cut."""
+    return (text if len(text) <= MAX_RECORDED_CHARS
+            else text[:MAX_RECORDED_CHARS] + _ELLIPSIS)
+
+
+def _recorded(value):
+    """A value on its way into `requested` or a refusal: bounded if it is a
+    string, unchanged otherwise (an int or a bool is its own bound)."""
+    return _bounded(value) if isinstance(value, str) else value
+
+
 def _refusal(key, value, reason):
-    return {"key": key, "value": value, "reason": reason}
+    return {"key": _bounded(str(key)), "value": _recorded(value), "reason": reason}
 
 
 def _fmt(value):
     if isinstance(value, bool):
         return "true" if value else "false"
-    return "null" if value is None else str(value)
+    return "null" if value is None else _bounded(str(value))
 
 
 def _line(key, value, tail):
     """The one disclosure sentence shape (spec §4): the target asked for X,
-    and here is what happened to it."""
-    return "target config asked for `%s: %s`; %s" % (key, _fmt(value), tail)
+    and here is what happened to it. Bounds both halves it quotes, so a line
+    is safe to print and to record however long the file's own spelling was."""
+    return "target config asked for `%s: %s`; %s" % (_bounded(str(key)), _fmt(value), tail)
 
 
 def _typed(key, value):
@@ -155,11 +192,33 @@ def parse_settings(doc):
                       [_refusal("settings", None, "settings must be a mapping")],
                       ["target config's `settings:` is not a mapping; "
                        "the whole section is refused"])
-    for key in sorted(raw, key=str):
-        name = key if isinstance(key, str) else repr(key)
+    keys = list(raw)
+    ignored = len(keys) - MAX_SETTINGS_KEYS
+    if ignored > 0:
+        # The cut is by DOCUMENT order; the loop below still reports in name
+        # order, so what a run discloses does not depend on dict iteration.
+        keys = keys[:MAX_SETTINGS_KEYS]
+        disclosures.append("target config: %d more settings keys ignored"
+                           % ignored)
+    for key in sorted(keys, key=str):
+        full = key if isinstance(key, str) else repr(key)
+        name = _bounded(full)           # `full` classifies, `name` is recorded
         value = raw[key]
         scalar = isinstance(value, _SCALARS)
-        klass = CLASS_OF.get(name)
+        # A non-finite float is refused BEFORE it can be recorded as a float:
+        # json.dump's default allow_nan=True writes a bare NaN / Infinity,
+        # which Python reads back and no other reader of run-manifest.json
+        # accepts. Its bounded string form is recorded instead, so the refusal
+        # still says what the file asked for. Checked ahead of the class
+        # lookup because an UNKNOWN key records its value just the same.
+        if isinstance(value, float) and not math.isfinite(value):
+            shown = _fmt(value)
+            requested[name] = shown
+            refused.append(_refusal(name, shown, "value is not a finite number"))
+            disclosures.append(_line(name, shown,
+                                     "refused (value is not a finite number)"))
+            continue
+        klass = CLASS_OF.get(full)
         # The unknown-key branch (and its TOP_LEVEL_GRAIN hint) is checked
         # BEFORE the scalar check: `exclude_paths` is spelled at the wrong
         # level regardless of what shape its value takes, and the hint that
@@ -167,10 +226,10 @@ def parse_settings(doc):
         # happens to be a scalar.
         if klass is None:
             hint = (" -- `exclude_paths` is a TOP-LEVEL key, not a settings key"
-                    if name in TOP_LEVEL_GRAIN else "")
-            shown = value if scalar else None
+                    if full in TOP_LEVEL_GRAIN else "")
+            shown = _recorded(value) if scalar else None
             if scalar:
-                requested[name] = value
+                requested[name] = shown
             refused.append(_refusal(name, shown, "unknown key" + hint))
             disclosures.append(_line(name, shown, "refused (unknown key%s)" % hint))
             continue
@@ -178,7 +237,7 @@ def parse_settings(doc):
             refused.append(_refusal(name, None, "value is not a scalar"))
             disclosures.append(_line(name, None, "refused (a settings value must be a scalar)"))
             continue
-        requested[name] = value
+        requested[name] = _recorded(value)
         if klass == "operator":
             refused.append(_refusal(name, value, "operator-only key"))
             disclosures.append(_line(
@@ -186,7 +245,7 @@ def parse_settings(doc):
                              "person running the review, not of the repository "
                              "being reviewed)"))
             continue
-        ok, normalised, why = _typed(name, value)
+        ok, normalised, why = _typed(full, value)
         if not ok:
             refused.append(_refusal(name, value, why))
             disclosures.append(_line(name, value, "refused (%s)" % why))

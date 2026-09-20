@@ -244,12 +244,15 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             fh.write("version: 1\n"
                      "groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
                      "settings:\n  security: redteam\n")
-        driver.run(self._args(d))
+        first = driver.run(self._args(d))
         m = run_manifest.load_manifest(d)
         self.assertEqual(m["security_mode"], "redteam")
         self.assertEqual(m["config_requested"], {"security": "redteam"})
         self.assertEqual(m["config_effective"], {"security": "redteam"})
-        self.assertNotIn("drift", str(driver.run(self._args(d)).get("message", "")))
+        resumed = driver.run(self._args(d))
+        self.assertEqual((resumed["status"], resumed["checkpoint"]),
+                         (first["status"], first["checkpoint"]))
+        self.assertEqual(first["status"], "checkpoint")
 
     def test_flag_drift_refused_no_synthesize_divergence(self):
         # RETIRED HAZARD (#957 both-pass flag mismatch): the manifest pins the
