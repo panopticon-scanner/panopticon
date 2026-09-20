@@ -402,14 +402,16 @@ class TestDriverSetup(unittest.TestCase):
                 parser.parse_args(argv)
         self.assertEqual(parser.parse_args(["setup", ".", "--max-groups", "5"]).max_groups, 5)
 
-    def test_setup_manifest_pins_the_config_numbers_at_creation(self):
+    def test_setup_manifest_pins_the_clamped_config_numbers_at_creation(self):
         # `settings:` is resolved when the manifest is minted: an edit between
         # scan and ingest cannot move the cap or the ceiling under the brief.
+        # max_per_group: 7 is below the 8-48 band (#1681 Plan 2), so the
+        # manifest pins the clamped 8 -- the number a run would actually use.
         d = self._repo()
         self._write_settings(d, 7, 9)
         setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         manifest = setup.load_setup_manifest(d)
-        self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (7, 9))
+        self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (8, 9))
         self._write_settings(d, 2, 4)
         with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
             json.dump({"groups": [{"capability": "Checkout",
@@ -417,7 +419,7 @@ class TestDriverSetup(unittest.TestCase):
         status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         self.assertEqual(status["status"], "complete")
         report = runio._load_json(runio._pano(d, "setup-report.json"))["report"]
-        self.assertEqual((report["cap"], report["ceiling"]), (7, 9))
+        self.assertEqual((report["cap"], report["ceiling"]), (8, 9))
         # the CLI still wins over config
         d2 = self._repo()
         self._write_settings(d2, 7, None)

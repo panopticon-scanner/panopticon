@@ -25,6 +25,7 @@ import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off o
 import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
 import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
 import repo_config  # noqa: E402  (#1681: the one place the config names live)
+import config_schema  # noqa: E402  (#1681 Plan 2: the settings trust classes)
 from scripts import hosts  # noqa: E402  (#1344 F2: host readiness reads the registry)
 from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard type)
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
@@ -1041,13 +1042,23 @@ _CONFIG_INT_KEYS = ("max_per_group", "max_groups")
 
 
 def config_overrides(repo):
-    """The size-policy overrides from the root config's `settings:` (#1681;
-    was the retired JSON config, now disclosed if present rather than read).
-    Returns `{"max_per_group": int|None, "max_groups": int|None}`."""
-    import groups_schema  # noqa: E402
+    """The size-policy overrides from the root config's `settings:` (#1681),
+    CLAMPED to their bands (Plan 2, ruling 6b).
+
+    Returns `{"max_per_group": int|None, "max_groups": int|None}`. The clamp
+    happens HERE as well as at run time because setup is where the numbers
+    become a committed matrix: a `max_per_group: 5000` that reached
+    `build_spine` would plan one cell over the whole repo and then be clamped
+    on every later run, so the agent would plan against arithmetic no run
+    ever applies. Disclosures go to stderr, as `_committed_exclude_paths`
+    does -- setup is interactive.
+    """
     doc = repo_config.read_document(repo)
-    settings, _errors = groups_schema.parse_settings(doc.doc or {})
-    return {k: settings[k] for k in _CONFIG_INT_KEYS}
+    resolved = config_schema.resolve_settings(
+        {}, config_schema.parse_settings(doc.doc or {}))
+    for line in resolved.disclosures:
+        print("setup: %s" % line, file=sys.stderr)
+    return {k: resolved.effective.get(k) for k in _CONFIG_INT_KEYS}
 
 
 # #1107: hard cap on the untrusted proposal file (a scanned repo can ship
@@ -1076,22 +1087,31 @@ def _committed_exclude_paths(repo):
 
 
 def _draft_settings(repo, max_per_group, max_groups):
-    """The `settings:` mapping the draft carries: everything the operator
-    COMMITTED, overlaid by the sizes they passed on this invocation.
+    """The `settings:` mapping the draft carries: every GRAIN key the operator
+    already committed, overlaid by the sizes they passed on this invocation.
 
-    #1504, one key over. The draft is what the completion message tells them
+    #1504, one key over: the draft is what the completion message tells them
     to move over the committed file, so a key it does not carry is a key they
-    lose by following our own instructions -- and `settings:` holds one the
-    CLI cannot express at setup time (`max_verify`, read by
-    `driver._cli_flags`). Rebuilding it from the two arguments would drop that
-    silently, exactly as the groups-only draft used to drop `exclude_paths`.
-    The writer omits a None, so an unset key stays unset."""
-    import groups_schema  # noqa: E402
-    settings, _errors = groups_schema.parse_settings(repo_config.read_document(repo).doc or {})
+    lose by following our own instructions. #1681 Plan 2 narrows what "a key"
+    means -- the effective grain keys, never a gate or operator-only one. A
+    committed `security: redteam` is refused at run time either way, and
+    copying it into the draft would suggest that promoting the draft makes it
+    stick. The CLI is not clamped (the operator's call), but a value outside
+    the band is warned about here, because the file they are about to commit
+    WILL be clamped on every run that reads it.
+    """
+    settings = dict(config_overrides(repo))
     for key, value in (("max_per_group", max_per_group), ("max_groups", max_groups)):
-        if value is not None:
-            settings[key] = value
-    return settings
+        if value is None:
+            continue
+        settings[key] = value
+        low, high = config_schema.CLAMPS[key]
+        if not low <= value <= high:
+            print("setup: --%s %d is outside the committed band %d-%d; the draft "
+                  "carries it, and a run will clamp it to %d"
+                  % (key.replace("_", "-"), value, low, high,
+                     min(max(value, low), high)), file=sys.stderr)
+    return {k: v for k, v in settings.items() if v is not None}
 
 
 def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None):
