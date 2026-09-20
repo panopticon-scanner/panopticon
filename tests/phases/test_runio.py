@@ -13,7 +13,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-import scripts.groups_schema as groups_schema
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review
@@ -254,17 +253,18 @@ class TestCommittedRootConfig(unittest.TestCase):
     def test_committed_settings_come_from_the_root_file(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
-                fh.write("version: 1\ngroups: {}\nsettings:\n  max_verify: 7\n")
-            self.assertEqual(runio.committed_settings(d)["max_verify"], 7)
-            self.assertIsNone(runio.committed_settings(d)["max_per_group"])
+                fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 12\n"
+                         "  security: redteam\n")
+            parsed = runio.committed_settings(d)
+            self.assertEqual(parsed.typed, {"max_per_group": 12, "security": "redteam"})
+            self.assertEqual(parsed.refused, [])
 
-    def test_committed_settings_without_a_config_are_all_none(self):
+    def test_committed_settings_without_a_config_are_empty(self):
         with tempfile.TemporaryDirectory() as d:
-            settings = runio.committed_settings(d)
-            self.assertEqual(set(settings), set(groups_schema.SETTINGS_INT_KEYS))
-            self.assertEqual(set(settings.values()), {None})
+            parsed = runio.committed_settings(d)
+            self.assertEqual((parsed.typed, parsed.requested, parsed.refused), ({}, {}, []))
 
-    def test_committed_settings_on_a_legacy_only_tree_are_all_none(self):
+    def test_committed_settings_on_a_legacy_only_tree_are_empty(self):
         # The knobs are NOT recovered from the retired layout, and asking for
         # them on such a tree is answered, not raised -- `load_committed_groups`
         # is the one that refuses the run, with the remedy.
@@ -273,7 +273,7 @@ class TestCommittedRootConfig(unittest.TestCase):
             with open(os.path.join(d, ".panopticon", "groups.yml"), "w",
                       encoding="utf-8") as fh:
                 fh.write("groups:\n  App:\n    match: ['src/**']\n")
-            self.assertEqual(set(runio.committed_settings(d).values()), {None})
+            self.assertEqual(runio.committed_settings(d).typed, {})
 
     def test_a_disclosure_is_printed_once_per_content_version(self):
         # The parse is memoized on (path, mtime); printing OUTSIDE it repeated

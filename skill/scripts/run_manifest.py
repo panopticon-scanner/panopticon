@@ -132,8 +132,8 @@ def _target_provenance(target, runner=subprocess.run):
 
 
 def build_manifest(*, target, review_root, host, security_mode, base=None,
-                   flags=None, run_id=None, worktree=None, scope=None, pr=None,
-                   pr_base=None, created=None):
+                   flags=None, config=None, run_id=None, worktree=None,
+                   scope=None, pr=None, pr_base=None, created=None):
     # The WRITE path: this host came from CLI args, so a host the registry does
     # not know is a programming error and raising is both correct and the only
     # place it is reachable from (#1344).
@@ -153,6 +153,18 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
         "host": host,
         "worktree": worktree,   # PR worktree to release at validate; None otherwise
         "flags": {k: flags.get(k) for k in _FLAG_KEYS},
+        # #1681 Plan 2: what the TARGET's committed config asked for and what
+        # the trust classes let through, recorded beside the flags they fed.
+        # Duck-typed off `config_schema.Settings` so this module keeps its
+        # dependency-free shape; `{}`/`[]` when no config was resolved.
+        # NOT anti-drift keys -- `_FLAG_KEYS` is the anti-drift surface and
+        # compares EFFECTIVE values, which is what `flags` already holds.
+        "config_requested": dict(getattr(config, "requested", None) or {}),
+        "config_effective": dict(getattr(config, "effective", None) or {}),
+        "config_refused": [dict(r) for r in (getattr(config, "refused", None) or [])],
+        "config_clamped": [dict(c) for c in (getattr(config, "clamped", None) or [])],
+        "config_disclosures": [str(s) for s in
+                               (getattr(config, "disclosures", None) or [])],
         "scope": scope or {"mode": "repo", "target": None},
         "pr": pr,
         # DERIVED (like worktree): the gh-detected PR base, threaded to

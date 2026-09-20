@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))                  
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # skill
 
 
+import scripts.config_schema as config_schema  # noqa: E402
 import scripts.diff_map as diff_map  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
@@ -90,7 +91,34 @@ PHASES = (
 )
 
 
-def _cli_flags(args, review_root=None):
+def _resolve_config(args, review_root=None):
+    """This invocation's `settings:` resolution (#1681 Plan 2, spec §4).
+
+    One read, one ratchet, one printing: `run()` calls this ONCE and hands
+    the result to both `_cli_flags` and `build_manifest`, so the operator
+    sees each refusal exactly once and the manifest records the same answer
+    the run acts on.
+
+    The two store_true flags need translating before the ratchet can compare
+    them: argparse spells "the operator said nothing" as False for
+    `--tools` / `--no-tools` / `--include-fixtures`, and False is a VALUE to
+    `resolve_settings` (it means "the command line chose"), so an untouched
+    flag has to arrive as None.
+    """
+    if not review_root:
+        return config_schema.EMPTY
+    cli = {key: getattr(args, key, None) for key in config_schema.CLASS_OF}
+    cli["tools"] = (False if getattr(args, "no_tools", False)
+                    else True if getattr(args, "tools", False) else None)
+    cli["include_fixtures"] = True if getattr(args, "include_fixtures", False) else None
+    resolution = config_schema.resolve_settings(
+        cli, runio.committed_settings(review_root))
+    for line in resolution.disclosures:
+        print("driver: %s" % line, file=sys.stderr, flush=True)
+    return resolution
+
+
+def _cli_flags(args, review_root=None, resolution=None):
     if getattr(args, "tools", False) and getattr(args, "no_tools", False):
         raise ValueError("cannot specify both --tools and --no-tools")
     # not `tools`: that name is bound to scripts.phases.tools at module scope,
@@ -98,23 +126,29 @@ def _cli_flags(args, review_root=None):
     # function an UnboundLocalError.
     tools_flag = False if getattr(args, "no_tools", False) else (
         True if getattr(args, "tools", False) else None)
-    # #1681 Plan 1: the grain knobs resolve CLI > `settings:` in the root
-    # config. The manifest's anti-drift keys compare EFFECTIVE values, which is
-    # what this records -- a config edit mid-run drifts exactly like a flag edit.
-    settings = runio.committed_settings(review_root) if review_root else {}
-    values = {"fail_on": getattr(args, "fail_on", None),
-              "severity": getattr(args, "severity", None),
-              "gate_scope": getattr(args, "gate_scope", None),
+    # #1681 Plan 2: CLI > the config's EFFECTIVE contribution > the engine's
+    # default. `cfg` holds only what survived the trust classes -- a clamped
+    # grain value, a gate value at least as strict as the built-in default --
+    # so an operator-only key or a loosening gate key cannot reach a flag at
+    # all. The manifest's anti-drift keys compare EFFECTIVE values, which is
+    # what this records: a config edit mid-run drifts exactly like a flag edit.
+    cfg = (resolution if resolution is not None
+           else _resolve_config(args, review_root)).effective
+    values = {"fail_on": getattr(args, "fail_on", None) or cfg.get("fail_on"),
+              "severity": getattr(args, "severity", None) or cfg.get("severity"),
+              "gate_scope": getattr(args, "gate_scope", None) or cfg.get("gate_scope"),
               "diff_context": getattr(args, "diff_context", None),
-              "tools": tools_flag,
-              "include_fixtures": True if getattr(args, "include_fixtures", False) else None,
+              "tools": tools_flag if tools_flag is not None
+                       else (True if cfg.get("tools") else None),
+              "include_fixtures": True if (getattr(args, "include_fixtures", False)
+                                           or cfg.get("include_fixtures")) else None,
               "max_per_group": getattr(args, "max_per_group", None)
                                if getattr(args, "max_per_group", None) is not None
-                               else settings.get("max_per_group"),
+                               else cfg.get("max_per_group"),
               "allow_unenforced": True if getattr(args, "allow_unenforced", False) else None,
               "max_verify": getattr(args, "max_verify", None)
                             if getattr(args, "max_verify", None) is not None
-                            else settings.get("max_verify")}
+                            else cfg.get("max_verify")}
     return {k: values.get(k) for k in run_manifest._FLAG_KEYS}
 
 
@@ -807,6 +841,10 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     if args.reset:
         _clear_run_artifacts(review_root)   # §5.1: resolve the tag before the manifest goes
         run_manifest.reset_run(review_root)
+    # #1681 Plan 2: ONE resolution per invocation -- both branches below read
+    # it, so the disclosures print once and the manifest records exactly what
+    # the flags were composed from.
+    resolution = _resolve_config(args, review_root)
     manifest = run_manifest.load_manifest(review_root)
     if runio._foreign_manifest(manifest, review_root, run_manifest.manifest_path(review_root)):
         # #1093: a target-committed run-manifest.json (foreign review_root) could
@@ -829,15 +867,24 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         manifest = run_manifest.build_manifest(
             target=args.target, review_root=review_root,
             host=args.host or runio._DEFAULTS["host"],
-            security_mode=args.security or runio._DEFAULTS["security"],
-            base=base, flags=_cli_flags(args, review_root=review_root),
+            security_mode=(args.security or resolution.effective.get("security")
+                           or runio._DEFAULTS["security"]),
+            base=base, flags=_cli_flags(args, review_root=review_root,
+                                        resolution=resolution),
+            config=resolution,
             worktree=worktree,
             scope=scope, pr=args.pr, pr_base=pr_base)
         run_manifest.write_manifest(review_root, manifest)
     else:
-        cli_flags = _cli_flags(args, review_root=review_root)
+        cli_flags = _cli_flags(args, review_root=review_root, resolution=resolution)
         conflicts = run_manifest.conflicting_flags(
-            manifest, host=args.host, security_mode=args.security,
+            manifest, host=args.host,
+            # The RESOLVED opinion, not the raw flag: a config that changed
+            # `security:` mid-run is drift exactly as `--security` would be.
+            # Still None when neither the CLI nor the file has an opinion --
+            # `conflicting_flags` reads None as "no opinion", which is what
+            # keeps a bare `driver run` resume from conflicting with itself.
+            security_mode=args.security or resolution.effective.get("security"),
             base=base, flags=cli_flags, scope=scope, pr=args.pr)
         if conflicts:
             return runio._error_status("flag drift (use --reset to start over): "
