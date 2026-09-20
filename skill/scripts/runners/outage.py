@@ -68,6 +68,57 @@ _KINDS = (
     r"rate_limit",                               # the wire key, underscore only
     r"rate{s}limit(?:ed|{s}(?:error|exceeded|reached))",
     r"exceeded{s}(?:your{s})?rate{s}limit",
+    # #1729: Claude's own subscription-limit line, printed with NO `error`
+    # object -- run 14's 225 wasted launches were entirely this
+    # (`You've hit your session limit \u00b7 resets 10:10am (America/Chicago)`,
+    # and the same shape for a usage, weekly/7-day, daily, monthly, plan or
+    # N-hour limit). Phrase-shaped like the neighbours: never a bare `limit`,
+    # and never a bare `usage limit`/`session limit` on their own -- an
+    # agent's finding can say "the per-user usage limit is never enforced"
+    # and a tool's stderr can say "session limit".
+    #
+    # Coordinator review round 1 found two defects in the first cut of these:
+    #
+    # Critical 1 (ReDoS): the filler between "your"/"the" and the limit name
+    # was `(?:\S+{s}){0,3}?` -- and `{s}` is `[\s_.-]`, which OVERLAPS `\S` on
+    # `_`/`.`/`-`. A long separator-free run then has cubically many ways to
+    # split itself between the filler's `\S+` and its own trailing
+    # separator, so a hostile or merely unlucky agent reply (or a claude
+    # `result` opening `API Error: 500 exceeded the a-a-a-a-...`, since
+    # `_HOST_HEAD` embeds this whole tuple into `_CLI_ERROR` too) cost
+    # seconds at 1-2 KB and tens of seconds at 3 KB. Fixed by making the
+    # filler's own separator whitespace-only (plain `\s`, spelled out rather
+    # than `{s}`): disjoint from `\S`, so there is no character either side
+    # can claim and nothing left to backtrack over.
+    #
+    # Critical 2 (false positives on ordinary code): the SAME `{s}` overlap
+    # meant a Python identifier (`hit_your_plan_limit()`) or a pytest node id
+    # (`test_usage_limit_reached`) read as this KIND, because `_` stood in
+    # for a space. Every separator in both patterns below is now a literal
+    # `\s`, never `{s}` -- these two patterns are about an English sentence
+    # the CLI or an agent wrote, never an identifier.
+    #
+    # Both patterns also refuse to run on into ordinary prose ("...limit
+    # handling is wrong in src/quota.py", "...limit reached counter is reset
+    # nightly") OR into a directly-attached quote (`'weekly limit reached'`,
+    # no space before the closing quote -- a bare `[a-z]`-only guard let this
+    # through, since a quote is not a letter) by requiring that nothing but a
+    # genuine delimiter follows: either no continuing word/quote at all, or
+    # -- Important 3 -- up to 40 characters of ANYTHING (a model name, "for
+    # Claude Opus 4.5") and then the real `\u00b7 resets` delimiter. The 40-char
+    # cap keeps that second option just as immune to backtracking blowup as
+    # the first: it is a bounded quantifier, not an unbounded one.
+    r"(?:hit|reached|exceeded)\s+(?:your|the)\s+(?:\S+\s){{0,3}}?"
+    r"(?:session|usage|weekly|daily|monthly|plan|\d+-hour)\s+limit"
+    r"(?:(?!\s*[a-z'])|.{{0,40}}?\u00b7\s*resets\b)",
+    r"(?:session|usage|weekly|daily|monthly|plan|\d+-hour)\s+limit\s+"
+    r"(?:reached|exceeded|hit)(?:(?!\s*[a-z'])|.{{0,40}}?\u00b7\s*resets\b)",
+    # The older API form of the same class: a bare phrase followed by a pipe
+    # and an epoch integer (`Claude AI usage limit reached|1758400000`), or
+    # end of line. Same guard as the two above -- a continuation into an
+    # ordinary word ("...reached is shown as a toast") is a finding, not a
+    # line the CLI printed.
+    r"claude\s+ai\s+usage\s+limit\s+reached(?!\s*[a-z'])",
     r"too{s}many{s}requests",
     r"overloaded(?:{s}error)?",
     r"(?:service|api){s}unavailable",
@@ -141,11 +192,37 @@ _HOST_ERROR_STATUS_OBJECT = _status_rule(_OBJECT_STATUS, _OBJECT_REASONS)
 # followed by its reason, a JSON or parenthetical body, another delimiter or
 # the end of the line; and a bare prefix by the end of the line, or by a
 # delimiter and then a KIND or a REASON -- host-shaped content, not prose.
+#
+# #1729 adds a fifth, sixth and seventh: `You've hit your session limit
+# \u00b7 resets 10:10am (America/Chicago)` (and the usage/weekly/daily/
+# monthly/plan/N-hour siblings of it), `Claude AI usage limit
+# reached|1758400000` (the older API form), and `5-hour limit reached
+# \u00b7 resets 3pm` -- all printed with NO `error` object at all, so this
+# gate is the ONLY place that surfaces them. Same discipline again --
+# "You've hit your session limit handling is wrong in src/quota.py" is a
+# finding, not an outage -- so each opening is only CLI framing when it is
+# followed by the delimiter that rendering actually uses, or the end of the
+# line; never by more prose.
+#
+# Coordinator review round 1, Important 3: the first cut required the middot
+# to sit IMMEDIATELY after "limit", so "You've reached your usage limit FOR
+# CLAUDE OPUS 4.5 \u00b7 resets 3:10pm" -- a real rendering with a model name
+# between the two -- failed the gate before the \u00b7 was ever looked at.
+# The lookahead now also accepts up to 40 characters of anything (bounded,
+# so this stays as immune to backtracking blowup as a fixed-width check) and
+# then the real `\u00b7 resets` delimiter.
 _HOST_HEAD = r"(?:%s|%s)" % (_alt(_KINDS), _alt(_REASONS))
 _CLI_ERROR = re.compile(
     r"^(?:(?:api\s+)?error\s*:\s*[45]\d\d(?!\w)(?=\s*(?:$|[{(\[\u00b7,;-]|" + _HOST_HEAD + r"))"
     r"|(?:api\s+error|invalid\s+api\s+key|overloaded)"
-    r"(?=\s*(?:$|[:\u00b7,-]\s*(?:[{\[]|" + _HOST_HEAD + r"))))", re.I)
+    r"(?=\s*(?:$|[:\u00b7,-]\s*(?:[{\[]|" + _HOST_HEAD + r")))"
+    # Item 4: the CLI may print a curly apostrophe (U+2019) instead of a
+    # straight one.
+    r"|you['\u2019]?ve\s+(?:hit|reached)\s+(?:your|the)\s+(?:\S+\s+){0,3}?"
+    r"(?:session|usage|weekly|daily|monthly|plan|\d+-hour)\s+limit"
+    r"(?=\s*(?:$|.{0,40}?\u00b7\s*(?:resets\b|$)))"
+    r"|claude\s+ai\s+usage\s+limit\s+reached(?=$|\|\d+)"
+    r"|\d+-hour\s+limit\s+reached(?=\s*(?:$|\u00b7\s*resets\b)))", re.I)
 
 
 # The keys a provider error object carries its own verdict in, across the
@@ -240,7 +317,7 @@ def cli_error(text):
     on a good turn and the CLI's `API Error: ...` line on a refused one. The
     envelope's own `error` OBJECT is preferred wherever the CLI emits one; this
     is the fallback, and it is deliberately the narrowest thing that still
-    recognises the four renderings the CLI really prints.
+    recognises the seven renderings the CLI really prints.
 
     Matched at the START of the stripped text AND up to the delimiter that
     follows it, so neither a findings body that quotes an error message inside
@@ -263,7 +340,8 @@ HOST_OUTAGE_CLAUSE = ("no entry's attempt budget was charged and the failed laun
                       "nothing behind, so every reply that did land is kept and re-running "
                       "the loop resumes this run where it stopped")
 HOST_OUTAGE = ("paused: the %s host failed %d of this batch's %d launches with a %s-class "
-               "failure (auth, quota, a rate limit, or the provider itself) rather than an "
+               "failure (auth, quota, a plan or session limit, a rate limit, or the provider "
+               "itself) rather than an "
                "entry-class one, and %d of its entries were never launched; last: %s; "
                + HOST_OUTAGE_CLAUSE + ", with the same flags, once the host is back: `%s`")
 # The flags a resume has to carry, in the order the parser declares them:
