@@ -381,6 +381,21 @@ def loop(args):
             if disagreeing:
                 return _finish(_status("error", loop_batch.enforcement_refusal(
                     disagreeing, expected)), review_root, guards, ledger, namespace, mode, runner)
+            # #1727: ...and the shell it names must be one THIS checkpoint
+            # dispatches. `enforced` says the launch is shell-bound; this says
+            # which charter it is bound to, and the driver owns both answers.
+            # Same place in the sequence and for the same reason: before the
+            # guards are armed and before anything launches.
+            misrouted = loop_batch.refuse_misrouted(pending, req.get("checkpoint"))
+            if misrouted:
+                return _finish(_status("error", loop_batch.misroute_refusal(
+                    misrouted, req.get("checkpoint"))), review_root, guards, ledger,
+                    namespace, mode, runner)
+            # The runner re-derives the same narrowing on its own launch path
+            # (base.registered_agent(entry, roles=self.roles)): the loop's check
+            # is per-batch, the runner's is per-entry, and neither is the other's
+            # excuse. Session mode ignores it -- it launches nothing.
+            runner.roles = loop_batch.CHECKPOINT_ROLES.get(req.get("checkpoint")) or ()
             pending_ids = ", ".join(e.get("id") for e in pending)
             if iterations > max_iterations:
                 return _finish(_status("error", "driver loop: %d iterations without "

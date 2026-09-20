@@ -2583,3 +2583,103 @@ class TestTheLoopRefusesARequestItCannotProveItWrote(LoopCase):
         status, err = self._loop_capturing(d, floor, FakeRunner())
         self.assertEqual("complete", status["status"], status)
         self.assertNotIn("ignoring the previous dispatch request", err)
+
+
+class TestTheEntrysShellIsBoundToItsCheckpoint(LoopCase):
+    """#1727 second half. `agent` is a registered-shell NAME, and #1720 made
+    sure it is one of the four -- but any of the four passed for any
+    checkpoint, so a `verify` entry could name `panopticon-domain-panel` and
+    get a reviewer's WRITE-granting charter in a round that only adjudicates.
+    The loop owns the routing table and refuses a misrouted entry before it
+    arms anything."""
+
+    def _misrouted(self, agent):
+        real = orchestrate.requests.load_bound_request
+
+        def fake(review_root, namespace=None, expected_sha256=None):
+            req, refusal = real(review_root, namespace, expected_sha256)
+            for entry in (req or {}).get("entries") or []:
+                entry["agent"] = agent
+            return req, refusal
+
+        return mock.patch.object(orchestrate.requests, "load_bound_request", fake)
+
+    def test_checkpoint_roles_has_a_row_for_every_checkpoint_kind(self):
+        self.assertEqual(sorted(loop_batch.CHECKPOINT_ROLES),
+                         sorted(runio.CHECKPOINT_KINDS))
+
+    def test_every_role_named_is_a_dispatch_role(self):
+        import scripts.dispatch as dispatch
+        for kind, roles in loop_batch.CHECKPOINT_ROLES.items():
+            for role in roles:
+                self.assertIn(role, dispatch.ROLE_FILES, (kind, role))
+
+    def test_the_table_matches_the_shells_the_phases_actually_assign(self):
+        # Read out of the phase modules rather than trusted: each builder
+        # spells its shell as `dispatch.registered_agent_name("<role>.md")`,
+        # and the table has to name the role that file maps to. A builder
+        # retargeted without this row moving would dispatch a shell the loop
+        # then refuses -- or, worse, the row would quietly widen.
+        import scripts.dispatch as dispatch
+        by_file = {f: role for role, f in dispatch.ROLE_FILES.items()}
+        phase_checkpoint = {"coverage.py": "scout", "review.py": "review",
+                            "verify.py": "verify", "verify_tools.py": "verify",
+                            "setup.py": "scan"}
+        phases_dir = os.path.join(os.path.dirname(orchestrate.__file__), "phases")
+        seen = {kind: set() for kind in runio.CHECKPOINT_KINDS}
+        for name, kind in phase_checkpoint.items():
+            with open(os.path.join(phases_dir, name), encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), name)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "registered_agent_name"
+                        and node.args and isinstance(node.args[0], ast.Constant)):
+                    seen[kind].add(by_file[node.args[0].value])
+        for kind in runio.CHECKPOINT_KINDS:
+            self.assertEqual(seen[kind], set(loop_batch.CHECKPOINT_ROLES[kind]), kind)
+
+    def test_a_misrouted_shell_ends_the_run_before_anything_is_armed(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        armed = []
+        with self._misrouted("panopticon-domain-advisor"), \
+             mock.patch.object(orchestrate.Guards, "arm",
+                               side_effect=lambda *a: armed.append(a[-1])), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = self._run_loop(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("review-app-SEC", status["message"])
+        self.assertIn("does not dispatch", status["message"])
+        self.assertIn("panopticon-domain-panel", status["message"])
+        self.assertEqual([], runner.launched)
+        self.assertEqual([], armed)
+
+    def test_an_unenforced_entry_that_names_a_shell_is_misrouted_too(self):
+        # The mirror of #1720's `enforced` check: an unenforced entry carries
+        # `agent: None` by construction, so a name on one is a claim the run
+        # never made.
+        d, floor = self._repo()
+        runner = FakeRunner("generic")
+        with self._misrouted("panopticon-domain-panel"), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = self._run_loop(d, floor, runner, "--host", "generic",
+                                    "--allow-unenforced")
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("does not dispatch", status["message"])
+        self.assertEqual([], runner.launched)
+
+    def test_the_loop_hands_the_runner_the_checkpoints_roles(self):
+        seen = []
+
+        class Recording(FakeRunner):
+            def run_entry(self, entry, env):
+                seen.append((entry["id"], self.roles))
+                return super().run_entry(entry, env)
+
+        d, floor = self._repo()
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = self._run_loop(d, floor, Recording())
+        self.assertEqual("complete", status["status"], status)
+        self.assertIn(("review-app-SEC", ("domain_panel",)), seen)
+        self.assertIn(("verify-app-SEC-primary", ("advisor", "domain_advisor")), seen)

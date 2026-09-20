@@ -14,11 +14,31 @@ does. Same shape, and the same reason, as `money.py` and `ledger.py`.
 import os
 import sys
 
+import scripts.dispatch as dispatch
 import scripts.hosts as hosts
 import scripts.phases.persist as persist
 import scripts.phases.runio as runio
 
 SETUP_NAMESPACE = "setup"
+
+# #1727: which enforcement shells each checkpoint DISPATCHES -- `ROLE_FILES`
+# keys, one row per `runio.CHECKPOINT_KINDS` member, pinned by a test that
+# reads the shells back out of the phase builders.
+#
+# #1720 bound `agent` to the four registered shells; it did not bind it to the
+# ROUND. Any of the four therefore passed for any checkpoint, so a `verify`
+# entry naming `panopticon-domain-panel` got a reviewer's WRITE-granting
+# charter in a round that only adjudicates -- a registered name, an allowlisted
+# launch, and a governing instruction set nobody in this run chose. The driver
+# owns the routing, so the driver states it, here, once.
+#
+# `scan` is deliberately EMPTY: `--setup`'s single entry is dispatched
+# shell-less by design (it is not in ROLE_FILES, so no host registers a shell
+# for it), and an empty row accepts no name at all rather than any.
+CHECKPOINT_ROLES = {"scout": ("scout",),
+                    "review": ("domain_panel",),
+                    "verify": ("advisor", "domain_advisor"),
+                    "scan": ()}
 
 
 def expected_enforced(review_root, host, namespace=None):
@@ -63,6 +83,54 @@ def enforcement_refusal(disagreeing, expected):
     return ("driver loop: entry %s claims %s launch on a host whose posture is %s; "
             "the dispatch request does not match this run's own evidence -- re-run "
             "with --reset, or re-run readiness" % (disagreeing[0], claimed, actual))
+
+
+def refuse_misrouted(pending, checkpoint):
+    """The ids whose `agent` is not one this checkpoint dispatches (#1727).
+
+    Two shapes are refused, and they are the same statement read from either
+    side: an ENFORCED entry whose agent is not one of `CHECKPOINT_ROLES[
+    checkpoint]`, and an UNENFORCED entry that names a shell at all (the
+    phases set `agent` to None on those, so a name on one is a claim this run
+    never made). An unknown checkpoint gets the empty row, which refuses every
+    name -- fail-closed, since the checkpoint is read off the same
+    target-writable file.
+    """
+    allowed = {dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
+               for role in CHECKPOINT_ROLES.get(checkpoint) or ()
+               if role in dispatch.ROLE_FILES}
+    misrouted = []
+    for entry in pending:
+        if not isinstance(entry, dict):
+            continue
+        agent = entry.get("agent")
+        if entry.get("enforced"):
+            if not (isinstance(agent, str) and agent in allowed):
+                misrouted.append(entry.get("id"))
+        elif agent is not None:
+            misrouted.append(entry.get("id"))
+    return misrouted
+
+
+def misroute_refusal(misrouted, checkpoint):
+    """The operator's message for such a request -- a REQUEST-INTEGRITY
+    refusal like `enforcement_refusal`, raised before the batch opens, so
+    nothing has launched and nothing is charged.
+
+    `%r` on every value that came out of the request (the id and the
+    checkpoint both did): they reach the operator's stderr and the status
+    JSON, and repr renders a control character, an ANSI escape or an embedded
+    newline as its escape sequence -- the reason `base.UNREGISTERED_AGENT`
+    does the same.
+    """
+    allowed = ", ".join(sorted(
+        dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
+        for role in CHECKPOINT_ROLES.get(checkpoint) or ()
+        if role in dispatch.ROLE_FILES)) or "no enforcement shell"
+    return ("driver loop: entry %r names an enforcement shell its checkpoint does "
+            "not dispatch (checkpoint %r dispatches: %s); the dispatch request does "
+            "not match this run's own plan -- re-run with --reset"
+            % (misrouted[0], checkpoint, allowed))
 
 
 def write_usage(review_root, ledger, namespace=None):

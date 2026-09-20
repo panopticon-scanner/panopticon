@@ -344,7 +344,7 @@ class Runner(base.HostRunner):
           application -- so a registered name symlinked out of that directory
           fails closed too.
         """
-        name = base.registered_agent(entry)
+        name = base.registered_agent(entry, roles=self.roles)
         if name is None:
             return None
         directory = hosts.spec(self.host).registration_dir
@@ -445,8 +445,8 @@ class Runner(base.HostRunner):
             # used to gate all three -- so an enforced entry with no agent,
             # or with one this driver never registers, skipped the check and
             # launched bare.
-            if base.registered_agent(entry) is None:
-                return base.refuse_unregistered_agent(entry)
+            if base.registered_agent(entry, roles=self.roles) is None:
+                return base.refuse_unregistered_agent(entry, roles=self.roles)
             shell = self._shell_path(entry)
             if shell is None:
                 return base.RunResult.failed(

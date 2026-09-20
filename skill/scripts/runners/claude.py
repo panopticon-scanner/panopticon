@@ -118,7 +118,7 @@ class Runner(base.HostRunner):
         # not registered gets the registered shell or no launch -- never a
         # `--model`-only argv, which is an unenforced launch. Latent behind
         # `run_entry` today; a second caller is all it would take.
-        agent = base.registered_agent(entry)
+        agent = base.registered_agent(entry, roles=self.roles)
         if entry.get("enforced") and agent:
             cmd += ["--agent", agent]
         elif not entry.get("enforced") and entry.get("model"):
@@ -203,8 +203,9 @@ class Runner(base.HostRunner):
         # `enforced and agent` gate in `command` sent both an absent agent and
         # a foreign one to the `--model` branch -- a bare launch, ledgered as
         # the enforced entry it was dispatched as.
-        if entry.get("enforced") and base.registered_agent(entry) is None:
-            return base.refuse_unregistered_agent(entry)
+        if entry.get("enforced") and base.registered_agent(
+                entry, roles=self.roles) is None:
+            return base.refuse_unregistered_agent(entry, roles=self.roles)
         run_env = self.launch_env(env)
         cmd = self.command(entry, self.settings_path, self.max_turns)
         try:

@@ -185,8 +185,9 @@ class Runner(base.HostRunner):
             # failed later, as an unreadable registration file, which reads as
             # a broken machine rather than as a request that named an agent
             # this driver never registered.
-            if entry.get("enforced") and base.registered_agent(entry) is None:
-                return base.refuse_unregistered_agent(entry)
+            if entry.get("enforced") and base.registered_agent(
+                    entry, roles=self.roles) is None:
+                return base.refuse_unregistered_agent(entry, roles=self.roles)
             command = codex_host.command(entry, child_env, self.review_root, self.run_dir,
                                          runner=self.runner,
                                          schema_argv=base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry))
