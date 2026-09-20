@@ -114,7 +114,14 @@ def read_document(review_root):
                         disclosures)
     try:
         doc = yaml.safe_load(data.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+    # ValueError as well as YAMLError: PyYAML resolves an int scalar with
+    # `int(text)`, and CPython 3.11+ raises ValueError -- not a YAMLError --
+    # past `sys.get_int_max_str_digits()` (4300 digits). A target-authored
+    # file can only ever be REFUSED here, never fatal, so the one road the
+    # loader raises on that is not a YAMLError is caught by name too.
+    # (UnicodeDecodeError is itself a ValueError; it stays spelled out for
+    # the decode above it describes.)
+    except (UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         return Document(res.path, None, ["%s unreadable: %s" % (res.path, exc)], disclosures)
     if not isinstance(doc, dict):
         return Document(res.path, None, ["%s must be a mapping" % res.path], disclosures)

@@ -113,6 +113,21 @@ class TestReadDocument(unittest.TestCase):
             _write(d, "panopticon.yml", "version: 1\ngroups: [\n")
             self.assertTrue(rc.read_document(d).errors)
 
+    def test_an_integer_past_pythons_digit_limit_is_refused_not_fatal(self):
+        # Final review F2: PyYAML resolves an int scalar with `int(text)`, and
+        # CPython 3.11+ raises ValueError -- not a YAMLError -- past
+        # `sys.get_int_max_str_digits()` (4300). It escaped this reader and
+        # ended the run from inside the one function whose contract is that a
+        # target-authored file can only ever be REFUSED.
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "panopticon.yml",
+                   "version: 1\ngroups: {}\nsettings:\n  max_per_group: %s\n"
+                   % ("9" * 5001))
+            doc = rc.read_document(d)
+        self.assertIsNone(doc.doc)
+        self.assertEqual(len(doc.errors), 1)
+        self.assertIn("unreadable", doc.errors[0])
+
     def test_over_cap_is_refused_before_parse(self):
         with tempfile.TemporaryDirectory() as d:
             _write(d, "panopticon.yml", GOOD + "#" * rc.MAX_CONFIG_BYTES)
