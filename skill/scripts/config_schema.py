@@ -354,6 +354,29 @@ def resolution_document(manifest):
 
 
 def _scalar(value):
+    """A value on its way into `meta.config` off the run artifact: bounded so
+    a hostile `config-resolution.json` cannot use it to bloat the report.
+
+    Order matters. `bool` is checked first because it is an `int` subclass --
+    falling through to the int branch below would round-trip `True`/`False`
+    as `1`/`0`. A non-finite float (`NaN`/`Infinity`; `json.load` accepts
+    those tokens even though they are not valid JSON) is turned into its
+    STRING form regardless of length, the same escape `parse_settings` uses:
+    a value this artifact could not have produced through a conforming
+    writer must not reach `report.json` as a live float either. Every other
+    int/float is bounded by the length of its OWN `repr` -- an oversized
+    number's cost lives in its digit count, not in a string wrapper around
+    it -- so a huge integer becomes its own truncated decimal string rather
+    than passing through as a number no consumer expects to be that large.
+    A regular string is bounded the same way it always was.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) and not math.isfinite(value):
+        return repr(value)[:MAX_TEXT]
+    if isinstance(value, (int, float)):
+        text = repr(value)
+        return value if len(text) <= MAX_TEXT else text[:MAX_TEXT]
     if isinstance(value, str):
         return value[:MAX_TEXT]
     return value if isinstance(value, _SCALARS) else None

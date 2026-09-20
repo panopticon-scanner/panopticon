@@ -9,6 +9,7 @@ import scripts.config_schema as cs
 import scripts.discovery as discovery
 import scripts.driver as driver
 import scripts.run_manifest as run_manifest
+import scripts.synth.render as render_mod
 # conftest puts tests/ on sys.path, so the literal ratchet's regex is
 # importable by name (see test_the_module_never_spells_a_config_filename).
 import test_repo_config_literals as lit
@@ -344,3 +345,43 @@ class TestTheRunArtifact(unittest.TestCase):
         self.assertEqual(loaded["effective"], {})                 # wrong shape -> empty
         self.assertEqual(loaded["refused"], [{"key": "x", "value": None, "reason": "y"}])
         self.assertLessEqual(len(loaded["disclosures"]), cs.MAX_ENTRIES)
+
+    def test_load_resolution_bounds_huge_numbers_and_non_finite_floats(self):
+        # #1681 Plan 2 fix round 1: a value's SIZE lives in its digit count,
+        # not in a string wrapper around it -- `_scalar` must bound a huge
+        # int/float the same way it bounds a huge string, and must never let
+        # a non-finite float (NaN/Infinity; `json.load` accepts those tokens
+        # even though they are not valid JSON) survive as a live float.
+        #
+        # 1000 digits, not 100000: Python 3.11+ refuses to convert an int to
+        # or from a string past `sys.get_int_max_str_digits()` (4300 by
+        # default) -- a 100000-digit literal would trip THAT ceiling first,
+        # inside `json.load` itself, and `load_resolution` would fail the
+        # whole parse (its own `except ValueError` above) before `_scalar`
+        # ever ran. That proves the file's own guard rail, not this one.
+        # 1000 digits sails through json.load untouched and lands on
+        # `_scalar` as a genuine 1000-digit `int` -- exactly the value this
+        # bound exists for.
+        huge = int("9" * 1000)
+        long_string = "s" * 5000
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, cs.RESOLUTION_NAME), "w", encoding="utf-8") as fh:
+                json.dump({"requested": {"long": long_string},
+                           "effective": {"huge": huge, "nan": float("nan")},
+                           "refused": [{"key": "x", "value": huge, "reason": "y"}],
+                           "clamped": [{"key": "k", "requested": huge,
+                                        "effective": float("inf")}],
+                           "disclosures": []}, fh)
+            loaded = cs.load_resolution(d)
+        bounded_values = (loaded["requested"]["long"], loaded["effective"]["huge"],
+                          loaded["effective"]["nan"], loaded["refused"][0]["value"],
+                          loaded["clamped"][0]["requested"],
+                          loaded["clamped"][0]["effective"])
+        for value in bounded_values:
+            self.assertNotIsInstance(value, float,
+                                     "a non-finite float reached meta.config live: %r" % (value,))
+            self.assertLessEqual(len(str(value)), cs.MAX_TEXT,
+                                 "an unbounded value reached meta.config: %r" % (value,))
+        # Belt-and-braces: the rendered summary line stays a sane length even
+        # when every value it quotes is near the artifact-layer's own bound.
+        self.assertLess(len(render_mod._config_line(loaded)), 500)

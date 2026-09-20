@@ -166,10 +166,20 @@ def _config_line(config):
             "asked for this and the run did not honour it" % ", ".join(parts))
 
 
+_CFG_VALUE_MAX = 80
+
+
 def _cfg_value(value):
+    """The summary-line rendering of one config value. Belt-and-braces bound
+    (#1681 Plan 2 fix round 1): `config_schema.load_resolution` already
+    bounds every value it reads off the run artifact, but this line is
+    human-facing, so a huge number or string never gets to widen it either."""
     if isinstance(value, bool):
         return "true" if value else "false"
-    return "null" if value is None else str(value)
+    if value is None:
+        return "null"
+    text = str(value)
+    return text if len(text) <= _CFG_VALUE_MAX else text[:_CFG_VALUE_MAX] + "…"
 
 
 def render_summary(report):
