@@ -493,6 +493,19 @@ class TestTargetConfigLine(unittest.TestCase):
         self.assertIn("`tools: false` refused", text)
         self.assertIn("`max_per_group: 5000` clamped to 48", text)
 
+    def test_a_long_key_is_bounded_the_same_way_the_value_is(self):
+        # Final review M7: the line bounded the target-authored VALUE at 80
+        # characters and interpolated the target-authored KEY raw -- bounded
+        # only by `load_resolution`'s own 300, on a line a human reads.
+        long_key = "k" * 300
+        text = render_mod.render_summary(self._report({
+            "requested": {}, "effective": {},
+            "refused": [{"key": long_key, "value": 1, "reason": "unknown key"}],
+            "clamped": [{"key": long_key, "requested": 5000, "effective": 48}],
+            "disclosures": []}))
+        self.assertIn("`" + "k" * render_mod._CFG_VALUE_MAX + "\u2026", text)
+        self.assertNotIn("k" * (render_mod._CFG_VALUE_MAX + 1), text)
+
     def test_the_summary_is_silent_when_nothing_was_refused_or_clamped(self):
         text = render_mod.render_summary(self._report(
             {"requested": {"max_per_group": 20}, "effective": {"max_per_group": 20},

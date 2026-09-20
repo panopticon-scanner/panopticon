@@ -154,10 +154,14 @@ def _config_line(config):
     that asked for nothing odd says nothing here, so the line's presence
     always means a target tried to move its own review's settings.
     """
+    # The KEY is target-authored too (fix round 2, M7): `load_resolution`
+    # bounds it at 300, which is four times what this human-facing line gives
+    # a value, so it goes through the same slice.
     src = config if isinstance(config, dict) else {}
-    parts = ["`%s: %s` refused" % (r.get("key"), _cfg_value(r.get("value")))
+    parts = ["`%s: %s` refused" % (_cfg_value(r.get("key")), _cfg_value(r.get("value")))
              for r in (src.get("refused") or []) if isinstance(r, dict)]
-    parts += ["`%s: %s` clamped to %s" % (c.get("key"), _cfg_value(c.get("requested")),
+    parts += ["`%s: %s` clamped to %s" % (_cfg_value(c.get("key")),
+                                          _cfg_value(c.get("requested")),
                                           _cfg_value(c.get("effective")))
               for c in (src.get("clamped") or []) if isinstance(c, dict)]
     if not parts:
