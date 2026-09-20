@@ -7,6 +7,7 @@ contract lives here rather than in __init__ (layout rule: docstring-only).
 import concurrent.futures
 import dataclasses
 import importlib
+import json
 import os
 import sys
 import time
@@ -496,13 +497,48 @@ def published_schema(path):
     return real
 
 
-def schema_argv(flag, entry):
+def inline_schema(path):
+    """The published schema at `path` as one line of JSON, for a CLI that takes
+    the schema TEXT on its argv; None when the file is not a JSON object.
+
+    Two CLIs, two shapes, one helper that used to know only one of them:
+    codex's `--output-schema <FILE>` takes a path, claude's `--json-schema
+    <schema>` takes the JSON itself. MEASURED 2026-09-20 on claude 2.1.276:
+    the path form is refused ("--json-schema is not valid JSON: JSON Parse
+    error: Unrecognized token '/'"), exit 1 in ~120 ms with no envelope -- so
+    every return_json entry of every checkpoint burned its three launches, and
+    run 14's tool-verify round (103 entries) stopped the driver. The `--help`
+    probe that marks the flag `advertised` reads the flag's NAME and cannot
+    see its shape; this is where the shape lives.
+
+    None, not a raise, for a file that does not parse: the persist layer
+    validates the reply against the same schema on receipt, so a launch
+    without the flag is the fail-safe and a launch the CLI refuses is not."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return json.dumps(data, separators=(",", ":"))
+
+
+def schema_argv(flag, entry, inline=False):
     """The two argv tokens that constrain one launch's output, or [] (D10
     ruling 3). Empty whenever the family declares no flag, the entry names no
     schema, or the path it names is not published -- so a caller can append the
-    result unconditionally."""
+    result unconditionally. `inline=True` hands the CLI the schema's JSON text
+    instead of its path (`inline_schema`); the containment rule is the same
+    either way, only a published file is ever read."""
     schema = published_schema(entry.get("output_schema") if isinstance(entry, dict) else None)
-    return [*flag, schema] if (flag and schema) else []
+    if not (flag and schema):
+        return []
+    if inline:
+        schema = inline_schema(schema)
+        if schema is None:
+            return []
+    return [*flag, schema]
 
 
 # The four registered enforcement shells, DERIVED from the one table that

@@ -333,8 +333,12 @@ class TestTheSuiteNeverLaunchesTheRealCli(unittest.TestCase):
 
 
 class TestOutputSchema(unittest.TestCase):
-    """D10 ruling 3: `claude -p --json-schema <file>` constrains the reply to
-    the role's published envelope."""
+    """D10 ruling 3: `claude -p --json-schema <schema>` constrains the reply
+    to the role's published envelope. The CLI takes the schema TEXT, not a
+    path -- MEASURED 2026-09-20 on claude 2.1.276, which answers a path with
+    "--json-schema is not valid JSON: JSON Parse error: Unrecognized token
+    '/'" and exit 1, no envelope, in ~120 ms. Run 14's tool-verify batch
+    burned 3 x 103 launches on it before the driver gave up."""
 
     def setUp(self):
         self.r = claude_runner.Runner("claude")
@@ -344,7 +348,14 @@ class TestOutputSchema(unittest.TestCase):
         self.assertEqual(("--json-schema",), claude_runner.Runner.OUTPUT_SCHEMA_FLAG)
         entry = dict(_entry(True), output_schema=self.schema)
         cmd = self.r.command(entry, "/s.json", max_turns=40)
-        self.assertEqual(cmd[-3:], ["--json-schema", self.schema, entry["prompt"]])
+        self.assertEqual(cmd[-3], "--json-schema")
+        self.assertEqual(cmd[-1], entry["prompt"])
+        # The token is the published file's JSON, one line, never its path.
+        self.assertNotEqual(self.schema, cmd[-2])
+        self.assertFalse(os.path.exists(cmd[-2]))
+        with open(self.schema, encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), json.loads(cmd[-2]))
+        self.assertNotIn("\n", cmd[-2])
 
     def test_an_entry_with_no_schema_carries_no_flag(self):
         cmd = self.r.command(_entry(True), "/s.json", max_turns=40)

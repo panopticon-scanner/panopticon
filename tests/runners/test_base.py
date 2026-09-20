@@ -472,6 +472,43 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual([], base.schema_argv(("--x",), {"output_schema": path}))
 
+    def test_inline_hands_the_cli_the_schema_text_not_its_path(self):
+        # MEASURED 2026-09-20 on claude 2.1.276: `--json-schema <schema>` takes
+        # the JSON itself ("--json-schema is not valid JSON: JSON Parse error:
+        # Unrecognized token '/'" on a path), while codex's `--output-schema
+        # <FILE>` takes a path. Run 14 burned 3 x 103 tool-verify launches on
+        # the path form before the driver gave up.
+        argv = base.schema_argv(("--x",), {"output_schema": _published()}, inline=True)
+        self.assertEqual("--x", argv[0])
+        self.assertEqual(2, len(argv))
+        self.assertNotEqual(_published(), argv[1])
+        with open(_published(), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), json.loads(argv[1]))
+        self.assertNotIn("\n", argv[1])
+
+    def test_inline_still_refuses_an_unpublished_path(self):
+        self.assertEqual([], base.schema_argv(("--x",), {"output_schema": "/etc/passwd"},
+                                              inline=True))
+
+    def test_inline_treats_an_unparsable_published_file_as_no_schema(self):
+        # The persist layer validates the reply against the schema either way;
+        # a launch without the flag is the fail-safe, a launch the CLI refuses
+        # is three burned attempts per entry.
+        tmp = tempfile.mkdtemp()
+        try:
+            bad = os.path.join(tmp, "broken-schema.json")
+            with open(bad, "w", encoding="utf-8") as fh:
+                fh.write("{not json")
+            with mock.patch.object(base.version, "reference_path", return_value=tmp):
+                self.assertEqual([], base.schema_argv(("--x",), {"output_schema": bad},
+                                                      inline=True))
+                # The path form is untouched: it hands over the (resolved)
+                # file and lets the CLI be the one to choke on it.
+                self.assertEqual(["--x", os.path.realpath(bad)],
+                                 base.schema_argv(("--x",), {"output_schema": bad}))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 class TestAFailedResultKeepsWhatTheLaunchProduced(unittest.TestCase):
     """D10 ruling 5: a timed-out entry is the most expensive kind of failure,

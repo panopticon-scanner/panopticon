@@ -121,7 +121,9 @@ class Runner(base.HostRunner):
             cmd += ["--agent", agent]
         elif not entry.get("enforced") and entry.get("model"):
             cmd += ["--model", entry["model"]]
-        cmd += base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)
+        # `--json-schema <schema>` takes the JSON text, not a file (see
+        # base.inline_schema for the measurement and the run it cost).
+        cmd += base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry, inline=True)
         cmd.append(entry["prompt"])
         return cmd
 
