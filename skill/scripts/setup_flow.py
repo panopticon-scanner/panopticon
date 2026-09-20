@@ -1053,12 +1053,23 @@ def config_overrides(repo):
     ever applies. Disclosures go to stderr, as `_committed_exclude_paths`
     does -- setup is interactive.
     """
+    return {k: _committed_settings(repo).get(k) for k in _CONFIG_INT_KEYS}
+
+
+def _committed_settings(repo):
+    """The committed config's EFFECTIVE settings (#1681 Plan 2): what the
+    trust classes let through, clamped, with every disclosure printed once.
+
+    One resolution behind both readers below, so `config_overrides` keeps the
+    two-int answer the plan pins while `_draft_settings` can still see the
+    other grain keys the operator committed.
+    """
     doc = repo_config.read_document(repo)
     resolved = config_schema.resolve_settings(
         {}, config_schema.parse_settings(doc.doc or {}))
     for line in resolved.disclosures:
         print("setup: %s" % line, file=sys.stderr)
-    return {k: resolved.effective.get(k) for k in _CONFIG_INT_KEYS}
+    return resolved.effective
 
 
 # #1107: hard cap on the untrusted proposal file (a scanned repo can ship
@@ -1100,7 +1111,16 @@ def _draft_settings(repo, max_per_group, max_groups):
     the band is warned about here, because the file they are about to commit
     WILL be clamped on every run that reads it.
     """
-    settings = dict(config_overrides(repo))
+    # Every GRAIN key the committed file resolves, not just the two sizes:
+    # `config_overrides` answers with the size knobs alone (its signature is
+    # pinned), so building the draft from it dropped a committed
+    # `include_fixtures` -- a working grain setting lost by following our own
+    # promotion instruction (final review F3). A gate or operator-only key is
+    # still never carried: `effective` cannot hold an operator key at all, and
+    # copying a honoured gate key would suggest that promoting the draft makes
+    # it stick.
+    settings = {k: v for k, v in _committed_settings(repo).items()
+                if config_schema.CLASS_OF.get(k) == "grain"}
     for key, value in (("max_per_group", max_per_group), ("max_groups", max_groups)):
         if value is None:
             continue

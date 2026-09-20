@@ -1098,6 +1098,21 @@ class TestSetupFlow(unittest.TestCase):
             settings = setup_flow._draft_settings(d, None, None)
         self.assertEqual(settings, {"max_per_group": 20})
 
+    def test_the_draft_keeps_a_committed_include_fixtures(self):
+        # Final review F3: the draft is what the completion message tells the
+        # operator to move over the committed file, and it was assembled from
+        # `config_overrides`, which answers with the two SIZE knobs alone --
+        # so a committed `include_fixtures: true` was lost by following
+        # panopticon's own promotion instruction. Every GRAIN key the config
+        # resolves survives; a gate or operator-only key still never does.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 20\n"
+                         "  include_fixtures: true\n  security: redteam\n"
+                         "  allow_unenforced: true\n")
+            settings = setup_flow._draft_settings(d, None, None)
+        self.assertEqual(settings, {"max_per_group": 20, "include_fixtures": True})
+
     def test_an_out_of_band_setup_flag_is_written_but_warned_about(self):
         with tempfile.TemporaryDirectory() as d:
             with contextlib.redirect_stderr(io.StringIO()) as err:
