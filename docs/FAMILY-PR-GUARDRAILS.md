@@ -121,6 +121,18 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   entries came from), and `run_home` is read off the runner **after** it -- a
   scratch directory outside the reviewed tree, so a probe can find this run's
   children without opening a file the target is free to rewrite.
+- `roles` and `request_sha256` are set by the loop **per checkpoint**, before
+  each batch (#1727). `roles` is the tuple of `dispatch.ROLE_FILES` keys that
+  checkpoint dispatches, and you MUST pass it through: every
+  `base.registered_agent(entry)` / `base.refuse_unregistered_agent(entry)` call
+  on your launch path becomes `(entry, roles=self.roles)`. The allowlist alone
+  accepts any of the four registered shells for any round, so without this a
+  `verify` entry naming `panopticon-domain-panel` launches a reviewer's
+  write-granting charter in a round that only adjudicates. `request_sha256` is
+  the hash the run manifest recorded for `dispatch_request`; only session mode
+  reads it (it prints it so the host can check the file it is about to read),
+  and a headless runner, which gets its entries in memory, needs nothing from
+  it.
 - `HONOURS_MAX_TURNS = False` says your CLI has no turn cap for `--max-turns` to
   reach. The loop sets `runner.max_turns` unconditionally, so declare it rather
   than accepting the flag and ignoring it in silence; Codex does.
