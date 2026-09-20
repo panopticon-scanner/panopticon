@@ -2704,3 +2704,55 @@ class TestTheEntrysShellIsBoundToItsCheckpoint(LoopCase):
         self.assertEqual("complete", status["status"], status)
         self.assertIn(("review-app-SEC", ("domain_panel",)), seen)
         self.assertIn(("verify-app-SEC-primary", ("advisor", "domain_advisor")), seen)
+
+
+class TestNoDriverReaderTakesTheUnboundRead(unittest.TestCase):
+    """#1727 drift guard. `requests.load_dispatch_request` proves NOTHING about
+    who wrote the file it parses; `load_bound_request` is the read every driver
+    reader takes. Three call sites moved across in this change (the loop's own,
+    the re-entry read, `persist.find_entry`) and a fourth followed
+    (`readiness._existing_run_row`), so the unbound name now has zero callers
+    under `skill/scripts/` -- and the way this control comes undone is somebody
+    reaching for the shorter name in a new reader, which no test would notice.
+
+    The function itself stays: it is the documented UNBOUND accessor, used by
+    tests and by anything inspecting a request document rather than trusting
+    it. Kept honest by this pin rather than by its docstring.
+
+    AST, not grep: a call written across two source lines returns a false zero
+    from `git grep` (the `\\b` trap, one shape over).
+    """
+
+    SCRIPTS = os.path.dirname(orchestrate.__file__)
+
+    def _modules(self):
+        for folder, _dirs, files in os.walk(self.SCRIPTS):
+            for name in sorted(files):
+                if name.endswith(".py"):
+                    yield os.path.join(folder, name)
+
+    def test_nothing_under_skill_scripts_calls_the_unbound_read(self):
+        offenders = []
+        for path in self._modules():
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), path)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call)
+                        and ast.unparse(node.func).endswith("load_dispatch_request")):
+                    offenders.append("%s:%d" % (os.path.relpath(path, self.SCRIPTS),
+                                                node.lineno))
+        self.assertEqual(offenders, [],
+                         "a driver reader took the UNBOUND dispatch-request read; use "
+                         "requests.load_bound_request:\n" + "\n".join(offenders))
+
+    def test_the_bound_reader_does_not_delegate_to_it_either(self):
+        # It reads the file as BYTES and hashes them; routing through the
+        # unbound reader would hash one read and parse another.
+        source = os.path.join(self.SCRIPTS, "phases", "requests.py")
+        with open(source, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), source)
+        bound = next(n for n in ast.walk(tree)
+                     if isinstance(n, ast.FunctionDef) and n.name == "load_bound_request")
+        self.assertEqual([], [ast.unparse(n.func) for n in ast.walk(bound)
+                              if isinstance(n, ast.Call)
+                              and ast.unparse(n.func).endswith("load_dispatch_request")])

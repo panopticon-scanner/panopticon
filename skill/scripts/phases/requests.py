@@ -310,7 +310,11 @@ def load_dispatch_request(review_root, namespace=None):
 
     #1727: this is the UNBOUND read -- it proves nothing about who wrote the
     file. Every driver reader goes through `load_bound_request` below; this
-    stays for the host-facing/inspection callers that only want the document.
+    stays for the host-facing/inspection callers that only want the document,
+    and has NO caller under `skill/scripts/`. That is pinned by an AST test
+    (`tests/test_orchestrate.py::TestNoDriverReaderTakesTheUnboundRead`),
+    because the way this control comes undone is somebody reaching for the
+    shorter name in a new reader.
     """
     return runio._load_json(request_path(review_root, namespace))
 
