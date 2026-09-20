@@ -212,6 +212,20 @@ class TestWhatIsRecordedIsBounded(unittest.TestCase):
         self.assertEqual(p.typed, {"max_verify": 2 ** 53 - 1})
         self.assertEqual(p.refused, [])
 
+    def test_an_integer_key_too_large_to_render_is_refused_not_fatal(self):
+        # The KEY is target-authored too, and this function renders it twice
+        # -- once to sort, once to record. A >4300-digit int key made `str()`
+        # and `repr()` themselves raise (the same CPython limit the loader
+        # catches one layer up), out of a function whose whole promise is
+        # that a hostile section is refused key by key, never fatal.
+        # 10 ** 5000, not int("9" * 5001): the digit cap bites on the way IN
+        # to an int as well, so the literal itself would raise.
+        p = cs.parse_settings({"settings": {10 ** 5000: 1,
+                                            "security": "redteam"}})
+        self.assertEqual(p.typed, {"security": "redteam"})
+        self.assertEqual([r["reason"] for r in p.refused], ["unknown key"])
+        self.assertIn("integer of", p.refused[0]["key"])
+
     def test_rank_is_total_even_on_a_value_float_refuses(self):
         # Belt-and-braces: `_rank` is the crash SITE, so it stays safe even if
         # a second road ever hands it a value `float()` will not take.

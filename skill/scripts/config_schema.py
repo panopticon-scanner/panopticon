@@ -153,12 +153,14 @@ def _oversized(value):
             and value.bit_length() > MAX_INT_BITS)
 
 
-def _text(value):
-    """`str(value)` that cannot raise. CPython 3.11+ caps int->str at
-    `sys.get_int_max_str_digits()` (4300) and raises ValueError past it, and
-    this module records whatever the file spelled without ever failing."""
+def _text(value, render=str):
+    """`str(value)` -- or `repr(value)` -- minus the one road either renderer
+    raises on: CPython 3.11+ caps int->str at `sys.get_int_max_str_digits()`
+    (4300) and raises ValueError past it. Only an int can reach that road, so
+    the fallback can describe the number that could not be spelled. This
+    module records whatever the file spelled, and never fails doing it."""
     try:
-        return str(value)
+        return render(value)
     except ValueError:
         return "<integer of %d bits>" % value.bit_length()
 
@@ -242,8 +244,12 @@ def parse_settings(doc):
         keys = keys[:MAX_SETTINGS_KEYS]
         disclosures.append("target config: %d more settings keys ignored"
                            % ignored)
-    for key in sorted(keys, key=str):
-        full = key if isinstance(key, str) else repr(key)
+    # `_text`, not `str`/`repr`: a key is target-authored too, and BOTH the
+    # sort and the recording render it. A >4300-digit integer key made the
+    # renderers themselves raise, out of the one function whose promise is
+    # that a hostile section is refused key by key and never fatal.
+    for key in sorted(keys, key=_text):
+        full = key if isinstance(key, str) else _text(key, repr)
         name = _bounded(full)           # `full` classifies, `name` is recorded
         value = raw[key]
         scalar = isinstance(value, _SCALARS)
