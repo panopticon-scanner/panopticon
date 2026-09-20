@@ -495,3 +495,52 @@ class TestTheEntryAgentIsAllowlisted(unittest.TestCase):
         self.assertTrue(res.ok, res.error)
         self.assertEqual(1, len(launched))
         self.assertIn("panopticon-domain-panel", launched[0])
+
+
+class TestTheRolesTheLoopSetsReachTheCheck(unittest.TestCase):
+    """#1727: `runner.roles` is the checkpoint's own role set. A REGISTERED
+    shell that this checkpoint does not dispatch must be refused exactly as a
+    foreign name is -- before any launch."""
+
+    def test_a_registered_but_misrouted_shell_is_refused(self):
+        launched = []
+
+        def fake_run(cmd, **kw):
+            launched.append(cmd)
+            class P: returncode = 0; stdout = json.dumps(ENVELOPE); stderr = ""
+            return P()
+
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=fake_run)
+            r.prepare(d, review_root=d)
+            r.roles = ("advisor", "domain_advisor")
+            res = r.run_entry(dict(_entry(True), agent="panopticon-domain-panel"), {})
+        self.assertFalse(res.ok)
+        self.assertIn("not a registered panopticon shell for this checkpoint", res.error)
+        self.assertIn("panopticon-domain-advisor", res.error)
+        self.assertEqual([], launched)
+
+    def test_the_right_shell_for_the_roles_still_launches(self):
+        launched = []
+
+        def fake_run(cmd, **kw):
+            launched.append(cmd)
+            class P: returncode = 0; stdout = json.dumps(ENVELOPE); stderr = ""
+            return P()
+
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=fake_run)
+            r.prepare(d, review_root=d)
+            r.roles = ("domain_panel",)
+            res = r.run_entry(dict(_entry(True), agent="panopticon-domain-panel"), {})
+        self.assertTrue(res.ok, res.error)
+        self.assertIn("panopticon-domain-panel", launched[0])
+
+    def test_command_binds_no_agent_for_a_misrouted_shell(self):
+        # `command` is the argv builder behind the refusal: it must not put a
+        # misrouted shell on the launch line either, or a second caller would.
+        r = claude_runner.Runner("claude")
+        r.roles = ("advisor",)
+        cmd = r.command(dict(_entry(True), agent="panopticon-domain-panel"),
+                        "/run/host-settings.json", max_turns=40)
+        self.assertNotIn("--agent", cmd)

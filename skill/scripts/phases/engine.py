@@ -39,6 +39,11 @@ class PhaseResult:
     checkpoint: str = None        # a runio.CHECKPOINT_KINDS member, iff kind == "checkpoint"
     group: str = None
     dispatch_request: str = None  # absolute path (iff checkpoint)
+    # #1727: sha256 of the bytes `requests.write_dispatch_request_bound` just
+    # wrote, carried IN PROCESS to the loop. The loop compares it against the
+    # manifest's record before it reads a single entry -- two reads of the same
+    # tamperable file would compare nothing.
+    request_sha256: str = None
     message: str = ""
 
     def __post_init__(self):
@@ -73,6 +78,7 @@ def run_engine(review_root, manifest, phases, max_steps=None):
         if phase is None:
             return {"status": "complete", "phase": None, "checkpoint": None,
                     "group": None, "dispatch_request": None,
+                    "request_sha256": None,
                     "advanced": advanced, "message": "all phases complete",
                     # The run is over, so no fan-out still needs write access.
                     # The guard is fail-closed while registered and its
@@ -89,6 +95,7 @@ def run_engine(review_root, manifest, phases, max_steps=None):
             return {"status": "checkpoint", "phase": phase.name,
                     "checkpoint": result.checkpoint, "group": result.group,
                     "dispatch_request": result.dispatch_request,
+                    "request_sha256": result.request_sha256,
                     "advanced": advanced,
                     "message": result.message or ("%s checkpoint" % result.checkpoint)}
         if phase.name not in advanced:

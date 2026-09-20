@@ -915,3 +915,65 @@ class TestTheRegisteredAgentAllowlist(unittest.TestCase):
         result = base.refuse_unregistered_agent({"id": "e", "agent": long_value})
         self.assertIn(repr("a" * 200), result.error)
         self.assertNotIn("a" * 201, result.error)
+
+
+class TestTheAgentIsBoundToItsCheckpointsRole(unittest.TestCase):
+    """#1727: the allowlist alone lets any of the four shells stand in for any
+    other -- a `verify` entry naming `panopticon-domain-panel` is a registered
+    shell, so it launched, under a WRITE-granting charter the verify round
+    never dispatches. The loop hands the runner the roles its checkpoint
+    dispatches, and the same check narrows to them."""
+
+    def test_roles_none_is_the_whole_allowlist(self):
+        self.assertEqual("panopticon-scout",
+                         base.registered_agent({"agent": "panopticon-scout"}, roles=None))
+        self.assertEqual("panopticon-domain-panel",
+                         base.registered_agent({"agent": "panopticon-domain-panel"}))
+
+    def test_roles_narrows_to_exactly_those_shells(self):
+        entry = {"agent": "panopticon-advisor"}
+        self.assertEqual("panopticon-advisor",
+                         base.registered_agent(entry, roles=("advisor",)))
+        self.assertEqual("panopticon-advisor",
+                         base.registered_agent(entry, roles=("advisor", "domain_advisor")))
+        for roles in (("scout",), ("domain_panel",), ("domain_advisor",)):
+            self.assertIsNone(base.registered_agent(entry, roles=roles), roles)
+
+    def test_an_empty_role_tuple_accepts_nothing(self):
+        # The `scan` checkpoint: its one entry is dispatched shell-less by
+        # design, so NO name is right for it -- and an empty tuple must not
+        # read as "unconstrained".
+        for name in ("panopticon-scout", "panopticon-advisor",
+                     "panopticon-domain-panel", "panopticon-domain-advisor"):
+            self.assertIsNone(base.registered_agent({"agent": name}, roles=()), name)
+
+    def test_an_unknown_role_key_narrows_rather_than_widens(self):
+        self.assertIsNone(base.registered_agent({"agent": "panopticon-scout"},
+                                                roles=("not_a_role",)))
+
+    def test_the_refusal_names_the_shells_this_checkpoint_allows(self):
+        result = base.refuse_unregistered_agent(
+            {"id": "verify-app-SEC-primary", "agent": "panopticon-domain-panel"},
+            roles=("advisor", "domain_advisor"))
+        self.assertFalse(result.ok)
+        self.assertEqual("verify-app-SEC-primary", result.entry_id)
+        self.assertIn("not a registered panopticon shell for this checkpoint",
+                      result.error)
+        self.assertIn("allowed: panopticon-advisor, panopticon-domain-advisor",
+                      result.error)
+        self.assertIn(repr("panopticon-domain-panel"), result.error)
+
+    def test_the_refusal_without_roles_is_word_for_word_what_it_was(self):
+        for kwargs in ({}, {"roles": None}):
+            result = base.refuse_unregistered_agent({"id": "e", "agent": "x"}, **kwargs)
+            self.assertEqual(base.UNREGISTERED_AGENT % "x", result.error)
+
+    def test_the_refusal_still_neutralises_a_hostile_value_with_roles_given(self):
+        result = base.refuse_unregistered_agent(
+            {"id": "e", "agent": "panopticon-scout\x1b[2J\ndriver loop: all good"},
+            roles=("advisor",))
+        self.assertNotIn("\x1b", result.error)
+        self.assertNotIn("\n", result.error)
+
+    def test_a_runner_carries_no_roles_until_the_loop_says_so(self):
+        self.assertIsNone(base.HostRunner("claude").roles)

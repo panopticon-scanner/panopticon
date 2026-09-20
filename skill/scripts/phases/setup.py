@@ -1,4 +1,5 @@
 """The `driver setup` flow: scan + ingest, its manifest and SETUP_PHASES."""
+import json
 import os
 import subprocess
 import sys
@@ -22,6 +23,32 @@ def _setup_manifest_path(review_root):
 
 def load_setup_manifest(review_root):
     return runio._load_json(_setup_manifest_path(review_root))
+
+def record_dispatch_request(review_root, checkpoint, sha256, at=None):
+    """`--setup`'s half of #1727: anchor the setup dispatch request's sha256 in
+    `setup-manifest.json`, under the SAME key the run manifest uses.
+
+    Setup is not a run (#1507): it keeps its own request
+    (`.panopticon/setup-dispatch-request.json`) and its own manifest, and
+    `run_manifest._rewrite` writes `run-manifest.json` unconditionally -- so
+    recording there would stamp a prior REVIEW run's manifest with setup's
+    hash. Same tmp + `os.replace` shape as that helper, through this package's
+    own confining opener (the manifest is a `.panopticon` artifact and the
+    target may have planted a symlink at either name). A tree with no setup
+    manifest records nothing, exactly as the run-manifest side does.
+    """
+    manifest = load_setup_manifest(review_root)
+    if manifest is None:
+        return None
+    manifest[run_manifest.DISPATCH_REQUEST] = {
+        "checkpoint": checkpoint, "sha256": sha256,
+        "at": at or run_manifest._now_iso()}
+    path = _setup_manifest_path(review_root)
+    tmp = path + ".tmp"
+    with runio._open_w_nofollow(tmp) as fh:
+        json.dump(manifest, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+    return manifest
 
 def _read_text(path):
     with open(path, encoding="utf-8") as fh:
@@ -87,10 +114,11 @@ def scan_execute(review_root, manifest):
     entry = _setup_scan_entry(review_root, _read_text(brief_path), host)
     # #1507: setup's own namespace -- never the per-run resolver, which routed
     # this into whatever runs/latest pointed at and clobbered that run's request.
-    req = requests.write_dispatch_request(review_root, manifest["run_id"], "scan",
-                                          None, [entry], namespace="setup")
+    req, sha = requests.write_dispatch_request_bound(
+        review_root, manifest["run_id"], "scan", None, [entry], namespace="setup")
     return engine.PhaseResult(kind="checkpoint", checkpoint="scan", group=None,
-                       dispatch_request=req, message="setup-scan checkpoint")
+                       dispatch_request=req, request_sha256=sha,
+                       message="setup-scan checkpoint")
 
 def ingest_done(review_root, manifest):
     return (os.path.isfile(repo_config.draft_path(review_root))

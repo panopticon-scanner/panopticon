@@ -220,10 +220,10 @@ def _verify_tools_execute(review_root, manifest, host):
         return None
     entries = [_tool_verify_entry(review_root, manifest, qid, f, host)
                for qid, f in pending]
-    req = requests.write_dispatch_request(review_root, manifest["run_id"], "verify",
-                                 "tools", entries)
+    req, sha = requests.write_dispatch_request_bound(
+        review_root, manifest["run_id"], "verify", "tools", entries)
     return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group="tools",
-                       dispatch_request=req,
+                       dispatch_request=req, request_sha256=sha,
                        message="verify: %d tool advisor(s)" % len(entries))
 
 def _verify_tools_done(review_root, manifest):

@@ -14,11 +14,31 @@ does. Same shape, and the same reason, as `money.py` and `ledger.py`.
 import os
 import sys
 
+import scripts.dispatch as dispatch
 import scripts.hosts as hosts
 import scripts.phases.persist as persist
 import scripts.phases.runio as runio
 
 SETUP_NAMESPACE = "setup"
+
+# #1727: which enforcement shells each checkpoint DISPATCHES -- `ROLE_FILES`
+# keys, one row per `runio.CHECKPOINT_KINDS` member, pinned by a test that
+# reads the shells back out of the phase builders.
+#
+# #1720 bound `agent` to the four registered shells; it did not bind it to the
+# ROUND. Any of the four therefore passed for any checkpoint, so a `verify`
+# entry naming `panopticon-domain-panel` got a reviewer's WRITE-granting
+# charter in a round that only adjudicates -- a registered name, an allowlisted
+# launch, and a governing instruction set nobody in this run chose. The driver
+# owns the routing, so the driver states it, here, once.
+#
+# `scan` is deliberately EMPTY: `--setup`'s single entry is dispatched
+# shell-less by design (it is not in ROLE_FILES, so no host registers a shell
+# for it), and an empty row accepts no name at all rather than any.
+CHECKPOINT_ROLES = {"scout": ("scout",),
+                    "review": ("domain_panel",),
+                    "verify": ("advisor", "domain_advisor"),
+                    "scan": ()}
 
 
 def expected_enforced(review_root, host, namespace=None):
@@ -63,6 +83,119 @@ def enforcement_refusal(disagreeing, expected):
     return ("driver loop: entry %s claims %s launch on a host whose posture is %s; "
             "the dispatch request does not match this run's own evidence -- re-run "
             "with --reset, or re-run readiness" % (disagreeing[0], claimed, actual))
+
+
+def checkpoint_roles(checkpoint):
+    """The roles `checkpoint` dispatches -- `()` for anything else (#1727).
+
+    `isinstance` FIRST, for the reason `base.registered_agent` does it: the
+    checkpoint is read off the same target-writable request as `agent`, so it
+    arrives as whatever the JSON says, and `dict.get` on an array or an object
+    raises `TypeError: unhashable type`. `loop`'s catch-all turned that into
+    an `error` naming a Python type rather than the routing refusal it is.
+    `()` narrows -- it accepts no shell at all -- so an unknown or unhashable
+    checkpoint fails CLOSED, exactly as `scan` does by design.
+    """
+    if not isinstance(checkpoint, str):
+        return ()
+    return CHECKPOINT_ROLES.get(checkpoint) or ()
+
+
+def _allowed_shells(checkpoint):
+    """The registered shell NAMES this checkpoint dispatches."""
+    return {dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
+            for role in checkpoint_roles(checkpoint)
+            if role in dispatch.ROLE_FILES}
+
+
+def refuse_misrouted(pending, checkpoint):
+    """The ids whose `agent` is not one this checkpoint dispatches (#1727).
+
+    Two shapes are refused, and they are the same statement read from either
+    side: an ENFORCED entry whose agent is not one of `CHECKPOINT_ROLES[
+    checkpoint]`, and an UNENFORCED entry that names a shell at all (the
+    phases set `agent` to None on those, so a name on one is a claim this run
+    never made). An unknown checkpoint gets the empty row, which refuses every
+    name -- fail-closed, since the checkpoint is read off the same
+    target-writable file.
+    """
+    allowed = _allowed_shells(checkpoint)
+    misrouted = []
+    for entry in pending:
+        if not isinstance(entry, dict):
+            continue
+        agent = entry.get("agent")
+        if entry.get("enforced"):
+            if not (isinstance(agent, str) and agent in allowed):
+                misrouted.append(entry.get("id"))
+        elif agent is not None:
+            misrouted.append(entry.get("id"))
+    return misrouted
+
+
+def misroute_refusal(misrouted, checkpoint):
+    """The operator's message for such a request -- a REQUEST-INTEGRITY
+    refusal like `enforcement_refusal`, raised before the batch opens, so
+    nothing has launched and nothing is charged.
+
+    `%r` on every value that came out of the request (the id and the
+    checkpoint both did): they reach the operator's stderr and the status
+    JSON, and repr renders a control character, an ANSI escape or an embedded
+    newline as its escape sequence -- the reason `base.UNREGISTERED_AGENT`
+    does the same.
+    """
+    allowed = ", ".join(sorted(_allowed_shells(checkpoint))) or "no enforcement shell"
+    return ("driver loop: entry %r names an enforcement shell its checkpoint does "
+            "not dispatch (checkpoint %r dispatches: %s); the dispatch request does "
+            "not match this run's own plan -- re-run with --reset"
+            % (misrouted[0], checkpoint, allowed))
+
+
+def disarm_previous(guards, prev_req):
+    """R-P6-6 (session mode): on re-entry, drop the PREVIOUS request's grants
+    before arming the current pending set. Uninstall is scoped by id/out_file
+    and install unions, so an entry still pending is re-armed a few lines
+    below (this iteration's own `guards.arm(pending)`, computed from the
+    FRESH request `_first_run` just wrote) and only a FINISHED entry actually
+    falls away -- no bookkeeping file needed to tell the two apart.
+
+    `prev_req` must be the dispatch request as it stood BEFORE this
+    invocation's own `driver.run`/`run_setup_flow` call rewrote
+    dispatch-request.json (`loop` reads it first thing, before `_first_run`)
+    -- reading it fresh here instead would see the very request this same
+    invocation just produced, never the previous one, and disarm nothing.
+
+    I4: CALLED only once this invocation has a live checkpoint of its own. An
+    invocation that lands on complete/error instead never reaches here, so an
+    errored re-entry (flag drift, a bad --pr) leaves the previous fan-out's
+    grants exactly as it found them -- that fan-out is still running under
+    them. Deferring the teardown past `_first_run`'s posture probe changes
+    nothing that probe measures: probe_write_guard_armed proves the MECHANISM
+    and the settings file, explicitly not live arming."""
+    entries = [e for e in (prev_req or {}).get("entries") or [] if isinstance(e, dict)]
+    if entries:
+        guards.disarm(entries)
+
+
+def request_refusal(review_root, host, namespace, req, pending):
+    """The refusal this batch must not proceed past, or None.
+
+    Both request-integrity checks in the order the loop needs them, behind one
+    call so `orchestrate.loop` carries the DECISION and not the derivation:
+    does the entry's self-asserted `enforced` match this run's own evidence
+    (#1720), and is the shell it names one this checkpoint dispatches (#1727).
+    Raised before the batch opens -- nothing has launched and nothing is
+    charged -- so neither is any entry's failure; the remedy is to rebuild the
+    request from the run, not to retry the cell.
+    """
+    expected = expected_enforced(review_root, host, namespace)
+    disagreeing = refuse_disagreeing(pending, expected)
+    if disagreeing:
+        return enforcement_refusal(disagreeing, expected)
+    misrouted = refuse_misrouted(pending, req.get("checkpoint"))
+    if misrouted:
+        return misroute_refusal(misrouted, req.get("checkpoint"))
+    return None
 
 
 def write_usage(review_root, ledger, namespace=None):

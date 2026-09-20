@@ -2,6 +2,7 @@
 import ast
 import contextlib
 import dataclasses
+import hashlib
 import io
 import json
 import os
@@ -2272,16 +2273,22 @@ class TestTheRequestsEnforcedFlagIsDerived(LoopCase):
     def _tampered(self, **fields):
         """Flip a field on every entry between the phase that wrote the
         request and the loop that reads it -- the on-disk hop the reviewed
-        tree could tamper with."""
-        real = orchestrate.requests.load_dispatch_request
+        tree could tamper with.
 
-        def fake(review_root, namespace=None):
-            req = real(review_root, namespace)
+        Patched at `load_bound_request` (#1727 moved the loop's read there) and
+        deliberately AFTER its integrity check: these two controls are
+        independent. The hash answers "is this the file we wrote"; this one
+        answers "does what it says match this run's own evidence", and it has
+        to keep holding for a tamper the hash cannot see."""
+        real = orchestrate.requests.load_bound_request
+
+        def fake(review_root, namespace=None, expected_sha256=None):
+            req, refusal = real(review_root, namespace, expected_sha256)
             for entry in (req or {}).get("entries") or []:
                 entry.update(fields)
-            return req
+            return req, refusal
 
-        return mock.patch.object(orchestrate.requests, "load_dispatch_request", fake)
+        return mock.patch.object(orchestrate.requests, "load_bound_request", fake)
 
     def test_a_proven_run_refuses_a_request_that_claims_an_unenforced_launch(self):
         d, floor = self._repo()
@@ -2426,3 +2433,326 @@ class TestEnforcedIsDerivedInOnePlace(unittest.TestCase):
                          "a phase re-derives the enforcement posture instead of "
                          "calling loop_batch.expected_enforced; two copies is the "
                          "drift #1720 closed:\n" + "\n".join(offenders))
+
+
+class TestTheRequestHashTravelsOnTheStatus(LoopCase):
+    """#1727: the phase that WRITES the dispatch request is the only code that
+    has seen its bytes before the reviewed tree could touch them. The hash it
+    computed travels to the loop in process, on the checkpoint status."""
+
+    def test_the_checkpoint_status_carries_the_hash_of_the_request_it_wrote(self):
+        d, _floor = self._repo()
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = driver.run(self._args(d))
+        self.assertEqual(status["status"], "checkpoint", status)
+        self.assertEqual(status["checkpoint"], "scout")
+        with open(status["dispatch_request"], "rb") as fh:
+            self.assertEqual(hashlib.sha256(fh.read()).hexdigest(),
+                             status["request_sha256"])
+        self.assertEqual(driver.run_manifest.load_manifest(d)["dispatch_request"],
+                         {"checkpoint": "scout", "sha256": status["request_sha256"],
+                          "at": driver.run_manifest.load_manifest(d)
+                          ["dispatch_request"]["at"]})
+
+    def test_every_checkpoint_phase_result_carries_one(self):
+        # The anti-drift pin for all six writers (coverage, review, verify x2,
+        # verify_tools, setup) and for the seventh somebody adds: a checkpoint
+        # that names a dispatch_request and no request_sha256 would reach the
+        # loop with nothing to compare, and `load_bound_request` would fall
+        # back to the manifest alone -- silently weaker, and nothing would say so.
+        phases_dir = os.path.join(os.path.dirname(orchestrate.__file__), "phases")
+        missing = []
+        for name in sorted(os.listdir(phases_dir)):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(phases_dir, name)
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), path)
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "PhaseResult"):
+                    continue
+                kw = {k.arg: k.value for k in node.keywords}
+                kind = kw.get("kind")
+                if not (isinstance(kind, ast.Constant) and kind.value == "checkpoint"):
+                    continue
+                if "request_sha256" not in kw:
+                    missing.append("%s:%d" % (name, node.lineno))
+        self.assertEqual(missing, [],
+                         "checkpoint PhaseResult with no request_sha256:\n"
+                         + "\n".join(missing))
+
+
+def _append_a_byte(path):
+    """The minimal on-disk tamper: the document still parses and still says
+    everything it said, so only the HASH can tell it apart from what the
+    driver wrote."""
+    with open(path, "ab") as fh:
+        fh.write(b" ")
+
+
+class TestTheLoopRefusesARequestItCannotProveItWrote(LoopCase):
+    """#1727: `.panopticon/dispatch-request.json` is written into the reviewed
+    tree, and between the phase that writes it and the loop that reads it back
+    the target owns that file. The loop checks the bytes against the hash the
+    phase handed it in memory and the hash the run manifest recorded, and
+    refuses before it arms, launches or spends anything."""
+
+    def _tamper_after_every_run(self, mutate=_append_a_byte):
+        real = orchestrate._run
+
+        def fake(args, namespace, resolved=None):
+            status = real(args, namespace, resolved)
+            path = orchestrate.requests.request_path(args.target, namespace)
+            if os.path.isfile(path):
+                mutate(path)
+            return status
+
+        return mock.patch.object(orchestrate, "_run", fake)
+
+    def _loop_capturing(self, d, floor, runner, *extra, seed=True):
+        args = self._args(d, *extra)
+        err = io.StringIO()
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: seed and self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(err):
+            return orchestrate.loop(args), err.getvalue()
+
+    def test_a_request_altered_after_the_phase_wrote_it_ends_the_run(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        armed = []
+        with self._tamper_after_every_run(), \
+             mock.patch.object(orchestrate.Guards, "arm",
+                               side_effect=lambda *a: armed.append(a[-1])):
+            status, _err = self._loop_capturing(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("does not match the request this run wrote", status["message"])
+        self.assertIn("re-run `driver run`/`driver loop`", status["message"])
+        self.assertEqual([], runner.launched)      # nothing launched...
+        self.assertEqual([], armed)                # ...and nothing was ever armed
+        run_dir = orchestrate.persist.run_dir(d, None)
+        self.assertFalse(os.path.exists(os.path.join(run_dir, base.LEDGER_FILE)))
+
+    def test_a_forged_record_is_caught_by_the_hash_the_phase_returned(self):
+        # The manifest is inside the reviewed tree as well -- better defended
+        # (no dispatched agent may write it, and `_foreign_manifest` discards
+        # a planted one), not out of reach. So assume it WAS reached: the loop
+        # still holds the hash the PHASE computed, in memory, and that is the
+        # value no on-disk edit can reconcile.
+        d, floor = self._repo()
+        runner = FakeRunner()
+
+        def tamper(path):
+            _append_a_byte(path)
+            with open(path, "rb") as fh:
+                forged = hashlib.sha256(fh.read()).hexdigest()
+            manifest = driver.run_manifest.load_manifest(d)
+            manifest["dispatch_request"]["sha256"] = forged
+            driver.run_manifest._rewrite(d, manifest)
+
+        with self._tamper_after_every_run(tamper):
+            status, _err = self._loop_capturing(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("recorded dispatch request hash was altered", status["message"])
+        self.assertEqual([], runner.launched)
+
+    def test_a_resume_after_a_tampered_file_regenerates_it_and_completes(self):
+        # Nothing to repair by hand: the request is ROLLING, so the next
+        # invocation's own phase overwrites both the file and the record.
+        d, floor = self._repo()
+        with contextlib.redirect_stderr(io.StringIO()):
+            first = driver.run(self._args(d))
+        self.assertEqual("checkpoint", first["status"], first)
+        _append_a_byte(first["dispatch_request"])
+        status, err = self._loop_capturing(d, floor, FakeRunner())
+        self.assertEqual("complete", status["status"], status)
+        # ...and the previous, tampered request was refused as a source of
+        # disarm targets rather than acted on (R-P6-6 reads it before the
+        # regeneration, by design).
+        self.assertIn("ignoring the previous dispatch request", err)
+        self.assertIn("does not match the request this run wrote", err)
+
+    def test_a_clean_previous_request_is_still_read_for_the_disarm(self):
+        # The negative control for the line above: an untouched re-entry must
+        # print nothing and must still hand `loop_batch.disarm_previous` its entries.
+        d, floor = self._repo()
+        with contextlib.redirect_stderr(io.StringIO()):
+            driver.run(self._args(d))
+        status, err = self._loop_capturing(d, floor, FakeRunner())
+        self.assertEqual("complete", status["status"], status)
+        self.assertNotIn("ignoring the previous dispatch request", err)
+
+
+class TestTheEntrysShellIsBoundToItsCheckpoint(LoopCase):
+    """#1727 second half. `agent` is a registered-shell NAME, and #1720 made
+    sure it is one of the four -- but any of the four passed for any
+    checkpoint, so a `verify` entry could name `panopticon-domain-panel` and
+    get a reviewer's WRITE-granting charter in a round that only adjudicates.
+    The loop owns the routing table and refuses a misrouted entry before it
+    arms anything."""
+
+    def _misrouted(self, agent):
+        real = orchestrate.requests.load_bound_request
+
+        def fake(review_root, namespace=None, expected_sha256=None):
+            req, refusal = real(review_root, namespace, expected_sha256)
+            for entry in (req or {}).get("entries") or []:
+                entry["agent"] = agent
+            return req, refusal
+
+        return mock.patch.object(orchestrate.requests, "load_bound_request", fake)
+
+    def test_checkpoint_roles_has_a_row_for_every_checkpoint_kind(self):
+        self.assertEqual(sorted(loop_batch.CHECKPOINT_ROLES),
+                         sorted(runio.CHECKPOINT_KINDS))
+
+    def test_every_role_named_is_a_dispatch_role(self):
+        import scripts.dispatch as dispatch
+        for kind, roles in loop_batch.CHECKPOINT_ROLES.items():
+            for role in roles:
+                self.assertIn(role, dispatch.ROLE_FILES, (kind, role))
+
+    def test_the_table_matches_the_shells_the_phases_actually_assign(self):
+        # Read out of the phase modules rather than trusted: each builder
+        # spells its shell as `dispatch.registered_agent_name("<role>.md")`,
+        # and the table has to name the role that file maps to. A builder
+        # retargeted without this row moving would dispatch a shell the loop
+        # then refuses -- or, worse, the row would quietly widen.
+        import scripts.dispatch as dispatch
+        by_file = {f: role for role, f in dispatch.ROLE_FILES.items()}
+        phase_checkpoint = {"coverage.py": "scout", "review.py": "review",
+                            "verify.py": "verify", "verify_tools.py": "verify",
+                            "setup.py": "scan"}
+        phases_dir = os.path.join(os.path.dirname(orchestrate.__file__), "phases")
+        seen = {kind: set() for kind in runio.CHECKPOINT_KINDS}
+        for name, kind in phase_checkpoint.items():
+            with open(os.path.join(phases_dir, name), encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), name)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "registered_agent_name"
+                        and node.args and isinstance(node.args[0], ast.Constant)):
+                    seen[kind].add(by_file[node.args[0].value])
+        for kind in runio.CHECKPOINT_KINDS:
+            self.assertEqual(seen[kind], set(loop_batch.CHECKPOINT_ROLES[kind]), kind)
+
+    def test_an_unhashable_checkpoint_is_a_refusal_not_a_caught_crash(self):
+        # `checkpoint` is read off the same target-writable file as `agent`, so
+        # it arrives as whatever JSON says -- and `CHECKPOINT_ROLES.get([])`
+        # raises `TypeError: unhashable type`. `loop` catches everything, so
+        # that became an `error` naming a Python type instead of the routing
+        # refusal it is. Reachable only through a forged record plus a planted
+        # file; a named refusal either way.
+        for checkpoint in ([], {}, ["verify"], {"a": "verify"}, 7, None):
+            with self.subTest(checkpoint=checkpoint):
+                self.assertEqual((), loop_batch.checkpoint_roles(checkpoint))
+                self.assertEqual(
+                    ["e"], loop_batch.refuse_misrouted(
+                        [{"id": "e", "enforced": True, "agent": "panopticon-advisor"}],
+                        checkpoint))
+                message = loop_batch.misroute_refusal(["e"], checkpoint)
+                self.assertIn("does not dispatch", message)
+                self.assertIn("no enforcement shell", message)
+                self.assertNotIn("TypeError", message)
+
+    def test_a_misrouted_shell_ends_the_run_before_anything_is_armed(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        armed = []
+        with self._misrouted("panopticon-domain-advisor"), \
+             mock.patch.object(orchestrate.Guards, "arm",
+                               side_effect=lambda *a: armed.append(a[-1])), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = self._run_loop(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("review-app-SEC", status["message"])
+        self.assertIn("does not dispatch", status["message"])
+        self.assertIn("panopticon-domain-panel", status["message"])
+        self.assertEqual([], runner.launched)
+        self.assertEqual([], armed)
+
+    def test_an_unenforced_entry_that_names_a_shell_is_misrouted_too(self):
+        # The mirror of #1720's `enforced` check: an unenforced entry carries
+        # `agent: None` by construction, so a name on one is a claim the run
+        # never made.
+        d, floor = self._repo()
+        runner = FakeRunner("generic")
+        with self._misrouted("panopticon-domain-panel"), \
+             contextlib.redirect_stderr(io.StringIO()):
+            status = self._run_loop(d, floor, runner, "--host", "generic",
+                                    "--allow-unenforced")
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("does not dispatch", status["message"])
+        self.assertEqual([], runner.launched)
+
+    def test_the_loop_hands_the_runner_the_checkpoints_roles(self):
+        seen = []
+
+        class Recording(FakeRunner):
+            def run_entry(self, entry, env):
+                seen.append((entry["id"], self.roles))
+                return super().run_entry(entry, env)
+
+        d, floor = self._repo()
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = self._run_loop(d, floor, Recording())
+        self.assertEqual("complete", status["status"], status)
+        self.assertIn(("review-app-SEC", ("domain_panel",)), seen)
+        self.assertIn(("verify-app-SEC-primary", ("advisor", "domain_advisor")), seen)
+
+
+class TestNoDriverReaderTakesTheUnboundRead(unittest.TestCase):
+    """#1727 drift guard. `requests.load_dispatch_request` proves NOTHING about
+    who wrote the file it parses; `load_bound_request` is the read every driver
+    reader takes. Three call sites moved across in this change (the loop's own,
+    the re-entry read, `persist.find_entry`) and a fourth followed
+    (`readiness._existing_run_row`), so the unbound name now has zero callers
+    under `skill/scripts/` -- and the way this control comes undone is somebody
+    reaching for the shorter name in a new reader, which no test would notice.
+
+    The function itself stays: it is the documented UNBOUND accessor, used by
+    tests and by anything inspecting a request document rather than trusting
+    it. Kept honest by this pin rather than by its docstring.
+
+    AST, not grep: a call written across two source lines returns a false zero
+    from `git grep` (the `\\b` trap, one shape over).
+    """
+
+    SCRIPTS = os.path.dirname(orchestrate.__file__)
+
+    def _modules(self):
+        for folder, _dirs, files in os.walk(self.SCRIPTS):
+            for name in sorted(files):
+                if name.endswith(".py"):
+                    yield os.path.join(folder, name)
+
+    def test_nothing_under_skill_scripts_calls_the_unbound_read(self):
+        offenders = []
+        for path in self._modules():
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), path)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call)
+                        and ast.unparse(node.func).endswith("load_dispatch_request")):
+                    offenders.append("%s:%d" % (os.path.relpath(path, self.SCRIPTS),
+                                                node.lineno))
+        self.assertEqual(offenders, [],
+                         "a driver reader took the UNBOUND dispatch-request read; use "
+                         "requests.load_bound_request:\n" + "\n".join(offenders))
+
+    def test_the_bound_reader_does_not_delegate_to_it_either(self):
+        # It reads the file as BYTES and hashes them; routing through the
+        # unbound reader would hash one read and parse another.
+        source = os.path.join(self.SCRIPTS, "phases", "requests.py")
+        with open(source, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), source)
+        bound = next(n for n in ast.walk(tree)
+                     if isinstance(n, ast.FunctionDef) and n.name == "load_bound_request")
+        self.assertEqual([], [ast.unparse(n.func) for n in ast.walk(bound)
+                              if isinstance(n, ast.Call)
+                              and ast.unparse(n.func).endswith("load_dispatch_request")])

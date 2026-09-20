@@ -1,4 +1,5 @@
 """Dispatch requests: prompt materialization, dispatch-request.json, the driver plan."""
+import hashlib
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import scripts.group_runner as group_runner
 # this run's evidence; this module derives it to WRITE that request. One
 # function, so the two can never disagree about what the run's posture is.
 import scripts.loop_batch as loop_batch
+import scripts.run_manifest as run_manifest
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.plan as plan_mod
 from scripts import hosts
@@ -229,6 +231,66 @@ def request_path(review_root, namespace=None):
     return runio._pano(review_root, "dispatch-request.json")
 
 
+def record_request_hash(review_root, checkpoint, sha256, namespace=None):
+    """Anchor `sha256` in THIS namespace's manifest (#1727).
+
+    The one place the two manifests are told apart. `--setup` keeps its own
+    request and its own `setup-manifest.json` (#1507), and
+    `run_manifest._rewrite` writes `run-manifest.json` unconditionally -- so
+    routing setup's hash through the run manifest would stamp whatever review
+    run's manifest happens to be on the tree.
+
+    `phases/setup` is imported at CALL time, in the function, exactly as
+    `orchestrate._run` imports it: `setup` imports this module at module
+    level, and a second module-level cycle here would buy nothing that a
+    one-line local import does not (layout rule 1 is satisfied either way --
+    the name bound is the MODULE)."""
+    if namespace == loop_batch.SETUP_NAMESPACE:
+        import scripts.phases.setup as setup_mod
+        return setup_mod.record_dispatch_request(review_root, checkpoint, sha256)
+    return run_manifest.record_dispatch_request(review_root, None, checkpoint, sha256)
+
+
+def write_dispatch_request_bound(review_root, run_id, checkpoint, group, entries,
+                                 namespace=None):
+    """`(absolute path, sha256)` for the request this writes (#1727).
+
+    The hash is taken over the EXACT BYTES about to be written -- serialise,
+    hash, write -- never by re-reading the file afterwards: a target that can
+    swap the file can swap it between those two operations, and the driver
+    would then record the attacker's hash as its own. It is recorded in this
+    namespace's manifest, so that every reader can ask whether the file it is
+    about to trust is the one this run wrote.
+
+    The manifest is `.panopticon/run-manifest.json` (or `setup-manifest.json`)
+    -- INSIDE the reviewed tree, like the request itself. It is not a safe
+    place; it is a BETTER-DEFENDED one: the write guard's allowlist is the
+    entries' out_files, so no dispatched agent may write it, and
+    `runio._foreign_manifest` discards one that is git-tracked in the tree or
+    stamped for another checkout. What the record buys is that forging the
+    request now costs a second, harder write -- and the loop, which also holds
+    `request_sha256` in memory off its own checkpoint status, catches even
+    that pair.
+
+    `write_dispatch_request` below is the same call for the callers that want
+    only the path. Two names rather than a module-level stash of the last
+    hash: a global would be one more piece of mutable state two concurrent
+    runs in one process would share."""
+    if checkpoint not in runio.CHECKPOINT_KINDS:
+        raise ValueError("unknown checkpoint kind: %r" % checkpoint)
+    entries = _materialize_prompts(review_root, entries, namespace)
+    request = {"schema_version": 1, "run_id": run_id, "checkpoint": checkpoint,
+               "group": group, "entries": list(entries)}
+    body = json.dumps(request, indent=2)
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    path = request_path(review_root, namespace)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with runio._open_w_nofollow(path) as fh:
+        fh.write(body)
+    record_request_hash(review_root, checkpoint, digest, namespace)
+    return os.path.abspath(path), digest
+
+
 def write_dispatch_request(review_root, run_id, checkpoint, group, entries,
                            namespace=None):
     """Write the single per-(group, checkpoint) dispatch-request.json and return
@@ -238,22 +300,131 @@ def write_dispatch_request(review_root, run_id, checkpoint, group, entries,
 
     Each entry also gets a `prompt_file` (#run10 B2) — the same text, addressable
     — so a host can hand an agent a path instead of echoing the whole prompt."""
-    if checkpoint not in runio.CHECKPOINT_KINDS:
-        raise ValueError("unknown checkpoint kind: %r" % checkpoint)
-    entries = _materialize_prompts(review_root, entries, namespace)
-    request = {"schema_version": 1, "run_id": run_id, "checkpoint": checkpoint,
-               "group": group, "entries": list(entries)}
-    path = request_path(review_root, namespace)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with runio._open_w_nofollow(path) as fh:
-        json.dump(request, fh, indent=2)
-    return os.path.abspath(path)
+    return write_dispatch_request_bound(review_root, run_id, checkpoint, group,
+                                        entries, namespace=namespace)[0]
 
 def load_dispatch_request(review_root, namespace=None):
     """The parsed .panopticon/dispatch-request.json (or None if absent/invalid).
     The host reads req['entries'] to install the write-guard
-    (write_guard_hook.install(entries)) and to dispatch the checkpoint's cells."""
+    (write_guard_hook.install(entries)) and to dispatch the checkpoint's cells.
+
+    #1727: this is the UNBOUND read -- it proves nothing about who wrote the
+    file. Every driver reader goes through `load_bound_request` below; this
+    stays for the host-facing/inspection callers that only want the document,
+    and has NO caller under `skill/scripts/`. That is pinned by an AST test
+    (`tests/test_orchestrate.py::TestNoDriverReaderTakesTheUnboundRead`),
+    because the way this control comes undone is somebody reaching for the
+    shorter name in a new reader.
+    """
     return runio._load_json(request_path(review_root, namespace))
+
+
+# #1727. Printed to an operator's stderr and stored in a status, so: hashes
+# only (they are not secrets and they are not attacker text), never a byte of
+# the file's own contents -- a refused request is the target's document, and
+# quoting it back is how a refusal repaints a terminal or forges a log line.
+# Both hashes are abbreviated to _HASH_CHARS: enough to be unambiguous in a
+# bug report, short enough to read.
+_HASH_CHARS = 12
+REQUEST_MISSING = ("dispatch request missing: %s; this run recorded one, so it was "
+                   "removed after it was written -- re-run `driver run`/`driver loop` "
+                   "to regenerate it")
+REQUEST_UNRECORDED = ("dispatch request has no recorded hash in %s; re-run `driver "
+                      "run`/`driver loop` to regenerate it")
+REQUEST_MISMATCH = ("dispatch-request.json does not match the request this run wrote "
+                    "(sha256 %s... != recorded %s...); a target-writable copy was "
+                    "altered -- re-run `driver run`/`driver loop` to regenerate it")
+RECORD_ALTERED = ("%s's recorded dispatch request hash was altered after it was "
+                  "written (recorded %s... != %s... this run wrote); re-run `driver "
+                  "run`/`driver loop` to regenerate it")
+REQUEST_UNREADABLE = ("%s is not a readable dispatch request; re-run `driver "
+                      "run`/`driver loop` to regenerate it")
+
+
+def recorded_request_hash(review_root, namespace=None):
+    """`(sha256_or_None, manifest filename)` for this namespace (#1727).
+
+    The filename travels with the hash because it is what the refusals name,
+    and setup anchors in its own manifest (#1507). A record of the wrong shape
+    -- anything a target could put there if it reached the manifest -- reads
+    as no record at all, which is the fail-closed answer."""
+    if namespace == loop_batch.SETUP_NAMESPACE:
+        import scripts.phases.setup as setup_mod
+        manifest, name = setup_mod.load_setup_manifest(review_root), setup_mod.SETUP_MANIFEST
+    else:
+        manifest = run_manifest.load_manifest(review_root)
+        name = run_manifest.MANIFEST_NAME
+    record = (manifest or {}).get(run_manifest.DISPATCH_REQUEST)
+    sha = record.get("sha256") if isinstance(record, dict) else None
+    return (sha if isinstance(sha, str) and sha else None), name
+
+
+def previous_request(review_root, namespace=None):
+    """The OUTGOING request, for `loop_batch.disarm_previous`, or `{}`.
+
+    A refusal is not fatal here and must not be: this read happens BEFORE
+    `_first_run`, which is about to regenerate the file, and its only consumer
+    removes grants. But uninstall is keyed by strings that file supplies, so a
+    request the run cannot prove it wrote is announced once and read as "no
+    previous entries" rather than acted on. An absent file with no record is a
+    fresh run and says nothing."""
+    req, refusal = load_bound_request(review_root, namespace)
+    if refusal:
+        print("driver loop: ignoring the previous dispatch request: %s" % refusal,
+              file=sys.stderr, flush=True)
+    return req or {}
+
+
+def load_bound_request(review_root, namespace=None, expected_sha256=None):
+    """`(request_or_None, refusal_or_None)` -- the read every driver reader uses.
+
+    The request travels through a file in the REVIEWED tree while the hash of
+    what the driver wrote travels through the run manifest (and, for the
+    loop's own iteration, in memory on the checkpoint status). This is where
+    the three are compared, and every disagreement is a refusal: nothing is
+    dispatched, armed or persisted from a request this run cannot prove it
+    wrote.
+
+    `expected_sha256` is the IN-MEMORY hash the phase handed back on the
+    status. It is checked against the RECORD, not against the file, because
+    that is the pair no on-disk edit can reconcile: an attacker who rewrites
+    both the request and the manifest still cannot reach the value the loop
+    is holding. Checked first for exactly that reason -- it names the right
+    file.
+
+    The one non-refusal absence is a fresh tree: no file AND no record is "no
+    previous request", which is what `driver loop`'s re-entry read sees before
+    `_first_run` has written one.
+    """
+    recorded, manifest_name = recorded_request_hash(review_root, namespace)
+    path = request_path(review_root, namespace)
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        raw = None
+    if raw is None:
+        if recorded is None:
+            return None, None
+        return None, REQUEST_MISSING % os.path.abspath(path)
+    if recorded is None:
+        return None, REQUEST_UNRECORDED % manifest_name
+    if expected_sha256 is not None and expected_sha256 != recorded:
+        return None, RECORD_ALTERED % (manifest_name, recorded[:_HASH_CHARS],
+                                       expected_sha256[:_HASH_CHARS])
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != recorded:
+        return None, REQUEST_MISMATCH % (digest[:_HASH_CHARS], recorded[:_HASH_CHARS])
+    try:
+        request = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        request = None
+    if not isinstance(request, dict):
+        # Unreachable through the driver -- it wrote these bytes and they
+        # hash-match -- so this is the "the record was forged to match a
+        # planted file" corner, and it fails closed like every other.
+        return None, REQUEST_UNREADABLE % os.path.abspath(path)
+    return request, None
 
 def _driver_plan_entries(review_root, manifest):
     """The declared review cells as a matrix domain-cell dispatch plan

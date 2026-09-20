@@ -116,35 +116,10 @@ class Guards:
 
 def _status(kind, message, **extra):
     st = {"status": kind, "phase": None, "checkpoint": None, "group": None,
-          "dispatch_request": None, "advanced": [], "message": message}
+          "dispatch_request": None, "request_sha256": None, "advanced": [],
+          "message": message}
     st.update(extra)
     return st
-
-
-def _disarm_previous(guards, prev_req):
-    """R-P6-6 (session mode): on re-entry, drop the PREVIOUS request's grants
-    before arming the current pending set. Uninstall is scoped by id/out_file
-    and install unions, so an entry still pending is re-armed a few lines
-    below (this iteration's own `guards.arm(pending)`, computed from the
-    FRESH request `_first_run` just wrote) and only a FINISHED entry actually
-    falls away -- no bookkeeping file needed to tell the two apart.
-
-    `prev_req` must be the dispatch request as it stood BEFORE this
-    invocation's own `driver.run`/`run_setup_flow` call rewrote
-    dispatch-request.json (`loop` reads it first thing, before `_first_run`)
-    -- reading it fresh here instead would see the very request this same
-    invocation just produced, never the previous one, and disarm nothing.
-
-    I4: CALLED only once this invocation has a live checkpoint of its own. An
-    invocation that lands on complete/error instead never reaches here, so an
-    errored re-entry (flag drift, a bad --pr) leaves the previous fan-out's
-    grants exactly as it found them -- that fan-out is still running under
-    them. Deferring the teardown past `_first_run`'s posture probe changes
-    nothing that probe measures: probe_write_guard_armed proves the MECHANISM
-    and the settings file, explicitly not live arming."""
-    entries = [e for e in (prev_req or {}).get("entries") or [] if isinstance(e, dict)]
-    if entries:
-        guards.disarm(entries)
 
 
 def _resolve_mode(args, host):
@@ -253,7 +228,8 @@ def loop(args):
     # reading it afterwards would see the very request this same invocation just
     # produced and disarm nothing. Read in every mode -- it is one JSON load -- so that
     # the READ and the ACT can sit on opposite sides of `_first_run`, which I4 requires.
-    prev_req = requests.load_dispatch_request(review_root, namespace) or {}
+    # #1727: read BOUND -- uninstall is keyed by strings that file supplies.
+    prev_req = requests.previous_request(review_root, namespace)
     if mode == "session":
         # Guards constructed HERE, before `_first_run`, and unconditionally -- not only once this
         # invocation reaches a fresh checkpoint. Session mode is the only mode whose guards can
@@ -289,7 +265,7 @@ def loop(args):
         # the authority on what is still running. An entry now done falls away here; one still
         # pending is re-armed below by this iteration's own `guards.arm(pending)`, computed from
         # the FRESH request `_first_run` just wrote (Task 6 ruling 3).
-        _disarm_previous(guards, prev_req)
+        loop_batch.disarm_previous(guards, prev_req)
     if _after_first_run(review_root):
         status = _run(args, namespace, resolved)      # re-derive after the seam
     iterations = 0
@@ -340,17 +316,28 @@ def loop(args):
         ledger = ledger_mod.Ledger(run_dir)
         while status.get("status") == "checkpoint":
             iterations += 1
-            req = requests.load_dispatch_request(review_root, namespace) or {}
+            # #1727, FIRST: everything below reads fields off a file in the
+            # reviewed tree. `status` is what THIS iteration's `_run` returned,
+            # so its `request_sha256` is the writing phase's, held in memory.
+            req, refusal = requests.load_bound_request(
+                review_root, namespace, expected_sha256=status.get("request_sha256"))
+            if refusal:
+                return _finish(_status("error", "driver loop: " + refusal), review_root,
+                               guards, ledger, namespace, mode, runner)
+            req = req or {}
+            # What a session host is told the file must hash to, and which
+            # shells this checkpoint dispatches (the runner narrows its own
+            # per-entry allowlist to them). Per checkpoint: the request rolls.
+            runner.request_sha256 = requests.recorded_request_hash(review_root, namespace)[0]
+            runner.roles = loop_batch.checkpoint_roles(req.get("checkpoint"))
             entries = [e for e in req.get("entries") or [] if isinstance(e, dict)]
             pending = loop_batch._pending(entries)
-            # #1720: the request is a file in the reviewed tree, so its
-            # `enforced` flag is checked against this run's own evidence
-            # before anything is armed or launched.
-            expected = loop_batch.expected_enforced(review_root, host, namespace)
-            disagreeing = loop_batch.refuse_disagreeing(pending, expected)
-            if disagreeing:
-                return _finish(_status("error", loop_batch.enforcement_refusal(
-                    disagreeing, expected)), review_root, guards, ledger, namespace, mode, runner)
+            # #1720 + #1727: does what it SAYS match this run's own evidence
+            # and plan? Before anything is armed or launched.
+            refusal = loop_batch.request_refusal(review_root, host, namespace, req, pending)
+            if refusal:
+                return _finish(_status("error", refusal), review_root, guards, ledger,
+                               namespace, mode, runner)
             pending_ids = ", ".join(e.get("id") for e in pending)
             if iterations > max_iterations:
                 return _finish(_status("error", "driver loop: %d iterations without "
@@ -386,7 +373,7 @@ def loop(args):
                 # longer return: the session runner prints the batch, launches
                 # nothing, and the loop exits `dispatch` still armed (spec 4.3).
                 runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
-                return _dispatch_exit(review_root, req, pending, namespace)
+                return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256)
             done, total = 0, len(pending)
             handled = []
             # #1721: the pool is FIFO, so an entry's index in `pending` is its
@@ -559,7 +546,7 @@ def _first_run(args, namespace, resolved=None):
     return _run(args, namespace, resolved)
 
 
-def _dispatch_exit(review_root, req, pending, namespace):
+def _dispatch_exit(review_root, req, pending, namespace, request_sha256=None):
     """Session mode: the runner printed the batch; exit with a dispatch status and leave
     the guards armed (spec 4.3).
 
@@ -580,6 +567,7 @@ def _dispatch_exit(review_root, req, pending, namespace):
                    "`driver loop%s --mode session`" % (setup, setup),
                    dispatch_request=os.path.abspath(
                        requests.request_path(review_root, namespace)),
+                   request_sha256=request_sha256,
                    pending=[e.get("id") for e in pending],
                    checkpoint=req.get("checkpoint"))
 
@@ -661,8 +649,12 @@ def persist_cli(args):
     """
     review_root, _wt, _pr = runio.resolve_review_root(
         args.target, base=getattr(args, "base", None), pr=getattr(args, "pr", None))
-    entry = persist.find_entry(review_root, args.entry_id,
-                               namespace="setup" if args.setup else None)
+    entry, refusal = persist.find_entry(review_root, args.entry_id,
+                                        namespace="setup" if args.setup else None)
+    if refusal:
+        # #1727: not the request this run wrote -- and it names the out_file.
+        print("driver persist: %s" % refusal, file=sys.stderr)
+        return 1
     if entry is None:
         print("driver persist: no entry %r in the current dispatch request"
               % args.entry_id, file=sys.stderr)

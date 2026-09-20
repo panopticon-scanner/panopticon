@@ -555,3 +555,24 @@ def test_a_json_array_or_object_agent_is_refused_rather_than_crashing(tmp_path):
         assert "not a registered panopticon shell" in result.error, agent
         assert repr(str(agent)) in result.error
     assert launched == []
+
+
+def test_a_registered_but_misrouted_shell_is_refused(tmp_path):
+    """#1727: `runner.roles` carries the checkpoint's own role set, and the
+    same allowlist narrows to it. A `verify` entry naming the review round's
+    write-granting shell is a charter swap, not a typo."""
+    launched = []
+
+    def fake_run(command, **kwargs):
+        launched.append(command)
+        return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)
+
+    runner = codex.Runner(runner=fake_run)
+    runner.prepare(str(tmp_path), str(tmp_path))
+    runner.roles = ("advisor", "domain_advisor")
+    misrouted = dict(entry(), agent="panopticon-domain-panel")
+    result = runner.run_entry(misrouted, {base.ENV_ENTRY_ID: misrouted["id"]})
+    assert not result.ok
+    assert "not a registered panopticon shell for this checkpoint" in result.error
+    assert "panopticon-advisor, panopticon-domain-advisor" in result.error
+    assert launched == []

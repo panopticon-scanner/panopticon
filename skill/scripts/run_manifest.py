@@ -288,6 +288,13 @@ _EPHEMERAL_KEYS = ("session_dir", "invocation")
 # is about to find could otherwise silence surface 1 on the first invocation.
 POSTURE_DISCLOSED = "posture_disclosed"
 
+# #1727: {"checkpoint": <runio.CHECKPOINT_KINDS member>, "sha256": <hex>,
+# "at": <iso>} -- the integrity anchor for the dispatch request this run last
+# wrote. Spelled once here because the SETUP namespace keeps the same key in
+# its own `setup-manifest.json` (phases/setup.record_dispatch_request) and two
+# spellings of one key is how a reader silently stops finding it.
+DISPATCH_REQUEST = "dispatch_request"
+
 
 def _rewrite(review_root, manifest):
     """Write the manifest back through a temp file + `os.replace`.
@@ -331,6 +338,42 @@ def record_posture_disclosure(review_root, manifest, digest, at=None):
     loop rewrites this file once per run rather than once per turn.
     """
     manifest[POSTURE_DISCLOSED] = {"digest": digest, "at": at or _now_iso()}
+    return _rewrite(review_root, manifest)
+
+
+def record_dispatch_request(review_root, manifest, checkpoint, sha256, at=None):
+    """Record the sha256 of the dispatch request the driver JUST wrote (#1727).
+
+    The THIRD deliberate rewrite, and -- like the two above -- not an
+    anti-drift key. `.panopticon/dispatch-request.json` lives inside the
+    REVIEWED tree, so every field on it is a value a target can choose; the
+    hash of the bytes the driver wrote is anchored here, and
+    `phases/requests.load_bound_request` refuses a file that no longer
+    matches. It records what this driver itself wrote, is overwritten on every
+    write (the request is rolling -- regenerated each iteration), and a lost
+    or stale value fails CLOSED: the readers refuse rather than trust.
+
+    This file is inside the reviewed tree too -- the claim is NOT that it is
+    out of reach. It is the better-defended of the two: no dispatched agent
+    may write it (the write guard's allowlist is the entries' out_files) and
+    `runio._foreign_manifest` discards a manifest that is git-tracked in the
+    tree or stamped for another checkout, while the request is rewritten by
+    the driver every iteration and read by every family. Forging the record
+    as well is a second, harder write -- and one the loop's in-memory
+    `request_sha256` cross-check still catches.
+
+    `manifest` may be None, in which case the on-disk one is loaded. A tree
+    with no manifest at all records nothing and does not raise: the
+    pre-manifest window is real (unit callers, and `--setup`, which anchors in
+    its own manifest via `phases/setup.record_dispatch_request`), and the
+    reader's "no recorded hash" refusal is the fail-closed answer for it.
+    """
+    if manifest is None:
+        manifest = load_manifest(review_root)
+    if manifest is None:
+        return None
+    manifest[DISPATCH_REQUEST] = {"checkpoint": checkpoint, "sha256": sha256,
+                                  "at": at or _now_iso()}
     return _rewrite(review_root, manifest)
 
 

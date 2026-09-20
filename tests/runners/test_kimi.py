@@ -1339,3 +1339,23 @@ class TestTheEntryAgentIsAllowlistedAndContained(unittest.TestCase):
         self.assertEqual(1, len(self.launched))
         self.assertIn("--agent-file=%s" % os.path.realpath(self._shell()),
                       self.launched[0])
+
+
+class TestTheRolesTheLoopSetsReachTheKimiCheck(TestTheEntryAgentIsAllowlistedAndContained):
+    """#1727, kimi's half: the name is also joined into `--agent-file=`, which
+    IS the reviewer's governing instructions -- so a registered shell the
+    checkpoint does not dispatch is a charter swap, refused before launch."""
+
+    def test_a_registered_but_misrouted_shell_is_refused(self):
+        self.r.roles = ("advisor", "domain_advisor")
+        res = self._run("panopticon-domain-panel")
+        self.assertFalse(res.ok)
+        self.assertIn("not a registered panopticon shell for this checkpoint", res.error)
+        self.assertIn("panopticon-advisor", res.error)
+        self.assertEqual([], self.launched)
+
+    def test_the_shell_path_refuses_a_misrouted_name_too(self):
+        # `_shell_path` is the second application of the same allowlist; it
+        # must narrow with the roles or the argv and the check disagree.
+        self.r.roles = ("advisor",)
+        self.assertIsNone(self.r._shell_path({"agent": "panopticon-domain-panel"}))

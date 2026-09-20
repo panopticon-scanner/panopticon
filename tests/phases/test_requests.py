@@ -1,6 +1,7 @@
 """Tests for scripts.phases.requests: dispatch-request.json, the driver plan and the
 prompt file lists every checkpoint emits.
 """
+import hashlib
 import json
 import os
 import tempfile
@@ -13,6 +14,8 @@ import scripts.phases.runio as runio
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage
+import scripts.phases.setup as setup
+import scripts.run_manifest as run_manifest
 import scripts.phases.review as review
 import scripts.phases.verify as verify
 
@@ -371,3 +374,208 @@ class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
                                  "delivery": "return_json",
                                  "out_file": runio._pano(self.root, "scout-app.json")})
         self.assertNotIn("output_schema", written)
+
+
+class RequestIntegrityCase(unittest.TestCase):
+    """#1727: `.panopticon/dispatch-request.json` lives INSIDE the reviewed
+    tree, and several readers trust every field on it. Its integrity is
+    anchored in the run (or setup) manifest -- a sha256 over the exact bytes
+    the driver wrote, recorded as it writes them. That manifest is inside the
+    tree too; what it is, is better defended (no dispatched agent may write
+    it; `_foreign_manifest` discards a planted one), and forging it as well is
+    a second write the loop's in-memory hash still catches.
+    """
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(runio._pano(self.root))
+
+    def _run_manifest(self):
+        run_manifest.write_manifest(self.root, {
+            "schema_version": 1, "run_id": "0123456789abcdef", "host": "claude",
+            "security_mode": "standard", "created": "2026-09-20T00:00:00Z",
+            "review_root": self.root, "target": self.root})
+        return run_manifest.load_manifest(self.root)
+
+    def _setup_manifest(self):
+        runio._write_json(setup._setup_manifest_path(self.root),
+                          {"schema_version": 1, "run_id": "RID", "host": "claude",
+                           "review_root": self.root, "target": self.root})
+
+    def _entries(self):
+        return [{"id": "scout-app", "agent": "panopticon-scout", "enforced": True,
+                 "model": None, "prompt": "p",
+                 "out_file": os.path.join(self.root, ".panopticon", "scout-app.json")}]
+
+    def _write(self, checkpoint="scout", namespace=None):
+        return requests.write_dispatch_request_bound(
+            self.root, "RID", checkpoint, None, self._entries(), namespace=namespace)
+
+    def _tamper(self, path):
+        with open(path, "r+b") as fh:
+            body = fh.read().replace(b'"scout-app"', b'"scout-evil"', 1)
+            fh.seek(0)
+            fh.write(body)
+            fh.truncate()
+
+
+class TestTheWriterRecordsTheHash(RequestIntegrityCase):
+    def test_the_recorded_hash_is_the_sha256_of_the_file_bytes(self):
+        self._run_manifest()
+        path, digest = self._write()
+        with open(path, "rb") as fh:
+            self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), digest)
+        record = run_manifest.load_manifest(self.root)["dispatch_request"]
+        self.assertEqual(record["sha256"], digest)
+        self.assertEqual(record["checkpoint"], "scout")
+        self.assertTrue(record["at"])
+
+    def test_the_old_name_still_returns_only_the_path(self):
+        self._run_manifest()
+        path = requests.write_dispatch_request(self.root, "RID", "scout", None,
+                                               self._entries())
+        self.assertEqual(path, os.path.abspath(path))
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(run_manifest.load_manifest(self.root)["dispatch_request"]["sha256"],
+                         hashlib.sha256(open(path, "rb").read()).hexdigest())
+
+    def test_the_setup_namespace_records_into_the_setup_manifest(self):
+        self._setup_manifest()
+        path, digest = self._write(checkpoint="scan", namespace="setup")
+        self.assertTrue(path.endswith("setup-dispatch-request.json"), path)
+        record = setup.load_setup_manifest(self.root)["dispatch_request"]
+        self.assertEqual((record["sha256"], record["checkpoint"]), (digest, "scan"))
+        # ...and never into the review namespace's manifest
+        self.assertIsNone(run_manifest.load_manifest(self.root))
+
+    def test_every_write_overwrites_the_record(self):
+        # The request is ROLLING -- regenerated every iteration -- so the
+        # record is not an anti-drift key: it says what the driver last wrote.
+        self._run_manifest()
+        _p1, first = self._write()
+        _p2, second = self._write(checkpoint="review")
+        self.assertNotEqual(first, second)
+        self.assertEqual(run_manifest.load_manifest(self.root)["dispatch_request"],
+                         {"checkpoint": "review", "sha256": second,
+                          "at": run_manifest.load_manifest(self.root)
+                          ["dispatch_request"]["at"]})
+
+    def test_a_tree_with_no_manifest_records_nothing_and_still_writes(self):
+        # Unit callers (and the pre-manifest window) have no manifest to
+        # anchor to; the writer must not raise, and the reader then refuses.
+        path, digest = self._write()
+        self.assertTrue(os.path.isfile(path))
+        self.assertTrue(digest)
+
+
+class TestLoadBoundRequest(RequestIntegrityCase):
+    """Fail-closed, every case: a reader that cannot prove the file is the one
+    this run wrote gets `(None, <refusal>)` and never an entry."""
+
+    def test_a_clean_file_loads_with_no_refusal(self):
+        self._run_manifest()
+        _path, digest = self._write()
+        req, refusal = requests.load_bound_request(self.root)
+        self.assertIsNone(refusal)
+        self.assertEqual(req["checkpoint"], "scout")
+        self.assertEqual([e["id"] for e in req["entries"]], ["scout-app"])
+        # the in-memory hash the loop carries must agree too
+        req2, refusal2 = requests.load_bound_request(self.root, expected_sha256=digest)
+        self.assertIsNone(refusal2)
+        self.assertEqual(req2["run_id"], req["run_id"])
+
+    def test_a_fresh_tree_with_no_file_and_no_record_is_not_a_refusal(self):
+        # The `driver loop` re-entry read: before `_first_run` there may be no
+        # previous request at all, which is "no previous entries", not an error.
+        self._run_manifest()
+        self.assertEqual((None, None), requests.load_bound_request(self.root))
+
+    def test_a_tampered_byte_is_refused_with_both_hashes(self):
+        self._run_manifest()
+        path, digest = self._write()
+        self._tamper(path)
+        req, refusal = requests.load_bound_request(self.root)
+        self.assertIsNone(req)
+        self.assertIn("dispatch-request.json does not match the request this run wrote",
+                      refusal)
+        self.assertIn(digest[:12], refusal)
+        self.assertIn("re-run", refusal)
+        # never the file's contents, only hashes
+        self.assertNotIn("scout-evil", refusal)
+
+    def test_a_request_with_no_recorded_hash_is_refused(self):
+        # A request on disk that this run's manifest does not vouch for: a
+        # planted file, or one left by a manifest that was reset under it.
+        self._run_manifest()
+        self._write()
+        manifest = run_manifest.load_manifest(self.root)
+        manifest.pop("dispatch_request")
+        run_manifest._rewrite(self.root, manifest)
+        req, refusal = requests.load_bound_request(self.root)
+        self.assertIsNone(req)
+        self.assertIn("no recorded hash in run-manifest.json", refusal)
+
+    def test_a_missing_file_with_a_record_is_refused(self):
+        self._run_manifest()
+        path, _digest = self._write()
+        os.remove(path)
+        req, refusal = requests.load_bound_request(self.root)
+        self.assertIsNone(req)
+        self.assertIn("dispatch request missing", refusal)
+        self.assertIn(path, refusal)
+
+    def test_a_record_altered_after_the_write_is_refused_by_the_in_memory_hash(self):
+        # Assume the manifest was reached too (it is inside the tree, only
+        # better defended): the loop also carries the hash the phase returned
+        # IN MEMORY, which no on-disk edit can reach.
+        self._run_manifest()
+        path, digest = self._write()
+        forged = hashlib.sha256(b"forged").hexdigest()
+        with open(path, "wb") as fh:
+            fh.write(b"forged")
+        manifest = run_manifest.load_manifest(self.root)
+        manifest["dispatch_request"]["sha256"] = forged
+        run_manifest._rewrite(self.root, manifest)
+        # the file now matches the RECORD, and only the in-memory hash knows better
+        req, refusal = requests.load_bound_request(self.root, expected_sha256=digest)
+        self.assertIsNone(req)
+        self.assertIn("run-manifest.json's recorded dispatch request hash was altered",
+                      refusal)
+        self.assertIn(digest[:12], refusal)
+        self.assertIn(forged[:12], refusal)
+
+    def test_the_setup_namespace_reads_its_own_manifest(self):
+        self._setup_manifest()
+        path, digest = self._write(checkpoint="scan", namespace="setup")
+        req, refusal = requests.load_bound_request(self.root, "setup",
+                                                   expected_sha256=digest)
+        self.assertIsNone(refusal)
+        self.assertEqual(req["checkpoint"], "scan")
+        self._tamper(path)
+        req, refusal = requests.load_bound_request(self.root, "setup")
+        self.assertIsNone(req)
+        self.assertIn("does not match the request this run wrote", refusal)
+
+    def test_a_setup_record_altered_names_the_setup_manifest(self):
+        self._setup_manifest()
+        _path, digest = self._write(checkpoint="scan", namespace="setup")
+        manifest = setup.load_setup_manifest(self.root)
+        manifest["dispatch_request"]["sha256"] = hashlib.sha256(b"x").hexdigest()
+        runio._write_json(setup._setup_manifest_path(self.root), manifest)
+        req, refusal = requests.load_bound_request(self.root, "setup",
+                                                   expected_sha256=digest)
+        self.assertIsNone(req)
+        self.assertIn("setup-manifest.json's recorded dispatch request hash", refusal)
+
+    def test_unparseable_json_that_matches_its_record_is_still_refused(self):
+        self._run_manifest()
+        path, _digest = self._write()
+        with open(path, "wb") as fh:
+            fh.write(b"{not json")
+        run_manifest.record_dispatch_request(
+            self.root, None, "scout", hashlib.sha256(b"{not json").hexdigest())
+        req, refusal = requests.load_bound_request(self.root)
+        self.assertIsNone(req)
+        self.assertIn("is not a readable dispatch request", refusal)

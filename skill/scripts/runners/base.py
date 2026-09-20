@@ -192,6 +192,18 @@ class HostRunner:
     # runner is given them and the Codex runner reads `namespace` in prepare().
     dispatch_request = None
     namespace = None
+    # #1727: the sha256 the run manifest recorded for THAT file. Session mode
+    # prints it so a host that reads the request itself can check it is
+    # reading what this run wrote; a headless runner is handed its entries in
+    # memory and needs nothing from it. Re-set per checkpoint, because the
+    # request is rolling.
+    request_sha256 = None
+    # #1727: the `dispatch.ROLE_FILES` keys THIS checkpoint dispatches, set by
+    # the loop from its own routing table before each batch -- like `max_turns`,
+    # set whether or not a runner reads it. None means "any registered shell",
+    # which is the pre-#1727 behaviour and what a runner used outside the loop
+    # gets.
+    roles = None
     # M-9: whether `--max-turns` reaches anything on this host. The loop sets
     # `runner.max_turns` unconditionally, so a runner with no native turn
     # limit accepted the flag and ignored it in silence. True by default --
@@ -504,7 +516,7 @@ def published_schema(path):
 # the runner reports as a failed entry -- three burned launches per entry,
 # the exact failure this helper exists to prevent. `skill/reference/` also
 # publishes `ocrdb-0.5.0.json` (176 KB compacted), and a rewritten
-# `dispatch-request.json` can name any published file (#1727 is unshipped),
+# `dispatch-request.json` can name any published file,
 # so the cap is what keeps "published" from meaning "launchable". Half the
 # kernel limit, well above every schema stamped on an entry today (the
 # largest, report-schema.json, compacts to ~40 KB).
@@ -578,11 +590,37 @@ REGISTERED_AGENT_NAMES = frozenset(
 # character, an ANSI escape or an embedded newline as its escape sequence, so a
 # refused value cannot repaint the terminal or forge a second log line.
 UNREGISTERED_AGENT = "entry names an agent that is not a registered panopticon shell: %r"
+# #1727: the same refusal once the checkpoint's own roles are known. A separate
+# string rather than an optional clause, because the two say different things:
+# the first means "we never registered this", the second "we registered it for
+# a different round".
+UNREGISTERED_AGENT_FOR_CHECKPOINT = ("entry names an agent that is not a registered "
+                                     "panopticon shell for this checkpoint "
+                                     "(allowed: %s): %r")
 
 
-def registered_agent(entry):
+def allowed_agent_names(roles=None):
+    """The shell names acceptable for `roles` -- the whole allowlist when
+    `roles` is None (#1727).
+
+    `roles` is an iterable of `dispatch.ROLE_FILES` KEYS, supplied by the loop
+    from the checkpoint it is dispatching. Derived through `ROLE_FILES` for the
+    same reason `REGISTERED_AGENT_NAMES` is: a role renamed there moves the
+    emitter, the readiness probe and this together. A key that is not a role
+    contributes nothing -- narrowing, never widening, is the only direction a
+    lookup failure may take a containment rule -- and `()` therefore accepts
+    NOTHING, which is exactly right for the `scan` checkpoint, whose one entry
+    is dispatched shell-less by design.
+    """
+    if roles is None:
+        return REGISTERED_AGENT_NAMES
+    return frozenset(dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
+                     for role in roles if role in dispatch.ROLE_FILES)
+
+
+def registered_agent(entry, roles=None):
     """`entry["agent"]` when it is one of the four registered shells; None
-    otherwise (#1720).
+    otherwise (#1720) -- narrowed to `roles` when the caller has them (#1727).
 
     The second containment rule on this seam, and for the same reason as
     `published_schema`: an entry travels through
@@ -599,10 +637,10 @@ def registered_agent(entry):
     # string -- and `value in <frozenset>` raises `TypeError: unhashable type`
     # on either, straight out of `run_entry`, which never raises (spec 4.4).
     # A type check is what makes this a refusal rather than a crash.
-    return name if isinstance(name, str) and name in REGISTERED_AGENT_NAMES else None
+    return name if isinstance(name, str) and name in allowed_agent_names(roles) else None
 
 
-def refuse_unregistered_agent(entry):
+def refuse_unregistered_agent(entry, roles=None):
     """The refusal every family returns for an enforced entry whose `agent` is
     not a registered shell -- including one carrying no `agent` at all, which
     used to fall through to the bare branch and launch unenforced while the
@@ -611,7 +649,12 @@ def refuse_unregistered_agent(entry):
     finds two of them."""
     value = entry.get("agent") if isinstance(entry, dict) else None
     entry_id = entry.get("id") if isinstance(entry, dict) else None
-    return RunResult.failed(entry_id, UNREGISTERED_AGENT % redact.redact(str(value)[:200]))
+    shown = redact.redact(str(value)[:200])
+    if roles is None:
+        return RunResult.failed(entry_id, UNREGISTERED_AGENT % shown)
+    allowed = ", ".join(sorted(allowed_agent_names(roles))) or "none"
+    return RunResult.failed(entry_id,
+                            UNREGISTERED_AGENT_FOR_CHECKPOINT % (allowed, shown))
 
 
 def _headless_module(host):

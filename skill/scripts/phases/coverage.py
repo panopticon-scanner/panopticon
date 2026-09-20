@@ -298,10 +298,10 @@ def coverage_execute(review_root, manifest):
             registry_tools = None
         entries = [_scout_entry(review_root, manifest, g, f, host, registry_tools)
                    for g, f in pending_scouts]
-        req = requests.write_dispatch_request(review_root, manifest["run_id"],
-                                     "scout", None, entries)
+        req, sha = requests.write_dispatch_request_bound(
+            review_root, manifest["run_id"], "scout", None, entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="scout", group=None,
-                           dispatch_request=req,
+                           dispatch_request=req, request_sha256=sha,
                            message="scout checkpoint for %d group(s)"
                                    % len(entries))
     # Every group now has a scout output -> compute coverage (one group per call:
