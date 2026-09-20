@@ -858,6 +858,27 @@ class TestSetupDocs(unittest.TestCase):
         # guide the refusal sends the operator to.
         self.assertIn("migrate-config", skill)
 
+    def test_the_settings_trust_classes_are_documented(self):
+        # #1681 Plan 2, spec §8: a target reading this doc has to be able to
+        # tell which of its own settings will be honoured BEFORE it commits
+        # them, and an operator reading a report has to know where a refusal
+        # shows up.
+        setup = _section(_read_doc(), "## Driver setup (5.2)", "## Output")
+        self.assertIn("trust classes", setup)
+        self.assertIn("never loosen", setup)
+        self.assertIn("meta.config", setup)
+        for key in ("max_per_group", "max_groups", "security", "fail_on",
+                    "gate_scope", "tools", "max_verify", "allow_unenforced"):
+            self.assertIn(key, setup)
+        self.assertIn("8-48", setup)
+        self.assertIn("4-64", setup)
+
+    def test_the_sizes_paragraph_no_longer_claims_run_ignores_settings(self):
+        # Plan 1 wired `driver run`'s max_per_group to `settings:`; the
+        # parenthetical saying it does not was stale the day it shipped.
+        setup = _section(_read_doc(), "## Driver setup (5.2)", "## Output")
+        self.assertNotIn("does not read `settings:` yet", setup)
+
 
 class TestInstalledFlowDocs(unittest.TestCase):
     """#495: SKILL states the <skill-dir> substitution contract once, and the
