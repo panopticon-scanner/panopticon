@@ -1,6 +1,7 @@
 import ast
 import contextlib
 import dataclasses
+import io
 import json
 import os
 import subprocess
@@ -442,12 +443,15 @@ class TestSetupFlow(unittest.TestCase):
             self.assertIn("settings:\n  max_per_group: 12\n", text)
             self.assertTrue(os.path.isfile(os.path.join(d, ".panopticon", "setup-report.md")))
 
-    def test_the_draft_carries_a_committed_setting_the_cli_cannot_express(self):
-        # The #1504 failure one key over: the draft used to be told the two
-        # numbers the CLI passes and nothing else, so a committed `max_verify`
-        # -- live, read by driver._cli_flags -- vanished the moment the
-        # operator followed the completion message and moved the draft over.
-        # The draft is the committed settings OVERLAID by what was passed.
+    def test_the_draft_drops_a_committed_gate_key_the_cli_cannot_express(self):
+        # The #1504 failure one key over used to be about NOT DROPPING a
+        # committed setting the CLI cannot express -- `max_verify` used to
+        # survive into the draft for exactly that reason. #1681 Plan 2
+        # reclassifies `max_verify` as a GATE key: it is refused at run time
+        # regardless of what the draft says, so carrying it forward would
+        # suggest that promoting the draft makes it stick. The draft is the
+        # committed GRAIN settings OVERLAID by what was passed; a gate key
+        # is never one of them.
         with self._ingest_fixture() as (d, pp):
             with open(os.path.join(d, "panopticon.yml"), "w") as fh:
                 fh.write("version: 1\ngroups: {}\n"
@@ -456,9 +460,12 @@ class TestSetupFlow(unittest.TestCase):
             self.assertTrue(result["ok"], result.get("errors"))
             with open(result["draft"], encoding="utf-8") as fh:
                 doc = yaml.safe_load(fh)
-            self.assertEqual(doc["settings"], {"max_per_group": 12, "max_verify": 4})
+            self.assertEqual(doc["settings"], {"max_per_group": 12})
 
-    def test_the_draft_keeps_the_committed_sizes_when_no_flags_were_passed(self):
+    def test_the_draft_keeps_the_committed_sizes_clamped_when_no_flags_were_passed(self):
+        # #1681 Plan 2: the committed `max_groups: 3` is below the 4-64 band,
+        # so it is clamped the same way a run would clamp it -- the draft
+        # carries the number a run will actually use, not the raw file value.
         with self._ingest_fixture() as (d, pp):
             with open(os.path.join(d, "panopticon.yml"), "w") as fh:
                 fh.write("version: 1\ngroups: {}\n"
@@ -466,7 +473,7 @@ class TestSetupFlow(unittest.TestCase):
             result = setup_flow.ingest_proposal(d, pp)
             with open(result["draft"], encoding="utf-8") as fh:
                 doc = yaml.safe_load(fh)
-            self.assertEqual(doc["settings"], {"max_per_group": 8, "max_groups": 3})
+            self.assertEqual(doc["settings"], {"max_per_group": 8, "max_groups": 4})
 
     def test_the_draft_omits_settings_a_repo_never_asked_for(self):
         with self._ingest_fixture() as (d, pp):
@@ -764,10 +771,12 @@ class TestSetupFlow(unittest.TestCase):
 
     def test_build_spine_size_precedence_matches_ingest(self):
         d = self._spine_repo()
+        # max_per_group: 2 is below the 8-48 band (#1681 Plan 2): the spine
+        # sees the clamped 8, the same number a run would apply.
         self._settings(d, "settings:\n  max_per_group: 2\n  max_groups: 6\n")
         spine = setup_flow.build_spine(d)
         self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
-                         (2, 6, "config"))
+                         (8, 6, "config"))
         spine = setup_flow.build_spine(d, max_per_group=3, max_groups=9)
         self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
                          (3, 9, "cli"))
@@ -1065,14 +1074,61 @@ class TestSetupFlow(unittest.TestCase):
                 fh.write('{"max_per_group": 5}')
             self.assertEqual(setup_flow.config_overrides(d), {"max_per_group": None, "max_groups": None})
 
+    def test_config_overrides_are_clamped_to_the_band(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 5000\n"
+                         "  max_groups: 1\n")
+            self.assertEqual(setup_flow.config_overrides(d),
+                             {"max_per_group": 48, "max_groups": 4})
+
+    def test_config_overrides_ignore_a_gate_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  security: redteam\n")
+            self.assertEqual(setup_flow.config_overrides(d),
+                             {"max_per_group": None, "max_groups": None})
+
+    def test_the_draft_carries_grain_keys_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 20\n"
+                         "  max_verify: 9\n  security: redteam\n"
+                         "  allow_unenforced: true\n")
+            settings = setup_flow._draft_settings(d, None, None)
+        self.assertEqual(settings, {"max_per_group": 20})
+
+    def test_the_draft_keeps_a_committed_include_fixtures(self):
+        # Final review F3: the draft is what the completion message tells the
+        # operator to move over the committed file, and it was assembled from
+        # `config_overrides`, which answers with the two SIZE knobs alone --
+        # so a committed `include_fixtures: true` was lost by following
+        # panopticon's own promotion instruction. Every GRAIN key the config
+        # resolves survives; a gate or operator-only key still never does.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 20\n"
+                         "  include_fixtures: true\n  security: redteam\n"
+                         "  allow_unenforced: true\n")
+            settings = setup_flow._draft_settings(d, None, None)
+        self.assertEqual(settings, {"max_per_group": 20, "include_fixtures": True})
+
+    def test_an_out_of_band_setup_flag_is_written_but_warned_about(self):
+        with tempfile.TemporaryDirectory() as d:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                settings = setup_flow._draft_settings(d, 5000, None)
+            self.assertEqual(settings["max_per_group"], 5000)
+            self.assertIn("a run will clamp it to 48", err.getvalue())
+
     def test_ingest_writes_the_report_and_resolves_cap_cli_over_config(self):
         d = _repo(self)
+        # max_per_group: 2 is below the 8-48 band (#1681 Plan 2) and clamps to 8.
         self._root_settings(d, "settings:\n  max_per_group: 2\n  max_groups: 6\n")
         pp = self._write_proposal(d, {"groups": [{"capability": "Checkout",
                                                   "match": ["src/checkout/**"], "tests": []}]})
         res = setup_flow.ingest_proposal(d, pp)
         self.assertTrue(res["ok"], res)
-        self.assertEqual((res["report"]["cap"], res["report"]["ceiling"]), (2, 6))
+        self.assertEqual((res["report"]["cap"], res["report"]["ceiling"]), (8, 6))
         self.assertEqual(res["report_path"], os.path.join(d, ".panopticon", "setup-report.md"))
         with open(res["report_path"], encoding="utf-8") as fh:
             text = fh.read()
@@ -1315,7 +1371,8 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
                                    settings={"max_per_group": 48, "max_groups": None})
         body = text.split(
             "# parent; its subgroups are its layers and roll up to it in the report.\n"
-            "# settings: max_per_group / max_groups / max_verify (positive ints).\n", 1)[1]
+            "# settings: max_per_group (8-48) / max_groups (4-64) / include_fixtures;\n"
+            "# gate keys only tighten the review, operator flags are refused.\n", 1)[1]
         self.assertTrue(body.startswith("version: 1\n"))
         self.assertLess(body.index("groups:"), body.index("exclude_paths:"))
         self.assertLess(body.index("exclude_paths:"), body.index("settings:"))

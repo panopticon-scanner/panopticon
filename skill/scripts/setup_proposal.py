@@ -731,5 +731,6 @@ def dump_config_yaml(groups, exclude_paths=None, settings=None, header=True):
             + "# groups: match/tests/panels/exclude, gitignore-flavored globs; first\n"
             "# matching group wins. A group whose keys are names (no match:) is a\n"
             "# parent; its subgroups are its layers and roll up to it in the report.\n"
-            "# settings: max_per_group / max_groups / max_verify (positive ints).\n"
+            "# settings: max_per_group (8-48) / max_groups (4-64) / include_fixtures;\n"
+            "# gate keys only tighten the review, operator flags are refused.\n"
             + body_text)

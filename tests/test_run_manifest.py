@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.config_schema as cs
 import scripts.run_manifest as rm
 from scripts import hosts
 
@@ -163,6 +164,45 @@ class TestRunManifest(unittest.TestCase):
         # conflicting_flags key (only pr/scope/base gate drift).
         m = rm.build_manifest(**self._params(), pr_base="main")
         self.assertEqual(rm.conflicting_flags(m), [])
+
+    def test_the_manifest_records_the_config_resolution_beside_the_flags(self):
+        settings = cs.resolve_settings(
+            {}, cs.parse_settings({"settings": {"max_per_group": 5000,
+                                                "allow_unenforced": True}}))
+        m = rm.build_manifest(**self._params(), config=settings)
+        self.assertEqual(m["config_requested"],
+                         {"max_per_group": 5000, "allow_unenforced": True})
+        self.assertEqual(m["config_effective"], {"max_per_group": 48})
+        self.assertEqual(m["config_clamped"][0]["effective"], 48)
+        self.assertEqual(m["config_refused"][0]["key"], "allow_unenforced")
+        self.assertTrue(m["config_disclosures"])
+
+    def test_a_hostile_config_still_leaves_the_manifest_strict_json(self):
+        # `settings:` is TARGET-authored and lands in the manifest verbatim.
+        # A non-finite float would reach json.dump (allow_nan=True by default)
+        # as a bare Infinity -- valid to Python, invalid JSON to every other
+        # reader of run-manifest.json -- and an unbounded string would be
+        # copied into it whole (YAML aliases amplify past the source cap).
+        # config_schema bounds both at the parse boundary; this is the end of
+        # that pipe, where the damage would actually be written.
+        settings = cs.resolve_settings({}, cs.parse_settings(
+            {"settings": {"max_verify": float("inf"), "severity": "s" * 10000}}))
+        m = rm.build_manifest(**self._params(), config=settings)
+        strict = json.loads(json.dumps(m, allow_nan=False, sort_keys=True))
+        self.assertEqual(strict["config_requested"]["max_verify"], "inf")
+        self.assertEqual(len(strict["config_requested"]["severity"]),
+                         cs.MAX_RECORDED_CHARS + 1)
+        self.assertLess(len(json.dumps(strict["config_disclosures"])), 2000)
+
+    def test_the_config_blocks_are_not_anti_drift_keys(self):
+        for key in ("config_requested", "config_effective", "config_refused",
+                    "config_clamped", "config_disclosures"):
+            self.assertNotIn(key, rm._FLAG_KEYS)
+
+    def test_a_manifest_built_without_a_config_carries_empty_blocks(self):
+        m = rm.build_manifest(**self._params())
+        self.assertEqual(m["config_requested"], {})
+        self.assertEqual(m["config_refused"], [])
 
 
 class TestManifestRejectsAnUnknownHost(unittest.TestCase):

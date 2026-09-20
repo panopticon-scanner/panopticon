@@ -269,31 +269,3 @@ def parse_exclude_paths(doc):
     globs = [x for x in raw if isinstance(x, str) and x.strip()]
     errors.extend(glob_errors("exclude_paths", "entry", globs))
     return globs, errors
-
-
-SETTINGS_INT_KEYS = ("max_per_group", "max_groups", "max_verify")
-
-
-def parse_settings(doc):
-    """Return (settings, errors) for the top-level `settings:` mapping (#1681
-    Plan 1: the GRAIN keys only). Each of SETTINGS_INT_KEYS is honoured as a
-    positive int (bool is not an int here) and reads as None otherwise, with
-    the refusal disclosed, so a target cannot wedge a run through its config.
-    Every other key is disclosed and ignored -- a gate key (`security`,
-    `fail_on`, ...) does nothing here until Plan 2's ratchet classifies it."""
-    out = {k: None for k in SETTINGS_INT_KEYS}
-    errors = []
-    raw = (doc or {}).get("settings")
-    if raw is None:
-        return out, errors
-    if not isinstance(raw, dict):
-        errors.append("settings must be a mapping")
-        return out, errors
-    for key, value in raw.items():
-        if key not in SETTINGS_INT_KEYS:
-            errors.append("settings.%s: unknown key ignored" % key)
-        elif isinstance(value, int) and not isinstance(value, bool) and value >= 1:
-            out[key] = value
-        else:
-            errors.append("settings.%s: expected a positive int, got %r; ignored" % (key, value))
-    return out, errors

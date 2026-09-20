@@ -201,12 +201,19 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(status["status"], "error")
         self.assertIn("drift", status["message"])
 
-    def _settings(self, root, max_verify):
-        """Rewrite the fixture's root config with a `settings:` grain knob."""
+    def _settings(self, root, max_per_group):
+        """Rewrite the fixture's root config with a `settings:` grain knob.
+
+        `max_per_group` and not `max_verify`: #1681 Plan 2 made the verify cap
+        a GATE key whose built-in default (uncapped) is stricter than any
+        number, so a committed one is refused and never reaches a flag. The
+        grain knob is the one a repository may still set -- both values below
+        sit inside the 8-48 band, so nothing is clamped either.
+        """
         with open(os.path.join(root, "panopticon.yml"), "w", encoding="utf-8") as fh:
             fh.write("version: 1\n"
                      "groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
-                     "settings:\n  max_verify: %d\n" % max_verify)
+                     "settings:\n  max_per_group: %d\n" % max_per_group)
 
     def test_changing_a_settings_knob_between_resumes_is_flag_drift(self):
         # #1681 Plan 1: the grain knobs resolve CLI > `settings:` and the
@@ -216,14 +223,79 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         # drift: an incoming None never conflicts, so the run resumes on the
         # value the manifest already pinned.)
         d = self._repo()
-        self._settings(d, 5)
+        self._settings(d, 12)
         driver.run(self._args(d))
-        self.assertEqual(run_manifest.load_manifest(d)["flags"]["max_verify"], 5)
-        self._settings(d, 7)
+        self.assertEqual(run_manifest.load_manifest(d)["flags"]["max_per_group"], 12)
+        self._settings(d, 20)
         status = driver.run(self._args(d))
         self.assertEqual(status["status"], "error")
         self.assertIn("drift", status["message"])
-        self.assertIn("max_verify", status["message"])
+        self.assertIn("max_per_group", status["message"])
+
+    def test_a_committed_security_mode_is_honoured_and_recorded(self):
+        # #1681 Plan 2: `security` is a GATE key and `redteam` is stricter than
+        # the built-in `standard`, so a target may tighten its own review this
+        # way. It is a top-level manifest field rather than a flag, so run() --
+        # not _cli_flags -- resolves it, and the same resolution is what
+        # build_manifest records. A bare resume on the unchanged config must
+        # then match its own manifest instead of drifting against it.
+        d = self._repo()
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n"
+                     "groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
+                     "settings:\n  security: redteam\n")
+        first = driver.run(self._args(d))
+        m = run_manifest.load_manifest(d)
+        self.assertEqual(m["security_mode"], "redteam")
+        self.assertEqual(m["config_requested"], {"security": "redteam"})
+        self.assertEqual(m["config_effective"], {"security": "redteam"})
+        resumed = driver.run(self._args(d))
+        self.assertEqual((resumed["status"], resumed["checkpoint"]),
+                         (first["status"], first["checkpoint"]))
+        self.assertEqual(first["status"], "checkpoint")
+
+    def test_a_huge_committed_integer_cannot_crash_the_run(self):
+        # Final review F1: `settings: {max_verify: <400 digits>}` reached
+        # `config_schema._rank`'s `float(value)` and raised OverflowError out
+        # of `driver._resolve_config` -- the target crashed the driver before
+        # a single reviewer was dispatched. `driver run` must answer with a
+        # STATUS, and the number must land in the manifest as a refusal.
+        d = self._repo()
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n"
+                     "groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
+                     "settings:\n  max_verify: %s\n" % ("9" * 400))
+        status = driver.run(self._args(d, "--no-tools"))
+        self.assertEqual(status["status"], "checkpoint", status.get("message"))
+        m = run_manifest.load_manifest(d)
+        self.assertEqual(m["config_effective"], {})
+        self.assertEqual([r["key"] for r in m["config_refused"]], ["max_verify"])
+        self.assertIn("out of range", m["config_refused"][0]["reason"])
+        self.assertIsInstance(m["config_requested"]["max_verify"], str)
+
+    def test_a_committed_default_gate_value_does_not_break_a_resume(self):
+        # Final review F4: a gate value EQUAL to the built-in default was
+        # written into `effective`, which made a no-op into an OPINION. A run
+        # created with `--security redteam` whose target then committed
+        # `security: standard` (and `tools: true`, already the default) was
+        # refused on the next bare resume -- "flag drift ... use --reset" --
+        # while the disclosure printed on that same invocation said nothing
+        # changes. The run's own posture is unmoved.
+        d = self._repo()
+        # No --no-tools: `tools: true` has to reach the ratchet to be the
+        # second equal-to-default value under test (conftest refuses the
+        # docker daemon, and the run stops at the scout checkpoint anyway).
+        first = driver.run(self._args(d, "--security", "redteam"))
+        self.assertEqual(first["status"], "checkpoint", first.get("message"))
+        self.assertIsNone(run_manifest.load_manifest(d)["flags"]["tools"])
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n"
+                     "groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
+                     "settings:\n  security: standard\n  tools: true\n")
+        resumed = driver.run(self._args(d))
+        self.assertEqual(resumed["status"], "checkpoint", resumed.get("message"))
+        self.assertEqual(resumed["checkpoint"], first["checkpoint"])
+        self.assertEqual(run_manifest.load_manifest(d)["security_mode"], "redteam")
 
     def test_flag_drift_refused_no_synthesize_divergence(self):
         # RETIRED HAZARD (#957 both-pass flag mismatch): the manifest pins the
@@ -741,20 +813,64 @@ class TestDriverRunLoopEndToEnd(unittest.TestCase):
         self.assertEqual(result2.kind, "advanced")
         self.assertTrue(coverage.coverage_done(d, manifest))
 
-class TestCliFlagsGrainKnobs(unittest.TestCase):
-    """#1681 Plan 1: the grain knobs resolve CLI > `settings:` in the root
-    config. The manifest's anti-drift keys record the EFFECTIVE value, so a
-    config edit between resumes is caught the same way a flag edit is."""
+class TestCliFlagsResolveTheCommittedConfig(unittest.TestCase):
+    """#1681 Plan 2: the flags resolve CLI > the config's EFFECTIVE
+    contribution > the engine's default, and only what the trust classes let
+    through can reach a flag at all. The manifest's anti-drift keys record the
+    EFFECTIVE value, so a config edit between resumes is caught the same way a
+    flag edit is."""
 
-    def test_flags_take_grain_knobs_from_settings_when_the_cli_is_silent(self):
+    def test_flags_take_the_grain_knobs_from_settings_when_the_cli_is_silent(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
-                fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 12\n  max_verify: 9\n")
+                fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 12\n"
+                         "  fail_on: high\n  gate_scope: all\n")
+            args = argparse.Namespace(max_per_group=None, max_verify=None,
+                                      fail_on=None, gate_scope=None)
+            flags = driver._cli_flags(args, review_root=d)
+            self.assertEqual(flags["max_per_group"], 12)
+            self.assertEqual(flags["fail_on"], "high")
+            self.assertEqual(flags["gate_scope"], "all")
+            args = argparse.Namespace(max_per_group=3, max_verify=None,
+                                      fail_on="critical", gate_scope=None)
+            flags = driver._cli_flags(args, review_root=d)
+            self.assertEqual((flags["max_per_group"], flags["fail_on"]), (3, "critical"))
+
+    def test_a_committed_max_verify_no_longer_reaches_the_flags(self):
+        # #1681 Plan 2: max_verify is a GATE key now, and the built-in default
+        # (uncapped) is stricter than any number -- so the file cannot set it.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  max_verify: 9\n")
+            args = argparse.Namespace(max_per_group=None, max_verify=None)
+            self.assertIsNone(driver._cli_flags(args, review_root=d)["max_verify"])
+            res = driver._resolve_config(args, review_root=d)
+            self.assertEqual(res.refused[0]["key"], "max_verify")
+
+    def test_an_operator_only_key_is_refused_and_never_reaches_the_flags(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  allow_unenforced: true\n"
+                         "  diff_context: 40\n")
             args = argparse.Namespace(max_per_group=None, max_verify=None)
             flags = driver._cli_flags(args, review_root=d)
-            self.assertEqual((flags["max_per_group"], flags["max_verify"]), (12, 9))
-            args = argparse.Namespace(max_per_group=3, max_verify=None)
-            self.assertEqual(driver._cli_flags(args, review_root=d)["max_per_group"], 3)
+            self.assertIsNone(flags["allow_unenforced"])
+            self.assertIsNone(flags["diff_context"])
+            self.assertEqual(sorted(r["key"] for r in
+                                    driver._resolve_config(args, review_root=d).refused),
+                             ["allow_unenforced", "diff_context"])
+
+    def test_a_committed_tools_false_cannot_switch_the_scanners_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n  tools: false\n")
+            args = argparse.Namespace(max_per_group=None, max_verify=None)
+            self.assertIsNone(driver._cli_flags(args, review_root=d)["tools"])
+
+    def test_no_review_root_means_no_config_and_no_crash(self):
+        args = argparse.Namespace(max_per_group=7, max_verify=None)
+        self.assertEqual(driver._cli_flags(args)["max_per_group"], 7)
+        self.assertEqual(driver._resolve_config(args, review_root=None), driver.config_schema.EMPTY)
 
 
 class TestDriverSingleScopeEndToEnd(unittest.TestCase):

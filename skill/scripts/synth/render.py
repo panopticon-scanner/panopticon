@@ -148,6 +148,44 @@ def _suppressed_gated_line(gated):
             % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
 
 
+def _config_line(config):
+    """#1681 Plan 2: what the reviewed repository's own config asked for and
+    did not get. Silent unless something was refused or clamped -- a config
+    that asked for nothing odd says nothing here, so the line's presence
+    always means a target tried to move its own review's settings.
+    """
+    # The KEY is target-authored too (fix round 2, M7): `load_resolution`
+    # bounds it at 300, which is four times what this human-facing line gives
+    # a value, so it goes through the same slice.
+    src = config if isinstance(config, dict) else {}
+    parts = ["`%s: %s` refused" % (_cfg_value(r.get("key")), _cfg_value(r.get("value")))
+             for r in (src.get("refused") or []) if isinstance(r, dict)]
+    parts += ["`%s: %s` clamped to %s" % (_cfg_value(c.get("key")),
+                                          _cfg_value(c.get("requested")),
+                                          _cfg_value(c.get("effective")))
+              for c in (src.get("clamped") or []) if isinstance(c, dict)]
+    if not parts:
+        return ""
+    return ("**Target config:** %s — the reviewed repository's `settings:` "
+            "asked for this and the run did not honour it" % ", ".join(parts))
+
+
+_CFG_VALUE_MAX = 80
+
+
+def _cfg_value(value):
+    """The summary-line rendering of one config value. Belt-and-braces bound
+    (#1681 Plan 2 fix round 1): `config_schema.load_resolution` already
+    bounds every value it reads off the run artifact, but this line is
+    human-facing, so a huge number or string never gets to widen it either."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    text = str(value)
+    return text if len(text) <= _CFG_VALUE_MAX else text[:_CFG_VALUE_MAX] + "…"
+
+
 def render_summary(report):
     """Render markdown summary of report with grades, stats, groups, and top findings."""
     s = report["summary"]
@@ -208,6 +246,14 @@ def render_summary(report):
             total_pending)
         insert_idx = 4 if not s.get("coverage_certified", True) else 3
         lines.insert(insert_idx, resume_line)
+    # #1681 Plan 2: coded BEFORE the integrity inserts below so integrity stays
+    # on top of it -- each `lines.insert(3, …)` in this function lands ABOVE
+    # whatever was already there (#1701's comment above pins the direction),
+    # so the LATER an insert is coded, the HIGHER it renders. An artifact-trust
+    # problem outranks a disclosure about a target's own config.
+    cfg_line = _config_line(report["meta"].get("config"))
+    if cfg_line:
+        lines.insert(3, cfg_line)
     integ = report["meta"].get("integrity") or {}
     bad = integ.get("unexpected_findings_files") or []
     if bad:

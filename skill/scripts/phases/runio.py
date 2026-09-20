@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 
+import scripts.config_schema as config_schema
 import scripts.diff_map as diff_map
 import scripts.evidence as evidence
 import scripts.groups_schema as groups_schema
@@ -446,16 +447,18 @@ def load_committed_groups(review_root):
     return copy.deepcopy(groups), list(errors)
 
 def committed_settings(review_root):
-    """The root config's `settings:` grain knobs (#1681 Plan 1), Nones when
-    there is no usable config (missing, refused, or legacy-only -- none of
-    which raises). A refusal is named after the file it actually came from,
-    since either accepted name may be the one that was read."""
+    """The root config's `settings:` section, parsed and classified (#1681
+    Plan 2), empty when there is no usable config (missing, refused, or
+    legacy-only -- none of which raises).
+
+    Returns `config_schema.Parsed`: what the file ASKED for, what type-checks,
+    and what was refused. It does NOT decide what any of it is worth -- the
+    clamp and the ratchet need the command line, which only the driver has,
+    so `driver._resolve_config` applies `config_schema.resolve_settings` on
+    top of this and is the one place that prints the disclosures.
+    """
     doc = repo_config.read_document(review_root)
-    settings, errors = groups_schema.parse_settings(doc.doc or {})
-    named = os.path.basename(doc.path) if doc.path else repo_config.CONFIG_NAMES[0]
-    for line in errors:
-        print("driver: %s: %s" % (named, line), file=sys.stderr)
-    return settings
+    return config_schema.parse_settings(doc.doc or {})
 
 def _load_ocrdb_bundle():
     """ocrdb.load_bundle, converting a malformed-bundle ValueError into a

@@ -215,6 +215,7 @@ groups:
     - skill/scripts/coverage_model.py
     - skill/scripts/groups_schema.py
     - skill/scripts/repo_config.py
+    - skill/scripts/config_schema.py
     - skill/scripts/setup_flow.py
     - skill/scripts/setup_proposal.py
     - skill/scripts/tests_axis.py
@@ -236,6 +237,7 @@ groups:
     - tests/test_groups_schema.py
     - tests/test_repo_config.py
     - tests/test_repo_config_literals.py
+    - tests/test_config_schema.py
     - tests/test_grouping_engine.py
     - tests/test_coverage_model.py
     - tests/test_setup_flow.py
