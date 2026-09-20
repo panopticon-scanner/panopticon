@@ -1262,7 +1262,7 @@ class TestTheEntryAgentIsAllowlistedAndContained(unittest.TestCase):
     symlinked out of the registration directory did the same thing one step
     later. Two rules, both fail-closed: the name must be one of the four
     registered shells, and the path it resolves to must stay inside the
-    registration directory (`base.published_schema`'s containment rule,
+    registration directory (`runners.schema.published_schema`'s containment rule,
     second application).
     """
 

@@ -15,6 +15,7 @@ from unittest import mock
 
 import scripts.runners.base as base
 import scripts.runners.batch as batch_mod
+import scripts.runners.schema as schema_rules
 import scripts._version as version
 import scripts.runners.session as session_runner
 
@@ -138,18 +139,19 @@ class TestIterBatch(unittest.TestCase):
         # enrolled by existing rather than by being listed here.
         #
         # `base.py` is the seam itself, `batch.py` (#1662) the loop's
-        # rollback manifest, `outage.py` (#1623) its host-outage verdict and
-        # `kimi_home.py` the sandboxed `$KIMI_CODE_HOME` the kimi family's
-        # children run under: none is a family, none launches anything, and
-        # none has a Runner. A shared module added to this package costs one
-        # line here, which is the visible decision it should be -- the
-        # alternative, skipping any module that happens to have no `Runner`,
-        # would silently excuse the family that forgot one.
+        # rollback manifest, `outage.py` (#1623) its host-outage verdict,
+        # `schema.py` (#1732) the output-schema argv rules split out of
+        # `base.py`, and `kimi_home.py` the sandboxed `$KIMI_CODE_HOME` the
+        # kimi family's children run under: none is a family, none launches
+        # anything, and none has a Runner. A shared module added to this
+        # package costs one line here, which is the visible decision it should
+        # be -- the alternative, skipping any module that happens to have no
+        # `Runner`, would silently excuse the family that forgot one.
         pkg_dir = os.path.dirname(os.path.abspath(base.__file__))
         names = sorted(f[:-3] for f in os.listdir(pkg_dir)
                        if f.endswith(".py")
                        and f not in ("__init__.py", "base.py", "batch.py",
-                                     "outage.py", "kimi_home.py"))
+                                     "outage.py", "schema.py", "kimi_home.py"))
         self.assertIn("claude", names)                  # the directory really was read
         for name in names:
             mod = importlib.import_module("scripts.runners.%s" % name)
@@ -450,17 +452,17 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
         class Bare(base.HostRunner):
             host = "bare"
         self.assertEqual((), Bare().OUTPUT_SCHEMA_FLAG)
-        self.assertEqual([], base.schema_argv(Bare().OUTPUT_SCHEMA_FLAG,
+        self.assertEqual([], schema_rules.schema_argv(Bare().OUTPUT_SCHEMA_FLAG,
                                               {"output_schema": _published()}))
 
     def test_a_declared_flag_takes_the_entrys_published_schema(self):
         self.assertEqual(["--x", _published()],
-                         base.schema_argv(("--x",), {"output_schema": _published()}))
+                         schema_rules.schema_argv(("--x",), {"output_schema": _published()}))
 
     def test_an_entry_naming_no_schema_gets_no_flag(self):
         for entry in ({}, {"output_schema": None}, {"output_schema": ""}, None):
             with self.subTest(entry=entry):
-                self.assertEqual([], base.schema_argv(("--x",), entry))
+                self.assertEqual([], schema_rules.schema_argv(("--x",), entry))
 
     def test_a_path_outside_the_published_reference_dir_is_refused(self):
         # The entry travels through `.panopticon/dispatch-request.json`, inside
@@ -470,7 +472,7 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
         for path in ("/etc/passwd", os.path.join(os.path.dirname(_published()), "nope.json"),
                      os.path.join(os.path.dirname(_published()), os.pardir, "SKILL.md")):
             with self.subTest(path=path):
-                self.assertEqual([], base.schema_argv(("--x",), {"output_schema": path}))
+                self.assertEqual([], schema_rules.schema_argv(("--x",), {"output_schema": path}))
 
     def test_inline_hands_the_cli_the_schema_text_not_its_path(self):
         # MEASURED 2026-09-20 on claude 2.1.276: `--json-schema <schema>` takes
@@ -478,7 +480,7 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
         # Unrecognized token '/'" on a path), while codex's `--output-schema
         # <FILE>` takes a path. Run 14 burned 3 x 103 tool-verify launches on
         # the path form before the driver gave up.
-        argv = base.schema_argv(("--x",), {"output_schema": _published()}, inline=True)
+        argv = schema_rules.schema_argv(("--x",), {"output_schema": _published()}, inline=True)
         self.assertEqual("--x", argv[0])
         self.assertEqual(2, len(argv))
         self.assertNotEqual(_published(), argv[1])
@@ -487,37 +489,37 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
         self.assertNotIn("\n", argv[1])
 
     def test_inline_still_refuses_an_unpublished_path(self):
-        self.assertEqual([], base.schema_argv(("--x",), {"output_schema": "/etc/passwd"},
+        self.assertEqual([], schema_rules.schema_argv(("--x",), {"output_schema": "/etc/passwd"},
                                               inline=True))
 
     def test_inline_schema_applies_the_containment_rule_itself(self):
         # Not only via schema_argv: a helper that opened whatever it was handed
         # would turn the one target-chosen argv value into an arbitrary-file
         # read that reaches the CLI (review round 1, item 1).
-        self.assertIsNone(base.inline_schema("/etc/passwd"))
-        self.assertIsNone(base.inline_schema(None))
-        self.assertIsNotNone(base.inline_schema(_published()))
+        self.assertIsNone(schema_rules.inline_schema("/etc/passwd"))
+        self.assertIsNone(schema_rules.inline_schema(None))
+        self.assertIsNotNone(schema_rules.inline_schema(_published()))
 
     def test_inline_refuses_a_published_file_too_large_for_one_argv_token(self):
         # skill/reference/ also publishes ocrdb-0.5.0.json (176 KB compacted),
         # over Linux MAX_ARG_STRLEN: execve would answer E2BIG and the runner
         # would burn three launches per entry -- the run-14 failure mode by a
         # second road (review round 1, item 2).
-        self.assertLess(0, base.INLINE_SCHEMA_MAX)
+        self.assertLess(0, schema_rules.INLINE_SCHEMA_MAX)
         tmp = tempfile.mkdtemp()
         try:
             big = os.path.join(tmp, "big-schema.json")
             with open(big, "w", encoding="utf-8") as fh:
-                json.dump({"type": "object", "pad": "x" * (base.INLINE_SCHEMA_MAX + 1)}, fh)
-            with mock.patch.object(base.version, "reference_path", return_value=tmp):
-                self.assertIsNone(base.inline_schema(big))
-                self.assertEqual([], base.schema_argv(("--x",), {"output_schema": big},
+                json.dump({"type": "object", "pad": "x" * (schema_rules.INLINE_SCHEMA_MAX + 1)}, fh)
+            with mock.patch.object(schema_rules.version, "reference_path", return_value=tmp):
+                self.assertIsNone(schema_rules.inline_schema(big))
+                self.assertEqual([], schema_rules.schema_argv(("--x",), {"output_schema": big},
                                                       inline=True))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         published = os.path.join(os.path.dirname(_published()), "ocrdb-0.5.0.json")
         if os.path.isfile(published):
-            self.assertIsNone(base.inline_schema(published))
+            self.assertIsNone(schema_rules.inline_schema(published))
 
     def test_inline_treats_an_unparsable_published_file_as_no_schema(self):
         # The persist layer validates the reply against the schema either way;
@@ -528,13 +530,13 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
             bad = os.path.join(tmp, "broken-schema.json")
             with open(bad, "w", encoding="utf-8") as fh:
                 fh.write("{not json")
-            with mock.patch.object(base.version, "reference_path", return_value=tmp):
-                self.assertEqual([], base.schema_argv(("--x",), {"output_schema": bad},
+            with mock.patch.object(schema_rules.version, "reference_path", return_value=tmp):
+                self.assertEqual([], schema_rules.schema_argv(("--x",), {"output_schema": bad},
                                                       inline=True))
                 # The path form is untouched: it hands over the (resolved)
                 # file and lets the CLI be the one to choke on it.
                 self.assertEqual(["--x", os.path.realpath(bad)],
-                                 base.schema_argv(("--x",), {"output_schema": bad}))
+                                 schema_rules.schema_argv(("--x",), {"output_schema": bad}))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -859,7 +861,7 @@ class TestTheRegisteredAgentAllowlist(unittest.TestCase):
     """#1720: `entry["agent"]` arrives through
     `.panopticon/dispatch-request.json`, a file inside the REVIEWED TREE, and
     every family puts it on a launch's argv (kimi joins it into a filesystem
-    path). The allowlist is the same containment idea `published_schema`
+    path). The allowlist is the same containment idea `schema.published_schema`
     applies to the one other entry-derived argv value -- and it is DERIVED
     from `dispatch.ROLE_FILES`, so a role added or renamed there cannot leave
     a second, stale spelling here.

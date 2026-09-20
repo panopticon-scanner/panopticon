@@ -6,6 +6,7 @@ import subprocess
 
 import scripts.runners.base as base
 import scripts.runners.outage as outage
+import scripts.runners.schema as schema_argv_rules
 
 
 # The launcher a Runner built without an injected `runner=` uses. Read at
@@ -27,7 +28,7 @@ class Runner(base.HostRunner):
     ENVELOPE_FLAGS = ("-p", "--output-format")
     # D10 ruling 3: `claude -p --json-schema <schema>` ("JSON Schema for
     # structured output") -- the schema's TEXT, not a file (MEASURED on
-    # 2.1.276; see base.inline_schema). Appended only for an entry whose role
+    # 2.1.276; see runners/schema.py). Appended only for an entry whose role
     # publishes one.
     OUTPUT_SCHEMA_FLAG = ("--json-schema",)
     mode = "headless"
@@ -124,8 +125,9 @@ class Runner(base.HostRunner):
         elif not entry.get("enforced") and entry.get("model"):
             cmd += ["--model", entry["model"]]
         # `--json-schema <schema>` takes the JSON text, not a file (see
-        # base.inline_schema for the measurement and the run it cost).
-        cmd += base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry, inline=True)
+        # `runners/schema.py` for the measurement and the run it cost).
+        cmd += schema_argv_rules.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry,
+                                             inline=True)
         cmd.append(entry["prompt"])
         return cmd
 

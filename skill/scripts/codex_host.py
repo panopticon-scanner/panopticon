@@ -22,6 +22,7 @@ import tomllib
 import scripts.codex_read_tools as codex_read_tools
 import scripts.hosts as hosts
 import scripts.runners.base as runners_base
+import scripts.runners.schema as runners_schema
 
 
 ENV_KEYS = ("PANOPTICON_ENTRY_ID", "PANOPTICON_WRITE_ALLOWLIST", "PANOPTICON_READ_SCOPE")
@@ -238,7 +239,7 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
             catalog=None, schema_argv=()):
     """Build one stdin-prompt launch from its registered, effective policy.
 
-    `schema_argv` is `runners.base.schema_argv`'s output -- `["--output-schema",
+    `schema_argv` is `runners.schema.schema_argv`'s output -- `["--output-schema",
     <published schema>]` or nothing (D10 ruling 3). It is placed BEFORE the
     trailing `-`, which is not a flag but the stdin marker, and `validate_command`
     re-checks the path it carries."""
@@ -371,7 +372,7 @@ def validate_command(argv, env, review_root):
     # job is to re-check the FINISHED argv rather than trust how it was made.
     if SCHEMA_FLAG in argv:
         index = argv.index(SCHEMA_FLAG) + 1
-        if index >= len(argv) or not runners_base.published_schema(argv[index]):
+        if index >= len(argv) or not runners_schema.published_schema(argv[index]):
             raise ValueError("Codex command names an output schema that is not one "
                              "panopticon publishes under skill/reference/")
     overrides = [argv[i + 1] for i, value in enumerate(argv[:-1]) if value == "-c"]

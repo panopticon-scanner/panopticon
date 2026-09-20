@@ -340,7 +340,7 @@ class Runner(base.HostRunner):
         * the name must be one of `base.REGISTERED_AGENT_NAMES` (that alone
           stops `../../tmp/evil` and `/tmp/x`);
         * the path it RESOLVES to must still be under the registration
-          directory -- `base.published_schema`'s realpath containment, second
+          directory -- `runners.schema.published_schema`'s realpath containment, second
           application -- so a registered name symlinked out of that directory
           fails closed too.
         """

@@ -5,6 +5,7 @@ import subprocess
 
 from scripts import codex_host
 import scripts.runners.base as base
+import scripts.runners.schema as schema_argv_rules
 
 
 # The launcher, as a MODULE attribute rather than a default argument, so a
@@ -190,7 +191,8 @@ class Runner(base.HostRunner):
                 return base.refuse_unregistered_agent(entry, roles=self.roles)
             command = codex_host.command(entry, child_env, self.review_root, self.run_dir,
                                          runner=self.runner,
-                                         schema_argv=base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry))
+                                         schema_argv=schema_argv_rules.schema_argv(
+                                             self.OUTPUT_SCHEMA_FLAG, entry))
             codex_host.validate_command(command, child_env, self.review_root)
             # #1657 step 2 / CX-9: the child's PROCESS cwd is the same
             # run-owned scratch `--cd` names, never the review root. A codex
