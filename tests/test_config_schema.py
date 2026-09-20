@@ -103,3 +103,99 @@ class TestParseSettings(unittest.TestCase):
         p = cs.parse_settings({"settings": [1, 2]})
         self.assertEqual(p.typed, {})
         self.assertIn("mapping", p.refused[0]["reason"])
+
+
+def _resolve(settings, cli=None, defaults=None):
+    return cs.resolve_settings(cli or {}, cs.parse_settings({"settings": settings}),
+                               defaults=defaults)
+
+
+class TestTheClamp(unittest.TestCase):
+    def test_an_in_band_value_passes_through_unchanged(self):
+        r = _resolve({"max_per_group": 20, "max_groups": 12})
+        self.assertEqual(r.effective, {"max_per_group": 20, "max_groups": 12})
+        self.assertEqual(r.clamped, [])
+
+    def test_an_above_band_value_is_clamped_to_the_upper_bound(self):
+        r = _resolve({"max_per_group": 5000})
+        self.assertEqual(r.effective["max_per_group"], 48)
+        self.assertEqual(r.clamped, [{"key": "max_per_group", "requested": 5000,
+                                      "effective": 48}])
+        self.assertIn("clamped to 48", r.disclosures[0])
+        self.assertIn("target config asked for `max_per_group: 5000`", r.disclosures[0])
+
+    def test_a_below_band_value_is_clamped_to_the_lower_bound(self):
+        r = _resolve({"max_groups": 1})
+        self.assertEqual(r.effective["max_groups"], 4)
+        self.assertEqual(r.clamped[0]["requested"], 1)
+
+    def test_a_clamp_is_not_a_refusal(self):
+        r = _resolve({"max_per_group": 5000})
+        self.assertEqual(r.refused, [])
+
+    def test_the_cli_is_never_clamped_and_always_wins(self):
+        r = _resolve({"max_per_group": 5000}, cli={"max_per_group": 900})
+        self.assertNotIn("max_per_group", r.effective)
+        self.assertEqual(r.clamped, [])
+        self.assertIn("the command line's `900` wins", r.disclosures[0])
+
+
+class TestTheRatchet(unittest.TestCase):
+    def test_a_tightening_gate_value_is_honoured(self):
+        for key, value in (("security", "redteam"), ("fail_on", "high"),
+                           ("gate_scope", "all")):
+            r = _resolve({key: value})
+            self.assertEqual(r.effective.get(key), value, key)
+            self.assertEqual(r.refused, [], key)
+
+    def test_a_loosening_gate_value_is_refused_and_disclosed(self):
+        for key, value, base in (("severity", "high", "all"),
+                                 ("tools", False, "true"),
+                                 ("max_verify", 5, "null")):
+            r = _resolve({key: value})
+            self.assertNotIn(key, r.effective, key)
+            self.assertEqual(r.refused[0]["key"], key)
+            self.assertIn("loosens the built-in default", r.refused[0]["reason"])
+            self.assertIn("refused", r.disclosures[0])
+            self.assertIn(base, r.refused[0]["reason"])
+
+    def test_a_value_equal_to_the_default_is_a_disclosed_no_op(self):
+        r = _resolve({"security": "standard", "tools": True})
+        self.assertEqual(r.effective, {"security": "standard", "tools": True})
+        self.assertEqual(r.refused, [])
+        self.assertTrue(any("already the built-in default" in d for d in r.disclosures))
+
+    def test_max_verify_is_refused_against_the_uncapped_default(self):
+        # Spec Amendments finding 1: the built-in default is None = uncapped,
+        # which is STRICTER than any number, so no committed cap survives the
+        # ratchet. Pinned so the day the baseline changes, this test says so.
+        self.assertIsNone(cs.DEFAULTS["max_verify"])
+        r = _resolve({"max_verify": 1000})
+        self.assertNotIn("max_verify", r.effective)
+        self.assertIn("null", r.refused[0]["reason"])
+
+    def test_max_verify_tightens_against_a_finite_baseline(self):
+        defaults = dict(cs.DEFAULTS, max_verify=10)
+        self.assertEqual(_resolve({"max_verify": 30}, defaults=defaults)
+                         .effective["max_verify"], 30)
+        self.assertEqual(_resolve({"max_verify": 4}, defaults=defaults).effective, {})
+
+    def test_the_cli_wins_over_a_tightening_gate_value_too(self):
+        r = _resolve({"security": "redteam"}, cli={"security": "standard"})
+        self.assertEqual(r.effective, {})
+        self.assertIn("the command line's `standard` wins", r.disclosures[0])
+
+    def test_refusals_from_the_parse_layer_are_carried_through(self):
+        r = _resolve({"allow_unenforced": True, "nonsense": 1})
+        self.assertEqual(sorted(x["key"] for x in r.refused),
+                         ["allow_unenforced", "nonsense"])
+        self.assertEqual(r.effective, {})
+
+    def test_requested_is_what_the_file_asked_for_including_refusals(self):
+        r = _resolve({"security": "redteam", "allow_unenforced": True})
+        self.assertEqual(r.requested, {"security": "redteam", "allow_unenforced": True})
+
+    def test_an_empty_document_resolves_to_nothing(self):
+        r = cs.resolve_settings({}, cs.EMPTY_PARSED)
+        self.assertEqual((r.effective, r.requested, r.refused, r.clamped, r.disclosures),
+                         ({}, {}, [], [], []))

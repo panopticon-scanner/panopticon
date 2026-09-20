@@ -195,4 +195,74 @@ def parse_settings(doc):
     return Parsed(requested, typed, refused, disclosures)
 
 
+Settings = namedtuple("Settings", "effective requested refused clamped disclosures")
+EMPTY = Settings({}, {}, [], [], [])
+
+
+def _rank(key, value):
+    """How strict `value` is for `key`, as a number: higher is stricter.
+
+    `max_verify` is the numeric one, and its None means UNCAPPED -- verify
+    every queued finding -- which is stricter than any finite cap, hence the
+    infinity. A value outside its key's vocabulary ranks below everything,
+    which cannot happen for a parsed value and keeps the comparison total.
+    """
+    if key == "max_verify":
+        return float("inf") if value is None else float(value)
+    order = STRICTNESS[key]
+    return float(order.index(value)) if value in order else -1.0
+
+
+def resolve_settings(cli, parsed, defaults=None):
+    """What the FILE contributes to this run, after the CLI, the clamp and
+    the ratchet (spec §4, ruling 6).
+
+    `cli` maps a classified key to the value the command line gave, or None
+    where it gave none. `effective` holds only the keys the file actually
+    supplies: a key the operator named on the command line is the OPERATOR's,
+    in both directions, so the file's value for it is set aside and disclosed
+    rather than compared. Callers compose each run value as
+    `cli value if not None else resolved.effective.get(key)`.
+
+    `defaults` exists for the tests and for the day a built-in default moves;
+    production always passes None and gets DEFAULTS.
+    """
+    defaults = DEFAULTS if defaults is None else defaults
+    cli = cli or {}
+    effective, clamped = {}, []
+    refused = [dict(r) for r in parsed.refused]
+    disclosures = list(parsed.disclosures)
+    for key in sorted(parsed.typed):
+        value = parsed.typed[key]
+        if cli.get(key) is not None:
+            disclosures.append(_line(key, value, "the command line's `%s` wins"
+                                     % _fmt(cli[key])))
+            continue
+        if key in CLAMPS:
+            low, high = CLAMPS[key]
+            bounded = min(max(value, low), high)
+            if bounded != value:
+                clamped.append({"key": key, "requested": value, "effective": bounded})
+                disclosures.append(_line(key, value, "clamped to %d (the band is %d-%d)"
+                                         % (bounded, low, high)))
+            effective[key] = bounded
+            continue
+        if CLASS_OF[key] == "gate":
+            base = defaults.get(key)
+            if _rank(key, value) >= _rank(key, base):
+                effective[key] = value
+                if value == base:
+                    disclosures.append(_line(
+                        key, value, "it is already the built-in default; nothing changes"))
+            else:
+                refused.append(_refusal(key, value, "loosens the built-in default (%s)"
+                                        % _fmt(base)))
+                disclosures.append(_line(key, value,
+                                         "refused (it loosens the built-in default `%s`)"
+                                         % _fmt(base)))
+            continue
+        effective[key] = value          # grain, no band (include_fixtures)
+    return Settings(effective, dict(parsed.requested), refused, clamped, disclosures)
+
+
 RESOLUTION_NAME = "config-resolution.json"
