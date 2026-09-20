@@ -379,8 +379,11 @@ class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
 class RequestIntegrityCase(unittest.TestCase):
     """#1727: `.panopticon/dispatch-request.json` lives INSIDE the reviewed
     tree, and several readers trust every field on it. Its integrity is
-    anchored outside that tree instead -- a sha256 over the exact bytes the
-    driver wrote, recorded in the run (or setup) manifest as it writes them.
+    anchored in the run (or setup) manifest -- a sha256 over the exact bytes
+    the driver wrote, recorded as it writes them. That manifest is inside the
+    tree too; what it is, is better defended (no dispatched agent may write
+    it; `_foreign_manifest` discards a planted one), and forging it as well is
+    a second write the loop's in-memory hash still catches.
     """
 
     def setUp(self):
@@ -524,9 +527,9 @@ class TestLoadBoundRequest(RequestIntegrityCase):
         self.assertIn(path, refusal)
 
     def test_a_record_altered_after_the_write_is_refused_by_the_in_memory_hash(self):
-        # The manifest is outside the reviewed tree, but the operator's own
-        # checkout is not beyond reach; the loop also carries the hash the
-        # phase returned IN MEMORY, which no on-disk edit can reach.
+        # Assume the manifest was reached too (it is inside the tree, only
+        # better defended): the loop also carries the hash the phase returned
+        # IN MEMORY, which no on-disk edit can reach.
         self._run_manifest()
         path, digest = self._write()
         forged = hashlib.sha256(b"forged").hexdigest()

@@ -2538,9 +2538,11 @@ class TestTheLoopRefusesARequestItCannotProveItWrote(LoopCase):
         self.assertFalse(os.path.exists(os.path.join(run_dir, base.LEDGER_FILE)))
 
     def test_a_forged_record_is_caught_by_the_hash_the_phase_returned(self):
-        # The manifest lives outside the reviewed tree, but assume it too was
-        # reached: the loop still holds the hash the PHASE computed, in
-        # memory, and that is the value no on-disk edit can reconcile.
+        # The manifest is inside the reviewed tree as well -- better defended
+        # (no dispatched agent may write it, and `_foreign_manifest` discards
+        # a planted one), not out of reach. So assume it WAS reached: the loop
+        # still holds the hash the PHASE computed, in memory, and that is the
+        # value no on-disk edit can reconcile.
         d, floor = self._repo()
         runner = FakeRunner()
 

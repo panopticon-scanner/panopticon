@@ -347,11 +347,20 @@ def record_dispatch_request(review_root, manifest, checkpoint, sha256, at=None):
     The THIRD deliberate rewrite, and -- like the two above -- not an
     anti-drift key. `.panopticon/dispatch-request.json` lives inside the
     REVIEWED tree, so every field on it is a value a target can choose; the
-    hash of the bytes the driver wrote is anchored here, outside that tree,
-    and `phases/requests.load_bound_request` refuses a file that no longer
+    hash of the bytes the driver wrote is anchored here, and
+    `phases/requests.load_bound_request` refuses a file that no longer
     matches. It records what this driver itself wrote, is overwritten on every
     write (the request is rolling -- regenerated each iteration), and a lost
     or stale value fails CLOSED: the readers refuse rather than trust.
+
+    This file is inside the reviewed tree too -- the claim is NOT that it is
+    out of reach. It is the better-defended of the two: no dispatched agent
+    may write it (the write guard's allowlist is the entries' out_files) and
+    `runio._foreign_manifest` discards a manifest that is git-tracked in the
+    tree or stamped for another checkout, while the request is rewritten by
+    the driver every iteration and read by every family. Forging the record
+    as well is a second, harder write -- and one the loop's in-memory
+    `request_sha256` cross-check still catches.
 
     `manifest` may be None, in which case the on-disk one is loaded. A tree
     with no manifest at all records nothing and does not raise: the

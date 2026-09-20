@@ -259,8 +259,18 @@ def write_dispatch_request_bound(review_root, run_id, checkpoint, group, entries
     hash, write -- never by re-reading the file afterwards: a target that can
     swap the file can swap it between those two operations, and the driver
     would then record the attacker's hash as its own. It is recorded in this
-    namespace's manifest, OUTSIDE the reviewed tree, so that every reader can
-    ask whether the file it is about to trust is the one this run wrote.
+    namespace's manifest, so that every reader can ask whether the file it is
+    about to trust is the one this run wrote.
+
+    The manifest is `.panopticon/run-manifest.json` (or `setup-manifest.json`)
+    -- INSIDE the reviewed tree, like the request itself. It is not a safe
+    place; it is a BETTER-DEFENDED one: the write guard's allowlist is the
+    entries' out_files, so no dispatched agent may write it, and
+    `runio._foreign_manifest` discards one that is git-tracked in the tree or
+    stamped for another checkout. What the record buys is that forging the
+    request now costs a second, harder write -- and the loop, which also holds
+    `request_sha256` in memory off its own checkpoint status, catches even
+    that pair.
 
     `write_dispatch_request` below is the same call for the callers that want
     only the path. Two names rather than a module-level stash of the last
