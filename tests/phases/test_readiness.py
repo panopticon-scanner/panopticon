@@ -376,3 +376,59 @@ class TestMatrixRowNamesTheResolvedConfig(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheExistingRunRowReadsTheRequestBound(unittest.TestCase):
+    """#1727: the `existing_run` row's pending COUNT is read out of
+    `dispatch-request.json`, a file in the reviewed tree. Once the run has
+    recorded a hash for it, the row reads it bound -- a file that no longer
+    matches reports NO count and says why, rather than a number derived from
+    a request this run cannot vouch for. A run with no record (one written
+    before the key existed) reads exactly as it did."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        self.addCleanup(self._t.cleanup)
+        os.makedirs(os.path.join(self.root, ".panopticon"))
+        run_manifest.write_manifest(self.root, {
+            "schema_version": 1, "run_id": "0123456789abcdef", "host": "claude",
+            "security_mode": "standard", "created": "2026-09-20T00:00:00Z",
+            "review_root": self.root, "target": self.root})
+        self.tag = run_manifest.run_tag(run_manifest.load_manifest(self.root))
+        runs = os.path.join(self.root, ".panopticon", "runs")
+        os.makedirs(os.path.join(runs, self.tag))
+        os.symlink(self.tag, os.path.join(runs, "latest"))
+
+    def _entries(self):
+        import scripts.phases.requests as requests
+        pending = os.path.join(self.root, ".panopticon", "runs", self.tag, "b.json")
+        return requests.write_dispatch_request(
+            self.root, "RID", "review", None,
+            [{"id": "b", "prompt": "p", "out_file": pending}])
+
+    def test_a_recorded_request_still_reports_its_pending_count(self):
+        self._entries()
+        row = readiness._existing_run_row(self.root)
+        self.assertEqual(("checkpoint", 1), (row["status"], row["pending"]))
+        self.assertEqual(self.tag, row["tag"])
+
+    def test_a_request_that_no_longer_matches_reports_no_count(self):
+        path = self._entries()
+        with open(path, "ab") as fh:
+            fh.write(b" ")
+        row = readiness._existing_run_row(self.root)
+        self.assertIsNone(row["pending"])
+        self.assertIn("pending count unknown", row["detail"])
+        self.assertIn("does not match the request this run wrote", row["detail"])
+        self.assertEqual(self.tag, row["tag"])
+
+    def test_a_run_with_no_recorded_hash_reads_as_it_always_did(self):
+        path = self._entries()
+        manifest = run_manifest.load_manifest(self.root)
+        manifest.pop("dispatch_request")
+        run_manifest._rewrite(self.root, manifest)
+        with open(path, "ab") as fh:
+            fh.write(b" ")
+        row = readiness._existing_run_row(self.root)
+        self.assertEqual(("checkpoint", 1), (row["status"], row["pending"]))

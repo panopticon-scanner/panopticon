@@ -53,6 +53,9 @@ import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
 from . import engine
 from . import readiness_checks
+# #1727: the `existing_run` row counts pending entries out of the dispatch
+# request, so it reads it through the same bound reader the loop does.
+from . import requests
 from . import runio
 
 
@@ -372,6 +375,11 @@ def _existing_run_row(review_root):
     nothing pending", so a `--json` consumer keying on `status` alone could not
     tell them apart while the row's own `detail` said which. A non-null `tag`
     with `none` was the contradiction.
+
+    `pending` is an int except in one case (#1727): `null` under `checkpoint`
+    means the run IS at a checkpoint but its dispatch request no longer
+    matches the hash the run recorded, so the count could not be established.
+    `detail` carries the refusal.
     """
     runs = os.path.join(review_root, ".panopticon", "runs")
     try:
@@ -396,7 +404,25 @@ def _existing_run_row(review_root):
                 "detail": "%s stopped at readiness (%s)"
                           % (tag, ", ".join(map(str, failed)) or "no row named")}
     pending = 0
-    request = runio._load_json(os.path.join(folder, "dispatch-request.json"))
+    path = os.path.join(folder, "dispatch-request.json")
+    # #1727: this count is read out of a file in the REVIEWED tree, and it is
+    # what tells an operator whether a resume has work left. Read it BOUND
+    # whenever this row's folder is the one the run manifest anchors -- the
+    # normal case, and the only one `load_bound_request` can resolve -- so a
+    # request that no longer matches what the run recorded reports NO count
+    # and says why, instead of a number derived from a file the run cannot
+    # vouch for. Informational, never gating: the `existing-run` line carries
+    # no ok-flag, and `driver loop` regenerates the request on its way past.
+    # A run that recorded no hash (one written before the key existed) reads
+    # exactly as it always did.
+    bound = os.path.abspath(path) == os.path.abspath(requests.request_path(review_root))
+    if bound and requests.recorded_request_hash(review_root)[0]:
+        request, refusal = requests.load_bound_request(review_root)
+        if refusal:
+            return {"tag": tag, "status": "checkpoint", "pending": None,
+                    "detail": "%s: pending count unknown -- %s" % (tag, refusal)}
+    else:
+        request = runio._load_json(path)
     entries = request.get("entries") if isinstance(request, dict) else None
     if isinstance(entries, list):
         pending = sum(1 for entry in entries if _entry_pending(entry))
