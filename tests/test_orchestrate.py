@@ -2641,6 +2641,25 @@ class TestTheEntrysShellIsBoundToItsCheckpoint(LoopCase):
         for kind in runio.CHECKPOINT_KINDS:
             self.assertEqual(seen[kind], set(loop_batch.CHECKPOINT_ROLES[kind]), kind)
 
+    def test_an_unhashable_checkpoint_is_a_refusal_not_a_caught_crash(self):
+        # `checkpoint` is read off the same target-writable file as `agent`, so
+        # it arrives as whatever JSON says -- and `CHECKPOINT_ROLES.get([])`
+        # raises `TypeError: unhashable type`. `loop` catches everything, so
+        # that became an `error` naming a Python type instead of the routing
+        # refusal it is. Reachable only through a forged record plus a planted
+        # file; a named refusal either way.
+        for checkpoint in ([], {}, ["verify"], {"a": "verify"}, 7, None):
+            with self.subTest(checkpoint=checkpoint):
+                self.assertEqual((), loop_batch.checkpoint_roles(checkpoint))
+                self.assertEqual(
+                    ["e"], loop_batch.refuse_misrouted(
+                        [{"id": "e", "enforced": True, "agent": "panopticon-advisor"}],
+                        checkpoint))
+                message = loop_batch.misroute_refusal(["e"], checkpoint)
+                self.assertIn("does not dispatch", message)
+                self.assertIn("no enforcement shell", message)
+                self.assertNotIn("TypeError", message)
+
     def test_a_misrouted_shell_ends_the_run_before_anything_is_armed(self):
         d, floor = self._repo()
         runner = FakeRunner()

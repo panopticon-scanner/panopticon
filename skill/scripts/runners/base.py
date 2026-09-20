@@ -516,7 +516,7 @@ def published_schema(path):
 # the runner reports as a failed entry -- three burned launches per entry,
 # the exact failure this helper exists to prevent. `skill/reference/` also
 # publishes `ocrdb-0.5.0.json` (176 KB compacted), and a rewritten
-# `dispatch-request.json` can name any published file (#1727 is unshipped),
+# `dispatch-request.json` can name any published file,
 # so the cap is what keeps "published" from meaning "launchable". Half the
 # kernel limit, well above every schema stamped on an entry today (the
 # largest, report-schema.json, compacts to ~40 KB).

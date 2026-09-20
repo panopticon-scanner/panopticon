@@ -329,7 +329,7 @@ def loop(args):
             # shells this checkpoint dispatches (the runner narrows its own
             # per-entry allowlist to them). Per checkpoint: the request rolls.
             runner.request_sha256 = requests.recorded_request_hash(review_root, namespace)[0]
-            runner.roles = loop_batch.CHECKPOINT_ROLES.get(req.get("checkpoint")) or ()
+            runner.roles = loop_batch.checkpoint_roles(req.get("checkpoint"))
             entries = [e for e in req.get("entries") or [] if isinstance(e, dict)]
             pending = loop_batch._pending(entries)
             # #1720 + #1727: does what it SAYS match this run's own evidence

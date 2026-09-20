@@ -85,6 +85,29 @@ def enforcement_refusal(disagreeing, expected):
             "with --reset, or re-run readiness" % (disagreeing[0], claimed, actual))
 
 
+def checkpoint_roles(checkpoint):
+    """The roles `checkpoint` dispatches -- `()` for anything else (#1727).
+
+    `isinstance` FIRST, for the reason `base.registered_agent` does it: the
+    checkpoint is read off the same target-writable request as `agent`, so it
+    arrives as whatever the JSON says, and `dict.get` on an array or an object
+    raises `TypeError: unhashable type`. `loop`'s catch-all turned that into
+    an `error` naming a Python type rather than the routing refusal it is.
+    `()` narrows -- it accepts no shell at all -- so an unknown or unhashable
+    checkpoint fails CLOSED, exactly as `scan` does by design.
+    """
+    if not isinstance(checkpoint, str):
+        return ()
+    return CHECKPOINT_ROLES.get(checkpoint) or ()
+
+
+def _allowed_shells(checkpoint):
+    """The registered shell NAMES this checkpoint dispatches."""
+    return {dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
+            for role in checkpoint_roles(checkpoint)
+            if role in dispatch.ROLE_FILES}
+
+
 def refuse_misrouted(pending, checkpoint):
     """The ids whose `agent` is not one this checkpoint dispatches (#1727).
 
@@ -96,9 +119,7 @@ def refuse_misrouted(pending, checkpoint):
     name -- fail-closed, since the checkpoint is read off the same
     target-writable file.
     """
-    allowed = {dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
-               for role in CHECKPOINT_ROLES.get(checkpoint) or ()
-               if role in dispatch.ROLE_FILES}
+    allowed = _allowed_shells(checkpoint)
     misrouted = []
     for entry in pending:
         if not isinstance(entry, dict):
@@ -123,10 +144,7 @@ def misroute_refusal(misrouted, checkpoint):
     newline as its escape sequence -- the reason `base.UNREGISTERED_AGENT`
     does the same.
     """
-    allowed = ", ".join(sorted(
-        dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
-        for role in CHECKPOINT_ROLES.get(checkpoint) or ()
-        if role in dispatch.ROLE_FILES)) or "no enforcement shell"
+    allowed = ", ".join(sorted(_allowed_shells(checkpoint))) or "no enforcement shell"
     return ("driver loop: entry %r names an enforcement shell its checkpoint does "
             "not dispatch (checkpoint %r dispatches: %s); the dispatch request does "
             "not match this run's own plan -- re-run with --reset"
