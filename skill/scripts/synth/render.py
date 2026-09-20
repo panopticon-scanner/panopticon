@@ -148,6 +148,30 @@ def _suppressed_gated_line(gated):
             % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
 
 
+def _config_line(config):
+    """#1681 Plan 2: what the reviewed repository's own config asked for and
+    did not get. Silent unless something was refused or clamped -- a config
+    that asked for nothing odd says nothing here, so the line's presence
+    always means a target tried to move its own review's settings.
+    """
+    src = config if isinstance(config, dict) else {}
+    parts = ["`%s: %s` refused" % (r.get("key"), _cfg_value(r.get("value")))
+             for r in (src.get("refused") or []) if isinstance(r, dict)]
+    parts += ["`%s: %s` clamped to %s" % (c.get("key"), _cfg_value(c.get("requested")),
+                                          _cfg_value(c.get("effective")))
+              for c in (src.get("clamped") or []) if isinstance(c, dict)]
+    if not parts:
+        return ""
+    return ("**Target config:** %s — the reviewed repository's `settings:` "
+            "asked for this and the run did not honour it" % ", ".join(parts))
+
+
+def _cfg_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return "null" if value is None else str(value)
+
+
 def render_summary(report):
     """Render markdown summary of report with grades, stats, groups, and top findings."""
     s = report["summary"]
@@ -208,6 +232,14 @@ def render_summary(report):
             total_pending)
         insert_idx = 4 if not s.get("coverage_certified", True) else 3
         lines.insert(insert_idx, resume_line)
+    # #1681 Plan 2: coded BEFORE the integrity inserts below so integrity stays
+    # on top of it -- each `lines.insert(3, …)` in this function lands ABOVE
+    # whatever was already there (#1701's comment above pins the direction),
+    # so the LATER an insert is coded, the HIGHER it renders. An artifact-trust
+    # problem outranks a disclosure about a target's own config.
+    cfg_line = _config_line(report["meta"].get("config"))
+    if cfg_line:
+        lines.insert(3, cfg_line)
     integ = report["meta"].get("integrity") or {}
     bad = integ.get("unexpected_findings_files") or []
     if bad:

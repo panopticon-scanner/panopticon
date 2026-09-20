@@ -5,6 +5,7 @@ import os
 import sys
 
 from scripts import hosts
+import scripts.config_schema as config_schema
 import scripts.run_manifest as run_manifest
 import scripts.synth.validate_schema as validate_schema_mod
 from . import child
@@ -127,6 +128,14 @@ def synthesize_execute(review_root, manifest):
     requests._write_driver_plan(review_root, manifest)
     requests._snapshot_review_out_files(review_root, manifest)
     _collect_host_usage(review_root, manifest)
+    # #1681 Plan 2: the config resolution, copied out of the manifest into the
+    # run folder so the synthesize CHILD can read it. run-manifest.json is a
+    # _TOP_LEVEL artifact and therefore not under the `--run-dir` every other
+    # run artifact resolves against, and a direct `synthesize.py` invocation
+    # legitimately has no driver to ask -- the same reasoning that threads
+    # `--tools-disabled-mid-run` through instead of re-reading the manifest.
+    runio._write_json(runio._pano(review_root, config_schema.RESOLUTION_NAME),
+                      config_schema.resolution_document(manifest))
     findings = sorted(_glob.glob(runio._pano(review_root, "findings-*.json")))
     verdicts_dir = runio._pano(review_root, "verdicts")
     os.makedirs(verdicts_dir, exist_ok=True)   # empty in P3 (verify is a no-op)

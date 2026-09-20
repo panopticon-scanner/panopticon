@@ -573,6 +573,37 @@
             "dispatches",
             "tokens"
           ]
+        },
+        "config": {
+          "type": "object",
+          "description": "#1681 Plan 2 (spec §4): the reviewed repository's own `settings:` section, and what this run did with it. `requested` is what the committed config asked for, verbatim; `effective` is what the trust classes let through (a grain value after its clamp, a gate value at least as strict as panopticon's default); `refused` and `clamped` say what did not survive and why; `disclosures` is the same in prose, as the terminal summary prints it. The maps' KEYS and VALUES come from a target-authored file and are deliberately not type-pinned, for meta.host_capabilities' reason -- this is disclosure that gates nothing, and a junk config must be readable as junk rather than a way to make the report fail its own schema. Empty maps and lists mean the config asked for nothing, which is a measurement, not an absence.",
+          "properties": {
+            "requested": {"type": "object", "additionalProperties": true},
+            "effective": {"type": "object", "additionalProperties": true},
+            "refused": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": "string"},
+                  "value": {},
+                  "reason": {"type": "string"}
+                }
+              }
+            },
+            "clamped": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": "string"},
+                  "requested": {},
+                  "effective": {}
+                }
+              }
+            },
+            "disclosures": {"type": "array", "items": {"type": "string"}}
+          }
         }
       }
     },

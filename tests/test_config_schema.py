@@ -288,3 +288,59 @@ class TestTheRatchet(unittest.TestCase):
         r = cs.resolve_settings({}, cs.EMPTY_PARSED)
         self.assertEqual((r.effective, r.requested, r.refused, r.clamped, r.disclosures),
                          ({}, {}, [], [], []))
+
+
+class TestTheRunArtifact(unittest.TestCase):
+    def test_the_document_is_built_off_the_manifest_blocks(self):
+        doc = cs.resolution_document(
+            {"config_requested": {"security": "standard"},
+             "config_effective": {"security": "standard"},
+             "config_refused": [{"key": "tools", "value": False, "reason": "loosens"}],
+             "config_clamped": [], "config_disclosures": ["x"]})
+        self.assertEqual(doc["schema_version"], cs.RESOLUTION_SCHEMA_VERSION)
+        self.assertEqual(doc["refused"][0]["key"], "tools")
+        self.assertEqual(doc["disclosures"], ["x"])
+
+    def test_a_manifest_with_no_config_blocks_yields_the_empty_document(self):
+        doc = cs.resolution_document({})
+        self.assertEqual((doc["requested"], doc["refused"]), ({}, []))
+
+    def test_load_resolution_round_trips_a_written_document(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, cs.RESOLUTION_NAME), "w", encoding="utf-8") as fh:
+                json.dump(cs.resolution_document(
+                    {"config_effective": {"max_per_group": 48},
+                     "config_clamped": [{"key": "max_per_group", "requested": 5000,
+                                         "effective": 48}]}), fh)
+            loaded = cs.load_resolution(d)
+        self.assertEqual(loaded["effective"], {"max_per_group": 48})
+        self.assertEqual(loaded["clamped"][0]["requested"], 5000)
+        self.assertNotIn("schema_version", loaded)
+
+    def test_load_resolution_fails_closed_on_anything_unreadable(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(cs.load_resolution(d)["effective"], {})      # absent
+            with open(os.path.join(d, cs.RESOLUTION_NAME), "w", encoding="utf-8") as fh:
+                fh.write("[not an object")
+            self.assertEqual(cs.load_resolution(d)["refused"], [])         # unparseable
+            with open(os.path.join(d, cs.RESOLUTION_NAME), "w", encoding="utf-8") as fh:
+                json.dump([1, 2], fh)
+            self.assertEqual(cs.load_resolution(d)["disclosures"], [])     # not a dict
+        self.assertEqual(cs.load_resolution(None)["clamped"], [])          # no run dir
+
+    def test_load_resolution_sanitizes_a_hostile_artifact(self):
+        # `.panopticon` is target-writable, so this file is untrusted input.
+        # It must never be able to make the report fail its own schema.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, cs.RESOLUTION_NAME), "w", encoding="utf-8") as fh:
+                json.dump({"requested": {"a": {"deep": 1}, "b": 2},
+                           "effective": "not a map",
+                           "refused": [{"key": "x", "reason": "y", "extra": "z"},
+                                       "not a dict"],
+                           "clamped": [{"key": "k", "requested": 1, "effective": 2}],
+                           "disclosures": ["ok", 5] + ["pad"] * 500}, fh)
+            loaded = cs.load_resolution(d)
+        self.assertEqual(loaded["requested"], {"b": 2})          # non-scalar dropped
+        self.assertEqual(loaded["effective"], {})                 # wrong shape -> empty
+        self.assertEqual(loaded["refused"], [{"key": "x", "value": None, "reason": "y"}])
+        self.assertLessEqual(len(loaded["disclosures"]), cs.MAX_ENTRIES)

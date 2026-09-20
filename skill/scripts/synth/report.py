@@ -119,10 +119,15 @@ class RunConfig:
     # had it switched off mid-flight. Distinct from `flags.tools is False`,
     # which is equally true of a run that never had tools -- a weaker claim.
     tools_disabled_mid_run: bool = False
+    # #1681 Plan 2: what the TARGET's committed `settings:` asked for and what
+    # the trust classes let through, off `<run_dir>/config-resolution.json`.
+    # {} when there is no driver-written artifact: nothing asked for.
+    config: dict = field(default_factory=dict)
 
     @classmethod
     def from_args(cls, args, groups_json, timestamp, host_capabilities=None,
-                  panel_tools_context=None, tools_disabled_mid_run=False):
+                  panel_tools_context=None, tools_disabled_mid_run=False,
+                  config=None):
         """The CLI flags resolved against the run's groups.json (WS-0 S3):
         an explicit --changes wins over a discovered mode (a groups.json mode
         must not flip an explicitly-requested changes review back to repo);
@@ -146,7 +151,8 @@ class RunConfig:
                    gate_scope=args.gate_scope,
                    host_capabilities=host_capabilities or {},
                    panel_tools_context=panel_tools_context or {},
-                   tools_disabled_mid_run=bool(tools_disabled_mid_run))
+                   tools_disabled_mid_run=bool(tools_disabled_mid_run),
+                   config=config or {})
 
 
 @dataclass(frozen=True)
@@ -227,6 +233,27 @@ def _host_capabilities_field(host_capabilities, key):
     if not isinstance(host_capabilities, dict):
         return None
     return host_capabilities.get(key)
+
+
+def _config_block(config):
+    """`meta.config` (#1681 Plan 2, spec §4): what the target's committed
+    config asked for, what this run honoured, and what it refused or clamped.
+
+    Always emitted, `{}`/`[]` when there was nothing to say -- meta.tools'
+    rule: the absence of a refusal has to mean "measured and did not happen",
+    not "this run had no opinion". The values are copied out of a
+    target-authored file, so they are DESCRIBED in the published schema
+    without being type-pinned by it, for `host_capabilities`' reason: a junk
+    config must be readable AS junk, never a lever that makes the report
+    fail its own schema. `load_resolution` has already bounded them.
+    """
+    src = config if isinstance(config, dict) else {}
+    return {"requested": dict(src.get("requested") or {}),
+            "effective": dict(src.get("effective") or {}),
+            "refused": [r for r in (src.get("refused") or []) if isinstance(r, dict)],
+            "clamped": [c for c in (src.get("clamped") or []) if isinstance(c, dict)],
+            "disclosures": [s for s in (src.get("disclosures") or [])
+                            if isinstance(s, str)]}
 
 
 def assemble(run, resolved, reconciled, graded, cost):
@@ -312,6 +339,7 @@ def assemble(run, resolved, reconciled, graded, cost):
                 hosts.CLI_FLAGS: _host_capabilities_block(
                     run.host_capabilities, hosts.CLI_FLAGS),
             },
+            "config": _config_block(run.config),
         },
         "summary": graded.summary,
         "groups": graded.groups,

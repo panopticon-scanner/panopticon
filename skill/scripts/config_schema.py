@@ -325,3 +325,80 @@ def resolve_settings(cli, parsed, defaults=None):
 
 
 RESOLUTION_NAME = "config-resolution.json"
+RESOLUTION_SCHEMA_VERSION = 1
+# Bounds on what the run artifact may carry into the report. The file lives
+# under `.panopticon`, which a hostile target can pre-commit, and `meta` is
+# schema-described: an unbounded list or a 4 MiB string there would turn a
+# target-authored file into a way to make every run exit `artifact invalid`.
+MAX_ENTRIES = 50
+MAX_TEXT = 300
+
+
+def resolution_document(manifest):
+    """The run-folder artifact, built from the manifest's `config_*` blocks.
+
+    The manifest is the single source: it is written once, at run start, so a
+    resumed run reports what the config said WHEN THE RUN BEGAN rather than
+    what it says now -- the same rule the flags follow.
+    """
+    m = manifest or {}
+    return {"schema_version": RESOLUTION_SCHEMA_VERSION,
+            "requested": dict(m.get("config_requested") or {}),
+            "effective": dict(m.get("config_effective") or {}),
+            "refused": [dict(r) for r in (m.get("config_refused") or [])
+                        if isinstance(r, dict)],
+            "clamped": [dict(c) for c in (m.get("config_clamped") or [])
+                        if isinstance(c, dict)],
+            "disclosures": [s for s in (m.get("config_disclosures") or [])
+                            if isinstance(s, str)]}
+
+
+def _scalar(value):
+    if isinstance(value, str):
+        return value[:MAX_TEXT]
+    return value if isinstance(value, _SCALARS) else None
+
+
+def load_resolution(run_dir):
+    """`{requested, effective, refused, clamped, disclosures}` off
+    `<run_dir>/config-resolution.json`, or the empty block.
+
+    Fail-closed in every direction -- absent (a direct `synthesize.py`
+    invocation never had a driver to write one), unreadable, not an object,
+    a block of the wrong shape -- and REBUILT field by field rather than
+    copied, so no key, type or size from the file reaches `meta.config`
+    unchecked. "Nothing asked for" and "nobody looked" read the same here on
+    purpose: both are honestly empty.
+    """
+    blank = {"requested": {}, "effective": {}, "refused": [], "clamped": [],
+             "disclosures": []}
+    try:
+        with open(os.path.join(run_dir or ".", RESOLUTION_NAME), encoding="utf-8") as fh:
+            body = json.load(fh)
+    except (OSError, ValueError):
+        return blank
+    if not isinstance(body, dict):
+        return blank
+    out = dict(blank)
+    for key in ("requested", "effective"):
+        raw = body.get(key)
+        if isinstance(raw, dict):
+            out[key] = {str(k)[:MAX_TEXT]: _scalar(v) for k, v in
+                        list(raw.items())[:MAX_ENTRIES] if isinstance(v, _SCALARS)}
+    refused = body.get("refused")
+    if isinstance(refused, list):
+        out["refused"] = [{"key": str(r.get("key"))[:MAX_TEXT],
+                           "value": _scalar(r.get("value")),
+                           "reason": str(r.get("reason"))[:MAX_TEXT]}
+                          for r in refused[:MAX_ENTRIES] if isinstance(r, dict)]
+    clamped = body.get("clamped")
+    if isinstance(clamped, list):
+        out["clamped"] = [{"key": str(c.get("key"))[:MAX_TEXT],
+                           "requested": _scalar(c.get("requested")),
+                           "effective": _scalar(c.get("effective"))}
+                          for c in clamped[:MAX_ENTRIES] if isinstance(c, dict)]
+    disclosures = body.get("disclosures")
+    if isinstance(disclosures, list):
+        out["disclosures"] = [s[:MAX_TEXT] for s in disclosures[:MAX_ENTRIES]
+                              if isinstance(s, str)]
+    return out

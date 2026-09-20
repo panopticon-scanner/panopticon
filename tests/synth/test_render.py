@@ -466,3 +466,39 @@ class TestSuppressedToolFindingsAreRendered(unittest.TestCase):
             with self.subTest(value=repr(bad)):
                 self.assertNotIn(
                     "suppressed", render_mod.render_summary(self._report(bad)))
+
+
+class TestTargetConfigLine(unittest.TestCase):
+    """#1681 Plan 2: the summary says when a target's config was refused."""
+
+    def _report(self, config):
+        return {"schema_version": 1,
+                "meta": {"target": "src", "coverage": {}, "integrity": {},
+                         **({"config": config} if config is not None else {})},
+                "summary": {"overall_grade": "B", "risk_level": "MEDIUM",
+                            "gate": "PASS", "coverage_certified": True,
+                            "evidence_stats": {}, "stats": {},
+                            "gate_severities": None},
+                "findings": [], "groups": []}
+
+    def test_the_summary_names_a_refused_or_clamped_config(self):
+        text = render_mod.render_summary(self._report({
+            "requested": {"tools": False, "max_per_group": 5000},
+            "effective": {"max_per_group": 48},
+            "refused": [{"key": "tools", "value": False,
+                         "reason": "loosens the built-in default (true)"}],
+            "clamped": [{"key": "max_per_group", "requested": 5000, "effective": 48}],
+            "disclosures": []}))
+        self.assertIn("**Target config:**", text)
+        self.assertIn("`tools: false` refused", text)
+        self.assertIn("`max_per_group: 5000` clamped to 48", text)
+
+    def test_the_summary_is_silent_when_nothing_was_refused_or_clamped(self):
+        text = render_mod.render_summary(self._report(
+            {"requested": {"max_per_group": 20}, "effective": {"max_per_group": 20},
+             "refused": [], "clamped": [], "disclosures": []}))
+        self.assertNotIn("Target config", text)
+
+    def test_a_report_without_meta_config_still_renders(self):
+        # A pre-Plan-2 report.json re-rendered by a current synthesize.
+        self.assertIn("**Grade:**", render_mod.render_summary(self._report(None)))

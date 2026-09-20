@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import scripts.config_schema as config_schema
 import scripts.html_report as html_report
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
@@ -249,7 +250,8 @@ def main(argv=None):
     run = report_mod.RunConfig.from_args(
         args, gj, ts, host_capabilities=host_capabilities,
         panel_tools_context=plan_mod.load_panel_tools_context(run_dir),
-        tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False))
+        tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False),
+        config=config_schema.load_resolution(run_dir))
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
     # #1701: `gated_suppressed` is the vendored-path drops the gate must still
     # count under --security redteam; empty otherwise. It rides to certification
