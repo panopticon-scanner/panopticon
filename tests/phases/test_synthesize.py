@@ -10,7 +10,9 @@ from unittest import mock
 
 from scripts import hosts
 from conftest import write_host_evidence
+import scripts.config_schema as config_schema
 import scripts.phases.runio as runio
+import scripts.run_manifest as run_manifest
 import scripts.synthesize as syn
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.phases.synthesize as synthesize
@@ -446,3 +448,50 @@ class TestSynthesizeDonePredicate(unittest.TestCase):
             with self.assertRaises(runio.DriverError) as cm:
                 synthesize.synthesize_execute(self.root, self.manifest)
         self.assertIn("no usable report.json", str(cm.exception))
+
+
+class TestTheConfigResolutionSeam(unittest.TestCase):
+    """#1681 Plan 2 (final review M5): the PHASE writes the config resolution
+    through `runio._pano`, and the synthesize CHILD reads it with
+    `config_schema.load_resolution(run_dir)` -- where `run_dir` is the folder
+    of the `--groups` path this same phase hands it. Two independent
+    derivations of one location, and nothing fails if they part: `meta.config`
+    just goes quietly empty, and the report stops saying that the reviewed
+    repository tried to move its own review's settings.
+    """
+
+    def _synthesize(self, root, manifest):
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            synthesize.synthesize_execute(root, manifest)
+        return captured["cmd"]
+
+    def test_the_phase_writes_the_artifact_where_the_child_reads_it(self):
+        settings = config_schema.resolve_settings({}, config_schema.parse_settings(
+            {"settings": {"max_per_group": 5000, "allow_unenforced": True}}))
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            manifest = run_manifest.build_manifest(
+                target=root, review_root=root, host="claude",
+                security_mode="standard", config=settings, run_id="R")
+            run_manifest.write_manifest(root, manifest)
+            cmd = self._synthesize(root, manifest)
+            groups_path = cmd[cmd.index("--groups") + 1]
+            # synthesize.py: `run_dir = args.run_dir or dirname(--groups)`.
+            self.assertNotIn("--run-dir", cmd)
+            loaded = config_schema.load_resolution(os.path.dirname(groups_path))
+        # The per-run folder, not flat `.panopticon`: the seam only has a
+        # failure mode at all because these paths differ once a run exists.
+        self.assertIn(os.path.join("runs", run_manifest.run_tag(manifest)),
+                      groups_path)
+        self.assertEqual(loaded["effective"], {"max_per_group": 48})
+        self.assertEqual(loaded["clamped"][0]["requested"], 5000)
+        self.assertEqual([r["key"] for r in loaded["refused"]], ["allow_unenforced"])
+        self.assertTrue(loaded["disclosures"])
