@@ -254,19 +254,8 @@ def loop(args):
     # reading it afterwards would see the very request this same invocation just
     # produced and disarm nothing. Read in every mode -- it is one JSON load -- so that
     # the READ and the ACT can sit on opposite sides of `_first_run`, which I4 requires.
-    #
-    # #1727: read BOUND. Uninstall is removal-only, but every uninstall path is
-    # keyed by strings this file supplies (entry ids, out_files), so a request
-    # the run cannot prove it wrote must not be the thing that decides what to
-    # disarm. A refusal here is not fatal -- this read is an optimisation of the
-    # re-entry, and `_first_run` is about to regenerate the file anyway -- so it
-    # is said once on stderr and treated as "no previous entries". An ABSENT
-    # file with no record is a fresh run and stays silent.
-    prev_req, prev_refusal = requests.load_bound_request(review_root, namespace)
-    if prev_refusal:
-        print("driver loop: ignoring the previous dispatch request: %s" % prev_refusal,
-              file=sys.stderr, flush=True)
-    prev_req = prev_req or {}
+    # #1727: read BOUND -- uninstall is keyed by strings that file supplies.
+    prev_req = requests.previous_request(review_root, namespace)
     if mode == "session":
         # Guards constructed HERE, before `_first_run`, and unconditionally -- not only once this
         # invocation reaches a fresh checkpoint. Session mode is the only mode whose guards can
@@ -353,49 +342,28 @@ def loop(args):
         ledger = ledger_mod.Ledger(run_dir)
         while status.get("status") == "checkpoint":
             iterations += 1
-            # #1727, FIRST: the request is a file in the reviewed tree, and
-            # everything below reads fields off it -- the pending set, the
-            # guards' grants, each entry's argv. `status` is the checkpoint
-            # this iteration's own `_run` returned, so `request_sha256` is the
-            # hash the writing PHASE computed, in memory, out of the target's
-            # reach. Refuse before `expected_enforced`, before arming, before
-            # any launch.
+            # #1727, FIRST: everything below reads fields off a file in the
+            # reviewed tree. `status` is what THIS iteration's `_run` returned,
+            # so its `request_sha256` is the writing phase's, held in memory.
             req, refusal = requests.load_bound_request(
                 review_root, namespace, expected_sha256=status.get("request_sha256"))
             if refusal:
                 return _finish(_status("error", "driver loop: " + refusal), review_root,
                                guards, ledger, namespace, mode, runner)
             req = req or {}
-            # What the host is told that file must hash to, refreshed per
-            # checkpoint because the request is rolling (session mode prints
-            # it; a headless runner gets its entries in memory).
-            runner.request_sha256 = requests.recorded_request_hash(
-                review_root, namespace)[0]
+            # What a session host is told the file must hash to, and which
+            # shells this checkpoint dispatches (the runner narrows its own
+            # per-entry allowlist to them). Per checkpoint: the request rolls.
+            runner.request_sha256 = requests.recorded_request_hash(review_root, namespace)[0]
+            runner.roles = loop_batch.CHECKPOINT_ROLES.get(req.get("checkpoint")) or ()
             entries = [e for e in req.get("entries") or [] if isinstance(e, dict)]
             pending = loop_batch._pending(entries)
-            # #1720: the request is a file in the reviewed tree, so its
-            # `enforced` flag is checked against this run's own evidence
-            # before anything is armed or launched.
-            expected = loop_batch.expected_enforced(review_root, host, namespace)
-            disagreeing = loop_batch.refuse_disagreeing(pending, expected)
-            if disagreeing:
-                return _finish(_status("error", loop_batch.enforcement_refusal(
-                    disagreeing, expected)), review_root, guards, ledger, namespace, mode, runner)
-            # #1727: ...and the shell it names must be one THIS checkpoint
-            # dispatches. `enforced` says the launch is shell-bound; this says
-            # which charter it is bound to, and the driver owns both answers.
-            # Same place in the sequence and for the same reason: before the
-            # guards are armed and before anything launches.
-            misrouted = loop_batch.refuse_misrouted(pending, req.get("checkpoint"))
-            if misrouted:
-                return _finish(_status("error", loop_batch.misroute_refusal(
-                    misrouted, req.get("checkpoint"))), review_root, guards, ledger,
-                    namespace, mode, runner)
-            # The runner re-derives the same narrowing on its own launch path
-            # (base.registered_agent(entry, roles=self.roles)): the loop's check
-            # is per-batch, the runner's is per-entry, and neither is the other's
-            # excuse. Session mode ignores it -- it launches nothing.
-            runner.roles = loop_batch.CHECKPOINT_ROLES.get(req.get("checkpoint")) or ()
+            # #1720 + #1727: does what it SAYS match this run's own evidence
+            # and plan? Before anything is armed or launched.
+            refusal = loop_batch.request_refusal(review_root, host, namespace, req, pending)
+            if refusal:
+                return _finish(_status("error", refusal), review_root, guards, ledger,
+                               namespace, mode, runner)
             pending_ids = ", ".join(e.get("id") for e in pending)
             if iterations > max_iterations:
                 return _finish(_status("error", "driver loop: %d iterations without "
@@ -431,7 +399,7 @@ def loop(args):
                 # longer return: the session runner prints the batch, launches
                 # nothing, and the loop exits `dispatch` still armed (spec 4.3).
                 runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
-                return _dispatch_exit(review_root, req, pending, namespace)
+                return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256)
             done, total = 0, len(pending)
             handled = []
             # #1721: the pool is FIFO, so an entry's index in `pending` is its
@@ -604,7 +572,7 @@ def _first_run(args, namespace, resolved=None):
     return _run(args, namespace, resolved)
 
 
-def _dispatch_exit(review_root, req, pending, namespace):
+def _dispatch_exit(review_root, req, pending, namespace, request_sha256=None):
     """Session mode: the runner printed the batch; exit with a dispatch status and leave
     the guards armed (spec 4.3).
 
@@ -625,6 +593,7 @@ def _dispatch_exit(review_root, req, pending, namespace):
                    "`driver loop%s --mode session`" % (setup, setup),
                    dispatch_request=os.path.abspath(
                        requests.request_path(review_root, namespace)),
+                   request_sha256=request_sha256,
                    pending=[e.get("id") for e in pending],
                    checkpoint=req.get("checkpoint"))
 
@@ -709,9 +678,7 @@ def persist_cli(args):
     entry, refusal = persist.find_entry(review_root, args.entry_id,
                                         namespace="setup" if args.setup else None)
     if refusal:
-        # #1727: the request this verb was pointed at is not the one the run
-        # wrote. Nothing is written -- the `out_file` it would have written to
-        # is named BY that request.
+        # #1727: not the request this run wrote -- and it names the out_file.
         print("driver persist: %s" % refusal, file=sys.stderr)
         return 1
     if entry is None:

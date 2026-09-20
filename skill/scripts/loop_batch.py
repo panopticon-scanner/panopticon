@@ -133,6 +133,27 @@ def misroute_refusal(misrouted, checkpoint):
             % (misrouted[0], checkpoint, allowed))
 
 
+def request_refusal(review_root, host, namespace, req, pending):
+    """The refusal this batch must not proceed past, or None.
+
+    Both request-integrity checks in the order the loop needs them, behind one
+    call so `orchestrate.loop` carries the DECISION and not the derivation:
+    does the entry's self-asserted `enforced` match this run's own evidence
+    (#1720), and is the shell it names one this checkpoint dispatches (#1727).
+    Raised before the batch opens -- nothing has launched and nothing is
+    charged -- so neither is any entry's failure; the remedy is to rebuild the
+    request from the run, not to retry the cell.
+    """
+    expected = expected_enforced(review_root, host, namespace)
+    disagreeing = refuse_disagreeing(pending, expected)
+    if disagreeing:
+        return enforcement_refusal(disagreeing, expected)
+    misrouted = refuse_misrouted(pending, req.get("checkpoint"))
+    if misrouted:
+        return misroute_refusal(misrouted, req.get("checkpoint"))
+    return None
+
+
 def write_usage(review_root, ledger, namespace=None):
     """R-P6-4: rewritten after every ENTRY (P07; it was every batch) so synthesize --
     which runs inside the engine, before `complete` -- finds it; never estimated.

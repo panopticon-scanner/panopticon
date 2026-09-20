@@ -345,6 +345,22 @@ def recorded_request_hash(review_root, namespace=None):
     return (sha if isinstance(sha, str) and sha else None), name
 
 
+def previous_request(review_root, namespace=None):
+    """The OUTGOING request, for `orchestrate._disarm_previous`, or `{}`.
+
+    A refusal is not fatal here and must not be: this read happens BEFORE
+    `_first_run`, which is about to regenerate the file, and its only consumer
+    removes grants. But uninstall is keyed by strings that file supplies, so a
+    request the run cannot prove it wrote is announced once and read as "no
+    previous entries" rather than acted on. An absent file with no record is a
+    fresh run and says nothing."""
+    req, refusal = load_bound_request(review_root, namespace)
+    if refusal:
+        print("driver loop: ignoring the previous dispatch request: %s" % refusal,
+              file=sys.stderr, flush=True)
+    return req or {}
+
+
 def load_bound_request(review_root, namespace=None, expected_sha256=None):
     """`(request_or_None, refusal_or_None)` -- the read every driver reader uses.
 

@@ -124,8 +124,12 @@ class TestSessionMode(LoopCase):
         self.assertEqual(status["status"], "dispatch", status)
         printed = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
         with open(printed[0]["dispatch_request"], "rb") as fh:
-            self.assertEqual(hashlib.sha256(fh.read()).hexdigest(),
-                             printed[0]["request_sha256"])
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        self.assertEqual(digest, printed[0]["request_sha256"])
+        # ...and the loop's own dispatch status says the same thing, so a host
+        # that parses the status rather than the printed batch is not told the
+        # path with no way to check it.
+        self.assertEqual(digest, status["request_sha256"])
 
     def test_re_entry_with_nothing_done_re_emits_the_same_set(self):
         d, floor = self._repo(); s = self._session_root(d)
@@ -319,6 +323,38 @@ class TestSetupSessionMode(LoopCase):
         self.assertEqual(printed[0]["dispatch_request"], expected)
         self.assertIn("--setup", printed[0]["then"])
         self.assertIn("--setup", printed[0]["persist"])
+
+
+    def test_setup_persist_reads_the_setup_manifests_own_record(self):
+        # #1727: `--setup` anchors its request in `setup-manifest.json`, not in
+        # a review run's manifest. `driver persist --setup` has to find that
+        # record -- and refuse a setup request that no longer matches it.
+        d, _ = self._repo()
+        s = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(s, ignore_errors=True))
+        os.makedirs(os.path.join(s, ".claude"))
+        with open(os.path.join(s, ".claude", "settings.local.json"), "w") as fh:
+            fh.write("{}")
+        args = driver.build_parser().parse_args(
+            ["loop", d, "--setup", "--mode", "session", "--session-dir", s])
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "dispatch", status)
+        proposal = os.path.join(d, "reply.txt")
+        with open(proposal, "w", encoding="utf-8") as fh:
+            json.dump({"groups": [{"capability": "custom:App", "match": ["src/**"],
+                                   "tests": []}]}, fh)
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = driver.main(["persist", "setup-scan", "--setup", "--file", proposal, d])
+        self.assertEqual(rc, 0)
+        # ...and once the request is altered, the same call refuses
+        with open(status["dispatch_request"], "ab") as fh:
+            fh.write(b" ")
+        with contextlib.redirect_stderr(io.StringIO()) as err, \
+             contextlib.redirect_stdout(io.StringIO()):
+            rc = driver.main(["persist", "setup-scan", "--setup", "--file", proposal, d])
+        self.assertEqual(rc, 1)
+        self.assertIn("does not match the request this run wrote", err.getvalue())
 
 
 class _ProposalRunner(FakeRunner):
