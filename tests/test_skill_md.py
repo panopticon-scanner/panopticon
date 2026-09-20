@@ -872,6 +872,17 @@ class TestSetupDocs(unittest.TestCase):
             self.assertIn(key, setup)
         self.assertIn("8-48", setup)
         self.assertIn("4-64", setup)
+        # Final review, doc nit: the paragraph named four of the FIVE
+        # `config_*` blocks the manifest actually carries, and the missing one
+        # is the disclosures -- the block that holds every "nothing changes"
+        # and "the command line wins" line, i.e. everything that happened to a
+        # setting WITHOUT being a refusal or a clamp.
+        for key in ("config_requested", "config_effective", "config_refused",
+                    "config_clamped", "config_disclosures"):
+            self.assertIn(key, setup)
+        # A value equal to the built-in default is a disclosed no-op, not a
+        # refusal (final review F4): it must not read as one here either.
+        self.assertIn("equal to the default", setup)
 
     def test_the_sizes_paragraph_no_longer_claims_run_ignores_settings(self):
         # Plan 1 wired `driver run`'s max_per_group to `settings:`; the
