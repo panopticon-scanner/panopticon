@@ -273,6 +273,30 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertIn("out of range", m["config_refused"][0]["reason"])
         self.assertIsInstance(m["config_requested"]["max_verify"], str)
 
+    def test_a_committed_default_gate_value_does_not_break_a_resume(self):
+        # Final review F4: a gate value EQUAL to the built-in default was
+        # written into `effective`, which made a no-op into an OPINION. A run
+        # created with `--security redteam` whose target then committed
+        # `security: standard` (and `tools: true`, already the default) was
+        # refused on the next bare resume -- "flag drift ... use --reset" --
+        # while the disclosure printed on that same invocation said nothing
+        # changes. The run's own posture is unmoved.
+        d = self._repo()
+        # No --no-tools: `tools: true` has to reach the ratchet to be the
+        # second equal-to-default value under test (conftest refuses the
+        # docker daemon, and the run stops at the scout checkpoint anyway).
+        first = driver.run(self._args(d, "--security", "redteam"))
+        self.assertEqual(first["status"], "checkpoint", first.get("message"))
+        self.assertIsNone(run_manifest.load_manifest(d)["flags"]["tools"])
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\n"
+                     "groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
+                     "settings:\n  security: standard\n  tools: true\n")
+        resumed = driver.run(self._args(d))
+        self.assertEqual(resumed["status"], "checkpoint", resumed.get("message"))
+        self.assertEqual(resumed["checkpoint"], first["checkpoint"])
+        self.assertEqual(run_manifest.load_manifest(d)["security_mode"], "redteam")
+
     def test_flag_drift_refused_no_synthesize_divergence(self):
         # RETIRED HAZARD (#957 both-pass flag mismatch): the manifest pins the
         # gate flags once; a conflicting re-invocation is refused, so pass-1 and

@@ -274,10 +274,18 @@ class TestTheRatchet(unittest.TestCase):
             self.assertIn(base, r.refused[0]["reason"])
 
     def test_a_value_equal_to_the_default_is_a_disclosed_no_op(self):
+        # A NO-OP, so it leaves no opinion behind (final review F4). Writing
+        # it into `effective` made it one: a run created with `--security
+        # redteam` whose target later committed `security: standard` tripped
+        # the manifest's anti-drift check -- "use --reset to start over" --
+        # while this very disclosure said nothing changes. Not refused
+        # either: the file asked for what panopticon already does.
         r = _resolve({"security": "standard", "tools": True})
-        self.assertEqual(r.effective, {"security": "standard", "tools": True})
+        self.assertEqual(r.effective, {})
         self.assertEqual(r.refused, [])
-        self.assertTrue(any("already the built-in default" in d for d in r.disclosures))
+        self.assertEqual(len(r.disclosures), 2)
+        self.assertTrue(all("already the built-in default" in d
+                            for d in r.disclosures), r.disclosures)
 
     def test_max_verify_is_refused_against_the_uncapped_default(self):
         # Spec Amendments finding 1: the built-in default is None = uncapped,

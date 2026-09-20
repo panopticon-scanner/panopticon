@@ -350,11 +350,19 @@ def resolve_settings(cli, parsed, defaults=None):
             continue
         if CLASS_OF[key] == "gate":
             base = defaults.get(key)
-            if _rank(key, value) >= _rank(key, base):
+            if value == base:
+                # A no-op leaves NO OPINION behind (final review F4). It used
+                # to land in `effective`, and `effective` is what the run
+                # composes its flags and its `security_mode` from -- so a run
+                # created with `--security redteam` whose target later
+                # committed `security: standard` was refused on the next
+                # resume as flag drift, "use --reset to start over", while
+                # this very line said nothing changes. The file asked for
+                # what panopticon already does; that is disclosed and done.
+                disclosures.append(_line(
+                    key, value, "it is already the built-in default; nothing changes"))
+            elif _rank(key, value) >= _rank(key, base):
                 effective[key] = value
-                if value == base:
-                    disclosures.append(_line(
-                        key, value, "it is already the built-in default; nothing changes"))
             else:
                 refused.append(_refusal(key, value, "loosens the built-in default (%s)"
                                         % _fmt(base)))
