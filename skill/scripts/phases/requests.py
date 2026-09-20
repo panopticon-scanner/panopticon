@@ -360,7 +360,7 @@ def recorded_request_hash(review_root, namespace=None):
 
 
 def previous_request(review_root, namespace=None):
-    """The OUTGOING request, for `orchestrate._disarm_previous`, or `{}`.
+    """The OUTGOING request, for `loop_batch.disarm_previous`, or `{}`.
 
     A refusal is not fatal here and must not be: this read happens BEFORE
     `_first_run`, which is about to regenerate the file, and its only consumer

@@ -2578,7 +2578,7 @@ class TestTheLoopRefusesARequestItCannotProveItWrote(LoopCase):
 
     def test_a_clean_previous_request_is_still_read_for_the_disarm(self):
         # The negative control for the line above: an untouched re-entry must
-        # print nothing and must still hand `_disarm_previous` its entries.
+        # print nothing and must still hand `loop_batch.disarm_previous` its entries.
         d, floor = self._repo()
         with contextlib.redirect_stderr(io.StringIO()):
             driver.run(self._args(d))
