@@ -122,32 +122,6 @@ def _status(kind, message, **extra):
     return st
 
 
-def _disarm_previous(guards, prev_req):
-    """R-P6-6 (session mode): on re-entry, drop the PREVIOUS request's grants
-    before arming the current pending set. Uninstall is scoped by id/out_file
-    and install unions, so an entry still pending is re-armed a few lines
-    below (this iteration's own `guards.arm(pending)`, computed from the
-    FRESH request `_first_run` just wrote) and only a FINISHED entry actually
-    falls away -- no bookkeeping file needed to tell the two apart.
-
-    `prev_req` must be the dispatch request as it stood BEFORE this
-    invocation's own `driver.run`/`run_setup_flow` call rewrote
-    dispatch-request.json (`loop` reads it first thing, before `_first_run`)
-    -- reading it fresh here instead would see the very request this same
-    invocation just produced, never the previous one, and disarm nothing.
-
-    I4: CALLED only once this invocation has a live checkpoint of its own. An
-    invocation that lands on complete/error instead never reaches here, so an
-    errored re-entry (flag drift, a bad --pr) leaves the previous fan-out's
-    grants exactly as it found them -- that fan-out is still running under
-    them. Deferring the teardown past `_first_run`'s posture probe changes
-    nothing that probe measures: probe_write_guard_armed proves the MECHANISM
-    and the settings file, explicitly not live arming."""
-    entries = [e for e in (prev_req or {}).get("entries") or [] if isinstance(e, dict)]
-    if entries:
-        guards.disarm(entries)
-
-
 def _resolve_mode(args, host):
     """(mode, stderr_note) -- spec 4.4 (I8).
 
@@ -291,7 +265,7 @@ def loop(args):
         # the authority on what is still running. An entry now done falls away here; one still
         # pending is re-armed below by this iteration's own `guards.arm(pending)`, computed from
         # the FRESH request `_first_run` just wrote (Task 6 ruling 3).
-        _disarm_previous(guards, prev_req)
+        loop_batch.disarm_previous(guards, prev_req)
     if _after_first_run(review_root):
         status = _run(args, namespace, resolved)      # re-derive after the seam
     iterations = 0
