@@ -287,6 +287,25 @@ class TestTheRatchet(unittest.TestCase):
         self.assertTrue(all("already the built-in default" in d
                             for d in r.disclosures), r.disclosures)
 
+    def test_a_refusal_says_why_the_default_is_already_the_strict_end(self):
+        # Final review M8: "loosens the built-in default `null`" reads as
+        # nonsense to the operator it is written for -- `null` and `all` LOOK
+        # like the permissive end. The two keys whose default is already the
+        # strictest value there is say what that default does.
+        self.assertEqual(_resolve({"max_verify": 5}).refused[0]["reason"],
+                         "loosens the built-in default `null` "
+                         "(uncapped verifies more)")
+        self.assertEqual(_resolve({"severity": "high"}).refused[0]["reason"],
+                         "loosens the built-in default `all` "
+                         "(every severity is reported)")
+        # A default that needs no gloss keeps the plain sentence.
+        self.assertEqual(_resolve({"tools": False}).refused[0]["reason"],
+                         "loosens the built-in default `true`")
+        # ...and the disclosure carries the same sentence, once.
+        self.assertIn("refused (loosens the built-in default `null` "
+                      "(uncapped verifies more))",
+                      _resolve({"max_verify": 5}).disclosures[0])
+
     def test_max_verify_is_refused_against_the_uncapped_default(self):
         # Spec Amendments finding 1: the built-in default is None = uncapped,
         # which is STRICTER than any number, so no committed cap survives the

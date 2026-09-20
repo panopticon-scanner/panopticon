@@ -486,7 +486,7 @@ class TestTargetConfigLine(unittest.TestCase):
             "requested": {"tools": False, "max_per_group": 5000},
             "effective": {"max_per_group": 48},
             "refused": [{"key": "tools", "value": False,
-                         "reason": "loosens the built-in default (true)"}],
+                         "reason": "loosens the built-in default `true`"}],
             "clamped": [{"key": "max_per_group", "requested": 5000, "effective": 48}],
             "disclosures": []}))
         self.assertIn("**Target config:**", text)

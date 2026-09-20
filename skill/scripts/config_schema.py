@@ -95,6 +95,14 @@ STRICTNESS = {
 DEFAULTS = {"fail_on": None, "gate_scope": "on-diff", "max_verify": None,
             "security": "standard", "severity": "all", "tools": True}
 
+# Why a refusal is a refusal, for the two keys whose default is ALREADY the
+# strictest value there is. `null` and `all` read as the permissive end to
+# anyone who has not memorised the table above -- "loosens the built-in
+# default `null`" is the one refusal sentence an operator cannot act on
+# without a gloss (fix round 2, M8).
+DEFAULT_RATIONALE = {"max_verify": "uncapped verifies more",
+                     "severity": "every severity is reported"}
+
 _SCALARS = (str, int, float, bool, type(None))
 
 # What a RECORD of a target-authored value may cost. `settings:` is written by
@@ -364,11 +372,11 @@ def resolve_settings(cli, parsed, defaults=None):
             elif _rank(key, value) >= _rank(key, base):
                 effective[key] = value
             else:
-                refused.append(_refusal(key, value, "loosens the built-in default (%s)"
-                                        % _fmt(base)))
-                disclosures.append(_line(key, value,
-                                         "refused (it loosens the built-in default `%s`)"
-                                         % _fmt(base)))
+                why = DEFAULT_RATIONALE.get(key)
+                reason = ("loosens the built-in default `%s`%s"
+                          % (_fmt(base), " (%s)" % why if why else ""))
+                refused.append(_refusal(key, value, reason))
+                disclosures.append(_line(key, value, "refused (%s)" % reason))
             continue
         effective[key] = value          # grain, no band (include_fixtures)
     return Settings(effective, dict(parsed.requested), refused, clamped, disclosures)
