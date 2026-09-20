@@ -490,6 +490,35 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
         self.assertEqual([], base.schema_argv(("--x",), {"output_schema": "/etc/passwd"},
                                               inline=True))
 
+    def test_inline_schema_applies_the_containment_rule_itself(self):
+        # Not only via schema_argv: a helper that opened whatever it was handed
+        # would turn the one target-chosen argv value into an arbitrary-file
+        # read that reaches the CLI (review round 1, item 1).
+        self.assertIsNone(base.inline_schema("/etc/passwd"))
+        self.assertIsNone(base.inline_schema(None))
+        self.assertIsNotNone(base.inline_schema(_published()))
+
+    def test_inline_refuses_a_published_file_too_large_for_one_argv_token(self):
+        # skill/reference/ also publishes ocrdb-0.5.0.json (176 KB compacted),
+        # over Linux MAX_ARG_STRLEN: execve would answer E2BIG and the runner
+        # would burn three launches per entry -- the run-14 failure mode by a
+        # second road (review round 1, item 2).
+        self.assertLess(0, base.INLINE_SCHEMA_MAX)
+        tmp = tempfile.mkdtemp()
+        try:
+            big = os.path.join(tmp, "big-schema.json")
+            with open(big, "w", encoding="utf-8") as fh:
+                json.dump({"type": "object", "pad": "x" * (base.INLINE_SCHEMA_MAX + 1)}, fh)
+            with mock.patch.object(base.version, "reference_path", return_value=tmp):
+                self.assertIsNone(base.inline_schema(big))
+                self.assertEqual([], base.schema_argv(("--x",), {"output_schema": big},
+                                                      inline=True))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        published = os.path.join(os.path.dirname(_published()), "ocrdb-0.5.0.json")
+        if os.path.isfile(published):
+            self.assertIsNone(base.inline_schema(published))
+
     def test_inline_treats_an_unparsable_published_file_as_no_schema(self):
         # The persist layer validates the reply against the schema either way;
         # a launch without the flag is the fail-safe, a launch the CLI refuses

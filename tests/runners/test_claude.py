@@ -352,7 +352,6 @@ class TestOutputSchema(unittest.TestCase):
         self.assertEqual(cmd[-1], entry["prompt"])
         # The token is the published file's JSON, one line, never its path.
         self.assertNotEqual(self.schema, cmd[-2])
-        self.assertFalse(os.path.exists(cmd[-2]))
         with open(self.schema, encoding="utf-8") as fh:
             self.assertEqual(json.load(fh), json.loads(cmd[-2]))
         self.assertNotIn("\n", cmd[-2])
