@@ -2273,16 +2273,22 @@ class TestTheRequestsEnforcedFlagIsDerived(LoopCase):
     def _tampered(self, **fields):
         """Flip a field on every entry between the phase that wrote the
         request and the loop that reads it -- the on-disk hop the reviewed
-        tree could tamper with."""
-        real = orchestrate.requests.load_dispatch_request
+        tree could tamper with.
 
-        def fake(review_root, namespace=None):
-            req = real(review_root, namespace)
+        Patched at `load_bound_request` (#1727 moved the loop's read there) and
+        deliberately AFTER its integrity check: these two controls are
+        independent. The hash answers "is this the file we wrote"; this one
+        answers "does what it says match this run's own evidence", and it has
+        to keep holding for a tamper the hash cannot see."""
+        real = orchestrate.requests.load_bound_request
+
+        def fake(review_root, namespace=None, expected_sha256=None):
+            req, refusal = real(review_root, namespace, expected_sha256)
             for entry in (req or {}).get("entries") or []:
                 entry.update(fields)
-            return req
+            return req, refusal
 
-        return mock.patch.object(orchestrate.requests, "load_dispatch_request", fake)
+        return mock.patch.object(orchestrate.requests, "load_bound_request", fake)
 
     def test_a_proven_run_refuses_a_request_that_claims_an_unenforced_launch(self):
         d, floor = self._repo()
@@ -2476,3 +2482,104 @@ class TestTheRequestHashTravelsOnTheStatus(LoopCase):
         self.assertEqual(missing, [],
                          "checkpoint PhaseResult with no request_sha256:\n"
                          + "\n".join(missing))
+
+
+def _append_a_byte(path):
+    """The minimal on-disk tamper: the document still parses and still says
+    everything it said, so only the HASH can tell it apart from what the
+    driver wrote."""
+    with open(path, "ab") as fh:
+        fh.write(b" ")
+
+
+class TestTheLoopRefusesARequestItCannotProveItWrote(LoopCase):
+    """#1727: `.panopticon/dispatch-request.json` is written into the reviewed
+    tree, and between the phase that writes it and the loop that reads it back
+    the target owns that file. The loop checks the bytes against the hash the
+    phase handed it in memory and the hash the run manifest recorded, and
+    refuses before it arms, launches or spends anything."""
+
+    def _tamper_after_every_run(self, mutate=_append_a_byte):
+        real = orchestrate._run
+
+        def fake(args, namespace, resolved=None):
+            status = real(args, namespace, resolved)
+            path = orchestrate.requests.request_path(args.target, namespace)
+            if os.path.isfile(path):
+                mutate(path)
+            return status
+
+        return mock.patch.object(orchestrate, "_run", fake)
+
+    def _loop_capturing(self, d, floor, runner, *extra, seed=True):
+        args = self._args(d, *extra)
+        err = io.StringIO()
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: seed and self._seed_coverage(rr, floor)), \
+             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(err):
+            return orchestrate.loop(args), err.getvalue()
+
+    def test_a_request_altered_after_the_phase_wrote_it_ends_the_run(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        armed = []
+        with self._tamper_after_every_run(), \
+             mock.patch.object(orchestrate.Guards, "arm",
+                               side_effect=lambda *a: armed.append(a[-1])):
+            status, _err = self._loop_capturing(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("does not match the request this run wrote", status["message"])
+        self.assertIn("re-run `driver run`/`driver loop`", status["message"])
+        self.assertEqual([], runner.launched)      # nothing launched...
+        self.assertEqual([], armed)                # ...and nothing was ever armed
+        run_dir = orchestrate.persist.run_dir(d, None)
+        self.assertFalse(os.path.exists(os.path.join(run_dir, base.LEDGER_FILE)))
+
+    def test_a_forged_record_is_caught_by_the_hash_the_phase_returned(self):
+        # The manifest lives outside the reviewed tree, but assume it too was
+        # reached: the loop still holds the hash the PHASE computed, in
+        # memory, and that is the value no on-disk edit can reconcile.
+        d, floor = self._repo()
+        runner = FakeRunner()
+
+        def tamper(path):
+            _append_a_byte(path)
+            with open(path, "rb") as fh:
+                forged = hashlib.sha256(fh.read()).hexdigest()
+            manifest = driver.run_manifest.load_manifest(d)
+            manifest["dispatch_request"]["sha256"] = forged
+            driver.run_manifest._rewrite(d, manifest)
+
+        with self._tamper_after_every_run(tamper):
+            status, _err = self._loop_capturing(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("recorded dispatch request hash was altered", status["message"])
+        self.assertEqual([], runner.launched)
+
+    def test_a_resume_after_a_tampered_file_regenerates_it_and_completes(self):
+        # Nothing to repair by hand: the request is ROLLING, so the next
+        # invocation's own phase overwrites both the file and the record.
+        d, floor = self._repo()
+        with contextlib.redirect_stderr(io.StringIO()):
+            first = driver.run(self._args(d))
+        self.assertEqual("checkpoint", first["status"], first)
+        _append_a_byte(first["dispatch_request"])
+        status, err = self._loop_capturing(d, floor, FakeRunner())
+        self.assertEqual("complete", status["status"], status)
+        # ...and the previous, tampered request was refused as a source of
+        # disarm targets rather than acted on (R-P6-6 reads it before the
+        # regeneration, by design).
+        self.assertIn("ignoring the previous dispatch request", err)
+        self.assertIn("does not match the request this run wrote", err)
+
+    def test_a_clean_previous_request_is_still_read_for_the_disarm(self):
+        # The negative control for the line above: an untouched re-entry must
+        # print nothing and must still hand `_disarm_previous` its entries.
+        d, floor = self._repo()
+        with contextlib.redirect_stderr(io.StringIO()):
+            driver.run(self._args(d))
+        status, err = self._loop_capturing(d, floor, FakeRunner())
+        self.assertEqual("complete", status["status"], status)
+        self.assertNotIn("ignoring the previous dispatch request", err)

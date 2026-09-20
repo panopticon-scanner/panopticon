@@ -254,7 +254,19 @@ def loop(args):
     # reading it afterwards would see the very request this same invocation just
     # produced and disarm nothing. Read in every mode -- it is one JSON load -- so that
     # the READ and the ACT can sit on opposite sides of `_first_run`, which I4 requires.
-    prev_req = requests.load_dispatch_request(review_root, namespace) or {}
+    #
+    # #1727: read BOUND. Uninstall is removal-only, but every uninstall path is
+    # keyed by strings this file supplies (entry ids, out_files), so a request
+    # the run cannot prove it wrote must not be the thing that decides what to
+    # disarm. A refusal here is not fatal -- this read is an optimisation of the
+    # re-entry, and `_first_run` is about to regenerate the file anyway -- so it
+    # is said once on stderr and treated as "no previous entries". An ABSENT
+    # file with no record is a fresh run and stays silent.
+    prev_req, prev_refusal = requests.load_bound_request(review_root, namespace)
+    if prev_refusal:
+        print("driver loop: ignoring the previous dispatch request: %s" % prev_refusal,
+              file=sys.stderr, flush=True)
+    prev_req = prev_req or {}
     if mode == "session":
         # Guards constructed HERE, before `_first_run`, and unconditionally -- not only once this
         # invocation reaches a fresh checkpoint. Session mode is the only mode whose guards can
@@ -341,7 +353,24 @@ def loop(args):
         ledger = ledger_mod.Ledger(run_dir)
         while status.get("status") == "checkpoint":
             iterations += 1
-            req = requests.load_dispatch_request(review_root, namespace) or {}
+            # #1727, FIRST: the request is a file in the reviewed tree, and
+            # everything below reads fields off it -- the pending set, the
+            # guards' grants, each entry's argv. `status` is the checkpoint
+            # this iteration's own `_run` returned, so `request_sha256` is the
+            # hash the writing PHASE computed, in memory, out of the target's
+            # reach. Refuse before `expected_enforced`, before arming, before
+            # any launch.
+            req, refusal = requests.load_bound_request(
+                review_root, namespace, expected_sha256=status.get("request_sha256"))
+            if refusal:
+                return _finish(_status("error", "driver loop: " + refusal), review_root,
+                               guards, ledger, namespace, mode, runner)
+            req = req or {}
+            # What the host is told that file must hash to, refreshed per
+            # checkpoint because the request is rolling (session mode prints
+            # it; a headless runner gets its entries in memory).
+            runner.request_sha256 = requests.recorded_request_hash(
+                review_root, namespace)[0]
             entries = [e for e in req.get("entries") or [] if isinstance(e, dict)]
             pending = loop_batch._pending(entries)
             # #1720: the request is a file in the reviewed tree, so its
@@ -662,8 +691,14 @@ def persist_cli(args):
     """
     review_root, _wt, _pr = runio.resolve_review_root(
         args.target, base=getattr(args, "base", None), pr=getattr(args, "pr", None))
-    entry = persist.find_entry(review_root, args.entry_id,
-                               namespace="setup" if args.setup else None)
+    entry, refusal = persist.find_entry(review_root, args.entry_id,
+                                        namespace="setup" if args.setup else None)
+    if refusal:
+        # #1727: the request this verb was pointed at is not the one the run
+        # wrote. Nothing is written -- the `out_file` it would have written to
+        # is named BY that request.
+        print("driver persist: %s" % refusal, file=sys.stderr)
+        return 1
     if entry is None:
         print("driver persist: no entry %r in the current dispatch request"
               % args.entry_id, file=sys.stderr)

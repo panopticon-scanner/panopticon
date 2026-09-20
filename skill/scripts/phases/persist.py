@@ -615,9 +615,19 @@ def write_reply(entry, text):
 
 
 def find_entry(review_root, entry_id, namespace=None):
-    """The current dispatch request's entry with this id, or None."""
-    req = requests.load_dispatch_request(review_root, namespace)
+    """`(entry_or_None, refusal_or_None)` for this id in the current request.
+
+    #1727: `driver persist` is a SEPARATE process, and the entry it finds here
+    names the `out_file` it is about to write -- so the request is read
+    through `load_bound_request`, which refuses a file that does not match
+    the hash this run recorded. A refusal and a missing id are DIFFERENT
+    answers and the caller says so differently: one means the file is not
+    ours, the other that the operator typed an id that is not in it.
+    """
+    req, refusal = requests.load_bound_request(review_root, namespace)
+    if refusal:
+        return None, refusal
     for e in (req or {}).get("entries") or []:
         if isinstance(e, dict) and e.get("id") == entry_id:
-            return e
-    return None
+            return e, None
+    return None, None

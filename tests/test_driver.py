@@ -1989,12 +1989,19 @@ class TestDriverPersistCLI(unittest.TestCase):
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         os.makedirs(os.path.join(d, ".panopticon", "runs", "t"))
+        # #1727: `driver persist` reads the dispatch request out of the
+        # reviewed tree and now checks it against the hash the run recorded,
+        # so the fixture needs the run this request belongs to.
+        driver.run_manifest.write_manifest(d, {
+            "schema_version": 1, "run_id": "0123456789abcdef", "host": "claude",
+            "security_mode": "standard", "created": "2026-09-20T00:00:00Z",
+            "review_root": d, "target": d})
         return d
 
     def _request(self, d, entries):
-        runio._write_json(os.path.join(d, ".panopticon", "dispatch-request.json"),
-                          {"schema_version": 1, "run_id": "RID", "checkpoint": "scout",
-                           "group": None, "entries": entries})
+        # Through the REAL writer: a hand-written file is exactly what the
+        # verb refuses now, and a fixture that forges one proves nothing.
+        return requests.write_dispatch_request(d, "RID", "scout", None, entries)
 
     def test_persist_writes_the_named_entry_from_a_file(self):
         d = self._repo()
@@ -2003,9 +2010,7 @@ class TestDriverPersistCLI(unittest.TestCase):
         reply = os.path.join(d, "reply.txt")
         with open(reply, "w", encoding="utf-8") as fh:
             fh.write('```json\n{"domains": [], "files": [], "tools": []}\n```')
-        with mock.patch("scripts.phases.requests.request_path",
-                        return_value=os.path.join(d, ".panopticon", "dispatch-request.json")):
-            rc = driver.main(["persist", "scout-app", "--file", reply, d])
+        rc = driver.main(["persist", "scout-app", "--file", reply, d])
         self.assertEqual(rc, 0)
         self.assertTrue(os.path.isfile(out))
 
@@ -2050,12 +2055,44 @@ class TestDriverPersistCLI(unittest.TestCase):
         self.assertEqual(rr.call_args.args, (d,))
         self.assertEqual(rr.call_args.kwargs, {"base": "origin/main", "pr": 42})
 
+    def test_persist_refuses_a_request_that_does_not_match_its_record(self):
+        # #1727: `driver persist` is a SEPARATE process reading a file in the
+        # reviewed tree, and it writes whatever that file's entry names as
+        # `out_file`. A tampered request must not reach that write.
+        d = self._repo()
+        out = os.path.join(d, ".panopticon", "runs", "t", "scout-app.json")
+        path = self._request(d, [{"id": "scout-app", "out_file": out,
+                                  "delivery": "return_json", "prompt": "p"}])
+        with open(path, "ab") as fh:
+            fh.write(b" ")
+        reply = os.path.join(d, "reply.txt")
+        with open(reply, "w", encoding="utf-8") as fh:
+            fh.write('```json\n{"domains": [], "files": [], "tools": []}\n```')
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = driver.main(["persist", "scout-app", "--file", reply, d])
+        self.assertEqual(rc, 1)
+        self.assertIn("driver persist: dispatch-request.json does not match the "
+                      "request this run wrote", err.getvalue())
+        self.assertFalse(os.path.exists(out))      # nothing written
+
+    def test_persist_still_names_the_unknown_entry_when_the_request_is_sound(self):
+        # The two refusals stay distinct: "this file is not ours" is not the
+        # same answer as "this id is not in it", and an operator chasing a
+        # typo must not be told the request was tampered with.
+        d = self._repo()
+        self._request(d, [{"id": "scout-app", "out_file": "/tmp/x.json",
+                           "delivery": "return_json", "prompt": "p"}])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = driver.main(["persist", "scout-other", "--file", os.devnull, d])
+        self.assertEqual(rc, 1)
+        self.assertIn("no entry 'scout-other' in the current dispatch request",
+                      err.getvalue())
+        self.assertNotIn("does not match", err.getvalue())
+
     def test_persist_refuses_an_unknown_entry_with_exit_1(self):
         d = self._repo()
         self._request(d, [])
-        with mock.patch("scripts.phases.requests.request_path",
-                        return_value=os.path.join(d, ".panopticon", "dispatch-request.json")), \
-             contextlib.redirect_stderr(io.StringIO()) as err:
+        with contextlib.redirect_stderr(io.StringIO()) as err:
             rc = driver.main(["persist", "scout-app", "--file", os.devnull, d])
         self.assertEqual(rc, 1)
         self.assertIn("scout-app", err.getvalue())

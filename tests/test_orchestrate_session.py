@@ -15,6 +15,7 @@ headless runner -- so this file is now "the loop's edges" rather than
 strictly its non-headless half.
 """
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -111,6 +112,20 @@ class TestSessionMode(LoopCase):
         self.assertNotIn("--setup", status["message"])
         self.assertNotIn("--setup", printed[0]["then"])
         self.assertNotIn("--setup", printed[0]["persist"])
+
+    def test_the_printed_batch_names_what_the_request_must_hash_to(self):
+        # #1727: a session host reads dispatch-request.json ITSELF, out of the
+        # reviewed tree. It is handed the anchor the driver checks against, so
+        # it can make the same check before it dispatches anything.
+        d, floor = self._repo(); s = self._session_root(d)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            status, out = self._loop(d, "--session-dir", s)
+        self.assertEqual(status["status"], "dispatch", status)
+        printed = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+        with open(printed[0]["dispatch_request"], "rb") as fh:
+            self.assertEqual(hashlib.sha256(fh.read()).hexdigest(),
+                             printed[0]["request_sha256"])
 
     def test_re_entry_with_nothing_done_re_emits_the_same_set(self):
         d, floor = self._repo(); s = self._session_root(d)
