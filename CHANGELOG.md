@@ -26,7 +26,14 @@ evidence exposed.
   `.panopticon/setup-unenforced-ack.json` and discarded once the posture
   proves enforcement). Registering the shells is a one-time step; until it is
   done `tool_policy_enforced` reads REFUTED for review runs too, which is the
-  registry honestly reporting itself incomplete.
+  registry honestly reporting itself incomplete. The refusal names the remedy
+  that can actually change the answer: emitting shells where the capability is
+  REFUTED, and `driver loop --setup --host <h> --mode headless` where nothing
+  measured it at all — on Codex that is the ONLY invocation that can, since its
+  tool-policy probe needs a headless settings path and `driver setup` has no
+  `--mode`. Probing costs no paid turn and, Kimi's `kimi --version` read aside,
+  launches no host CLI at all: everything `driver setup` measures is a
+  filesystem read.
 - **`usage_ledger` follows the mode.** The probe is now `usage-source` (was
   `transcript-dir`): in headless mode it measures the launch envelope path —
   a run folder that can hold `dispatch-ledger.jsonl`, the host CLI on PATH,
