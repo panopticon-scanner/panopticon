@@ -57,6 +57,31 @@ class TestLedgerMoney(LoopCase):
         self.assertIn("is_error", row["error"])
         self.assertIn("cost_usd non-finite (nan) dropped", row["error"])
 
+    def test_error_and_refusal_are_redacted_before_the_row_is_written(self):
+        key = "sk-ant-" + "A" * 32
+        password = "ledger-fixture-password"
+        error = "Incorrect API key provided: %s; postgres://worker:%s@db.invalid" % (key, password)
+        for refusal in (None, error):
+            with self.subTest(refusal=refusal is not None):
+                ledger = self._ledger()
+                result = self._result(0.25, error if refusal is None else "original failure")
+                ledger.record({"id": "e"}, "review", result, "headless", "claude",
+                              refusal=refusal)
+                with open(ledger.path, encoding="utf-8") as fh:
+                    written = fh.read()
+                self.assertNotIn(key, written)
+                self.assertNotIn(password, written)
+                row = ledger.lines()[0]
+                self.assertEqual("Incorrect API key provided: [REDACTED_KEY]; "
+                                 "postgres://worker:[REDACTED]@db.invalid", row["error"])
+                self.assertEqual(0.25, row["cost_usd"])
+                self.assertEqual(error if refusal is None else "original failure", result.error)
+
+    def test_absent_error_remains_null(self):
+        ledger = self._ledger()
+        ledger.record({"id": "e"}, "review", self._result(0.25), "headless", "claude")
+        self.assertIsNone(ledger.lines()[0]["error"])
+
     def test_a_good_cost_is_ledgered_and_summed_unchanged(self):
         ledger = self._ledger()
         for _ in range(3):
