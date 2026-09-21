@@ -13,6 +13,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
+import scripts.runners.batch as batch
 from . import engine
 from . import runio
 from . import requests
@@ -334,6 +335,41 @@ _SETUP_ARTIFACTS = ("setup-scan-brief.md", "setup-spine.json", "setup-proposal.j
                     # includes being asked again.
                     SETUP_UNENFORCED_ACK)
 
+def _stale_batch_records(run_dir):
+    """The `batch-<n>.json` records in `run_dir` that `--reset` may delete.
+
+    The NAME is `batch.MANIFEST_RE`, the same pattern `loop_batch.recover_stale`
+    matches: that one reads the iteration number back out of the name, so a
+    file carrying none is not a record -- and a sweep sold as "batch-*.json"
+    would still have deleted it (#1698 round 2).
+
+    STALE is the other half. `--setup`'s records share the flat `.panopticon/`
+    with every other setup run against this tree, so a record whose owner is
+    still alive belongs to a `driver loop --setup` that is running RIGHT NOW,
+    and deleting it is the same accident `recover_stale` refuses from the
+    other direction: that loop's own rollback would then find nothing to take
+    back. It is kept and said out loud. Every other answer -- a dead owner, a
+    pid from another machine, no stamp at all -- goes: `--reset` is the
+    operator saying this run is over, and none of those is a live process.
+    """
+    try:
+        names = sorted(os.listdir(run_dir))
+    except OSError:
+        return []
+    keep = []
+    for name in names:
+        if not batch.MANIFEST_RE.fullmatch(name):
+            continue
+        path = os.path.join(run_dir, name)
+        doc = None if os.path.islink(path) else runio._load_json(path)
+        if batch.owner_state(doc) == batch.OWNER_LIVE:
+            print("driver setup: keeping %s -- a `driver loop --setup` is still "
+                  "running here (pid %r)" % (name, doc.get("pid")),
+                  file=sys.stderr, flush=True)
+            continue
+        keep.append(path)
+    return keep
+
 def _clear_setup_artifacts(review_root):
     """Remove derived setup artifacts + the setup-manifest for --reset. NEVER
     touches the committed root config -- only the DRAFT beside it, which this
@@ -343,10 +379,20 @@ def _clear_setup_artifacts(review_root):
     --setup` reads it back on every later invocation, and `driver.run`'s own
     `--reset` cannot reach it -- that one clears the REVIEW namespace, i.e. the
     per-run folder. A file the verb consults with no way to discard it is a
-    remedy the refusal message names and does not deliver."""
+    remedy the refusal message names and does not deliver.
+
+    So is a crashed batch's record (#1698). It is named by a PATTERN rather
+    than a filename -- `batch-<n>.json`, one per iteration -- and it is swept
+    from the flat run folder for the same reason as the capability evidence:
+    `batch-<n>.json` is not in `runio._TOP_LEVEL`, so `_pano` would resolve it
+    into some review run's `runs/<tag>/`, where the record belongs to that run
+    and may name a process that is still going. Left behind, it met
+    `Batch.open`'s O_EXCL on the next `--setup` run -- and since `--reset`
+    skips recovery, the remedy the refusal names raised FileExistsError."""
     draft = repo_config.draft_path(review_root)
     setup_dir = os.path.dirname(_setup_manifest_path(review_root))
     for path in ([os.path.join(setup_dir, name) for name in _SETUP_ARTIFACTS]
+                 + _stale_batch_records(setup_dir)
                  + ([draft] if os.path.isfile(draft) else [])):
         try:
             os.remove(path)

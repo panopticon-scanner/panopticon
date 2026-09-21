@@ -132,7 +132,7 @@ class Ledger:
         with runio._open_a_nofollow(self.path) as fh:
             fh.write(text + "\n")
 
-    def rollback_rows(self, entries, completed, checkpoint, mode, host):
+    def rollback_rows(self, entries, completed, checkpoint, mode, host, reason="Ctrl-C"):
         """Write the interrupt's rows for one rolled-back batch (#1662): one
         per entry, through `record`, which is still the ledger's only writer.
 
@@ -161,8 +161,8 @@ class Ledger:
             cut = eid not in completed
             self.record(entry, checkpoint,
                         runners_base.RunResult.failed(
-                            eid, "cancelled (Ctrl-C) before it completed" if cut
-                            else "rolled back (Ctrl-C): this entry's artifacts were removed"),
+                            eid, ("cancelled (%s) before it completed" % reason) if cut
+                            else ("rolled back (%s): this entry's artifacts were removed" % reason)),
                         mode, host,
                         status=CANCELLED if cut else ROLLED_BACK, rolled_back=True)
 

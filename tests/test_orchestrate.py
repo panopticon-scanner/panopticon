@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -620,6 +621,7 @@ class TestHeadlessLoop(LoopCase):
         self.assertIn("the phase will re-run from its checkpoint on the next "
                       "`driver loop`", status["message"])
         self.assertIn("use `--reset` to discard the whole run", status["message"])
+
         # the reply the loop had persisted is gone, and the entry is pending again
         req = orchestrate.requests.load_dispatch_request(d) or {}
         entries = {e["id"]: e for e in req.get("entries") or []}
@@ -631,6 +633,283 @@ class TestHeadlessLoop(LoopCase):
         settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
         self.assertFalse(write_guard_hook.is_armed(
             settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+
+    def _dead_pid(self):
+        """A pid that is certainly not running: a child spawned and reaped."""
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait()
+        return proc.pid
+
+    def _stamp_crash_owner(self, run_dir, **fields):
+        """Rewrite every leftover crash record's owner stamp (#1698).
+
+        The suite models a crash IN THIS PROCESS, so the record it leaves
+        names a pid that is very much alive -- which is exactly what recovery
+        now refuses to touch. A test about a CRASHED loop has to say the
+        process is gone, and a reaped child's pid is the honest way to say it.
+        """
+        for name in self._manifests(run_dir):
+            path = os.path.join(run_dir, name)
+            doc = runio._load_json(path)
+            doc.update(fields)
+            runio._write_json(path, doc)
+
+    def _crash_record(self, run_dir):
+        return runio._load_json(os.path.join(run_dir, self._manifests(run_dir)[0]))
+
+    def _untouched(self, d, run_dir):
+        """Everything a refused recovery must leave exactly as it found it."""
+        doc = self._crash_record(run_dir)
+        return (sorted(self._manifests(run_dir)),
+                [p for row in doc["entries"] for p in row["artifacts"] if os.path.exists(p)],
+                ledger_mod.Ledger(run_dir).lines(),
+                runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)))
+
+    def _leave_crashed_batch(self, d, floor):
+        runner = FakeRunner()
+        # Model a process that never reached its interrupt rollback. The
+        # finished peer's artifact, real paid row and batch record survive.
+        with mock.patch.object(loop_batch, "rolled_back",
+                               return_value="simulated process loss"):
+            self._interrupt_mid_batch(d, floor, runner)
+        # ...and that process is GONE: the record it left names a dead pid.
+        self._stamp_crash_owner(runner.run_dir, pid=self._dead_pid())
+        return runner
+
+    def test_resume_rolls_back_a_crashed_batch_before_reading_done_artifacts(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        run_dir = crashed.run_dir
+        self.assertTrue(self._manifests(run_dir))
+        before = ledger_mod.Ledger(run_dir).lines()
+        attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
+        self.assertTrue(all(n >= 1 for n in attempts.values()))
+        resumed = FakeRunner()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven), \
+                mock.patch("scripts.runners.base.runner_for", return_value=resumed):
+            status = orchestrate.loop(self._args(d, "--allow-unenforced"))
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("review-app-SEC", resumed.launched)
+        self.assertIn("review-app-ACC", resumed.launched)
+        self.assertIn("recovered stale batch", err.getvalue())
+        self.assertEqual(self._manifests(run_dir), [])
+        after = ledger_mod.Ledger(run_dir).lines()
+        self.assertEqual(after[:len(before)], before)
+        self.assertTrue(any(r.get("status") == ledger_mod.ROLLED_BACK for r in after))
+        self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)), attempts)
+
+    def test_an_outside_path_in_a_crash_record_refuses_before_any_deletion(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        path = os.path.join(crashed.run_dir, self._manifests(crashed.run_dir)[0])
+        doc = runio._load_json(path)
+        victim = os.path.join(d, "keep.txt")
+        with open(victim, "w") as fh:
+            fh.write("keep")
+        doc["entries"][0]["artifacts"].append(victim)
+        runio._write_json(path, doc)
+        existing = [p for row in doc["entries"] for p in row["artifacts"] if os.path.exists(p)]
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("escapes the run folder", status["message"])
+        self.assertEqual(resumed.launched, [])
+        self.assertTrue(all(os.path.exists(p) for p in existing))
+        self.assertTrue(os.path.exists(path))
+
+    # #1698: a manifest on disk is a CRASHED batch only if the process that
+    # opened it is gone. A second `driver loop` on the same run folder used to
+    # read the first's LIVE record as a crash: it deleted the artifacts that
+    # loop was still producing, cancelled its entries, refunded its attempts
+    # and unlinked its manifest, so the first loop's own Ctrl-C then found
+    # nothing to roll back. `opened_at` cannot tell the two apart (a batch may
+    # legitimately run for hours), so the record names its process and
+    # recovery asks the operating system.
+
+    def test_a_live_owner_refuses_the_resume_and_touches_nothing(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        # the record says the loop that wrote it is still running, here
+        self._stamp_crash_owner(crashed.run_dir, pid=os.getpid())
+        before = self._untouched(d, crashed.run_dir)
+        self.assertTrue(before[1], "the crashed batch left no artifact to protect")
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("still running here", status["message"])
+        self.assertIn(str(os.getpid()), status["message"])
+        self.assertNotIn("--reset", status["message"])    # never, at a live loop
+        self.assertEqual(resumed.launched, [])
+        self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
+    def test_a_record_from_another_machine_refuses_rather_than_guesses(self):
+        # A pid number from over there names some unrelated local process
+        # here, so nothing may be concluded from it either way.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        self._stamp_crash_owner(crashed.run_dir, host="some-other-box")
+        before = self._untouched(d, crashed.run_dir)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("some-other-box", status["message"])
+        self.assertIn("not this machine", status["message"])
+        self.assertIn("--reset", status["message"])
+        self.assertEqual(resumed.launched, [])
+        self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
+    def test_a_record_with_no_owner_stamp_fails_closed(self):
+        # The record lives INSIDE the reviewed tree. An absent owner is either
+        # a manifest from before the field existed or one the target wrote;
+        # neither is evidence that a crash happened.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        path = os.path.join(crashed.run_dir, self._manifests(crashed.run_dir)[0])
+        doc = runio._load_json(path)
+        doc.pop("pid"), doc.pop("host")
+        runio._write_json(path, doc)
+        before = self._untouched(d, crashed.run_dir)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("no owner stamp", status["message"])
+        self.assertEqual(resumed.launched, [])
+        self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
+    def _obstruct(self, d, entry_id):
+        """Make `entry_id`'s artifact un-removable: a non-empty directory
+        where the reply file was. `os.remove` raises, which is what a
+        rollback with PROBLEMS looks like."""
+        req = orchestrate.requests.load_dispatch_request(d) or {}
+        out = next(e for e in req["entries"] if e["id"] == entry_id)["out_file"]
+        os.remove(out)
+        os.makedirs(out)
+        with open(os.path.join(out, "keep.txt"), "w") as fh:
+            fh.write("keep")
+        return out
+
+    def test_a_rollback_that_could_not_finish_is_flagged_and_never_re_ledgered(self):
+        # #1698: `roll_back` keeps the manifest when it has problems, so the
+        # Ctrl-C path could leave a record carrying NO `recovering` flag after
+        # the rollback rows were written and the markers refunded. The next
+        # loop then recovered it from scratch: a second ROLLED_BACK/CANCELLED
+        # row per entry and a second decrement of the same attempt counter.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        obstructed = []
+
+        def obstruct_then_interrupt():
+            obstructed.append(self._obstruct(d, "review-app-SEC"))
+            raise KeyboardInterrupt
+
+        self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC",
+                           then=obstruct_then_interrupt)
+        status = self._return_persist(d, floor, runner)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("rollback incomplete", status["message"])
+        # the record survived the rollback it could not finish -- FLAGGED, so
+        # that what was already ledgered is never ledgered again
+        run_dir = runner.run_dir
+        self.assertEqual(self._manifests(run_dir), ["batch-1.json"])
+        self.assertIs(self._crash_record(run_dir).get("recovering"), True)
+        rows = ledger_mod.Ledger(run_dir).lines()
+        rolled = [r for r in rows if r.get("status") in (ledger_mod.ROLLED_BACK,
+                                                         ledger_mod.CANCELLED)]
+        self.assertEqual(len(rolled), 2, rolled)
+        attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
+        # the operator clears the obstruction; a LATER loop finishes the job
+        shutil.rmtree(obstructed[0])
+        self._stamp_crash_owner(run_dir, pid=self._dead_pid())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            orchestrate.loop_batch.recover_stale(
+                d, orchestrate.requests.previous_request(d), "claude", "headless")
+        self.assertIn("finished the interrupted recovery", err.getvalue())
+        self.assertEqual(self._manifests(run_dir), [])
+        self.assertEqual(ledger_mod.Ledger(run_dir).lines(), rows)
+        self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)), attempts)
+
+    def test_open_never_overwrites_an_existing_batch_record(self):
+        with tempfile.TemporaryDirectory() as root:
+            batch = batch_mod.Batch(root, 1, "review", [])
+            batch.open()
+            with open(batch.path, "rb") as fh:
+                before = fh.read()
+            with self.assertRaises(FileExistsError):
+                batch_mod.Batch(root, 1, "scout", []).open()
+            with open(batch.path, "rb") as fh:
+                self.assertEqual(fh.read(), before)
+
+    def test_a_leftover_batch_record_refuses_before_the_guards_are_armed(self):
+        # #1698: `--setup --reset` left `batch-<n>.json` behind and skipped
+        # recovery, so `Batch.open`'s O_EXCL raised FileExistsError out of
+        # `loop` -- a traceback, AFTER `guards.arm(pending)`, with the write
+        # guard still armed. It is a refusal now, and it lands before a single
+        # grant is installed.
+        d, floor = self._repo(floor=("SEC",))
+        runner = FakeRunner()
+
+        def seed_and_plant(review_root):
+            seeded = self._seed_coverage(review_root, floor)
+            run_dir = orchestrate.persist.run_dir(review_root)
+            with open(batch_mod.manifest_path(run_dir, 1), "w") as fh:
+                fh.write("{}")
+            return seeded
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven), \
+                mock.patch.object(orchestrate, "_after_first_run", side_effect=seed_and_plant), \
+                mock.patch("scripts.runners.base.runner_for", return_value=runner):
+            status = orchestrate.loop(self._args(d, "--allow-unenforced"))
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("batch-1.json", status["message"])
+        self.assertIn("already exists", status["message"])
+        self.assertNotIn("FileExistsError", status["message"])
+        self.assertEqual(runner.launched, [])
+        settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
+        self.assertFalse(write_guard_hook.is_armed(
+            settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+
+    def test_a_record_that_lands_between_the_check_and_the_open_refuses_too(self):
+        # The race the check above cannot close: O_EXCL is the backstop, and
+        # what it raises must still reach the operator as the same sentence
+        # rather than as a Python type name.
+        d, floor = self._repo(floor=("SEC",))
+        runner = FakeRunner()
+        with mock.patch.object(batch_mod.Batch, "open",
+                               side_effect=FileExistsError(17, "File exists")):
+            status = self._return_persist(d, floor, runner)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("batch-1.json", status["message"])
+        self.assertIn("already exists", status["message"])
+        self.assertNotIn("FileExistsError", status["message"])
+        # armed for this batch, and taken back down on the way out
+        settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
+        self.assertFalse(write_guard_hook.is_armed(
+            settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+
+    def test_an_interrupted_recovery_never_refunds_the_attempt_twice(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        req = orchestrate.requests.previous_request(d)
+        with mock.patch.object(batch_mod.Batch, "close", return_value=["simulated interruption"]):
+            with self.assertRaises(OSError):
+                orchestrate.loop_batch.recover_stale(d, req, "claude", "headless")
+        attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
+        rows = ledger_mod.Ledger(crashed.run_dir).lines()
+        # #1698: flagging the record took it over, so it now names THIS
+        # process. The next loop is a later one, and that one died too.
+        self._stamp_crash_owner(crashed.run_dir, pid=self._dead_pid())
+        with contextlib.redirect_stderr(io.StringIO()):
+            orchestrate.loop_batch.recover_stale(d, req, "claude", "headless")
+        # it FINISHED the file removals and nothing else: the rows and the
+        # refund the interrupted recovery had already written stand alone.
+        self.assertEqual(self._manifests(crashed.run_dir), [])
+        self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)), attempts)
+        self.assertEqual(ledger_mod.Ledger(crashed.run_dir).lines(), rows)
 
     def test_the_interrupt_ledgers_what_it_cut_and_keeps_what_was_spent(self):
         # Spend is a fact and is never rolled back: the completed entry's row
@@ -723,7 +1002,7 @@ class TestHeadlessLoop(LoopCase):
         runner.prepare = prepare
         status = self._run(d, floor, runner)
         self.assertEqual("error", status["status"], status)
-        self.assertEqual(orchestrate.INTERRUPTED_IDLE, status["message"])
+        self.assertEqual(loop_batch.INTERRUPTED_IDLE, status["message"])
         self.assertIn("no batch was in flight", status["message"])
         self.assertIn("`--reset`", status["message"])
 

@@ -651,13 +651,39 @@ class TestSkillMd(unittest.TestCase):
         # seam, false of all three shipped runners. Read off the constant, not
         # re-typed: the `%d of %d` is the only part a prose sentence cannot
         # carry, so it is the only part dropped.
-        import scripts.orchestrate as orchestrate
-        clause = orchestrate.INTERRUPTED.split(";")[0].split("%d of %d ")[-1]
+        import scripts.loop_batch as loop_batch
+        clause = loop_batch.INTERRUPTED.split(";")[0].split("%d of %d ")[-1]
         self.assertEqual("entries had been handled and have been rolled back", clause)
         self.assertIn(clause, loop)
         # ...and the termination claim says whose children it can actually reach
         self.assertIn("registered a handle", loop)
         self.assertIn("process-group SIGINT", loop)
+        # #1698: a kill that reaches no teardown leaves the batch's record, and
+        # the next loop ROLLS IT BACK rather than overwriting it. The guide had
+        # promised the opposite of both halves -- "keeps everything that already
+        # finished" of a killed batch, and a record "removed when the batch
+        # ends" full stop -- which is a resume reading a half-written reply as a
+        # finished cell, described as working as intended.
+        self.assertIn("rolls a crashed batch back before it resumes", loop)
+        self.assertIn("read a half-written artifact as a finished cell", loop)
+        self.assertIn("previous process stopped", loop)
+        # ...and the three refusals an operator meets, pinned to the CODE's own
+        # wording the way the interrupt sentence above is. A message reworded in
+        # `loop_batch` without the guide following is how the last drift began.
+        for clause, refusal in (("still running here", loop_batch.BATCH_OWNER_LIVE),
+                                ("not this machine", loop_batch.BATCH_OWNER_ELSEWHERE),
+                                ("no owner stamp", loop_batch.BATCH_OWNER_UNSTAMPED)):
+            self.assertIn(clause, refusal)
+            self.assertIn(clause, loop)
+        # the live-owner refusal offers no `--reset` -- pointing an operator at
+        # the run folder another loop is working in is the accident itself --
+        # and the guide says so rather than leaving the omission to be read as
+        # an oversight.
+        self.assertNotIn("--reset", loop_batch.BATCH_OWNER_LIVE)
+        self.assertIn("`--reset` is deliberately not offered", loop)
+        # the fourth refusal, and setup's own folder
+        self.assertIn("a record this batch would overwrite", loop)
+        self.assertIn("`--setup --reset` sweeps them", loop)
 
     def test_driver_run_loop_documents_scout_return_persist(self):
         # The scout checkpoint is read-only + return-persist (the scout agent

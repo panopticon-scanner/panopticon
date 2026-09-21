@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -26,6 +27,7 @@ import scripts.setup_flow as setup_flow
 import scripts.model_resolver as model_resolver
 import scripts.probes.codex as codex_probes
 import scripts.repo_config as repo_config
+import scripts.runners.batch as batch_mod
 
 from conftest import write_host_evidence
 from test_orchestrate import _all_proven_artifact, _refuted_artifact
@@ -546,6 +548,94 @@ class TestDriverSetup(unittest.TestCase):
         setup._clear_setup_artifacts(d)
         self.assertTrue(os.path.isfile(per_run),
                         "a --setup --reset deleted a review run's own evidence")
+
+    def _dead_pid(self):
+        """A pid that is certainly not running: a child spawned and reaped."""
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait()
+        return proc.pid
+
+    def _batch_record(self, d, name, **fields):
+        path = os.path.join(d, ".panopticon", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        runio._write_json(path, {"schema_version": 1, "batch": 1, **fields})
+        return path
+
+    def test_reset_clears_a_leftover_batch_record(self):
+        # #1698. `driver loop --setup`'s run folder is the FLAT .panopticon/,
+        # and this list named only setup's own artifacts -- so a crashed setup
+        # batch's `batch-<n>.json` survived `--reset`. Recovery is SKIPPED
+        # under `--reset`, so the next run reached `Batch.open`'s O_EXCL and
+        # raised FileExistsError at it: a traceback, from the very flag the
+        # refusal it replaced told the operator to use.
+        d = self._repo()
+        flat = os.path.join(d, ".panopticon", "batch-1.json")
+        os.makedirs(os.path.dirname(flat), exist_ok=True)
+        runio._write_json(flat, {"schema_version": 1, "batch": 1})
+        setup._clear_setup_artifacts(d)
+        self.assertFalse(os.path.isfile(flat))
+
+    def test_reset_leaves_a_batch_record_a_live_setup_loop_owns(self):
+        # #1698 round 2: the sweep is unconditional no longer. Two concurrent
+        # `driver loop --setup` runs share the flat `.panopticon/`, so a
+        # `--reset` that deleted the other one's IN-FLIGHT record would hand
+        # its own crash rollback nothing to roll back -- the same accident the
+        # resume-side ownership check exists to prevent, arriving from the
+        # other direction.
+        d = self._repo()
+        live = self._batch_record(d, "batch-1.json", pid=os.getpid(),
+                                  host=batch_mod.host_id())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            setup._clear_setup_artifacts(d)
+        self.assertTrue(os.path.isfile(live))
+        self.assertIn("batch-1.json", err.getvalue())
+        self.assertIn("still running", err.getvalue())
+
+    def test_reset_clears_a_record_whose_owner_is_dead_or_unstamped(self):
+        # Everything the resume side would recover or refuse, `--reset` is
+        # entitled to discard: it is the operator saying the run is over.
+        d = self._repo()
+        dead = self._batch_record(d, "batch-1.json", pid=self._dead_pid(),
+                                  host=batch_mod.host_id())
+        unstamped = self._batch_record(d, "batch-2.json")
+        elsewhere = self._batch_record(d, "batch-3.json", pid=1,
+                                       host="some-other-box")
+        setup._clear_setup_artifacts(d)
+        for path in (dead, unstamped, elsewhere):
+            self.assertFalse(os.path.isfile(path), path)
+
+    def test_reset_sweeps_by_the_same_name_shape_recovery_matches(self):
+        # `batch-` + `.json` is not the record's name: `recover_stale` reads
+        # the ITERATION number out of it, and a file that carries none is not
+        # a record at all -- not one this sweep may delete on a prefix match.
+        d = self._repo()
+        record = self._batch_record(d, "batch-10.json", pid=self._dead_pid(),
+                                    host=batch_mod.host_id())
+        decoy = self._batch_record(d, "batch-foo.json")
+        setup._clear_setup_artifacts(d)
+        self.assertFalse(os.path.isfile(record))
+        self.assertTrue(os.path.isfile(decoy),
+                        "a --setup --reset deleted a file that is not a batch record")
+
+    def test_reset_does_not_reach_a_review_runs_batch_record(self):
+        # The trap next door, the same one `host-capabilities.json` has:
+        # `batch-<n>.json` is not in `runio._TOP_LEVEL`, so `_pano` resolves it
+        # into `runs/<tag>/` whenever a review run-manifest is on the tree --
+        # and a record in there belongs to that run, which may be live.
+        d = self._repo()
+        runio._write_json(runio._pano(d, "run-manifest.json"),
+                          {"schema_version": 1, "run_id": "r1", "host": "claude",
+                           "review_root": os.path.abspath(d),
+                           "created": "2026-09-17T00:00:00Z"})
+        per_run = runio._pano(d, "batch-1.json")
+        self.assertNotEqual(os.path.abspath(per_run),
+                            os.path.join(d, ".panopticon", "batch-1.json"))
+        os.makedirs(os.path.dirname(per_run), exist_ok=True)
+        runio._write_json(per_run, {"schema_version": 1, "batch": 1})
+        setup._clear_setup_artifacts(d)
+        self.assertTrue(os.path.isfile(per_run),
+                        "a --setup --reset deleted a review run's own batch record")
 
     def test_setup_end_to_end_loop(self):
         """scan checkpoint -> host persists proposal -> re-invoke ingests ->

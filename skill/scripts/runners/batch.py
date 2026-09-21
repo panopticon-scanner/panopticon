@@ -17,14 +17,27 @@ guard files; a batch that finishes -- cleanly or rolled back -- deletes it, so
 a manifest on disk means a batch that did neither: a run killed outright
 (SIGKILL, a power loss), which reaches no teardown at all.
 
-Such a leftover is a RECORD, not an instruction. Nothing applies it on a later
-invocation -- a rollback nobody is watching is what `--reset` is for -- and it
-is not durable either: `<n>` is the loop's iteration counter, so the next
-`driver loop` on this run opens batch 1 again and `open()` OVERWRITES it. An
-operator who wants to know what a killed run had in flight has to read the
-file BEFORE re-running. Keeping it across runs means naming manifests so they
-cannot collide and deciding what a resume owes a stale one; that is a
-follow-up, and deliberately not smuggled in here.
+A later loop validates a leftover against the bound dispatch request and
+rolls it back BEFORE a phase can read a partial artifact as complete. Opening
+an existing manifest is refused, so the recovery record cannot be overwritten.
+
+TODO (#1698, follow-up): this document is NOT hash-bound to the run the way
+`dispatch-request.json` has been since #1727 -- serialise, hash, write, and
+record the sha256 in the run manifest, so every reader can ask whether the
+file it just read is the one the driver wrote. It lives inside the reviewed
+tree, so everything it carries is target-writable, the owner stamp below
+included: `owner_state` is a LIVENESS check (is the process that wrote this
+still running?) and never an authenticity one. Two things make the binding
+more than the one-line mirror it looks like. `Batch` is in `runners/`, which
+may not import `scripts.phases.*` (tests/test_layout.py rule 3), so it cannot
+reach `requests.record_request_hash` -- and that helper is where the two
+namespaces are told apart (`--setup` anchors in its own manifest, #1507), so
+the recorder would have to be threaded in from `loop_batch`. And the record
+is rewritten three times, not once (`open`, `add_artifact` per retained
+reply, `begin_recovery`), so each rewrite owes the manifest a new hash and
+each one opens a window where the two disagree. What is defended today is
+what the rollback ACTS on: every artifact path is re-derived from the bound
+request before a single file is deleted (`loop_batch.recover_stale`).
 
 It lives in `runners/` rather than in `phases/` because `tests/test_layout.py`
 forbids `runners/* -> phases` imports and the loop is what calls both halves
@@ -32,17 +45,82 @@ of the rollback: the artifact half here, and the interrupted phase's
 per-dispatch marker in `phases.persist.rollback_markers`.
 """
 import os
+import re
+import socket
 import time
 
 import scripts.write_guard_hook as write_guard_hook
 
-# The manifest's file-name prefix. One owner: the loop writes these, the
-# operator greps for them, and the suite asserts a clean batch leaves none.
+# The manifest's file name. One owner: the loop writes these, the operator
+# greps for them, the `--setup --reset` sweep deletes them and the suite
+# asserts a clean batch leaves none. The PATTERN is shared too, not just the
+# prefix (#1698 round 2): `recover_stale` reads the iteration number back out
+# of the name, so a file that carries none is not a record at all -- and a
+# sweep matching on prefix-and-suffix alone would delete it anyway.
 MANIFEST_PREFIX = "batch-"
+MANIFEST_RE = re.compile(r"%s([0-9]+)\.json" % re.escape(MANIFEST_PREFIX))
+
+# #1698: what `owner_state` can conclude about the process that wrote a
+# record. Only ONE of the four clears it for recovery.
+OWNER_DEAD = "dead"
+OWNER_LIVE = "live"
+OWNER_FOREIGN = "foreign"
+OWNER_UNSTAMPED = "unstamped"
 
 
 def manifest_path(run_dir, number):
     return os.path.join(run_dir, "%s%s.json" % (MANIFEST_PREFIX, int(number)))
+
+
+def host_id():
+    """This machine, as the record names it."""
+    return socket.gethostname()
+
+
+def owner_state(doc):
+    """Whether the process that wrote `doc` is still running (#1698).
+
+    A manifest on disk is a CRASHED batch only if the process that opened it
+    is gone; a loop that is still running has one on disk for as long as its
+    batch is in flight. Nothing in the record used to say which: a second
+    `driver loop` on the same run folder read the first's LIVE manifest as a
+    crash, deleted the artifacts it was still producing, wrote CANCELLED rows
+    for its entries, refunded their attempts and unlinked the manifest -- so
+    the first loop's own Ctrl-C then found nothing to take back. `opened_at`
+    cannot tell the two apart, because a batch may legitimately run for hours.
+    So the record names its process, and this asks the operating system:
+
+    * `dead` -- stamped by THIS host and the pid is gone. A crash, and the
+      only answer recovery acts on.
+    * `live` -- stamped by this host and still running. `PermissionError`
+      counts as live: the signal was refused BECAUSE something is there to
+      refuse it.
+    * `foreign` -- stamped by another host. A pid number from over there
+      names some unrelated local process here, so nothing may be concluded
+      from it in either direction.
+    * `unstamped` -- no usable stamp. The record lives inside the REVIEWED
+      tree, so an absent or malformed owner is either a manifest from before
+      this field existed or one the target wrote; neither is evidence that a
+      crash happened. Fail closed.
+
+    `isinstance(pid, bool)` is excluded on purpose -- `True` is an `int` and
+    `os.kill(True, 0)` asks about pid 1, which is always alive.
+    """
+    if not isinstance(doc, dict):
+        return OWNER_UNSTAMPED
+    pid, host = doc.get("pid"), doc.get("host")
+    if (not isinstance(host, str) or not host or isinstance(pid, bool)
+            or not isinstance(pid, int) or pid <= 0):
+        return OWNER_UNSTAMPED
+    if host != host_id():
+        return OWNER_FOREIGN
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return OWNER_LIVE
+    except OSError:                       # ProcessLookupError, and nothing else lands here
+        return OWNER_DEAD
+    return OWNER_LIVE
 
 
 class Batch:
@@ -60,19 +138,46 @@ class Batch:
         self.number = int(number)
         self.checkpoint = checkpoint
         self.opened_at = None
+        self.recovering = False
         self.entries = [
             {"id": e.get("id"),
              "artifacts": [os.path.abspath(e["out_file"])] if e.get("out_file") else []}
             for e in entries or [] if isinstance(e, dict)]
 
     def document(self):
+        """The record, stamped with the process WRITING it (#1698).
+
+        Whoever last wrote the record owns it: a recovery that rewrites a
+        crashed batch's manifest to flag it takes the record over, so a
+        second loop arriving mid-recovery asks about the RECOVERING process
+        rather than the long-dead one it is finishing for.
+        """
         return {"schema_version": 1, "batch": self.number,
                 "checkpoint": self.checkpoint, "opened_at": self.opened_at,
-                "entries": self.entries}
+                "pid": os.getpid(), "host": host_id(),
+                "entries": self.entries,
+                **({"recovering": True} if self.recovering else {})}
+
+    def begin_recovery(self):
+        """Mark before any rollback EFFECT -- the ledger row, the artifact,
+        the refund -- so a rollback that stops partway is never re-ledgered.
+
+        The ledger and the attempt counters are separate files, so a recovery
+        replayed from scratch writes one entry's rollback row twice and
+        refunds one attempt twice. A flagged record says "somebody has already
+        accounted for this": `loop_batch.recover_stale` finishes the file
+        removals it names and writes nothing (#1698).
+        """
+        self.recovering = True
+        self._write()
 
     def open(self):
         """Write the manifest. Called BEFORE the first submit, so an interrupt
         that lands on the very first entry still has the list."""
+        # Reserve this name exclusively: a crash record belongs to recovery,
+        # never to the next batch with the same iteration number.
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
         self.opened_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self._write()
         return self
@@ -104,9 +209,14 @@ class Batch:
     def artifacts(self):
         return [path for row in self.entries for path in row["artifacts"]]
 
-    def roll_back(self):
+    def roll_back(self, *, close=True):
         """Delete exactly the artifacts this manifest lists, then the manifest
         itself. Returns `(removed, problems)`.
+
+        The manifest goes LAST and only when everything before it went: a
+        record whose artifacts are still on disk is the one thing that says
+        so. `close=False` leaves it to the caller, which has its own work to
+        finish -- the ledger rows and the refund -- before this batch is over.
 
         `os.remove` unlinks a SYMLINK rather than following it, so a link
         planted at an artifact path costs the run its link and never the file
@@ -126,7 +236,8 @@ class Batch:
                 continue
             except OSError as exc:
                 problems.append("%s: %s" % (path, exc))
-        problems += self.close()
+        if close and not problems:
+            problems += self.close()
         return removed, problems
 
     def close(self):
