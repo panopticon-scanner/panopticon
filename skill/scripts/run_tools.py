@@ -23,6 +23,7 @@ from scripts.tools import egress
 from scripts.tools.base import drain_stderr_async
 from scripts import plan_contract
 from scripts import redact
+from scripts import safe_write
 from scripts.progress import NullProgress, make_progress
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
@@ -904,7 +905,17 @@ def _redact_capture(tool, data):
 
 
 def _atomic_write(out_path, data):
-    """Atomically replace out_path with data."""
+    """Atomically replace out_path with data.
+
+    #1735: every SARIF capture goes through here, and `out_path` is under
+    `.panopticon/tools/` in the REVIEWED tree. `mkstemp` leaves no plantable
+    staging name, but it stages in `dirname(out_path)` -- so a target that
+    commits `.panopticon/tools` as a directory symlink has every capture
+    written, and then `os.replace`d, outside the tree. O_NOFOLLOW would never
+    see that (it guards the final component only); the whole-path confinement
+    is the guard that does.
+    """
+    safe_write.confine_artifact_path(out_path)
     fd, temp_path = tempfile.mkstemp(
         prefix=".%s-" % os.path.basename(out_path),
         dir=os.path.dirname(out_path) or ".")
@@ -1137,8 +1148,12 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"])}
                                  for d in excluded_dirs or ()],
                "depth_bound": depth_bound}
+    # #1735: the driver points --manifest at `<run folder>/tools-manifest.json`,
+    # inside the reviewed tree. Confine before the makedirs (a symlinked
+    # intermediate would be traversed by it) and never open through a link.
+    safe_write.confine_artifact_path(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    with safe_write.open_w_nofollow(path) as fh:
         json.dump(payload, fh, indent=2)
         fh.write("\n")
     return payload
