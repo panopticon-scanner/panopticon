@@ -340,7 +340,14 @@ _SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 
 
 def _cap_findings(parsed, tool):
-    """Bound one adapter's yield, keeping the most severe. Returns (kept, dropped).
+    """Bound one adapter's POST-FILTER yield, keeping the most severe.
+    Returns (kept, dropped).
+
+    #1741: the caller runs this AFTER `_filter_parsed_findings`, not before --
+    *parsed* here is already the exclusion-filtered list, so a flood of
+    findings under a fixture/vendored/run-artifact/exclude-glob path can no
+    longer spend the cap's slots and evict real project findings; an excluded
+    finding is counted as excluded, never as capped.
 
     Severity-ordered rather than first-N: dropping a CRITICAL to keep a page of
     notes would be worse than not capping. The sort is stable, so within a
@@ -351,9 +358,9 @@ def _cap_findings(parsed, tool):
     ordered = sorted(parsed, key=lambda f: _SEVERITY_RANK.get(
         str(f.get("severity", "INFO")).upper(), len(_SEVERITY_RANK)))
     dropped = len(parsed) - MAX_ADAPTER_FINDINGS
-    print("ingest note %s: %d findings exceeds the %d cap; kept the %d most "
-          "severe, dropped %d (OPS-D1B #1236)"
-          % (tool, len(parsed), MAX_ADAPTER_FINDINGS, MAX_ADAPTER_FINDINGS,
+    print("ingest note %s: kept %d of %d findings after exclusions "
+          "(cap %d), dropped %d (OPS-D1B #1236, #1741)"
+          % (tool, MAX_ADAPTER_FINDINGS, len(parsed), MAX_ADAPTER_FINDINGS,
              dropped), file=sys.stderr)
     return ordered[:MAX_ADAPTER_FINDINGS], dropped
 
@@ -473,8 +480,14 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         finally:
             target_root_cv.reset(token)
         raw_count = len(parsed)
-        parsed, truncated = _cap_findings(parsed, tool)
         scanned = _scanned_files(raw)
+        # #1741: filter BEFORE capping. `_cap_findings` used to run first, so a
+        # flood of findings planted under a path the filter would have dropped
+        # anyway (fixture corpus, vendored, run-artifact/venv, an exclude_glob)
+        # could win the cap's top slots by severity and evict real,
+        # lower-severity project findings that never even reached the filter —
+        # gone, and never counted as excluded either. Filtering the raw parse
+        # first means only in-scope findings ever compete for the cap.
         parsed, fx_cnt, gl_cnt, ra_cnt, sup_cnt = _filter_parsed_findings(
             parsed, include_fixtures, exclude_globs, root, venv_cache,
             suppressed_out)
@@ -483,6 +496,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         ra_excluded += ra_cnt
         for seg, n in sup_cnt.items():
             suppressed[seg] = suppressed.get(seg, 0) + n
+        parsed, truncated = _cap_findings(parsed, tool)
         out.extend(parsed)
         if raw_count:
             status, reason = "ok", None
@@ -496,7 +510,10 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         if truncated:
             # Disclosed, never silent: `findings` stays the RAW count, so a
             # report reads "N seen, M dropped" rather than looking like a
-            # smaller clean scan (#1236).
+            # smaller clean scan (#1236). #1741: `truncated` now counts what
+            # the cap dropped AFTER exclusions -- a finding the filter would
+            # have dropped anyway is never counted here, it is counted in the
+            # "ingest: excluded ..." line below instead.
             dispositions[tool]["truncated"] = truncated
         if reason:
             dispositions[tool]["reason"] = reason
