@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from unittest import mock
 
@@ -80,16 +81,45 @@ class TestCargoAuditAdapter(unittest.TestCase):
         findings = ca.CargoAuditAdapter().parse(b'{"vulnerabilities": {"list": []}}', "g1")
         self.assertEqual(findings, [])
 
-    def test_invoke_runs_cargo_audit(self):
+    def test_invoke_runs_cargo_audit_binary_directly(self):
+        # #1742 (SEC-E3A): `cargo audit` goes through cargo's DISPATCHER,
+        # which honours the target's own `.cargo/config.toml` [alias] table
+        # -- a target can alias `audit` to `cargo run` and get its own code
+        # (build.rs included) executed inside the scanner. The fix invokes
+        # the external subcommand BINARY directly, so cargo's alias/config
+        # resolution is never consulted, and names the lockfile explicitly.
         fake_run = FakePopen(stdout=b"", stderr=b"", returncode=0)
+        seen_cwd = {}
+
+        def record_and_return(cmd, **kwargs):
+            seen_cwd["cwd"] = kwargs.get("cwd")
+            # The scratch cwd must exist WHILE the tool is invoked.
+            seen_cwd["existed_during_call"] = (
+                kwargs.get("cwd") is not None and os.path.isdir(kwargs["cwd"])
+            )
+            return fake_run
+
         with mock.patch("scripts.tools.base.subprocess.Popen",
-                        return_value=fake_run) as popen_mock:
+                        side_effect=record_and_return) as popen_mock:
             stdout, rc = ca.CargoAuditAdapter().invoke("/tmp/fake")
         self.assertEqual(rc, 0)
-        popen_mock.assert_called_once_with(
-            ["cargo", "audit", "--no-fetch", "--format", "json"],
-            stdout=mock.ANY, stderr=mock.ANY, cwd="/tmp/fake",
-        )
+        popen_mock.assert_called_once()
+        called_args, called_kwargs = popen_mock.call_args
+        cmd = called_args[0]
+        self.assertEqual(cmd[0], "cargo-audit")
+        self.assertEqual(cmd[1], "audit")
+        self.assertIn("--file", cmd)
+        lockfile = cmd[cmd.index("--file") + 1]
+        self.assertEqual(lockfile, os.path.join("/tmp/fake", "Cargo.lock"))
+        self.assertTrue(os.path.isabs(lockfile))
+        # cwd is a scratch dir, never the target or inside it.
+        cwd = called_kwargs.get("cwd")
+        self.assertIsNotNone(cwd)
+        self.assertNotEqual(cwd, "/tmp/fake")
+        self.assertFalse(cwd.startswith("/tmp/fake" + os.sep))
+        self.assertTrue(seen_cwd["existed_during_call"])
+        # ... and is cleaned up afterward.
+        self.assertFalse(os.path.isdir(cwd))
 
     def test_invoke_rc_2_prints_stderr_and_returns_failure(self):
         import contextlib, io
@@ -101,7 +131,7 @@ class TestCargoAuditAdapter(unittest.TestCase):
             stdout, rc = ca.CargoAuditAdapter().invoke("/tmp/fake")
         self.assertEqual(rc, 2)
         self.assertEqual(stdout, b"audit error output")
-        self.assertIn("tool cargo exited 2", buf.getvalue())
+        self.assertIn("tool cargo-audit exited 2", buf.getvalue())
         self.assertIn("cargo audit failed", buf.getvalue())
 
     def test_cvss_v3_score_scope_unchanged_known_vector(self):
