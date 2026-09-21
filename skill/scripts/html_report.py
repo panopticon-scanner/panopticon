@@ -490,6 +490,11 @@ def _render_host_capabilities(meta):
     return "".join(parts)
 
 
+def _gate_mode_label(meta):
+    mode = meta.get("gate_security_mode") if isinstance(meta, dict) else None
+    return " (%s)" % _escape(mode) if mode else ""
+
+
 def _render_header(report):
     meta = report.get("meta", {})
     summary = report.get("summary", {})
@@ -505,7 +510,7 @@ def _render_header(report):
         # and an uncertified grade is PROVISIONAL, not settled.
         f"<span class='badge grade'>Grade: {_escape(summary.get('overall_grade') or '-')}{' (provisional)' if summary.get('coverage_certified') is False else ''}</span>",
         f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>Risk: {_escape(summary.get('risk_level', '-'))}</span>",
-        f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}</span>",
+        f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
     ]
     # #calibration: health belongs in the header, not buried. The letter grade is
     # a worst-severity rollup, so it saturates -- across six calibration targets
@@ -813,7 +818,7 @@ def _render_compare_summary(label, report):
 <div class="badges">
 <span class="badge grade">{_escape(summary.get('overall_grade') or '-')}</span>
 <span class="badge {_severity_class(summary.get('risk_level', 'INFO'))}">Risk: {_escape(summary.get('risk_level', '-'))}</span>
-<span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}</span>
+<span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>
 </div>
 <div class="stat-minis">{stat_cards}</div>
 {host_caps}

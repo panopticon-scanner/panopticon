@@ -367,6 +367,11 @@ def load_scout_requests(run_dir):
 REDTEAM = "redteam"
 
 
+def gate_security_mode(args):
+    """The gate's controller-carried mode, also published in report metadata."""
+    return REDTEAM if getattr(args, "security", None) == REDTEAM else "standard"
+
+
 def gate_counts_suppressed(args):
     """Does this run's gate count what a directory-NAME exclusion dropped?
 
@@ -381,7 +386,7 @@ def gate_counts_suppressed(args):
     target's `.panopticon/`, and a target that can choose the mode can choose
     to have its vendored findings ignored, which is the whole defect inverted.
     """
-    return getattr(args, "security", None) == REDTEAM
+    return gate_security_mode(args) == REDTEAM
 
 
 def ingest_tool_findings(args):

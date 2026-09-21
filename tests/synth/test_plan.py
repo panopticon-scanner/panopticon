@@ -869,6 +869,8 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         # vacuously against a file nothing was reading.
         self.assertEqual(report["meta"]["security_mode"], "redteam")
         # The gate did not: no --security flag, so it ran standard.
+        self.assertEqual(report["meta"]["gate_security_mode"], "standard")
+        self.assertIn("**Gate:** PASS (standard)", render_mod.render_summary(report))
         self.assertEqual(report["summary"]["gate"], "PASS")
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"], {})
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed"], {"vendor": 1})
@@ -882,6 +884,8 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(report["summary"]["gate"], "FAIL")
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"],
                          {"vendor": 1})
+        self.assertEqual(report["meta"]["gate_security_mode"], "redteam")
+        self.assertIn("**Gate:** FAIL (redteam)", render_mod.render_summary(report))
 
     def test_the_evidence_axis_is_the_one_remaining_asymmetry(self):
         """The documented, owner-owed difference (see #1578).

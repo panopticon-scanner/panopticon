@@ -196,13 +196,15 @@ def _cfg_value(value):
 def render_summary(report):
     """Render markdown summary of report with grades, stats, groups, and top findings."""
     s = report["summary"]
+    gate_mode = report["meta"].get("gate_security_mode")
     health_line = _render_health(s.get("health"))
     lines = [
         "# panopticon — %s" % report["meta"]["target"],
         "",
-        "**Grade:** %s  **Risk:** %s  **Gate:** %s%s" % (
+        "**Grade:** %s  **Risk:** %s  **Gate:** %s%s%s" % (
             _grade_text(s),
             s["risk_level"], s["gate"],
+            " (%s)" % gate_mode if gate_mode else "",
             ("  " + _health_headline(s.get("health"))) if _health_headline(s.get("health")) else ""),
         "",
     ] + _render_severity_block(s.get("stats") or {}, s.get("gate_severities")) + [

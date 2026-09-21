@@ -57,6 +57,11 @@
             "redteam"
           ]
         },
+        "gate_security_mode": {
+          "type": "string",
+          "enum": ["standard", "redteam"],
+          "description": "The security mode used by this report's gate, derived only from the controller-carried --security flag (standard when omitted). Unlike meta.security_mode, this never falls back to target-written groups.json. Absent on older reports."
+        },
         "parts": {
           "type": "array",
           "items": {

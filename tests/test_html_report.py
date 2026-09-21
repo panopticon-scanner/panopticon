@@ -64,6 +64,15 @@ def _minimal_report(findings=None):
 
 
 class TestHtmlReport(unittest.TestCase):
+    def test_gate_mode_is_explicit_in_normal_and_compared_reports(self):
+        report = _minimal_report()
+        report["meta"].update(security_mode="redteam", gate_security_mode="standard")
+        for output in (hr._render_header(report), hr._render_compare_summary("Current", report)):
+            self.assertIn("Gate: PASS (standard)", output)
+        report["meta"]["gate_security_mode"] = "<script>"
+        self.assertNotIn("(<script>)", hr._render_header(report))
+        self.assertIn("(&lt;script&gt;)", hr._render_header(report))
+
     def test_escape_escapes_html(self):
         self.assertEqual(
             hr._escape("<script>alert('x')</script>"),
