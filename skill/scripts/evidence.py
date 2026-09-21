@@ -14,8 +14,10 @@ import sys
 import uuid
 
 try:
+    from scripts import safe_write
     from scripts._version import __version__
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+    import safe_write
     from _version import __version__
 
 # #1639 P15 F3: the pinned types live in ONE module (it both enforces them on
@@ -467,8 +469,12 @@ def write_verify_queue(entries, cut, path, run_id=None):
                                  if not k.startswith("_")}}
                     for e in entries],
     }
+    # #1735: `<run_dir>/verify-queue.json` sits in the reviewed tree's
+    # `.panopticon`. Confine first -- the makedirs below would otherwise walk a
+    # symlinked intermediate directory -- then open without following a link.
+    safe_write.confine_artifact_path(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    with safe_write.open_w_nofollow(path) as fh:
         json.dump(payload, fh, indent=2)
         fh.write("\n")
 
