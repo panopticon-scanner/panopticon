@@ -148,7 +148,7 @@ def require_unenforced_scan_ack(review_root, manifest, entries):
     if loop_batch.expected_enforced(review_root, host,
                                     namespace=loop_batch.SETUP_NAMESPACE):
         return None                    # the shell is registered and proven
-    evidence = loop_batch._evidence(review_root, loop_batch.SETUP_NAMESPACE)
+    evidence = loop_batch.evidence_for(review_root, loop_batch.SETUP_NAMESPACE)
     posture = hosts.posture(host, evidence)
     row = evidence.get(hosts.TOOL_POLICY_ENFORCED) or {}
     if not (manifest.get("flags") or {}).get("allow_unenforced"):

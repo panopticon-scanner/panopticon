@@ -76,11 +76,11 @@ def expected_enforced(review_root, host, namespace=None):
     """
     if hosts.is_unenforced_fallback(host):
         return False
-    return (hosts.posture(host, _evidence(review_root, namespace))
+    return (hosts.posture(host, evidence_for(review_root, namespace))
             [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
 
 
-def _evidence(review_root, namespace):
+def evidence_for(review_root, namespace):
     """This namespace's own capability evidence, failing closed on absence.
 
     Resolved through `persist.run_dir`, the namespace-aware resolver
