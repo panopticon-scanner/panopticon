@@ -106,6 +106,24 @@ class TestToolsManifest(_Planted):
         self.assert_victim_intact()
 
 
+class TestToolCaptures(_Planted):
+    """`run_tools._atomic_write` is the choke point every SARIF capture goes
+    through. It stages with `mkstemp` -- unplantable leaf, which is why it was
+    not in the first sweep -- but `dir=os.path.dirname(out_path)`, so a planted
+    `.panopticon/tools` directory link carries EVERY capture out of the tree,
+    and `os.replace` then lands each one there. The confinement is the guard
+    that sees a symlinked intermediate component; O_NOFOLLOW never would."""
+
+    def test_a_planted_tools_directory_link_refuses_the_capture(self):
+        outside = os.path.join(self.root, "outside")
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(self.pano, "tools"))
+        with self.assertRaises(ValueError):
+            run_tools._atomic_write(
+                os.path.join(self.pano, "tools", "semgrep.sarif"), b"{}")
+        self.assertEqual(os.listdir(outside), [])      # nothing escaped
+
+
 class TestUsageJson(_Planted):
     def test_collect_usage_refuses_a_planted_link(self):
         run_dir = os.path.join(self.pano, "runs", "tag")
