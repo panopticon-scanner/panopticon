@@ -236,6 +236,108 @@ class TestParseHunkState(unittest.TestCase):
         self.assertEqual(verdict["hunk"], [41, 42])
 
 
+class TestGitPathQuoting(unittest.TestCase):
+    r"""#1739 (COD-C2D / SEC-G2B). git C-quotes a path whose name carries a
+    byte >= 0x80 (under the default core.quotepath), or a `"`, `\`, tab or
+    newline (whatever quotepath says). Observed against real git 2.x in a
+    temp repo:
+
+        diff --git "a/caf\303\251.py" "b/caf\303\251.py"
+        +++ "b/we\"ird.py"
+        rename to "re\\n.py"
+
+    An un-decoded quoted spelling keys the map under a name no other surface
+    uses, so the file's hunks are unreachable and the on-diff gate scopes
+    past it -- the silent drop this issue is about.
+    """
+
+    def test_unquote_plain_string_is_returned_unchanged(self):
+        for s in ("app/db.py", "my file.txt", "", '"', 'x"y'):
+            self.assertEqual(diff_map._unquote_git_path(s), s)
+
+    def test_unquote_octal_escapes_decode_as_utf8(self):
+        # real git output for a file named café.py
+        self.assertEqual(diff_map._unquote_git_path(r'"caf\303\251.py"'),
+                         "café.py")
+
+    def test_unquote_named_escapes(self):
+        self.assertEqual(diff_map._unquote_git_path(r'"we\"ird.py"'), 'we"ird.py')
+        self.assertEqual(diff_map._unquote_git_path(r'"back\\slash.py"'),
+                         "back\\slash.py")
+        self.assertEqual(diff_map._unquote_git_path(r'"ta\tb.py"'), "ta\tb.py")
+        self.assertEqual(diff_map._unquote_git_path(r'"new\nline.py"'), "new\nline.py")
+        self.assertEqual(diff_map._unquote_git_path(r'"a\a\b\f\r\v.py"'),
+                         "a\a\b\f\r\v.py")
+
+    def test_unquote_undecodable_bytes_use_surrogateescape_like_os_fsdecode(self):
+        # the SAME spelling discovery's os.fsdecode produces, so the hunk-map
+        # key and the reviewed-file-set entry are equal strings.
+        self.assertEqual(diff_map._unquote_git_path(r'"\377.py"'),
+                         os.fsdecode(b"\xff.py"))
+
+    def test_unquote_refuses_to_invent_a_path_from_invalid_quoting(self):
+        # git never emits these; if one arrives, keep the literal rather than
+        # guess a different file.
+        for bad in (r'"bad\q.py"', r'"\777.py"', '"dangling\\"', '"unterminated'):
+            self.assertEqual(diff_map._unquote_git_path(bad), bad)
+
+    def test_plus_header_with_a_quoted_path_keys_the_real_name(self):
+        text = ('diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"\n'
+                'index 111..222 100644\n'
+                '--- "a/caf\\303\\251.py"\n'
+                '+++ "b/caf\\303\\251.py"\n'
+                '@@ -1 +1 @@\n-old\n+new\n')
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {"café.py": [(1, 1)]})
+
+    def test_plus_header_quoted_name_with_a_space_is_tab_terminated(self):
+        # observed: git appends a tab to the ---/+++ names when the path
+        # contains a space, INCLUDING when the name is also quoted.
+        text = ('diff --git "a/sp ace\\"q.py" "b/sp ace\\"q.py"\n'
+                '--- "a/sp ace\\"q.py"\t\n'
+                '+++ "b/sp ace\\"q.py"\t\n'
+                '@@ -1 +1 @@\n-old\n+new\n')
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {'sp ace"q.py': [(1, 1)]})
+
+    def test_hunkless_block_keys_on_the_quoted_diff_git_line(self):
+        # a binary/mode-only change has no `+++` header at all, so the
+        # `diff --git "a/<p>" "b/<p>"` line is the only key available.
+        text = ('diff --git "a/caf\\303\\251.dat" "b/caf\\303\\251.dat"\n'
+                'index c866266..5663091 100644\n'
+                'Binary files a/x and b/x differ\n')
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {"café.dat": []})
+
+    def test_hundred_percent_rename_to_a_quoted_name_keeps_a_key(self):
+        # observed for `git mv ren.py 're"n.py'`: the diff --git line is MIXED
+        # (`a/ren.py "b/re\"n.py"`), so only `rename to` names the new path.
+        text = ('diff --git a/ren.py "b/re\\"n.py"\n'
+                'similarity index 100%\n'
+                'rename from ren.py\n'
+                'rename to "re\\"n.py"\n')
+        self.assertEqual(diff_map.parse_unified_diff(text), {'re"n.py': []})
+
+    def test_dev_null_is_still_a_deletion_not_a_key(self):
+        text = ("diff --git a/gone.py b/gone.py\n"
+                "deleted file mode 100644\n"
+                "--- a/gone.py\n"
+                "+++ /dev/null\n"
+                "@@ -1,2 +0,0 @@\n-x\n-y\n")
+        self.assertEqual(diff_map.parse_unified_diff(text), {})
+
+    def test_a_quoted_header_forged_inside_a_hunk_is_still_payload(self):
+        # #1738 must not regress: unquoting happens only where framing is
+        # recognized, between hunks.
+        text = ('diff --git a/app/db.py b/app/db.py\n'
+                '--- a/app/db.py\n'
+                '+++ b/app/db.py\n'
+                '@@ -1,0 +1,1 @@\n'
+                '+++ "b/caf\\303\\251.py"\n')
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {"app/db.py": [(1, 1)]})
+
+
 def _make_repo(test_case):
     return make_git_repo(
         test_case=test_case,
