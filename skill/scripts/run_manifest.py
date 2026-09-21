@@ -33,6 +33,11 @@ import sys
 import uuid
 
 from scripts import hosts
+# #1735: the no-follow artifact open. It lives in a leaf module rather than in
+# `phases/runio`, where it was written, precisely so THIS module can reach it:
+# `phases/*` imports `run_manifest`, and layout rule 3 keeps that arrow
+# pointing one way.
+from scripts import safe_write
 
 MANIFEST_NAME = "run-manifest.json"
 SETUP_MANIFEST_NAME = "setup-manifest.json"
@@ -309,11 +314,23 @@ def _rewrite(review_root, manifest, *, namespace=None):
     why. Atomic because this is the one artifact that anchors the run tag: an
     interrupt mid-write would leave every `_pano` path unresolvable. The
     ephemeral keys are stripped here, once, rather than at each caller.
+
+    #1735 (SEC-D1C): the STAGING file is as exposed as the artifact. `.panopticon/`
+    is inside the reviewed tree and `run-manifest.json.tmp` is a fixed name, so a
+    redteam target can commit it as a symlink to any file the invoking user can
+    write; the plain `open(tmp, "w")` this used followed the link, replaced that
+    file's contents with the manifest JSON, and then `os.replace` renamed the LINK
+    over `run-manifest.json` (rename does not dereference), so every later
+    `load_manifest` read through it. `write_manifest` escaped only because mode "x"
+    is O_EXCL. The staging write now goes through the same no-follow open every
+    other `.panopticon` writer uses, and refuses LOUDLY rather than writing
+    somewhere else -- the two fixes this class already had (#1577, and the guard
+    hooks' own `_atomic_write_json`) fail the same way.
     """
     body = {k: v for k, v in manifest.items() if k not in _EPHEMERAL_KEYS}
     path = manifest_path(review_root, namespace)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    with safe_write.open_w_nofollow(tmp) as fh:
         json.dump(body, fh, indent=2, sort_keys=True)
     os.replace(tmp, path)
     return manifest
