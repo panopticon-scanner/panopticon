@@ -125,6 +125,31 @@ class TestEnvelope(unittest.TestCase):
         self.assertEqual(res.denials, ENVELOPE["permission_denials"])
         self.assertIsNone(res.error)
 
+    def test_the_turn_model_wins_over_a_first_helper_model(self):
+        model_usage = {
+            "claude-haiku-4-5-20251001": {"inputTokens": 100, "outputTokens": 2,
+                                          "costUSD": 0.001},
+            "claude-sonnet-5": {"inputTokens": 10, "outputTokens": 20,
+                                "costUSD": 0.01},
+        }
+        envelope = dict(ENVELOPE, modelUsage=model_usage)
+
+        res = claude_runner.Runner("claude").parse_envelope("e1", json.dumps(envelope), 0)
+
+        self.assertEqual("claude-sonnet-5", res.model)
+        self.assertEqual(model_usage, res.models)
+
+    def test_cost_breaks_the_tie_when_output_tokens_are_missing(self):
+        model_usage = {
+            "helper": {"inputTokens": 100, "costUSD": 0.001},
+            "primary": {"inputTokens": 10, "costUSD": 0.01},
+        }
+        envelope = dict(ENVELOPE, modelUsage=model_usage)
+
+        res = claude_runner.Runner("claude").parse_envelope("e1", json.dumps(envelope), 0)
+
+        self.assertEqual("primary", res.model)
+
     def test_the_host_surface_is_the_envelopes_own_error_not_the_agents_text(self):
         # #1623 C1: `error` carries 200 characters of the AGENT's reply, so a
         # cell whose finding is about a 403 handler must not read as a 403.

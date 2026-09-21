@@ -127,6 +127,17 @@ class TestLedgerMoney(LoopCase):
         ledger.record({"id": "e"}, "review", self._result(0.1), "headless", "claude")
         self.assertEqual(0, ledger.usage_document()["corrupt_rows"])
 
+    def test_a_row_preserves_the_complete_per_model_usage_map(self):
+        ledger = self._ledger()
+        models = {"helper": {"inputTokens": 3}, "primary": {"outputTokens": 12}}
+        result = base.RunResult(entry_id="e", ok=True, text="", usage={}, cost_usd=0.1,
+                                model="primary", models=models, session_id=None,
+                                denials=[], error=None)
+
+        ledger.record({"id": "e"}, "review", result, "headless", "claude")
+
+        self.assertEqual(models, ledger.lines()[0]["models"])
+
 
 class TestCancelledRows(LoopCase):
     """#1662: what a Ctrl-C cut is written into the run's history, through

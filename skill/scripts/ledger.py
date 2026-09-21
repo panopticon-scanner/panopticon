@@ -97,6 +97,9 @@ class Ledger:
                 "session_id": result.session_id, "denials": result.denials,
                 "rejected_file": rejected_file,
                 "error": refusal if refusal is not None else result.error}
+        models = getattr(result, "models", None)
+        if models:
+            line["models"] = models
         # #1732: what the CLI printed on stderr, on a FAILED row only. Written
         # ONLY when the launch produced something, so a completed row's shape
         # is byte-for-byte what it was (the same rule `status`/`rolled_back`

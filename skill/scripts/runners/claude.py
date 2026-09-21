@@ -17,6 +17,19 @@ import scripts.runners.schema as schema_argv_rules
 DEFAULT_RUNNER = subprocess.run
 
 
+def _usage_number(details, key):
+    value = details.get(key) if isinstance(details, dict) else None
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def _primary_model(model_usage):
+    """Choose the model that carried the turn, not the first helper entry."""
+    return max(model_usage.items(),
+               key=lambda item: (_usage_number(item[1], "outputTokens"),
+                                 _usage_number(item[1], "costUSD")),
+               default=(None, None))[0]
+
+
 class Runner(base.HostRunner):
     CLI = "claude"
     # The two argv tokens that make a launch print the JSON envelope `usage`
@@ -154,7 +167,7 @@ class Runner(base.HostRunner):
                                          stderr=diagnosis)
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         model_usage = data.get("modelUsage") if isinstance(data.get("modelUsage"), dict) else {}
-        model = next(iter(model_usage), None)
+        model = _primary_model(model_usage)
         denials = data.get("permission_denials") if isinstance(data.get("permission_denials"), list) else []
         # D10 ruling 3: under `--json-schema` the CLI may return the object in
         # `structured_output` ALONGSIDE or INSTEAD OF the `result` text, and
@@ -185,7 +198,7 @@ class Runner(base.HostRunner):
         return base.RunResult(entry_id=entry_id, ok=error is None, text=text if error is None else "",
                                usage=usage, cost_usd=data.get("total_cost_usd"), model=model,
                                session_id=data.get("session_id"), denials=denials, error=error,
-                               host_error=host_error,
+                               host_error=host_error, models=model_usage,
                                stderr=diagnosis if error is not None else None)
 
     def launch_env(self, overlay=None):
