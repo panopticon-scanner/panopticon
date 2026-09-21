@@ -90,7 +90,9 @@ def parse_unified_diff(text):
     RAISES DiffMapError on a diff the budget cannot reconcile -- text that
     ends inside a hunk, a hunk before any file header, or a COMBINED (merge)
     diff, whose `@@@` payload cannot be budgeted at all and whose two-column
-    markers forge a header from content beginning with "+ ". Same contract as
+    markers forge a header from content beginning with "+ " (defence-in-depth
+    for a direct caller: hunk_map's own `git diff <base_sha>` never emits
+    one, see the guard). Same contract as
     hunk_map's other guards (#5.0-08, #1256): half a map scopes the on-diff
     gate to half the change and passes vacuously for the rest, so it is never
     returned.
@@ -121,11 +123,19 @@ def parse_unified_diff(text):
             path, pending, opened = None, _git_header_path(line), True
             continue
         if line.startswith(_COMBINED_HEADERS) or line.startswith("@@@"):
+            # Defence-in-depth, and believed unreachable from hunk_map: only an
+            # ARGUMENT-LESS `git diff` emits combined format for unmerged
+            # paths. `git diff <base_sha>` -- the only diff this module runs --
+            # returns an ordinary two-way `diff --git` even with `UU` entries
+            # in the index (probed on a real conflicted merge). Kept for any
+            # other caller of this parser: a combined hunk's `@@@` header does
+            # not describe a payload that can be counted, and its two-column
+            # markers let content beginning with "+ " forge a header exactly as
+            # "++ " does here -- so refusing beats mis-parsing.
             raise DiffMapError(
-                "combined (merge) diff format is not parseable here: %r. Its "
-                "payload cannot be line-budgeted, so PR content would be read "
-                "as framing (#1738). Finish or abort the in-progress merge, "
-                "then re-run." % line[:80])
+                "combined (merge) diff format cannot be parsed here: %r. Its "
+                "payload cannot be line-budgeted, so content would be read as "
+                "framing (#1738). This parser takes two-way diffs only." % line[:80])
         if line.startswith(_RENAME_TO) and not line[len(_RENAME_TO):].startswith('"'):
             pending = line[len(_RENAME_TO):].rstrip() or pending
             continue

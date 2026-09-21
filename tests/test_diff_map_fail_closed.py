@@ -114,10 +114,13 @@ class MalformedDiffFailClosedTest(unittest.TestCase):
         self.assertIn("before any file header", str(ctx.exception))
 
     def test_a_combined_merge_diff_is_refused_not_mis_parsed(self):
-        # `git diff` emits combined format for UNMERGED paths, and there every
-        # added line carries TWO '+' markers -- so content beginning with "+ "
-        # forges a header again and the payload cannot be budgeted from the
-        # `@@@` header. Refuse it; the operator finishes the merge and re-runs.
+        # Defence-in-depth for a DIRECT caller of the parser, not a path
+        # hunk_map can reach: `git diff <base_sha>` returns an ordinary
+        # two-way diff even for unmerged (`UU`) paths -- only an
+        # argument-less `git diff` emits combined format. Where it does
+        # occur, every added line carries TWO markers, so content beginning
+        # with "+ " forges a header again and the `@@@` header describes no
+        # payload that can be counted. Refuse rather than mis-parse.
         combined = ("diff --cc merged.py\n"
                     "index 1111111,2222222..3333333\n"
                     "--- a/merged.py\n+++ b/merged.py\n"
