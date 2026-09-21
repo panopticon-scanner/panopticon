@@ -842,6 +842,55 @@ class TestHeadlessLoop(LoopCase):
             with open(batch.path, "rb") as fh:
                 self.assertEqual(fh.read(), before)
 
+    def test_a_leftover_batch_record_refuses_before_the_guards_are_armed(self):
+        # #1698: `--setup --reset` left `batch-<n>.json` behind and skipped
+        # recovery, so `Batch.open`'s O_EXCL raised FileExistsError out of
+        # `loop` -- a traceback, AFTER `guards.arm(pending)`, with the write
+        # guard still armed. It is a refusal now, and it lands before a single
+        # grant is installed.
+        d, floor = self._repo(floor=("SEC",))
+        runner = FakeRunner()
+
+        def seed_and_plant(review_root):
+            seeded = self._seed_coverage(review_root, floor)
+            run_dir = orchestrate.persist.run_dir(review_root)
+            with open(batch_mod.manifest_path(run_dir, 1), "w") as fh:
+                fh.write("{}")
+            return seeded
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven), \
+                mock.patch.object(orchestrate, "_after_first_run", side_effect=seed_and_plant), \
+                mock.patch("scripts.runners.base.runner_for", return_value=runner):
+            status = orchestrate.loop(self._args(d, "--allow-unenforced"))
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("batch-1.json", status["message"])
+        self.assertIn("already exists", status["message"])
+        self.assertNotIn("FileExistsError", status["message"])
+        self.assertEqual(runner.launched, [])
+        settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
+        self.assertFalse(write_guard_hook.is_armed(
+            settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+
+    def test_a_record_that_lands_between_the_check_and_the_open_refuses_too(self):
+        # The race the check above cannot close: O_EXCL is the backstop, and
+        # what it raises must still reach the operator as the same sentence
+        # rather than as a Python type name.
+        d, floor = self._repo(floor=("SEC",))
+        runner = FakeRunner()
+        with mock.patch.object(batch_mod.Batch, "open",
+                               side_effect=FileExistsError(17, "File exists")):
+            status = self._return_persist(d, floor, runner)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("batch-1.json", status["message"])
+        self.assertIn("already exists", status["message"])
+        self.assertNotIn("FileExistsError", status["message"])
+        # armed for this batch, and taken back down on the way out
+        settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
+        self.assertFalse(write_guard_hook.is_armed(
+            settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+
     def test_an_interrupted_recovery_never_refunds_the_attempt_twice(self):
         d, floor = self._repo(floor=("SEC", "ACC"))
         crashed = self._leave_crashed_batch(d, floor)

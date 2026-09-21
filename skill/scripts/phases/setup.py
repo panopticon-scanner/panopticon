@@ -10,6 +10,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
+import scripts.runners.batch as batch
 from . import engine
 from . import persist
 from . import runio
@@ -156,6 +157,15 @@ def _setup_capabilities_path(review_root):
     """
     return os.path.join(persist.run_dir(review_root, "setup"), runio.HOST_CAPABILITIES)
 
+def _stale_batch_records(run_dir):
+    """Every `batch-<n>.json` in `run_dir` (#1698) -- a pattern, not a name."""
+    try:
+        return [os.path.join(run_dir, n) for n in sorted(os.listdir(run_dir))
+                if n.startswith(batch.MANIFEST_PREFIX) and n.endswith(".json")]
+    except OSError:
+        return []
+
+
 def _clear_setup_artifacts(review_root):
     """Remove derived setup artifacts + the setup-manifest for --reset. NEVER
     touches the committed root config -- only the DRAFT beside it, which this
@@ -165,10 +175,21 @@ def _clear_setup_artifacts(review_root):
     --setup` reads it back on every later invocation, and `driver.run`'s own
     `--reset` cannot reach it -- that one clears the REVIEW namespace, i.e. the
     per-run folder. A file the verb consults with no way to discard it is a
-    remedy the refusal message names and does not deliver."""
+    remedy the refusal message names and does not deliver.
+
+    So is a crashed batch's record (#1698). It is named by a PATTERN rather
+    than a filename -- `batch-<n>.json`, one per iteration -- and it is swept
+    from the flat run folder for the same reason as the capability evidence:
+    `batch-<n>.json` is not in `runio._TOP_LEVEL`, so `_pano` would resolve it
+    into some review run's `runs/<tag>/`, where the record belongs to that run
+    and may name a process that is still going. Left behind, it met
+    `Batch.open`'s O_EXCL on the next `--setup` run -- and since `--reset`
+    skips recovery, the remedy the refusal names raised FileExistsError."""
     draft = repo_config.draft_path(review_root)
+    flat = persist.run_dir(review_root, "setup")
     for path in ([runio._pano(review_root, name) for name in _SETUP_ARTIFACTS]
                  + [_setup_capabilities_path(review_root)]
+                 + _stale_batch_records(flat)
                  + ([draft] if os.path.isfile(draft) else [])):
         try:
             os.remove(path)

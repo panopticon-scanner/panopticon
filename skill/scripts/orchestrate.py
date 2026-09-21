@@ -362,6 +362,15 @@ def loop(args):
             if stuck:
                 return _finish(_status("error", stuck), review_root, guards, ledger,
                                namespace, mode, runner)
+            # #1698: a crash record this batch must not overwrite, refused
+            # before a single grant is installed. `recover_stale` has already
+            # dealt with the ones it is allowed to; anything still here under
+            # `--reset` (which skips recovery) used to reach `Batch.open`'s
+            # O_EXCL and come back out of `loop` as a traceback.
+            in_use = loop_batch.batch_in_use(run_dir, iterations)
+            if in_use:
+                return _finish(_status("error", in_use), review_root, guards, ledger,
+                               namespace, mode, runner)
             guards.arm(pending)
             if mode == "session":
                 # Branched on the MODE, not on a None the headless path can no
@@ -385,8 +394,13 @@ def loop(args):
             # submit -- taking a cancelled batch back must never be a glob
             # over the run folder, which would reach a prior phase's outputs
             # and, on a redteam target, whatever the tree planted next to them.
-            batch = batch_mod.Batch(run_dir, iterations,
-                                    req.get("checkpoint"), pending).open()
+            try:
+                batch = batch_mod.Batch(run_dir, iterations,
+                                        req.get("checkpoint"), pending).open()
+            except FileExistsError:       # the race the check above cannot close
+                return _finish(_status("error", loop_batch.BATCH_IN_USE
+                                       % batch_mod.manifest_path(run_dir, iterations)),
+                               review_root, guards, ledger, namespace, mode, runner)
             # P07 (#1636): persisted, ledgered and counted into usage.json the moment EACH entry
             # finishes, so an interrupt keeps everything already yielded and `done`/`total` say
             # how much that was. `closing` because an exception here abandons the generator: it

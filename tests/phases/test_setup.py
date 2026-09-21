@@ -349,6 +349,39 @@ class TestDriverSetup(unittest.TestCase):
         self.assertTrue(os.path.isfile(per_run),
                         "a --setup --reset deleted a review run's own evidence")
 
+    def test_reset_clears_a_leftover_batch_record(self):
+        # #1698. `driver loop --setup`'s run folder is the FLAT .panopticon/,
+        # and this list named only setup's own artifacts -- so a crashed setup
+        # batch's `batch-<n>.json` survived `--reset`. Recovery is SKIPPED
+        # under `--reset`, so the next run reached `Batch.open`'s O_EXCL and
+        # raised FileExistsError at it: a traceback, from the very flag the
+        # refusal it replaced told the operator to use.
+        d = self._repo()
+        flat = os.path.join(d, ".panopticon", "batch-1.json")
+        os.makedirs(os.path.dirname(flat), exist_ok=True)
+        runio._write_json(flat, {"schema_version": 1, "batch": 1})
+        setup._clear_setup_artifacts(d)
+        self.assertFalse(os.path.isfile(flat))
+
+    def test_reset_does_not_reach_a_review_runs_batch_record(self):
+        # The trap next door, the same one `host-capabilities.json` has:
+        # `batch-<n>.json` is not in `runio._TOP_LEVEL`, so `_pano` resolves it
+        # into `runs/<tag>/` whenever a review run-manifest is on the tree --
+        # and a record in there belongs to that run, which may be live.
+        d = self._repo()
+        runio._write_json(runio._pano(d, "run-manifest.json"),
+                          {"schema_version": 1, "run_id": "r1", "host": "claude",
+                           "review_root": os.path.abspath(d),
+                           "created": "2026-09-17T00:00:00Z"})
+        per_run = runio._pano(d, "batch-1.json")
+        self.assertNotEqual(os.path.abspath(per_run),
+                            os.path.join(d, ".panopticon", "batch-1.json"))
+        os.makedirs(os.path.dirname(per_run), exist_ok=True)
+        runio._write_json(per_run, {"schema_version": 1, "batch": 1})
+        setup._clear_setup_artifacts(d)
+        self.assertTrue(os.path.isfile(per_run),
+                        "a --setup --reset deleted a review run's own batch record")
+
     def test_setup_end_to_end_loop(self):
         """scan checkpoint -> host persists proposal -> re-invoke ingests ->
         complete, draft present, the committed root config never written."""

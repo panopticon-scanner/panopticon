@@ -66,6 +66,29 @@ BATCH_OWNER_UNSTAMPED = (
     "is working on this run folder.")
 
 
+# #1698: the record this batch may not overwrite. `Batch.open` reserves the
+# name with O_EXCL so a crash record can never be silently replaced by the
+# next batch that happens to carry the same iteration number -- and what that
+# refusal raises has to reach the operator as a sentence. It reached them as
+# `FileExistsError: [Errno 17] File exists`, uncaught, with the write guard
+# already armed.
+BATCH_IN_USE = (
+    "driver loop: refusing to open batch record %s: it already exists. A record on "
+    "disk is a batch this run has not accounted for -- re-run WITHOUT `--reset` to "
+    "recover it, or with `--reset` to discard the run folder and start over.")
+
+
+def batch_in_use(run_dir, number):
+    """The refusal for a batch number whose record is already on disk, or None.
+
+    Asked BEFORE the guards are armed. O_EXCL is the backstop and it fires
+    too late to be the answer: by then this batch's grants are installed and
+    the run has to be torn back down to take them off.
+    """
+    path = batch_mod.manifest_path(run_dir, number)
+    return BATCH_IN_USE % path if os.path.lexists(path) else None
+
+
 def refuse_foreign_owner(name, doc):
     """The refusal for a record this process may not recover, or None (#1698).
 
