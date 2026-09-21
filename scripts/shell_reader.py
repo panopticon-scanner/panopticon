@@ -73,14 +73,24 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
-# A token ending in an unquoted `)` where a command was expected: a `case`
-# arm pattern -- `a)`, `*)`, `(a)`, `"a b")` (quoted, so the word carries a
-# space), and the tail of an `a|b)` alternation (the statement split cuts that
-# on the `|`) -- or the one-word tail of a tight subshell, `( ... || true)`.
-# Neither is a command name; the reader strips it and reads what follows. The
-# subshell's HEAD, `(curl ...`, is the other side of that coin: one token, so
-# the fetch it starts is unseen (a documented gap, see `workflow_guard`).
-ARM = re.compile(r"^(?!\(\)$)\S(?:.*[^(])?\)$")
+# Only a pattern parsed INSIDE a case body receives this marker. A closing
+# subshell parenthesis (or a quoted command name ending in one) is not an arm.
+# LIMITATION, shared with `@@substN@@` and `@@heredocN@@`: a marker is a
+# spelling, not a capability, so a target script CAN write one -- and since
+# `command()` drops a leading arm marker, a step spelling `@@casearm@@curl`
+# hides the fetch behind it. There is no cheap unforgeable alternative: every
+# character survives `shlex` quoting, and a control character does not help
+# either: PyYAML's reader does reject a RAW control character in a workflow
+# file, but a double-quoted YAML scalar spells one with a backslash-u escape
+# and loads the real thing (checked, this fix round). Closing it needs a
+# per-parse nonce, or `statements()` neutralising the whole marker family in
+# its input before parsing -- either of which changes the marker CONTRACT, not
+# a constant, so it is a change of its own. The index guard in `_stage.take`
+# ("an index past the end belongs to ANOTHER parse") is the shape of the
+# defence that is in place today.
+_CASE_ARM = "@@casearm@@"
+ARM = re.compile(r"^@@casearm@@")
+_GROUP_TOKENS = ("@@group-open@@", "@@group-close@@")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _REDIRECT = re.compile(r"^(\d*)(>>|>|<)(.*)$")
 # `&>word`/`&>>word`: bash's combined-stream shorthand for `>word 2>&1` --
@@ -219,15 +229,30 @@ def _split(text):
     """
     statements, stages, buf = [], [], []
     quote, at_token_start, i, n = None, True, 0, len(text)
+    cases: list[str] = []
+    # A `case` header is exactly three words (`case`, the word, `in`), so the
+    # shlex probe below only has to run while the buffer can still BE one --
+    # `header_words` counts the words the buffer has closed, `header_live`
+    # goes false as soon as the first word is not `case` or a third word has
+    # gone by without a header, and both reset when the buffer does. Probing
+    # unconditionally re-split the WHOLE buffer on every whitespace character,
+    # which made `_split` quadratic: 42 KB of one statement took ~93 s against
+    # 0.02 s before the probe existed, from a `run:` block this module reads
+    # out of the TARGET repository (fix round on #1714, Critical 1).
+    header_words, header_live = 0, True
 
     def end_stage():
+        nonlocal header_words, header_live
         stages.append("".join(buf))
         del buf[:]
+        header_words, header_live = 0, True
 
     def end_statement(separator):
         end_stage()
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
+            if cases and re.match(r"^\s*esac(?:\s|$)", stages[0]):
+                cases.pop()
         del stages[:]
 
     while i < n:
@@ -252,12 +277,54 @@ def _split(text):
             while i < n and text[i] != "\n":
                 i += 1
             continue
+        # A case header ends at its `in`, even when its first arm shares
+        # the line. Quoted/escaped words remain intact until shlex reads them.
+        # The count asks the BUFFER, not the source text, whether a word just
+        # closed here: whitespace that only extends a run of whitespace ends
+        # nothing, an escaped space ends nothing, and the character before a
+        # statement's first space may be the `;` that ENDED the last one --
+        # a source-text test miscounted that as a word and killed the probe
+        # one word early, losing the second header of `case ... esac; case
+        # ... in ...`. Whitespace inside a quote never reaches this branch.
+        if ch.isspace() and header_live and buf and not buf[-1][-1].isspace():
+            header_words += 1
+            try:
+                words = shlex.split("".join(buf))
+            except ValueError:
+                words = []
+            words = [w for w in words if w not in _GROUP_TOKENS]
+            if len(words) == 3 and words[0] == "case" and words[-1] == "in":
+                end_statement(";")
+                cases.append("pattern")
+            elif header_words >= 3 or (words and words[0] != "case"):
+                header_live = False         # this buffer is not a header
+        if ch == "(" and not (cases and cases[-1] == "pattern"):
+            # Preserve function headers: `f()` and `f ()` are not subshells.
+            if text[i:i + 2] == "()" and _NAME.fullmatch("".join(buf).strip()):
+                buf.append("()")
+                at_token_start, i = False, i + 2
+                continue
+            buf.append(" " + _GROUP_TOKENS[0] + " ")
+            at_token_start, i = True, i + 1
+            continue
+        if ch == ")":
+            if cases and cases[-1] == "pattern":
+                buf[:] = [_CASE_ARM + "".join(buf).lstrip() + ")"]
+                cases[-1] = "body"
+            else:
+                buf.append(" " + _GROUP_TOKENS[1] + " ")
+            at_token_start, i = True, i + 1
+            continue
         prev = "".join(buf[-1:]).strip()
         if ch in "&|" and (prev in (">", "&") or text[i:i + 2] == "&>"):
             buf.append(ch)                      # `2>&1`, `&>log`: a redirection
             at_token_start, i = False, i + 1
             continue
         if ch == "|" and text[i:i + 2] != "||":
+            if cases and cases[-1] == "pattern":
+                buf.append(ch)  # case alternatives are one pattern, not a pipeline
+                at_token_start, i = False, i + 1
+                continue
             end_stage()
             at_token_start, i = True, i + 1
             continue
@@ -265,8 +332,20 @@ def _split(text):
             pair = text[i:i + 2]
             separator = pair if pair in ("&&", "||") else ch
             end_statement(separator)
+            # Every terminator that ENDS a case arm, not just `;;`: bash also
+            # spells it `;&` (fall through into the next arm's body) and `;;&`
+            # (resume matching at the next pattern). Reading only `;;` left
+            # the state at "body", so the next arm's `b)` was read as a group
+            # CLOSE and `b` became argv[0] -- shadowing the command behind it,
+            # which is how a `curl` in the second arm went unseen entirely
+            # (fix round on #1714, Critical 2). After any of the three the
+            # next word is a pattern again.
+            arm_end = next((t for t in (";;&", ";;", ";&")
+                            if text.startswith(t, i)), None)
+            if arm_end and cases:
+                cases[-1] = "pattern"
             at_token_start = True
-            i += len(separator)
+            i += len(arm_end) if arm_end else len(separator)
             continue
         buf.append(ch)
         at_token_start = ch.isspace()
@@ -325,6 +404,8 @@ def _stage(text, bodies, inners):
         write("1", target)
 
     for token in tokens:
+        if token in _GROUP_TOKENS:
+            continue
         if pending is not None:
             kind, fd, is_write = pending
             pending = None

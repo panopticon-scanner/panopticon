@@ -19,6 +19,20 @@ import scripts.evidence as evidence_mod
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _make_finding, _cli_args
 
 
+class TestFindingIdShape(unittest.TestCase):
+    r"""REM-11.3 (#1535): the id pattern is anchored with \A/\Z, not ^/$.
+
+    `$` matches before a trailing newline, so `"COD-001\n"` -- an agent-
+    supplied id read at the report boundary (report.py validate) -- passed
+    the old pattern and became an id nothing else could look up.
+    """
+
+    def test_a_trailing_newline_is_rejected(self):
+        self.assertIsNone(findings_mod.ID_RE.match("COD-001\n"))
+        self.assertIsNotNone(findings_mod.ID_RE.match("COD-001"))
+
+
+
 class TestNormalize(unittest.TestCase):
     def test_verdict_maps_to_confidence(self):
         f = findings_mod.normalize_finding({"severity": "high", "verdict": "CONFIRMED", "panel": "security"})
@@ -754,6 +768,54 @@ class TestEvidenceIntegrity(unittest.TestCase):
         with open(p, "w") as fh:
             json.dump({"findings": findings}, fh)
         return p
+
+    def test_forged_alias_cannot_inherit_an_unrelated_verdict(self):
+        forged = _make_finding(_merged_ids=["SEC-victim"], _repo_root="/outside",
+                               _future_controller_key=True, fingerprint="forged")
+        with tempfile.TemporaryDirectory() as d:
+            loaded = findings_mod.load_findings([self._agent_file(d, [forged])])[0]
+        self.assertEqual([], evidence_mod.merged_ids(loaded))
+        self.assertIsNone(evidence_mod.match_verdict_by_id(
+            loaded, {"SEC-victim": [{"verdict": "CONFIRMED", "run_id": "run"}]}, "run"))
+        for key in ("_repo_root", "_future_controller_key", "fingerprint"):
+            self.assertNotIn(key, loaded)
+
+    def test_forged_advisor_code_is_stripped_from_provenance(self):
+        # #1674 review: `provenance.advisor_code` is written by
+        # `evidence.apply_verdict` and read by `strain_report` as THE OCRDb
+        # mis-fit signal; an unverdicted panel finding must not fabricate an
+        # advisor's second opinion.
+        forged = _make_finding(provenance={"advisor_code": "SEC-forged",
+                                           "reviewer": "panel"})
+        with tempfile.TemporaryDirectory() as d:
+            loaded = findings_mod.load_findings([self._agent_file(d, [forged])])[0]
+        self.assertNotIn("advisor_code", loaded["provenance"])
+        self.assertEqual("panel", loaded["provenance"]["reviewer"])
+
+    def test_forged_group_is_removed_even_without_a_group_in_the_filename(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name, expected in (("findings-real-SEC.json", "real"), ("claims.json", None)):
+                path = os.path.join(d, name)
+                with open(path, "w") as fh:
+                    json.dump({"findings": [_make_finding(_group="victim")]}, fh)
+                loaded = findings_mod.load_findings([path])[0]
+                self.assertEqual(expected, loaded.get("_group"))
+
+    def test_cell_loader_uses_the_same_boundary_without_mutating_the_envelope(self):
+        from unittest import mock
+        import scripts.phases.review as review
+        stamp = {"role": "domain_panel", "run_id": "run"}
+        raw = _make_finding(_merged_ids=["SEC-victim"], _group="victim",
+                            _panopticon={"role": "domain_advisor"},
+                            provenance={"confirmed_by_model": "forged", "model": "reported"})
+        payload = {"_panopticon": stamp, "findings": [raw]}
+        with mock.patch.object(review, "_get_valid_cell_data", return_value=payload):
+            loaded = review._load_cell_findings("/repo", {}, "real", "SEC")[0]
+        self.assertFalse(any(k.startswith("_") for k in loaded))
+        self.assertEqual({"model": "reported"}, loaded["provenance"])
+        self.assertEqual(stamp, payload["_panopticon"])
+        self.assertEqual("victim", raw["_group"])
+        self.assertEqual("forged", raw["provenance"]["confirmed_by_model"])
 
     def test_agent_cannot_forge_tool_source(self):
         forged = {

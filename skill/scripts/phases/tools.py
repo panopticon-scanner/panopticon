@@ -122,7 +122,26 @@ def tools_execute(review_root, manifest):
     cmd = [sys.executable, runio._script("run_tools.py"), "--target", review_root,
            "--out", out_dir, "--deps",
            "--run-id", manifest.get("run_id") or "",   # #17: manifest self-identifies
+           # #1740: the runner keeps three scanners out of a directory named
+           # `venv` on that name alone, which under redteam is the inference
+           # the gate exists to refuse -- so the mode travels to the scan, not
+           # only to discovery and synthesize. Off the run MANIFEST (the
+           # controller's write-once record), never off the target's config.
+           "--security", manifest.get("security_mode", "standard"),
            "--manifest", manifest_path]
+    # #1740 fix round 1: the committed `exclude_paths:` policy, threaded to the
+    # scan. Same globs `phases/synthesize.py` hands the ingest as
+    # `--tools-exclude`, from the same seam, so the report and the gate are
+    # scoped by the ONE thing the repository committed. What `--exclude` does
+    # HERE is narrower than the ingest half and worth saying exactly: it
+    # demotes an adapter whose entire applicable surface is excluded from
+    # `selected` to `excluded_scope` (disclosed, not required, so the gate
+    # cannot read its absence as lost coverage) and records the globs in the
+    # manifest as `exclude_globs`. It does not narrow any scanner's own argv
+    # -- the scanners still walk the tree, and the findings are dropped at
+    # ingest, where `--tools-exclude` applies the same policy.
+    for glob in runio.committed_exclude_paths(review_root):
+        cmd += ["--exclude", glob]
     proc = child._run_child(cmd, review_root=review_root, phase="tools")
     # The runner's own report of what it did with the captures it wrote (#1639
     # P11 F5). Tolerant: a crash before the manifest was written leaves nothing

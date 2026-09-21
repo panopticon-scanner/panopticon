@@ -333,7 +333,7 @@ class TestCommonsCatalog(unittest.TestCase):
         commons_named = {"Docs": ["a.md"], "Deps": ["go.sum"],
                          "Build": ["b%d" % i for i in range(orchestrator.COMMONS_MIN_FILES)]}
         catalog = {"Commons:Shared": {"match": ["shared/**"], "parent": "Commons"}}
-        self.assertEqual(orchestrator._fold_tiny_commons(dict(commons_named), catalog),
+        self.assertEqual(orchestrator.fold_tiny_commons(dict(commons_named), catalog),
                          commons_named)
 
     def test_fold_suppressed_when_committed_catalog_claims_Commons(self):
@@ -751,11 +751,11 @@ class TestTestsSweep(unittest.TestCase):
                          {"Core": ["crates/core"], "UI:Admin": ["web/admin"]})
 
     def test_tests_suppressed_by_committed_tests_or_subgroup(self):
-        self.assertTrue(orchestrator._tests_suppressed({"Tests": {"match": ["tests/**"]}}))
-        self.assertTrue(orchestrator._tests_suppressed({"Tests:E2E": {"match": ["e2e/**"], "parent": "Tests"}}))
-        self.assertTrue(orchestrator._tests_suppressed({"tests": {"match": ["tests/**"]}}),
+        self.assertTrue(orchestrator.tests_suppressed({"Tests": {"match": ["tests/**"]}}))
+        self.assertTrue(orchestrator.tests_suppressed({"Tests:E2E": {"match": ["e2e/**"], "parent": "Tests"}}))
+        self.assertTrue(orchestrator.tests_suppressed({"tests": {"match": ["tests/**"]}}),
                         "case-insensitive filesystems would collide the findings files")
-        self.assertFalse(orchestrator._tests_suppressed({"Testing": {"match": ["x/**"]}}))
+        self.assertFalse(orchestrator.tests_suppressed({"Testing": {"match": ["x/**"]}}))
 
     def test_affinity_respects_the_verticals_own_negation(self):
         # `Core` excluded its `__tests__` dir on purpose; proximity must not
@@ -909,7 +909,7 @@ class TestGitignoreDivergences(unittest.TestCase):
 
     def test_character_class_matches_nothing_and_says_so(self):
         with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-            orchestrator._warned_globs.clear()
+            groups_schema._warned_globs.clear()
             self.assertFalse(self._m("main.c", ["*.[ch]"]))
             # and not as a literal either -- the old behaviour re.escape'd the
             # brackets, so `*.[ch]` claimed a file actually named `main.[ch]`
@@ -919,14 +919,14 @@ class TestGitignoreDivergences(unittest.TestCase):
 
     def test_the_disclosure_is_one_line_per_distinct_pattern(self):
         with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-            orchestrator._warned_globs.clear()
+            groups_schema._warned_globs.clear()
             for path in ("a.c", "b.c", "c.c"):
                 self._m(path, ["*.[ch]", "src/[abc]/**"])
         lines = [ln for ln in err.getvalue().splitlines() if ln.strip()]
         self.assertEqual(len(lines), 2, err.getvalue())
 
     def test_shipped_catalog_globs_carry_no_defect(self):
-        catalogs = [orchestrator._commons_catalog(), orchestrator._tests_catalog()]
+        catalogs = [orchestrator.commons_catalog(), orchestrator.tests_catalog()]
         for catalog in catalogs:
             for name, body in catalog.items():
                 for glob in body.get("match") or []:
@@ -976,7 +976,7 @@ class TestGithubTopLevelFilesAreClaimed(unittest.TestCase):
     """
 
     def _cat(self, path):
-        for name, body in orchestrator._commons_catalog().items():
+        for name, body in orchestrator.commons_catalog().items():
             if orchestrator.match_patterns(path, body.get("match") or []):
                 return name
         return None

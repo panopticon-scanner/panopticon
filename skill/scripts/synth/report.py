@@ -123,6 +123,8 @@ class RunConfig:
     # the trust classes let through, off `<run_dir>/config-resolution.json`.
     # {} when there is no driver-written artifact: nothing asked for.
     config: dict = field(default_factory=dict)
+    # The gate never inherits its mode from target-written groups.json (#1707).
+    gate_security_mode: str = "standard"
 
     @classmethod
     def from_args(cls, args, groups_json, timestamp, host_capabilities=None,
@@ -152,7 +154,8 @@ class RunConfig:
                    host_capabilities=host_capabilities or {},
                    panel_tools_context=panel_tools_context or {},
                    tools_disabled_mid_run=bool(tools_disabled_mid_run),
-                   config=config or {})
+                   config=config or {},
+                   gate_security_mode=plan_mod.gate_security_mode(args))
 
 
 @dataclass(frozen=True)
@@ -275,6 +278,7 @@ def assemble(run, resolved, reconciled, graded, cost):
             "ocrdb_version": (ocrdb.BUNDLE_VERSION
                               if resolved.ocrdb_bundle is not None else None),
             "security_mode": run.security_mode,
+            "gate_security_mode": run.gate_security_mode,
             "models_used": _collect_models_used(resolved.findings),
             "coverage": reconciled.coverage,
             # #1637 P08 ruling 5: a run whose tool scan skipped still produces

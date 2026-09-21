@@ -117,7 +117,7 @@ def probe_entry_model_bound(host, registration_dir=None):
     if not os.access(directory, os.R_OK):
         return (hosts.UNKNOWN, ENTRY_MODEL_BOUND,
                 "cannot read %s, so nothing could be checked" % directory)
-    faults, matched, absent = [], [], []
+    faults, matched, absent, unbound = [], [], [], []
     for role, role_file in sorted(dispatch.ROLE_FILES.items()):
         path = os.path.join(directory,
                             dispatch.registered_agent_filename(host, role_file))
@@ -126,7 +126,14 @@ def probe_entry_model_bound(host, registration_dir=None):
             continue
         resolved = model_resolver.resolve_model(host, role).get("model")
         bound = _frontmatter_model(path)
-        if bound is None:
+        if bound is None and resolved is None:
+            # #1737: the two AGREE. None is the explicit "inherit the session's
+            # model" policy (R-F4-2, `setup_scan`) and a shell that binds
+            # nothing is how a claude agent file states it -- nothing silently
+            # wins, because the entry asks for nothing either. Named in the
+            # detail, not hidden in the count.
+            unbound.append(role)
+        elif bound is None:
             faults.append("%s: shell at %s binds no model, so the session's model "
                           "silently wins over the entry's %r" % (role, path, resolved))
         elif bound != resolved:
@@ -137,10 +144,17 @@ def probe_entry_model_bound(host, registration_dir=None):
     if faults:
         return (hosts.REFUTED, ENTRY_MODEL_BOUND, "; ".join(faults))
     if not matched:
+        # #1737: the unbound roles are deliberately NOT counted here. A registry
+        # holding only those proves nothing -- no entry in it asks for a model
+        # -- and a vacuous PROVEN is the fail-open this probe removes.
         return (hosts.UNKNOWN, ENTRY_MODEL_BOUND,
-                "no role is registered in %s, so nothing binds a model" % directory)
+                "no role is registered in %s that binds a model, so nothing "
+                "here proves the host honours the entry's" % directory)
     detail = ("%d/%d roles registered in %s bind the model dispatch resolves"
               % (len(matched), len(dispatch.ROLE_FILES), directory))
+    if unbound:
+        detail += ("; deliberately unbound, shell and entry both inherit the "
+                   "session's model: %s" % ", ".join(unbound))
     if absent:
         detail += ("; unregistered, model bound on the entry itself: %s"
                    % ", ".join(absent))

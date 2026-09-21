@@ -17,6 +17,7 @@ This file is the parser's own spec: a redirect whose target begins with `&`
 delivers to file descriptor 1 -- the only one `parse_fetch` may treat as the
 destination a step downloaded to.
 """
+import time
 import unittest
 
 import shell_reader
@@ -115,6 +116,61 @@ class TestCombinedStreamRedirectsAreARealDestination(unittest.TestCase):
             s = stage(script)
             self.assertEqual([], s.stdout_writes, script)
             self.assertEqual([], s.writes, script)
+
+
+class TestTheCaseHeaderProbeIsNotQuadratic(unittest.TestCase):
+    """#1714 fix round, Critical 1: reading `case WORD in` cost O(n^2).
+
+    The header probe re-ran `shlex.split` over the WHOLE accumulated buffer
+    on EVERY whitespace character, so a single long statement was re-split
+    once per word -- quadratic in the length of the statement. Measured on
+    the parser as reviewed: 8 KB took 3.2 s, 16 KB 13.0 s and 42 KB 92.8 s,
+    against 0.02 s before the probe existed. `shell_reader` reads the TARGET
+    repository's `run:` blocks under `--security redteam`, so one long line
+    in a hostile workflow was enough to stall the guard that reads it.
+
+    A `case` header is three words (`case`, the word, `in`), so the probe
+    only has to run while the buffer can still BE one: at most three times
+    per statement, which makes `_split` linear again. The `case` cases in
+    `tests/test_workflow_guard.py` are the other half of this spec -- the
+    probe must still fire on every header it fired on before.
+    """
+
+    def test_a_50kb_single_statement_parses_in_well_under_a_second(self):
+        script = "echo " + "a " * 26000 + "\n"
+        self.assertGreater(len(script), 50 * 1024, len(script))
+        start = time.monotonic()
+        stmts = shell_reader.statements(script)
+        elapsed = time.monotonic() - start
+        self.assertEqual(1, len(stmts), stmts)
+        self.assertEqual(26001, len(stmts[0].stages[0].argv))
+        self.assertLess(elapsed, 2.0, elapsed)
+
+    def test_a_second_case_header_on_the_same_line_is_still_read(self):
+        # Caught by differentially parsing a corpus against the unbounded
+        # probe: counting words from the SOURCE text read the `;` that ended
+        # `esac` as a word of the next statement, so the bound expired one
+        # word early and the second `case ... in` was never recognised --
+        # which drops its arm markers, and an unmarked arm pattern is exactly
+        # what put `b` where the command was expected. The count asks the
+        # buffer instead.
+        stmts = shell_reader.statements(
+            "case $x in a) echo 1;; esac; case $y in b) echo 2;; esac\n")
+        arms = [st.stages[0].argv[0] for st in stmts
+                if st.stages[0].argv and shell_reader.ARM.match(
+                    st.stages[0].argv[0])]
+        self.assertEqual(["@@casearm@@a)", "@@casearm@@b)"], arms, stmts)
+
+    def test_a_50kb_statement_that_really_is_a_case_header_is_fast_too(self):
+        # The probe survives on a buffer whose first word IS `case`, so the
+        # bound cannot be "give up once the statement is long".
+        script = "case " + "a" * (50 * 1024) + " in x) :; esac\n"
+        start = time.monotonic()
+        stmts = shell_reader.statements(script)
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 2.0, elapsed)
+        self.assertTrue(any(st.stages[0].argv[:1] == ["esac"] for st in stmts),
+                        stmts)
 
 
 if __name__ == "__main__":

@@ -933,8 +933,8 @@ class TestRunDirArtifactResolution(unittest.TestCase):
                 "selected": [], "produced": [], "missing": []})
             out = os.path.join(d, "r.json")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit):
-                    self._run(groups, fp, out)
+                self.assertEqual(self._run(groups, fp, out), 3)
+            self.assertFalse(os.path.exists(out))
 
     def test_pre_5_1_schemaless_manifest_in_run_dir_is_a_loud_error(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
@@ -942,8 +942,8 @@ class TestRunDirArtifactResolution(unittest.TestCase):
                 "selected": ["bandit"], "produced": ["bandit"]})   # no schema_version
             out = os.path.join(d, "r.json")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit):
-                    self._run(groups, fp, out)
+                self.assertEqual(self._run(groups, fp, out), 3)
+            self.assertFalse(os.path.exists(out))
 
     def test_run_id_without_run_dir_warns_loudly(self):
         # #17 fail-open guard: a 5.1 run (--run-id) that falls back to flat
@@ -1188,7 +1188,7 @@ _SLOPPY_AGENT_SHAPES = [
     ("source_role off-enum", {"source_role": "ninja"}, PINS),
     ("provenance.discovered_by int", {"provenance": {"discovered_by": 5}}, PINS),
     ("severity_override string", {"severity_override": "yes"}, PINS),
-    ("backup_confirmed string", {"backup_confirmed": "yes"}, PINS),
+    ("backup_confirmed string", {"backup_confirmed": "yes"}, "stripped self-asserted"),
     ("tool_evidence.rule_id int", {"tool_evidence": {"rule_id": 5}}, PINS),
     ("code int", {"code": 7}, PINS),
     ("category int", {"category": 7}, PINS),
@@ -1202,7 +1202,8 @@ _SLOPPY_AGENT_SHAPES = [
     ("provenance.discovered_by dict",
      {"provenance": {"model": "m", "discovered_by": {"a": 1}}}, PINS),  # F2
     ("agent-supplied delta outside delta mode",
-     {"delta": {"on_diff": "yes", "hunk": "a", "distance": "x"}}, PINS),  # F4
+     {"delta": {"on_diff": "yes", "hunk": "a", "distance": "x"}},
+     "stripped self-asserted"),  # F4
     # Fix round 3, R2-1: the two `_OWNED_DOWNSTREAM` entries whose declared
     # normalizer RAISES on the value it is declared to normalize. `panel` is
     # tested for set membership (unhashable -> TypeError) before any derivation,

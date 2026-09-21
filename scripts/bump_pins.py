@@ -73,13 +73,19 @@ def current_rustup_pin(text: str) -> tuple[str | None, dict[str, str]]:
     return version, shas
 
 
+def _rustup_version(version: str) -> str:
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise RuntimeError("invalid rustup version: %r" % version)
+    return version
+
+
 def latest_rustup_version() -> str:
     """The current stable rustup version, from rust-lang's own manifest."""
     body = _get(RUSTUP_STABLE).decode("utf-8", "replace")
     m = re.search(r"^version\s*=\s*['\"]([^'\"]+)['\"]", body, re.M)
     if not m:
         raise RuntimeError("could not parse a version out of %s" % RUSTUP_STABLE)
-    return m.group(1)
+    return _rustup_version(m.group(1))
 
 
 def verified_rustup_shas(version: str) -> dict[str, str]:
@@ -89,6 +95,7 @@ def verified_rustup_shas(version: str) -> dict[str, str]:
     self-consistent. Hashing the artifact too is what makes the pin mean
     something -- and it is exactly the step the FIXME said not to skip.
     """
+    version = _rustup_version(version)
     out = {}
     for arch, triple in RUSTUP_TRIPLES.items():
         url = RUSTUP_ARCHIVE.format(v=version, triple=triple)
@@ -107,6 +114,7 @@ def verified_rustup_shas(version: str) -> dict[str, str]:
 def rewrite_rustup_pin(text: str, version: str, shas: dict[str, str]) -> str:
     """Dockerfile text with the rustup pin updated. Pure, and total: raises
     rather than silently no-op'ing if a line it expects is absent."""
+    version = _rustup_version(version)
     new = re.sub(r"^ARG RUSTUP_VERSION=\S+\s*$",
                  "ARG RUSTUP_VERSION=%s" % version, text, count=1, flags=re.M)
     if new == text:

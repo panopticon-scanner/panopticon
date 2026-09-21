@@ -18,27 +18,51 @@ import scripts.phases.setup as setup_phase
 import scripts.phases.requests as requests
 
 import scripts.driver as driver
+import scripts.loop_batch as loop_batch
 import scripts.coverage_model as coverage_model
 import scripts.host_disclosure as host_disclosure
 import scripts.host_probes as host_probes
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
 import scripts.model_resolver as model_resolver
+import scripts.probes.codex as codex_probes
 import scripts.repo_config as repo_config
 import scripts.runners.batch as batch_mod
 
+from conftest import write_host_evidence
+from test_orchestrate import _all_proven_artifact, _refuted_artifact
 from tools.git_repo import make_git_repo
 
 
 class TestDriverSetup(unittest.TestCase):
-    def _repo(self):
-        return make_git_repo(
+    def _repo(self, enforcement=None):
+        """A target tree. `enforcement` seeds this host's capability evidence
+        (#1737): PROVEN is the registered machine every scan test but the ack
+        ones assumes, and None leaves the tree with no evidence at all -- the
+        all-unknown posture, which gates as REFUTED and takes the ack path."""
+        repo = make_git_repo(
             test_case=self,
             files={"src/checkout/pay.py": "x = 1\n"},
             branch="main",
             user_email="t@t",
             user_name="t",
         )
+        if enforcement is not None:
+            write_host_evidence(repo, {hosts.TOOL_POLICY_ENFORCED: enforcement})
+        return repo
+
+    def _registered_repo(self):
+        """A machine that HAS emitted its enforcement shells and proved it.
+
+        A UNIT fixture: it arranges the evidence and calls `run_setup_flow`
+        with no posture step, so these tests exercise the flow against a given
+        posture. The real verb PROBES for itself (#1737 fix round 1) and
+        overwrites this artifact before any gate reads it --
+        `TestStandaloneSetupProbesItsOwnPosture` drives `driver.main` end to
+        end for that, including the planted-artifact case. Read the two
+        together: a green fixture here proves nothing about the wiring.
+        """
+        return self._repo(enforcement=hosts.PROVEN)
 
     def _write_settings(self, repo, max_per_group, max_groups):
         """A root config carrying only `settings:` (#1681 retired config.json)."""
@@ -53,7 +77,10 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(args.verb, "setup")
 
     def test_scan_emits_setup_scan_checkpoint_when_vocab_present(self):
-        d = self._repo()
+        # #1737: a machine that has emitted its shells -- the normal state for
+        # every scan test below. The unregistered machine's path (refusal, or
+        # the acknowledged shell-less dispatch) has its own tests above.
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "checkpoint")
@@ -65,6 +92,122 @@ class TestDriverSetup(unittest.TestCase):
         self.assertTrue(entry["out_file"].endswith("setup-proposal.json"))
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
         self.assertEqual("return_json", entry["delivery"])
+
+    def test_setup_refuses_a_shell_less_scan_without_the_operators_ack(self):
+        # #1737 brief case (b). The one dispatch that reads the whole untrusted
+        # tree now passes the acknowledgement every other unenforced dispatch
+        # has required since #1519, and a refusal lands BEFORE anything is
+        # dispatched.
+        #
+        # This is the UNIT shape: no posture step, so no probe ran and the
+        # state is UNKNOWN -- for which the remedy is the invocation that
+        # measures, never the emit command (fix round 2: a remedy that cannot
+        # change the answer is the defect, not the wording). The real verb
+        # probes, and a fresh machine with no registration directory measures
+        # REFUTED and IS told to emit --
+        # TestStandaloneSetupProbesItsOwnPosture covers that end to end.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        status = setup.run_setup_flow(args)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("tool_policy_enforced", status["message"])
+        self.assertIn("driver loop --setup --host claude --mode headless",
+                      status["message"])
+        self.assertNotIn("--emit-host-agents", status["message"])
+        self.assertIn("--allow-unenforced", status["message"])
+        self.assertIn("setup-unenforced-ack.json", status["message"])
+        # nothing was dispatched
+        self.assertFalse(os.path.isfile(requests.request_path(d, namespace="setup")))
+
+    def test_the_ack_lets_the_shell_less_scan_proceed_and_is_recorded(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d, "--allow-unenforced"])
+        status = setup.run_setup_flow(args)
+        self.assertEqual("checkpoint", status["status"], status)
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        self.assertFalse(entry["enforced"])
+        self.assertIsNone(entry["agent"])
+        ack = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        self.assertTrue(ack["acknowledged"])
+        self.assertEqual(["setup_scan"], ack["roles"])
+        self.assertEqual("claude", ack["host"])
+        self.assertTrue(ack["plan_sha256"])
+        self.assertIn("tool_policy_enforced", ack)
+        # ...and it lands FLAT, beside setup's other artifacts, never in a
+        # review run's folder and never as the review ack's name (#1507/#493).
+        self.assertTrue(os.path.isfile(os.path.join(
+            d, ".panopticon", setup.SETUP_UNENFORCED_ACK)))
+        self.assertFalse(os.path.exists(os.path.join(
+            d, ".panopticon", requests.UNENFORCED_ACK)))
+
+    def test_the_refusal_names_no_emit_command_on_a_host_with_no_shells(self):
+        # `--host generic` is the permanent unenforced fallback (ruling D1) and
+        # registers nothing, so `--emit-host-agents generic` is a command that
+        # refuses. The refusal offers the two remedies that exist instead.
+        d = self._repo()
+        status = setup.run_setup_flow(driver.build_parser().parse_args(
+            ["setup", d, "--host", "generic"]))
+        self.assertEqual("error", status["status"], status)
+        self.assertNotIn("--emit-host-agents", status["message"])
+        self.assertIn("--allow-unenforced", status["message"])
+        self.assertIn("--host claude", status["message"])
+
+    def test_a_proven_host_needs_no_ack_at_all(self):
+        # #1737 brief case (c): the shell is registered and the posture proves
+        # it, so the entry is enforced and nothing is acknowledged.
+        d = self._repo()
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        args = driver.build_parser().parse_args(["setup", d])
+        status = setup.run_setup_flow(args)
+        self.assertEqual("checkpoint", status["status"], status)
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        self.assertTrue(entry["enforced"])
+        self.assertEqual("panopticon-setup-scan", entry["agent"])
+        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+
+        self.assertTrue(loop_batch.expected_enforced(d, "claude", "setup"))
+
+    def test_a_stored_allow_unenforced_flag_grants_nothing(self):
+        # `setup-manifest.json` sits at a `.panopticon` path a hostile target
+        # can force-commit (`git add -f`), and it is written once and reused --
+        # so the flag is read off THIS invocation's argv every time. A stored
+        # acceptance is not an acceptance.
+        d = self._repo()
+        setup.run_setup_flow(driver.build_parser().parse_args(
+            ["setup", d, "--allow-unenforced"]))
+        manifest = setup.load_setup_manifest(d)
+        manifest["flags"] = {"allow_unenforced": True}
+        runio._write_json(setup._setup_manifest_path(d), manifest)
+        setup._clear_setup_artifacts(d)         # keeps nothing but the tree
+        runio._write_json(setup._setup_manifest_path(d), manifest)
+        status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("--allow-unenforced", status["message"])
+        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+
+    def test_the_flag_the_operator_typed_reaches_the_phases(self):
+        # `scan_execute` sees only the manifest, so the argv answer has to be
+        # recorded on the in-memory one the engine is handed.
+        d = self._repo()
+        seen = {}
+        real = setup.require_unenforced_scan_ack
+
+        def spy(review_root, manifest, entries):
+            seen.update(manifest.get("flags") or {})
+            return real(review_root, manifest, entries)
+
+        with mock.patch.object(setup, "require_unenforced_scan_ack", spy):
+            setup.run_setup_flow(driver.build_parser().parse_args(
+                ["setup", d, "--allow-unenforced"]))
+        self.assertEqual({"allow_unenforced": True}, seen)
+
+    def test_reset_discards_the_acceptance(self):
+        d = self._repo()
+        setup.run_setup_flow(driver.build_parser().parse_args(
+            ["setup", d, "--allow-unenforced"]))
+        self.assertTrue(os.path.isfile(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+        setup._clear_setup_artifacts(d)
+        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
 
     def test_setup_host_generic_prints_the_fallback_notice_once(self):
         # D1: run_setup_flow resolves `host` itself (a manifest field it pins
@@ -79,17 +222,56 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_FALLBACK_NOTICE))
 
     def test_setup_scan_is_deliberately_not_model_bound(self):
-        # R-F4-2. setup-scan has no role in dispatch.ROLE_FILES and no profile
-        # entry; resolve_model would hand it the host's catch-all default and
+        # R-F4-2. `resolve_model` would hand setup-scan a role tier and
         # silently move the one judgement-heavy, one-off `driver setup`
-        # dispatch off the session's model. The exception is pinned so it
-        # stays a decision rather than becoming an omission.
+        # dispatch off the session's model. #1737 registered the SHELL and
+        # left the MODEL exactly here: the role now has a ROLE_FILES row and
+        # an explicit `model: null` profile, and the entry still carries None,
+        # so the exception stays a decision rather than becoming an omission.
         d = self._repo()
         with mock.patch.object(model_resolver, "resolve_model",
                                return_value={"model": "SENTINEL"}) as rm:
             entry = setup._setup_scan_entry(d, "PROMPT", "claude")
         self.assertIsNone(entry["model"])
         rm.assert_not_called()
+
+    def test_setup_scan_names_its_registered_shell_on_a_proven_host(self):
+        # #1737 (AGT-B1D): the one dispatch that reads the WHOLE untrusted
+        # tree used to carry `agent: None, enforced: False` unconditionally,
+        # so its tool grant was whatever the host gives a general-purpose
+        # agent. It is a registered role now, and `enforced` is DERIVED from
+        # this invocation's own posture the way the five phase sites are.
+        d = self._repo()
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+        self.assertEqual("panopticon-setup-scan", entry["agent"])
+        self.assertTrue(entry["enforced"])
+        self.assertIsNone(entry["model"])          # R-F4-2, unchanged
+        self.assertTrue(loop_batch.expected_enforced(d, "claude", "setup"))
+
+    def test_setup_scan_falls_back_shell_less_when_the_host_cannot_enforce(self):
+        # No evidence at all is the all-unknown posture, and UNKNOWN gates as
+        # REFUTED: a machine that has not emitted its shells dispatches
+        # shell-less -- and `scan_execute` makes the operator say so.
+        d = self._repo()
+        entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+        self.assertIsNone(entry["agent"])
+        self.assertFalse(entry["enforced"])
+        self.assertIsNone(entry["model"])
+
+    def test_the_entry_agrees_with_what_the_loop_expects_either_way(self):
+        # The #1720 request-integrity check, run against the builder: an entry
+        # whose self-asserted `enforced` disagrees with the run's own evidence
+        # stops the batch before anything launches.
+        d = self._repo()
+        for states in ({hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN},
+                       {hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED}):
+            with self.subTest(states=states):
+                write_host_evidence(d, states)
+                entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+                self.assertEqual([], loop_batch.refuse_disagreeing(
+                    [entry], loop_batch.expected_enforced(d, "claude", "setup")))
+                self.assertEqual([], loop_batch.refuse_misrouted([entry], "scan"))
 
     def test_setup_scan_entry_is_return_persist_and_says_so(self):
         # #1608. Its docstring always said "return-persist"; now the entry does.
@@ -98,7 +280,8 @@ class TestDriverSetup(unittest.TestCase):
                                return_value=("SENTINEL-MODE", "")) as dl:
             entry = setup._setup_scan_entry(d, "PROMPT", "claude")
         self.assertEqual("SENTINEL-MODE", entry["delivery"])
-        self.assertFalse(entry["enforced"])       # unchanged: no shell exists for it
+        # unenforced here because this repo has no capability evidence (#1737)
+        self.assertFalse(entry["enforced"])
         self.assertIsNone(entry["model"])         # unchanged: R-F4-2
         (host, _evidence, role_file, out_file), _kw = dl.call_args
         self.assertEqual(("claude", "setup-scan.md", entry["out_file"]),
@@ -121,7 +304,7 @@ class TestDriverSetup(unittest.TestCase):
         # .gitignore untouched (no migration to /*). #1681 retired the
         # `git add -f` note with it: the committed config is at the ROOT, so
         # nothing setup writes under .panopticon/ needs force-adding.
-        d = self._repo()
+        d = self._registered_repo()
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write(".panopticon/\n")
         args = driver.build_parser().parse_args(["setup", d])
@@ -163,7 +346,7 @@ class TestDriverSetup(unittest.TestCase):
     def test_vocab_absent_falls_back_to_seed_and_completes(self):
         # The bundled fixture is always present, so force absence at the loader
         # boundary to exercise the fallback path deterministically.
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
@@ -178,7 +361,7 @@ class TestDriverSetup(unittest.TestCase):
     def test_stale_fallback_marker_self_heals_when_vocab_returns(self):
         # First run: vocab absent -> fallback marker written, run completes
         # without a checkpoint.
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
@@ -294,6 +477,20 @@ class TestDriverSetup(unittest.TestCase):
         self.assertNotEqual(m["run_id"], "FOREIGN")                # rebuilt, not reused
         self.assertIsNone(m["vocabulary_path"])                    # hostile path dropped
         self.assertIn("ignoring foreign setup-manifest", err.getvalue())
+        self.assertIn("stamped review_root '/somewhere/else' !=", err.getvalue())
+        self.assertNotIn("git-tracked", err.getvalue())
+
+    def test_tracked_setup_manifest_message_does_not_claim_the_stamp_differs(self):
+        root = self._repo()
+        args = driver.build_parser().parse_args(["setup", root])
+        setup.run_setup_flow(args)
+        self.assertEqual(root, setup.load_setup_manifest(root)["review_root"])
+        err = io.StringIO()
+        with mock.patch.object(runio, "_manifest_committed", return_value=True), \
+                contextlib.redirect_stderr(err):
+            setup.run_setup_flow(args)
+        self.assertIn("ignoring foreign setup-manifest.json (the file is git-tracked", err.getvalue())
+        self.assertNotIn("stamped review_root", err.getvalue())
 
     def test_reset_preserves_the_committed_root_config(self):
         d = self._repo()
@@ -443,7 +640,7 @@ class TestDriverSetup(unittest.TestCase):
     def test_setup_end_to_end_loop(self):
         """scan checkpoint -> host persists proposal -> re-invoke ingests ->
         complete, draft present, the committed root config never written."""
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         s1 = setup.run_setup_flow(args)
         self.assertEqual(s1["checkpoint"], "scan")
@@ -462,7 +659,7 @@ class TestDriverSetup(unittest.TestCase):
         # 5.2: --max-per-group/--max-groups are pinned in setup-manifest.json at
         # scan time and honoured by ingest; the report artifacts are written
         # and the completion message points at the report.
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(
             ["setup", d, "--max-per-group", "3", "--max-groups", "5"])
         setup.run_setup_flow(args)                       # scan checkpoint
@@ -522,7 +719,7 @@ class TestDriverSetup(unittest.TestCase):
         # 5.2 stage 1: the scan phase computes the spine ONCE with the sizes
         # the manifest pinned, persists it, and the brief carries the same
         # numbers -- what the agent plans against is what ingest applies.
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(
             ["setup", d, "--max-per-group", "3", "--max-groups", "5"])
         status = setup.run_setup_flow(args)
@@ -575,6 +772,262 @@ class TestDriverSetup(unittest.TestCase):
         for name in ("setup-report.md", "setup-report.json"):
             self.assertFalse(os.path.isfile(runio._pano(d, name)), name)
         self.assertFalse(os.path.isfile(repo_config.draft_path(d)))
+
+
+class TestTheRefusalNamesARemedyThatCanWork(unittest.TestCase):
+    """#1737 fix round 2. The round-1 Critical was an impotent remedy --
+    `--emit-host-agents` named to an operator nothing would re-probe for. One
+    host over, the same shape survived: codex maps `tool_policy_enforced` to
+    `codex-effective-tools`, and that probe short-circuits to UNKNOWN whenever
+    `settings_path` is None -- which `driver setup` always leaves it, having no
+    `--mode`. So `driver setup --host codex` cannot reach PROVEN on any
+    machine, however many times its operator emits shells.
+
+    The rule is the state, and it is host-agnostic. REFUTED means the host
+    measured and said no -- for every capability that maps to a registration
+    probe, re-emitting is the fix, and the quoted detail names the specific
+    fault. UNKNOWN means NOTHING measured it, and no amount of registering
+    changes what was never read: the remedy is the invocation that can
+    measure, which is the headless loop.
+    """
+
+    def _repo(self):
+        return make_git_repo(test_case=self, files={"src/a.py": "x = 1\n"},
+                             branch="main", user_email="t@t", user_name="t")
+
+    def _refuse(self, d, host, row):
+        """`driver setup --host <host>` against an artifact carrying `row` for
+        tool_policy_enforced, returning the refusal message."""
+        body = _all_proven_artifact(host)
+        body["capabilities"][hosts.TOOL_POLICY_ENFORCED] = row
+        out = io.StringIO()
+        with mock.patch("scripts.host_probes.run_probes",
+                        side_effect=lambda h, target, **kw: body), \
+                contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            driver.main(["setup", d, "--host", host])
+        status = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual("error", status["status"], status)
+        return status["message"]
+
+    def _codex_unmeasurable_row(self):
+        """The row the REAL codex probe produces for `driver setup` -- taken
+        from the production probe rather than retyped, and reached without
+        launching anything: the short-circuit is before the launch."""
+        with tempfile.TemporaryDirectory() as reg:
+            state, by, detail = codex_probes.probe_codex_tool_policy(
+                "codex", registration_dir=reg, settings_path=None)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("--mode headless", detail)
+        return {"state": state, "by": by, "detail": detail}
+
+    def test_codex_is_pointed_at_the_invocation_that_can_measure_it(self):
+        message = self._refuse(self._repo(), "codex", self._codex_unmeasurable_row())
+        self.assertIn("driver loop --setup --host codex --mode headless", message)
+        self.assertNotIn("--emit-host-agents", message)
+        self.assertIn("--allow-unenforced", message)
+        # ...and the probe's own reason is still quoted, so the operator can
+        # see WHY this invocation could not answer.
+        self.assertIn("measured for driver loop --mode headless only", message)
+
+    def test_a_refuted_host_still_gets_the_emit_remedy(self):
+        message = self._refuse(self._repo(), "claude",
+                               {"state": hosts.REFUTED, "by": "registered-shell-tools",
+                                "detail": "no registration directory at /nope"})
+        self.assertIn("--emit-host-agents claude", message)
+        self.assertNotIn("driver loop --setup", message)
+        self.assertIn("--allow-unenforced", message)
+
+    def test_an_unmeasured_claude_is_not_told_to_emit_either(self):
+        # The same rule, on the host the round-1 fix was written for: an
+        # unreadable registration directory is UNKNOWN, and emitting into a
+        # directory that cannot be read changes nothing.
+        message = self._refuse(self._repo(), "claude",
+                               {"state": hosts.UNKNOWN, "by": "registered-shell-tools",
+                                "detail": "cannot read /nope, so nothing could be checked"})
+        self.assertNotIn("--emit-host-agents", message)
+        self.assertIn("driver loop --setup --host claude --mode headless", message)
+
+    def test_a_host_that_registers_nothing_is_offered_neither(self):
+        message = self._refuse(self._repo(), "generic",
+                               {"state": hosts.UNKNOWN, "by": None, "detail": "no shells"})
+        self.assertNotIn("--emit-host-agents", message)
+        self.assertNotIn("driver loop --setup", message)
+        self.assertIn("--allow-unenforced", message)
+        self.assertIn("--host claude", message)
+
+
+class TestTheSetupAckDescribesThisInvocation(unittest.TestCase):
+    """#1737 fix round 1, nit (a). The ack borrowed the review ack's
+    never-overwrite rule, which exists there to protect a BINDING (#493 R2:
+    `plan_sha256` must stay as first written so a changed plan reads stale).
+    Setup's ack binds nothing downstream -- it is a record of what the
+    operator accepted about THIS dispatch -- so never-overwrite only made it
+    lie: an ack first written on one host kept that host's name, and one
+    written while the posture was refuted went on saying `acknowledged: true`
+    after the operator emitted their shells and the dispatch became enforced.
+    """
+
+    def _root(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, ".panopticon"))
+        return d
+
+    def _entry(self, out_file="/abs/p.json"):
+        return {"id": "setup-scan", "agent": None, "enforced": False,
+                "out_file": out_file, "prompt": "BRIEF"}
+
+    def _manifest(self, host="claude"):
+        return {"host": host, "flags": {"allow_unenforced": True}}
+
+    def test_host_and_plan_hash_are_refreshed_on_every_write(self):
+        d = self._root()
+        setup.require_unenforced_scan_ack(d, self._manifest("claude"), [self._entry()])
+        first = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        setup.require_unenforced_scan_ack(
+            d, self._manifest("generic"), [self._entry("/abs/other.json")])
+        second = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        self.assertEqual("claude", first["host"])
+        self.assertEqual("generic", second["host"])
+        self.assertNotEqual(first["plan_sha256"], second["plan_sha256"])
+
+    def test_writing_the_same_acceptance_twice_changes_nothing(self):
+        d = self._root()
+        path = setup.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
+        before = open(path, "rb").read()
+        again = setup.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
+        self.assertEqual(path, again)
+        self.assertEqual(before, open(path, "rb").read())
+
+    def test_an_enforced_dispatch_supersedes_and_removes_a_standing_ack(self):
+        d = self._root()
+        path = setup.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
+        self.assertTrue(os.path.isfile(path))
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNone(setup.require_unenforced_scan_ack(
+                d, {"host": "claude"}, [self._entry()]))
+        self.assertFalse(os.path.exists(path),
+                         "a superseded acceptance stayed on the tree saying "
+                         "acknowledged: true about an enforced dispatch")
+        self.assertIn(setup.SETUP_UNENFORCED_ACK, err.getvalue())   # announced
+
+    def test_removing_it_is_never_fatal(self):
+        # The ack sits under `.panopticon`, which the target owns: a read-only
+        # directory, or a planted directory at the name, must not take down
+        # the enforced path -- the acknowledgement is not needed there.
+        d = self._root()
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        os.makedirs(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(setup.require_unenforced_scan_ack(
+                d, {"host": "claude"}, [self._entry()]))
+
+
+class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
+    """#1737 fix round 1, Critical. `driver setup` -- the bootstrap verb, not
+    `driver loop --setup` -- passed `posture=None`, so NOTHING wrote the setup
+    namespace's `host-capabilities.json`. The ack gate reads exactly that
+    artifact, so on a fresh target the verb refused with "probe none ran: no
+    evidence", and the remedy it names first (`--emit-host-agents`) changed
+    nothing at all, because nothing re-probed afterwards. The only route
+    through the bootstrap verb became `--allow-unenforced` -- the silent
+    unenforced dispatch #1737 exists to remove, now merely renamed.
+
+    The verb probes for itself now, exactly as `driver loop --setup` does.
+    These tests go through `driver.main` deliberately: the wiring IS the fix,
+    and a test calling `run_setup_flow(posture=...)` by hand would pass with
+    the wiring still missing.
+    """
+
+    def _repo(self):
+        return make_git_repo(test_case=self, files={"src/a.py": "x = 1\n"},
+                             branch="main", user_email="t@t", user_name="t")
+
+    def _setup(self, d, *argv, probes):
+        out = io.StringIO()
+        with mock.patch("scripts.host_probes.run_probes",
+                        side_effect=lambda host, target, **kw: probes(host)), \
+                contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = driver.main(["setup", d, *argv])
+        return code, json.loads(out.getvalue().splitlines()[-1])
+
+    def _evidence(self, d):
+        return runio._load_json(os.path.join(d, ".panopticon", runio.HOST_CAPABILITIES))
+
+    def test_a_proven_host_dispatches_enforced_with_no_ack_and_no_fixture(self):
+        d = self._repo()
+        self.assertIsNone(self._evidence(d))          # a genuinely fresh target
+        code, status = self._setup(d, probes=_all_proven_artifact)
+        self.assertEqual(0, code, status)
+        self.assertEqual("checkpoint", status["status"], status)
+        # the run wrote its OWN evidence, flat, in setup's namespace
+        written = self._evidence(d)
+        self.assertEqual(hosts.PROVEN,
+                         written["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"])
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        self.assertTrue(entry["enforced"])
+        self.assertEqual("panopticon-setup-scan", entry["agent"])
+        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+
+    def test_a_standing_ack_is_dropped_once_the_shells_are_registered(self):
+        # The bootstrap sequence itself: accept the risk once, emit the
+        # shells, re-run. The acceptance must not outlive the posture it was
+        # about, saying `acknowledged: true` over an enforced dispatch.
+        d = self._repo()
+        self._setup(d, "--allow-unenforced", probes=_refuted_artifact)
+        ack = runio._pano(d, setup.SETUP_UNENFORCED_ACK)
+        self.assertTrue(os.path.isfile(ack))
+        os.remove(requests.request_path(d, namespace="setup"))
+        code, status = self._setup(d, probes=_all_proven_artifact)
+        self.assertEqual(0, code, status)
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        self.assertTrue(entry["enforced"])
+        self.assertFalse(os.path.exists(ack))
+
+    def test_an_unenforceable_host_is_refused_with_both_remedies(self):
+        d = self._repo()
+        code, status = self._setup(d, probes=_refuted_artifact)
+        self.assertEqual(1, code, status)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("--emit-host-agents claude", status["message"])
+        self.assertIn("--allow-unenforced", status["message"])
+        # ...and the refusal quotes what the probe ACTUALLY found, not
+        # "probe none ran: no evidence" -- the symptom of the unwired step.
+        self.assertNotIn("none ran", status["message"])
+        self.assertIn("fixture: tool policy deliberately refuted", status["message"])
+        self.assertFalse(os.path.isfile(requests.request_path(d, namespace="setup")))
+
+    def test_the_ack_carries_the_same_unenforceable_host_through(self):
+        d = self._repo()
+        code, status = self._setup(d, "--allow-unenforced", probes=_refuted_artifact)
+        self.assertEqual(0, code, status)
+        self.assertEqual("checkpoint", status["status"], status)
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        self.assertFalse(entry["enforced"])
+        self.assertIsNone(entry["agent"])
+        ack = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        self.assertEqual(hosts.REFUTED, ack[hosts.TOOL_POLICY_ENFORCED])
+
+    def test_a_planted_evidence_artifact_is_overwritten_before_the_gate_reads_it(self):
+        # Fix round 1, Important 2. `.panopticon/host-capabilities.json` is a
+        # path a hostile target can force-commit past `.gitignore`, and before
+        # the posture step was wired the gate simply believed it. The run's own
+        # probe now rewrites the artifact BEFORE the gate reads it, so a
+        # planted `proven` cannot buy an enforced dispatch.
+        d = self._repo()
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        subprocess.run(["git", "add", "-f", ".panopticon/" + runio.HOST_CAPABILITIES],
+                       cwd=d, check=True, capture_output=True)
+        code, status = self._setup(d, probes=_refuted_artifact)
+        self.assertEqual(1, code, status)
+        self.assertIn("--allow-unenforced", status["message"])
+        self.assertEqual(hosts.REFUTED,
+                         self._evidence(d)["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"])
 
 
 class TestSetupOwnsItsDispatchNamespace(unittest.TestCase):
@@ -689,6 +1142,9 @@ class TestSetupScanExecuteUsesTheNamespace(unittest.TestCase):
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("x = 1\n")
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        # #1737: a registered machine, so the scan dispatches enforced rather
+        # than being refused for want of the operator's acknowledgement.
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
         result = setup_phase.scan_execute(d, {"run_id": "RID", "host": "claude"})
         if result.kind != "checkpoint":
             self.skipTest("vocab-absent fallback path")
