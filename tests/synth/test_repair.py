@@ -443,3 +443,53 @@ class TestRepairToolsSuppressed(unittest.TestCase):
                                  for n in range(repair_mod.ROWS_MAX + 25)})
         self.assertEqual(len(got), repair_mod.ROWS_MAX)
         self.assertIn("%d" % repair_mod.ROWS_MAX, err)
+
+
+class TestRepairToolsExcluded(unittest.TestCase):
+    """#1740 fix round 2: `meta.coverage.tools_excluded` -- the `--exclude` /
+    committed `exclude_paths:` policy this run's tool ingest applied, and how
+    many findings it took off the axis.
+
+    Repaired like its `tools_suppressed` sibling and for the same reason: the
+    globs are authored by the REPOSITORY under review (`panopticon.yml`), so
+    they are a target-carried input reaching a published artifact, and the
+    schema pins their types.
+    """
+
+    def _repair(self, value):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = repair_mod.repair_tools_excluded(value)
+        return got, err.getvalue()
+
+    def test_a_well_formed_block_passes_through(self):
+        got, err = self._repair({"globs": ["tests/fixtures/**"], "count": 3})
+        self.assertEqual(got, {"globs": ["tests/fixtures/**"], "count": 3})
+        self.assertEqual(err, "")
+
+    def test_nothing_measured_is_the_empty_block_not_a_missing_key(self):
+        for bad in (None, {}, [], 7, "globs"):
+            with self.subTest(value=repr(bad)):
+                self.assertEqual(self._repair(bad)[0], {"globs": [], "count": 0})
+
+    def test_a_non_integer_count_is_dropped_to_zero_never_coerced(self):
+        got, err = self._repair({"globs": ["a/**"], "count": "lots"})
+        self.assertEqual(got, {"globs": ["a/**"], "count": 0})
+        self.assertIn("count", err)
+
+    def test_a_bool_is_not_an_integer_here(self):
+        self.assertEqual(self._repair({"globs": [], "count": True})[0]["count"], 0)
+
+    def test_a_negative_count_is_dropped(self):
+        self.assertEqual(self._repair({"globs": [], "count": -1})[0]["count"], 0)
+
+    def test_non_string_and_over_long_globs_are_dropped(self):
+        got, err = self._repair({"globs": ["ok/**", 7, "x" * 500], "count": 1})
+        self.assertEqual(got["globs"], ["ok/**"])
+        self.assertIn("globs", err)
+
+    def test_the_row_count_is_bounded(self):
+        got, _err = self._repair({"globs": ["g%d/**" % i for i in range(500)],
+                                  "count": 1})
+        self.assertEqual(len(got["globs"]), repair_mod.ROWS_MAX)
+
