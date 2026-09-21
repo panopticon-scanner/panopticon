@@ -139,6 +139,7 @@ groups:
       - skill/scripts/group_runner.py
       - skill/scripts/model_resolver.py
       - skill/scripts/run_manifest.py
+      - skill/scripts/safe_write.py
       - skill/scripts/write_guard_hook.py
       - skill/scripts/collect_usage.py
       - skill/scripts/_version.py
@@ -154,6 +155,8 @@ groups:
       - tests/test_phases_child.py
       - tests/test_model_resolver.py
       - tests/test_run_manifest.py
+      - tests/test_safe_write.py
+      - tests/test_artifact_write_symlinks.py
       - tests/test_agent_templates.py
       - tests/test_domain_advisor_template.py
       - tests/test_write_guard_hook.py
@@ -339,6 +342,7 @@ groups:
     - tests/test_nvd_cache_decision.py
     - tests/test_workflow_pins.py
     - tests/test_workflow_guard.py
+    - tests/test_shell_reader.py
     - tests/test_pyproject.py
     - tests/test_pyproject_metadata.py
     panels:
