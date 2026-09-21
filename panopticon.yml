@@ -45,6 +45,10 @@
 #     were parked under `Core`. Fifth `Orchestration` layer `Runners` added
 #     over the launch seam (`runners/**`, `kimi_toml.py`, `tests/runners/**`);
 #     `Hosts` keeps the registry, posture, guards, probes and workflows.
+#   - 2026-09-21 (#1670): synthesis already has `Reporting:Synth` and the
+#     host launch seam has `Orchestration:Runners`. Split report rendering
+#     and issue export into `Reporting:Outputs` to leave room in `Core`;
+#     move verdict-bundle-schema.json beside its sibling contracts there.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -108,7 +112,6 @@ groups:
       - '!skill/scripts/phases/readiness_checks.py'
       - skill/scripts/orchestrate.py
       - skill/scripts/progress.py
-      - skill/reference/verdict-bundle-schema.json
       tests:
       - tests/test_driver.py
       - tests/test_driver_verify.py
@@ -199,6 +202,8 @@ groups:
       - tests/test_hook_command_quoting.py
       - tests/test_generic_retirement_bar.py
       - tests/test_family_guardrails_doc.py
+      - tests/test_workflow_dispatch_script.py
+      - tests/workflows/dispatch_harness.mjs
       panels:
       - ARC
       - SEC
@@ -273,9 +278,6 @@ groups:
       - tests/test_verdict_binding.py
     Core:
       match:
-      - skill/scripts/html_report.py
-      - skill/scripts/x0x_report.py
-      - skill/scripts/strain_report.py
       - skill/scripts/reconcile.py
       - skill/scripts/evidence.py
       - skill/scripts/citations.py
@@ -289,17 +291,10 @@ groups:
       - skill/reference/strain-report-schema.json
       - skill/reference/findings-envelope-schema.json
       - skill/reference/advisor-verdict-schema.json
+      - skill/reference/verdict-bundle-schema.json
       - skill/reference/cwe-catalog.json
       - skill/reference/ocrdb-0.5.0.json
-      - scripts/file_issues.py
-      - scripts/file_fixmes.py
-      - scripts/triage.py
-      - scripts/reconcile_apply.py
-      - scripts/sanitize.py
       tests:
-      - tests/test_html_report.py
-      - tests/test_x0x_report.py
-      - tests/test_strain_report.py
       - tests/test_citations.py
       - tests/test_ocrdb.py
       - tests/test_evidence.py
@@ -307,12 +302,7 @@ groups:
       - tests/test_score_gate.py
       - tests/test_redact.py
       - tests/test_findings_contract.py
-      - tests/test_sanitize.py
       - tests/test_reconcile.py
-      - tests/test_reconcile_apply.py
-      - tests/test_file_issues.py
-      - tests/test_file_fixmes.py
-      - tests/test_triage.py
       - tests/test_label_catalog_parity.py
       - tests/test_schema.py
       - tests/test_matrix_finding_id.py
@@ -322,6 +312,25 @@ groups:
       - tests/test_verify_inconclusive.py
       - tests/test_verify_queue.py
       - tests/test_verify_schema_fields.py
+    Outputs:
+      match:
+      - skill/scripts/html_report.py
+      - skill/scripts/x0x_report.py
+      - skill/scripts/strain_report.py
+      - scripts/file_issues.py
+      - scripts/file_fixmes.py
+      - scripts/triage.py
+      - scripts/reconcile_apply.py
+      - scripts/sanitize.py
+      tests:
+      - tests/test_html_report.py
+      - tests/test_x0x_report.py
+      - tests/test_strain_report.py
+      - tests/test_file_issues.py
+      - tests/test_file_fixmes.py
+      - tests/test_triage.py
+      - tests/test_reconcile_apply.py
+      - tests/test_sanitize.py
   CI:
     match:
     - .github/**

@@ -816,7 +816,7 @@ def _resolve(settings_path, allowlist_path, session_root):
                 "not both -- they resolve to different files and the guard would "
                 "arm somewhere other than where it was checked")
         return (os.path.join(session_root, DEFAULT_SETTINGS_PATH),
-                os.path.join(session_root, DEFAULT_ALLOWLIST_PATH), False)
+                os.path.join(session_root, DEFAULT_ALLOWLIST_PATH), True)
     return (settings_path or DEFAULT_SETTINGS_PATH,
             allowlist_path or DEFAULT_ALLOWLIST_PATH, not explicit)
 

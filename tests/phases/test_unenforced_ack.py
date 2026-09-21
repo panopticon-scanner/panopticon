@@ -19,6 +19,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from conftest import write_host_evidence
 import scripts.dispatch as dispatch
@@ -83,6 +84,20 @@ class TestGate(unittest.TestCase):
         # posture()-based hint would come back empty. No evidence is written
         # here, so this fails if requests.py:201 is ever swapped to posture().
         self.assertIn("--host claude", message)
+
+    def test_an_unproven_current_host_is_not_its_own_remedy(self):
+        root = self._root()
+        for manifest in (_manifest("claude"), {"flags": {}}):
+            with self.subTest(manifest=manifest), self.assertRaises(runio.DriverError) as caught:
+                requests.require_unenforced_ack(root, manifest, ENTRIES)
+            message = str(caught.exception)
+            self.assertIn("--allow-unenforced", message)
+            self.assertNotIn("--host claude", message)
+            self.assertNotIn("or use one of: .", message)
+        with mock.patch.object(hosts, "driver_hosts", return_value=("claude",)):
+            with self.assertRaises(runio.DriverError) as caught:
+                requests.require_unenforced_ack(root, _manifest("claude"), ENTRIES)
+        self.assertNotIn("or use one of", str(caught.exception))
 
     def test_a_second_claim_nothing_host_refuses_on_identical_terms(self):
         # The gate is keyed on the CLAIM, never on the name "generic". `gemini`
