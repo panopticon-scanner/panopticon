@@ -387,5 +387,13 @@ def parse_exclude_paths(doc):
     if invalid:
         errors.append("exclude_paths entries must be non-empty strings")
     globs = [x for x in raw if isinstance(x, str) and x.strip()]
+    # `exclude_paths:` documents no negation. `glob_to_re` would honour a
+    # leading `!` while discovery's walk would not, so a negated entry is
+    # refused here, before either consumer can read it differently.
+    negated = [g for g in globs if g.lstrip().startswith("!")]
+    if negated:
+        errors.append("exclude_paths entries must not use `!` negation: %s"
+                      % ", ".join(repr(g) for g in negated))
+        globs = [g for g in globs if g not in negated]
     errors.extend(glob_errors("exclude_paths", "entry", globs))
     return globs, errors
