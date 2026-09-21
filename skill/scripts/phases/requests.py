@@ -164,8 +164,18 @@ def _materialize_prompts(review_root, entries, namespace=None):
     # Fail-safe, because the alternative is fatal: a CLI that does not know
     # the flag exits non-zero on it, prints no envelope, and every entry of
     # every checkpoint burns its three launches.
-    advertised = runio.host_cli_flags(review_root).get(
-        hosts.OUTPUT_SCHEMA, {}).get("advertised") is True
+    #
+    # #1732: AND the shape. `advertised` is a read of the flag's NAME, from
+    # `<cli> --help`; run 14's CLI advertised `--json-schema` and then refused
+    # what the driver put after it (the schema's path, where it wants the
+    # text), and every return_json entry of every checkpoint burned its three
+    # launches -- 309 of them. `refuted` is the one verdict that takes the
+    # flag back off; `proven`, `unmeasured` and an absent key all stamp
+    # exactly as before, because a fact nobody could measure may not remove a
+    # capability.
+    fact = runio.host_cli_flags(review_root).get(hosts.OUTPUT_SCHEMA, {})
+    advertised = (fact.get("advertised") is True
+                  and fact.get(hosts.SHAPE) != hosts.SHAPE_REFUTED)
     for entry in entries:
         entry = dict(entry)
         # D10 ruling 3: the published schema this entry's reply is accepted

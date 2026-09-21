@@ -1,0 +1,9 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "panopticon output-schema shape proof",
+  "description": "The smallest published schema this driver can put on a real launch's argv. Its only consumer is probes/shape.py, which spends one launch per run asking a host CLI to accept it -- proving that an ADVERTISED output-schema flag really takes what the driver puts after it. Deliberately trivial: the probe measures the argv, never the model.",
+  "type": "object",
+  "properties": {"ok": {"type": "boolean"}},
+  "required": ["ok"],
+  "additionalProperties": false
+}

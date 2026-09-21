@@ -306,12 +306,50 @@ def _output_schema_line(envelope, host):
                 "read `<cli> --help`; the driver validates every reply either way"
                 % (host, CLI_FLAGS_PROBE)]
     if row.get("advertised") is True:
-        return []
+        return _shape_line(row, host)
     return ["replies are not schema-constrained this run on host %r -- probe %s: %s. "
             "fix: upgrade the CLI if you want %s enforced output; the driver validates "
             "every reply either way"
             % (host, CLI_FLAGS_PROBE, row.get("detail") or "no detail recorded",
                row.get("flag") or "its")]
+
+
+def _shape_line(row, host):
+    """What one real launch found out about an ADVERTISED flag (#1732).
+
+    `advertised` is a read of the flag's NAME out of `<cli> --help`. Run 14
+    proved a name is not a contract: `claude --help` advertises
+    `--json-schema`, the driver handed it the schema's PATH where the CLI
+    wants its TEXT, and 309 launches went to that gap under a posture line
+    saying "5 of 5 capabilities proven". So an advertised flag is no longer
+    silent -- it says which of the three answers this run's own probe got.
+
+    Silent only when there is no `shape` at all: an artifact written before
+    this shipped, or a run that legitimately never asked (session mode
+    launches none of our CLIs). Inventing a line about a measurement nobody
+    made is the "mood" 5.1 rules out, and this is the same silence an
+    advertised flag has always had.
+
+    Still a NOTE and never a capability line: the flag gates nothing, the
+    headline counts five capabilities whatever this says, and the driver
+    validates every reply either way.
+    """
+    shape, flag = row.get(hosts.SHAPE), row.get("flag") or "its output-schema flag"
+    detail = row.get(hosts.SHAPE_DETAIL) or "no detail recorded"
+    if shape == hosts.SHAPE_PROVEN:
+        return ["replies are schema-constrained this run on host %r -- %s advertised, "
+                "shape proven by one launch (%s)" % (host, flag, detail)]
+    if shape == hosts.SHAPE_REFUTED:
+        return ["replies are not schema-constrained this run on host %r -- %s "
+                "advertised, shape REFUTED by one launch (%s) -- entries launch "
+                "without the flag and reply in fenced JSON, which the driver "
+                "validates against the same schema on receipt" % (host, flag, detail)]
+    if shape == hosts.SHAPE_UNMEASURED:
+        return ["replies may be schema-constrained this run on host %r -- %s "
+                "advertised (shape unmeasured: %s); entries carry the flag as "
+                "before, and the driver validates every reply either way"
+                % (host, flag, detail)]
+    return []
 
 
 def disclosure_digest(envelope):
