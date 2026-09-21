@@ -219,6 +219,7 @@ class Runner(base.HostRunner):
             partial = base.partial_output(exc)
             return base.RunResult.failed(entry_id, "codex timed out after %ss" % self.entry_timeout,
                                           usage=self.parse_envelope(entry_id, partial, 0).usage,
+                                          stderr=base.stderr_head(getattr(exc, "stderr", None)),
                                           text=partial)
         except Exception as exc:
             return base.RunResult.failed(entry_id, "%s: %s" % (type(exc).__name__, exc))

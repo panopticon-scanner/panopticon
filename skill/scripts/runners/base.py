@@ -511,24 +511,29 @@ def stderr_head(text):
     at all in that case, which is what keeps a completed row's shape exactly
     what every existing reader parses).
     """
-    text = redact.redact((text or "").strip())
+    text = redact.redact(_stream_text(text).strip())
     return text[:STDERR_HEAD] or None
 
 
-def partial_output(exc):
-    """Whatever a killed child had printed, as text (D10 ruling 5).
+def _stream_text(stream):
+    """One of a child's streams as text, whatever the caller was handed.
 
-    `subprocess.TimeoutExpired` carries it UNDECODED even from a text-mode
-    launch -- `communicate()` translates newlines only after it returns, and
-    the timeout raises before that -- so bytes is the normal case and `errors
-    ="replace"` keeps a truncated multi-byte character at the cut from
-    throwing away the whole transcript. Empty for a launch that printed
-    nothing, which is the same "no evidence" every other failure has.
+    `subprocess.TimeoutExpired` carries stdout AND stderr UNDECODED even from a
+    text-mode launch -- `communicate()` translates newlines only after it
+    returns, and the timeout raises before that -- so bytes is the normal case
+    on the timeout path, while the ordinary completed launch hands `str`.
+    `errors="replace"` keeps a multi-byte character truncated at the kill from
+    throwing away the whole stream. Empty for a launch that printed nothing,
+    which is the same "no evidence" every other failure has.
     """
-    out = getattr(exc, "stdout", None)
-    if isinstance(out, bytes):
-        return out.decode("utf-8", "replace")
-    return out if isinstance(out, str) else ""
+    if isinstance(stream, bytes):
+        return stream.decode("utf-8", "replace")
+    return stream if isinstance(stream, str) else ""
+
+
+def partial_output(exc):
+    """Whatever a killed child had printed, as text (D10 ruling 5)."""
+    return _stream_text(getattr(exc, "stdout", None))
 
 
 # The four registered enforcement shells, DERIVED from the one table that

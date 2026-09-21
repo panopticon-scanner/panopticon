@@ -594,3 +594,25 @@ class TestTheFailedLaunchesStderr(unittest.TestCase):
         res = self._run("", 1, "   \n")
         self.assertFalse(res.ok)
         self.assertIsNone(res.stderr)
+
+    def test_a_timed_out_launch_carries_the_killed_childs_stderr(self):
+        # #1732 fix round 2: the `TimeoutExpired` path kept the partial stdout
+        # and dropped stderr, so the one failure that costs a whole entry
+        # timeout ledgered no diagnosis at all. `TimeoutExpired` carries both
+        # streams UNDECODED even from a text-mode launch (see
+        # `base.partial_output`), so bytes is the normal case here.
+        import subprocess
+
+        def slow(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"),
+                                            stderr=self.SECRET.encode())
+
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=slow)
+            r.prepare(d, review_root=d)
+            res = r.run_entry(_entry(True), {})
+        self.assertFalse(res.ok)
+        self.assertIn("timed out after", res.error)
+        self.assertIn("Unrecognized token", res.stderr)
+        self.assertNotIn("sk-ant-", res.stderr)
+        self.assertLessEqual(len(res.stderr), base.STDERR_HEAD)

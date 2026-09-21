@@ -233,8 +233,11 @@ class Runner(base.HostRunner):
             # it: `claude -p` prints its envelope once, at the end, so a
             # partial stdout carries no figure to read -- recorded as the empty
             # truth rather than a fabricated zero.
+            # ...but stderr IS kept (#1732 fix round 2): a killed child's
+            # complaint is the only diagnosis a timeout ever ledgers.
             return base.RunResult.failed(entry.get("id"), "claude -p timed out after %ss" % self.entry_timeout,
-                                          text=base.partial_output(exc))
+                                          text=base.partial_output(exc),
+                                          stderr=base.stderr_head(getattr(exc, "stderr", None)))
         except OSError as exc:
             return base.RunResult.failed(entry.get("id"), "could not launch %s: %s" % (self.CLI, exc))
         except Exception as exc:          # run_entry never raises (spec 4.4): anything else is a failed entry

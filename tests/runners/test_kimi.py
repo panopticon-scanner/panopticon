@@ -441,6 +441,28 @@ class TestRunEntry(unittest.TestCase):
         self.assertEqual(partial, res.text)
         self.assertEqual({}, res.usage)
 
+    def test_a_timed_out_launch_carries_the_killed_childs_stderr(self):
+        # #1732 fix round 2: the `TimeoutExpired` path kept the partial stream
+        # and dropped stderr, so the failure that costs a whole entry timeout
+        # ledgered no diagnosis. `TimeoutExpired` carries both streams UNDECODED
+        # even from a text-mode launch (see `base.partial_output`).
+        noisy = "kimi: auth failed for key sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF"
+
+        def slow(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"), stderr=noisy.encode())
+
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+            r = kimi_runner.Runner("kimi", runner=slow)
+            r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
+            res = r.run_entry(_entry(False), {})
+        self.assertFalse(res.ok)
+        self.assertIn("timed out after", res.error)
+        self.assertIn("auth failed", res.stderr)
+        self.assertNotIn("sk-ant-", res.stderr)
+        self.assertLessEqual(len(res.stderr), base.STDERR_HEAD)
+
     def test_a_timeout_or_launch_failure_is_a_failed_result(self):
         def boom(cmd, **kw):
             raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))

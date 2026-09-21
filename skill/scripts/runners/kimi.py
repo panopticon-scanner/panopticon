@@ -489,7 +489,8 @@ class Runner(base.HostRunner):
             # D10 ruling 5: the stream it printed is kept; usage is not, because
             # this family reads it from the session wire file, not from stdout.
             return base.RunResult.failed(entry_id, "kimi -p timed out after %ss" % self.entry_timeout,
-                                          text=base.partial_output(exc))
+                                          text=base.partial_output(exc),
+                                          stderr=base.stderr_head(getattr(exc, "stderr", None)))
         except OSError as exc:
             return base.RunResult.failed(entry_id, "could not launch %s: %s" % (self.CLI, exc))
         except Exception as exc:          # run_entry never raises (spec 4.4)
