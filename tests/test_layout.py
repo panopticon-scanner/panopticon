@@ -288,9 +288,15 @@ class FlatImportModeTest(unittest.TestCase):
     is unreachable, which is the whole point.
     """
 
+    # #1735 adds three: `safe_write` (the no-follow artifact open, reached by
+    # the flat-importable modules below), and the two CLIs the driver spawns as
+    # plain scripts -- `discovery` and `collect_usage` -- which now carry the
+    # same `try: from scripts import ... except ModuleNotFoundError` for it and
+    # would otherwise have nothing pinning the mode they are actually run in.
     FLAT_MODULES = ("evidence", "x0x_report", "citations", "html_report",
                     "ocrdb", "plan_contract", "host_disclosure",
-                    "model_resolver", "redact", "safe_write")
+                    "model_resolver", "redact", "safe_write",
+                    "discovery", "collect_usage")
 
     def test_every_flat_importable_module_still_imports_flat(self):
         env = dict(os.environ)
