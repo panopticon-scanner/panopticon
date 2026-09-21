@@ -55,6 +55,160 @@ class TestParse(unittest.TestCase):
         self.assertEqual(diff_map.parse_unified_diff("not a diff\nrandom\n"), {})
 
 
+# #1738 (COD-C2A / DAT-E1D). `git diff --unified=0` marks an ADDED line with a
+# single '+', so an added source line whose text begins with "++ " reaches the
+# parser as "+++ <text>" -- byte-identical to a `+++ b/<path>` file header.
+# Every fixture below is a real shape git emits under the flags hunk_map pins
+# (--unified=0 --no-color --find-renames --src-prefix=a/ --dst-prefix=b/),
+# checked against live `git diff` output rather than hand-imagined.
+FORGED = """diff --git a/app/db.py b/app/db.py
+index f696b4b..e9a07cf 100644
+--- a/app/db.py
++++ b/app/db.py
+@@ -3 +3 @@ def q():
+%s
+%s
+@@ -40,0 +41,2 @@ def r():
++real1
++real2
+"""
+
+NO_NEWLINE = """diff --git a/a.txt b/a.txt
+index ce01362..14be0d4 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-old
+\\ No newline at end of file
++++ x;
+@@ -5,0 +6 @@
++tail
+"""
+
+RENAME_AND_DELETE = """diff --git a/old.py b/new.py
+similarity index 80%
+rename from old.py
+rename to new.py
+index 1111111..2222222 100644
+--- a/old.py
++++ b/new.py
+@@ -2 +2 @@
+-b
++B
+diff --git a/gone.py b/gone.py
+deleted file mode 100644
+index 3333333..0000000
+--- a/gone.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-x
+-y
+"""
+
+HUNKLESS = """diff --git a/bin.dat b/bin.dat
+index c866266..5663091 100644
+Binary files a/bin.dat and b/bin.dat differ
+diff --git a/sh.sh b/sh.sh
+old mode 100644
+new mode 100755
+diff --git a/moved.py b/renamed.py
+similarity index 100%
+rename from moved.py
+rename to renamed.py
+"""
+
+
+class TestParseHunkState(unittest.TestCase):
+    """#1738: framing is recognized only BETWEEN hunks, so a PR's own added
+    content can never re-key, erase, or invent an entry in the hunk map."""
+
+    REAL = {"app/db.py": [(3, 3), (41, 42)]}
+
+    def _forged(self, added="+plain", removed="-line3"):
+        """The two payload lines of the first hunk, exactly as git prefixes them."""
+        return FORGED % (removed, added)
+
+    def test_the_fixture_is_a_faithful_two_hunk_diff(self):
+        # positive control: with innocent payload the map is the REAL one, so
+        # every failure below is about the forged line and nothing else.
+        self.assertEqual(diff_map.parse_unified_diff(self._forged()), self.REAL)
+
+    def test_added_line_forging_a_file_header_is_payload(self):      # (a)
+        # source line `++ x;` -> diff line `+++ x;`
+        self.assertEqual(diff_map.parse_unified_diff(self._forged(added="+++ x;")),
+                         self.REAL)
+
+    def test_added_line_forging_dev_null_does_not_drop_later_hunks(self):   # (b)
+        # source line `++ /dev/null` -> `+++ /dev/null`: used to set path=None,
+        # discarding every later hunk of the real file.
+        self.assertEqual(diff_map.parse_unified_diff(self._forged(added="+++ /dev/null")),
+                         self.REAL)
+
+    def test_added_line_forging_another_path_does_not_rekey(self):   # (c)
+        # source line `++ b/other/file` -> `+++ b/other/file`: used to re-key
+        # the later hunks onto a path of the author's choosing AND mint a key
+        # for a file the diff never touched.
+        m = diff_map.parse_unified_diff(self._forged(added="+++ b/other/file"))
+        self.assertEqual(m, self.REAL)
+
+    def test_added_line_starting_with_three_pluses_is_payload(self):  # (d)
+        # source line `+++ b/x` -> diff line `++++ b/x`: never matched the old
+        # header regex (it wants a space in position 4) -- pinned so the fix
+        # cannot widen the regex and make it match.
+        self.assertEqual(diff_map.parse_unified_diff(self._forged(added="++++ b/x")),
+                         self.REAL)
+
+    def test_removed_line_looking_like_an_old_file_header_does_nothing(self):  # (e)
+        # source line `-- a/x` -> diff line `--- a/x`
+        self.assertEqual(diff_map.parse_unified_diff(self._forged(removed="--- a/x")),
+                         self.REAL)
+
+    def test_no_newline_marker_consumes_no_budget(self):             # (f)
+        # `\ No newline at end of file` sits INSIDE the hunk and pays no line
+        # budget; if it did, the forged header after it would land at budget 0
+        # and be read as framing again.
+        self.assertEqual(diff_map.parse_unified_diff(NO_NEWLINE),
+                         {"a.txt": [(1, 1), (6, 6)]})
+
+    def test_rename_and_deletion_parse_as_before(self):               # (g)
+        # a rename WITH hunks keys on the new side; a deletion is not a
+        # new-side key at all. Unchanged by #1738.
+        self.assertEqual(diff_map.parse_unified_diff(RENAME_AND_DELETE),
+                         {"new.py": [(2, 2)]})
+
+    def test_hunkless_changes_keep_a_key_with_no_ranges(self):
+        # Binary, mode-only and 100%-similarity renames carry no `+++` header
+        # and no hunks. They ARE changed files, so they keep a key with no
+        # ranges -- classify()'s documented fail-open for a lineless (or
+        # lined-but-rangeless) finding on a changed file.
+        self.assertEqual(diff_map.parse_unified_diff(HUNKLESS),
+                         {"bin.dat": [], "sh.sh": [], "renamed.py": []})
+
+    def test_a_path_containing_spaces_keys_on_the_real_name(self):
+        # git tab-terminates the ---/+++ names when they contain a space, and
+        # the `diff --git a/<p> b/<p>` line is only decodable because both
+        # halves are the same path.
+        text = ("diff --git a/my file.txt b/my file.txt\n"
+                "index ce01362..14be0d4 100644\n"
+                "--- a/my file.txt\t\n"
+                "+++ b/my file.txt\t\n"
+                "@@ -1 +1 @@\n-hello\n+hello2\n"
+                "diff --git a/my bin.dat b/my bin.dat\n"
+                "index c866266..5663091 100644\n"
+                "Binary files a/my bin.dat and b/my bin.dat differ\n")
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {"my file.txt": [(1, 1)], "my bin.dat": []})
+
+    def test_classify_still_sees_a_hunk_after_a_forged_header(self):  # (i)
+        # The whole point: a finding at line 41 (second hunk) used to come back
+        # on_diff False -- the PR's own content had scoped the gate away from it.
+        m = diff_map.parse_unified_diff(self._forged(added="+++ b/other/file"))
+        verdict = diff_map.classify(
+            {"location": {"file": "app/db.py", "line_start": 41}}, m)
+        self.assertTrue(verdict["on_diff"])
+        self.assertEqual(verdict["hunk"], [41, 42])
+
+
 def _make_repo(test_case):
     return make_git_repo(
         test_case=test_case,
@@ -93,6 +247,28 @@ class TestHunkMap(unittest.TestCase):
             fh.write("x\ny\nz")   # 3 lines, no trailing newline
         m2 = diff_map.hunk_map(d, "main")
         self.assertEqual(m2["c.py"], [(1, 3)])
+
+    def test_a_forged_header_in_the_content_cannot_scope_the_gate(self):
+        # #1738 end-to-end through the REAL pinned `git diff --unified=0`: a
+        # branch whose own added line reads "++ /dev/null" is emitted as
+        # "+++ /dev/null" and used to erase every LATER hunk of the same file
+        # from the map -- so a finding at line 9 came back off-diff.
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        p = os.path.join(d, "a.py")
+        with open(p, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        lines[1] = "++ /dev/null"      # the forged header, first hunk
+        lines[8] = "CHANGED9"          # the real change, a later hunk
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        _git(d, "commit", "-qam", "c")
+        m = diff_map.hunk_map(d, "main")
+        self.assertEqual(sorted(m), ["a.py"])          # no forged/erased keys
+        self.assertTrue(any(s <= 2 <= e for (s, e) in m["a.py"]), m)
+        self.assertTrue(any(s <= 9 <= e for (s, e) in m["a.py"]), m)
+        self.assertTrue(diff_map.classify(
+            {"location": {"file": "a.py", "line_start": 9}}, m)["on_diff"])
 
     def test_unresolvable_base_raises_instead_of_returning_empty(self):
         # #1256: this used to return {}. An empty map scopes the on-diff gate to

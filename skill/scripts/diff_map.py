@@ -27,34 +27,92 @@ except ImportError:
     import repo_config
 
 _NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
-_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_FILE_HEADER = "diff --git "
+_RENAME_TO = "rename to "
+
+
+def _git_header_path(line):
+    """The new-side path of a `diff --git a/<p> b/<p>` line, or None.
+
+    Only the SAME-path form is decoded, by halving the remainder: a path may
+    contain spaces, so `a/<x> b/<y>` with x != y is genuinely ambiguous, and a
+    C-quoted name is not decoded here at all. Both of those fall through to the
+    `rename to` / `+++` lines, which are unambiguous. This line is therefore
+    only ever the FALLBACK key (see parse_unified_diff).
+    """
+    rem = line[len(_FILE_HEADER):]
+    if rem.startswith('"'):
+        return None
+    half, odd = divmod(len(rem) - 5, 2)          # "a/" + p + " b/" + p
+    if odd or half <= 0 or rem[:2] != "a/" or rem[2 + half:5 + half] != " b/":
+        return None
+    p = rem[2:2 + half]
+    return p if rem[5 + half:] == p else None
 
 
 def parse_unified_diff(text):
-    """{path: [(start, end), ...]} of changed NEW-side line ranges.
+    r"""{path: [(start, end), ...]} of changed NEW-side line ranges.
 
-    `+++ b/<path>` opens a file (kept as a key even with no ranges, so a
-    lineless finding on a changed file can fail-open in classify()); a
-    `+++ /dev/null` target (deleted file) is skipped. `@@ -a,b +c,d @@` gives
-    new-side range (c, c+d-1); d==0 (pure deletion) adds nothing.
+    #1738 (COD-C2A/DAT-E1D): this is a STATE MACHINE, not a line scanner,
+    because the diff it parses is attacker-authored content. Under
+    `--unified=0` (the flags `hunk_map` pins) an ADDED line carries a single
+    '+', so a source line whose text begins with "++ " arrives as
+    `+++ <text>` -- byte-identical to a file header. A flat scanner read it as
+    one and re-keyed (`++ b/other`), erased (`++ /dev/null`) or invented
+    (`++ x;`) map entries, dropping the PR's own later hunks off the on-diff
+    gate.
+
+    The frame: `diff --git` opens a file block; `---`/`+++` head it;
+    `@@ -a,b +c,d @@` opens a hunk whose payload under --unified=0 is EXACTLY
+    b removed + d added lines (a missing `,n` means 1), plus
+    `\ No newline at end of file` markers, which pay no budget. So while that
+    budget is unspent every line is PAYLOAD whatever it looks like, and
+    framing is recognized ONLY between hunks -- where a payload line can
+    never stand.
+
+    Keys: the `+++ b/<path>` header is authoritative (unambiguous even for a
+    name with spaces, which git tab-terminates); `+++ /dev/null` marks a
+    deletion and takes no key. A block with NO `+++` header at all (binary,
+    mode-only, a 100%-similarity rename) still changed a file, so it keeps a
+    key with no ranges -- classify()'s documented fail-open -- under the path
+    from its `rename to` line or, failing that, from the `diff --git` line.
+    `@@ -a,b +c,d @@` gives new-side range (c, c+d-1); d==0 (pure deletion)
+    adds no range.
     """
     result = {}
-    path = None
+    path = None        # key of the open block, None = no new side (deletion)
+    pending = None     # fallback key, live until this block's `+++` header
+    budget = 0         # payload lines the open hunk still owes
     for line in text.splitlines():
+        if budget > 0:                                   # inside a hunk
+            if not line.startswith("\\"):                # no-newline marker
+                budget -= 1
+            continue
+        if line.startswith(_FILE_HEADER):
+            if pending is not None:                      # hunkless block
+                result.setdefault(pending, [])
+            path, pending = None, _git_header_path(line)
+            continue
+        if line.startswith(_RENAME_TO) and not line[len(_RENAME_TO):].startswith('"'):
+            pending = line[len(_RENAME_TO):].rstrip() or pending
+            continue
         m = _NEWFILE_RE.match(line)
         if m:
-            path = None if m.group(1) == "/dev/null" else m.group(1)
+            path, pending = (None if m.group(1) == "/dev/null" else m.group(1)), None
             if path is not None:
                 result.setdefault(path, [])
             continue
-        if path is None:
-            continue
         h = _HUNK_RE.match(line)
         if h:
-            start = int(h.group(1))
-            count = int(h.group(2)) if h.group(2) is not None else 1
-            if count > 0:
-                result[path].append((start, start + count - 1))
+            removed = int(h.group(1)) if h.group(1) is not None else 1
+            start = int(h.group(2))
+            count = int(h.group(3)) if h.group(3) is not None else 1
+            budget = removed + count
+            if path is not None and count > 0:
+                result.setdefault(path, []).append((start, start + count - 1))
+    if pending is not None:
+        result.setdefault(pending, [])
     return result
 
 
