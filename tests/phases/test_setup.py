@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -26,6 +27,7 @@ import scripts.model_resolver as model_resolver
 import scripts.repo_config as repo_config
 
 from conftest import write_host_evidence
+from test_orchestrate import _all_proven_artifact, _refuted_artifact
 from tools.git_repo import make_git_repo
 
 
@@ -47,7 +49,16 @@ class TestDriverSetup(unittest.TestCase):
         return repo
 
     def _registered_repo(self):
-        """A machine that HAS emitted its enforcement shells and proved it."""
+        """A machine that HAS emitted its enforcement shells and proved it.
+
+        A UNIT fixture: it arranges the evidence and calls `run_setup_flow`
+        with no posture step, so these tests exercise the flow against a given
+        posture. The real verb PROBES for itself (#1737 fix round 1) and
+        overwrites this artifact before any gate reads it --
+        `TestStandaloneSetupProbesItsOwnPosture` drives `driver.main` end to
+        end for that, including the planted-artifact case. Read the two
+        together: a green fixture here proves nothing about the wiring.
+        """
         return self._repo(enforcement=hosts.PROVEN)
 
     def _write_settings(self, repo, max_per_group, max_groups):
@@ -646,6 +657,95 @@ class TestDriverSetup(unittest.TestCase):
         for name in ("setup-report.md", "setup-report.json"):
             self.assertFalse(os.path.isfile(runio._pano(d, name)), name)
         self.assertFalse(os.path.isfile(repo_config.draft_path(d)))
+
+
+class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
+    """#1737 fix round 1, Critical. `driver setup` -- the bootstrap verb, not
+    `driver loop --setup` -- passed `posture=None`, so NOTHING wrote the setup
+    namespace's `host-capabilities.json`. The ack gate reads exactly that
+    artifact, so on a fresh target the verb refused with "probe none ran: no
+    evidence", and the remedy it names first (`--emit-host-agents`) changed
+    nothing at all, because nothing re-probed afterwards. The only route
+    through the bootstrap verb became `--allow-unenforced` -- the silent
+    unenforced dispatch #1737 exists to remove, now merely renamed.
+
+    The verb probes for itself now, exactly as `driver loop --setup` does.
+    These tests go through `driver.main` deliberately: the wiring IS the fix,
+    and a test calling `run_setup_flow(posture=...)` by hand would pass with
+    the wiring still missing.
+    """
+
+    def _repo(self):
+        return make_git_repo(test_case=self, files={"src/a.py": "x = 1\n"},
+                             branch="main", user_email="t@t", user_name="t")
+
+    def _setup(self, d, *argv, probes):
+        out = io.StringIO()
+        with mock.patch("scripts.host_probes.run_probes",
+                        side_effect=lambda host, target, **kw: probes(host)), \
+                contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = driver.main(["setup", d, *argv])
+        return code, json.loads(out.getvalue().splitlines()[-1])
+
+    def _evidence(self, d):
+        return runio._load_json(os.path.join(d, ".panopticon", runio.HOST_CAPABILITIES))
+
+    def test_a_proven_host_dispatches_enforced_with_no_ack_and_no_fixture(self):
+        d = self._repo()
+        self.assertIsNone(self._evidence(d))          # a genuinely fresh target
+        code, status = self._setup(d, probes=_all_proven_artifact)
+        self.assertEqual(0, code, status)
+        self.assertEqual("checkpoint", status["status"], status)
+        # the run wrote its OWN evidence, flat, in setup's namespace
+        written = self._evidence(d)
+        self.assertEqual(hosts.PROVEN,
+                         written["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"])
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        self.assertTrue(entry["enforced"])
+        self.assertEqual("panopticon-setup-scan", entry["agent"])
+        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+
+    def test_an_unenforceable_host_is_refused_with_both_remedies(self):
+        d = self._repo()
+        code, status = self._setup(d, probes=_refuted_artifact)
+        self.assertEqual(1, code, status)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("--emit-host-agents claude", status["message"])
+        self.assertIn("--allow-unenforced", status["message"])
+        # ...and the refusal quotes what the probe ACTUALLY found, not
+        # "probe none ran: no evidence" -- the symptom of the unwired step.
+        self.assertNotIn("none ran", status["message"])
+        self.assertIn("fixture: tool policy deliberately refuted", status["message"])
+        self.assertFalse(os.path.isfile(requests.request_path(d, namespace="setup")))
+
+    def test_the_ack_carries_the_same_unenforceable_host_through(self):
+        d = self._repo()
+        code, status = self._setup(d, "--allow-unenforced", probes=_refuted_artifact)
+        self.assertEqual(0, code, status)
+        self.assertEqual("checkpoint", status["status"], status)
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        self.assertFalse(entry["enforced"])
+        self.assertIsNone(entry["agent"])
+        ack = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        self.assertEqual(hosts.REFUTED, ack[hosts.TOOL_POLICY_ENFORCED])
+
+    def test_a_planted_evidence_artifact_is_overwritten_before_the_gate_reads_it(self):
+        # Fix round 1, Important 2. `.panopticon/host-capabilities.json` is a
+        # path a hostile target can force-commit past `.gitignore`, and before
+        # the posture step was wired the gate simply believed it. The run's own
+        # probe now rewrites the artifact BEFORE the gate reads it, so a
+        # planted `proven` cannot buy an enforced dispatch.
+        d = self._repo()
+        os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        subprocess.run(["git", "add", "-f", ".panopticon/" + runio.HOST_CAPABILITIES],
+                       cwd=d, check=True, capture_output=True)
+        code, status = self._setup(d, probes=_refuted_artifact)
+        self.assertEqual(1, code, status)
+        self.assertIn("--allow-unenforced", status["message"])
+        self.assertEqual(hosts.REFUTED,
+                         self._evidence(d)["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"])
 
 
 class TestSetupOwnsItsDispatchNamespace(unittest.TestCase):

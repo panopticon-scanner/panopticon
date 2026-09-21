@@ -416,12 +416,17 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
     `.panopticon/host-settings.json`) and the evidence lands beside setup's
     other artifacts rather than in some earlier review run's folder.
 
-    `driver loop --setup` passes it, because that is the path that ARMS both
-    guards headlessly and therefore the one whose subject a probe has to have
-    proven. `driver setup` on its own arms nothing and passes None, which
-    leaves it exactly as it was. Its refusal -- a posture that moved, a
-    planted shadow shell -- is this verb's `error` status, the same one every
-    other refusal here speaks."""
+    BOTH entrypoints pass it (#1737 fix round 1). `driver loop --setup` always
+    did, because that is the path that ARMS both guards headlessly and
+    therefore the one whose subject a probe has to have proven. `driver setup`
+    now does too, because the evidence that step writes is no longer only a
+    record: `_setup_scan_entry` and `require_unenforced_scan_ack` both read it,
+    so a run that skipped the probe would gate on an artifact nothing in this
+    invocation measured -- absent on a fresh target, or planted by the target.
+    `posture=None` is a UNIT seam only: it runs the flow against whatever
+    evidence the caller arranged, and no production caller passes it. Its
+    refusal -- a posture that moved, a planted shadow shell -- is this verb's
+    `error` status, the same one every other refusal here speaks."""
     review_root, _wt, _pr = runio.resolve_review_root(args.target, runner=runner)
     if getattr(args, "reset", False):
         _clear_setup_artifacts(review_root)               # Task 3
