@@ -366,6 +366,8 @@ UNIFORM_FAILURE = (
     "entries were never launched; message: %s; no entry's attempt budget was charged and the "
     "failed launches left nothing behind, so fix the cause and re-run the loop to resume this "
     "run where it stopped: `%s`")
+
+
 class FailureTally:
     """The loop's failure bookkeeping for one INVOCATION: which entries are
     stuck, and whether a batch was really the host going down (#1623).
@@ -593,6 +595,15 @@ class FailureTally:
         describe the same K results -- a host-class failure among them is not
         uniform -- so there is no precedence to arbitrate."""
         was_uniform = self.stopped_uniform is not None or self.uniform(width)
+        # The message the VERDICT was reached on -- the one the first K
+        # arrivals all carried -- captured before the arrivals are dropped.
+        # Quoting the batch's LAST failure instead let a launch that was
+        # already in flight when the stop fired, and drained afterwards,
+        # supply it: "all failed ... with the same entry-class message ...
+        # and not the host; message: API Error: 403 Forbidden". A pause that
+        # contradicts itself in one sentence sends the operator to wait out a
+        # host that is fine.
+        identical = self._arrived[0][1] if self._arrived else None
         batch, self._batch = self._batch, []
         self._arrived = []
         trailing, self._trailing, self._outage_seq = self._trailing, 0, None
@@ -614,7 +625,7 @@ class FailureTally:
                 # Already redacted on arrival; redacted again on the way out
                 # for the same reason every other pause message is -- the
                 # composition is the guarantee, not the storage.
-                redact.redact(failed[-1][1] if failed else None),
+                redact.redact(identical),
                 self.resume_command())
         host = [(eid, err) for eid, err, cls in batch if cls == HOST_FAILURE]
         self.uncharged = [eid for eid, _err in host]

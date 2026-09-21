@@ -842,6 +842,33 @@ class TestTheUniformInstantFailure(unittest.TestCase):
         self.assertIn("--host claude", message)              # the resume command
         self.assertNotIn(outage.HOST_FAILURE + "-class", message)
 
+    def test_the_pause_quotes_the_identical_message_not_a_drained_stray(self):
+        # The message is the EVIDENCE for the verdict, so it has to be the
+        # message the verdict was reached on -- the one the first K arrivals
+        # all carried. Quoting the last failure of the batch instead let a
+        # launch that was already in flight when the stop fired, and drained
+        # afterwards, supply it: "all failed ... with the same entry-class
+        # message ... and not the host; message: API Error: 403 Forbidden".
+        # A pause that contradicts itself in one sentence sends the operator
+        # to wait out a host that is fine.
+        tally = self._tally()
+        for seq in range(2):
+            tally.record("e%d" % seq, self._fail(self.MESSAGE), seq=seq, duration_ms=120)
+        tally.record("e9", self._fail("claude -p exited 1: API Error: 403 Forbidden",
+                                      host_error="API Error: 403 Forbidden"),
+                     seq=9, duration_ms=800)
+        message = tally.settle(50, 2)
+        self.assertIn(self.MESSAGE, message)
+        self.assertNotIn("403", message)
+        self.assertNotIn("API Error", message)
+
+    def test_the_quoted_message_is_redacted(self):
+        tally = self._tally()
+        for seq in range(2):
+            tally.record("e%d" % seq, self._fail("bad key sk-ant-api03-AAAABBBBCCCCDDDD"),
+                         seq=seq, duration_ms=120)
+        self.assertNotIn("sk-ant-", tally.settle(0, 2))
+
     def test_the_message_is_not_the_host_outage_one(self):
         tally = self._tally()
         self._instant_batch(tally, 2, width=2)
