@@ -26,10 +26,17 @@ try:
 except ImportError:
     import repo_config
 
+class DiffMapError(Exception):
+    """A delta-map computation failed in a way that must NOT silently degrade to
+    an empty (and therefore vacuous-PASS) hunk map — the caller fails loud
+    instead of scoping the on-diff gate to nothing (#5.0-08)."""
+
+
 _NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _FILE_HEADER = "diff --git "
 _RENAME_TO = "rename to "
+_COMBINED_HEADERS = ("diff --cc ", "diff --combined ")
 
 
 def _git_header_path(line):
@@ -79,10 +86,19 @@ def parse_unified_diff(text):
     from its `rename to` line or, failing that, from the `diff --git` line.
     `@@ -a,b +c,d @@` gives new-side range (c, c+d-1); d==0 (pure deletion)
     adds no range.
+
+    RAISES DiffMapError on a diff the budget cannot reconcile -- text that
+    ends inside a hunk, a hunk before any file header, or a COMBINED (merge)
+    diff, whose `@@@` payload cannot be budgeted at all and whose two-column
+    markers forge a header from content beginning with "+ ". Same contract as
+    hunk_map's other guards (#5.0-08, #1256): half a map scopes the on-diff
+    gate to half the change and passes vacuously for the rest, so it is never
+    returned.
     """
     result = {}
     path = None        # key of the open block, None = no new side (deletion)
     pending = None     # fallback key, live until this block's `+++` header
+    opened = False     # a file block has been framed at all
     budget = 0         # payload lines the open hunk still owes
     for line in text.splitlines():
         if budget > 0:                                   # inside a hunk
@@ -92,25 +108,44 @@ def parse_unified_diff(text):
         if line.startswith(_FILE_HEADER):
             if pending is not None:                      # hunkless block
                 result.setdefault(pending, [])
-            path, pending = None, _git_header_path(line)
+            path, pending, opened = None, _git_header_path(line), True
             continue
+        if line.startswith(_COMBINED_HEADERS) or line.startswith("@@@"):
+            raise DiffMapError(
+                "combined (merge) diff format is not parseable here: %r. Its "
+                "payload cannot be line-budgeted, so PR content would be read "
+                "as framing (#1738). Finish or abort the in-progress merge, "
+                "then re-run." % line[:80])
         if line.startswith(_RENAME_TO) and not line[len(_RENAME_TO):].startswith('"'):
             pending = line[len(_RENAME_TO):].rstrip() or pending
             continue
         m = _NEWFILE_RE.match(line)
         if m:
             path, pending = (None if m.group(1) == "/dev/null" else m.group(1)), None
+            opened = True
             if path is not None:
                 result.setdefault(path, [])
             continue
         h = _HUNK_RE.match(line)
         if h:
+            if not opened:
+                raise DiffMapError(
+                    "hunk header before any file header: %r. The diff is "
+                    "malformed and the ranges cannot be attributed to a file; "
+                    "an unattributed hunk map would scope the on-diff gate to "
+                    "nothing and pass vacuously (#5.0-08)." % line[:80])
             removed = int(h.group(1)) if h.group(1) is not None else 1
             start = int(h.group(2))
             count = int(h.group(3)) if h.group(3) is not None else 1
             budget = removed + count
             if path is not None and count > 0:
                 result.setdefault(path, []).append((start, start + count - 1))
+    if budget > 0:
+        raise DiffMapError(
+            "the diff ended inside a hunk: its @@ header still owes %d payload "
+            "line(s). The map read so far covers only part of the change, and "
+            "the rest would come back off-diff -- the same vacuous pass the "
+            "diff/merge-base guards refuse (#5.0-08)." % budget)
     if pending is not None:
         result.setdefault(pending, [])
     return result
@@ -121,12 +156,6 @@ def _run_git(repo, args, timeout=60):
     return subprocess.run([git_bin, "-C", repo, *args],  # nosec B603
                           capture_output=True, text=True, timeout=timeout,
                           env={"PATH": os.environ.get("PATH", "")})
-
-
-class DiffMapError(Exception):
-    """A delta-map computation failed in a way that must NOT silently degrade to
-    an empty (and therefore vacuous-PASS) hunk map — the caller fails loud
-    instead of scoping the on-diff gate to nothing (#5.0-08)."""
 
 
 def _merge_base_cause(repo, base):
@@ -151,9 +180,10 @@ def hunk_map(repo, base, exclude=()):
     including untracked non-ignored files as whole-file ranges.
 
     RAISES DiffMapError when the base cannot be resolved, when HEAD and the base
-    share no common ancestor, or when the diff itself fails — none of these may
-    fall through to an empty map that passes the delta gate vacuously
-    (#5.0-08, #1256).
+    share no common ancestor, when the diff itself fails, or when the diff text
+    does not reconcile against its own hunk budget (#1738) — none of these may
+    fall through to an empty or partial map that passes the delta gate
+    vacuously (#5.0-08, #1256).
 
     `exclude`: repo-root-relative paths (exact match, no directory component)
     dropped from the map before it is returned. Only the `--pr` worktree
