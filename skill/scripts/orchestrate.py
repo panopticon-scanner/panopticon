@@ -494,7 +494,6 @@ def loop(args):
     return _finish(status, review_root, guards, ledger, namespace, mode, runner)
 
 
-
 def _resolve_target(args):
     """`(review_root, worktree, pr_base)` -- resolved ONCE per invocation and passed down (#1616 item 6):
     `driver.run` takes it as `resolved=`, not a `gh pr view` and a worktree acquisition per iteration."""

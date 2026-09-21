@@ -165,7 +165,6 @@ def _stale_batch_records(run_dir):
     except OSError:
         return []
 
-
 def _clear_setup_artifacts(review_root):
     """Remove derived setup artifacts + the setup-manifest for --reset. NEVER
     touches the committed root config -- only the DRAFT beside it, which this
