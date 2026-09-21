@@ -88,7 +88,7 @@ def _host_name_comparisons(path):
 
 
 def _offenders():
-    """Every host-name comparison left anywhere in `phases/`."""
+    """Every host-name comparison in the phases and their replay consumer."""
     found = []
     for name in sorted(os.listdir(PHASES)):
         if name.endswith(".py"):
@@ -96,6 +96,9 @@ def _offenders():
                 "%s:%d %s" % (name, lineno, text)
                 for lineno, text in _host_name_comparisons(
                     os.path.join(PHASES, name)))
+    found.extend("replay_report.py:%d %s" % (lineno, text)
+                 for lineno, text in _host_name_comparisons(
+                     os.path.join(REPO_ROOT, "scripts", "replay_report.py")))
     return sorted(found)
 
 
