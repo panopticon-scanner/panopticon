@@ -1,4 +1,5 @@
 import io
+import os
 import sys
 import unittest
 from unittest import mock
@@ -114,22 +115,52 @@ class TestBundlerAuditAdapter(unittest.TestCase):
         self.assertEqual(findings, [])
 
     def test_invoke_runs_bundle_audit(self):
+        # #1742 (SEC-E3A neighbour): `cwd=target` let bundle-audit read the
+        # target's own `.bundler-audit.yml` ([ignore]) and silently drop
+        # advisories. Point it at the target EXPLICITLY as a positional
+        # argument, pin `--config` to a generated empty config, and run from
+        # a scratch cwd the target never controls.
         fake_run = FakePopen(stdout=b"", stderr=b"", returncode=0)
+        seen = {}
+
+        def record_and_return(cmd, **kwargs):
+            seen["cwd"] = kwargs.get("cwd")
+            seen["existed_during_call"] = (
+                kwargs.get("cwd") is not None and os.path.isdir(kwargs["cwd"])
+            )
+            return fake_run
+
         with mock.patch("scripts.tools.base.subprocess.Popen",
-                        return_value=fake_run) as popen_mock:
+                        side_effect=record_and_return) as popen_mock:
             stdout, rc = ba.BundlerAuditAdapter().invoke("/tmp/fake")
         self.assertEqual(rc, 0)
-        popen_mock.assert_called_once_with(
-            ["bundle-audit", "check", "--format", "json", "--no-update"],
-            stdout=mock.ANY, stderr=mock.ANY, cwd="/tmp/fake",
-        )
+        popen_mock.assert_called_once()
+        called_args, called_kwargs = popen_mock.call_args
+        cmd = called_args[0]
+        self.assertEqual(cmd[0], "bundle-audit")
+        self.assertEqual(cmd[1], "check")
+        self.assertEqual(cmd[2], "/tmp/fake")
+        self.assertIn("--config", cmd)
+        config_path = cmd[cmd.index("--config") + 1]
+        self.assertTrue(os.path.isabs(config_path))
+        self.assertIn("--format", cmd)
+        self.assertIn("json", cmd)
+        self.assertIn("--no-update", cmd)
+        cwd = called_kwargs.get("cwd")
+        self.assertIsNotNone(cwd)
+        self.assertNotEqual(cwd, "/tmp/fake")
+        self.assertFalse(cwd.startswith("/tmp/fake" + os.sep))
+        self.assertTrue(seen["existed_during_call"])
+        self.assertFalse(os.path.isdir(cwd))
+        # The config path lives inside the scratch cwd, not the target.
+        self.assertTrue(config_path.startswith(cwd + os.sep))
 
     def test_invoke_falls_back_to_text_when_json_unsupported(self):
         """Older bundler-audit (< 0.8.0) rejects --format json."""
         calls = []
 
         def fake_run_tool(cmd, **kwargs):
-            calls.append(cmd)
+            calls.append((cmd, kwargs.get("cwd")))
             if "--format" in cmd:
                 return (b"", b"Unknown switches '--format'", 1)
             return (BUNDLE_AUDIT_SAMPLE, 0)
@@ -140,10 +171,18 @@ class TestBundlerAuditAdapter(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual(raw, BUNDLE_AUDIT_SAMPLE)
-        self.assertEqual(calls, [
-            ["bundle-audit", "check", "--format", "json", "--no-update"],
-            ["bundle-audit", "check", "--no-update"],
-        ])
+        self.assertEqual(len(calls), 2)
+        (json_cmd, json_cwd), (text_cmd, text_cwd) = calls
+        self.assertEqual(json_cmd[:3], ["bundle-audit", "check", "/tmp/fake"])
+        self.assertIn("--config", json_cmd)
+        self.assertIn("--format", json_cmd)
+        self.assertEqual(text_cmd[:3], ["bundle-audit", "check", "/tmp/fake"])
+        self.assertIn("--config", text_cmd)
+        self.assertNotIn("--format", text_cmd)
+        # Both calls run from the SAME scratch cwd, never the target.
+        self.assertIsNotNone(json_cwd)
+        self.assertEqual(json_cwd, text_cwd)
+        self.assertNotEqual(json_cwd, "/tmp/fake")
         # Fallback output is still shape-guarded by parse().
         findings = ba.BundlerAuditAdapter().parse(raw, "g1")
         self.assertEqual(len(findings), 2)

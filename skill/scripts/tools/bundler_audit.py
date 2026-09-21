@@ -2,7 +2,9 @@
 from __future__ import annotations
 import os
 import re
+import shutil
 import sys
+import tempfile
 from .base import cve_ids, make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
 
 _BLOCK_RE = re.compile(
@@ -26,16 +28,54 @@ class BundlerAuditAdapter:
         return os.path.exists(os.path.join(target, "Gemfile.lock"))
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        json_cmd = ["bundle-audit", "check", "--format", "json", "--no-update"]
-        raw, stderr, rc = run_tool(json_cmd, timeout=300, cwd=target,
-                                   capture_stderr=True)
-        # bundler-audit added --format json in 0.8.0. Older gems reject the
-        # switch (Thor prints "Unknown switches '--format'" and exits non-zero).
-        # Fall back to the legacy text output and let parse() shape-guard it.
-        if rc not in (0, 1) or b"Unknown switches" in stderr:
-            return run_tool(["bundle-audit", "check", "--no-update"],
-                            timeout=300, cwd=target)
-        return raw, rc
+        # ---------------------------------------------------------------
+        # #1742 (SEC-E3A neighbour) -- lesser road than cargo-audit's:
+        # `bundle-audit` is a real binary, not a dispatcher with an alias
+        # table, so `cwd=target` cannot hand the target code execution. But
+        # bundle-audit's `check` command reads a config file, defaulting to
+        # `.bundler-audit.yml` resolved against the directory it scans --
+        # which used to be `cwd` (the target itself, implicitly, via
+        # `Dir.pwd`). A target-committed `.bundler-audit.yml` with an
+        # `[ignore]` list silently drops advisories from the report the same
+        # way a target's `.cargo/audit.toml` does for cargo-audit.
+        #
+        # The fix: name the target EXPLICITLY as bundle-audit's positional
+        # `dir` argument (absolute, so it does not depend on cwd either),
+        # and pin `--config` to a generated, EMPTY config file in a scratch
+        # directory the target never controls -- mirroring cargo-audit /
+        # pip-audit's scratch-cwd pattern. bundle-audit resolves the
+        # Gemfile.lock it audits against the positional `dir`
+        # (Scanner#initialize joins `gemfile_lock` onto `root`), so the real
+        # lockfile is still read from the target; only the ignore-list
+        # config is redirected. Verified against bundler-audit 0.9.3's own
+        # source (cli.rb's `check(dir=Dir.pwd)` / scanner.rb's
+        # `Scanner#initialize`): `--config`/`-c` exists (default
+        # '.bundler-audit.yml'), and an ABSOLUTE config path is used as-is
+        # (`File.absolute_path` is a no-op on an already-absolute path), so
+        # it is never rejoined onto the target.
+        # ---------------------------------------------------------------
+        abs_target = os.path.abspath(target)
+        scratch = tempfile.mkdtemp(prefix="bundler-audit-cwd-")
+        try:
+            config_path = os.path.join(scratch, "empty-bundler-audit.yml")
+            # An empty MAPPING, not an empty file: bundler-audit's config
+            # loader requires the parsed YAML root to be a Hash, and rejects
+            # a genuinely empty document.
+            with open(config_path, "w", encoding="utf-8") as fh:
+                fh.write("{}\n")
+            json_cmd = ["bundle-audit", "check", abs_target, "--config", config_path,
+                        "--format", "json", "--no-update"]
+            raw, stderr, rc = run_tool(json_cmd, timeout=300, cwd=scratch,
+                                       capture_stderr=True)
+            # bundler-audit added --format json in 0.8.0. Older gems reject the
+            # switch (Thor prints "Unknown switches '--format'" and exits non-zero).
+            # Fall back to the legacy text output and let parse() shape-guard it.
+            if rc not in (0, 1) or b"Unknown switches" in stderr:
+                return run_tool(["bundle-audit", "check", abs_target, "--config",
+                                config_path, "--no-update"], timeout=300, cwd=scratch)
+            return raw, rc
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         try:
