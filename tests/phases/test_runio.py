@@ -373,9 +373,9 @@ class TestArtifactWriteSymlinkSafety(unittest.TestCase):
 class TestAtomicArtifactWrite(unittest.TestCase):
     """F6: `usage.json` is rewritten once per ENTRY now, while host children are
     live inside the reviewed tree and the guide invites an operator to watch it
-    as a progress surface. The default in-place O_TRUNC write can be read back
-    empty or half-written; `atomic=True` gives that one file the tmp +
-    `os.replace` `persist.write_reply` already uses for the reply beside it."""
+    as a progress surface. Atomic replacement is now the default: a failed
+    write leaves the previous file intact. Explicit `atomic=False` retains
+    in-place writes; these tests pin both failure modes."""
 
     def test_an_atomic_write_that_fails_leaves_the_previous_file_intact(self):
         with tempfile.TemporaryDirectory() as d:
@@ -383,7 +383,7 @@ class TestAtomicArtifactWrite(unittest.TestCase):
             runio._write_json(p, {"total": 1})
             with mock.patch.object(runio.json, "dump", side_effect=OSError("ENOSPC")), \
                  self.assertRaises(OSError):
-                runio._write_json(p, {"total": 2}, atomic=True)
+                runio._write_json(p, {"total": 2})
             with open(p) as fh:
                 self.assertEqual(json.load(fh), {"total": 1})   # never truncated
 
