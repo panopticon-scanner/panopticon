@@ -293,12 +293,16 @@ def partition_venv_dirs(venv_dirs, security_mode="standard"):
     any scanner's exclusion knob, and only the marker-confirmed ones are
     skipped.
 
-    That gets semgrep and trivy into `app/venv/`, and NOT bandit: a bandit run
-    also carries `--ini <target>/.bandit`, and `_bandit_exclude_value` merges
-    that file's own `exclude` entries (this repo's list `venv` and `.venv`)
-    into every invocation, in every mode. So a name-only virtualenv named in
-    the TARGET's `.bandit` is still unscanned by bandit under redteam. Narrowing
-    a target-authored config by security mode is the same question #1877 tracks
+    That gets semgrep and trivy into `app/venv/`, and it gets bandit there too
+    -- UNLESS the target ships a `.bandit`. With no marker venv to skip,
+    `_with_venv_excludes` adds no flag at all (so `_bandit_exclude_value` is
+    never reached and its merge is moot) and the argv is just
+    `bandit --ini /src/.bandit ...`. bandit then reads that target-authored
+    file's own `exclude` entries itself, and this repo's list `venv` and
+    `.venv` -- so on a target carrying such a `.bandit`, bandit still does not
+    enter the directory under redteam, while a target with no `.bandit` is
+    scanned (bandit's own parser defaults name no virtualenv). Narrowing a
+    target-authored config by security mode is the same question #1877 tracks
     for the rest of the target's discoverable configuration, and it is decided
     there, not here.
 

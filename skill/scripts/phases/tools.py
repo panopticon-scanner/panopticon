@@ -131,10 +131,15 @@ def tools_execute(review_root, manifest):
            "--manifest", manifest_path]
     # #1740 fix round 1: the committed `exclude_paths:` policy, threaded to the
     # scan. Same globs `phases/synthesize.py` hands the ingest as
-    # `--tools-exclude`, from the same seam, so the scanners, the report and
-    # the gate are scoped by the ONE thing the repository committed. An
-    # adapter whose whole surface is excluded is disclosed as `excluded_scope`
-    # rather than required, and the manifest records the globs themselves.
+    # `--tools-exclude`, from the same seam, so the report and the gate are
+    # scoped by the ONE thing the repository committed. What `--exclude` does
+    # HERE is narrower than the ingest half and worth saying exactly: it
+    # demotes an adapter whose entire applicable surface is excluded from
+    # `selected` to `excluded_scope` (disclosed, not required, so the gate
+    # cannot read its absence as lost coverage) and records the globs in the
+    # manifest as `exclude_globs`. It does not narrow any scanner's own argv
+    # -- the scanners still walk the tree, and the findings are dropped at
+    # ingest, where `--tools-exclude` applies the same policy.
     for glob in runio.committed_exclude_paths(review_root):
         cmd += ["--exclude", glob]
     proc = child._run_child(cmd, review_root=review_root, phase="tools")
