@@ -6,6 +6,8 @@ the shareable report.json / report.html / X0X artifacts). Patterns are anchored
 to token prefixes + lengths so they mask WELL-FORMED secrets, not prose that
 merely mentions a token format (e.g. "a ghp_ token" is left untouched; a real
 `ghp_<40 chars>` is masked). See #run7 SEC-B2C.
+Slack incoming webhooks use their vendor host and three credential-bearing
+path segments as the anchor; the bare documentation prefix stays readable.
 
 Three rules are structural rather than prefix-anchored -- UUID, JWT, and the
 `scheme://user:password@host` URL userinfo -- because a secret scanner's output
@@ -35,6 +37,9 @@ _PATTERNS = [
     (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "[REDACTED_SLACK_TOKEN]"),
     (re.compile(r"AIza[0-9A-Za-z_-]{35}"), "[REDACTED_GOOGLE_KEY]"),  # Google API
     (re.compile(r"xapp-[0-9]-[A-Za-z0-9-]{10,}"), "[REDACTED_SLACK_TOKEN]"),
+    (re.compile(r"https://hooks\.slack\.com/services/"
+                r"[A-Za-z0-9]{8,}/[A-Za-z0-9]{8,}/[A-Za-z0-9]{20,}"),
+     "[REDACTED_SLACK_WEBHOOK]"),
     (re.compile(r"glpat-[A-Za-z0-9_-]{20,}"), "[REDACTED_TOKEN]"),   # GitLab PAT
     (re.compile(r"npm_[A-Za-z0-9]{36}"), "[REDACTED_TOKEN]"),        # npm token
     (re.compile(r"hf_[A-Za-z0-9]{30,}"), "[REDACTED_TOKEN]"),        # HuggingFace
