@@ -141,7 +141,8 @@ class TestIterBatch(unittest.TestCase):
         # `base.py` is the seam itself, `batch.py` (#1662) the loop's
         # rollback manifest, `outage.py` (#1623) its host-outage verdict,
         # `schema.py` (#1732) the output-schema argv rules split out of
-        # `base.py`, and `kimi_home.py` the sandboxed `$KIMI_CODE_HOME` the
+        # `base.py`, `resume.py` (#1732) the resume command split out of
+        # `outage.py`, and `kimi_home.py` the sandboxed `$KIMI_CODE_HOME` the
         # kimi family's children run under: none is a family, none launches
         # anything, and none has a Runner. A shared module added to this
         # package costs one line here, which is the visible decision it should
@@ -151,7 +152,8 @@ class TestIterBatch(unittest.TestCase):
         names = sorted(f[:-3] for f in os.listdir(pkg_dir)
                        if f.endswith(".py")
                        and f not in ("__init__.py", "base.py", "batch.py",
-                                     "outage.py", "schema.py", "kimi_home.py"))
+                                     "outage.py", "resume.py", "schema.py",
+                                     "kimi_home.py"))
         self.assertIn("claude", names)                  # the directory really was read
         for name in names:
             mod = importlib.import_module("scripts.runners.%s" % name)

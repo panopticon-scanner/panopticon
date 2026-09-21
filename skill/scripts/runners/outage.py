@@ -8,12 +8,10 @@ asks this module to classify a failure nobody classified -- so there is no
 cycle, and `runners/*` still imports no `phases` (layout rule 3).
 """
 import json
-import os
 import re
-import shlex
-import sys
 
 import scripts.redact as redact
+import scripts.runners.resume as resume
 
 
 # #1623: the two classes a failed launch can belong to. `host` is the run's
@@ -344,62 +342,6 @@ HOST_OUTAGE = ("paused: the %s host failed %d of this batch's %d launches with a
                "itself) rather than an "
                "entry-class one, and %d of its entries were never launched; last: %s; "
                + HOST_OUTAGE_CLAUSE + ", with the same flags, once the host is back: `%s`")
-# The flags a resume has to carry, in the order the parser declares them:
-# (attribute, flag, kind). `value` prints the flag and its value, `flag` prints
-# itself when set, `list` prints every value it holds.
-#
-# Two kinds of flag are here and one is deliberately not. The ANTI-DRIFT flags
-# (`--security`, `--fail-on`, the scope selectors, ...) because the engine
-# refuses a resume that changed one; and the per-invocation BOUNDS
-# (`--max-budget-usd`, `--entry-timeout`, `--concurrency`, `--max-iterations`,
-# `--max-turns`) because a copy-pasted resume that silently dropped them would
-# run unbounded, which is the opposite of what an operator watching a quota
-# outage wants. `--reset` is the one flag never carried: it would discard the
-# very run this line exists to resume. `--host`, `--mode` and the review root
-# are emitted ahead of the table, from the values the LOOP resolved rather
-# than from whatever the operator did or did not type.
-_RESUME_FLAGS = (
-    ("security", "--security", "value"),
-    ("fail_on", "--fail-on", "value"),
-    ("severity", "--severity", "value"),
-    ("gate_scope", "--gate-scope", "value"),
-    ("diff_context", "--diff-context", "value"),
-    ("tools", "--tools", "flag"),
-    ("no_tools", "--no-tools", "flag"),
-    ("include_fixtures", "--include-fixtures", "flag"),
-    ("allow_unenforced", "--allow-unenforced", "flag"),
-    ("session_dir", "--session-dir", "value"),
-    ("max_per_group", "--max-per-group", "value"),
-    ("max_verify", "--max-verify", "value"),
-    ("scope_file", "-f", "value"),
-    ("scope_dir", "-d", "value"),
-    ("scope_group", "-g", "value"),
-    ("scope_changed", "-c", "flag"),
-    ("scope_files", "--files", "list"),
-    ("concurrency", "--concurrency", "value"),
-    ("max_iterations", "--max-iterations", "value"),
-    ("max_budget_usd", "--max-budget-usd", "value"),
-    ("max_turns", "--max-turns", "value"),
-    ("entry_timeout", "--entry-timeout", "value"),
-    ("max_groups", "--max-groups", "value"),
-)
-
-
-def program():
-    """How THIS process was invoked, as the head of a runnable command.
-
-    Never the hard-coded `python3 skill/scripts/driver.py`: #495 says that
-    spelling in the guide is a PLACEHOLDER for whatever directory the skill was
-    installed to, so on an installed skill it names a path that does not exist.
-    Read off `sys.argv[0]` when the driver really is what is running, and
-    otherwise the abbreviated `driver` form every other runtime hint in the
-    loop already prints (`_dispatch_exit`'s `driver persist <id>`).
-    """
-    argv0 = sys.argv[0] if sys.argv else ""
-    return ("python3 %s" % shlex.quote(argv0)
-            if os.path.basename(argv0) == "driver.py" else "driver")
-
-
 class FailureTally:
     """The loop's failure bookkeeping for one INVOCATION: which entries are
     stuck, and whether a batch was really the host going down (#1623).
@@ -572,35 +514,10 @@ class FailureTally:
         return None
 
     def resume_command(self):
-        """The command that resumes this run once the host is back.
-
-        Reconstructed from the loop's own `args`, so what it prints is what the
-        operator ran: the review root (`target`, or the `--pr`/`--base` whose
-        worktree IS the review root), the namespace, the host and mode the loop
-        RESOLVED, and every flag in `_RESUME_FLAGS` that was set -- the
-        anti-drift ones because the engine refuses a resume that changed one,
-        the bounds because a resume that quietly dropped them would run
-        unbounded. Quoted with `shlex`, so a path with a space in it survives
-        the copy-paste.
-        """
-        args = self.args
-        cmd = [program(), "loop", shlex.quote(str(getattr(args, "target", None) or "."))]
-        if getattr(args, "pr", None):
-            cmd += ["--pr", str(args.pr)]
-        elif getattr(args, "base", None):
-            cmd += ["--base", shlex.quote(str(args.base))]
-        if getattr(args, "setup", False):
-            cmd.append("--setup")
-        cmd += ["--host", str(self.host),
-                "--mode", str(getattr(args, "mode", None) or "headless")]
-        for attr, flag, kind in _RESUME_FLAGS:
-            value = getattr(args, attr, None)
-            if not value:
-                continue
-            if kind == "flag":
-                cmd.append(flag)
-            elif kind == "list":
-                cmd += [flag] + [shlex.quote(str(v)) for v in value]
-            else:
-                cmd += [flag, shlex.quote(str(value))]
-        return " ".join(cmd)
+        """The command that resumes this run, composed by `runners/resume.py`
+        -- which is where the flag table and the `sys.argv[0]` reading live
+        since #1732 took this module past the package ceiling. Kept as a
+        method because this object is what holds both inputs (the RESOLVED
+        host, and the loop's own `args`) and because both pause messages above
+        already call it."""
+        return resume.command(self.host, self.args)

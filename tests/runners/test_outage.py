@@ -6,6 +6,7 @@ from unittest import mock
 
 import scripts.runners.base as base
 import scripts.runners.outage as outage
+import scripts.runners.resume as resume
 
 
 class TestTheHostOutageClassifier(unittest.TestCase):
@@ -687,14 +688,14 @@ class TestTheFailureTally(unittest.TestCase):
         # not exist on an installed skill. Read off argv, with the abbreviated
         # form every other runtime hint uses as the fallback.
         tally = outage.FailureTally("claude", self._args())
-        with mock.patch.object(outage.sys, "argv", ["/opt/panopticon/skill/scripts/driver.py",
+        with mock.patch.object(resume.sys, "argv", ["/opt/panopticon/skill/scripts/driver.py",
                                                     "loop"]):
             self.assertEqual("python3 /opt/panopticon/skill/scripts/driver.py",
-                             outage.program())
+                             resume.program())
             self.assertIn("python3 /opt/panopticon/skill/scripts/driver.py loop",
                           tally.resume_command())
-        with mock.patch.object(outage.sys, "argv", ["/usr/local/bin/pytest"]):
-            self.assertEqual("driver", outage.program())
+        with mock.patch.object(resume.sys, "argv", ["/usr/local/bin/pytest"]):
+            self.assertEqual("driver", resume.program())
 
     def test_the_resume_command_never_carries_reset(self):
         # It would discard the very run the line exists to resume.
