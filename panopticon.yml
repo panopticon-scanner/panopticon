@@ -202,6 +202,8 @@ groups:
       - tests/test_hook_command_quoting.py
       - tests/test_generic_retirement_bar.py
       - tests/test_family_guardrails_doc.py
+      - tests/test_workflow_dispatch_script.py
+      - tests/workflows/dispatch_harness.mjs
       panels:
       - ARC
       - SEC

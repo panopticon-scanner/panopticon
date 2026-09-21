@@ -747,3 +747,46 @@ class TestOneAbsolutePathExpression(unittest.TestCase):
                          and n.func.attr in ("_abs_files", "_abs_file_list")]
                 self.assertEqual({"_abs_files", "_abs_file_list"},
                                  {c.func.attr for c in calls})
+
+
+class TestCommittedExcludePaths(unittest.TestCase):
+    """#1740 fix round 1: the committed `exclude_paths:` policy has to reach the
+    TOOL axis, not only discovery.
+
+    `exclude_paths:` pruned the agentic scan and nothing else, so a repo that
+    committed `tests/fixtures/**` still had every scanner walk the corpus, every
+    fixture finding ingested, and -- once #1740 made the fixture prune a gated
+    class under redteam -- the report's own gate FAILing on a directory the
+    committed policy had already scoped out. One parse seam
+    (`groups_schema.parse_exclude_paths`, the one discovery reads), so the two
+    scopes cannot drift.
+    """
+
+    def _root(self, body):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        if body is not None:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write(body)
+        return d
+
+    def test_reads_the_committed_globs(self):
+        root = self._root("version: 1\nexclude_paths:\n  - 'tests/fixtures/**'\n"
+                          "  - 'vendor/**'\n")
+        self.assertEqual(runio.committed_exclude_paths(root),
+                         ["tests/fixtures/**", "vendor/**"])
+
+    def test_no_config_and_no_key_are_both_empty(self):
+        self.assertEqual(runio.committed_exclude_paths(self._root(None)), [])
+        self.assertEqual(
+            runio.committed_exclude_paths(self._root("version: 1\ngroups: {}\n")), [])
+
+    def test_an_unusable_config_is_empty_not_an_exception(self):
+        # Tolerant on purpose: the phases that REQUIRE a valid config already
+        # refuse before this is read, and an exclusion list is not the place to
+        # take a run down.
+        for body in ("version: 1\nexclude_paths: nope\n",      # not a list
+                     "exclude_paths: ['a/**']\n",               # no version
+                     "{{{\n"):                                  # not YAML
+            with self.subTest(body=body), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(runio.committed_exclude_paths(self._root(body)), [])
