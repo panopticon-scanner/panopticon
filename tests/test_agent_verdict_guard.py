@@ -34,11 +34,9 @@ A fourth reader therefore turns this file red instead of quietly reopening the
 hole. The walk is AST-based because a text scan over these modules flags the
 prose that explains the rule -- this docstring included.
 
-Out of scope, and said out loud: the FINDINGS path. `synth/findings.
-load_findings_detailed` strips `AGENT_FORBIDDEN_FIELDS` but no `_`-prefixed key,
-so `_merged_ids` is still agent-settable there (re-review N5, pre-existing at
-`fb799d3`, filed separately). This guard covers verdicts only, and the key it
-walks for is `verdicts`.
+This guard covers verdicts only. The findings counterpart is now
+`test_agent_findings_guard.py` (#1674), which requires `agent_finding` at every
+raw findings reader and removes private controller carriers there too.
 """
 import ast
 import os

@@ -96,7 +96,11 @@ def _render_health(health):
             "the gate." % (score, "{:,}".format(loc), "{:,}".format(wd)))
 
 def _suppressed_line(suppressed):
-    """#1578: what the vendored-path exclusion dropped, named per segment.
+    """#1578: what a directory-NAME exclusion dropped, named per segment.
+
+    #1740: three rules feed it -- a vendored directory, a virtualenv known only
+    by its name, and the fixture corpus -- so the wording names the class of
+    evidence they share rather than the oldest of the three.
 
     Silent when nothing was dropped and on a report that never measured this
     (pre-#1578, or a foreign report on the --compare path) -- "nobody counted"
@@ -107,9 +111,10 @@ def _suppressed_line(suppressed):
     if not rows:
         return ""
     return ("**Tool findings suppressed:** %s \u2014 dropped from the tool axis "
-            "for sitting under a conventional vendored-dependency directory; the "
-            "agentic panel still reviewed those files, and `security_gate "
-            "--security redteam` gates them"
+            "for the DIRECTORY NAME they sit under (a conventional vendored, "
+            "virtualenv or fixture-corpus name, with no marker or provenance "
+            "behind it); the agentic panel still reviewed those files, and "
+            "`security_gate --security redteam` gates them"
             % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
 
 
@@ -128,8 +133,8 @@ def _suppressed_rows(value):
 
 
 def _suppressed_gated_line(gated):
-    """#1701: what the vendored-path exclusion withheld from `findings[]` and
-    THIS RUN'S gate counted anyway.
+    """#1701: what a directory-NAME exclusion withheld from `findings[]` and
+    THIS RUN'S gate counted anyway (#1740: all three classes of it).
 
     Its own line, with its own wording, because it says the opposite of the one
     above: those findings were not lost from the gate, they were lost from the
@@ -142,8 +147,9 @@ def _suppressed_gated_line(gated):
     if not rows:
         return ""
     return ("**Tool findings suppressed but GATED:** %s \u2014 withheld from the "
-            "findings below for sitting under a conventional vendored-dependency "
-            "directory, and counted toward THIS RUN's gate, risk level and health "
+            "findings below for the DIRECTORY NAME they sit under (vendored, "
+            "virtualenv-by-name or fixture corpus), and counted toward THIS "
+            "RUN's gate, risk level and health "
             "grade anyway (`--security redteam`). A gate verdict here may rest on "
             "findings this report does not list"
             % ", ".join("%s: %d" % (seg, n) for seg, n in rows))

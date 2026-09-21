@@ -660,6 +660,17 @@ class TestTheAssumedHost(_VerbCase):
         self.assertEqual("manifest", body["selected_from"])
         self.assertEqual("/opt/bin/kimi", body["cli"][0]["path"])
 
+    def test_a_retired_manifest_host_is_refused_with_the_loops_remedy(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        self._manifest(d, "gemini")
+        code, body = self._json(d, which=READY_CLI)
+        self.assertEqual(1, code)
+        self.assertEqual(["cli"], body["failed"])
+        self.assertEqual("manifest", body["selected_from"])
+        self.assertEqual("gemini", body["cli"][0]["host"])
+        self.assertEqual(hosts.unselectable_host_message("gemini", "loop"),
+                         body["cli"][0]["remedy"])
+
     def test_an_explicit_host_beats_the_manifest(self):
         d = self._repo(groups_yml=GROUPS_YML)
         self._manifest(d, "kimi")
@@ -816,4 +827,3 @@ class TestCapabilitiesRowHostShape(unittest.TestCase):
         self.assertIs(True, row["measured"])
         self.assertEqual("claude", row["host"])
         self.assertEqual([], row["unproven"])
-

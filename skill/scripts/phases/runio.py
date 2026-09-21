@@ -54,6 +54,10 @@ _TOP_LEVEL = frozenset({
     # at -- an unrelated review run, whose own dispatch-request.json setup then
     # overwrote. Setup is not a run; its artifacts live beside its siblings above.
     "setup-dispatch-request.json", "setup-prompts",
+    # #1737. Setup's own unenforced-ack, deliberately NOT the review run's
+    # `unenforced-ack.json`: that name is per-run by design, and setup is not
+    # a run.
+    "setup-unenforced-ack.json",
     "epss-cache.json", "write-allowlist.json",
     "report.json", "report.json.html",
 })
@@ -288,7 +292,17 @@ def host_evidence(review_root):
     file is written to a `.panopticon` path a hostile target can pre-commit,
     so "unparseable value" and "unparseable container" are the same defect.
     """
-    body = _load_json(_pano(review_root, HOST_CAPABILITIES))
+    return evidence_at(_pano(review_root, HOST_CAPABILITIES))
+
+def evidence_at(path):
+    """The `capabilities` block of ONE capability artifact, or {} (#1737).
+
+    Split out of `host_evidence` so a namespace that keeps its own artifact
+    -- `--setup`'s flat `.panopticon/host-capabilities.json`, which
+    `persist.run_dir("setup")` resolves and the manifest-tag lookup above
+    would route into an unrelated review run's folder -- reads it through the
+    same fail-closed parse rather than a second copy of it."""
+    body = _load_json(path)
     caps = body.get("capabilities") if isinstance(body, dict) else None
     return caps if isinstance(caps, dict) else {}
 
@@ -405,6 +419,33 @@ def committed_settings(review_root):
     """
     doc = repo_config.read_document(review_root)
     return config_schema.parse_settings(doc.doc or {})
+
+def committed_exclude_paths(review_root):
+    """The root config's top-level `exclude_paths:` globs, or `[]` (#1740).
+
+    `exclude_paths:` pruned DISCOVERY and nothing else, so a repo that
+    committed `tests/fixtures/**` still had every scanner walk the corpus and
+    every fixture finding ingested -- and once #1740 made the fixture prune a
+    disclosed, gate-counted class, the report's own redteam gate could FAIL on
+    a directory the committed policy had already scoped out. The tools phase
+    passes these to `run_tools --exclude` and the synthesize phase to
+    `synthesize --tools-exclude`, so ONE committed policy governs the agentic
+    scope, the scanners and the gate.
+
+    Same parse seam `discovery._committed_exclude_paths` reads
+    (`groups_schema.parse_exclude_paths` over `repo_config.read_document`), not
+    a second copy of the rule -- two answers to "what did the repo exclude?"
+    is the drift this shares a definition to avoid.
+
+    Tolerant, and SILENT about errors: a missing, refused or invalid config
+    yields `[]` rather than taking a run down, and discovery has already
+    printed whatever was wrong with it (re-printing once per phase is noise).
+    Erring toward [] is the safe direction -- it scopes nothing out, so a
+    broken config can never quietly un-gate a finding.
+    """
+    doc = repo_config.read_document(review_root)
+    globs, _errors = groups_schema.parse_exclude_paths(doc.doc or {})
+    return globs
 
 def _load_ocrdb_bundle():
     """ocrdb.load_bundle, converting a malformed-bundle ValueError into a
@@ -579,8 +620,16 @@ def _foreign_manifest(manifest, review_root, manifest_file=None):
       * the stamped `review_root` differs from this checkout (the original #1093
         signal, kept as a fallback for a non-git target where nothing is tracked
         and for a manifest carried over from another machine)."""
+    return _foreign_manifest_reason(manifest, review_root, manifest_file) is not None
+
+
+def _foreign_manifest_reason(manifest, review_root, manifest_file=None):
+    """The signal that made a manifest foreign, or None for a valid resume."""
     if not isinstance(manifest, dict):
-        return False
+        return None
     if _manifest_committed(review_root, manifest_file):
-        return True
-    return manifest.get("review_root") != os.path.abspath(review_root)
+        return "the file is git-tracked in the target; a driver-written manifest is never committed"
+    if manifest.get("review_root") != os.path.abspath(review_root):
+        return "stamped review_root %r != %r" % (manifest.get("review_root"),
+                                                os.path.abspath(review_root))
+    return None

@@ -725,7 +725,11 @@ def _render_test_inventory(meta):
 
 
 def _render_suppressed_tools(meta):
-    """#1578: what the tool axis dropped for sitting under a vendored directory.
+    """#1578: what the tool axis dropped for the DIRECTORY NAME it sits under.
+
+    #1740: three rules feed this tally -- a vendored directory, a virtualenv
+    recognised only by its `venv`/`.venv`/`site-packages` name, and the fixture
+    corpus. They share the evidence, which is why they share a line.
 
     Beside the coverage line with the other "what this run did not see" facts.
     The exclusion earns its keep -- 592 of solidus's 623 eslint-security
@@ -743,8 +747,8 @@ def _render_suppressed_tools(meta):
     rows = _suppressed_rows((meta.get("coverage") or {}).get("tools_suppressed"))
     if not rows:
         return ""
-    return ("<div class='coverage'>Tool findings suppressed as vendored: %s "
-            "&mdash; dropped from the tool axis on the directory name alone; "
+    return ("<div class='coverage'>Tool findings suppressed by directory name: %s "
+            "&mdash; dropped from the tool axis on that name alone; "
             "the agentic panel still reviewed those files, and "
             "<code>security_gate --security redteam</code> gates them</div>"
             % " &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows))
@@ -776,8 +780,8 @@ def _render_suppressed_gated_tools(meta):
     rows = _suppressed_rows((meta.get("coverage") or {}).get("tools_suppressed_gated"))
     if not rows:
         return ""
-    return ("<div class='coverage'>Tool findings suppressed as vendored but "
-            "GATED: %s &mdash; withheld from the findings below on the directory "
+    return ("<div class='coverage'>Tool findings suppressed by directory name "
+            "but GATED: %s &mdash; withheld from the findings below on that "
             "name alone, and counted toward <strong>this run's</strong> gate, "
             "risk level and health grade anyway "
             "(<code>--security redteam</code>). A gate verdict here may rest on "
