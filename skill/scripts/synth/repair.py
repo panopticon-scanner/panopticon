@@ -345,7 +345,7 @@ def repair_tools_excluded(value, warn=None):
 
     `{"globs": [str], "count": int}` -- which globs scoped this run's tool
     ingest, and how many findings they dropped. The globs come from the
-    repository's own `panopticon.yml`, so they are a target-carried input
+    repository's own root config file (`repo_config`), so they are a target-carried input
     reaching a published artifact and are repaired here like every other one:
     a non-string or over-long glob is DROPPED rather than cut (a cut glob is a
     different glob, which would misstate the policy), the list is bounded, and
