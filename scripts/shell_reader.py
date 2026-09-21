@@ -319,10 +319,20 @@ def _split(text):
             pair = text[i:i + 2]
             separator = pair if pair in ("&&", "||") else ch
             end_statement(separator)
-            if pair == ";;" and cases:
+            # Every terminator that ENDS a case arm, not just `;;`: bash also
+            # spells it `;&` (fall through into the next arm's body) and `;;&`
+            # (resume matching at the next pattern). Reading only `;;` left
+            # the state at "body", so the next arm's `b)` was read as a group
+            # CLOSE and `b` became argv[0] -- shadowing the command behind it,
+            # which is how a `curl` in the second arm went unseen entirely
+            # (fix round on #1714, Critical 2). After any of the three the
+            # next word is a pattern again.
+            arm_end = next((t for t in (";;&", ";;", ";&")
+                            if text.startswith(t, i)), None)
+            if arm_end and cases:
                 cases[-1] = "pattern"
             at_token_start = True
-            i += 2 if pair == ";;" else len(separator)
+            i += len(arm_end) if arm_end else len(separator)
             continue
         buf.append(ch)
         at_token_start = ch.isspace()
