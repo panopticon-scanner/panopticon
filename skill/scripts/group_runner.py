@@ -95,7 +95,9 @@ def fan_out_coverage(plan):
     """Planned-vs-executed coverage, derived from the plan and disk state.
 
     'executed' counts entries whose out_file is done (entry_is_done); a group is
-    complete when every one of its entries ran, partial when some did not. This
+    complete when every entry ran. `groups_partial` includes ALL incomplete
+    groups, including those with zero executed entries; it is not a claim
+    that at least one entry ran. This
     is the disclosure axis that makes a truncated run visible instead of
     silently biased toward 'no findings'.
     """

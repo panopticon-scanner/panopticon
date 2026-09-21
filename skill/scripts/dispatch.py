@@ -438,8 +438,6 @@ def _detect_host():
     return "generic"
 
 
-
-
 def _registration_dir(host, agents_dir):
     """Explicit dir wins; otherwise the host's default. Unknown -> None."""
     if agents_dir:
@@ -452,16 +450,6 @@ def _is_registered(reg_dir, role_file, host=None):
     """Check if a role is registered in the registration directory."""
     return bool(reg_dir) and os.path.isfile(
         os.path.join(reg_dir, registered_agent_filename(host, role_file)))
-
-
-
-
-
-
-
-
-
-
 
 
 def render_advisor_prompts(queue_path, out_dir, host=None):
@@ -528,18 +516,6 @@ def render_advisor_prompts(queue_path, out_dir, host=None):
             fh.write(prompt)
         written.append(path)
     return written
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def main(argv=None):

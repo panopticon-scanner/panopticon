@@ -53,6 +53,19 @@ class TestRewrite(unittest.TestCase):
 class TestVerification(unittest.TestCase):
     """The #run7 FIXME's rule -- never guess a checksum -- as executable code."""
 
+    def test_malformed_versions_are_refused_before_fetch_or_rewrite(self):
+        for version in ("1.2.3/evil", "1.2.3 extra", "1.2.3\n", "1.2", "1.2.3-rc1"):
+            with self.subTest(version=version):
+                with mock.patch.object(bp, "_get", return_value=('version = "%s"' % version).encode()):
+                    with self.assertRaisesRegex(RuntimeError, "invalid rustup version"):
+                        bp.latest_rustup_version()
+                with mock.patch.object(bp, "_get") as fetch:
+                    with self.assertRaisesRegex(RuntimeError, "invalid rustup version"):
+                        bp.verified_rustup_shas(version)
+                    fetch.assert_not_called()
+                with self.assertRaisesRegex(RuntimeError, "invalid rustup version"):
+                    bp.rewrite_rustup_pin(DOCKERFILE, version, {})
+
     def _fake_get(self, artifact, published):
         def get(url):
             return published.encode() if url.endswith(".sha256") else artifact
