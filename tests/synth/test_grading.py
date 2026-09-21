@@ -308,7 +308,7 @@ resolved = types.SimpleNamespace(
     pre_existing_active=[], delta_mode=False)
 reconciled = types.SimpleNamespace(
     groups_meta=[{"name": "App", "files": ["app.py"], "parent": "App"}],
-    panels_incomplete=[], tools_absent=[], integrity_ok=True,
+    panels_incomplete=[], tools_absent=[], tools_network_excluded=[], integrity_ok=True,
     cell_audit={"missing_floor": []}, tools_manifest_invalid=None,
     gated_suppressed=[])
 run = types.SimpleNamespace(target=sys.argv[1], fail_on=None, gate_unverified=False)
