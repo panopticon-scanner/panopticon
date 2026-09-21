@@ -31,7 +31,7 @@ evidence exposed.
   REFUTED, and `driver loop --setup --host <h> --mode headless` where nothing
   measured it at all — on Codex that is the ONLY invocation that can, since its
   tool-policy probe needs a headless settings path and `driver setup` has no
-  `--mode`. Probing costs no paid turn and, Kimi's `kimi --version` read aside,
+  `--mode`. Probing costs no paid turn and, Kimi's `kimi --version` and `kimi doctor` reads aside,
   launches no host CLI at all: everything `driver setup` measures is a
   filesystem read.
 - **`usage_ledger` follows the mode.** The probe is now `usage-source` (was
