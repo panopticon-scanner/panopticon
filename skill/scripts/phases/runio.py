@@ -406,6 +406,33 @@ def committed_settings(review_root):
     doc = repo_config.read_document(review_root)
     return config_schema.parse_settings(doc.doc or {})
 
+def committed_exclude_paths(review_root):
+    """The root config's top-level `exclude_paths:` globs, or `[]` (#1740).
+
+    `exclude_paths:` pruned DISCOVERY and nothing else, so a repo that
+    committed `tests/fixtures/**` still had every scanner walk the corpus and
+    every fixture finding ingested -- and once #1740 made the fixture prune a
+    disclosed, gate-counted class, the report's own redteam gate could FAIL on
+    a directory the committed policy had already scoped out. The tools phase
+    passes these to `run_tools --exclude` and the synthesize phase to
+    `synthesize --tools-exclude`, so ONE committed policy governs the agentic
+    scope, the scanners and the gate.
+
+    Same parse seam `discovery._committed_exclude_paths` reads
+    (`groups_schema.parse_exclude_paths` over `repo_config.read_document`), not
+    a second copy of the rule -- two answers to "what did the repo exclude?"
+    is the drift this shares a definition to avoid.
+
+    Tolerant, and SILENT about errors: a missing, refused or invalid config
+    yields `[]` rather than taking a run down, and discovery has already
+    printed whatever was wrong with it (re-printing once per phase is noise).
+    Erring toward [] is the safe direction -- it scopes nothing out, so a
+    broken config can never quietly un-gate a finding.
+    """
+    doc = repo_config.read_document(review_root)
+    globs, _errors = groups_schema.parse_exclude_paths(doc.doc or {})
+    return globs
+
 def _load_ocrdb_bundle():
     """ocrdb.load_bundle, converting a malformed-bundle ValueError into a
     DriverError so a corrupt bundle is a clean status:error, not a raw traceback
