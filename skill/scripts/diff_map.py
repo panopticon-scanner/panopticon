@@ -32,25 +32,123 @@ class DiffMapError(Exception):
     instead of scoping the on-diff gate to nothing (#5.0-08)."""
 
 
-_NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
+_NEWFILE_RE = re.compile(r"^\+\+\+ (.*)$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _FILE_HEADER = "diff --git "
 _RENAME_TO = "rename to "
 _COMBINED_HEADERS = ("diff --cc ", "diff --combined ")
 
 
+_C_ESCAPES = {"a": 0x07, "b": 0x08, "f": 0x0C, "n": 0x0A, "r": 0x0D,
+              "t": 0x09, "v": 0x0B, '"': 0x22, "\\": 0x5C}
+
+
+def _unquote_git_path(s):
+    r"""Decode ONE C-quoted git path, or return *s* unchanged.
+
+    #1739 (COD-C2D / SEC-G2B). git prints a path in double quotes, with the
+    escapes below, whenever it carries a byte >= 0x80 (under the default
+    core.quotepath) or a `"`, `\` or control character (whatever quotepath
+    says) -- observed against real git in a temp repo:
+
+        diff --git "a/caf\303\251.py" "b/caf\303\251.py"
+        +++ "b/we\"ird.py"
+        rename to "ta\tb.py"
+
+    Left undecoded, that spelling keys the hunk map under a name that matches
+    no other surface -- discovery lists the real name -- so the file's hunks
+    are unreachable and the on-diff gate silently scopes past a changed file
+    that a PR author picked the name of.
+
+    The escapes are git's `quote_c_style` set: \a \b \f \n \r \t \v, \" and
+    \\ verbatim, and \NNN for any other byte (up to three OCTAL digits). The
+    escapes reconstitute BYTES, so the result is decoded UTF-8 with
+    `surrogateescape` -- the same spelling `os.fsdecode` gives discovery for
+    the same name, which is what keeps the two sets comparable.
+
+    Anything that is not exactly a C-quoted string -- unquoted, unterminated,
+    a trailing backslash, an unknown escape, an octal value above 0xFF -- is
+    returned VERBATIM. git emits none of those; inventing a different path
+    from a malformed one would be a worse failure than keying the literal.
+    """
+    if len(s) < 2 or not (s.startswith('"') and s.endswith('"')):
+        return s
+    body = s[1:-1]
+    out = bytearray()
+    i, n = 0, len(body)
+    while i < n:
+        ch = body[i]
+        if ch != "\\":
+            out.extend(ch.encode("utf-8", "surrogateescape"))
+            i += 1
+            continue
+        i += 1
+        if i >= n:
+            return s                                  # trailing backslash
+        esc = body[i]
+        if esc in _C_ESCAPES:
+            out.append(_C_ESCAPES[esc])
+            i += 1
+            continue
+        if esc not in "01234567":
+            return s                                  # unknown escape
+        j = i
+        while j < n and j - i < 3 and body[j] in "01234567":
+            j += 1
+        val = int(body[i:j], 8)
+        if val > 0xFF:
+            return s                                  # not a byte git wrote
+        out.append(val)
+        i = j
+    return out.decode("utf-8", "surrogateescape")
+
+
+def _plus_header_path(rem):
+    r"""The path named by a `+++ ` line's remainder, or None for /dev/null.
+
+    git terminates the ---/+++ name with a TAB when it contains a space (and
+    it does so for a quoted name too: `+++ "b/sp ace\"q.py"\t`), then strips
+    the `b/` prefix here. A quoted name is unquoted first (#1739), because
+    the `b/` prefix lives INSIDE the quotes. Exactly one terminator tab is
+    peeled -- never a trailing-whitespace strip, which would silently rename
+    a file whose own name ends in a space.
+    """
+    if rem.endswith("\t"):
+        rem = rem[:-1]               # EXACTLY the terminator: a name may itself
+                                     # end in a space, and stripping all
+                                     # trailing whitespace keyed `endsp .py`
+                                     # while discovery listed `endsp .py `
+                                     # (#1739). A name ending in a tab is
+                                     # always quoted, so this can't eat one.
+    p = _unquote_git_path(rem)
+    if p == "/dev/null":
+        return None
+    return p[2:] if p.startswith("b/") else p
+
+
 def _git_header_path(line):
-    """The new-side path of a `diff --git a/<p> b/<p>` line, or None.
+    r"""The new-side path of a `diff --git a/<p> b/<p>` line, or None.
 
     Only the SAME-path form is decoded, by halving the remainder: a path may
-    contain spaces, so `a/<x> b/<y>` with x != y is genuinely ambiguous, and a
-    C-quoted name is not decoded here at all. Both of those fall through to the
+    contain spaces, so `a/<x> b/<y>` with x != y is genuinely ambiguous. When
+    the path needs C-quoting git quotes BOTH halves identically, so the
+    quoted form halves just as cleanly and is decoded here too (#1739). A
+    MIXED line -- `a/ren.py "b/re\"n.py"`, which is what a rename to a quoted
+    name actually emits -- stays ambiguous and falls through to the
     `rename to` / `+++` lines, which are unambiguous. This line is therefore
     only ever the FALLBACK key (see parse_unified_diff).
     """
     rem = line[len(_FILE_HEADER):]
     if rem.startswith('"'):
-        return None
+        half, odd = divmod(len(rem) - 1, 2)      # '"a/p"' + " " + '"b/p"'
+        if odd or half <= 0 or rem[half] != " ":
+            return None
+        left = _unquote_git_path(rem[:half])
+        right = _unquote_git_path(rem[half + 1:])
+        if not left.startswith("a/") or not right.startswith("b/"):
+            return None                          # undecodable, or not a pair
+        p = right[2:]
+        return p if p and left[2:] == p else None
     half, odd = divmod(len(rem) - 5, 2)          # "a/" + p + " b/" + p
     if odd or half <= 0 or rem[:2] != "a/" or rem[2 + half:5 + half] != " b/":
         return None
@@ -136,12 +234,19 @@ def parse_unified_diff(text):
                 "combined (merge) diff format cannot be parsed here: %r. Its "
                 "payload cannot be line-budgeted, so content would be read as "
                 "framing (#1738). This parser takes two-way diffs only." % line[:80])
-        if line.startswith(_RENAME_TO) and not line[len(_RENAME_TO):].startswith('"'):
-            pending = line[len(_RENAME_TO):].rstrip() or pending
+        if line.startswith(_RENAME_TO):
+            # #1739: a rename TO a C-quoted name used to be skipped outright,
+            # and the `diff --git` line of such a rename is mixed-quoting and
+            # undecodable -- so a 100%-similarity rename to e.g. `re"n.py`
+            # got no key at all and the changed file vanished from the map.
+            # No terminator on this line at all (observed: `rename to new sp
+            # .py `), so it is taken verbatim -- rstrip() renamed a file whose
+            # name ends in a space.
+            pending = _unquote_git_path(line[len(_RENAME_TO):]) or pending
             continue
         m = _NEWFILE_RE.match(line)
         if m:
-            path, pending = (None if m.group(1) == "/dev/null" else m.group(1)), None
+            path, pending = _plus_header_path(m.group(1)), None
             opened = True
             if path is not None:
                 result.setdefault(path, [])
@@ -291,16 +396,30 @@ def hunk_map(repo, base, exclude=()):
     # `git diff` omits untracked files; add them as whole-file ranges.
     try:
         # Include new untracked files, matching discovery.collect_changed_files.
-        others = _run_git(repo, ["ls-files", "--others", "--exclude-standard"])
+        # -z + text=False (#1739): without -z git C-quotes any name carrying a
+        # byte >= 0x80 (default core.quotepath) or a quote, backslash, tab or
+        # newline, and the quoted spelling then failed open() with an OSError
+        # the loop below swallowed -- the untracked file was in neither the map
+        # nor any warning, and a PR author picks the name. With -z git never
+        # quotes at all, so the bytes are the name.
+        others = _run_git(repo, ["ls-files", "--others", "--exclude-standard",
+                                 "-z"], text=False)
     except Exception as e:
         raise RuntimeError(f"git ls-files failed: {e}")
     if others is not None:
         if others.returncode != 0:
-            raise RuntimeError(f"git ls-files failed: {others.stderr}")
-        for rel in others.stdout.splitlines():
-            rel = rel.strip()
-            if not rel:
+            raise RuntimeError("git ls-files failed: %s"
+                               % _decode_git(others.stderr, lossy=True))
+        # split on NUL, never str.splitlines(): splitlines() also breaks on a
+        # lone \r, \x0b, \x0c, \x1c-\x1e, \x85 and U+2028/9 (#1738), any of
+        # which a filename may legally carry -- a fragment is then a path that
+        # does not exist and the real file is lost. os.fsdecode matches
+        # discovery's spelling exactly, which is what keeps the reviewed file
+        # set and this map comparable.
+        for raw in others.stdout.split(b"\0"):
+            if not raw:
                 continue
+            rel = os.fsdecode(raw)
             full = os.path.join(repo, rel)
             if os.path.islink(full):
                 continue
@@ -312,6 +431,11 @@ def hunk_map(repo, base, exclude=()):
                 if os.path.commonpath([real_full, real_repo]) != real_repo:
                     continue
             except ValueError:
+                continue
+            # An untracked NESTED repository is listed by `ls-files --others`
+            # as `dir/`; it is not a reviewable file, so it is skipped without
+            # the "could not be read" warning a genuinely unreadable file earns.
+            if os.path.isdir(real_full):
                 continue
             try:
                 # #1083: count newlines in bounded chunks so an untracked file
@@ -328,7 +452,13 @@ def hunk_map(repo, base, exclude=()):
                         last = chunk
                     if last and not last.endswith(b"\n"):
                         n += 1
-            except OSError:
+            except OSError as e:
+                # #1739: a bare `continue` made an unreadable-but-present file
+                # indistinguishable from one git never listed. It still gets no
+                # ranges -- there are no lines to count -- but never in silence.
+                print("panopticon: untracked file %r could not be read for the "
+                      "delta map, so it contributes no changed-line ranges: %s"
+                      % (rel, e), file=sys.stderr)
                 continue
             result[rel] = [(1, max(n, 1))]
     for name in exclude:
