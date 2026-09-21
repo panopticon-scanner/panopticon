@@ -63,14 +63,11 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
-# A token ending in an unquoted `)` where a command was expected: a `case`
-# arm pattern -- `a)`, `*)`, `(a)`, `"a b")` (quoted, so the word carries a
-# space), and the tail of an `a|b)` alternation (the statement split cuts that
-# on the `|`) -- or the one-word tail of a tight subshell, `( ... || true)`.
-# Neither is a command name; the reader strips it and reads what follows. The
-# subshell's HEAD, `(curl ...`, is the other side of that coin: one token, so
-# the fetch it starts is unseen (a documented gap, see `workflow_guard`).
-ARM = re.compile(r"^(?!\(\)$)\S(?:.*[^(])?\)$")
+# Only a pattern parsed INSIDE a case body receives this marker. A closing
+# subshell parenthesis (or a quoted command name ending in one) is not an arm.
+_CASE_ARM = "@@casearm@@"
+ARM = re.compile(r"^@@casearm@@")
+_GROUP_TOKENS = ("@@group-open@@", "@@group-close@@")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _REDIRECT = re.compile(r"^(\d*)(>>|>|<)(.*)$")
 _HEREDOC_OP = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
@@ -205,6 +202,7 @@ def _split(text):
     """
     statements, stages, buf = [], [], []
     quote, at_token_start, i, n = None, True, 0, len(text)
+    cases = []
 
     def end_stage():
         stages.append("".join(buf))
@@ -214,6 +212,8 @@ def _split(text):
         end_stage()
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
+            if cases and re.match(r"^\s*esac(?:\s|$)", stages[0]):
+                cases.pop()
         del stages[:]
 
     while i < n:
@@ -238,12 +238,44 @@ def _split(text):
             while i < n and text[i] != "\n":
                 i += 1
             continue
+        # A case header ends at its `in`, even when its first arm shares
+        # the line. Quoted/escaped words remain intact until shlex reads them.
+        if ch.isspace():
+            try:
+                words = shlex.split("".join(buf))
+            except ValueError:
+                words = []
+            words = [w for w in words if w not in _GROUP_TOKENS]
+            if len(words) == 3 and words[0] == "case" and words[-1] == "in":
+                end_statement(";")
+                cases.append("pattern")
+        if ch == "(" and not (cases and cases[-1] == "pattern"):
+            # Preserve function headers: `f()` and `f ()` are not subshells.
+            if text[i:i + 2] == "()" and _NAME.fullmatch("".join(buf).strip()):
+                buf.append("()")
+                at_token_start, i = False, i + 2
+                continue
+            buf.append(" " + _GROUP_TOKENS[0] + " ")
+            at_token_start, i = True, i + 1
+            continue
+        if ch == ")":
+            if cases and cases[-1] == "pattern":
+                buf[:] = [_CASE_ARM + "".join(buf).lstrip() + ")"]
+                cases[-1] = "body"
+            else:
+                buf.append(" " + _GROUP_TOKENS[1] + " ")
+            at_token_start, i = True, i + 1
+            continue
         prev = "".join(buf[-1:]).strip()
         if ch in "&|" and (prev in (">", "&") or text[i:i + 2] == "&>"):
             buf.append(ch)                      # `2>&1`, `&>log`: a redirection
             at_token_start, i = False, i + 1
             continue
         if ch == "|" and text[i:i + 2] != "||":
+            if cases and cases[-1] == "pattern":
+                buf.append(ch)  # case alternatives are one pattern, not a pipeline
+                at_token_start, i = False, i + 1
+                continue
             end_stage()
             at_token_start, i = True, i + 1
             continue
@@ -251,8 +283,10 @@ def _split(text):
             pair = text[i:i + 2]
             separator = pair if pair in ("&&", "||") else ch
             end_statement(separator)
+            if pair == ";;" and cases:
+                cases[-1] = "pattern"
             at_token_start = True
-            i += len(separator)
+            i += 2 if pair == ";;" else len(separator)
             continue
         buf.append(ch)
         at_token_start = ch.isspace()
@@ -282,6 +316,8 @@ def _stage(text, bodies, inners):
                              if int(n) < len(inners))
 
     for token in tokens:
+        if token in _GROUP_TOKENS:
+            continue
         if pending is not None:
             take(token)
             (writes if pending else reads).append(token)

