@@ -268,6 +268,7 @@ groups:
       - tests/test_report_redaction_e2e.py
       - tests/test_schema_parity.py
       - tests/test_verdict_binding.py
+      - tests/test_agent_findings_guard.py
     Core:
       match:
       - skill/scripts/html_report.py

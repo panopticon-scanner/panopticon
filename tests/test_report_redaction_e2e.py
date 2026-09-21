@@ -288,12 +288,11 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
                  "severity": "HIGH", "confidence": "LIKELY", "panel": "security",
                  "category": "authz",
                  "references": ["docs/PANOPTICON.md", "CVE-2021-44228"],
-                 # -> meta.models_used: a panel model, a version and the
-                 # advisor role derived from confirmed_by_model.
+                 # The panel can name its own model. Advisor attribution below
+                 # comes through the bound verdict, never through the finding.
                  "provenance": {"model": "claude-opus-4-1",
                                 "model_version": "20260101",
-                                "discovered_by": "agent:domain_panel",
-                                "confirmed_by_model": "claude-sonnet-4-5"},
+                                "discovered_by": "agent:domain_panel"},
                  "location": {"file": "app/x.py", "line_start": 4}}]}, fh)
         # Ingested but NOT declared by the plan -> meta.integrity
         # .unexpected_findings_files carries this real filename.
@@ -346,8 +345,24 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
         try:
             with contextlib.redirect_stdout(buf), \
                     contextlib.redirect_stderr(io.StringIO()):
+                syn.main(["--target", "app", "--run-dir", run,
+                          "--groups", os.path.join(run, "groups.json"),
+                          "--emit-verify-queue", sec, cod])
+                with open(os.path.join(run, "verify-queue.json"), encoding="utf-8") as fh:
+                    queue_id = json.load(fh)["run_id"]
+                finding_id = findings_mod.load_findings([sec])[0]["id"]
+                verdicts = os.path.join(d, "verdicts")
+                os.mkdir(verdicts)
+                with open(os.path.join(verdicts, "verdicts-app-SEC.json"), "w") as fh:
+                    json.dump({"verdicts": [{"finding_id": finding_id,
+                               "verdict": "CONFIRMED", "reasoning": "verified authz gap",
+                               "model": "claude-sonnet-4-5"}],
+                               "_panopticon": {"run_id": queue_id, "role": "domain_advisor",
+                                               "domain": "SEC", "group": "app",
+                                               "stage": "primary"}}, fh)
                 syn.main(["--target", "app", "--out", out, "--run-dir", run,
                           "--groups", os.path.join(run, "groups.json"),
+                          "--verdicts-dir", verdicts,
                           sec, cod])
         finally:
             os.chdir(prev)

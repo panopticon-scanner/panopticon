@@ -155,6 +155,8 @@ def out_of_scope_findings(findings_paths, plan):
         except (OSError, ValueError):
             continue
         for f in (data.get("findings") or [] if isinstance(data, dict) else []):
+            if isinstance(f, dict):
+                f = findings_mod.agent_finding(f, path)
             loc = (f.get("location") or {}) if isinstance(f, dict) else {}
             fpath = evidence_mod.norm_path(loc.get("file"))
             if not fpath:
