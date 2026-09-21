@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -633,6 +634,37 @@ class TestHeadlessLoop(LoopCase):
         self.assertFalse(write_guard_hook.is_armed(
             settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
 
+    def _dead_pid(self):
+        """A pid that is certainly not running: a child spawned and reaped."""
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait()
+        return proc.pid
+
+    def _stamp_crash_owner(self, run_dir, **fields):
+        """Rewrite every leftover crash record's owner stamp (#1698).
+
+        The suite models a crash IN THIS PROCESS, so the record it leaves
+        names a pid that is very much alive -- which is exactly what recovery
+        now refuses to touch. A test about a CRASHED loop has to say the
+        process is gone, and a reaped child's pid is the honest way to say it.
+        """
+        for name in self._manifests(run_dir):
+            path = os.path.join(run_dir, name)
+            doc = runio._load_json(path)
+            doc.update(fields)
+            runio._write_json(path, doc)
+
+    def _crash_record(self, run_dir):
+        return runio._load_json(os.path.join(run_dir, self._manifests(run_dir)[0]))
+
+    def _untouched(self, d, run_dir):
+        """Everything a refused recovery must leave exactly as it found it."""
+        doc = self._crash_record(run_dir)
+        return (sorted(self._manifests(run_dir)),
+                [p for row in doc["entries"] for p in row["artifacts"] if os.path.exists(p)],
+                ledger_mod.Ledger(run_dir).lines(),
+                runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)))
+
     def _leave_crashed_batch(self, d, floor):
         runner = FakeRunner()
         # Model a process that never reached its interrupt rollback. The
@@ -640,6 +672,8 @@ class TestHeadlessLoop(LoopCase):
         with mock.patch.object(loop_batch, "rolled_back",
                                return_value="simulated process loss"):
             self._interrupt_mid_batch(d, floor, runner)
+        # ...and that process is GONE: the record it left names a dead pid.
+        self._stamp_crash_owner(runner.run_dir, pid=self._dead_pid())
         return runner
 
     def test_resume_rolls_back_a_crashed_batch_before_reading_done_artifacts(self):
@@ -685,6 +719,65 @@ class TestHeadlessLoop(LoopCase):
         self.assertTrue(all(os.path.exists(p) for p in existing))
         self.assertTrue(os.path.exists(path))
 
+    # #1698: a manifest on disk is a CRASHED batch only if the process that
+    # opened it is gone. A second `driver loop` on the same run folder used to
+    # read the first's LIVE record as a crash: it deleted the artifacts that
+    # loop was still producing, cancelled its entries, refunded its attempts
+    # and unlinked its manifest, so the first loop's own Ctrl-C then found
+    # nothing to roll back. `opened_at` cannot tell the two apart (a batch may
+    # legitimately run for hours), so the record names its process and
+    # recovery asks the operating system.
+
+    def test_a_live_owner_refuses_the_resume_and_touches_nothing(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        # the record says the loop that wrote it is still running, here
+        self._stamp_crash_owner(crashed.run_dir, pid=os.getpid())
+        before = self._untouched(d, crashed.run_dir)
+        self.assertTrue(before[1], "the crashed batch left no artifact to protect")
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("still running here", status["message"])
+        self.assertIn(str(os.getpid()), status["message"])
+        self.assertNotIn("--reset", status["message"])    # never, at a live loop
+        self.assertEqual(resumed.launched, [])
+        self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
+    def test_a_record_from_another_machine_refuses_rather_than_guesses(self):
+        # A pid number from over there names some unrelated local process
+        # here, so nothing may be concluded from it either way.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        self._stamp_crash_owner(crashed.run_dir, host="some-other-box")
+        before = self._untouched(d, crashed.run_dir)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("some-other-box", status["message"])
+        self.assertIn("not this machine", status["message"])
+        self.assertIn("--reset", status["message"])
+        self.assertEqual(resumed.launched, [])
+        self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
+    def test_a_record_with_no_owner_stamp_fails_closed(self):
+        # The record lives INSIDE the reviewed tree. An absent owner is either
+        # a manifest from before the field existed or one the target wrote;
+        # neither is evidence that a crash happened.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        path = os.path.join(crashed.run_dir, self._manifests(crashed.run_dir)[0])
+        doc = runio._load_json(path)
+        doc.pop("pid"), doc.pop("host")
+        runio._write_json(path, doc)
+        before = self._untouched(d, crashed.run_dir)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("no owner stamp", status["message"])
+        self.assertEqual(resumed.launched, [])
+        self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
     def test_open_never_overwrites_an_existing_batch_record(self):
         with tempfile.TemporaryDirectory() as root:
             batch = batch_mod.Batch(root, 1, "review", [])
@@ -705,6 +798,9 @@ class TestHeadlessLoop(LoopCase):
                 orchestrate.loop_batch.recover_stale(d, req, "claude", "headless")
         attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
         rows = ledger_mod.Ledger(crashed.run_dir).lines()
+        # #1698: flagging the record took it over, so it now names THIS
+        # process. The next loop is a later one, and that one died too.
+        self._stamp_crash_owner(crashed.run_dir, pid=self._dead_pid())
         with self.assertRaisesRegex(ValueError, "previous recovery was interrupted"):
             orchestrate.loop_batch.recover_stale(d, req, "claude", "headless")
         self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)), attempts)

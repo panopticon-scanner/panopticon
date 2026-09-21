@@ -27,6 +27,7 @@ of the rollback: the artifact half here, and the interrupted phase's
 per-dispatch marker in `phases.persist.rollback_markers`.
 """
 import os
+import socket
 import time
 
 import scripts.write_guard_hook as write_guard_hook
@@ -35,9 +36,67 @@ import scripts.write_guard_hook as write_guard_hook
 # operator greps for them, and the suite asserts a clean batch leaves none.
 MANIFEST_PREFIX = "batch-"
 
+# #1698: what `owner_state` can conclude about the process that wrote a
+# record. Only ONE of the four clears it for recovery.
+OWNER_DEAD = "dead"
+OWNER_LIVE = "live"
+OWNER_FOREIGN = "foreign"
+OWNER_UNSTAMPED = "unstamped"
+
 
 def manifest_path(run_dir, number):
     return os.path.join(run_dir, "%s%s.json" % (MANIFEST_PREFIX, int(number)))
+
+
+def host_id():
+    """This machine, as the record names it."""
+    return socket.gethostname()
+
+
+def owner_state(doc):
+    """Whether the process that wrote `doc` is still running (#1698).
+
+    A manifest on disk is a CRASHED batch only if the process that opened it
+    is gone; a loop that is still running has one on disk for as long as its
+    batch is in flight. Nothing in the record used to say which: a second
+    `driver loop` on the same run folder read the first's LIVE manifest as a
+    crash, deleted the artifacts it was still producing, wrote CANCELLED rows
+    for its entries, refunded their attempts and unlinked the manifest -- so
+    the first loop's own Ctrl-C then found nothing to take back. `opened_at`
+    cannot tell the two apart, because a batch may legitimately run for hours.
+    So the record names its process, and this asks the operating system:
+
+    * `dead` -- stamped by THIS host and the pid is gone. A crash, and the
+      only answer recovery acts on.
+    * `live` -- stamped by this host and still running. `PermissionError`
+      counts as live: the signal was refused BECAUSE something is there to
+      refuse it.
+    * `foreign` -- stamped by another host. A pid number from over there
+      names some unrelated local process here, so nothing may be concluded
+      from it in either direction.
+    * `unstamped` -- no usable stamp. The record lives inside the REVIEWED
+      tree, so an absent or malformed owner is either a manifest from before
+      this field existed or one the target wrote; neither is evidence that a
+      crash happened. Fail closed.
+
+    `isinstance(pid, bool)` is excluded on purpose -- `True` is an `int` and
+    `os.kill(True, 0)` asks about pid 1, which is always alive.
+    """
+    if not isinstance(doc, dict):
+        return OWNER_UNSTAMPED
+    pid, host = doc.get("pid"), doc.get("host")
+    if (not isinstance(host, str) or not host or isinstance(pid, bool)
+            or not isinstance(pid, int) or pid <= 0):
+        return OWNER_UNSTAMPED
+    if host != host_id():
+        return OWNER_FOREIGN
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return OWNER_LIVE
+    except OSError:                       # ProcessLookupError, and nothing else lands here
+        return OWNER_DEAD
+    return OWNER_LIVE
 
 
 class Batch:
@@ -62,8 +121,16 @@ class Batch:
             for e in entries or [] if isinstance(e, dict)]
 
     def document(self):
+        """The record, stamped with the process WRITING it (#1698).
+
+        Whoever last wrote the record owns it: a recovery that rewrites a
+        crashed batch's manifest to flag it takes the record over, so a
+        second loop arriving mid-recovery asks about the RECOVERING process
+        rather than the long-dead one it is finishing for.
+        """
         return {"schema_version": 1, "batch": self.number,
                 "checkpoint": self.checkpoint, "opened_at": self.opened_at,
+                "pid": os.getpid(), "host": host_id(),
                 "entries": self.entries,
                 **({"recovering": True} if self.recovering else {})}
 

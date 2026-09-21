@@ -25,7 +25,7 @@ import scripts.phases.runio as runio
 import scripts.phases.setup as setup
 import scripts.probes.shape as shape_probe
 import scripts.run_manifest as run_manifest
-from scripts.runners.batch import Batch
+import scripts.runners.batch as batch_mod
 
 SETUP_NAMESPACE = "setup"
 
@@ -39,6 +39,51 @@ INTERRUPTED = ("interrupted: %d of %d entries had been handled and have been rol
                "`driver loop`; use `--reset` to discard the whole run")
 INTERRUPTED_IDLE = ("interrupted: no batch was in flight, so nothing was rolled back; "
                     "re-run to resume, or use `--reset` to discard the whole run")
+
+# #1698: the three records a resume must NOT treat as a crash, one sentence
+# each. Refusals rather than a silent skip, because the run folder is shared
+# state: a loop that resumed past a live record would re-dispatch entries
+# another loop is running, and one that resumed past a record it cannot read
+# the owner of would delete files it cannot prove belong to a dead batch.
+#
+# `--reset` is named in two of them and deliberately NOT in the live one:
+# telling an operator to reset a run folder another `driver loop` is working
+# in is the very accident this refusal exists to prevent.
+# No "driver loop: " lead: these are RAISED, and the one catch in
+# `orchestrate.loop` prefixes every refusal out of this function.
+BATCH_OWNER_LIVE = (
+    "batch record %s belongs to a `driver loop` that is still running here (pid %r); "
+    "refusing to resume this run folder -- two loops would delete each other's "
+    "in-flight artifacts. Wait for it to finish, or stop it and re-run.")
+BATCH_OWNER_ELSEWHERE = (
+    "batch record %s was written by pid %r on host %r, not this machine, so this loop "
+    "cannot tell whether that process is still running. Re-run with `--reset` ONLY "
+    "once you know that loop is gone.")
+BATCH_OWNER_UNSTAMPED = (
+    "batch record %s carries no owner stamp, so a crashed batch cannot be told from "
+    "one still in flight. Re-run with `--reset` once you know no other `driver loop` "
+    "is working on this run folder.")
+
+
+def refuse_foreign_owner(name, doc):
+    """The refusal for a record this process may not recover, or None (#1698).
+
+    Asked before every other check on the document, because a record whose
+    owner is alive is not a DEFECTIVE crash record -- it is a correct
+    in-flight one, and "another loop is running here" is a different sentence
+    from "this manifest does not match the request". `%r` on both values: they
+    come off a file in the reviewed tree and reach the operator's stderr, so
+    repr renders a control character or an embedded newline as its escape
+    sequence (the reason `misroute_refusal` does the same).
+    """
+    state = batch_mod.owner_state(doc)
+    if state == batch_mod.OWNER_LIVE:
+        return BATCH_OWNER_LIVE % (name, doc.get("pid"))
+    if state == batch_mod.OWNER_FOREIGN:
+        return BATCH_OWNER_ELSEWHERE % (name, doc.get("pid"), doc.get("host"))
+    if state != batch_mod.OWNER_DEAD:
+        return BATCH_OWNER_UNSTAMPED % name
+    return None
 
 
 def recover_stale(review_root, request, host, mode, namespace=None):
@@ -70,8 +115,13 @@ def recover_stale(review_root, request, host, mode, namespace=None):
         path = os.path.join(root, name)
         doc = None if os.path.islink(path) else runio._load_json(path)
         refusal = "cannot recover stale batch %s; use --reset: " % name
-        if (not isinstance(doc, dict) or doc.get("schema_version") != 1
-                or doc.get("batch") != int(match[1])
+        if not isinstance(doc, dict) or doc.get("schema_version") != 1:
+            raise ValueError(refusal + "invalid manifest or unbound checkpoint")
+        # #1698: is this a crash AT ALL? First, and on its own wording.
+        owned = refuse_foreign_owner(name, doc)
+        if owned:
+            raise ValueError(owned)
+        if (doc.get("batch") != int(match[1])
                 or doc.get("checkpoint") != request.get("checkpoint")
                 or not isinstance(doc.get("entries"), list) or not doc["entries"]):
             raise ValueError(refusal + "invalid manifest or unbound checkpoint")
@@ -103,7 +153,7 @@ def recover_stale(review_root, request, host, mode, namespace=None):
                                               os.path.basename(artifact))):
                     raise ValueError(refusal + "unexpected retained-reply artifact")
             pending.append(entry)
-        batch = Batch(root, doc["batch"], doc["checkpoint"], pending)
+        batch = batch_mod.Batch(root, doc["batch"], doc["checkpoint"], pending)
         batch.opened_at = doc.get("opened_at")
         batch.entries = doc["entries"]
         batches.append((batch, pending))
