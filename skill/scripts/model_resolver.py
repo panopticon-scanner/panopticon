@@ -64,6 +64,14 @@ def _profiles():
 # So a YAML-less kimi run resolved its domain_advisor to primary/131072 instead
 # of k3/524288: the adjudication role, on a weaker model with a quarter of the
 # context, silently.
+# #1737 R-F4-2: `setup_scan` is an EXPLICIT inherit row in all three tables and
+# in model-profiles.yml, never an omission and never an exemption from the
+# parity test below. `model: None` is what docs/PANOPTICON.md defines as
+# "inherit the session's model": `driver setup` is a one-off, judgement-heavy
+# classification and the operator's own session model is the policy. Registering
+# the shell (#1737) must not quietly move it onto a role tier, so the emitters
+# write no model line for it and the model-binding probes read None-on-both-sides
+# as agreement rather than as a shell that binds nothing.
 _KIMI_FALLBACK = {
     "scout": {"model": "primary", "alias": "kimi-for-coding",
               "max_context_size": 131072, "max_output_size": 16384},
@@ -73,6 +81,7 @@ _KIMI_FALLBACK = {
                      "max_context_size": 131072, "max_output_size": 16384},
     "domain_advisor": {"model": "secondary", "alias": "k3",
                        "max_context_size": 524288, "max_output_size": 32768},
+    "setup_scan": {"model": None},
 }
 _CLAUDE_FALLBACK = {
     "scout": {"model": "haiku"},
@@ -82,12 +91,14 @@ _CLAUDE_FALLBACK = {
     # duplicate EMIT_MODEL_POLICY dict — #1029 had to edit both).
     "domain_panel": {"model": "sonnet"},
     "domain_advisor": {"model": "opus"},
+    "setup_scan": {"model": None},
 }
 _CODEX_FALLBACK = {
     "scout": {"model": "gpt-5.6-luna", "model_reasoning_effort": "medium"},
     "advisor": {"model": "gpt-5.6-sol", "model_reasoning_effort": "high"},
     "domain_panel": {"model": "gpt-5.6-terra", "model_reasoning_effort": "high"},
     "domain_advisor": {"model": "gpt-5.6-sol", "model_reasoning_effort": "high"},
+    "setup_scan": {"model": None},
 }
 
 
@@ -170,6 +181,14 @@ def _normalize_kimi_model(cfg, role):
     """
     model = cfg.get("model")
     if model in _KIMI_TIERS:
+        return cfg
+    if model is None:
+        # #1737: None is not a wrong alias, it is the explicit "inherit the
+        # session's model" policy (R-F4-2). The runner already reads it that
+        # way -- `runners/kimi.py` binds `-m` only `if entry.get("model")` --
+        # so coercing it to a tier here would be this module overruling a
+        # decision the profile states, and the stderr warning would name a
+        # drift that never happened.
         return cfg
     mapped = _KIMI_ALIAS_TIER.get(model)
     out = dict(cfg)

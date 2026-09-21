@@ -197,6 +197,8 @@ class TestRedactAdditionalVendorFormats(unittest.TestCase):
         "sk_live_" + "f" * 24: "[REDACTED_KEY]",
         "pypi-" + "g" * 40: "[REDACTED_TOKEN]",
         "xapp-1-" + "H" * 20: "[REDACTED_SLACK_TOKEN]",
+        "https://hooks.slack.com/services/" + "T" * 9 + "/" + "B" * 9 + "/" + "Z" * 24:
+            "[REDACTED_SLACK_WEBHOOK]",
     }
 
     def test_masks_each_added_format(self):
@@ -204,6 +206,13 @@ class TestRedactAdditionalVendorFormats(unittest.TestCase):
             out = redact.redact("leak: %s here" % secret)
             self.assertIn(marker, out, secret)
             self.assertNotIn(secret, out, secret)
+
+    def test_format_names_and_incomplete_credentials_stay_readable(self):
+        for text in ("JWT eyJheader.eyJpayload.signature", "glpat-example",
+                     "npm_example", "pypi-example", "https://hooks.slack.com/services/",
+                     "https://hooks.slack.com/services/Tshort/Bshort/example"):
+            with self.subTest(text=text):
+                self.assertEqual(redact.redact(text), text)
 
     def test_added_formats_survive_the_tree_walk(self):
         jwt = [k for k in self.CASES if k.startswith("eyJ")][0]
@@ -343,6 +352,9 @@ class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
         # said, and the message whose whole purpose is to surface an auth
         # failure is the likeliest of all of them to be carrying a credential.
         ("tests/test_orchestrate.py", "postgres://svc:hunter2@"),
+        # #1709: ledger error/refusal specimens, before and after masking.
+        ("tests/test_ledger.py", "postgres://worker:%s@"),
+        ("tests/test_ledger.py", "postgres://worker:[REDACTED]@"),
     }
 
     # The rule's own definition and its own specimens. They are full of
@@ -529,6 +541,7 @@ class TestOnlyThePemRuleMayCrossAQuote(unittest.TestCase):
         "xoxb-1234567890-abcdefghij",
         "AIza" + "E" * 35,
         "xapp-1-" + "F" * 20,
+        "https://hooks.slack.com/services/" + "T" * 9 + "/" + "B" * 9 + "/" + "Z" * 24,
         "glpat-" + "G" * 24,
         "npm_" + "H" * 36,
         "hf_" + "I" * 34,

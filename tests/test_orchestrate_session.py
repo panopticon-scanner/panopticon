@@ -445,9 +445,13 @@ class TestSetupEstablishesHostPosture(LoopCase):
         # made `driver loop --setup --host generic` say it twice per
         # invocation.
         d, _ = self._repo()
+        # #1737: `generic` registers no shells, so the setup dispatch is
+        # shell-less and the operator has to say so. The acceptance is what
+        # this test is NOT about -- it is about the notice being printed once
+        # -- so it is given here rather than worked around.
         args = driver.build_parser().parse_args(
             ["loop", d, "--setup", "--host", "generic", "--mode", "session",
-             "--session-dir", self._session_root(d)])
+             "--allow-unenforced", "--session-dir", self._session_root(d)])
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(err):

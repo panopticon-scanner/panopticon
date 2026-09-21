@@ -229,6 +229,39 @@ class TestSynthesizePhase(unittest.TestCase):
                          runio._pano(self.root, "report.json"))
         self.assertEqual(cmd[cmd.index("--run-id") + 1], "R")   # §5.1: X0X provenance
 
+    def test_passes_the_committed_exclude_paths_as_tools_exclude(self):
+        # #1740 fix round 1 (controller addition): the report-side gate reads
+        # the tool findings through `synthesize.py`, so the committed policy
+        # has to reach THAT ingest too -- otherwise a redteam run gates on the
+        # very corpus `exclude_paths:` scoped out.
+        with open(os.path.join(self.root, "panopticon.yml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("version: 1\nexclude_paths:\n  - 'tests/fixtures/**'\n")
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            synthesize.synthesize_execute(self.root, self.manifest)
+        cmd = captured["cmd"]
+        got = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--tools-exclude"]
+        self.assertEqual(got, ["tests/fixtures/**"])
+
+    def test_no_committed_globs_means_no_tools_exclude_flag(self):
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            synthesize.synthesize_execute(self.root, self.manifest)
+        self.assertNotIn("--tools-exclude", captured["cmd"])
+
     def test_tools_dir_added_only_when_tools_ran(self):
         runio._write_json(runio._pano(self.root, "tools-ran.json"),
                            {"ran": True, "run_id": "R"})

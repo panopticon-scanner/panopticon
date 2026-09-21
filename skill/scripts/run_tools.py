@@ -7,7 +7,6 @@ no-secret container (recorded in report meta); pip-audit/npm-audit run only
 under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 """
 import configparser
-import fnmatch
 import json
 import os
 import re
@@ -18,6 +17,7 @@ import tempfile
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts import groups_schema
 from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts.tools import egress
 from scripts.tools.base import drain_stderr_async
@@ -272,6 +272,60 @@ def find_virtualenvs(target, max_depth=VENV_MAX_DEPTH):
     return [{"path": p, "reason": found[p]} for p in sorted(found)]
 
 
+# #1740 (ARC-F2A): the scan half of the security mode `security_gate` keys on.
+# Mirrored here rather than imported, because `security_gate` imports THIS
+# module (through `ingest_tools`) and the runner must not depend on the gate.
+REDTEAM = "redteam"
+SECURITY_MODES = ("standard", REDTEAM)
+
+
+def partition_venv_dirs(venv_dirs, security_mode="standard"):
+    """Split detected virtualenvs into (told-to-skip, manifest rows) (#1740).
+
+    `find_virtualenvs` flags a directory two ways, and they are not the same
+    claim. `pyvenv.cfg` is EVIDENCE the tree is an installed environment;
+    `"name"` is a convention -- a directory called `venv` with nothing in it
+    saying so. Under `--security redteam` the target is untrusted and a finding
+    may not be lost to a directory NAME, which is what `security_gate` enforces
+    at ingest. Telling semgrep, trivy and bandit to skip `app/venv/` made that
+    enforcement moot for three scanners: there was no finding left to re-admit.
+    So under redteam this function stops handing the name-only directories to
+    any scanner's exclusion knob, and only the marker-confirmed ones are
+    skipped.
+
+    That gets semgrep and trivy into `app/venv/`, and it gets bandit there too
+    -- UNLESS the target ships a `.bandit`. With no marker venv to skip,
+    `_with_venv_excludes` adds no flag at all (so `_bandit_exclude_value` is
+    never reached and its merge is moot) and the argv is just
+    `bandit --ini /src/.bandit ...`. bandit then reads that target-authored
+    file's own `exclude` entries itself, and this repo's list `venv` and
+    `.venv` -- so on a target carrying such a `.bandit`, bandit still does not
+    enter the directory under redteam, while a target with no `.bandit` is
+    scanned (bandit's own parser defaults name no virtualenv). Narrowing a
+    target-authored config by security mode is the same question #1877 tracks
+    for the rest of the target's discoverable configuration, and it is decided
+    there, not here.
+
+    Under `standard` nothing changes: both kinds are skipped, which is #1638
+    P09's whole point (58 bandit findings from run-13's `.venv/` bought 46 of
+    128 advisor dispatches).
+
+    The second return value is what `write_manifest` publishes, one row per
+    DETECTED directory either way -- `skipped` says whether the scanners were
+    told to leave it alone, so a report can say the directory was scanned
+    rather than leaving the reader to infer it from an absence.
+    """
+    redteam = security_mode == REDTEAM
+    skip, rows = [], []
+    for entry in venv_dirs or ():
+        skipped = (not redteam) or entry.get("reason") == VENV_MARKER
+        if skipped:
+            skip.append(entry)
+        rows.append({"path": entry["path"], "reason": entry["reason"],
+                     "skipped": skipped})
+    return skip, rows
+
+
 # The exclusion knob each legacy SARIF scanner already exposes, repeated once
 # per venv directory. NOT listed, deliberately: `gitleaks` (v8 has no path-
 # exclusion flag -- its allowlist is a config file, and inventing one would just
@@ -368,10 +422,17 @@ def select_adapters(target: str, adapters: dict | None = None) -> dict:
 
 
 def _is_excluded(rel, exclude_globs):
-    """True if a repo-relative path matches any exclusion glob (fnmatch `*`
-    spans `/`, so `tests/fixtures/*` covers the whole subtree)."""
+    """True if a repo-relative path matches any exclusion glob.
+
+    #1740 fix round 2: GITIGNORE semantics, through the one translator
+    `discovery` reads the same committed `exclude_paths:` lines with
+    (`groups_schema.matched_glob`). It was `fnmatch` here, where `*` spans `/`
+    and a trailing `/` matches nothing -- so `tests/*` covered the whole
+    subtree on this side and only the direct children on discovery's, and
+    `docs/` covered a tree there and nothing here. Subtree is spelled `**`.
+    """
     rel = str(rel).replace(os.sep, "/")
-    return any(fnmatch.fnmatch(rel, g) for g in exclude_globs or [])
+    return groups_schema.matched_glob(rel, exclude_globs, "run_tools") is not None
 
 
 def partition_by_exclusion(adapters, target, exclude_globs):
@@ -1076,7 +1137,7 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
 
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
-                   network=None):
+                   network=None, exclude_globs=()):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
@@ -1084,10 +1145,14 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     required), and are kept out of `selected` so the missing-set invariant
     holds.
 
-    `excluded_dirs` (#1638 P09) are the virtualenv directories the scan was told
-    to skip, as ``{"path", "reason"}`` rows -- so a report can say what was
-    pruned and on what evidence (`pyvenv.cfg` or the conventional name) rather
-    than leaving a silent hole in the scanned surface. `depth_bound` is how deep
+    `excluded_dirs` (#1638 P09) are the virtualenv directories this scan
+    DETECTED, as ``{"path", "reason", "skipped"}`` rows -- so a report can say
+    what was pruned and on what evidence (`pyvenv.cfg` or the conventional
+    name) rather than leaving a silent hole in the scanned surface. #1740:
+    `skipped` is what separates the two, because under `--security redteam` a
+    name-only directory is detected and scanned anyway; it defaults to True, so
+    a caller handing `find_virtualenvs` output straight in still publishes this
+    list's pre-#1740 meaning. `depth_bound` is how deep
     the walk that found them looked: the list is what the SCANNERS were told to
     skip, and ingest drops virtualenv findings at any depth, so a reader knows
     the list is bounded rather than exhaustive. Additive: both fields are new in
@@ -1102,6 +1167,13 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     audit can be PARTIAL, and this is where it says by how much and which lines.
     Stated on every manifest, `{}` included, so its absence cannot be read as
     "nothing was dropped" on a run that never measured.
+
+    `exclude_globs` (#1740 fix round 1) are the `--exclude` path globs this
+    scan was given -- the driver passes the repository's committed
+    `exclude_paths:`, CI passes its own. `excluded_scope` beside it names the
+    ADAPTERS those globs disqualified; this is the policy itself, so a reader
+    can tell "no adapter was excluded" from "no policy was applied". Stated on
+    every manifest, `[]` included, like `sanitized`.
 
     `redacted` (#1639 P11) says whether every capture this run wrote went
     through the redaction choke point, read off the ledger `_redact_capture`
@@ -1146,7 +1218,15 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope)),
                "network": network,
                "sanitized": dict(sanitized or {}),
-               "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"])}
+               "exclude_globs": [str(g) for g in exclude_globs or ()],
+               "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"]),
+                                  # #1740: `skipped` is the whole point of the
+                                  # row under redteam -- a name-only venv is
+                                  # DETECTED and scanned anyway. True for a
+                                  # caller that passed `find_virtualenvs`
+                                  # output directly, which is the pre-#1740
+                                  # meaning of this list.
+                                  "skipped": bool(d.get("skipped", True))}
                                  for d in excluded_dirs or ()],
                "depth_bound": depth_bound}
     # #1735: the driver points --manifest at `<run folder>/tools-manifest.json`,
@@ -1185,6 +1265,13 @@ def main(argv=None):
                          "adapter applicable only to excluded files is disclosed "
                          "as excluded_scope, not required (repeatable). Pass the "
                          "same globs the gate uses.")
+    # #1740: the same flag `security_gate` takes, and the same meaning -- under
+    # redteam a directory is not excluded from the scan on its NAME alone. Only
+    # the virtualenv skip reads it; every other decision here is mode-blind.
+    ap.add_argument("--security", dest="security_mode", default="standard",
+                    choices=list(SECURITY_MODES),
+                    help="redteam: scan virtualenvs detected by NAME alone "
+                         "(no pyvenv.cfg), so the gate has findings to re-admit")
     a = ap.parse_args(argv)
     excluded_scope = []
     if a.tools is not None:
@@ -1214,7 +1301,10 @@ def main(argv=None):
     # filesystem read that holds on the skip path too.
     sanitized = collect_sanitization(
         {t: ADAPTERS[t] for t in effective if t in ADAPTERS}, a.target)
-    venv_dirs = find_virtualenvs(a.target)   # #1638 P09: one walk, two consumers
+    # #1638 P09: one walk, two consumers. #1740: and one mode decides which of
+    # the detected directories the scanners are actually told to skip.
+    skip_dirs, venv_rows = partition_venv_dirs(find_virtualenvs(a.target),
+                                               a.security_mode)
     if not docker_available():
         print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
         # Still disclose the skip through the coverage manifest. Without this,
@@ -1228,16 +1318,16 @@ def main(argv=None):
         # no docker, so `effective` is a faithful record of what WOULD have run.
         if a.manifest:
             write_manifest(a.manifest, effective, [], excluded_scope=excluded_scope,
-                           run_id=a.run_id, excluded_dirs=venv_dirs,
-                           sanitized=sanitized)
+                           run_id=a.run_id, excluded_dirs=venv_rows,
+                           sanitized=sanitized, exclude_globs=a.exclude)
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
-                      progress=make_progress(a.progress), venv_dirs=venv_dirs,
+                      progress=make_progress(a.progress), venv_dirs=skip_dirs,
                       run_id=a.run_id)
     if a.manifest:
         write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
-                       run_id=a.run_id, excluded_dirs=venv_dirs,
-                       sanitized=sanitized)
+                       run_id=a.run_id, excluded_dirs=venv_rows,
+                       sanitized=sanitized, exclude_globs=a.exclude)
     print("\n".join(paths))
     return 0
 

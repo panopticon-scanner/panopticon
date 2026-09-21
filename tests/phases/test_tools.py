@@ -150,6 +150,55 @@ class TestToolsPhase(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--manifest") + 1],
                          runio._pano(self.root, "tools-manifest.json"))
 
+    def _captured_cmd(self, manifest):
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            out = cmd[cmd.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            open(os.path.join(out, "trivy.json"), "w").close()
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            tools_phase.tools_execute(self.root, manifest)
+        return captured["cmd"]
+
+    def test_passes_the_runs_security_mode(self):
+        # #1740: `run_tools` excludes a directory named `venv` from three
+        # scanners on the NAME alone, and under redteam that is exactly the
+        # inference the gate refuses -- so the runner has to know the mode. Read
+        # off the run MANIFEST, the controller's write-once record, the same
+        # way discovery and synthesize read it (#1701's item-14 principle: never
+        # from the target's own `.panopticon/`).
+        for mode in ("standard", "redteam"):
+            with self.subTest(mode=mode):
+                cmd = self._captured_cmd({"run_id": "R", "flags": {},
+                                          "security_mode": mode})
+                self.assertEqual(cmd[cmd.index("--security") + 1], mode)
+
+    def test_a_manifest_with_no_mode_scans_as_standard(self):
+        cmd = self._captured_cmd(self.manifest)
+        self.assertEqual(cmd[cmd.index("--security") + 1], "standard")
+
+    def _commit_config(self, body):
+        with open(os.path.join(self.root, "panopticon.yml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(body)
+
+    def test_passes_the_committed_exclude_paths_to_the_scanner_run(self):
+        # #1740 fix round 1 (controller addition): `exclude_paths:` governed
+        # discovery alone, so the committed policy could not scope the tool
+        # axis or the gate at all. One glob per `--exclude`, in the committed
+        # order, the same spelling `security_gate` takes.
+        self._commit_config("version: 1\nexclude_paths:\n"
+                            "  - 'tests/fixtures/**'\n  - 'vendor/**'\n")
+        cmd = self._captured_cmd(self.manifest)
+        got = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--exclude"]
+        self.assertEqual(got, ["tests/fixtures/**", "vendor/**"])
+
+    def test_no_committed_globs_means_no_exclude_flag(self):
+        self.assertNotIn("--exclude", self._captured_cmd(self.manifest))
+
     def test_docker_absent_is_disclosed_skip_that_advances(self):
         def fake_run(cmd, **kw):   # produces nothing, exits 0 (docker missing)
             return mock.Mock(returncode=0, stdout="",

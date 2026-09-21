@@ -373,9 +373,9 @@ class TestArtifactWriteSymlinkSafety(unittest.TestCase):
 class TestAtomicArtifactWrite(unittest.TestCase):
     """F6: `usage.json` is rewritten once per ENTRY now, while host children are
     live inside the reviewed tree and the guide invites an operator to watch it
-    as a progress surface. The default in-place O_TRUNC write can be read back
-    empty or half-written; `atomic=True` gives that one file the tmp +
-    `os.replace` `persist.write_reply` already uses for the reply beside it."""
+    as a progress surface. Atomic replacement is now the default: a failed
+    write leaves the previous file intact. Explicit `atomic=False` retains
+    in-place writes; these tests pin both failure modes."""
 
     def test_an_atomic_write_that_fails_leaves_the_previous_file_intact(self):
         with tempfile.TemporaryDirectory() as d:
@@ -383,7 +383,7 @@ class TestAtomicArtifactWrite(unittest.TestCase):
             runio._write_json(p, {"total": 1})
             with mock.patch.object(runio.json, "dump", side_effect=OSError("ENOSPC")), \
                  self.assertRaises(OSError):
-                runio._write_json(p, {"total": 2}, atomic=True)
+                runio._write_json(p, {"total": 2})
             with open(p) as fh:
                 self.assertEqual(json.load(fh), {"total": 1})   # never truncated
 
@@ -392,10 +392,10 @@ class TestAtomicArtifactWrite(unittest.TestCase):
         # of a per-entry usage.json was exposed to.
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "usage.json")
-            runio._write_json(p, {"total": 1})
+            runio._write_json(p, {"total": 1}, atomic=False)
             with mock.patch.object(runio.json, "dump", side_effect=OSError("ENOSPC")), \
                  self.assertRaises(OSError):
-                runio._write_json(p, {"total": 2})
+                runio._write_json(p, {"total": 2}, atomic=False)
             with open(p) as fh:
                 self.assertEqual("", fh.read())
 
@@ -747,3 +747,46 @@ class TestOneAbsolutePathExpression(unittest.TestCase):
                          and n.func.attr in ("_abs_files", "_abs_file_list")]
                 self.assertEqual({"_abs_files", "_abs_file_list"},
                                  {c.func.attr for c in calls})
+
+
+class TestCommittedExcludePaths(unittest.TestCase):
+    """#1740 fix round 1: the committed `exclude_paths:` policy has to reach the
+    TOOL axis, not only discovery.
+
+    `exclude_paths:` pruned the agentic scan and nothing else, so a repo that
+    committed `tests/fixtures/**` still had every scanner walk the corpus, every
+    fixture finding ingested, and -- once #1740 made the fixture prune a gated
+    class under redteam -- the report's own gate FAILing on a directory the
+    committed policy had already scoped out. One parse seam
+    (`groups_schema.parse_exclude_paths`, the one discovery reads), so the two
+    scopes cannot drift.
+    """
+
+    def _root(self, body):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        if body is not None:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write(body)
+        return d
+
+    def test_reads_the_committed_globs(self):
+        root = self._root("version: 1\nexclude_paths:\n  - 'tests/fixtures/**'\n"
+                          "  - 'vendor/**'\n")
+        self.assertEqual(runio.committed_exclude_paths(root),
+                         ["tests/fixtures/**", "vendor/**"])
+
+    def test_no_config_and_no_key_are_both_empty(self):
+        self.assertEqual(runio.committed_exclude_paths(self._root(None)), [])
+        self.assertEqual(
+            runio.committed_exclude_paths(self._root("version: 1\ngroups: {}\n")), [])
+
+    def test_an_unusable_config_is_empty_not_an_exception(self):
+        # Tolerant on purpose: the phases that REQUIRE a valid config already
+        # refuse before this is read, and an exclusion list is not the place to
+        # take a run down.
+        for body in ("version: 1\nexclude_paths: nope\n",      # not a list
+                     "exclude_paths: ['a/**']\n",               # no version
+                     "{{{\n"):                                  # not YAML
+            with self.subTest(body=body), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(runio.committed_exclude_paths(self._root(body)), [])

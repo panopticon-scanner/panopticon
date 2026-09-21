@@ -31,16 +31,6 @@ DEFAULT_MAX_ITERATIONS = 50
 # a CLI flag: it is a safety rail, not a tuning knob -- an operator who wants a fourth attempt
 # re-runs, which resumes from disk and starts every streak at zero.
 MAX_ENTRY_FAILURES = 3
-# #1662: the two sentences a Ctrl-C ends a run with. Constants because
-# docs/PANOPTICON.md quotes the first one back and the guide test reads it off
-# here. "had been HANDLED", not completed: the count is every entry the loop
-# got back, a failed launch included -- ledgered as the failure it was rather
-# than persisted (F2), and rolled back either way.
-INTERRUPTED = ("interrupted: %d of %d entries had been handled and have been rolled "
-               "back; the phase will re-run from its checkpoint on the next "
-               "`driver loop`; use `--reset` to discard the whole run")
-INTERRUPTED_IDLE = ("interrupted: no batch was in flight, so nothing was rolled back; "
-                    "re-run to resume, or use `--reset` to discard the whole run")
 
 
 def _after_first_run(review_root):
@@ -230,6 +220,11 @@ def loop(args):
     # the READ and the ACT can sit on opposite sides of `_first_run`, which I4 requires.
     # #1727: read BOUND -- uninstall is keyed by strings that file supplies.
     prev_req = requests.previous_request(review_root, namespace)
+    if not getattr(args, "reset", False):
+        try:
+            loop_batch.recover_stale(review_root, prev_req, host, mode, namespace)
+        except (ValueError, OSError) as exc:
+            return _status("error", "driver loop: %s" % exc)
     if mode == "session":
         # Guards constructed HERE, before `_first_run`, and unconditionally -- not only once this
         # invocation reaches a fresh checkpoint. Session mode is the only mode whose guards can
@@ -367,6 +362,15 @@ def loop(args):
             if stuck:
                 return _finish(_status("error", stuck), review_root, guards, ledger,
                                namespace, mode, runner)
+            # #1698: a crash record this batch must not overwrite, refused
+            # before a single grant is installed. `recover_stale` has already
+            # dealt with the ones it is allowed to; anything still here under
+            # `--reset` (which skips recovery) used to reach `Batch.open`'s
+            # O_EXCL and come back out of `loop` as a traceback.
+            in_use = loop_batch.batch_in_use(run_dir, iterations)
+            if in_use:
+                return _finish(_status("error", in_use), review_root, guards, ledger,
+                               namespace, mode, runner)
             guards.arm(pending)
             if mode == "session":
                 # Branched on the MODE, not on a None the headless path can no
@@ -390,8 +394,13 @@ def loop(args):
             # submit -- taking a cancelled batch back must never be a glob
             # over the run folder, which would reach a prior phase's outputs
             # and, on a redteam target, whatever the tree planted next to them.
-            batch = batch_mod.Batch(run_dir, iterations,
-                                    req.get("checkpoint"), pending).open()
+            try:
+                batch = batch_mod.Batch(run_dir, iterations,
+                                        req.get("checkpoint"), pending).open()
+            except FileExistsError:       # the race the check above cannot close
+                return _finish(_status("error", loop_batch.BATCH_IN_USE
+                                       % batch_mod.manifest_path(run_dir, iterations)),
+                               review_root, guards, ledger, namespace, mode, runner)
             # P07 (#1636): persisted, ledgered and counted into usage.json the moment EACH entry
             # finishes, so an interrupt keeps everything already yielded and `done`/`total` say
             # how much that was. `closing` because an exception here abandons the generator: it
@@ -477,70 +486,12 @@ def loop(args):
                                namespace, mode, runner)
             status = _run(args, namespace, resolved)
     except KeyboardInterrupt:
-        status = _rolled_back(review_root, batch, pending, handled, req, ledger,
-                              mode, runner, guards, done, total)
+        status = _status("error", loop_batch.rolled_back(
+            review_root, batch, pending, handled, req, ledger, mode, runner,
+            guards, done, total))
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
     return _finish(status, review_root, guards, ledger, namespace, mode, runner)
-
-
-def _rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
-                 guards, done, total):
-    """The Ctrl-C path (#1662): cancel, roll back to the checkpoint, and say so.
-
-    `iter_batch` has already stopped the batch: nothing queued was launched,
-    and what was running has been terminated. What is left, in this order:
-
-    * this batch's grants come down FIRST, before a single artifact is deleted.
-      A child that outlived the termination (no shipped family holds a handle
-      on its children, so "terminated" means the terminal's process-group
-      SIGINT) would otherwise re-create the very file the rollback had handed
-      back, and the resume would read that cell as done and never dispatch it
-      again -- the one outcome the rollback exists to prevent. The guard is
-      fail-closed the moment its allowlist is unlinked, so disarming first
-      denies the straggler's Write; `_finish`'s own disarm is then a no-op.
-    * the batch's entries are ledgered as the interrupt left them
-      (`Ledger.rollback_rows`): `cancelled` for one it cut, a `rolled_back`
-      marker BESIDE the real row of one that had completed. The real rows
-      stand untouched -- spend is a fact -- and the marker is what says the
-      artifact that spend bought was then deleted.
-    * the batch's artifacts go, as a unit and by the list the manifest holds.
-    * the interrupted phase's per-dispatch marker is given back, so the re-run
-      starts with the retry budget it had rather than one interrupt poorer.
-      Only `review` has one today (`persist.rollback_markers`: one charge per
-      dispatched cell in `cell-attempts.json`); scout's and verify's counters
-      are charges against a PREVIOUS reply and are left standing.
-
-    Every step is wrapped in `except BaseException`, not `except Exception`: an
-    operator who holds the key down -- or presses it again because the first
-    Ctrl-C did not look like it had done anything -- raises a SECOND
-    KeyboardInterrupt in the middle of this, and that is a BaseException, so an
-    `except Exception` did not hold it. Escaping skipped `_finish` entirely:
-    both guards stayed armed over the whole session and the kimi run home kept
-    its config.toml and its credential symlinks. Every failure on the way out
-    is reported under one `rollback incomplete:` clause instead.
-    """
-    if batch is None:
-        return _status("error", INTERRUPTED_IDLE)
-    notes, checkpoint, finished = [], req.get("checkpoint"), set(handled)
-    try:
-        if guards is not None:
-            guards.disarm(pending)
-    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
-        notes.append("guards not disarmed: %s: %s" % (type(exc).__name__, exc))
-    try:
-        ledger.rollback_rows(pending, finished, checkpoint, mode, runner.host)
-    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
-        notes.append("the interrupt's own rows not written: %s: %s"
-                     % (type(exc).__name__, exc))
-    try:
-        _removed, problems = batch.roll_back()
-        notes += problems
-        persist.rollback_markers(review_root, checkpoint, pending)
-    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
-        notes.append("%s: %s" % (type(exc).__name__, exc))
-    return _status("error", INTERRUPTED % (done, total)
-                   + ("; rollback incomplete: " + "; ".join(notes) if notes else ""))
 
 
 def _resolve_target(args):

@@ -40,6 +40,7 @@ from scripts import hosts
 from scripts import safe_write
 
 MANIFEST_NAME = "run-manifest.json"
+SETUP_MANIFEST_NAME = "setup-manifest.json"
 SCHEMA_VERSION = 1
 
 
@@ -99,8 +100,12 @@ _FLAG_KEYS = ("fail_on", "severity", "gate_scope", "diff_context", "tools",
               "max_verify", "online")
 
 
-def manifest_path(review_root):
-    return os.path.join(review_root, ".panopticon", MANIFEST_NAME)
+def manifest_path(review_root, namespace=None):
+    """The parameter record for a review run or the independent setup flow."""
+    if namespace not in (None, "setup"):
+        raise ValueError("unknown manifest namespace: %r" % namespace)
+    name = SETUP_MANIFEST_NAME if namespace == "setup" else MANIFEST_NAME
+    return os.path.join(review_root, ".panopticon", name)
 
 
 def new_run_id():
@@ -301,7 +306,7 @@ POSTURE_DISCLOSED = "posture_disclosed"
 DISPATCH_REQUEST = "dispatch_request"
 
 
-def _rewrite(review_root, manifest):
+def _rewrite(review_root, manifest, *, namespace=None):
     """Write the manifest back through a temp file + `os.replace`.
 
     The manifest is otherwise write-once, and stays so for every anti-drift
@@ -323,7 +328,7 @@ def _rewrite(review_root, manifest):
     hooks' own `_atomic_write_json`) fail the same way.
     """
     body = {k: v for k, v in manifest.items() if k not in _EPHEMERAL_KEYS}
-    path = manifest_path(review_root)
+    path = manifest_path(review_root, namespace)
     tmp = path + ".tmp"
     with safe_write.open_w_nofollow(tmp) as fh:
         json.dump(body, fh, indent=2, sort_keys=True)
@@ -345,7 +350,7 @@ def record_tools_downgrade(review_root, manifest):
     return _rewrite(review_root, manifest)
 
 
-def record_posture_disclosure(review_root, manifest, digest, at=None):
+def record_posture_disclosure(review_root, manifest, digest, at=None, *, namespace=None):
     """Remember that this run's FULL posture block has now been printed (#1596).
 
     Not an anti-drift key and never read as one: it records what an operator
@@ -355,7 +360,7 @@ def record_posture_disclosure(review_root, manifest, digest, at=None):
     loop rewrites this file once per run rather than once per turn.
     """
     manifest[POSTURE_DISCLOSED] = {"digest": digest, "at": at or _now_iso()}
-    return _rewrite(review_root, manifest)
+    return _rewrite(review_root, manifest, namespace=namespace)
 
 
 def record_dispatch_request(review_root, manifest, checkpoint, sha256, at=None):

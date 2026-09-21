@@ -80,8 +80,8 @@ def classify_files(files):
     `"tests"` (the Tests seed globs match), `"commons:<Category>"` (the first
     shipped Commons category whose globs match, in catalog order) or `"code"`.
     Classifier-based, so the stage-1 spine and stage 3 agree."""
-    commons = [(cat, g.get("match") or []) for cat, g in discovery._commons_catalog().items()]
-    seeds = (discovery._tests_catalog().get(discovery.TESTS_GROUP) or {}).get("match") or []
+    commons = [(cat, g.get("match") or []) for cat, g in discovery.commons_catalog().items()]
+    seeds = (discovery.tests_catalog().get(discovery.TESTS_GROUP) or {}).get("match") or []
     kinds = {}
     for f in files:
         if discovery.match_patterns(f, seeds):
@@ -359,17 +359,17 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
     # sweep, nor a redundant vertical offer an affinity home or take a name.
     landing_view = {n: v for n, v in full_view.items()
                     if n in committed_view or a_assigned.get(n)}
-    suppressed = discovery._tests_suppressed(landing_view)
+    suppressed = discovery.tests_suppressed(landing_view)
     if suppressed:
         tests, attached = [], {}
     else:
         tests, attached, leftovers = discovery.sweep_tests(
             leftovers, discovery.vertical_homes(landing_view), landing_view)
     tops = {_top(n) for n in landing_view}
-    commons_cat = {n: g for n, g in discovery._commons_catalog().items()
+    commons_cat = {n: g for n, g in discovery.commons_catalog().items()
                    if n not in landing_view and n not in tops}
     commons_named, residual = discovery.assign_by_catalog(leftovers, commons_cat)
-    commons_named = discovery._fold_tiny_commons(commons_named, landing_view)
+    commons_named = discovery.fold_tiny_commons(commons_named, landing_view)
 
     code_files, n_commons, n_tests = count_code_files(files)
     ceiling = int(ceiling) if ceiling else ceiling_for(code_files, cap)

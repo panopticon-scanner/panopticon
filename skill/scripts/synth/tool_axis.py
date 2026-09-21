@@ -35,6 +35,10 @@ from . import validate_schema as validate_schema_mod
 UNPUBLISHABLE_NETWORK_TOOL = "(unpublishable)"
 
 
+class ToolManifestError(ValueError):
+    """A stale or foreign tool manifest cannot be used for synthesis."""
+
+
 @dataclass(frozen=True)
 class ToolAxis:
     """The tool layer's own accounting (WS-0 S2). `tools_ran` None means
@@ -59,10 +63,16 @@ class ToolAxis:
     # report DISCLOSES, this is what certification COUNTS. Never merged into
     # the report's findings body; `reconcile` hands it to `grade_report`.
     gated_suppressed: list | None = None
+    # #1740 fix round 2: `{globs, count}` -- the operator/committed exclusion
+    # POLICY this ingest ran under. Not a suppression: these findings were
+    # never candidates for any gate in any mode, which is exactly why the
+    # policy that removed them has to be published beside the two tallies that
+    # are.
+    excluded: dict | None = None
 
     @classmethod
     def load(cls, args, run_dir, plan_lists, dispositions, tools_ran, suppressed=None,
-             gated_suppressed=None):
+             gated_suppressed=None, excluded=None):
         """The tool axis from the run folder (WS-0 S3): the runner's
         tools-manifest with its two FATAL (#17) checks, the policy mode the
         dispatch plans declare, and the ingest results `ingest_tool_findings`
@@ -106,12 +116,12 @@ class ToolAxis:
             # carries schema_version; its run_id (when the runner stamps it) must
             # match this run. Either mismatch is a loud error, not a silent fallback.
             if "schema_version" not in manifest:
-                sys.exit("FATAL (#17): tools-manifest at %s lacks schema_version — it "
+                raise ToolManifestError("FATAL (#17): tools-manifest at %s lacks schema_version — it "
                          "looks like a pre-5.1 flat manifest from another run; refusing "
                          "to certify against it. Re-run the tools phase." % tm_path)
             mrid = manifest.get("run_id")
             if args.run_id and mrid and mrid != args.run_id:
-                sys.exit("FATAL (#17): tools-manifest run_id %r != this run %r (at %s) — "
+                raise ToolManifestError("FATAL (#17): tools-manifest run_id %r != this run %r (at %s) — "
                          "refusing to certify against another run's manifest."
                          % (mrid, args.run_id, tm_path))
             # #1692: `selected` is the whole of what this manifest is FOR --
@@ -144,7 +154,8 @@ class ToolAxis:
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
                    ingested_paths=args.files, manifest_invalid=manifest_invalid,
                    suppressed=suppressed,                     # #1578
-                   gated_suppressed=list(gated_suppressed or []))   # #1701
+                   gated_suppressed=list(gated_suppressed or []),   # #1701
+                   excluded=excluded)                          # #1740 round 2
 
 
 @dataclass(frozen=True)
@@ -174,7 +185,7 @@ class Reconciled:
     # beside `integrity` (which also publishes it) the way `integrity_ok` is:
     # certification takes it as an input, and must not have to read a section.
     tools_manifest_invalid: str | None = None
-    # #1701: the vendored-path drops this run's gate counts anyway (redteam
+    # #1701: the name-based drops this run's gate counts anyway (redteam
     # only; `[]` in every other mode). Beside `coverage` like the two blocks
     # above and for the same reason: `meta.coverage` is what the report SAYS,
     # and this is a population certification consumes but never publishes.
@@ -381,7 +392,8 @@ def reconcile(plan, tools, resolved):
     cell_audit = coverage_io.audit_floor_cells(plan.coverages or [], present)
     coverage = {
         "adapters": tools.dispositions or {},
-        # #1578 (SEC-G2B): the vendored-path drops, per segment; schema has the
+        # #1578 (SEC-G2B), widened by #1740: the name-based drops, per
+        # segment (vendored / virtualenv-by-name / fixture-corpus); schema has the
         # why. #1701 fix round 1 (F2): ONE tally, split in two. `gated` is what
         # this run's gate counted anyway; this key is the remainder -- what the
         # exclusion kept out of the gate as well as out of the body, which is
@@ -402,6 +414,10 @@ def reconcile(plan, tools, resolved):
         # the mode that changed the gate was the mode that stopped disclosing,
         # and the report contradicted its own run's stderr and CI gate line.
         "tools_suppressed_gated": gated_counts,
+        # #1740 fix round 2: the exclusion POLICY, repaired at the read like
+        # its two siblings -- `exclude_paths:` is target-authored, so a glob
+        # reaching a published artifact is a target-carried input.
+        "tools_excluded": repair_mod.repair_tools_excluded(tools.excluded),
         "tools_ran": (sorted(tools_ran) if tools_ran is not None
                       else sorted(resolved.tool_names)),
         "build_executing_tools": sorted(

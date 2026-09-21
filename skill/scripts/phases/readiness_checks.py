@@ -155,13 +155,13 @@ def _cli_rows(host):
     there is nothing to look for, which is a different answer from "looked and
     did not find it".
 
-    Only the selected row can gate (F2), and only when it names a binary that
-    is absent -- see SESSION_REMEDY. The others are informational: `driver
+    Only the selected row can gate (F2), when its binary is absent or the
+    registry no longer permits selecting it. The others are informational: `driver
     loop` will not pick them, so their absence costs this run nothing."""
     names = set(hosts.driver_hosts())
     if hosts.spec(host) is not None:
         # A manifest may name a registered-but-unselectable host (`gemini`);
-        # `orchestrate.loop` refuses that separately, and a row saying nothing
+        # `orchestrate.loop` refuses that, so readiness must name the same
         # about the host this document is ABOUT would be worse than either.
         names.add(host)
     rows = []
@@ -171,10 +171,13 @@ def _cli_rows(host):
         if not binary and not selected:
             continue                  # session-only, and not the one asked about
         found = shutil.which(binary) if binary else None
+        selectable = name in hosts.driver_hosts()
         rows.append({"host": name, "binary": binary or None,
                      "on_path": bool(found) if binary else None,
                      "path": found, "selected": selected,
-                     "remedy": (SESSION_REMEDY % {"binary": binary, "host": name}
+                     "remedy": (hosts.unselectable_host_message(name, "loop")
+                                if selected and not selectable else
+                                SESSION_REMEDY % {"binary": binary, "host": name}
                                 if selected and binary and not found else None)})
     rows.sort(key=lambda row: (not row["selected"], row["host"]))
     return rows

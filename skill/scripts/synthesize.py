@@ -254,14 +254,18 @@ def main(argv=None):
         tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False),
         config=config_schema.load_resolution(run_dir))
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
-    # #1701: `gated_suppressed` is the vendored-path drops the gate must still
+    # #1701: `gated_suppressed` is the name-based drops the gate must still
     # count under --security redteam; empty otherwise. It rides to certification
     # on the ToolAxis and never joins `tool_findings`, so the report body is the
     # same in both modes.
     (tool_findings, dispositions, tools_ran, suppressed,
-     gated_suppressed) = plan_mod.ingest_tool_findings(args)
-    tools = tool_axis_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran,
-                                        suppressed, gated_suppressed)
+     gated_suppressed, tools_excluded) = plan_mod.ingest_tool_findings(args)
+    try:
+        tools = tool_axis_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran,
+                                           suppressed, gated_suppressed, tools_excluded)
+    except tool_axis_mod.ToolManifestError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3              # invalid input, distinct from gate FAIL (1)
     prepared = findings_mod.FindingSet.prepare(args, tool_findings, run.security_mode)
     # #1634: redact the INPUT, not only the output -- and do it HERE, upstream
     # of the --emit-verify-queue branch, so both passes of a run see identical

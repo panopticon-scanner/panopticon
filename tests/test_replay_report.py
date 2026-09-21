@@ -15,6 +15,7 @@ import unittest
 from unittest import mock
 import scripts.phases.child as child_mod
 import scripts.phases.runio as runio
+from scripts import hosts
 
 import replay_report
 
@@ -92,6 +93,28 @@ class ReplayScrubTest(unittest.TestCase):
         _replay_into(self.review_root, self.run_folder, out_dir)
         self.assertEqual(self._read(out_dir, "synthesize.stderr"),
                          f"ingest: path mismatch under <scratch>/.panopticon/runs/{TAG}\n")
+
+
+    def test_usage_preflight_matches_the_archived_runs_measured_posture(self):
+        for host in (None, "claude", "codex"):
+            for state in (hosts.PROVEN, hosts.UNKNOWN, hosts.REFUTED):
+                with self.subTest(host=host, state=state):
+                    manifest = dict(MANIFEST)
+                    if host is None:
+                        manifest.pop("host")
+                    else:
+                        manifest["host"] = host
+                    with open(os.path.join(self.review_root, "run-manifest.json"), "w") as fh:
+                        json.dump(manifest, fh)
+                    with open(os.path.join(self.run_folder, "host-capabilities.json"), "w") as fh:
+                        json.dump({"capabilities": {hosts.USAGE_LEDGER: {"state": state}}}, fh)
+                    out = os.path.join(self.tmp.name, "out-%s-%s" % (host, state))
+                    if host == "claude" and state == hosts.PROVEN:
+                        with self.assertRaisesRegex(SystemExit, "lacks.*usage.json"):
+                            _replay_into(self.review_root, self.run_folder, out)
+                    else:
+                        _replay_into(self.review_root, self.run_folder, out)
+                    self.assertFalse(os.path.exists(os.path.join(self.run_folder, "usage.json")))
 
 
 class ScrubTest(unittest.TestCase):
