@@ -20,7 +20,7 @@ from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _make_finding, _cli_a
 
 
 class TestFindingIdShape(unittest.TestCase):
-    """REM-11.3 (#1535): the id pattern is anchored with \A/\Z, not ^/$.
+    r"""REM-11.3 (#1535): the id pattern is anchored with \A/\Z, not ^/$.
 
     `$` matches before a trailing newline, so `"COD-001\n"` -- an agent-
     supplied id read at the report boundary (report.py validate) -- passed
