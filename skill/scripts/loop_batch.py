@@ -41,6 +41,11 @@ CHECKPOINT_ROLES = {"scout": ("scout",),
                     "verify": ("advisor", "domain_advisor"),
                     "scan": ()}
 
+# Acceptance roles are derived from the controller-bound output path, never
+# from an entry's claimed shell. Verify has two roles with different charters.
+OUTPUT_ROLES = {"scout": "scout", "review-cell": "domain_panel",
+                "verify-cell": "domain_advisor", "tool-advisor": "advisor"}
+
 
 def expected_enforced(review_root, host, namespace=None):
     """Whether THIS run's own evidence says its entries launch enforced (#1720).
@@ -110,7 +115,7 @@ def _allowed_shells(checkpoint):
 
 
 def refuse_misrouted(pending, checkpoint):
-    """The ids whose `agent` is not one this checkpoint dispatches (#1727).
+    """The ids whose shell disagrees with their output role or checkpoint.
 
     Two shapes are refused, and they are the same statement read from either
     side: an ENFORCED entry whose agent is not one of `CHECKPOINT_ROLES[
@@ -127,7 +132,10 @@ def refuse_misrouted(pending, checkpoint):
             continue
         agent = entry.get("agent")
         if entry.get("enforced"):
-            if not (isinstance(agent, str) and agent in allowed):
+            role = OUTPUT_ROLES.get(persist.role_of(entry))
+            expected = (dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
+                        if role in checkpoint_roles(checkpoint) else None)
+            if not (isinstance(agent, str) and agent in allowed and agent == expected):
                 misrouted.append(entry.get("id"))
         elif agent is not None:
             misrouted.append(entry.get("id"))
@@ -146,7 +154,7 @@ def misroute_refusal(misrouted, checkpoint):
     does the same.
     """
     allowed = ", ".join(sorted(_allowed_shells(checkpoint))) or "no enforcement shell"
-    return ("driver loop: entry %r names an enforcement shell its checkpoint does "
+    return ("driver loop: entry %r names an enforcement shell its output role or checkpoint does "
             "not dispatch (checkpoint %r dispatches: %s); the dispatch request does "
             "not match this run's own plan -- re-run with --reset"
             % (misrouted[0], checkpoint, allowed))
