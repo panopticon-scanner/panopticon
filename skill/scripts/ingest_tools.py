@@ -331,7 +331,6 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
         # run_tools._is_excluded, so an exclude_glob behaves identically on both
         # the ingest and the scan path (a no-op on POSIX; correct on Windows).
         fpath = str((f.get("location") or {}).get("file", "")).replace(os.sep, "/")
-        segment = None
         if _is_run_artifact_path(fpath, target_root, venv_cache):   # not project source
             ra_count += 1
             continue
