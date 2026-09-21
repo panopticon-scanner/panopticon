@@ -113,9 +113,31 @@ RUN curl -sfL --connect-timeout 5 --max-time 60 "https://rubygems.org/downloads/
     && rm /tmp/thor.gem /tmp/brakeman.gem /tmp/bundler-audit.gem \
     && timeout 120 bundle-audit update
 
-# Node (eslint + security plugin). pip-audit used to ride along on this line;
-# it is one of the four tools in the closure above now.
-RUN npm install --fetch-timeout=600000 -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}"
+# Node: eslint, eslint-plugin-security and
+# @microsoft/eslint-formatter-sarif, from the lockfile this repo
+# commits -- tools-image/node/package.json is the declared list and
+# package-lock.json is the 140-package closure it resolves to.
+# `npm install -g <pkg>@<version>` pinned the three NAMED packages and let the
+# registry decide the other 136 at build time -- running each one's install
+# scripts as root. `npm ci` installs exactly what
+# tools-image/node/package-lock.json records, refusing to proceed if the
+# lockfile and package.json disagree, and --ignore-scripts is the whole point:
+# no install-time code from anything in that tree runs.
+#
+# WORKDIR, not `cd` (DL3003) and not `npm ci --prefix`: npm 12 reads the
+# lockfile from --prefix but the PROJECT from the working directory, so
+# `npm ci --prefix /opt/panopticon-node` dies with "Missing: node@0.0.0 from
+# lock file". Reset to `/`, the base image's own workdir, so nothing below
+# inherits this one.
+#
+# pip-audit used to ride along on the old npm line; it is one of the four
+# tools in the python closure above now. The three ARGs above stay as the
+# declared pins, and a test fails when they and package.json disagree.
+COPY tools-image/node/package.json tools-image/node/package-lock.json /opt/panopticon-node/
+WORKDIR /opt/panopticon-node
+RUN npm ci --fetch-timeout=600000 --ignore-scripts --omit=dev
+WORKDIR /
+ENV PATH="/opt/panopticon-node/node_modules/.bin:${PATH}"
 
 # OSV scanner (static Go binary)
 ARG OSV_SCANNER_VERSION=1.8.2

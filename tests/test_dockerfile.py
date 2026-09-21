@@ -101,10 +101,19 @@ class TestDockerfile(unittest.TestCase):
 
 class TestDockerfilePhase1(unittest.TestCase):
     def test_phase1_adapters_mentioned(self):
+        # Each tool is asserted where the image actually gets it from, which
+        # after #1734 is no longer all one file: two of the three moved into a
+        # pinned closure, and a Dockerfile grep would pass on the PROSE that
+        # explains the move -- naming the tool in a comment is not shipping it.
         text = _read_dockerfile()
-        self.assertIn("pip-audit", text)
         self.assertIn("osv-scanner", text)
-        self.assertIn("eslint-plugin-security", text)
+        with open(os.path.join(ROOT, "requirements-tools.txt"),
+                  encoding="utf-8") as fh:
+            self.assertRegex(fh.read(), r"(?m)^pip-audit==")
+        with open(os.path.join(ROOT, "tools-image", "node", "package.json"),
+                  encoding="utf-8") as fh:
+            self.assertIn("eslint-plugin-security",
+                          json.load(fh)["dependencies"])
 
 
 class TestFindSecBugsIntegrity(unittest.TestCase):
