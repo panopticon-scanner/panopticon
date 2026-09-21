@@ -88,9 +88,11 @@ _VENV_DIR_NAMES = {".venv", "venv"}
 _VENV_NAME_SEGMENTS = _VENV_DIR_NAMES | {"site-packages"}
 # The pseudo-segment the fixture-corpus prune is disclosed under (#1740). Not a
 # directory name -- `tests/fixtures`, `spec/fixtures`, `testdata` and
-# `__fixtures__` are one class with one rule -- so it names the RULE instead,
-# and it can never collide with a real segment because a path segment holding a
-# "/" does not exist.
+# `__fixtures__` are one class with one rule -- so it names the RULE instead.
+# It cannot collide with a real segment because no rule here can ever emit this
+# token: the other two suppressions return a segment drawn from `_VENDORED_DIRS`
+# or `_VENV_NAME_SEGMENTS`, and a directory in the tree literally named
+# `fixture-corpus` matches neither list and is never suppressed at all.
 FIXTURE_SEGMENT = "fixture-corpus"
 # #1740: every suppression segment belongs to exactly one class, and the gate
 # line names the class beside the segment. One definition, because the stderr

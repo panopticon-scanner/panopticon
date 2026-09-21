@@ -289,8 +289,18 @@ def partition_venv_dirs(venv_dirs, security_mode="standard"):
     may not be lost to a directory NAME, which is what `security_gate` enforces
     at ingest. Telling semgrep, trivy and bandit to skip `app/venv/` made that
     enforcement moot for three scanners: there was no finding left to re-admit.
-    So under redteam the name-only directories are SCANNED, and only the
-    marker-confirmed ones are skipped.
+    So under redteam this function stops handing the name-only directories to
+    any scanner's exclusion knob, and only the marker-confirmed ones are
+    skipped.
+
+    That gets semgrep and trivy into `app/venv/`, and NOT bandit: a bandit run
+    also carries `--ini <target>/.bandit`, and `_bandit_exclude_value` merges
+    that file's own `exclude` entries (this repo's list `venv` and `.venv`)
+    into every invocation, in every mode. So a name-only virtualenv named in
+    the TARGET's `.bandit` is still unscanned by bandit under redteam. Narrowing
+    a target-authored config by security mode is the same question #1877 tracks
+    for the rest of the target's discoverable configuration, and it is decided
+    there, not here.
 
     Under `standard` nothing changes: both kinds are skipped, which is #1638
     P09's whole point (58 bandit findings from run-13's `.venv/` bought 46 of
