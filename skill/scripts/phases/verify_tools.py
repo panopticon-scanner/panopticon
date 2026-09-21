@@ -24,6 +24,7 @@ import os
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
 import scripts.ingest_tools as ingest_tools
+import scripts.redact as redact
 # #1720: ONE owner for the enforcement posture -- the loop re-derives it
 # to CHECK the dispatch request this module writes, so both sides must
 # read the same function or a run can refuse itself.
@@ -112,8 +113,10 @@ def _tool_verify_queue(review_root, manifest):
     tools_dir = runio._pano(review_root, "tools")
     if not ran or not os.path.isdir(tools_dir):
         return []
-    findings = findings_mod.load_findings(
-        sorted(_glob.glob(runio._pano(review_root, "findings-*.json"))))
+    # Match synthesis before fingerprinting: a redacted agent title changes
+    # the combined queue's ordering and therefore its max-verify cut (#1660).
+    findings = redact.redact_tree(findings_mod.load_findings(
+        sorted(_glob.glob(runio._pano(review_root, "findings-*.json")))))
     tool_findings, _disp = ingest_tools.ingest_dir_detailed(
         tools_dir, None, include_fixtures=_tools_include_fixtures(manifest),
         target_root=review_root)

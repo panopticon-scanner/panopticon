@@ -9,6 +9,8 @@ Style mirrors test_driver_verify.py / TestVerifyMatrixEndToEnd: drives state on
 disk and runs a REAL synthesize.py subprocess via phases.synthesize.synthesize_execute.
 """
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -24,6 +26,7 @@ import scripts.phases.synthesize as synthesize
 
 import scripts.evidence as evidence
 import scripts.model_resolver as model_resolver
+import scripts.synthesize as synthesize_cli
 
 RUN_ID = "RID"
 
@@ -122,6 +125,30 @@ class TestToolQueueParity(_ToolVerifyBase):
         return {
             (f["fingerprint"], f["id"]) for f in report["findings"] if evidence.is_tool_sourced(f)
         }
+
+    def test_redactable_agent_titles_preserve_the_capped_combined_queue(self):
+        # The cap applies BEFORE filtering to tools. An agent's changed title
+        # fingerprint can therefore change which tool gets an advisor (#1660).
+        for letter in "ABCDEFGH":
+            with self.subTest(token=letter):
+                agent = {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH",
+                         "title": "credential ghp_" + letter * 36,
+                         "category": "credential", "location": {"file": "src/app.py", "line_start": 5}}
+                d = self._repo([_result("rule-" + letter, "src/app.py", 1)],
+                               agent_findings=[agent])
+                manifest = self._manifest(max_verify=1)
+                driver_pairs = {(qid, f["id"]) for qid, f in verify_tools._tool_verify_queue(d, manifest)}
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    rc = synthesize_cli.main([
+                        "--emit-verify-queue", "--max-verify", "1", "--target", d,
+                        "--run-dir", runio._pano(d), "--tools-dir", runio._pano(d, "tools"),
+                        runio._pano(d, "findings-app-SEC.json")])
+                self.assertEqual(0, rc)
+                queue = runio._load_json(runio._pano(d, "verify-queue.json"))
+                self.assertEqual(1, len(queue["entries"]))
+                synth_pairs = {(e["queue_id"], e["finding"]["id"]) for e in queue["entries"]
+                               if evidence.is_tool_sourced(e["finding"])}
+                self.assertEqual(synth_pairs, driver_pairs)
 
     def test_queue_ids_and_ids_match_synthesize(self):
         d = self._repo([_result("r1", "src/app.py", 1), _result("r2", "src/app.py", 9)])
