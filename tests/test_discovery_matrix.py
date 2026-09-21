@@ -352,7 +352,9 @@ def test_collect_changed_files_default_branch_fallback():
         mock_git.side_effect = [
             Exception("not main"),  # fails on main
             MagicMock(stdout="fake_master_hash\n"), # succeeds on master
-            MagicMock(stdout="file1.py\n"), MagicMock(stdout="")
+            # #1739: the two file listings are read with -z/text=False, so
+            # they hand back NUL-separated BYTES, not newline-separated text.
+            MagicMock(stdout=b"file1.py\0"), MagicMock(stdout=b"")
         ]
         with patch('scripts.discovery._on_allowed_dotdir_path', return_value=True), patch('os.path.isfile', return_value=True):
             res = discovery.collect_changed_files("/tmp/x", base=None)

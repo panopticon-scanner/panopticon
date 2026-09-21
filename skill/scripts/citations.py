@@ -13,15 +13,18 @@ import urllib.request
 
 if TYPE_CHECKING:
     from scripts import _version
+    from scripts import safe_write
     from scripts._version import __version__
     from scripts.evidence import is_tool_sourced
 else:
     try:
         from scripts import _version
+        from scripts import safe_write
         from scripts._version import __version__
         from scripts.evidence import is_tool_sourced
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
         import _version
+        import safe_write
         from _version import __version__
         from evidence import is_tool_sourced
 
@@ -84,23 +87,6 @@ def validate_cwe(cwe_id, catalog, tool_sourced=False):
     return {"id": cwe_id, "name": None, "verified": bool(tool_sourced)}
 
 
-def normalize_cwe_entries(entries, catalog, tool_sourced=False):
-    """Normalize a mixed list of CWE strings/dicts to validated dicts.
-
-    Dict entries are preserved as-is; string entries are validated against
-    the catalog. Invalid or malformed entries are dropped.
-    """
-    out = []
-    for entry in entries:
-        if isinstance(entry, dict):
-            out.append(entry)
-        elif isinstance(entry, str):
-            v = validate_cwe(entry, catalog, tool_sourced=tool_sourced)
-            if v:
-                out.append(v)
-    return out
-
-
 def derive_owasp(cwe_ids, asserted, catalog):
     """Derive OWASP mappings from CWE IDs and asserted OWASP tags."""
     out = []
@@ -147,10 +133,28 @@ def _load_cache(cache_path):
 
 
 def _save_cache(cache_path, cache):
+    """Best-effort: the EPSS cache is an optimization, never a run input.
+
+    #1735: it defaults to `.panopticon/epss-cache.json` in the REVIEWED tree,
+    a fixed name a target can pre-commit as a symlink -- so the write goes
+    through the no-follow open. Its refusal (ValueError) joins OSError in the
+    shrug rather than taking the run down: an uncacheable score has always been
+    a shrug here, and the refusal has already done the only job that mattered.
+
+    Swallowed is not the same as unsaid, though (round 1 ruling). A refused
+    path means someone COMMITTED a link at this name, which is an attack signal
+    and the operator's to act on; an OSError means the directory is read-only,
+    which is boring and self-correcting. So the refusal gets one stderr line
+    and the OSError keeps its silence.
+    """
     try:
+        safe_write.confine_artifact_path(cache_path)
         os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
-        with open(cache_path, "w", encoding="utf-8") as fh:
+        with safe_write.open_w_nofollow(cache_path) as fh:
             json.dump(cache, fh)
+    except ValueError as exc:
+        print("citations: refusing to write the EPSS cache -- %s" % exc,
+              file=sys.stderr)
     except OSError:
         pass
 
@@ -222,20 +226,6 @@ def _compute_citation_quality(citations, finding_cvss=None):
     if has_derived_cwe or citations or finding_cvss:
         return "minimal"
     return "none"
-
-
-def _raw_cwe_ids(raw):
-    ids = []
-    entries = raw.get("cwe")
-    entries = entries if isinstance(entries, list) else []
-    for entry in entries:
-        if isinstance(entry, dict):
-            cid = entry.get("id")
-        else:
-            cid = entry
-        if isinstance(cid, str):
-            ids.append(cid)
-    return ids
 
 
 def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, opener=None):

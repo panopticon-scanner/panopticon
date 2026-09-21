@@ -140,6 +140,7 @@ def _cli_flags(args, review_root=None, resolution=None):
               "diff_context": getattr(args, "diff_context", None),
               "tools": tools_flag if tools_flag is not None
                        else (True if cfg.get("tools") else None),
+              "online": True if getattr(args, "online", False) else None,
               "include_fixtures": True if (getattr(args, "include_fixtures", False)
                                            or cfg.get("include_fixtures")) else None,
               "max_per_group": getattr(args, "max_per_group", None)
@@ -262,6 +263,8 @@ def build_parser():
         tools_group = p.add_mutually_exclusive_group()
         tools_group.add_argument("--tools", action="store_true")
         tools_group.add_argument("--no-tools", action="store_true")
+        p.add_argument("--online", action="store_true", default=None,
+                       help="allow dependency auditors through the restricted egress proxy")
         p.add_argument("--include-fixtures", action="store_true")
         # #1519: when this invocation's MEASURED artifact_write_guard posture
         # is not proven, dispatching write-capable cells is refused unless the
@@ -329,6 +332,14 @@ def build_parser():
     # max_groups), else the defaults (48; max(4, 2 x ceil(code_files / cap))).
     sp.add_argument("--max-per-group", type=_positive_int, default=None)
     sp.add_argument("--max-groups", type=_positive_int, default=None)
+    # #1737: `driver setup` dispatches too -- one agent, over the whole
+    # untrusted tree -- so it needs the same explicit acceptance `run`/`loop`
+    # take when that dispatch cannot be enforced. Without it the refusal names
+    # a remedy the verb does not accept, which is a refusal with no way out.
+    sp.add_argument("--allow-unenforced", action="store_true",
+                    help="accept a shell-less setup-scan dispatch when "
+                         "tool_policy_enforced is not proven; recorded in "
+                         "setup-unenforced-ack.json")
     # #1637 P10: the read-only preflight. It shares `run`/`loop`'s `target` and
     # `--host` and NOTHING else on purpose -- it is not a run, so a flag that
     # configures one (`--no-tools`, `--pr`, `--reset`, ...) would either have
@@ -342,6 +353,8 @@ def build_parser():
                     choices=list(hosts.driver_hosts()))
     rp.add_argument("--json", action="store_true",
                     help="the document as JSON instead of the human table")
+    rp.add_argument("--online", action="store_true", default=None,
+                    help="also check the pinned egress-proxy image")
     pp = sub.add_parser("persist")
     pp.add_argument("entry_id")
     pp.add_argument("target", nargs="?", default=".")
@@ -427,23 +440,18 @@ def _disclose_posture(review_root, manifest, fresh, namespace=None):
     resolves the per-run folder off the manifest, so creating one mid-flow
     would move `host-capabilities.json` out from under this very function.
 
-    ...and never in the setup namespace (#1616 item 3), for the mirror-image
-    reason. `record_posture_disclosure` writes `run-manifest.json` -- that
-    path is unconditional -- while `driver loop --setup` is driving its OWN
-    `setup-manifest.json`, so stamping there would overwrite a prior review
-    run's manifest with setup's body: a new run_id, a new tag, and every
-    `_pano` path of that run pointing somewhere else. The cost of not
-    stamping is that setup prints the full block on each of its two
-    invocations instead of once, which is the cheap half of the trade.
+    Setup stamps its own `setup-manifest.json` through the same namespace
+    resolver. A prior review run's manifest and capability evidence remain
+    associated with that review run.
     """
     digest = host_disclosure.disclosure_digest(fresh)
     since = run_manifest.posture_disclosed_at(manifest, digest)
     _emit_posture_disclosure(fresh, since=since)
-    if (since is None and namespace is None
-            and os.path.isfile(run_manifest.manifest_path(review_root))):
+    if (since is None
+            and os.path.isfile(run_manifest.manifest_path(review_root, namespace))):
         try:
             run_manifest.record_posture_disclosure(review_root, manifest, digest,
-                                                   fresh.get("probed_at"))
+                                                   fresh.get("probed_at"), namespace=namespace)
         except OSError as exc:
             # The stamp is EXPENDABLE, and a stamp that cannot be written must
             # not be the thing that kills an invocation. Losing it costs one
@@ -458,6 +466,16 @@ def _disclose_posture(review_root, manifest, fresh, namespace=None):
                 "driver: could not record the posture disclosure stamp (%s: %s)"
                 " -- the full block will print again next invocation\n"
                 % (type(exc).__name__, exc))
+        except ValueError as exc:
+            # #1735: NOT the expendable case above. A ValueError here is the
+            # whole-path confinement refusing a planted component -- the tree is
+            # hostile, so the run must stop rather than shrug and continue. It
+            # stops the way this verb stops: as its own error STATUS. Returned
+            # rather than raised for exactly the reason the OSError comment
+            # gives -- `driver run` speaks a status protocol, and a traceback is
+            # not a status. The raise stays inside `_rewrite`, where fail-closed
+            # and loud belongs; this is only where it becomes a sentence.
+            return ("refusing to record the posture disclosure stamp: %s" % exc)
 
 
 def _establish_host_posture(review_root, manifest, args, *, registration_dir=None,
@@ -481,10 +499,21 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     `driver loop --setup` would otherwise probe and then overwrite THAT run's
     evidence -- the hazard `phases/persist.run_dir` exists to resolve, and the
     one `test_setup_never_writes_into_a_stale_review_runs_folder` already pins
-    for setup's other artifacts. Nothing reads host evidence in the setup
-    namespace (`phases/setup._setup_scan_entry` passes the all-unknown posture
-    explicitly, because setup is what runs BEFORE a run exists), so this
-    writes a record rather than feeding a gate.
+    for setup's other artifacts.
+
+    That artifact FEEDS A GATE (#1737). It used to be a record and nothing
+    more, which is why both setup entrypoints could afford to differ about
+    whether they ran this step at all; now `loop_batch.expected_enforced(...,
+    namespace="setup")` reads it to decide whether the setup-scan dispatch
+    gets its registered shell, and `phases/setup.require_unenforced_scan_ack`
+    reads it to decide whether the shell-less fallback needs the operator's
+    acknowledgement. So EVERY caller of `run_setup_flow` passes this step --
+    `driver setup` as much as `driver loop --setup`. A caller that skipped it
+    would hand the gate a `.panopticon/host-capabilities.json` nothing in this
+    invocation measured: absent on a fresh target (refusing the bootstrap with
+    a remedy that cannot change the answer), or planted by the target and
+    believed. Writing it here, before any phase runs, is what makes the
+    evidence this invocation's own.
 
     `registration_dir` (#1609) is a TEST SEAM: None -- the default, and what
     every production caller passes -- keeps the registration probes reading the
@@ -603,7 +632,9 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
     stored = runio._load_json(path)
     _carry_output_schema_shape(fresh, stored)
-    _disclose_posture(review_root, manifest, fresh, namespace)
+    disclosure_refusal = _disclose_posture(review_root, manifest, fresh, namespace)
+    if disclosure_refusal:                         # #1735: a planted staging path
+        return disclosure_refusal
     # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
     # tool_policy_enforced is already REFUTED for an unrelated reason -- no
     # registration directory, i.e. every machine that has not run `driver
@@ -880,12 +911,13 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # the flags were composed from.
     resolution = _resolve_config(args, review_root)
     manifest = run_manifest.load_manifest(review_root)
-    if runio._foreign_manifest(manifest, review_root, run_manifest.manifest_path(review_root)):
+    foreign_reason = runio._foreign_manifest_reason(
+        manifest, review_root, run_manifest.manifest_path(review_root))
+    if foreign_reason:
         # #1093: a target-committed run-manifest.json (foreign review_root) could
         # preset flags to skip tools / force gate:PASS. Drop it and rebuild from
         # the real CLI args, exactly like a corrupt manifest below.
-        print("driver: ignoring foreign run-manifest.json (stamped review_root "
-              "%r != %r)" % (manifest.get("review_root"), os.path.abspath(review_root)),
+        print("driver: ignoring foreign run-manifest.json (%s)" % foreign_reason,
               file=sys.stderr, flush=True)
         manifest = None
     if manifest is None:
@@ -963,7 +995,10 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         # tools phase rewrites its marker as the operator's own skip, and
         # synthesis discloses it as meta.tools.disabled_mid_run.
         if run_manifest.is_tools_downgrade(manifest, cli_flags):
-            manifest = run_manifest.record_tools_downgrade(review_root, manifest)
+            try:
+                manifest = run_manifest.record_tools_downgrade(review_root, manifest)
+            except ValueError as exc:     # #1735: the same refusal, the same protocol
+                return runio._error_status(str(exc))
     # In-memory only, and deliberately NOT a manifest field: it names where the
     # HOST SESSION runs, which is a property of this invocation rather than of
     # the run, and it feeds nothing but the cost-ledger transcript lookup. Not
@@ -982,15 +1017,25 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # fresh token per iteration by construction, since every iteration calls
     # this function.
     manifest["invocation"] = run_manifest.new_run_id()
-    # §5.1: point runs/latest at the active run folder now that the manifest (hence
-    # the tag) is established — so the pointer exists throughout the run, not just
-    # after synthesize writes the report.
-    runio._ensure_run_symlinks(review_root)
-    # I2: capture the clean-tree baseline unconditionally and BEFORE the engine
-    # runs. Idempotent (returns the existing baseline if present) -> no-op on a
-    # normal resume, but self-heals a baseline that a mid-first-run interrupt
-    # left missing (which had silently disabled the clean-tree guard).
-    validate.capture_tree_baseline(review_root, runner=runner)
+    # Both writes below land inside the REVIEWED tree, and each can refuse a
+    # planted component -- `_ensure_run_symlinks` with DriverError, the baseline
+    # write with the confinement's ValueError. They sat outside every `except` on
+    # this path, so on the hostile tree #1735 is about they ended the invocation
+    # with a traceback and no JSON. Same rule as `run_engine` below: refusing is
+    # the guard working, and it speaks this verb's status protocol.
+    try:
+        # §5.1: point runs/latest at the active run folder now that the manifest
+        # (hence the tag) is established — so the pointer exists throughout the
+        # run, not just after synthesize writes the report.
+        runio._ensure_run_symlinks(review_root)
+        # I2: capture the clean-tree baseline unconditionally and BEFORE the
+        # engine runs. Idempotent (returns the existing baseline if present) ->
+        # no-op on a normal resume, but self-heals a baseline that a
+        # mid-first-run interrupt left missing (which had silently disabled the
+        # clean-tree guard).
+        validate.capture_tree_baseline(review_root, runner=runner)
+    except (runio.DriverError, ValueError) as exc:
+        return runio._error_status(str(exc))
     # 5.2: establish this host's capability posture BEFORE any phase can build
     # a dispatch entry, and re-establish it on every resume. Not an
     # engine.Phase: phases are skipped once their done-predicate holds, which
@@ -1066,9 +1111,20 @@ def main(argv=None):
         # protocol, and `driver readiness && driver loop` is the reason it
         # exists (#1637 P10).
         return readiness.emit_preflight(args.target, host=args.host,
-                                        as_json=args.json)
+                                        as_json=args.json, online=args.online)
     if args.verb == "setup":
-        return engine.emit_status(setup.run_setup_flow(args))
+        # #1737 fix round 1: WITH the posture step, exactly as
+        # `orchestrate.loop --setup` passes it. `driver setup` dispatches an
+        # agent over the whole untrusted tree, and since #1737 that dispatch
+        # is gated on this host's measured `tool_policy_enforced` -- so a verb
+        # that probed nothing read whatever `.panopticon/host-capabilities.json`
+        # happened to be lying on the tree (or nothing at all, on a fresh
+        # target) and refused the bootstrap with a remedy that could not
+        # change the answer. The step is namespace-aware: it writes setup's
+        # own flat artifact and skips the drift COMPARISON, which is a
+        # statement about one run and this is not one.
+        return engine.emit_status(
+            setup.run_setup_flow(args, posture=_establish_host_posture))
     if args.verb == "migrate-config":
         # Its own exit code, like `readiness`: this verb writes one file and
         # says what it wrote, it is not a review and speaks no status protocol.

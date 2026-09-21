@@ -511,9 +511,18 @@ def probe_kimi_model_alias(host, configured=None):
         return (hosts.REFUTED, KIMI_MODEL_ALIAS,
                 "no [models] table is readable in the installed kimi config, "
                 "so no entry model can bind")
-    faults, bound = [], []
+    faults, bound, unbound = [], [], []
     for role in common.DRIVER_ROLES:
         tier = model_resolver.resolve_model(host, role).get("model")
+        if tier is None:
+            # #1737: the profile states "inherit the session's model" for this
+            # role (R-F4-2, `setup_scan`). The runner reads it the same way --
+            # `runners/kimi.py` binds `-m` only `if entry.get("model")` -- so
+            # there is no entry model for an alias to fail to resolve, and
+            # refuting here would report a break in a binding nobody asked
+            # for. Named in the detail, never silently dropped.
+            unbound.append(role)
+            continue
         alias = kimi_runner.resolve_cli_alias(tier, configured)
         if alias is None:
             faults.append("%s: entry model %r resolves to no configured alias" % (role, tier))
@@ -521,9 +530,18 @@ def probe_kimi_model_alias(host, configured=None):
             bound.append("%s->%s" % (role, alias))
     if faults:
         return (hosts.REFUTED, KIMI_MODEL_ALIAS, "; ".join(faults))
-    return (hosts.PROVEN, KIMI_MODEL_ALIAS,
-            "%d/%d roles bind a configured alias: %s"
-            % (len(bound), len(common.DRIVER_ROLES), ", ".join(bound)))
+    if not bound:
+        # Every role inheriting proves nothing about alias binding, the same
+        # vacuous PROVEN probes.claude.probe_entry_model_bound refuses.
+        return (hosts.UNKNOWN, KIMI_MODEL_ALIAS,
+                "no role carries an entry model, so no alias binding could be "
+                "measured: %s" % ", ".join(unbound))
+    detail = ("%d/%d roles bind a configured alias: %s"
+              % (len(bound), len(common.DRIVER_ROLES), ", ".join(bound)))
+    if unbound:
+        detail += ("; deliberately unbound, the session's model runs: %s"
+                   % ", ".join(unbound))
+    return (hosts.PROVEN, KIMI_MODEL_ALIAS, detail)
 
 
 def probe_kimi_usage_wire(host):

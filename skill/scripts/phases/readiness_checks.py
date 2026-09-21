@@ -20,9 +20,11 @@ dispatch. See DEVELOPMENT.md, "Test-only injection seams";
 import importlib.util
 import os
 import shutil
+import subprocess
 
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
+from scripts.tools import egress
 
 
 # The repo root, resolved from `skill/`'s own location rather than from cwd:
@@ -59,6 +61,26 @@ _NOT_APPLICABLE = "not applicable (--no-tools)"
 # launch seams in tests/test_host_launch_guard.py; this one is not a host CLI,
 # so it is not spelled DEFAULT_RUNNER and does not belong in LAUNCH_SEAMS.
 DOCKER_RUNNER = None
+
+
+def egress_proxy_row(online, tools_flag=None):
+    """A missing optional sidecar is a warning before any paid dispatch."""
+    if not online or tools_flag is False:
+        return {"ok": None, "level": "skip", "detail": "not requested (--online with tools)"}
+    runner = DOCKER_RUNNER if DOCKER_RUNNER is not None else setup_flow.DEFAULT_RUNNER
+    try:
+        proc = runner(["docker", "image", "inspect", egress.PROXY_IMAGE],
+                      capture_output=True, text=True, timeout=15)
+        present = proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        present = False
+    if present:
+        return {"ok": True, "level": "ok", "detail": egress.PROXY_IMAGE}
+    return {"ok": None, "level": "warn",
+            "detail": "online dependency audits need the pinned sidecar; pull it before "
+                      "starting: `docker pull %s`. If egress remains unavailable, "
+                      "the report cannot certify tool coverage." % egress.PROXY_IMAGE}
+
 
 def _docker_checks(tools_flag):
     """The daemon + image rows, or two `ok: null` rows under `--no-tools`.
@@ -133,13 +155,13 @@ def _cli_rows(host):
     there is nothing to look for, which is a different answer from "looked and
     did not find it".
 
-    Only the selected row can gate (F2), and only when it names a binary that
-    is absent -- see SESSION_REMEDY. The others are informational: `driver
+    Only the selected row can gate (F2), when its binary is absent or the
+    registry no longer permits selecting it. The others are informational: `driver
     loop` will not pick them, so their absence costs this run nothing."""
     names = set(hosts.driver_hosts())
     if hosts.spec(host) is not None:
         # A manifest may name a registered-but-unselectable host (`gemini`);
-        # `orchestrate.loop` refuses that separately, and a row saying nothing
+        # `orchestrate.loop` refuses that, so readiness must name the same
         # about the host this document is ABOUT would be worse than either.
         names.add(host)
     rows = []
@@ -149,10 +171,13 @@ def _cli_rows(host):
         if not binary and not selected:
             continue                  # session-only, and not the one asked about
         found = shutil.which(binary) if binary else None
+        selectable = name in hosts.driver_hosts()
         rows.append({"host": name, "binary": binary or None,
                      "on_path": bool(found) if binary else None,
                      "path": found, "selected": selected,
-                     "remedy": (SESSION_REMEDY % {"binary": binary, "host": name}
+                     "remedy": (hosts.unselectable_host_message(name, "loop")
+                                if selected and not selectable else
+                                SESSION_REMEDY % {"binary": binary, "host": name}
                                 if selected and binary and not found else None)})
     rows.sort(key=lambda row: (not row["selected"], row["host"]))
     return rows

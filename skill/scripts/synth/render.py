@@ -7,6 +7,7 @@ import uuid
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.redact as redact
+import scripts.safe_write as safe_write
 from . import findings as findings_mod
 from . import grading as grading_mod
 
@@ -95,7 +96,11 @@ def _render_health(health):
             "the gate." % (score, "{:,}".format(loc), "{:,}".format(wd)))
 
 def _suppressed_line(suppressed):
-    """#1578: what the vendored-path exclusion dropped, named per segment.
+    """#1578: what a directory-NAME exclusion dropped, named per segment.
+
+    #1740: three rules feed it -- a vendored directory, a virtualenv known only
+    by its name, and the fixture corpus -- so the wording names the class of
+    evidence they share rather than the oldest of the three.
 
     Silent when nothing was dropped and on a report that never measured this
     (pre-#1578, or a foreign report on the --compare path) -- "nobody counted"
@@ -106,9 +111,10 @@ def _suppressed_line(suppressed):
     if not rows:
         return ""
     return ("**Tool findings suppressed:** %s \u2014 dropped from the tool axis "
-            "for sitting under a conventional vendored-dependency directory; the "
-            "agentic panel still reviewed those files, and `security_gate "
-            "--security redteam` gates them"
+            "for the DIRECTORY NAME they sit under (a conventional vendored, "
+            "virtualenv or fixture-corpus name, with no marker or provenance "
+            "behind it); the agentic panel still reviewed those files, and "
+            "`security_gate --security redteam` gates them"
             % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
 
 
@@ -127,8 +133,8 @@ def _suppressed_rows(value):
 
 
 def _suppressed_gated_line(gated):
-    """#1701: what the vendored-path exclusion withheld from `findings[]` and
-    THIS RUN'S gate counted anyway.
+    """#1701: what a directory-NAME exclusion withheld from `findings[]` and
+    THIS RUN'S gate counted anyway (#1740: all three classes of it).
 
     Its own line, with its own wording, because it says the opposite of the one
     above: those findings were not lost from the gate, they were lost from the
@@ -141,8 +147,9 @@ def _suppressed_gated_line(gated):
     if not rows:
         return ""
     return ("**Tool findings suppressed but GATED:** %s \u2014 withheld from the "
-            "findings below for sitting under a conventional vendored-dependency "
-            "directory, and counted toward THIS RUN's gate, risk level and health "
+            "findings below for the DIRECTORY NAME they sit under (vendored, "
+            "virtualenv-by-name or fixture corpus), and counted toward THIS "
+            "RUN's gate, risk level and health "
             "grade anyway (`--security redteam`). A gate verdict here may rest on "
             "findings this report does not list"
             % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
@@ -189,13 +196,15 @@ def _cfg_value(value):
 def render_summary(report):
     """Render markdown summary of report with grades, stats, groups, and top findings."""
     s = report["summary"]
+    gate_mode = report["meta"].get("gate_security_mode")
     health_line = _render_health(s.get("health"))
     lines = [
         "# panopticon — %s" % report["meta"]["target"],
         "",
-        "**Grade:** %s  **Risk:** %s  **Gate:** %s%s" % (
+        "**Grade:** %s  **Risk:** %s  **Gate:** %s%s%s" % (
             _grade_text(s),
             s["risk_level"], s["gate"],
+            " (%s)" % gate_mode if gate_mode else "",
             ("  " + _health_headline(s.get("health"))) if _health_headline(s.get("health")) else ""),
         "",
     ] + _render_severity_block(s.get("stats") or {}, s.get("gate_severities")) + [
@@ -438,7 +447,10 @@ def write_report(report, out_path, max_bytes=800000):
         try:
             for _fp, _txt in targets:
                 tmp = os.path.join(out_dir, ".report-%s.tmp" % uuid.uuid4().hex)
-                with open(tmp, "w", encoding="utf-8") as fh:
+                # #1735: the uuid leaves no plantable leaf name, but the staging
+                # file still lands in the reviewed tree's `.panopticon` -- the
+                # no-follow open is also what confines a symlinked intermediate.
+                with safe_write.open_w_nofollow(tmp) as fh:
                     fh.write(_txt)
                 temp_files.append((tmp, _fp))
             for tmp, _fp in reversed(temp_files):   # sibling first, main last
@@ -516,7 +528,7 @@ def write_report(report, out_path, max_bytes=800000):
             parent = os.path.dirname(os.path.abspath(final_path)) or "."
             os.makedirs(parent, exist_ok=True)
             tmp_p = os.path.join(parent, ".part-%s.tmp" % uuid.uuid4().hex)
-            with open(tmp_p, "w", encoding="utf-8") as fh:
+            with safe_write.open_w_nofollow(tmp_p) as fh:   # #1735, as above
                 json.dump(content, fh, indent=2)
             temp_files.append((tmp_p, final_path))
 

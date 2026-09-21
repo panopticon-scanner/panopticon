@@ -5,22 +5,295 @@ Split out of `orchestrate.py` (a pure move) so the entry script keeps room
 under its 700-line instruction. It holds no control flow: `loop` still owns
 the iteration, the guards, the tally and the interrupt, and the state a
 Ctrl-C rolls back (`batch`, `handled`, `done`/`total`) stays in `loop`'s own
-frame, where `_rolled_back` reads it.
+frame and is handed to `rolled_back` from there.
 
 A flat module rather than `runners/loop_batch.py`: `runners/*` may not import
 `scripts.phases.*` (tests/test_layout.py rule 3) and every function here
 does. Same shape, and the same reason, as `money.py` and `ledger.py`.
 """
 import os
+import re
 import sys
 
 import scripts.dispatch as dispatch
 import scripts.hosts as hosts
+import scripts.ledger as ledger_mod
+import scripts.plan_contract as plan_contract
 import scripts.phases.persist as persist
+import scripts.phases.requests as requests
 import scripts.phases.runio as runio
+import scripts.phases.setup as setup
 import scripts.probes.shape as shape_probe
+import scripts.run_manifest as run_manifest
+import scripts.runners.batch as batch_mod
 
 SETUP_NAMESPACE = "setup"
+
+# #1662: the two sentences a Ctrl-C ends a run with. Constants because
+# docs/PANOPTICON.md quotes the first one back and the guide test reads it off
+# here. "had been HANDLED", not completed: the count is every entry the loop
+# got back, a failed launch included -- ledgered as the failure it was rather
+# than persisted (F2), and rolled back either way.
+INTERRUPTED = ("interrupted: %d of %d entries had been handled and have been rolled "
+               "back; the phase will re-run from its checkpoint on the next "
+               "`driver loop`; use `--reset` to discard the whole run")
+INTERRUPTED_IDLE = ("interrupted: no batch was in flight, so nothing was rolled back; "
+                    "re-run to resume, or use `--reset` to discard the whole run")
+
+# #1698: the three records a resume must NOT treat as a crash, one sentence
+# each. Refusals rather than a silent skip, because the run folder is shared
+# state: a loop that resumed past a live record would re-dispatch entries
+# another loop is running, and one that resumed past a record it cannot read
+# the owner of would delete files it cannot prove belong to a dead batch.
+#
+# `--reset` is named in two of them and deliberately NOT in the live one:
+# telling an operator to reset a run folder another `driver loop` is working
+# in is the very accident this refusal exists to prevent.
+#
+# No "driver loop: " lead: these are RAISED, and the one catch in
+# `orchestrate.loop` prefixes every refusal out of this function.
+BATCH_OWNER_LIVE = (
+    "batch record %s belongs to a `driver loop` that is still running here (pid %r); "
+    "refusing to resume this run folder -- two loops would delete each other's "
+    "in-flight artifacts. Wait for it to finish, or stop it and re-run.")
+BATCH_OWNER_ELSEWHERE = (
+    "batch record %s was written by pid %r on host %r, not this machine, so this loop "
+    "cannot tell whether that process is still running. Re-run with `--reset` ONLY "
+    "once you know that loop is gone.")
+BATCH_OWNER_UNSTAMPED = (
+    "batch record %s carries no owner stamp, so a crashed batch cannot be told from "
+    "one still in flight. Re-run with `--reset` once you know no other `driver loop` "
+    "is working on this run folder.")
+
+
+# #1698: the record this batch may not overwrite. `Batch.open` reserves the
+# name with O_EXCL so a crash record can never be silently replaced by the
+# next batch that happens to carry the same iteration number -- and what that
+# refusal raises has to reach the operator as a sentence. It reached them as
+# `FileExistsError: [Errno 17] File exists`, uncaught, with the write guard
+# already armed.
+BATCH_IN_USE = (
+    "driver loop: refusing to open batch record %s: it already exists. A record on "
+    "disk is a batch this run has not accounted for -- re-run WITHOUT `--reset` to "
+    "recover it, or with `--reset` to discard the run folder and start over.")
+
+
+def batch_in_use(run_dir, number):
+    """The refusal for a batch number whose record is already on disk, or None.
+
+    Asked BEFORE the guards are armed. O_EXCL is the backstop and it fires
+    too late to be the answer: by then this batch's grants are installed and
+    the run has to be torn back down to take them off.
+    """
+    path = batch_mod.manifest_path(run_dir, number)
+    return BATCH_IN_USE % path if os.path.lexists(path) else None
+
+
+def refuse_foreign_owner(name, doc):
+    """The refusal for a record this process may not recover, or None (#1698).
+
+    Asked before every other check on the document, because a record whose
+    owner is alive is not a DEFECTIVE crash record -- it is a correct
+    in-flight one, and "another loop is running here" is a different sentence
+    from "this manifest does not match the request". `%r` on both values: they
+    come off a file in the reviewed tree and reach the operator's stderr, so
+    repr renders a control character or an embedded newline as its escape
+    sequence (the reason `misroute_refusal` does the same).
+    """
+    state = batch_mod.owner_state(doc)
+    if state == batch_mod.OWNER_LIVE:
+        return BATCH_OWNER_LIVE % (name, doc.get("pid"))
+    if state == batch_mod.OWNER_FOREIGN:
+        return BATCH_OWNER_ELSEWHERE % (name, doc.get("pid"), doc.get("host"))
+    if state != batch_mod.OWNER_DEAD:
+        return BATCH_OWNER_UNSTAMPED % name
+    return None
+
+
+def recover_stale(review_root, request, host, mode, namespace=None):
+    """Validate every crash record before deleting anything, then retry the phase.
+
+    The manifest lists artifacts, but the bound outgoing request supplies the
+    authority: entries, output paths and checkpoint must agree. Nothing from a
+    foreign run is followed; the normal first-run path discards that run.
+
+    Two records reach here and they owe different things (#1698). An
+    UNFLAGGED one is a crash nobody has accounted for: its artifacts go, its
+    entries are ledgered as cancelled or rolled back, and the attempt each
+    one charged at dispatch is given back. A record already carrying
+    `recovering` was flagged by whoever wrote those rows -- `rolled_back` on
+    the interrupt path, or a previous recovery here -- and all this one owes
+    it is finishing the file removals. Ledgering it again is a second
+    ROLLED_BACK row per entry and a second decrement of one attempt counter,
+    which is exactly what the flag is for.
+    """
+    plan_contract.artifact_root(review_root)
+    manifest = (setup.load_setup_manifest(review_root) if namespace == "setup"
+                else run_manifest.load_manifest(review_root))
+    mpath = (setup._setup_manifest_path(review_root) if namespace == "setup"
+             else run_manifest.manifest_path(review_root))
+    if manifest is None or runio._foreign_manifest(manifest, review_root, mpath):
+        return
+    folder = persist.run_dir(review_root, namespace)
+    runio._confine_artifact_path(folder)
+    root = os.path.realpath(folder)
+    if not os.path.isdir(root):
+        return
+    batches, claimed = [], set()
+    declared = {e["id"]: e for e in request.get("entries", [])
+                if isinstance(e, dict) and isinstance(e.get("id"), str)}
+    for name in sorted(os.listdir(root)):
+        match = batch_mod.MANIFEST_RE.fullmatch(name)
+        if not match:
+            continue
+        path = os.path.join(root, name)
+        doc = None if os.path.islink(path) else runio._load_json(path)
+        refusal = "cannot recover stale batch %s; use --reset: " % name
+        if not isinstance(doc, dict) or doc.get("schema_version") != 1:
+            raise ValueError(refusal + "invalid manifest or unbound checkpoint")
+        # #1698: is this a crash AT ALL? First, and on its own wording.
+        owned = refuse_foreign_owner(name, doc)
+        if owned:
+            raise ValueError(owned)
+        if (doc.get("batch") != int(match[1])
+                or doc.get("checkpoint") != request.get("checkpoint")
+                or not isinstance(doc.get("entries"), list) or not doc["entries"]):
+            raise ValueError(refusal + "invalid manifest or unbound checkpoint")
+        pending, seen = [], set()
+        for row in doc["entries"]:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+                raise ValueError(refusal + "invalid entry")
+            eid = row["id"]
+            entry = declared.get(eid)
+            paths = row.get("artifacts")
+            if (entry is None or not isinstance(entry.get("out_file"), str)
+                    or persist.role_of(entry) is None or eid in seen
+                    or not isinstance(paths, list) or not paths
+                    or paths[0] != os.path.abspath(entry.get("out_file") or "")):
+                raise ValueError(refusal + "entry differs from the bound dispatch request")
+            seen.add(eid)
+            if eid in claimed:
+                raise ValueError(refusal + "several stale batches claim the same entry")
+            claimed.add(eid)
+            safe_id = requests._PROMPT_FILE_SAFE.sub("_", eid) or "entry"
+            for i, artifact in enumerate(paths):
+                if (not isinstance(artifact, str) or not os.path.isabs(artifact)
+                        or os.path.commonpath((root, os.path.realpath(os.path.dirname(artifact)))) != root):
+                    raise ValueError(refusal + "artifact escapes the run folder")
+                if i and (os.path.realpath(os.path.dirname(artifact)) != os.path.join(root, persist.REJECTED_DIR)
+                          or not re.fullmatch(re.escape(safe_id) + r"-[0-9]+\.json",
+                                              os.path.basename(artifact))):
+                    raise ValueError(refusal + "unexpected retained-reply artifact")
+            pending.append(entry)
+        batch = batch_mod.Batch(root, doc["batch"], doc["checkpoint"], pending)
+        batch.opened_at = doc.get("opened_at")
+        batch.entries = doc["entries"]
+        # #1698: a record that is ALREADY flagged was ledgered by whoever
+        # flagged it. All this recovery owes it is the file removals.
+        batches.append((batch, pending, bool(doc.get("recovering"))))
+    ledger = ledger_mod.Ledger(root)
+    for batch, pending, ledgered in batches:
+        # Unconditional, flagged or not: the write re-stamps the record with
+        # THIS pid, so a loop arriving mid-recovery asks about the process
+        # that is doing the work rather than the one it is finishing for.
+        batch.begin_recovery()
+        # BEFORE the removals: `rollback_rows` needs to know which entries had
+        # actually landed, and three lines down there is nothing left to ask.
+        completed = {row["id"] for row in batch.entries
+                     if any(os.path.lexists(p) for p in row["artifacts"])}
+        removed, problems = batch.roll_back(close=False)
+        if problems:
+            raise OSError("stale batch rollback incomplete: " + "; ".join(problems))
+        if not ledgered:
+            ledger.rollback_rows(pending, completed, batch.checkpoint, mode, host,
+                                 reason="previous process stopped")
+            persist.rollback_markers(review_root, batch.checkpoint, pending)
+        problems = batch.close()
+        if problems:
+            raise OSError("stale batch rollback incomplete: " + "; ".join(problems))
+        print("driver loop: %s; removed %d artifact(s); retrying %s"
+              % (("finished the interrupted recovery of stale batch %s" % batch.number)
+                 if ledgered else "recovered stale batch %s" % batch.number,
+                 len(removed), batch.checkpoint), file=sys.stderr, flush=True)
+
+
+def rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
+                guards, done, total):
+    """The Ctrl-C path (#1662): cancel, roll back to the checkpoint, and say so.
+
+    Returns the operator's MESSAGE; `orchestrate.loop` is what turns it into
+    an `error` status. It lives beside `recover_stale` because the two are the
+    same mechanism read from either end -- this one takes a batch back while
+    the process is still here, that one finishes the job for a process that
+    is not -- and they have to agree, file for file, on what a rollback owes.
+
+    `iter_batch` has already stopped the batch: nothing queued was launched,
+    and what was running has been terminated. What is left, in this order:
+
+    * this batch's grants come down FIRST, before a single artifact is deleted.
+      A child that outlived the termination (no shipped family holds a handle
+      on its children, so "terminated" means the terminal's process-group
+      SIGINT) would otherwise re-create the very file the rollback had handed
+      back, and the resume would read that cell as done and never dispatch it
+      again -- the one outcome the rollback exists to prevent. The guard is
+      fail-closed the moment its allowlist is unlinked, so disarming first
+      denies the straggler's Write; `_finish`'s own disarm is then a no-op.
+    * the batch's entries are ledgered as the interrupt left them
+      (`Ledger.rollback_rows`): `cancelled` for one it cut, a `rolled_back`
+      marker BESIDE the real row of one that had completed. The real rows
+      stand untouched -- spend is a fact -- and the marker is what says the
+      artifact that spend bought was then deleted.
+    * the batch's artifacts go, as a unit and by the list the manifest holds.
+    * the interrupted phase's per-dispatch marker is given back, so the re-run
+      starts with the retry budget it had rather than one interrupt poorer.
+      Only `review` has one today (`persist.rollback_markers`: one charge per
+      dispatched cell in `cell-attempts.json`); scout's and verify's counters
+      are charges against a PREVIOUS reply and are left standing.
+
+    Every step is wrapped in `except BaseException`, not `except Exception`: an
+    operator who holds the key down -- or presses it again because the first
+    Ctrl-C did not look like it had done anything -- raises a SECOND
+    KeyboardInterrupt in the middle of this, and that is a BaseException, so an
+    `except Exception` did not hold it. Escaping skipped `_finish` entirely:
+    both guards stayed armed over the whole session and the kimi run home kept
+    its config.toml and its credential symlinks. Every failure on the way out
+    is reported under one `rollback incomplete:` clause instead.
+    """
+    if batch is None:
+        return INTERRUPTED_IDLE
+    notes, checkpoint, finished = [], req.get("checkpoint"), set(handled)
+    try:
+        if guards is not None:
+            guards.disarm(pending)
+    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
+        notes.append("guards not disarmed: %s: %s" % (type(exc).__name__, exc))
+    try:
+        # #1698: the record is FLAGGED before the first rollback EFFECT, never
+        # after. `roll_back` keeps the manifest when it has problems (an
+        # artifact path that is a non-empty directory is enough), and an
+        # UNFLAGGED leftover is what `recover_stale` treats as a fresh crash:
+        # the next loop wrote a second ROLLED_BACK/CANCELLED row per entry and
+        # decremented the same attempt counter a second time, on top of the
+        # rows and the refund three lines below. Flagged, that next loop
+        # finishes the file removals and ledgers nothing.
+        batch.begin_recovery()
+    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
+        notes.append("the crash record was not flagged, so a leftover may be "
+                     "recovered twice: %s: %s" % (type(exc).__name__, exc))
+    try:
+        ledger.rollback_rows(pending, finished, checkpoint, mode, runner.host)
+    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
+        notes.append("the interrupt's own rows not written: %s: %s"
+                     % (type(exc).__name__, exc))
+    try:
+        _removed, problems = batch.roll_back()
+        notes += problems
+        persist.rollback_markers(review_root, checkpoint, pending)
+    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
+        notes.append("%s: %s" % (type(exc).__name__, exc))
+    return (INTERRUPTED % (done, total)
+            + ("; rollback incomplete: " + "; ".join(notes) if notes else ""))
+
 
 # #1727: which enforcement shells each checkpoint DISPATCHES -- `ROLE_FILES`
 # keys, one row per `runio.CHECKPOINT_KINDS` member, pinned by a test that
@@ -33,13 +306,30 @@ SETUP_NAMESPACE = "setup"
 # launch, and a governing instruction set nobody in this run chose. The driver
 # owns the routing, so the driver states it, here, once.
 #
-# `scan` is deliberately EMPTY: `--setup`'s single entry is dispatched
-# shell-less by design (it is not in ROLE_FILES, so no host registers a shell
-# for it), and an empty row accepts no name at all rather than any.
+# #1737: `scan` used to be deliberately EMPTY, because `--setup`'s single
+# entry was dispatched shell-less by design. `setup_scan` is a registered role
+# now, so the row names it -- one shell, the one that checkpoint dispatches.
+# An UNENFORCED setup entry still carries `agent: None` and is still refused
+# for naming any shell at all, which is the second half `refuse_misrouted`
+# reads off this same table.
 CHECKPOINT_ROLES = {"scout": ("scout",),
                     "review": ("domain_panel",),
                     "verify": ("advisor", "domain_advisor"),
-                    "scan": ()}
+                    "scan": ("setup_scan",)}
+
+# Acceptance roles are derived from the controller-bound output path, never
+# from an entry's claimed shell. Verify has two roles with different charters.
+#
+# One row per `persist.role_of` family, and one row per `dispatch.ROLE_FILES`
+# role: the two tables are halves of a single statement, and a role added to
+# only one of them fails CLOSED and silently -- `role_of` resolves to a family
+# with no row here, `expected` comes out None, and no name the entry could
+# carry would match it. That is exactly what #1737's `setup_scan` hit, so
+# `test_no_role_can_be_added_to_one_side_of_the_routing_tables_only` pins them
+# against each other.
+OUTPUT_ROLES = {"scout": "scout", "review-cell": "domain_panel",
+                "verify-cell": "domain_advisor", "tool-advisor": "advisor",
+                "setup-scan": "setup_scan"}
 
 
 def expected_enforced(review_root, host, namespace=None):
@@ -53,19 +343,42 @@ def expected_enforced(review_root, host, namespace=None):
     the phases set it from exactly this, so the loop can check the request
     against the run rather than take its word.
 
-    Two postures are not read off the capability evidence at all:
+    ONE posture is not read off the capability evidence at all:
+    `hosts.is_unenforced_fallback` -- `--host generic` is the permanent
+    unenforced fallback (owner ruling D1), ack-gated and disclosed.
 
-    * the `setup` namespace, whose single `setup-scan` entry is dispatched
-      SHELL-LESS by design (phases/setup.py: it is not in
-      `dispatch.ROLE_FILES`, so no host registers a shell for it, and a fresh
-      machine runs `--setup` before it has registered anything);
-    * `hosts.is_unenforced_fallback` -- `--host generic` is the permanent
-      unenforced fallback (owner ruling D1), ack-gated and disclosed.
+    #1737 retired the second one. The `setup` namespace used to answer False
+    before it ever opened the evidence, because `setup-scan` had no registered
+    shell on any host; it has one now, so `--setup` asks the same question
+    every other dispatch asks. A machine that has not emitted its shells reads
+    REFUTED here -- exactly what it should -- and `phases/setup` takes the
+    ack-gated unenforced path rather than skipping the question.
+
+    `namespace` also decides WHICH evidence artifact answers. Setup keeps its
+    own (the flat `.panopticon/host-capabilities.json` that `driver loop
+    --setup`'s posture step writes); `runio.host_evidence` resolves through
+    the REVIEW run-manifest's tag, so on a tree that already holds a review
+    run it would answer with that run's posture -- the #1507 accident, one
+    file over.
     """
-    if namespace == SETUP_NAMESPACE or hosts.is_unenforced_fallback(host):
+    if hosts.is_unenforced_fallback(host):
         return False
-    return (hosts.posture(host, runio.host_evidence(review_root))
+    return (hosts.posture(host, evidence_for(review_root, namespace))
             [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
+
+
+def evidence_for(review_root, namespace):
+    """This namespace's own capability evidence, failing closed on absence.
+
+    Resolved through `persist.run_dir`, the namespace-aware resolver
+    `driver._establish_host_posture` writes the artifact through, so the
+    reader and the writer name the same file. `None` (a review run) keeps
+    `runio.host_evidence`'s manifest-tag resolution untouched.
+    """
+    if namespace is None:
+        return runio.host_evidence(review_root)
+    return runio.evidence_at(
+        os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES))
 
 
 def refuse_disagreeing(pending, expected):
@@ -109,8 +422,27 @@ def _allowed_shells(checkpoint):
             if role in dispatch.ROLE_FILES}
 
 
+def expected_shell(entry, checkpoint):
+    """The ONE registered shell this entry's output family may name here.
+
+    The acceptance role comes from the controller-bound `out_file`, never from
+    the entry's claimed `agent` (#1886). `None` whenever the family is
+    unknown, names a role this checkpoint does not dispatch, or names one no
+    host registers a shell for -- every one of those fails closed, since
+    `None` equals no name an entry could carry. The last of the three is the
+    same `in`-guard `_allowed_shells` applies: a role present in one routing
+    table and absent from the other must refuse, not raise `KeyError` for
+    `loop`'s catch-all to report as a Python type.
+    """
+    role = OUTPUT_ROLES.get(persist.role_of(entry))
+    if role is None or role not in checkpoint_roles(checkpoint):
+        return None
+    role_file = dispatch.ROLE_FILES.get(role)
+    return dispatch.registered_agent_name(role_file) if role_file else None
+
+
 def refuse_misrouted(pending, checkpoint):
-    """The ids whose `agent` is not one this checkpoint dispatches (#1727).
+    """The ids whose shell disagrees with their output role or checkpoint.
 
     Two shapes are refused, and they are the same statement read from either
     side: an ENFORCED entry whose agent is not one of `CHECKPOINT_ROLES[
@@ -127,14 +459,15 @@ def refuse_misrouted(pending, checkpoint):
             continue
         agent = entry.get("agent")
         if entry.get("enforced"):
-            if not (isinstance(agent, str) and agent in allowed):
+            expected = expected_shell(entry, checkpoint)
+            if not (isinstance(agent, str) and agent in allowed and agent == expected):
                 misrouted.append(entry.get("id"))
         elif agent is not None:
             misrouted.append(entry.get("id"))
     return misrouted
 
 
-def misroute_refusal(misrouted, checkpoint):
+def misroute_refusal(misrouted, checkpoint, pending=()):
     """The operator's message for such a request -- a REQUEST-INTEGRITY
     refusal like `enforcement_refusal`, raised before the batch opens, so
     nothing has launched and nothing is charged.
@@ -143,13 +476,30 @@ def misroute_refusal(misrouted, checkpoint):
     checkpoint both did): they reach the operator's stderr and the status
     JSON, and repr renders a control character, an ANSI escape or an embedded
     newline as its escape sequence -- the reason `base.UNREGISTERED_AGENT`
-    does the same.
+    does the same. `expected` is not one of those: it is this module's own
+    constant, reached through `dispatch.ROLE_FILES`, so `%s` names it the way
+    an operator would type it.
+
+    `pending` names the ENTRY's own expectation as well as the checkpoint's
+    list. On `verify` that list holds both advisor shells, so it never said
+    which of them this entry's output family was owed -- and the whole point
+    of #1886 is that the family, not the list, decides. Read through the same
+    `expected_shell` the refusal was made with, so the message cannot become a
+    second opinion. Optional, and the clause is DROPPED rather than guessed
+    when a caller passes no entries: an "expects ..." sentence derived from no
+    entry is a statement about a request nobody read.
     """
     allowed = ", ".join(sorted(_allowed_shells(checkpoint))) or "no enforcement shell"
-    return ("driver loop: entry %r names an enforcement shell its checkpoint does "
-            "not dispatch (checkpoint %r dispatches: %s); the dispatch request does "
+    entry = next((e for e in pending
+                  if isinstance(e, dict) and e.get("id") == misrouted[0]), None)
+    owed = ""
+    if entry is not None:
+        owed = ("its output role expects %s; "
+                % (expected_shell(entry, checkpoint) or "no shell this checkpoint dispatches"))
+    return ("driver loop: entry %r names an enforcement shell its output role or checkpoint does "
+            "not dispatch (%scheckpoint %r dispatches: %s); the dispatch request does "
             "not match this run's own plan -- re-run with --reset"
-            % (misrouted[0], checkpoint, allowed))
+            % (misrouted[0], owed, checkpoint, allowed))
 
 
 def disarm_previous(guards, prev_req):
@@ -195,7 +545,7 @@ def request_refusal(review_root, host, namespace, req, pending):
         return enforcement_refusal(disagreeing, expected)
     misrouted = refuse_misrouted(pending, req.get("checkpoint"))
     if misrouted:
-        return misroute_refusal(misrouted, req.get("checkpoint"))
+        return misroute_refusal(misrouted, req.get("checkpoint"), pending)
     return None
 
 

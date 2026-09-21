@@ -33,11 +33,11 @@ authors = [
 keywords = ["code-review", "security", "static-analysis", "ai-agent", "skill"]
 
 [project.optional-dependencies]
-test = ["pytest>=9.1.1", "pytest-xdist>=3.8.0", "jsonschema>=4.0"]
+test = ["pytest>=9.1.1", "pytest-xdist>=3.8.0", "pytest-cov>=7.1.0", "jsonschema>=4.0"]
 dev = ["panopticon[test]", "ruff>=0.16.7", "mypy>=2.3.0"]
 
 [dependency-groups]
-test = ["pytest>=9.1.1", "pytest-xdist>=3.8.0", "jsonschema>=4.0"]
+test = ["pytest>=9.1.1", "pytest-xdist>=3.8.0", "pytest-cov>=7.1.0", "jsonschema>=4.0"]
 dev = [{include-group = "test"}, "ruff>=0.16.7", "mypy>=2.3.0"]
 
 [project.urls]
@@ -77,6 +77,15 @@ ignore_missing_imports = true
 target-version = "py311"
 extend-exclude = ["*.json"]
 force-exclude = true
+
+[tool.coverage.run]
+source = ["skill/scripts", "scripts"]
+omit = ["*/tests/fixtures/*", "*/tests/goldens/*"]
+relative_files = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
 [tool.ruff.lint]
 select = ["E", "F", "W"]
 ignore = ["E401", "E501", "E701", "E702"]

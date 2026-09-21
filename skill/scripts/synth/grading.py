@@ -73,7 +73,7 @@ def gate_severity_roles(gate_eligible, fail_on):
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
             integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
-            missing_floor=0, tools_manifest_invalid=None):
+            missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -107,7 +107,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     high_value_incomplete = set(panels_incomplete) & findings_mod.HIGH_VALUE_PANELS
     gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
                          or not integrity_ok or bool(verdicts_unloadable)
-                         or bool(verdicts_unanswered) or bool(missing_floor))
+                         or bool(verdicts_unanswered) or bool(missing_floor)
+                         or bool(tools_network_excluded))
     any_incomplete = bool(panels_incomplete)
 
     if base_gate == "PASS" and gate_relevant_gap:
@@ -135,6 +136,10 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         tail = sorted(p for p in panels_incomplete if p not in findings_mod.HIGH_VALUE_PANELS)
         note = ("gate certified; grade provisional — low-value panel(s) incomplete: %s"
                 % ", ".join(tail))
+    if tools_network_excluded:
+        gap = "safe network unavailable — online scanner coverage missing: %s" % ", ".join(
+            sorted(tools_network_excluded))
+        note = "%s; %s" % (note, gap) if note else gap
 
     return {"gate": gate, "overall_grade": cert_grade,
             "provisional_grade": provisional,
@@ -380,7 +385,7 @@ def grade_report(run, resolved, reconciled):
     certification and the gate, from the resolved findings and the reconciled
     plan. Severity is never mutated here; grades and the gate are computed
     from gate-eligible findings only."""
-    # #1701: under `--security redteam` the vendored-path exclusion may keep a
+    # #1701: under `--security redteam` a directory-NAME exclusion may keep a
     # tool finding out of the report BODY, but not out of the gate -- a payload
     # parked at `app/vendor/patched_auth.rb` passing a merge gate on the
     # strength of a conventional directory name is the defect the mode exists
@@ -438,7 +443,8 @@ def grade_report(run, resolved, reconciled):
                    verdicts_unloadable=len(resolved.verdict_unloadable),
                    verdicts_unanswered=resolved.unanswered_gate,
                    missing_floor=len(reconciled.cell_audit["missing_floor"]),
-                   tools_manifest_invalid=reconciled.tools_manifest_invalid)
+                   tools_manifest_invalid=reconciled.tools_manifest_invalid,
+                   tools_network_excluded=reconciled.tools_network_excluded)
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],

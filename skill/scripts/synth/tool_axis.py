@@ -28,6 +28,16 @@ from . import plan as plan_mod
 from . import repair as repair_mod
 from . import validate_schema as validate_schema_mod
 
+# #1899: stands in for a network-excluded row the raw manifest named but
+# `repair_tools_network` could not publish (over `NAME_MAX`, or past
+# `ROWS_MAX`) -- fail closed, it still sinks certification, but as one
+# generic marker rather than the name a hostile manifest chose.
+UNPUBLISHABLE_NETWORK_TOOL = "(unpublishable)"
+
+
+class ToolManifestError(ValueError):
+    """A stale or foreign tool manifest cannot be used for synthesis."""
+
 
 @dataclass(frozen=True)
 class ToolAxis:
@@ -53,10 +63,16 @@ class ToolAxis:
     # report DISCLOSES, this is what certification COUNTS. Never merged into
     # the report's findings body; `reconcile` hands it to `grade_report`.
     gated_suppressed: list | None = None
+    # #1740 fix round 2: `{globs, count}` -- the operator/committed exclusion
+    # POLICY this ingest ran under. Not a suppression: these findings were
+    # never candidates for any gate in any mode, which is exactly why the
+    # policy that removed them has to be published beside the two tallies that
+    # are.
+    excluded: dict | None = None
 
     @classmethod
     def load(cls, args, run_dir, plan_lists, dispositions, tools_ran, suppressed=None,
-             gated_suppressed=None):
+             gated_suppressed=None, excluded=None):
         """The tool axis from the run folder (WS-0 S3): the runner's
         tools-manifest with its two FATAL (#17) checks, the policy mode the
         dispatch plans declare, and the ingest results `ingest_tool_findings`
@@ -100,12 +116,12 @@ class ToolAxis:
             # carries schema_version; its run_id (when the runner stamps it) must
             # match this run. Either mismatch is a loud error, not a silent fallback.
             if "schema_version" not in manifest:
-                sys.exit("FATAL (#17): tools-manifest at %s lacks schema_version — it "
+                raise ToolManifestError("FATAL (#17): tools-manifest at %s lacks schema_version — it "
                          "looks like a pre-5.1 flat manifest from another run; refusing "
                          "to certify against it. Re-run the tools phase." % tm_path)
             mrid = manifest.get("run_id")
             if args.run_id and mrid and mrid != args.run_id:
-                sys.exit("FATAL (#17): tools-manifest run_id %r != this run %r (at %s) — "
+                raise ToolManifestError("FATAL (#17): tools-manifest run_id %r != this run %r (at %s) — "
                          "refusing to certify against another run's manifest."
                          % (mrid, args.run_id, tm_path))
             # #1692: `selected` is the whole of what this manifest is FOR --
@@ -138,7 +154,8 @@ class ToolAxis:
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
                    ingested_paths=args.files, manifest_invalid=manifest_invalid,
                    suppressed=suppressed,                     # #1578
-                   gated_suppressed=list(gated_suppressed or []))   # #1701
+                   gated_suppressed=list(gated_suppressed or []),   # #1701
+                   excluded=excluded)                          # #1740 round 2
 
 
 @dataclass(frozen=True)
@@ -163,11 +180,12 @@ class Reconciled:
     # `tools_sanitized`: coverage says which adapters PRODUCED output, and this
     # says what one of them could reach while doing it.
     tools_network: dict = field(default_factory=dict)
+    tools_network_excluded: dict = field(default_factory=dict)
     # #1644: why this run's tools-manifest could not be read, or None. Carried
     # beside `integrity` (which also publishes it) the way `integrity_ok` is:
     # certification takes it as an input, and must not have to read a section.
     tools_manifest_invalid: str | None = None
-    # #1701: the vendored-path drops this run's gate counts anyway (redteam
+    # #1701: the name-based drops this run's gate counts anyway (redteam
     # only; `[]` in every other mode). Beside `coverage` like the two blocks
     # above and for the same reason: `meta.coverage` is what the report SAYS,
     # and this is a population certification consumes but never publishes.
@@ -257,8 +275,12 @@ def reconcile(plan, tools, resolved):
         # usability by, inferring "unusable" from their absence would fail every
         # selected adapter on a run that never ingested.
         if tools.tools_ran is not None:
-            lost = ingest_tools.lost_required_coverage(tools.manifest,
-                                                       tools.dispositions or {})
+            # #1899: the helper takes its own read of the `network` block;
+            # hand it the REPAIRED table so a row `repair_tools_network`
+            # dropped is never republished here under `requested_absent`
+            # (`security_gate` shares the helper and keeps the raw read).
+            lost = ingest_tools.lost_required_coverage(
+                {**tools.manifest, "network": network}, tools.dispositions or {})
             tools_absent = sorted(set(tools_absent) | set(lost))
             tool_divergence.update(
                 {t: "produced_unusable" if info["kind"] == "unusable"
@@ -269,6 +291,25 @@ def reconcile(plan, tools, resolved):
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
         tool_divergence = {t: "requested_absent" for t in tools_absent}
+    # #1899: certify on the SAME repaired `network` table `meta.tools.network`
+    # publishes (the `network` local above), not a second raw read of
+    # `tools.manifest` -- a row `repair_tools_network` drops used to sink
+    # `coverage_certified` and be NAMED in `coverage_note` while never
+    # appearing in the table the report actually printed. The published table
+    # and the verdict are one thing now.
+    network_excluded = ingest_tools.network_exclusions({"network": network})
+    # A row the raw manifest excluded for network but the repair above could
+    # not publish is unpublishable, not resolved: fail closed, it still counts
+    # as a gap, as one generic marker standing in for however many such rows
+    # there were -- never the name a hostile manifest chose, since that name
+    # is exactly what could not be published.
+    if isinstance(tools.manifest, dict):
+        raw_network_excluded = ingest_tools.network_exclusions(tools.manifest)
+        if set(raw_network_excluded) - set(network_excluded):
+            network_excluded = dict(network_excluded)
+            network_excluded[UNPUBLISHABLE_NETWORK_TOOL] = "excluded:unpublishable"
+    tools_absent = sorted(set(tools_absent) | set(network_excluded))
+    tool_divergence.update({t: "network_unavailable" for t in network_excluded})
     # #1335: an adapter that ran but scanned nothing is disclosed, never gated.
     # It is absent from `tools_ran` (no coverage credit) which would otherwise
     # sink it into `tools_absent` on the scout-derived path above -- but a
@@ -276,7 +317,8 @@ def reconcile(plan, tools, resolved):
     # `produced_noscan` is non-gating by construction: it appears only in the
     # divergence map, and `tools_absent` is what reaches certify().
     noscan = sorted(name for name, d in (tools.dispositions or {}).items()
-                    if isinstance(d, dict) and d.get("status") == "noscan")
+                    if isinstance(d, dict) and d.get("status") == "noscan"
+                    and name not in network_excluded)
     if noscan:
         tools_absent = [t for t in tools_absent if t not in noscan]
         tool_divergence.update({t: "produced_noscan" for t in noscan})
@@ -350,7 +392,8 @@ def reconcile(plan, tools, resolved):
     cell_audit = coverage_io.audit_floor_cells(plan.coverages or [], present)
     coverage = {
         "adapters": tools.dispositions or {},
-        # #1578 (SEC-G2B): the vendored-path drops, per segment; schema has the
+        # #1578 (SEC-G2B), widened by #1740: the name-based drops, per
+        # segment (vendored / virtualenv-by-name / fixture-corpus); schema has the
         # why. #1701 fix round 1 (F2): ONE tally, split in two. `gated` is what
         # this run's gate counted anyway; this key is the remainder -- what the
         # exclusion kept out of the gate as well as out of the body, which is
@@ -371,6 +414,10 @@ def reconcile(plan, tools, resolved):
         # the mode that changed the gate was the mode that stopped disclosing,
         # and the report contradicted its own run's stderr and CI gate line.
         "tools_suppressed_gated": gated_counts,
+        # #1740 fix round 2: the exclusion POLICY, repaired at the read like
+        # its two siblings -- `exclude_paths:` is target-authored, so a glob
+        # reaching a published artifact is a target-carried input.
+        "tools_excluded": repair_mod.repair_tools_excluded(tools.excluded),
         "tools_ran": (sorted(tools_ran) if tools_ran is not None
                       else sorted(resolved.tool_names)),
         "build_executing_tools": sorted(
@@ -409,5 +456,6 @@ def reconcile(plan, tools, resolved):
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
                       tools_sanitized=sanitized, tools_network=network,
+                      tools_network_excluded=network_excluded,
                       tools_manifest_invalid=tools.manifest_invalid,
                       gated_suppressed=gated)

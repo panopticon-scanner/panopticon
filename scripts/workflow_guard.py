@@ -115,14 +115,6 @@ that starts catching one fails there, and this list is edited with it.
   a second expansion model. The fleet writes one heredoc-ish construct (a
   `<<<` here-string in docker-publish.yml) and no `cat <<EOF` at all. It no
   longer CRASHES, which is what it did until #1697's review.
-* a subshell written tight: `(curl ... -o /tmp/p || true)`. The reader has no
-  paren grammar -- `(curl` is one word to it, so the fetch at the head of a
-  tight subshell is unseen, and the one-word tail (`true)`) is dropped by the
-  same strip that reads a `case` arm. `( curl ...`, with the space, is read.
-  KEPT: closing it means splitting `(` and `)` off words and tracking depth
-  across statements -- a grouping model the flat reader does not have. The
-  fleet writes no subshell; this repo's Dockerfiles write the `|| true)` tail
-  around a scanner, never around a fetch.
 * `if:` conditions are compared as WRITTEN (`_binds`), which assumes the
   expression is stable between the check's step and the use's step. It is not
   when it reads `env.*` written through `$GITHUB_ENV` in between, or a forward

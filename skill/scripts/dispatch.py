@@ -102,7 +102,18 @@ PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 
 ROLE_FILES = {"scout": "scout.md", "advisor": "advisor.md",
               "domain_panel": "domain-panel.md",
-              "domain_advisor": "domain-advisor.md"}
+              "domain_advisor": "domain-advisor.md",
+              # #1737 (AGT-B1D): `driver setup`'s one-off classifier reads the
+              # WHOLE untrusted tree, and it was the only dispatched role with
+              # no row here -- so no host ever registered a shell for it, the
+              # readiness probe never checked it, and the only tool
+              # restriction that travelled with the dispatch was the prose
+              # `_tool_policy_line` appends. It is a driver role like any
+              # other now: its shell is emitted, its tools are the template's
+              # Read/Grep/Glob, and `registered-shell-tools` proves it grants
+              # no Bash. Its MODEL stays unbound (R-F4-2) -- see
+              # model_resolver's `setup_scan` rows.
+              "setup_scan": "setup-scan.md"}
 # #1344 F2: the four registration-directory constants were re-exported from
 # hosts.py "so setup_flow and existing tests keep importing them". setup_flow
 # imported none of them, KIMI_AGENTS_DIR / CODEX_HOME / CODEX_AGENTS_DIR had no
@@ -218,13 +229,19 @@ def emit_host_agents(host, out_dir):
             # Override-free by design (registration_model, like the claude
             # branch): the tier comes from model-profiles.yml so it cannot drift
             # from what resolve_model returns at dispatch time.
-            preference = model_resolver.registration_model("kimi", role) or "primary"
+            # #1737: `or "primary"` was a silent SECOND policy -- a role whose
+            # resolved registration model is None ("inherit the session's
+            # model", R-F4-2 for setup_scan) came out bound to the primary
+            # tier, which is the drift this branch's own comment forbids.
+            # An unbound role emits NO `model_preference` key instead, which
+            # is how a kimi agent file says "whatever the session is on".
+            preference = model_resolver.registration_model("kimi", role)
             fm = (["---", "name: %s" % agent,
                    "description: %s" % meta["description"],
                    "whenToUse: %s" % meta["description"],
-                   "override: false",
-                   "model_preference: %s" % preference,
-                   "tools:"]
+                   "override: false"]
+                  + (["model_preference: %s" % preference] if preference else [])
+                  + ["tools:"]
                   + ["  - %s" % t for t in tp["allowed"]]
                   + ["disallowedTools:"]
                   + ["  - %s" % t for t in tp["forbidden"]]
@@ -439,8 +456,6 @@ def _detect_host():
     return "generic"
 
 
-
-
 def _registration_dir(host, agents_dir):
     """Explicit dir wins; otherwise the host's default. Unknown -> None."""
     if agents_dir:
@@ -453,16 +468,6 @@ def _is_registered(reg_dir, role_file, host=None):
     """Check if a role is registered in the registration directory."""
     return bool(reg_dir) and os.path.isfile(
         os.path.join(reg_dir, registered_agent_filename(host, role_file)))
-
-
-
-
-
-
-
-
-
-
 
 
 def render_advisor_prompts(queue_path, out_dir, host=None):
@@ -529,18 +534,6 @@ def render_advisor_prompts(queue_path, out_dir, host=None):
             fh.write(prompt)
         written.append(path)
     return written
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def main(argv=None):

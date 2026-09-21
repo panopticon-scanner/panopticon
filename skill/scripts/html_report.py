@@ -11,15 +11,18 @@ if TYPE_CHECKING:
     import scripts.evidence as evidence
     import scripts.host_disclosure as host_disclosure
     import scripts.hosts as hosts
+    import scripts.safe_write as safe_write
 else:
     try:
         import scripts.evidence as evidence
         import scripts.host_disclosure as host_disclosure
         import scripts.hosts as hosts
+        import scripts.safe_write as safe_write
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
         import evidence
         import host_disclosure
         import hosts
+        import safe_write
 
 _CSS = """
 :root {
@@ -495,6 +498,11 @@ def _render_host_capabilities(meta):
     return "".join(parts)
 
 
+def _gate_mode_label(meta):
+    mode = meta.get("gate_security_mode") if isinstance(meta, dict) else None
+    return " (%s)" % _escape(mode) if mode else ""
+
+
 def _render_header(report):
     meta = report.get("meta", {})
     summary = report.get("summary", {})
@@ -510,7 +518,7 @@ def _render_header(report):
         # and an uncertified grade is PROVISIONAL, not settled.
         f"<span class='badge grade'>Grade: {_escape(summary.get('overall_grade') or '-')}{' (provisional)' if summary.get('coverage_certified') is False else ''}</span>",
         f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>Risk: {_escape(summary.get('risk_level', '-'))}</span>",
-        f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}</span>",
+        f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
     ]
     # #calibration: health belongs in the header, not buried. The letter grade is
     # a worst-severity rollup, so it saturates -- across six calibration targets
@@ -725,7 +733,11 @@ def _render_test_inventory(meta):
 
 
 def _render_suppressed_tools(meta):
-    """#1578: what the tool axis dropped for sitting under a vendored directory.
+    """#1578: what the tool axis dropped for the DIRECTORY NAME it sits under.
+
+    #1740: three rules feed this tally -- a vendored directory, a virtualenv
+    recognised only by its `venv`/`.venv`/`site-packages` name, and the fixture
+    corpus. They share the evidence, which is why they share a line.
 
     Beside the coverage line with the other "what this run did not see" facts.
     The exclusion earns its keep -- 592 of solidus's 623 eslint-security
@@ -743,8 +755,8 @@ def _render_suppressed_tools(meta):
     rows = _suppressed_rows((meta.get("coverage") or {}).get("tools_suppressed"))
     if not rows:
         return ""
-    return ("<div class='coverage'>Tool findings suppressed as vendored: %s "
-            "&mdash; dropped from the tool axis on the directory name alone; "
+    return ("<div class='coverage'>Tool findings suppressed by directory name: %s "
+            "&mdash; dropped from the tool axis on that name alone; "
             "the agentic panel still reviewed those files, and "
             "<code>security_gate --security redteam</code> gates them</div>"
             % " &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows))
@@ -776,8 +788,8 @@ def _render_suppressed_gated_tools(meta):
     rows = _suppressed_rows((meta.get("coverage") or {}).get("tools_suppressed_gated"))
     if not rows:
         return ""
-    return ("<div class='coverage'>Tool findings suppressed as vendored but "
-            "GATED: %s &mdash; withheld from the findings below on the directory "
+    return ("<div class='coverage'>Tool findings suppressed by directory name "
+            "but GATED: %s &mdash; withheld from the findings below on that "
             "name alone, and counted toward <strong>this run's</strong> gate, "
             "risk level and health grade anyway "
             "(<code>--security redteam</code>). A gate verdict here may rest on "
@@ -814,7 +826,7 @@ def _render_compare_summary(label, report):
 <div class="badges">
 <span class="badge grade">{_escape(summary.get('overall_grade') or '-')}</span>
 <span class="badge {_severity_class(summary.get('risk_level', 'INFO'))}">Risk: {_escape(summary.get('risk_level', '-'))}</span>
-<span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}</span>
+<span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>
 </div>
 <div class="stat-minis">{stat_cards}</div>
 {host_caps}
@@ -1322,9 +1334,16 @@ def _render_discarded_claims(discarded):
 
 
 def write_html(report, path, compare_report=None):
-    """Write a rendered HTML report to disk."""
+    """Write a rendered HTML report to disk.
+
+    #1735: `<tag>-report.json.html` is derived from the driver's `--out`, so it
+    lands in the REVIEWED tree's `.panopticon` -- a name a target can pre-commit
+    as a symlink. Confine the whole path BEFORE the makedirs (which would
+    traverse a symlinked directory) and never open through a link.
+    """
+    safe_write.confine_artifact_path(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)) if os.path.dirname(path) else ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    with safe_write.open_w_nofollow(path) as fh:
         fh.write(render(report, compare_report=compare_report))
 
 

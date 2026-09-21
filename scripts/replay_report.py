@@ -116,6 +116,7 @@ def _scratch_root(tmp, review_root, manifest, tag, run_folder):
 def replay(args):
     repo = os.path.abspath(args.repo or os.path.dirname(HERE))
     sys.path.insert(0, os.path.join(repo, "skill"))
+    from scripts import hosts
     import scripts.phases.child as child_mod
     import scripts.phases.runio as runio
     import scripts.phases.synthesize as synthesize_phase
@@ -131,10 +132,6 @@ def replay(args):
     folder_id = _folder_run_id(run_folder)
     if folder_id != manifest.get("run_id"):
         sys.exit(f"manifest run_id {manifest.get('run_id')!r} != run folder's {folder_id!r}")
-    required = REQUIRED + (("usage.json",) if manifest.get("host", "claude") == "claude" else ())
-    missing = [f for f in required if not os.path.isfile(os.path.join(run_folder, f))]
-    if missing:
-        sys.exit(f"{run_folder} lacks {missing}: synthesize_execute would write into it")
     before = _listing(run_folder)
     os.makedirs(out_dir, exist_ok=True)
     recorded = []
@@ -145,6 +142,15 @@ def replay(args):
 
     with tempfile.TemporaryDirectory(prefix="replay-") as tmp:
         root = _scratch_root(tmp, review_root, manifest, tag, run_folder)
+        # Match the phase's measured posture, including the deliberate absent-
+        # host default. Read evidence through the scratch root so archived runs
+        # use their own capability artifact, not the live checkout's latest run.
+        collects_usage = (hosts.posture(manifest.get("host"), runio.host_evidence(root))
+                          [hosts.USAGE_LEDGER] == hosts.PROVEN)
+        required = REQUIRED + (("usage.json",) if collects_usage else ())
+        missing = [f for f in required if not os.path.isfile(os.path.join(run_folder, f))]
+        if missing:
+            sys.exit(f"{run_folder} lacks {missing}: synthesize_execute would write into it")
         with mock.patch("scripts.phases.child._run_child", new=fake_run_child):
             try:
                 synthesize_phase.synthesize_execute(root, manifest)

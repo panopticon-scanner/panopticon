@@ -15,6 +15,7 @@ import scripts.synth.delta as delta_mod
 import scripts.synth.render as render_mod
 import scripts.html_report as html_report
 import scripts.synth.plan as plan_mod
+import scripts.synth.repair as repair_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
 import scripts.group_runner as gr
@@ -379,7 +380,8 @@ class PlanLoadersTest(unittest.TestCase):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()),
-                                     ([], {}, None, None, []))
+                                     ([], {}, None, None, [],
+                                      {"globs": [], "count": 0}))
                 self.assertEqual(err.getvalue(), "")
                 # a non-empty default tools dir left un-ingested is announced
                 os.makedirs(os.path.join(".panopticon", "tools"))
@@ -388,7 +390,8 @@ class PlanLoadersTest(unittest.TestCase):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()),
-                                     ([], {}, None, None, []))
+                                     ([], {}, None, None, [],
+                                      {"globs": [], "count": 0}))
                 self.assertIn("appears un-ingested", err.getvalue())
                 # --tools-dir pointing nowhere is still "not measured"
                 self.assertEqual(
@@ -401,7 +404,8 @@ class PlanLoadersTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tools_dir = os.path.join(d, "tools")
             os.makedirs(tools_dir)
-            found, dispositions, ran, suppressed, gated = plan_mod.ingest_tool_findings(
+            (found, dispositions, ran, suppressed, gated,
+             _excluded) = plan_mod.ingest_tool_findings(
                 _cli_args(tools_dir=tools_dir))
             self.assertEqual(found, [])
             self.assertEqual(dispositions, {})
@@ -435,7 +439,7 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertIn("not a JSON object", notdict.manifest_invalid)
             with open(tm, "w") as fh:
                 json.dump({"selected": ["semgrep"]}, fh)   # pre-5.1: no schema_version
-            with self.assertRaises(SystemExit) as cm:
+            with self.assertRaises(tool_axis_mod.ToolManifestError) as cm:
                 tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIn("lacks schema_version", str(cm.exception))
             with open(tm, "w") as fh:
@@ -443,7 +447,7 @@ class PlanLoadersTest(unittest.TestCase):
                 # at all, so every shape below that IS accepted carries one.
                 json.dump({"schema_version": "1", "run_id": "other",
                            "selected": []}, fh)
-            with self.assertRaises(SystemExit) as cm:
+            with self.assertRaises(tool_axis_mod.ToolManifestError) as cm:
                 tool_axis_mod.ToolAxis.load(_cli_args(run_id="this"), d, [], {}, None)
             self.assertIn("run_id 'other' != this run 'this'", str(cm.exception))
             # same run (or no --run-id) is accepted
@@ -582,6 +586,62 @@ class TestManifestMustDeclareSelected(unittest.TestCase):
         self.assertEqual(report["summary"]["gate"], "PASS")
         self.assertTrue(report["summary"]["coverage_certified"])
 
+    def test_network_excluded_dependency_audit_cannot_certify(self):
+        for stale_noscan in (False, True):
+            with self.subTest(stale_noscan=stale_noscan):
+                dispositions = {"pip-audit": {"status": "noscan"}} if stale_noscan else {}
+                _, report, _ = self._run(
+                    {"schema_version": 1, "selected": [], "produced": [], "missing": [],
+                     "excluded_scope": ["pip-audit"],
+                     "network": {"pip-audit": "excluded:online egress unavailable"}},
+                    dispositions=dispositions)
+                self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+                self.assertFalse(report["summary"]["coverage_certified"])
+                self.assertIn("safe network unavailable", report["summary"]["coverage_note"])
+                self.assertIn("pip-audit", report["summary"]["coverage_note"])
+                self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"]["pip-audit"],
+                                 "network_unavailable")
+
+    def test_network_excluded_unpublishable_name_still_sinks_certification(self):
+        # #1899: an over-long tool name in the `network` block cannot survive
+        # `repair_tools_network`'s NAME_MAX bound, so `meta.tools.network`
+        # never publishes it -- naming it in `coverage_note` (the raw-manifest
+        # read this fixes) would cite text the report itself never printed.
+        # Design pick, fail closed: an unpublishable row still sinks
+        # certification -- a hostile manifest cannot buy back a PASS by
+        # naming its excluded tool something too long to report -- but with a
+        # GENERIC reason, never the dropped name, since that name is exactly
+        # what could not be published.
+        long_name = "x" * (repair_mod.NAME_MAX + 1)
+        _, report, _ = self._run(
+            {"schema_version": 1, "selected": [], "produced": [], "missing": [],
+             "network": {long_name: "excluded:online egress unavailable"}})
+        self.assertEqual(report["meta"]["tools"]["network"], {})
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertNotIn(long_name, report["summary"]["coverage_note"])
+        self.assertIn("safe network unavailable", report["summary"]["coverage_note"])
+        div_tools = report["meta"]["coverage"]["divergence"]["tools"]
+        self.assertNotIn(long_name, div_tools)
+        self.assertEqual(div_tools[tool_axis_mod.UNPUBLISHABLE_NETWORK_TOOL],
+                         "network_unavailable")
+
+    def test_network_excluded_unpublishable_name_stays_out_of_divergence_after_an_ingest(self):
+        # #1899 re-review residual: with `tools_ran` set (a real ingest ran)
+        # the coverage-loss helper took a SECOND raw read of the manifest's
+        # `network` block and republished the over-long name verbatim under
+        # `divergence.tools` as `requested_absent`. Feed it the repaired
+        # table, so the one name the report could not print never appears.
+        long_name = "x" * (repair_mod.NAME_MAX + 1)
+        _, report, _ = self._run(
+            {"schema_version": 1, "selected": [], "produced": [], "missing": [],
+             "network": {long_name: "excluded:online egress unavailable"}},
+            tools_ran=set())
+        div_tools = report["meta"]["coverage"]["divergence"]["tools"]
+        self.assertNotIn(long_name, div_tools)
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertNotIn(long_name, json.dumps(report))
+
 
 class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
     """#1701: the driver's own gate lost what the vendored-path exclusion drops.
@@ -619,7 +679,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         return hit
 
     def _run(self, security, rel="app/vendor/patched_auth.py", severity="all",
-             delta=False, groups_json=None):
+             delta=False, groups_json=None, tools_exclude=None):
         """One synthesis over a single bandit HIGH at `rel`.
 
         `rel` is the only thing that moves between the suppressed and the
@@ -659,11 +719,14 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                         json.dump(groups_json, fh)
             args = _cli_args(tools_dir=tools, security=security, fail_on="high",
                              target=d, run_dir=d, severity=severity,
-                             diff_hunks=hunks, gate_scope="on-diff")
-            with _chdir(d), contextlib.redirect_stderr(io.StringIO()):
-                body, disp, ran, suppressed, gated = plan_mod.ingest_tool_findings(args)
+                             diff_hunks=hunks, gate_scope="on-diff",
+                             tools_exclude=tools_exclude)
+            err = io.StringIO()
+            with _chdir(d), contextlib.redirect_stderr(err):
+                (body, disp, ran, suppressed, gated,
+                 excluded) = plan_mod.ingest_tool_findings(args)
                 axis = tool_axis_mod.ToolAxis.load(args, d, [], disp, ran,
-                                                   suppressed, gated)
+                                                   suppressed, gated, excluded)
                 prepared = findings_mod.FindingSet.prepare(args, body, security)
                 run = report_mod.RunConfig.from_args(
                     args, groups_json or {}, self.TS) if groups_json is not None \
@@ -680,6 +743,9 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                     plan=plan_mod.PlanInputs(groups_meta=[
                         {"name": "g", "files": [rel]}]),
                     tools=axis))
+            # #1740 fix round 1: the ingest's own disclosure line, kept for the
+            # test that asserts an operator exclusion is COUNTED, not silent.
+            self.stderr = err.getvalue()
             return body, report
 
     def _gate(self, **kw):
@@ -765,8 +831,58 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
             html_report.write_html(report, out)
             with open(out, encoding="utf-8") as fh:
                 html = fh.read()
-        self.assertIn("suppressed as vendored but", html)
+        self.assertIn("suppressed by directory name but", html)
         self.assertIn("this run", html)
+
+    # -- #1740 fix round 1: the committed exclude_paths policy scopes the gate -
+
+    FIXTURE = "tests/fixtures/vulnerable/patched_auth.py"
+
+    def test_a_fixture_high_gates_under_redteam_when_no_policy_excludes_it(self):
+        # The oracle for the test below: #1740 made the fixture-corpus prune a
+        # DISCLOSED drop, so under redteam this run's gate counts it.
+        _body, report = self._run("redteam", rel=self.FIXTURE)
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"],
+                         {"fixture-corpus": 1})
+
+    def test_the_committed_exclude_policy_takes_it_off_the_gate(self):
+        # ... and with the repo's own `exclude_paths: [tests/fixtures/**]`
+        # threaded to this ingest as `--tools-exclude`, the same finding is an
+        # operator EXCLUSION: counted, disclosed on stderr, never gated and
+        # never re-admitted by the mode.
+        _body, report = self._run("redteam", rel=self.FIXTURE,
+                                  tools_exclude=["tests/fixtures/**"])
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"], {})
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed"], {})
+        self.assertIn("excluded 1 finding", self.stderr)
+        self.assertIn("tests/fixtures/**", self.stderr)
+
+    def test_the_report_names_the_policy_that_emptied_the_tool_axis(self):
+        # #1740 fix round 2: `exclude_paths:` is TARGET-authored and now scopes
+        # the scanners, the report and the gate, so a report whose tool axis a
+        # committed `['**']` emptied must say so IN THE REPORT -- not only in
+        # groups.json, tools-manifest.json and a stderr line nobody keeps.
+        _body, report = self._run("redteam", rel=self.FIXTURE,
+                                  tools_exclude=["tests/fixtures/**"])
+        self.assertEqual(report["meta"]["coverage"]["tools_excluded"],
+                         {"globs": ["tests/fixtures/**"], "count": 1})
+
+    def test_the_excluded_block_is_present_when_no_policy_applied(self):
+        # Stated on every report, empty included: absence must never be
+        # readable as "nobody measured", the rule its two siblings follow.
+        _body, report = self._run("redteam")
+        self.assertEqual(report["meta"]["coverage"]["tools_excluded"],
+                         {"globs": [], "count": 0})
+
+    def test_the_globs_are_published_even_when_they_matched_nothing(self):
+        # The policy is the disclosure. A glob that matched nothing this run
+        # still scoped the run, and a reader comparing two runs needs to see it.
+        _body, report = self._run("redteam", tools_exclude=["ops/**"])
+        self.assertEqual(report["meta"]["coverage"]["tools_excluded"],
+                         {"globs": ["ops/**"], "count": 0})
 
     def test_the_two_tallies_sum_to_the_ingest_count_in_either_mode(self):
         """One tally, split -- `ingest_tools.suppressed_counts`' one-definition
@@ -810,6 +926,8 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         # vacuously against a file nothing was reading.
         self.assertEqual(report["meta"]["security_mode"], "redteam")
         # The gate did not: no --security flag, so it ran standard.
+        self.assertEqual(report["meta"]["gate_security_mode"], "standard")
+        self.assertIn("**Gate:** PASS (standard)", render_mod.render_summary(report))
         self.assertEqual(report["summary"]["gate"], "PASS")
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"], {})
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed"], {"vendor": 1})
@@ -823,6 +941,8 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(report["summary"]["gate"], "FAIL")
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"],
                          {"vendor": 1})
+        self.assertEqual(report["meta"]["gate_security_mode"], "redteam")
+        self.assertIn("**Gate:** FAIL (redteam)", render_mod.render_summary(report))
 
     def test_the_evidence_axis_is_the_one_remaining_asymmetry(self):
         """The documented, owner-owed difference (see #1578).

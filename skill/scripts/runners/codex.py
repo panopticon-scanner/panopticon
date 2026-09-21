@@ -51,10 +51,16 @@ class Runner(base.HostRunner):
         # runs before the first batch, so the loop reports one `error` naming
         # the remedy instead of 3xN launches naming an entry id.
         #
-        # Except under `--setup`, whose only entry is `setup-scan`: it carries
-        # no `agent`, launches off safety_config() alone, and is how a fresh
-        # machine starts -- before `--emit-host-agents codex` has ever run.
-        # Refusing there would break the documented first command.
+        # Except under `--setup`, whose only entry is `setup-scan`. Since
+        # #1737 that entry DOES name a shell -- `panopticon-setup-scan`,
+        # whenever this host's posture proves enforcement -- and `_shell`
+        # reads it from the registration directory like any other role's. What
+        # keeps the stand-down is the other posture: on a machine that has not
+        # run `--emit-host-agents codex`, the entry is built unenforced with no
+        # `agent` and launches off safety_config() alone, behind the operator's
+        # `--allow-unenforced`. That is how a fresh machine starts, so refusing
+        # up front here would break the documented first command for the sake
+        # of a shell that launch never asks for.
         if self.namespace != SETUP_NAMESPACE:
             codex_host.require_registered_shells()
         self.run_dir = os.path.abspath(run_dir)

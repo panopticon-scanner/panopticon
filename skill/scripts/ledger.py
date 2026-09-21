@@ -97,6 +97,10 @@ class Ledger:
                 "session_id": result.session_id, "denials": result.denials,
                 "rejected_file": rejected_file,
                 "error": refusal if refusal is not None else result.error}
+        # Host errors and persistence refusals can quote credentials. Redact at
+        # the single writer, preserving null when the row has no error (#1709).
+        if line["error"] is not None:
+            line["error"] = redact.redact(line["error"])
         # #1732: what the CLI printed on stderr, on a FAILED row only. Written
         # ONLY when the launch produced something, so a completed row's shape
         # is byte-for-byte what it was (the same rule `status`/`rolled_back`
@@ -128,7 +132,7 @@ class Ledger:
         with runio._open_a_nofollow(self.path) as fh:
             fh.write(text + "\n")
 
-    def rollback_rows(self, entries, completed, checkpoint, mode, host):
+    def rollback_rows(self, entries, completed, checkpoint, mode, host, reason="Ctrl-C"):
         """Write the interrupt's rows for one rolled-back batch (#1662): one
         per entry, through `record`, which is still the ledger's only writer.
 
@@ -157,8 +161,8 @@ class Ledger:
             cut = eid not in completed
             self.record(entry, checkpoint,
                         runners_base.RunResult.failed(
-                            eid, "cancelled (Ctrl-C) before it completed" if cut
-                            else "rolled back (Ctrl-C): this entry's artifacts were removed"),
+                            eid, ("cancelled (%s) before it completed" % reason) if cut
+                            else ("rolled back (%s): this entry's artifacts were removed" % reason)),
                         mode, host,
                         status=CANCELLED if cut else ROLLED_BACK, rolled_back=True)
 

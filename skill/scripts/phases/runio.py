@@ -16,6 +16,7 @@ import scripts.ocrdb as ocrdb
 import scripts.redact as redact
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
+import scripts.safe_write as safe_write
 
 
 CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
@@ -53,6 +54,10 @@ _TOP_LEVEL = frozenset({
     # at -- an unrelated review run, whose own dispatch-request.json setup then
     # overwrote. Setup is not a run; its artifacts live beside its siblings above.
     "setup-dispatch-request.json", "setup-prompts",
+    # #1737. Setup's own unenforced-ack, deliberately NOT the review run's
+    # `unenforced-ack.json`: that name is per-run by design, and setup is not
+    # a run.
+    "setup-unenforced-ack.json",
     "epss-cache.json", "write-allowlist.json",
     "report.json", "report.json.html",
 })
@@ -212,83 +217,28 @@ def _load_json(path):
     except (OSError, ValueError):
         return None
 
-def _confine_artifact_path(path):
-    """Reject a `.panopticon` artifact path whose REAL location escapes the real
-    `.panopticon` via a symlinked component (#run9 SEC-X0X). plan_contract.
-    artifact_root() vets only the TOP-LEVEL `.panopticon` (once, at run start) and
-    _open_w_nofollow's O_NOFOLLOW only the FINAL component, so a hostile target can
-    plant an INTERMEDIATE symlink (`.panopticon/runs -> /elsewhere`) that a write
-    would traverse. Anchor on the path's own `.panopticon` segment and require the
-    realpath (which resolves any symlinked intermediate dir) to stay inside the
-    real root. A planted `runs` link resolves outside and is rejected; a legit
-    not-yet-created path resolves lexically against its real parent and passes, and
-    the intentional `runs/latest` link (which points WITHIN `.panopticon`) passes.
-    A path with no `.panopticon` segment is not an artifact path and is left be."""
-    apath = os.path.abspath(path)
-    parts = apath.split(os.sep)
-    if ".panopticon" not in parts:
-        return
-    root = os.sep.join(parts[:parts.index(".panopticon") + 1]) or os.sep
-    real_root = os.path.realpath(root)
-    real = os.path.realpath(apath)
-    if not (real == real_root or real.startswith(real_root + os.sep)):
-        raise ValueError(
-            "artifact path escapes .panopticon via a symlinked component: %r" % path)
+# The no-follow artifact open lives in `scripts.safe_write` (#1735), not here:
+# `run_manifest` needs it for the manifest's own `<name>.tmp` staging write and
+# may not import this package (layout rule 3 -- `phases/*` imports
+# `run_manifest`, not the other way), and `synth/*` may not either. An alias of
+# a definition from OUTSIDE the package is what rule 4 leaves legal and asks to
+# justify: ~15 call sites across `phases/` and `setup_flow.py` -- and the
+# suite's one `mock.patch("scripts.phases.runio._open_w_nofollow")` -- spell it
+# with these names, so keeping them is what keeps ONE patch target for them.
+# tests/test_safe_write.py pins the identity, so a second implementation
+# cannot appear behind the alias.
+_confine_artifact_path = safe_write.confine_artifact_path
+_open_w_nofollow = safe_write.open_w_nofollow
+_open_a_nofollow = safe_write.open_a_nofollow
 
-def _open_w_nofollow(path):
-    """Open `path` for writing, refusing to follow a symlink at the final path
-    component. A target repo (untrusted under redteam) can pre-commit a
-    `.panopticon` artifact path as a symlink to a file the invoking user can
-    write (a dotfile, authorized_keys, ...); plain open() would follow it and
-    clobber that target. O_NOFOLLOW makes the open fail on a symlink; we then
-    replace the link with a fresh regular file instead of writing through it
-    (#1095 -- mirrors run_manifest's exclusive-create precedent).
-
-    #run9 SEC-X0X: O_NOFOLLOW guards only the FINAL component, so confine the whole
-    resolved path to the real `.panopticon` first -- an intermediate symlinked dir
-    (`.panopticon/runs -> /elsewhere`) would otherwise carry this write outside."""
-    _confine_artifact_path(path)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags, 0o644)
-    except OSError:
-        if os.path.islink(path):
-            os.unlink(path)                       # neutralize the link, never follow it
-            fd = os.open(path, flags, 0o644)
-        else:
-            raise
-    return os.fdopen(fd, "w", encoding="utf-8")
-
-def _open_a_nofollow(path):
-    """Open `path` for APPENDING, refusing to follow a symlink at the final
-    path component -- the O_APPEND analogue of `_open_w_nofollow` (#1095,
-    plan 6 review round 1) for a caller that must ADD a line without ever
-    truncating what is already there (Ledger.record's dispatch-ledger.jsonl,
-    one line per launch). Folds the confine-then-makedirs sequence
-    `_write_json` applies around `_open_w_nofollow` INTO this call, so a
-    caller needs neither a separate `_confine_artifact_path` nor its own
-    `os.makedirs` -- `Ledger.record` no longer carries either."""
-    _confine_artifact_path(path)              # SEC-X0X: before makedirs, which would
-    os.makedirs(os.path.dirname(path), exist_ok=True)   # otherwise follow a symlinked dir
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags, 0o644)
-    except OSError:
-        if os.path.islink(path):
-            os.unlink(path)                       # neutralize the link, never follow it
-            fd = os.open(path, flags, 0o644)
-        else:
-            raise
-    return os.fdopen(fd, "a", encoding="utf-8")
-
-def _write_json(path, data, atomic=False):
+def _write_json(path, data, atomic=True):
     """Write `data` as the artifact at `path`.
 
     `atomic` (F6) writes `<path>.tmp` and `os.replace`s it into place -- the
     same tmp-then-rename `persist.write_reply` uses -- for a file a reader can
-    catch mid-write. The default stays the in-place O_TRUNC write: a
-    once-per-run artifact nobody is watching does not need a second inode, and
-    the symlink defence is identical either way (the tmp goes through the same
+    catch mid-write. Atomic replacement is the default, so a failed write
+    leaves the last complete artifact readable. The symlink defence is
+    identical either way (the tmp goes through the same
     `_open_w_nofollow`, and `os.replace` onto a symlinked destination replaces
     the LINK, never the file it points at). `usage.json` is the caller that
     asks for it: the loop rewrites it once per ENTRY now, while host children
@@ -342,7 +292,17 @@ def host_evidence(review_root):
     file is written to a `.panopticon` path a hostile target can pre-commit,
     so "unparseable value" and "unparseable container" are the same defect.
     """
-    body = _load_json(_pano(review_root, HOST_CAPABILITIES))
+    return evidence_at(_pano(review_root, HOST_CAPABILITIES))
+
+def evidence_at(path):
+    """The `capabilities` block of ONE capability artifact, or {} (#1737).
+
+    Split out of `host_evidence` so a namespace that keeps its own artifact
+    -- `--setup`'s flat `.panopticon/host-capabilities.json`, which
+    `persist.run_dir("setup")` resolves and the manifest-tag lookup above
+    would route into an unrelated review run's folder -- reads it through the
+    same fail-closed parse rather than a second copy of it."""
+    body = _load_json(path)
     caps = body.get("capabilities") if isinstance(body, dict) else None
     return caps if isinstance(caps, dict) else {}
 
@@ -459,6 +419,33 @@ def committed_settings(review_root):
     """
     doc = repo_config.read_document(review_root)
     return config_schema.parse_settings(doc.doc or {})
+
+def committed_exclude_paths(review_root):
+    """The root config's top-level `exclude_paths:` globs, or `[]` (#1740).
+
+    `exclude_paths:` pruned DISCOVERY and nothing else, so a repo that
+    committed `tests/fixtures/**` still had every scanner walk the corpus and
+    every fixture finding ingested -- and once #1740 made the fixture prune a
+    disclosed, gate-counted class, the report's own redteam gate could FAIL on
+    a directory the committed policy had already scoped out. The tools phase
+    passes these to `run_tools --exclude` and the synthesize phase to
+    `synthesize --tools-exclude`, so ONE committed policy governs the agentic
+    scope, the scanners and the gate.
+
+    Same parse seam `discovery._committed_exclude_paths` reads
+    (`groups_schema.parse_exclude_paths` over `repo_config.read_document`), not
+    a second copy of the rule -- two answers to "what did the repo exclude?"
+    is the drift this shares a definition to avoid.
+
+    Tolerant, and SILENT about errors: a missing, refused or invalid config
+    yields `[]` rather than taking a run down, and discovery has already
+    printed whatever was wrong with it (re-printing once per phase is noise).
+    Erring toward [] is the safe direction -- it scopes nothing out, so a
+    broken config can never quietly un-gate a finding.
+    """
+    doc = repo_config.read_document(review_root)
+    globs, _errors = groups_schema.parse_exclude_paths(doc.doc or {})
+    return globs
 
 def _load_ocrdb_bundle():
     """ocrdb.load_bundle, converting a malformed-bundle ValueError into a
@@ -633,8 +620,16 @@ def _foreign_manifest(manifest, review_root, manifest_file=None):
       * the stamped `review_root` differs from this checkout (the original #1093
         signal, kept as a fallback for a non-git target where nothing is tracked
         and for a manifest carried over from another machine)."""
+    return _foreign_manifest_reason(manifest, review_root, manifest_file) is not None
+
+
+def _foreign_manifest_reason(manifest, review_root, manifest_file=None):
+    """The signal that made a manifest foreign, or None for a valid resume."""
     if not isinstance(manifest, dict):
-        return False
+        return None
     if _manifest_committed(review_root, manifest_file):
-        return True
-    return manifest.get("review_root") != os.path.abspath(review_root)
+        return "the file is git-tracked in the target; a driver-written manifest is never committed"
+    if manifest.get("review_root") != os.path.abspath(review_root):
+        return "stamped review_root %r != %r" % (manifest.get("review_root"),
+                                                os.path.abspath(review_root))
+    return None

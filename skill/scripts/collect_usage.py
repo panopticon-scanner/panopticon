@@ -40,6 +40,11 @@ import os
 import re
 import sys
 
+try:                                       # #1735: the no-follow artifact open
+    from scripts import safe_write
+except ModuleNotFoundError:                # fallback: imported with only
+    import safe_write                      # skill/scripts on sys.path
+
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
 PHASES = ("scout", "review", "verify", "unattributed")
@@ -491,7 +496,10 @@ def main(argv=None):
         sys.stdout.write("\n")
         return 0
     out = os.path.join(args.run_dir, "usage.json")
-    with open(out, "w", encoding="utf-8") as fh:
+    # #1735: --run-dir is the run folder inside the reviewed tree's
+    # `.panopticon`, and `usage.json` is a fixed name a target can pre-commit
+    # as a symlink; never write through one.
+    with safe_write.open_w_nofollow(out) as fh:
         json.dump(doc, fh, indent=2)
     print("collect-usage: %s  total=%d  (%d subagent transcripts, since %s)"
           % (out, doc["total"], doc["subagent_transcripts"], since or "beginning"))

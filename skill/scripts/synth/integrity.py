@@ -13,6 +13,7 @@ import scripts.findings_contract as findings_contract
 # Module-attribute access only (spec §3 rule 1): plan imports this module back,
 # and the pair is safe precisely because neither touches the other at import time.
 from . import plan as plan_mod
+from . import findings as findings_mod
 
 
 def duplicate_out_files(plan):
@@ -158,6 +159,7 @@ def cross_domain_findings(paths):
         for f in findings:
             if not isinstance(f, dict):
                 continue
+            f = findings_mod.agent_finding(f, p)
             fd = f.get("domain")
             if not fd or fd == domain:
                 continue

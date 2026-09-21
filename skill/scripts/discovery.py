@@ -32,10 +32,21 @@ import yaml
 # requires changes to off-limits ``driver.py``; accepted as tech debt (#1201).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402
-import groups_schema  # noqa: E402
+try:                                       # #1740 fix round 2: ONE module
+    from scripts import groups_schema      # object, so the glob compiler this
+except ModuleNotFoundError:                # module and the TOOL side share is
+    import groups_schema                   # noqa: E402  one cache and one
+                                           # disclosure ledger, not two. Same
+                                           # fallback shape as safe_write
+                                           # below: the standalone CLI has only
+                                           # skill/scripts on sys.path.
 import plan_contract  # noqa: E402
 import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
+try:                                       # #1735: the no-follow artifact open
+    from scripts import safe_write         # noqa: E402
+except ModuleNotFoundError:                # fallback: imported with only
+    import safe_write                      # noqa: E402  skill/scripts on sys.path
 
 # Files per review group before it splits into `<name>_<i>` chunks.
 #
@@ -210,6 +221,29 @@ def _git(repo, args, timeout=30, text=True):
                           capture_output=True, text=text, check=True,
                           timeout=timeout, env={"PATH": os.environ.get("PATH", "")})
 
+def _nul_separated_paths(raw):
+    """The non-empty paths in `git ... -z` output, decoded like os.fsdecode.
+
+    Splitting on NUL, never str.splitlines(): splitlines() also breaks on a
+    lone \r, \x0b, \x0c, \x1c-\x1e, \x85 and U+2028/9 (#1738), every one of
+    which a filename may legally carry -- a fragment is then a path that does
+    not exist, and the real file is lost. os.fsdecode is the spelling every
+    other surface here uses (`_git_listed_files`, diff_map's hunk keys), so
+    the file sets stay comparable as plain strings.
+    """
+    return [os.fsdecode(chunk) for chunk in (raw or b"").split(b"\0") if chunk]
+
+
+def _unreviewable_reason(full):
+    """Why a path git listed is not reviewable surface, in the operator's terms."""
+    if not os.path.lexists(full):
+        return "no longer exists in the working tree"
+    if not os.path.isfile(full):
+        return ("is not a regular file (a directory or nested repository, a "
+                "device, or a dangling symlink)")
+    return "resolves outside the repository"
+
+
 def _worktree_dirty(repo, exclude=()):
     """True when repo's working tree has uncommitted changes (git status
     --porcelain is non-empty) -- used to set diff-hunks.json's
@@ -290,31 +324,43 @@ def collect_changed_files(repo, base=None, exclude=()):
         # --find-renames: same rename semantics as diff_map.hunk_map, so the
         # reviewed file set and the on-diff hunk map can never diverge on a
         # similarity-threshold edge (#978).
-        out = _git(repo, ["diff", "--name-only", "--diff-filter=d",
-                          "--find-renames", mb])
-        for p in out.stdout.splitlines():
-            p = p.strip()
-            if p:
-                changed.add(p)
+        # -z + text=False + os.fsdecode (#1739), the SAME treatment
+        # _git_listed_files already gives the whole-repo listing: without -z
+        # git C-quotes any path carrying a byte >= 0x80 (default
+        # core.quotepath) or a `"`, `\`, tab or newline (whatever quotepath
+        # says) -- `"src/caf\303\251.py"` -- and that spelling is not a file,
+        # so the isfile filter below dropped the changed file out of the
+        # reviewed set in silence. A PR author picks the filename, so that is
+        # an author-chosen exemption from delta review. core.quotepath=false
+        # is belt and braces; with -z git never quotes at all.
+        out = _git(repo, ["-c", "core.quotepath=false", "diff", "--name-only",
+                          "--diff-filter=d", "--find-renames", "-z", mb],
+                   text=False)
+        changed.update(_nul_separated_paths(out.stdout))
     except Exception as e:
-        print(f"Warning: git diff failed: {e}")
+        print(f"Warning: git diff failed: {e}", file=sys.stderr)
         return None
     # Include new untracked files so a branch with only added files isn't empty.
     try:
-        out = _git(repo, ["ls-files", "--others", "--exclude-standard"])
-        for p in out.stdout.splitlines():
-            p = p.strip()
-            if p:
-                changed.add(p)
+        out = _git(repo, ["-c", "core.quotepath=false", "ls-files", "--others",
+                          "--exclude-standard", "-z"], text=False)
+        changed.update(_nul_separated_paths(out.stdout))
     except Exception:
         pass
     for name in exclude:
-        changed.discard(name)
+        changed.discard(name)          # a deliberate drop: never warned about
     out = []
     for p in sorted(changed):
         full = os.path.join(repo, p)
         if os.path.isfile(full) and _within(repo, full):
             out.append(p.replace(os.sep, "/"))
+        else:
+            # #1739: the drop itself is correct -- the reviewed set is files --
+            # but doing it in silence is what made the quoting bug invisible
+            # for as long as it lived. One line per path, naming which and why.
+            print("Warning: git lists %r as changed, but it %s; it is NOT in "
+                  "the reviewed file set." % (p, _unreviewable_reason(full)),
+                  file=sys.stderr)
     return out
 
 def _even_sizes(total, n_chunks):
@@ -391,90 +437,17 @@ def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
     # a chunk happened to land in.
     return sorted((sorted(c) for c in chunks), key=lambda c: c[0])
 
-# One disclosure per distinct pattern: `_glob_to_re` is called per (path,
-# pattern), so an unconditional print would emit a line per file scanned.
-_warned_globs: set[str] = set()
-
 def _glob_to_re(pat):
     """Compile one gitignore-flavored glob to a regex over repo-relative paths.
 
-    Semantics (#499): ``*`` and ``?`` stay within a path segment, ``**``
-    crosses segments, and a pattern containing no ``/`` matches the basename
-    at any depth (gitignore's unanchored form). Patterns with a ``/`` are
-    anchored to the repo root, and a TRAILING ``/`` claims the directory and
-    everything under it (#1501: ``docs/`` is gitignore's most natural idiom
-    and used to compile to a regex requiring the path to end in ``/``, which a
-    repo-relative FILE path never does -- a silent zero-match).
+    The compiler itself is `groups_schema.glob_to_re` (#1740 fix round 2): the
+    tool side matches the SAME committed `exclude_paths:` lines and must read
+    them the same way, so the translator lives beside `glob_defect` in the
+    module that owns the glob vocabulary. This wrapper is discovery's own name
+    for it, and pins the label its disclosures carry.
     """
-    # A glob this compiler cannot translate faithfully must never be
-    # translated wrongly (#1501). A setup proposal carrying one is refused
-    # outright, but a committed root config's parse errors are disclosed and
-    # NOT blocking (this module's standing policy, `_committed_matrix`), so
-    # one still reaches this compiler -- where the old behaviour was to
-    # `re.escape` the brackets into a literal that claimed the wrong files.
-    # Disclose and compile to a never-matching regex instead: refuse to guess.
-    defect = groups_schema.glob_defect(pat)
-    if defect:
-        if pat not in _warned_globs:
-            _warned_globs.add(pat)
-            print("discovery: glob %r matches nothing: %s (#1501)"
-                  % (pat[:80], defect), file=sys.stderr)
-        return re.compile(r"(?!)")
-    # Collapse runs of adjacent segment-crossing wildcards BEFORE compiling.
-    # `**/**/.../x` compiles to sequential `(?:[^/]+/)*` quantifiers -- the
-    # textbook catastrophic-backtracking ReDoS shape -- and repo-supplied
-    # root-config `match:` patterns reach this compiler, so a hostile repo
-    # could hang discovery (run-4 self-scan). Adjacent `**`
-    # segments are semantically redundant, so fold each run down to one.
-    pat = re.sub(r"(?:\*\*/)+", "**/", pat)
-    pat = re.sub(r"\*\*\*+", "**", pat)
-    # #run7 SEC-H4A: the `**`-collapse above only tames adjacent `**` runs. A
-    # SINGLE-`*` pattern like `a*a*...Z` compiles to `a[^/]*a[^/]*...Z` -- the
-    # classic (.*a)+ catastrophic-backtracking shape (empirically >5s on a
-    # moderate filename), unaffected by the collapse. Atomic groups can't fix it
-    # (a glob `*` MUST backtrack so a trailing literal can match), so bound
-    # complexity AFTER the collapse: a legitimate glob has a handful of wildcards,
-    # so an over-long / over-wildcarded pattern is hostile or degenerate --
-    # disclose it and compile to a never-matching regex rather than hang discovery
-    # (which reads the root config from the untrusted redteam target, BEFORE
-    # dispatch).
-    if len(pat) > 256 or pat.count("*") > 20:
-        print("discovery: ignoring over-complex glob pattern "
-              "(len=%d, wildcards=%d): %r"
-              % (len(pat), pat.count("*"), pat[:80]), file=sys.stderr)
-        return re.compile(r"(?!)")   # matches nothing
-    anchored = "/" in pat[:-1] if pat.endswith("/") else "/" in pat
-    if pat.startswith("/"):
-        pat = pat[1:]
-    # `docs/` == `docs/**`: the directory tree, never the directory's own
-    # path. Anchoring was already decided on the authored form above, so an
-    # unanchored `docs/` still means "a docs directory at any depth", exactly
-    # as gitignore reads it.
-    if pat.endswith("/"):
-        pat += "**"
-    out, i = [], 0
-    while i < len(pat):
-        c = pat[i]
-        if c == "*":
-            if pat[i:i + 3] == "**/":
-                out.append(r"(?:[^/]+/)*")
-                i += 3
-            elif pat[i:i + 2] == "**":
-                out.append(r".*")
-                i += 2
-            else:
-                out.append(r"[^/]*")
-                i += 1
-        elif c == "?":
-            out.append(r"[^/]")
-            i += 1
-        else:
-            out.append(re.escape(c))
-            i += 1
-    body = "".join(out)
-    if not anchored:
-        body = r"(?:.*/)?" + body
-    return re.compile("^" + body + "$")
+    return groups_schema.glob_to_re(pat, "discovery")
+
 
 def match_patterns(path, patterns):
     """gitignore-style decision for one path against an ordered pattern list.
@@ -808,7 +781,9 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
     os.makedirs(out_dir, exist_ok=True)
     tmp = os.path.join(out_dir, ".diff-hunks-%s.tmp" % uuid.uuid4().hex)
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
+        # #1735: staged inside the reviewed tree's `.panopticon`; the uuid makes
+        # the leaf unplantable, the no-follow open confines the rest of the path.
+        with safe_write.open_w_nofollow(tmp) as fh:
             json.dump(artifact, fh, indent=2)
             fh.write("\n")
         os.replace(tmp, out_path)
@@ -1034,7 +1009,7 @@ _COMMONS_CATALOG_PATH = os.path.join(
     "data", "commons_catalog.yml")
 
 @functools.lru_cache(maxsize=1)
-def _commons_catalog():
+def commons_catalog():
     """The curated Commons vocabulary (5.1 starter, #499): near-universal
     Docs/CI/Build/Config/Deps file groups loaded once from
     ``skill/data/commons_catalog.yml`` as a plain ``{name: {"match": [...]}}``
@@ -1067,7 +1042,7 @@ def _emit_named_groups(named, max_per_group, security_mode, parent_lookup=None):
 COMMONS_MIN_FILES = 6
 COMMONS_FOLD_NAME = "Commons"
 
-def _fold_tiny_commons(commons_named, catalog):
+def fold_tiny_commons(commons_named, catalog):
     """Fold under-sized Commons categories into one ``Commons`` group (5.2, #1499).
 
     Measured across 6 target-runs / 319 group-instances: a tiny (<=5 file)
@@ -1130,15 +1105,15 @@ _TESTS_CATALOG_PATH = os.path.join(
 
 
 @functools.lru_cache(maxsize=1)
-def _tests_catalog():
+def tests_catalog():
     """The Tests sweep seed globs (5.2 §4.3) as ``{"Tests": {"match": [...]}}``,
-    loaded like ``_commons_catalog``: shipped, tested data, no parse_groups."""
+    loaded like ``commons_catalog``: shipped, tested data, no parse_groups."""
     with open(_TESTS_CATALOG_PATH, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     return doc.get("groups") or {}
 
 
-def _tests_suppressed(catalog):
+def tests_suppressed(catalog):
     """A committed (or assembled) ``Tests`` group, or any ``Tests:*``
     subgroup, owns the test tree: the sweep must not mint a second ``Tests``
     (same findings-file clobber hazard as Commons). Compared casefolded so a
@@ -1192,7 +1167,7 @@ def sweep_tests(leftovers, homes, catalog=None):
     Returns ``(tests, attached, remaining)``: the ``Tests`` file list (may be
     empty), ``{group: [files]}`` to extend, and the untouched leftovers.
     """
-    seeds = (_tests_catalog().get(TESTS_GROUP) or {}).get("match") or []
+    seeds = (tests_catalog().get(TESTS_GROUP) or {}).get("match") or []
     swept = sorted(f for f in leftovers if match_patterns(f, seeds))
     remaining = sorted(f for f in leftovers if f not in set(swept))
     if len(swept) >= TESTS_MIN_FILES:
@@ -1250,7 +1225,7 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     # owns the test tree. Under the floor, files attach to the vertical they
     # sit beside (§4.5). Runs BEFORE Commons so `tests/conftest.py` is a test,
     # not Config.
-    if not _tests_suppressed(catalog):
+    if not tests_suppressed(catalog):
         tests, attached, leftovers = sweep_tests(leftovers, vertical_homes(catalog), catalog)
         for n, fs in attached.items():
             named[n] = sorted(named.get(n, []) + fs)
@@ -1264,10 +1239,10 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     # flat ids; its top-level name is just as taken (setup's plan_groups
     # excludes on the same `tops`).
     tops = {tests_axis.group_labels(n)[0] for n in catalog if tests_axis.group_labels(n)}
-    commons = {n: g for n, g in _commons_catalog().items()
+    commons = {n: g for n, g in commons_catalog().items()
                if n not in catalog and n not in tops}
     commons_named, residual = assign_by_catalog(leftovers, commons)
-    commons_named = _fold_tiny_commons(commons_named, catalog)
+    commons_named = fold_tiny_commons(commons_named, catalog)
     groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
     # run-9 A5: the residual sink used to be named `._N`. A leading dot made every
     # derived artifact a hidden dotfile (`findings-._1-ARC.json`, `scout-._1.json`
@@ -1709,7 +1684,7 @@ def main(argv=None):
         os.makedirs(out_dir, exist_ok=True)
         tmp = os.path.join(out_dir, ".discovery-%s.tmp" % uuid.uuid4().hex)
         try:
-            with open(tmp, "w", encoding="utf-8") as fh:
+            with safe_write.open_w_nofollow(tmp) as fh:   # #1735, as above
                 emit(result, fh)
             os.replace(tmp, args.out)
         finally:

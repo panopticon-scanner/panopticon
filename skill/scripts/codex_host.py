@@ -102,6 +102,14 @@ def safety_config():
 def _shell(entry, registration_dir):
     agent = entry.get("agent")
     if not agent:
+        # #1737: `setup-scan` HAS a registered shell now (dispatch.ROLE_FILES),
+        # and an enforced setup entry names it like any other role -- it goes
+        # through the branch below. This stays for the one path that remains
+        # shell-less: an UNENFORCED setup dispatch, which the driver only
+        # builds when the posture says the shell is not registered or the host
+        # cannot enforce, and which `requests.require_unenforced_scan_ack`
+        # refuses unless the operator accepted it explicitly. The running
+        # `safety_config()` is still the confined read-only policy.
         if entry.get("id") != "setup-scan":
             raise ValueError("Codex reviewer requires a registered shell; " + REGISTER_REMEDY)
         return safety_config()
@@ -250,6 +258,12 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
     model = entry.get("model")
     if model is not None and (not isinstance(model, str) or not model or any(c in model for c in "\r\n\0")):
         raise ValueError("Codex requires an explicit entry model")
+    # #1737: the exemption is about the MODEL, not the shell. `setup_scan` is a
+    # registered role whose profile resolves to None -- "inherit the session's
+    # model" (R-F4-2) -- so its entry carries no model by design, enforced or
+    # not, and the emitted TOML carries no `model` key either. Every other role
+    # must still name one, or an enforced launch would silently take the CLI's
+    # default.
     if model is None and entry.get("id") != "setup-scan":
         raise ValueError("Codex reviewer requires an explicit entry model")
     if any(not isinstance(env.get(key), str) or not env[key] for key in ENV_KEYS):

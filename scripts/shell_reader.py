@@ -20,7 +20,10 @@ from the guard until it was:
                     `<<'EOF'` does not
     substitutions   `eval "$(curl ...)"`, `bash <(curl ...)`, backticks
     quoting         a `|` or `;` inside '...' or "..." is text, not a pipeline
-    redirections    `curl ... > file`, `bash < file`, and `2>&1` is neither
+    redirections    `curl ... > file`, `bash < file`; `curl ... &>file` /
+                    `>&file` (bash's combined-stream form) are real
+                    destinations too; `2>&1`/`>&2`/`>&-` are neither, and
+                    `2>file` is a write, but not to stdout
     separators      `&&`, `||`, `;`, `&` -- which is where a shell says whether
                     a command's exit status is allowed to matter
     wrappers        `sudo`, `env FOO=1`, `timeout 300`, and the keywords (`if`,
@@ -36,10 +39,17 @@ import re
 import shlex
 
 # One shell command: its argv, the files it redirects into / reads from, the
-# heredoc body attached to it, and the command substitutions inside it -- the
+# heredoc body attached to it, the command substitutions inside it -- the
 # `$(...)`, `<(...)` and backtick texts, which are commands in their own right
-# and where `eval "$(curl ...)"` hides its download.
-Stage = collections.namedtuple("Stage", "argv writes reads heredoc substitutions")
+# and where `eval "$(curl ...)"` hides its download -- and stdout_writes, the
+# subset of `writes` a shell actually delivers to file descriptor 1. `writes`
+# also carries an explicit OTHER fd (`2>err.log`) so the guard's file-tracking
+# stays correct; `stdout_writes` is the one a caller may call THE destination
+# (#1733). `&>word`/`&>>word` and the UNNUMBERED `>&word` land there too --
+# bash's `>word 2>&1` shorthand, a real file whatever `word` looks like. A
+# target beginning with `&` whose remainder IS a duplication or close (`&1`,
+# `&-`) -- `2>&1`, `>&2`, `>&-` -- lands in neither list.
+Stage = collections.namedtuple("Stage", "argv writes reads heredoc substitutions stdout_writes")
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -63,16 +73,30 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
-# A token ending in an unquoted `)` where a command was expected: a `case`
-# arm pattern -- `a)`, `*)`, `(a)`, `"a b")` (quoted, so the word carries a
-# space), and the tail of an `a|b)` alternation (the statement split cuts that
-# on the `|`) -- or the one-word tail of a tight subshell, `( ... || true)`.
-# Neither is a command name; the reader strips it and reads what follows. The
-# subshell's HEAD, `(curl ...`, is the other side of that coin: one token, so
-# the fetch it starts is unseen (a documented gap, see `workflow_guard`).
-ARM = re.compile(r"^(?!\(\)$)\S(?:.*[^(])?\)$")
+# Only a pattern parsed INSIDE a case body receives this marker. A closing
+# subshell parenthesis (or a quoted command name ending in one) is not an arm.
+# LIMITATION, shared with `@@substN@@` and `@@heredocN@@`: a marker is a
+# spelling, not a capability, so a target script CAN write one -- and since
+# `command()` drops a leading arm marker, a step spelling `@@casearm@@curl`
+# hides the fetch behind it. There is no cheap unforgeable alternative: every
+# character survives `shlex` quoting, and a control character does not help
+# either: PyYAML's reader does reject a RAW control character in a workflow
+# file, but a double-quoted YAML scalar spells one with a backslash-u escape
+# and loads the real thing (checked, this fix round). Closing it needs a
+# per-parse nonce, or `statements()` neutralising the whole marker family in
+# its input before parsing -- either of which changes the marker CONTRACT, not
+# a constant, so it is a change of its own. The index guard in `_stage.take`
+# ("an index past the end belongs to ANOTHER parse") is the shape of the
+# defence that is in place today.
+_CASE_ARM = "@@casearm@@"
+ARM = re.compile(r"^@@casearm@@")
+_GROUP_TOKENS = ("@@group-open@@", "@@group-close@@")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _REDIRECT = re.compile(r"^(\d*)(>>|>|<)(.*)$")
+# `&>word`/`&>>word`: bash's combined-stream shorthand for `>word 2>&1` --
+# always fd 1, and `_split` already keeps it glued to `word` (the `&`/`>`
+# handling it shares with `2>&1`). It never takes a leading fd digit.
+_AMP_REDIRECT = re.compile(r"^&(>>|>)(.*)$")
 _HEREDOC_OP = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
 _HEREDOC_REF = re.compile(r"^@@heredoc(\d+)@@$")
 SUBST_REF = re.compile(r"@@subst(\d+)@@")
@@ -207,15 +231,30 @@ def _split(text):
     stages = []
     buf: list[str] = []
     quote, at_token_start, i, n = None, True, 0, len(text)
+    cases: list[str] = []
+    # A `case` header is exactly three words (`case`, the word, `in`), so the
+    # shlex probe below only has to run while the buffer can still BE one --
+    # `header_words` counts the words the buffer has closed, `header_live`
+    # goes false as soon as the first word is not `case` or a third word has
+    # gone by without a header, and both reset when the buffer does. Probing
+    # unconditionally re-split the WHOLE buffer on every whitespace character,
+    # which made `_split` quadratic: 42 KB of one statement took ~93 s against
+    # 0.02 s before the probe existed, from a `run:` block this module reads
+    # out of the TARGET repository (fix round on #1714, Critical 1).
+    header_words, header_live = 0, True
 
     def end_stage():
+        nonlocal header_words, header_live
         stages.append("".join(buf))
         del buf[:]
+        header_words, header_live = 0, True
 
     def end_statement(separator):
         end_stage()
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
+            if cases and re.match(r"^\s*esac(?:\s|$)", stages[0]):
+                cases.pop()
         del stages[:]
 
     while i < n:
@@ -240,12 +279,54 @@ def _split(text):
             while i < n and text[i] != "\n":
                 i += 1
             continue
+        # A case header ends at its `in`, even when its first arm shares
+        # the line. Quoted/escaped words remain intact until shlex reads them.
+        # The count asks the BUFFER, not the source text, whether a word just
+        # closed here: whitespace that only extends a run of whitespace ends
+        # nothing, an escaped space ends nothing, and the character before a
+        # statement's first space may be the `;` that ENDED the last one --
+        # a source-text test miscounted that as a word and killed the probe
+        # one word early, losing the second header of `case ... esac; case
+        # ... in ...`. Whitespace inside a quote never reaches this branch.
+        if ch.isspace() and header_live and buf and not buf[-1][-1].isspace():
+            header_words += 1
+            try:
+                words = shlex.split("".join(buf))
+            except ValueError:
+                words = []
+            words = [w for w in words if w not in _GROUP_TOKENS]
+            if len(words) == 3 and words[0] == "case" and words[-1] == "in":
+                end_statement(";")
+                cases.append("pattern")
+            elif header_words >= 3 or (words and words[0] != "case"):
+                header_live = False         # this buffer is not a header
+        if ch == "(" and not (cases and cases[-1] == "pattern"):
+            # Preserve function headers: `f()` and `f ()` are not subshells.
+            if text[i:i + 2] == "()" and _NAME.fullmatch("".join(buf).strip()):
+                buf.append("()")
+                at_token_start, i = False, i + 2
+                continue
+            buf.append(" " + _GROUP_TOKENS[0] + " ")
+            at_token_start, i = True, i + 1
+            continue
+        if ch == ")":
+            if cases and cases[-1] == "pattern":
+                buf[:] = [_CASE_ARM + "".join(buf).lstrip() + ")"]
+                cases[-1] = "body"
+            else:
+                buf.append(" " + _GROUP_TOKENS[1] + " ")
+            at_token_start, i = True, i + 1
+            continue
         prev = "".join(buf[-1:]).strip()
         if ch in "&|" and (prev in (">", "&") or text[i:i + 2] == "&>"):
             buf.append(ch)                      # `2>&1`, `&>log`: a redirection
             at_token_start, i = False, i + 1
             continue
         if ch == "|" and text[i:i + 2] != "||":
+            if cases and cases[-1] == "pattern":
+                buf.append(ch)  # case alternatives are one pattern, not a pipeline
+                at_token_start, i = False, i + 1
+                continue
             end_stage()
             at_token_start, i = True, i + 1
             continue
@@ -253,14 +334,38 @@ def _split(text):
             pair = text[i:i + 2]
             separator = pair if pair in ("&&", "||") else ch
             end_statement(separator)
+            # Every terminator that ENDS a case arm, not just `;;`: bash also
+            # spells it `;&` (fall through into the next arm's body) and `;;&`
+            # (resume matching at the next pattern). Reading only `;;` left
+            # the state at "body", so the next arm's `b)` was read as a group
+            # CLOSE and `b` became argv[0] -- shadowing the command behind it,
+            # which is how a `curl` in the second arm went unseen entirely
+            # (fix round on #1714, Critical 2). After any of the three the
+            # next word is a pattern again.
+            arm_end = next((t for t in (";;&", ";;", ";&")
+                            if text.startswith(t, i)), None)
+            if arm_end and cases:
+                cases[-1] = "pattern"
             at_token_start = True
-            i += len(separator)
+            i += len(arm_end) if arm_end else len(separator)
             continue
         buf.append(ch)
         at_token_start = ch.isspace()
         i += 1
     end_statement("")
     return statements
+
+
+def _fd_or_close(word):
+    """True for the historical ambiguity of the UNNUMBERED `>&word` form:
+    real bash reads a word made only of digits, or exactly `-`, as a file
+    descriptor to duplicate or close -- never a path -- and anything else as
+    the file `>word 2>&1` would have named. Checked against bash 5 (round 1
+    of #1733's fix): `>&2extra` writes a file called `2extra`; `>&2` does
+    not. The `&>word` spelling carries no such ambiguity at all (`&>2` is
+    always a file named `2`), so this is never consulted for it.
+    """
+    return word == "-" or word.isdigit()
 
 
 def _stage(text, bodies, inners):
@@ -274,8 +379,9 @@ def _stage(text, bodies, inners):
     writes: list[str] = []
     reads: list[str] = []
     heredoc = None
-    pending = None
+    stdout_writes: list[str] = []
     substitutions: list[str] = []
+    pending = None
 
     def take(token):
         # A redirection TARGET can be a command too (`bash < <(curl ...)`), so
@@ -287,11 +393,47 @@ def _stage(text, bodies, inners):
         substitutions.extend(inners[int(n)] for n in SUBST_REF.findall(token)
                              if int(n) < len(inners))
 
+    def write(fd, target):
+        # `1>x` and a bare `>x` both mean fd 1 -- the shell's default target
+        # for `>`/`>>` with no leading digit -- and only that one is where
+        # `curl`/`wget`'s stream actually goes; `2>x` is a real write this
+        # stage makes (kept in `writes` for the file-tracking that reads it),
+        # but never the destination a fetch is reported against (#1733).
+        writes.append(target)
+        if fd in ("", "1"):
+            stdout_writes.append(target)
+
+    def combined_write(target):
+        # `&>word`, `&>>word`, and the UNNUMBERED `>&word`: bash's shorthand
+        # for `>word 2>&1` -- always fd 1, and always a real file, whatever
+        # `word` looks like (round 1 of #1733's fix; see `_fd_or_close`).
+        take(target)
+        write("1", target)
+
     for token in tokens:
+        if token in _GROUP_TOKENS:
+            continue
         if pending is not None:
-            take(token)
-            (writes if pending else reads).append(token)
+            kind, fd, is_write = pending
             pending = None
+            if kind == "amp":
+                # `>& word` / `&> word`: the target landed in its own token
+                # because whitespace separates it from the operator. Only the
+                # unnumbered `>&`/`&>` (write side) carries a real file here:
+                # a numbered `N>&` (`is_write` but `fd` set) is a bash
+                # "ambiguous redirect" runtime error for a non-digit word,
+                # and the read side (`<&`) has no file-fallback AT ALL, so
+                # neither is modelled as a write.
+                if not fd and _fd_or_close(token):
+                    continue                     # `>& 2`, `>& -`
+                if is_write and not fd:
+                    combined_write(token)         # `>& word`, `&> word`
+                continue
+            take(token)
+            if is_write:
+                write(fd, token)
+            else:
+                reads.append(token)
             continue
         ref = _HEREDOC_REF.match(token)
         if ref and int(ref.group(1)) < len(bodies):
@@ -302,18 +444,39 @@ def _stage(text, bodies, inners):
                 # `$(...)` in there produced.
                 substitutions.extend(_lift_substitutions(heredoc)[1])
             continue
+        amp = _AMP_REDIRECT.match(token)
+        if amp:
+            target = amp.group(2)
+            if target:
+                combined_write(target)
+            else:
+                pending = ("amp", "", True)      # `&> word`: always unnumbered
+            continue
         redirect = _REDIRECT.match(token)
         if redirect:
-            target, is_write = redirect.group(3), redirect.group(2) != "<"
+            fd, op, target = redirect.groups()
+            is_write = op != "<"
             if target:
+                if target.startswith("&"):
+                    remainder = target[1:]
+                    if is_write and not fd and remainder and (
+                            not _fd_or_close(remainder)):
+                        combined_write(remainder)  # unnumbered `>&word`
+                    elif not remainder:
+                        pending = ("amp", fd, is_write)  # bare `>&`/`<&`
+                    # else `2>&1`, `>&2`, `>&-`: duplication/close -- nothing
+                    continue
                 take(target)
-                (writes if is_write else reads).append(target)
+                if is_write:
+                    write(fd, target)
+                else:
+                    reads.append(target)
             else:
-                pending = is_write
+                pending = ("write" if is_write else "read", fd, is_write)
             continue
         take(token)
         argv.append(token)
-    return Stage(argv, writes, reads, heredoc, substitutions)
+    return Stage(argv, writes, reads, heredoc, substitutions, stdout_writes)
 
 
 def statements(script):

@@ -55,6 +55,27 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             self.assertIn("%d/%d" % (len(probes_common.DRIVER_ROLES),
                                      len(probes_common.DRIVER_ROLES)), detail)
 
+    def test_the_setup_scan_shell_is_checked_and_grants_no_bash(self):
+        # #1737, brief case (e): `registered-shell-tools` is the proof
+        # read_guard_hook.py cites for "No fan-out shell grants Bash" -- a
+        # premise that held only for REGISTERED roles, and therefore not for
+        # the one dispatch that reads the whole untrusted tree. The verdict is
+        # unchanged with the new shell present, and a setup-scan shell that
+        # grants Bash now refutes exactly like any other role's would.
+        from scripts import dispatch
+        self.assertIn("setup_scan", probes_common.DRIVER_ROLES)
+        role_file = dispatch.ROLE_FILES["setup_scan"]
+        with tempfile.TemporaryDirectory() as d:
+            self._fully_registered(d)
+            state, _by, detail = probes_common.probe_registered_shell_tools("claude", d)
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertNotIn("Bash", detail)
+            _shell(d, dispatch.registered_agent_filename("claude", role_file),
+                   ["Read", "Grep", "Glob", "Bash"])
+            state, _by, detail = probes_common.probe_registered_shell_tools("claude", d)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("setup_scan: shell grants forbidden tool(s) Bash", detail)
+
     def test_an_empty_registration_dir_is_refuted(self):
         # THE negative fixture. This is the 7.1 case: a Claude run whose
         # shells were never registered must stop claiming enforcement.

@@ -89,9 +89,9 @@ class TestChangedFilesRenameParity(unittest.TestCase):
     def test_diff_invocation_includes_find_renames(self):
         calls = []
 
-        def fake_git(repo, args):
+        def fake_git(repo, args, timeout=30, text=True):
             calls.append(list(args))
-            r = types.SimpleNamespace(stdout="")
+            r = types.SimpleNamespace(stdout=b"" if not text else "")
             if args and args[0] == "merge-base":
                 r.stdout = "abc123\n"
             return r
@@ -102,7 +102,7 @@ class TestChangedFilesRenameParity(unittest.TestCase):
         # resolves through -- no cross-module duplication needed post-A2.
         with mock.patch.object(orchestrator, "_git", side_effect=fake_git):
             orchestrator.collect_changed_files("/tmp/x", base="main")
-        diff_calls = [a for a in calls if a and a[0] == "diff"]
+        diff_calls = [a for a in calls if "diff" in a]
         self.assertTrue(diff_calls, "no git diff invocation captured")
         for a in diff_calls:
             self.assertIn("--find-renames", a)
@@ -418,3 +418,183 @@ def test_repo_scan_plain_delta_still_reviews_a_changed_root_config(tmp_path):
                             str(repo), "--out", str(out)])
     assert rc == 0
     assert "panopticon.yml" in _reviewed_files(out)
+
+
+# --- #1740 fix round 2: one glob means one thing on both sides --------------
+#
+# `exclude_paths:` is compiled by discovery with GITIGNORE semantics (`*` stays
+# inside a segment, a trailing `/` claims the subtree, a pattern with no `/`
+# matches the basename at any depth) and was matched on the tool side with
+# `fnmatch` (`*` crosses `/`, a trailing `/` matches nothing at all). The same
+# committed line therefore meant two different things: `tests/*` excluded the
+# whole subtree from the gate but only the direct children from discovery, and
+# `docs/` excluded a tree from discovery and NOTHING from the gate. The tool
+# side now compiles through the same translator.
+
+_PARITY_GLOBS = ["tests/*", "docs/"]
+_PARITY_PATHS = ("tests/test_a.py",          # direct child: both exclude it
+                 "tests/unit/test_b.py",     # nested: gitignore `*` stops at /
+                 "docs/guide/intro.md")      # trailing `/` claims the subtree
+
+
+def _discovery_excludes(path, globs):
+    """Exactly what `discovery`'s `_apply_exclude` asks of a file."""
+    return any(orchestrator._glob_to_re(g).match(path) for g in globs)
+
+
+def test_the_tool_exclusion_agrees_with_discovery_on_every_path():
+    import scripts.ingest_tools as it
+    import scripts.run_tools as rt
+    for path in _PARITY_PATHS:
+        want = _discovery_excludes(path, _PARITY_GLOBS)
+        # the scan side (adapter demotion)
+        assert rt._is_excluded(path, _PARITY_GLOBS) is want, path
+        # the ingest side (what the report and the gate see)
+        kept, gl, _ra, _sup = it._filter_parsed_findings(
+            [{"location": {"file": path}}], True, _PARITY_GLOBS)
+        assert (gl == 1) is want, path
+        assert (kept == []) is want, path
+
+
+def test_the_parity_check_is_not_vacuous():
+    # The three paths really do split three ways under gitignore semantics, so
+    # a tool side that answered "everything" or "nothing" could not pass above.
+    assert [_discovery_excludes(p, _PARITY_GLOBS) for p in _PARITY_PATHS] \
+        == [True, False, True]
+
+
+# --------------------------------------------------------------------------
+# #1739 (COD-C2D / SEC-G2B): git quotes paths, and a quoted spelling silently
+# left the reviewed set.
+# --------------------------------------------------------------------------
+
+import os                                                       # noqa: E402
+import subprocess                                               # noqa: E402
+
+import scripts.diff_map as diff_map                              # noqa: E402
+
+# Verified against real git in a temp repo: with the default core.quotepath a
+# path carrying a byte >= 0x80 is C-quoted, and a path carrying `"`, `\`, tab
+# or newline is C-quoted whatever quotepath says --
+#     $ git ls-files
+#     "back\\slash.py"
+#     "caf\303\251.py"
+#     "ta\tb.py"
+#     "we\"ird.py"
+# -- while `git ls-files -z` emits the raw bytes and never quotes.
+_QUOTED_LS_FILES = b'"src/caf\\303\\251.py"\n'
+_NUL_LS_FILES = "src/café.py\0".encode("utf-8")
+
+
+def _quoting_git(repo_root):
+    """A fake discovery._git that quotes exactly as git does unless asked for -z."""
+    def fake_git(repo, args, timeout=30, text=True):
+        if args and args[0] == "merge-base":
+            return types.SimpleNamespace(stdout="deadbeef\n" if text else b"deadbeef\n")
+        payload = _NUL_LS_FILES if "-z" in args else _QUOTED_LS_FILES
+        if text:
+            payload = payload.decode("utf-8")
+        return types.SimpleNamespace(stdout=payload)
+    return fake_git
+
+
+def test_collect_changed_files_keeps_a_non_ascii_path(tmp_path):
+    # The whole defect in one test: git's own spelling of `src/café.py` used
+    # to reach os.path.isfile as the literal `"src/caf\303\251.py"`, which is
+    # false, so the file left the reviewed set with no warning at all. The
+    # fake quotes when the invocation lacks -z, so this fails on the old code.
+    repo = tmp_path / "r"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "café.py").write_text("x = 1\n", encoding="utf-8")
+    with mock.patch.object(orchestrator, "_git", side_effect=_quoting_git(repo)):
+        got = orchestrator.collect_changed_files(str(repo), base="main")
+    assert got == ["src/café.py"]
+
+
+def test_collect_changed_files_asks_git_not_to_quote(tmp_path):
+    # The flags are the fix: -z (git never quotes) read as BYTES, plus
+    # core.quotepath=false for belt and braces.
+    calls = []
+
+    def fake_git(repo, args, timeout=30, text=True):
+        calls.append((list(args), text))
+        if args and args[0] == "merge-base":
+            return types.SimpleNamespace(stdout="deadbeef\n")
+        return types.SimpleNamespace(stdout=b"")
+
+    with mock.patch.object(orchestrator, "_git", side_effect=fake_git):
+        orchestrator.collect_changed_files(str(tmp_path), base="main")
+    listings = [(a, t) for (a, t) in calls if a and a[0] != "merge-base"]
+    assert listings, "no file-listing invocation captured"
+    for args, text in listings:
+        assert "-z" in args, args
+        assert args[:2] == ["-c", "core.quotepath=false"], args
+        assert text is False, args
+
+
+def test_collect_changed_files_warns_instead_of_dropping_silently(tmp_path, capsys):
+    # Silence is the bug. A path git lists that is not a confined regular file
+    # is still dropped, but never invisibly.
+    repo = tmp_path / "r"
+    repo.mkdir()
+    (repo / "kept.py").write_text("x\n", encoding="utf-8")
+
+    def fake_git(repo_arg, args, timeout=30, text=True):
+        if args and args[0] == "merge-base":
+            return types.SimpleNamespace(stdout="deadbeef\n")
+        return types.SimpleNamespace(
+            stdout="kept.py\0vanished.py\0adir\0skipme.py\0".encode("utf-8"))
+
+    (repo / "adir").mkdir()
+    with mock.patch.object(orchestrator, "_git", side_effect=fake_git):
+        got = orchestrator.collect_changed_files(str(repo), base="main",
+                                                 exclude=("skipme.py",))
+    err = capsys.readouterr().err
+    assert got == ["kept.py"]
+    assert "vanished.py" in err
+    assert "adir" in err
+    # an EXCLUDED name is a deliberate drop, not a surprise: no warning for it
+    assert "skipme.py" not in err
+
+
+def _git_q(repo, *args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True,
+                   capture_output=True, timeout=30)
+
+
+def test_reviewed_set_and_hunk_map_agree_on_quoted_names(tmp_path):
+    # #978's invariant, on exactly the names git quotes: the reviewed file set
+    # and the on-diff hunk map must name the same files. Committed non-ASCII,
+    # quote, backslash and tab names all CHANGED on a branch, plus an
+    # untracked one -- the two producers used to lose every one of them.
+    repo = tmp_path / "r"
+    repo.mkdir()
+    committed = ["café.py", 'we"ird.py', "back\\slash.py"]
+    try:
+        (repo / "ta\tb.py").write_text("t\n", encoding="utf-8")
+        committed.append("ta\tb.py")
+    except OSError:
+        pass                      # filesystem refuses a tab in a filename
+    for name in committed:
+        if not (repo / name).exists():
+            (repo / name).write_text("one\n", encoding="utf-8")
+    _git_q(repo, "init", "-q", "-b", "main")
+    _git_q(repo, "config", "user.email", "t@t")
+    _git_q(repo, "config", "user.name", "T")
+    _git_q(repo, "add", "-A")
+    _git_q(repo, "commit", "-qm", "init")
+    _git_q(repo, "checkout", "-q", "-b", "feat")
+    for name in committed:
+        with open(repo / name, "a", encoding="utf-8") as fh:
+            fh.write("two\n")
+    _git_q(repo, "commit", "-qam", "change them all")
+    (repo / "naïve.txt").write_text("untracked\n", encoding="utf-8")
+
+    changed = orchestrator.collect_changed_files(str(repo), base="main")
+    hunks = diff_map.hunk_map(str(repo), "main")
+    expected = set(committed) | {"naïve.txt"}
+    assert set(changed) == expected, changed
+    assert set(hunks) == expected, sorted(hunks)
+    assert set(changed) == set(hunks)
+    for name in changed:
+        assert name == os.fsdecode(os.fsencode(name))

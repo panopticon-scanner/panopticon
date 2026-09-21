@@ -171,8 +171,18 @@ def parse_fetch(tool, args, stage, piped_to):
     if directory and dest and not os.path.isabs(dest) and (
             tool == "curl" or not named):
         dest = os.path.join(directory, dest)
-    if stage.writes:
-        dest = stage.writes[-1]                 # `curl ... > /tmp/x`
+    if stage.stdout_writes:
+        dest = stage.stdout_writes[-1]           # `curl ... > /tmp/x`; a
+        # stderr redirect (`2>&1`, `2>/dev/null`, `2>err.log`) never lands
+        # here -- `stage.writes` is not enough, it also carries fds that are
+        # not where the fetcher's stream goes (#1733)
+        if dest == "/dev/stderr":
+            # A STDOUT redirect landing on `/dev/stderr` is also "nothing was
+            # written" -- but only when a redirect put it there. `-o
+            # /dev/stderr` (below, via `dest`/`named`) really did write it,
+            # and STDOUT must not silence that explicit destination too
+            # (round 1 NIT: it did, while this lived in the STDOUT tuple).
+            dest = None
     if dest is None and piped_to and os.path.basename(piped_to[0]) == "tee":
         # `curl ... | sudo tee /usr/local/bin/tool`: the pipeline IS the
         # download's destination, and what tee wrote is what runs next.
