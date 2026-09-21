@@ -128,6 +128,26 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertFalse(res.ok)
         self.assertIn("exited 2", res.error)
 
+    def test_partial_output_never_masks_the_host_reason(self):
+        res = kimi_runner.Runner("kimi").parse_envelope(
+            "e1", STREAM, 1, stderr="provider.auth_error: 403 weekly usage limit")
+        self.assertIn("403 weekly usage limit", res.error)
+        self.assertNotIn("the final reply", res.error)
+        self.assertEqual("the final reply", res.text)
+        self.assertEqual("session_test-1", res.session_id)
+        self.assertEqual(outage.HOST_FAILURE, res.failure_class)
+
+    def test_missing_host_reason_is_explicit_and_partial_reply_is_separate(self):
+        text = "API Error: 403 Forbidden"
+        stream = json.dumps({"role": "assistant", "content": text})
+        res = kimi_runner.Runner("kimi").parse_envelope("e1", stream, 1)
+        self.assertIn("host provided no failure reason", res.error)
+        self.assertIn("retained separately", res.error)
+        self.assertNotIn(text, res.error)
+        self.assertEqual(text, res.text)
+        self.assertIsNone(res.host_error)
+        self.assertEqual(outage.ENTRY_FAILURE, res.failure_class)
+
     def test_a_failed_launch_reports_stderr_not_an_empty_tail(self):
         # 2026-09-13: an 8-wide burst hit the gateway rate limit and every
         # entry read 'kimi -p exited 1: ' -- stdout empty, the reason on

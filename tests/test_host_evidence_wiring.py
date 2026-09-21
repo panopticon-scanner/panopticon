@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import json
 import dataclasses
 import io
 import os
@@ -1402,6 +1403,30 @@ class TestThePostureBlockIsSaidInFullOncePerPosture(unittest.TestCase):
         # nothing.
         self.assertIn("2", out)
         self.assertIn("3", out)
+
+    def test_setup_stamps_its_own_manifest_and_collapses_the_repeat(self):
+        root = self._run_root()
+        review_path = run_manifest.manifest_path(root)
+        with open(review_path, "rb") as fh:
+            review_before = fh.read()
+        setup_path = run_manifest.manifest_path(root, "setup")
+        with open(setup_path, "w") as fh:
+            json.dump({"run_id": "setup-id", "host": "claude"}, fh)
+        outputs = []
+        for _ in range(2):
+            with open(setup_path) as fh:
+                manifest = json.load(fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                driver._disclose_posture(root, manifest, self.ARTIFACT, namespace="setup")
+            outputs.append(err.getvalue())
+        self.assertGreater(len(outputs[0].splitlines()), 1)
+        self.assertEqual(len(outputs[1].splitlines()), 1)
+        self.assertIn("unchanged since", outputs[1])
+        with open(setup_path) as fh:
+            self.assertIn(run_manifest.POSTURE_DISCLOSED, json.load(fh))
+        with open(review_path, "rb") as fh:
+            self.assertEqual(fh.read(), review_before)
 
     def test_a_posture_that_moved_says_the_whole_thing_again(self):
         # An OPERATIONAL capability (usage_ledger) so the run is not refused

@@ -705,6 +705,13 @@ class TestInstallUninstall(unittest.TestCase):
             self.assertFalse(os.path.exists(
                 os.path.join(d, ".claude", "settings.local.json")))
 
+    def test_session_root_without_settings_refuses_before_writing(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, ".panopticon", "findings-A-SEC.json")
+            with self.assertRaisesRegex(ValueError, "session root"):
+                wg.install([{"out_file": out}], session_root=d)
+            self.assertEqual(os.listdir(d), [])
+
     def test_session_root_resolves_both_paths_under_it(self):
         # The declared-root path: a caller that knows the root (the driver has
         # --session-dir) says so instead of inheriting whatever CWD it was run in.

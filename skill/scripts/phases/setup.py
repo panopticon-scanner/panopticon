@@ -11,15 +11,14 @@ import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
 from . import engine
-from . import persist
 from . import runio
 from . import requests
 
 
-SETUP_MANIFEST = "setup-manifest.json"
+SETUP_MANIFEST = run_manifest.SETUP_MANIFEST_NAME
 
 def _setup_manifest_path(review_root):
-    return runio._pano(review_root, SETUP_MANIFEST)
+    return run_manifest.manifest_path(review_root, "setup")
 
 def load_setup_manifest(review_root):
     return runio._load_json(_setup_manifest_path(review_root))
@@ -30,9 +29,8 @@ def record_dispatch_request(review_root, checkpoint, sha256, at=None):
 
     Setup is not a run (#1507): it keeps its own request
     (`.panopticon/setup-dispatch-request.json`) and its own manifest, and
-    `run_manifest._rewrite` writes `run-manifest.json` unconditionally -- so
-    recording there would stamp a prior REVIEW run's manifest with setup's
-    hash. Same tmp + `os.replace` shape as that helper, through this package's
+    its namespace must be preserved when updating the record. Same tmp +
+    `os.replace` shape as `run_manifest._rewrite`, through this package's
     own confining opener (the manifest is a `.panopticon` artifact and the
     target may have planted a symlink at either name). A tree with no setup
     manifest records nothing, exactly as the run-manifest side does.
@@ -141,20 +139,7 @@ SETUP_PHASES = (
 
 _SETUP_ARTIFACTS = ("setup-scan-brief.md", "setup-spine.json", "setup-proposal.json",
                     "setup-report.md", "setup-report.json",
-                    "setup-complete.json", SETUP_MANIFEST)
-
-def _setup_capabilities_path(review_root):
-    """The capability evidence `driver loop --setup`'s posture step writes.
-
-    Resolved through `persist.run_dir(review_root, "setup")` -- the flat
-    `.panopticon/`, where every other setup artifact lives -- and deliberately
-    NOT through `runio._pano`, which is what the rest of this module uses:
-    `host-capabilities.json` is not in `runio._TOP_LEVEL`, so `_pano` resolves
-    it into `runs/<tag>/` whenever a review run-manifest is on the tree. That
-    file is that run's evidence, and a `--setup --reset` deleting it would be
-    the same class of accident as the stale-runs-folder writes (#1507).
-    """
-    return os.path.join(persist.run_dir(review_root, "setup"), runio.HOST_CAPABILITIES)
+                    "setup-complete.json", SETUP_MANIFEST, runio.HOST_CAPABILITIES)
 
 def _clear_setup_artifacts(review_root):
     """Remove derived setup artifacts + the setup-manifest for --reset. NEVER
@@ -167,8 +152,8 @@ def _clear_setup_artifacts(review_root):
     per-run folder. A file the verb consults with no way to discard it is a
     remedy the refusal message names and does not deliver."""
     draft = repo_config.draft_path(review_root)
-    for path in ([runio._pano(review_root, name) for name in _SETUP_ARTIFACTS]
-                 + [_setup_capabilities_path(review_root)]
+    setup_dir = os.path.dirname(_setup_manifest_path(review_root))
+    for path in ([os.path.join(setup_dir, name) for name in _SETUP_ARTIFACTS]
                  + ([draft] if os.path.isfile(draft) else [])):
         try:
             os.remove(path)
@@ -313,8 +298,9 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
         _clear_setup_artifacts(review_root)               # Task 3
     _drop_stale_fallback_marker(review_root)
     manifest = load_setup_manifest(review_root)
-    if manifest is not None and runio._foreign_manifest(
-            manifest, review_root, _setup_manifest_path(review_root)):
+    foreign_reason = runio._foreign_manifest_reason(
+        manifest, review_root, _setup_manifest_path(review_root))
+    if foreign_reason:
         # #run7/#run8 AGT-C1A: a target repo can force-commit its own
         # .panopticon/setup-manifest.json (gitignored but `git add -f`-able) to
         # preset an attacker-chosen `vocabulary_path` -- which setup_flow reads and
@@ -322,9 +308,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
         # run-manifest guard (#1093): a manifest that is git-tracked in this tree,
         # or whose stamped review_root isn't THIS checkout, is not a legitimate
         # resume state; discard and rebuild from args.
-        print("driver: ignoring foreign setup-manifest.json (stamped review_root "
-              "%r != %r)" % (manifest.get("review_root"),
-                             os.path.abspath(review_root)),
+        print("driver: ignoring foreign setup-manifest.json (%s)" % foreign_reason,
               file=sys.stderr, flush=True)
         manifest = None
     if manifest is None:

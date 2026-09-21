@@ -427,23 +427,18 @@ def _disclose_posture(review_root, manifest, fresh, namespace=None):
     resolves the per-run folder off the manifest, so creating one mid-flow
     would move `host-capabilities.json` out from under this very function.
 
-    ...and never in the setup namespace (#1616 item 3), for the mirror-image
-    reason. `record_posture_disclosure` writes `run-manifest.json` -- that
-    path is unconditional -- while `driver loop --setup` is driving its OWN
-    `setup-manifest.json`, so stamping there would overwrite a prior review
-    run's manifest with setup's body: a new run_id, a new tag, and every
-    `_pano` path of that run pointing somewhere else. The cost of not
-    stamping is that setup prints the full block on each of its two
-    invocations instead of once, which is the cheap half of the trade.
+    Setup stamps its own `setup-manifest.json` through the same namespace
+    resolver. A prior review run's manifest and capability evidence remain
+    associated with that review run.
     """
     digest = host_disclosure.disclosure_digest(fresh)
     since = run_manifest.posture_disclosed_at(manifest, digest)
     _emit_posture_disclosure(fresh, since=since)
-    if (since is None and namespace is None
-            and os.path.isfile(run_manifest.manifest_path(review_root))):
+    if (since is None
+            and os.path.isfile(run_manifest.manifest_path(review_root, namespace))):
         try:
             run_manifest.record_posture_disclosure(review_root, manifest, digest,
-                                                   fresh.get("probed_at"))
+                                                   fresh.get("probed_at"), namespace=namespace)
         except OSError as exc:
             # The stamp is EXPENDABLE, and a stamp that cannot be written must
             # not be the thing that kills an invocation. Losing it costs one
@@ -892,12 +887,13 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # the flags were composed from.
     resolution = _resolve_config(args, review_root)
     manifest = run_manifest.load_manifest(review_root)
-    if runio._foreign_manifest(manifest, review_root, run_manifest.manifest_path(review_root)):
+    foreign_reason = runio._foreign_manifest_reason(
+        manifest, review_root, run_manifest.manifest_path(review_root))
+    if foreign_reason:
         # #1093: a target-committed run-manifest.json (foreign review_root) could
         # preset flags to skip tools / force gate:PASS. Drop it and rebuild from
         # the real CLI args, exactly like a corrupt manifest below.
-        print("driver: ignoring foreign run-manifest.json (stamped review_root "
-              "%r != %r)" % (manifest.get("review_root"), os.path.abspath(review_root)),
+        print("driver: ignoring foreign run-manifest.json (%s)" % foreign_reason,
               file=sys.stderr, flush=True)
         manifest = None
     if manifest is None:
