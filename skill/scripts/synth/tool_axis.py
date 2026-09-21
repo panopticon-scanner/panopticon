@@ -29,6 +29,10 @@ from . import repair as repair_mod
 from . import validate_schema as validate_schema_mod
 
 
+class ToolManifestError(ValueError):
+    """A stale or foreign tool manifest cannot be used for synthesis."""
+
+
 @dataclass(frozen=True)
 class ToolAxis:
     """The tool layer's own accounting (WS-0 S2). `tools_ran` None means
@@ -106,12 +110,12 @@ class ToolAxis:
             # carries schema_version; its run_id (when the runner stamps it) must
             # match this run. Either mismatch is a loud error, not a silent fallback.
             if "schema_version" not in manifest:
-                sys.exit("FATAL (#17): tools-manifest at %s lacks schema_version — it "
+                raise ToolManifestError("FATAL (#17): tools-manifest at %s lacks schema_version — it "
                          "looks like a pre-5.1 flat manifest from another run; refusing "
                          "to certify against it. Re-run the tools phase." % tm_path)
             mrid = manifest.get("run_id")
             if args.run_id and mrid and mrid != args.run_id:
-                sys.exit("FATAL (#17): tools-manifest run_id %r != this run %r (at %s) — "
+                raise ToolManifestError("FATAL (#17): tools-manifest run_id %r != this run %r (at %s) — "
                          "refusing to certify against another run's manifest."
                          % (mrid, args.run_id, tm_path))
             # #1692: `selected` is the whole of what this manifest is FOR --

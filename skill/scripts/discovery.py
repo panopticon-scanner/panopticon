@@ -1008,7 +1008,7 @@ _COMMONS_CATALOG_PATH = os.path.join(
     "data", "commons_catalog.yml")
 
 @functools.lru_cache(maxsize=1)
-def _commons_catalog():
+def commons_catalog():
     """The curated Commons vocabulary (5.1 starter, #499): near-universal
     Docs/CI/Build/Config/Deps file groups loaded once from
     ``skill/data/commons_catalog.yml`` as a plain ``{name: {"match": [...]}}``
@@ -1041,7 +1041,7 @@ def _emit_named_groups(named, max_per_group, security_mode, parent_lookup=None):
 COMMONS_MIN_FILES = 6
 COMMONS_FOLD_NAME = "Commons"
 
-def _fold_tiny_commons(commons_named, catalog):
+def fold_tiny_commons(commons_named, catalog):
     """Fold under-sized Commons categories into one ``Commons`` group (5.2, #1499).
 
     Measured across 6 target-runs / 319 group-instances: a tiny (<=5 file)
@@ -1104,15 +1104,15 @@ _TESTS_CATALOG_PATH = os.path.join(
 
 
 @functools.lru_cache(maxsize=1)
-def _tests_catalog():
+def tests_catalog():
     """The Tests sweep seed globs (5.2 §4.3) as ``{"Tests": {"match": [...]}}``,
-    loaded like ``_commons_catalog``: shipped, tested data, no parse_groups."""
+    loaded like ``commons_catalog``: shipped, tested data, no parse_groups."""
     with open(_TESTS_CATALOG_PATH, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh) or {}
     return doc.get("groups") or {}
 
 
-def _tests_suppressed(catalog):
+def tests_suppressed(catalog):
     """A committed (or assembled) ``Tests`` group, or any ``Tests:*``
     subgroup, owns the test tree: the sweep must not mint a second ``Tests``
     (same findings-file clobber hazard as Commons). Compared casefolded so a
@@ -1166,7 +1166,7 @@ def sweep_tests(leftovers, homes, catalog=None):
     Returns ``(tests, attached, remaining)``: the ``Tests`` file list (may be
     empty), ``{group: [files]}`` to extend, and the untouched leftovers.
     """
-    seeds = (_tests_catalog().get(TESTS_GROUP) or {}).get("match") or []
+    seeds = (tests_catalog().get(TESTS_GROUP) or {}).get("match") or []
     swept = sorted(f for f in leftovers if match_patterns(f, seeds))
     remaining = sorted(f for f in leftovers if f not in set(swept))
     if len(swept) >= TESTS_MIN_FILES:
@@ -1224,7 +1224,7 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     # owns the test tree. Under the floor, files attach to the vertical they
     # sit beside (§4.5). Runs BEFORE Commons so `tests/conftest.py` is a test,
     # not Config.
-    if not _tests_suppressed(catalog):
+    if not tests_suppressed(catalog):
         tests, attached, leftovers = sweep_tests(leftovers, vertical_homes(catalog), catalog)
         for n, fs in attached.items():
             named[n] = sorted(named.get(n, []) + fs)
@@ -1238,10 +1238,10 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     # flat ids; its top-level name is just as taken (setup's plan_groups
     # excludes on the same `tops`).
     tops = {tests_axis.group_labels(n)[0] for n in catalog if tests_axis.group_labels(n)}
-    commons = {n: g for n, g in _commons_catalog().items()
+    commons = {n: g for n, g in commons_catalog().items()
                if n not in catalog and n not in tops}
     commons_named, residual = assign_by_catalog(leftovers, commons)
-    commons_named = _fold_tiny_commons(commons_named, catalog)
+    commons_named = fold_tiny_commons(commons_named, catalog)
     groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
     # run-9 A5: the residual sink used to be named `._N`. A leading dot made every
     # derived artifact a hidden dotfile (`findings-._1-ARC.json`, `scout-._1.json`

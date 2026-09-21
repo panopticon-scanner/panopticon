@@ -231,14 +231,14 @@ _confine_artifact_path = safe_write.confine_artifact_path
 _open_w_nofollow = safe_write.open_w_nofollow
 _open_a_nofollow = safe_write.open_a_nofollow
 
-def _write_json(path, data, atomic=False):
+def _write_json(path, data, atomic=True):
     """Write `data` as the artifact at `path`.
 
     `atomic` (F6) writes `<path>.tmp` and `os.replace`s it into place -- the
     same tmp-then-rename `persist.write_reply` uses -- for a file a reader can
-    catch mid-write. The default stays the in-place O_TRUNC write: a
-    once-per-run artifact nobody is watching does not need a second inode, and
-    the symlink defence is identical either way (the tmp goes through the same
+    catch mid-write. Atomic replacement is the default, so a failed write
+    leaves the last complete artifact readable. The symlink defence is
+    identical either way (the tmp goes through the same
     `_open_w_nofollow`, and `os.replace` onto a symlinked destination replaces
     the LINK, never the file it points at). `usage.json` is the caller that
     asks for it: the loop rewrites it once per ENTRY now, while host children

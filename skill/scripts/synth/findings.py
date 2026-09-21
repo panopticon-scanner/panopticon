@@ -349,7 +349,7 @@ def _present(findings, sev):
 
 HIGH_VALUE_PANELS = {"security", "redteam", "architecture", "database"}
 
-ID_RE = re.compile(r"^[A-Z]{2,8}-\d{3,}$")  # {2,8}: real agents emit e.g. STRUCT-001
+ID_RE = re.compile(r"\A[A-Z]{2,8}-\d{3,}\Z")  # {2,8}: real agents emit e.g. STRUCT-001
 
 # Axis alternation: the 6 legacy PANEL_ORDER names (4.x findings-<group>-<panel>
 # [-panel_review|-lens_sweep-<lens>].json) plus the 10 P4 matrix domain codes

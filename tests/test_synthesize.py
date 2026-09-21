@@ -933,8 +933,8 @@ class TestRunDirArtifactResolution(unittest.TestCase):
                 "selected": [], "produced": [], "missing": []})
             out = os.path.join(d, "r.json")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit):
-                    self._run(groups, fp, out)
+                self.assertEqual(self._run(groups, fp, out), 3)
+            self.assertFalse(os.path.exists(out))
 
     def test_pre_5_1_schemaless_manifest_in_run_dir_is_a_loud_error(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
@@ -942,8 +942,8 @@ class TestRunDirArtifactResolution(unittest.TestCase):
                 "selected": ["bandit"], "produced": ["bandit"]})   # no schema_version
             out = os.path.join(d, "r.json")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit):
-                    self._run(groups, fp, out)
+                self.assertEqual(self._run(groups, fp, out), 3)
+            self.assertFalse(os.path.exists(out))
 
     def test_run_id_without_run_dir_warns_loudly(self):
         # #17 fail-open guard: a 5.1 run (--run-id) that falls back to flat

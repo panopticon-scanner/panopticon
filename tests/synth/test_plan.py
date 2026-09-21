@@ -438,7 +438,7 @@ class PlanLoadersTest(unittest.TestCase):
             self.assertIn("not a JSON object", notdict.manifest_invalid)
             with open(tm, "w") as fh:
                 json.dump({"selected": ["semgrep"]}, fh)   # pre-5.1: no schema_version
-            with self.assertRaises(SystemExit) as cm:
+            with self.assertRaises(tool_axis_mod.ToolManifestError) as cm:
                 tool_axis_mod.ToolAxis.load(_cli_args(), d, [], {}, None)
             self.assertIn("lacks schema_version", str(cm.exception))
             with open(tm, "w") as fh:
@@ -446,7 +446,7 @@ class PlanLoadersTest(unittest.TestCase):
                 # at all, so every shape below that IS accepted carries one.
                 json.dump({"schema_version": "1", "run_id": "other",
                            "selected": []}, fh)
-            with self.assertRaises(SystemExit) as cm:
+            with self.assertRaises(tool_axis_mod.ToolManifestError) as cm:
                 tool_axis_mod.ToolAxis.load(_cli_args(run_id="this"), d, [], {}, None)
             self.assertIn("run_id 'other' != this run 'this'", str(cm.exception))
             # same run (or no --run-id) is accepted
