@@ -9,6 +9,8 @@ Style mirrors test_driver_verify.py / TestVerifyMatrixEndToEnd: drives state on
 disk and runs a REAL synthesize.py subprocess via phases.synthesize.synthesize_execute.
 """
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -24,6 +26,7 @@ import scripts.phases.synthesize as synthesize
 
 import scripts.evidence as evidence
 import scripts.model_resolver as model_resolver
+import scripts.synthesize as synthesize_cli
 
 RUN_ID = "RID"
 
@@ -123,6 +126,30 @@ class TestToolQueueParity(_ToolVerifyBase):
             (f["fingerprint"], f["id"]) for f in report["findings"] if evidence.is_tool_sourced(f)
         }
 
+    def test_redactable_agent_titles_preserve_the_capped_combined_queue(self):
+        # The cap applies BEFORE filtering to tools. An agent's changed title
+        # fingerprint can therefore change which tool gets an advisor (#1660).
+        for letter in "ABCDEFGH":
+            with self.subTest(token=letter):
+                agent = {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH",
+                         "title": "credential ghp_" + letter * 36,
+                         "category": "credential", "location": {"file": "src/app.py", "line_start": 5}}
+                d = self._repo([_result("rule-" + letter, "src/app.py", 1)],
+                               agent_findings=[agent])
+                manifest = self._manifest(max_verify=1)
+                driver_pairs = {(qid, f["id"]) for qid, f in verify_tools._tool_verify_queue(d, manifest)}
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    rc = synthesize_cli.main([
+                        "--emit-verify-queue", "--max-verify", "1", "--target", d,
+                        "--run-dir", runio._pano(d), "--tools-dir", runio._pano(d, "tools"),
+                        runio._pano(d, "findings-app-SEC.json")])
+                self.assertEqual(0, rc)
+                queue = runio._load_json(runio._pano(d, "verify-queue.json"))
+                self.assertEqual(1, len(queue["entries"]))
+                synth_pairs = {(e["queue_id"], e["finding"]["id"]) for e in queue["entries"]
+                               if evidence.is_tool_sourced(e["finding"])}
+                self.assertEqual(synth_pairs, driver_pairs)
+
     def test_queue_ids_and_ids_match_synthesize(self):
         d = self._repo([_result("r1", "src/app.py", 1), _result("r2", "src/app.py", 9)])
         m = self._manifest()
@@ -159,6 +186,38 @@ class TestToolQueueParity(_ToolVerifyBase):
         # full-pipeline survivor selection.
         self.assertEqual({f["id"] for _q, f in queue}, {"SG-002"})
         self.assertEqual(driver_pairs, self._report_tool_pairs(d, m))
+
+    def test_the_committed_exclude_policy_empties_the_queue_too(self):
+        """#1740 fix round 2: the queue must ingest with the SAME exclusions.
+
+        `phases/synthesize.py` passes the committed `exclude_paths:` globs to
+        the report's ingest, so a finding under one of them is excluded from
+        the report -- while this queue ingested with `exclude_globs=None` and
+        queued it anyway, paying an advisor dispatch for a finding the report
+        would never carry and breaking the (queue_id, id) identity contract
+        this class exists to pin.
+
+        The excluded path is `ops/`, not a fixture corpus: a fixture path is
+        dropped by the corpus prune in standard mode regardless, which would
+        make the assertion vacuous.
+        """
+        d = self._repo([_result("r1", "src/app.py", 1),
+                        _result("r2", "ops/deploy.py", 3)])
+        os.makedirs(os.path.join(d, "ops"), exist_ok=True)
+        with open(os.path.join(d, "ops", "deploy.py"), "w") as fh:
+            fh.write("import os\nx = 1\n")
+        m = self._manifest()
+        # Non-vacuity: with no committed policy BOTH findings queue.
+        self.assertEqual(
+            {f["location"]["file"] for _q, f in verify_tools._tool_verify_queue(d, m)},
+            {"src/app.py", "ops/deploy.py"})
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\nexclude_paths:\n  - 'ops/**'\n")
+        queue = verify_tools._tool_verify_queue(d, m)
+        self.assertEqual({f["location"]["file"] for _q, f in queue}, {"src/app.py"})
+        # ... and the queue still equals what synthesize's own ingest reports.
+        self.assertEqual({(qid, f["id"]) for qid, f in queue},
+                         self._report_tool_pairs(d, m))
 
     def test_empty_queue_when_tools_did_not_run(self):
         d = self._repo([_result("r1", "src/app.py", 1)])

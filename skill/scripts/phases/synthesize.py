@@ -147,6 +147,13 @@ def synthesize_execute(review_root, manifest):
            "--security", manifest.get("security_mode", "standard"),
            "--run-id", manifest.get("run_id") or "",   # §5.1: X0X report provenance
            "--verdicts-dir", verdicts_dir]
+    # #1740 fix round 1: the committed `exclude_paths:` policy reaches the
+    # TOOL ingest too, not only discovery -- under `--security redteam` a
+    # fixture-corpus or vendored drop is counted toward THIS report's gate, so
+    # without this the committed policy could not scope that gate at all. The
+    # tools phase passes the same globs to `run_tools --exclude`.
+    for glob in runio.committed_exclude_paths(review_root):
+        cmd += ["--tools-exclude", glob]
     if (runio._load_json(runio._pano(review_root, "tools-ran.json")) or {}).get("ran"):
         cmd += ["--tools-dir", runio._pano(review_root, "tools")]
         # Pin synthesize's fixture posture to the tool-verify queue's

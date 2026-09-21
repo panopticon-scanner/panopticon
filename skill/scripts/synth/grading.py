@@ -379,7 +379,7 @@ def grade_report(run, resolved, reconciled):
     certification and the gate, from the resolved findings and the reconciled
     plan. Severity is never mutated here; grades and the gate are computed
     from gate-eligible findings only."""
-    # #1701: under `--security redteam` the vendored-path exclusion may keep a
+    # #1701: under `--security redteam` a directory-NAME exclusion may keep a
     # tool finding out of the report BODY, but not out of the gate -- a payload
     # parked at `app/vendor/patched_auth.rb` passing a merge gate on the
     # strength of a conventional directory name is the defect the mode exists

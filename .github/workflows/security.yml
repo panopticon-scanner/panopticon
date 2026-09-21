@@ -20,7 +20,12 @@ on:
 env:
   IMAGE: ghcr.io/${{ github.repository }}-tools:latest
   TOOLS_OUT: panopticon-tools-output
-  FIXTURE_GLOB: tests/fixtures/*
+  # #1740 fix round 2: `**`, because `--exclude` now reads the same
+  # gitignore-flavored vocabulary discovery reads `exclude_paths:` with, where
+  # `*` stops at `/`. Spelling it `*` would have silently narrowed this gate's
+  # exclusion to the direct children of tests/fixtures/ and started gating on
+  # the deliberately-vulnerable corpus below it.
+  FIXTURE_GLOB: tests/fixtures/**
 jobs:
   scan:
     runs-on: ubuntu-latest
