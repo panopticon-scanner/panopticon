@@ -711,3 +711,163 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertIn("--pr 7", message)
         self.assertIn("/tmp/repo", message)
         self.assertIn("--mode headless", message)
+
+
+class TestTheUniformInstantFailure(unittest.TestCase):
+    """#1732 part 2: a whole batch refused before any entry did any work.
+
+    Run 14's tool-verify checkpoint launched 103 entries, and every one of
+    them exited non-zero in ~120 ms with the SAME message, because one argv
+    token was wrong. Nothing in the loop could tell that from 103 entries each
+    failing on its own account: the per-entry cap needs three rounds to fire,
+    so the driver launched all 103 three times -- 309 launches, ~35 minutes --
+    for a defect the first two results had already proved.
+
+    Same message, same instant, entry class, first K by arrival: that is the
+    LAUNCH refusing, not the entries.
+    """
+
+    MESSAGE = "claude -p printed no JSON envelope (exit 1)"
+
+    def _args(self, **kw):
+        return type("Args", (), dict({"target": "/tmp/repo", "mode": "headless",
+                                      "pr": None, "base": None, "setup": False}, **kw))()
+
+    def _tally(self):
+        return outage.FailureTally("claude", self._args())
+
+    def _fail(self, error, host_error=None):
+        return base.RunResult.failed("e", error, host_error=host_error)
+
+    def _ok(self):
+        return base.RunResult(entry_id="e", ok=True, text="{}", usage={}, cost_usd=None,
+                              model=None, session_id=None, denials=[], error=None)
+
+    def _instant_batch(self, tally, n, width=2, message=None, **kw):
+        for seq in range(n):
+            tally.record("e%d" % seq, self._fail(message or self.MESSAGE, **kw),
+                         seq=seq, duration_ms=120)
+        return tally.uniform(width)
+
+    def test_k_identical_instant_entry_failures_are_uniform(self):
+        self.assertTrue(self._instant_batch(self._tally(), 2, width=2))
+
+    def test_it_needs_a_whole_pool_round_when_the_pool_is_wider(self):
+        for width, threshold in ((None, 2), (1, 2), (2, 2), (4, 4), (8, 8)):
+            tally = self._tally()
+            for seq in range(threshold - 1):
+                tally.record("e%d" % seq, self._fail(self.MESSAGE), seq=seq, duration_ms=120)
+                self.assertFalse(tally.uniform(width), (width, seq))
+            tally.record("last", self._fail(self.MESSAGE), seq=threshold, duration_ms=120)
+            self.assertTrue(tally.uniform(width), width)
+
+    def test_one_success_among_the_first_k_breaks_it(self):
+        tally = self._tally()
+        tally.record("a", self._fail(self.MESSAGE), seq=0, duration_ms=120)
+        tally.record("b", self._ok(), seq=1, duration_ms=120)
+        tally.record("c", self._fail(self.MESSAGE), seq=2, duration_ms=120)
+        self.assertFalse(tally.uniform(2))
+
+    def test_different_messages_break_it(self):
+        tally = self._tally()
+        tally.record("a", self._fail("no JSON envelope (exit 1)"), seq=0, duration_ms=120)
+        tally.record("b", self._fail("no JSON envelope (exit 2)"), seq=1, duration_ms=120)
+        self.assertFalse(tally.uniform(2))
+
+    def test_two_messages_that_differ_only_in_a_secret_are_still_one_message(self):
+        # The comparison is over the REDACTED text, which is also what the
+        # pause prints: a per-launch request id or key in an otherwise
+        # identical refusal must not read as two different failures.
+        tally = self._tally()
+        tally.record("a", self._fail("bad key sk-ant-api03-AAAABBBBCCCCDDDD"),
+                     seq=0, duration_ms=120)
+        tally.record("b", self._fail("bad key sk-ant-api03-EEEEFFFFGGGGHHHH"),
+                     seq=1, duration_ms=120)
+        self.assertTrue(tally.uniform(2))
+
+    def test_one_slow_failure_breaks_it(self):
+        # A launch that ran for two seconds got far enough to do work; the
+        # whole point of the rule is a refusal that happens before any entry
+        # could have started.
+        tally = self._tally()
+        tally.record("a", self._fail(self.MESSAGE), seq=0, duration_ms=120)
+        tally.record("b", self._fail(self.MESSAGE), seq=1,
+                     duration_ms=outage.UNIFORM_FAST_MS)
+        self.assertFalse(tally.uniform(2))
+
+    def test_an_unmeasured_duration_breaks_it(self):
+        tally = self._tally()
+        tally.record("a", self._fail(self.MESSAGE), seq=0, duration_ms=120)
+        tally.record("b", self._fail(self.MESSAGE), seq=1)
+        self.assertFalse(tally.uniform(2))
+
+    def test_a_host_class_failure_breaks_it_and_outage_still_governs(self):
+        tally = self._tally()
+        for seq in range(2):
+            tally.record("e%d" % seq,
+                         self._fail("claude -p exited 1: 403 Forbidden",
+                                    host_error="provider.auth_error: 403 Forbidden"),
+                         seq=seq, duration_ms=120)
+        self.assertFalse(tally.uniform(2))
+        self.assertTrue(tally.outage(2))
+        self.assertIn(outage.HOST_FAILURE, tally.settle(0, 2))
+
+    def test_a_persist_refusal_breaks_it(self):
+        # persist refusing a reply means the launch CAME BACK -- the one thing
+        # a uniform launch failure says did not happen.
+        tally = self._tally()
+        tally.record("a", self._ok(), refusal="persist refused: not a findings envelope",
+                     seq=0, duration_ms=120)
+        tally.record("b", self._ok(), refusal="persist refused: not a findings envelope",
+                     seq=1, duration_ms=120)
+        self.assertFalse(tally.uniform(2))
+
+    def test_the_stop_remembers_its_own_count(self):
+        tally = self._tally()
+        self.assertIsNone(tally.stopped_uniform)
+        self._instant_batch(tally, 2, width=2)
+        self.assertEqual(2, tally.stopped_uniform)
+        tally.settle(0, 2)
+        self.assertIsNone(tally.stopped_uniform, "stopped_uniform outlived its batch")
+
+    def test_settling_a_uniform_batch_charges_nobody_and_gives_every_id_back(self):
+        tally = self._tally()
+        self._instant_batch(tally, 3, width=2)
+        message = tally.settle(97, 2)
+        self.assertEqual({}, tally.streaks, "a uniform batch charged an entry")
+        self.assertEqual(["e0", "e1", "e2"], tally.uncharged)
+        self.assertTrue(message.startswith("paused:"), message)
+        self.assertIn("97 of the batch's entries were never launched", message)
+        self.assertIn(self.MESSAGE, message)
+        self.assertIn("--host claude", message)              # the resume command
+        self.assertNotIn(outage.HOST_FAILURE + "-class", message)
+
+    def test_the_message_is_not_the_host_outage_one(self):
+        tally = self._tally()
+        self._instant_batch(tally, 2, width=2)
+        self.assertNotIn(outage.HOST_OUTAGE_CLAUSE, tally.settle(0, 2))
+
+    def test_a_batch_that_ended_uniform_without_a_stop_still_pauses(self):
+        # `settle` is the terminal reading, exactly as it is for the trailing
+        # run: a batch narrower than the pool never asks `uniform` at all.
+        tally = self._tally()
+        for seq in range(2):
+            tally.record("e%d" % seq, self._fail(self.MESSAGE), seq=seq, duration_ms=120)
+        self.assertIsNone(tally.stopped_uniform)
+        self.assertIsNotNone(tally.settle(0, 2))
+
+    def test_a_non_uniform_batch_charges_exactly_as_before(self):
+        tally = self._tally()
+        tally.record("a", self._fail("its own fault"), seq=0, duration_ms=120)
+        tally.record("b", self._fail("a different fault"), seq=1, duration_ms=120)
+        self.assertIsNone(tally.settle(0, 2))
+        self.assertEqual({"a": 1, "b": 1}, tally.streaks)
+        self.assertEqual([], tally.uncharged)
+
+    def test_the_verdict_does_not_survive_its_batch(self):
+        tally = self._tally()
+        self._instant_batch(tally, 2, width=2)
+        self.assertIsNotNone(tally.settle(0, 2))
+        tally.record("z", self._fail(self.MESSAGE), seq=0, duration_ms=120)
+        self.assertFalse(tally.uniform(2))
+        self.assertIsNone(tally.settle(0, 2))

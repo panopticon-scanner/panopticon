@@ -2756,3 +2756,149 @@ class TestNoDriverReaderTakesTheUnboundRead(unittest.TestCase):
         self.assertEqual([], [ast.unparse(n.func) for n in ast.walk(bound)
                               if isinstance(n, ast.Call)
                               and ast.unparse(n.func).endswith("load_dispatch_request")])
+
+
+class TestAUniformInstantFailure(LoopCase):
+    """#1732 part 2: the whole batch refused before any entry did any work.
+
+    Run 14's tool-verify checkpoint launched 103 entries and every one exited
+    non-zero in ~120 ms with `claude -p printed no JSON envelope (exit 1)`,
+    because `--json-schema` had been handed the schema's PATH where the CLI
+    wants its TEXT. Nothing in the loop could tell that from 103 entries each
+    failing on its own account, so the driver launched all 103 three times --
+    309 launches, ~35 minutes -- to reach the per-entry cap on a defect its
+    first two results had already proved.
+    """
+
+    FLOOR = ("SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG")
+    MESSAGE = "claude -p printed no JSON envelope (exit 1)"
+    WIDTH = 2
+
+    class Refused(FakeRunner):
+        """Every launch fails instantly with the SAME message.
+
+        Gated exactly as `TestAMidBatchHostOutage.Gated` is, and for the same
+        reason: from index two on, a launch does not come back until the LOOP
+        has ledgered every result before it, so "what the short-circuit
+        stopped" is a fact rather than a thread race. One worker turnover is
+        still not pinnable (the loop persists, ledgers and counts a result
+        before it asks `stop`), which is the explicit `+ 1` in the bound.
+        """
+
+        def __init__(self, floor, message, per_entry=False):
+            super().__init__()
+            self.order = ["review-app-%s" % d for d in floor]
+            self.message, self.per_entry = message, per_entry
+
+        def _await_ledger(self, lines):
+            path = os.path.join(self.run_dir, base.LEDGER_FILE)
+            for _ in range(2000):
+                try:
+                    with open(path) as fh:
+                        if sum(1 for line in fh if line.strip()) >= lines:
+                            return
+                except OSError:
+                    pass
+                time.sleep(0.005)
+            raise AssertionError("the loop never ledgered %d results" % lines)
+
+        def _result(self, eid):
+            return base.RunResult.failed(
+                eid, self.message + (": " + eid if self.per_entry else ""))
+
+        def run_entry(self, entry, env):
+            eid = entry["id"]
+            index = self.order.index(eid) if eid in self.order else None
+            if index is not None and index >= 2:
+                self._await_ledger(index)
+            self.launched.append(eid)
+            return self._result(eid)
+
+    class HostRefused(Refused):
+        """The same instant, identical batch -- but host-class. The existing
+        outage path must still own it (regression pin)."""
+
+        def _result(self, eid):
+            return base.RunResult.failed(eid, self.message,
+                                         host_error="provider.auth_error: 403 Forbidden")
+
+    def _run(self, d, floor, runner, *extra):
+        err = io.StringIO()
+        with contextlib.ExitStack() as es:
+            es.enter_context(mock.patch.object(
+                orchestrate, "_after_first_run",
+                side_effect=lambda rr: self._seed_coverage(rr, floor)))
+            es.enter_context(mock.patch("scripts.runners.base.runner_for", return_value=runner))
+            es.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            es.enter_context(contextlib.redirect_stderr(err))
+            status = orchestrate.loop(self._args(d, "--concurrency", str(self.WIDTH), *extra))
+        return status, err.getvalue()
+
+    def _reviews(self, runner):
+        return [x for x in runner.launched if x.startswith("review-")]
+
+    def test_the_batch_stops_instead_of_burning_every_entrys_budget(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Refused(self.FLOOR, self.MESSAGE)
+        status, err = self._run(d, floor, runner)
+        self.assertEqual("paused", status["status"], status)
+        reviews = self._reviews(runner)
+        self.assertLess(len(reviews), len(self.FLOOR), reviews)
+        # the corroboration the stop waits for (max(2, width)) + the pool that
+        # was already running (width) + the one worker that can turn over while
+        # the loop is still persisting the result that trips the stop
+        self.assertLessEqual(len(reviews), max(2, self.WIDTH) + self.WIDTH + 1, reviews)
+        self.assertIn("the first %d launches of this batch all failed in under %d ms"
+                      % (max(2, self.WIDTH), outage.UNIFORM_FAST_MS), status["message"])
+        self.assertIn(self.MESSAGE, status["message"])
+        self.assertIn("driver loop: stopped launching after %d identical instant failure(s)"
+                      % max(2, self.WIDTH), err)
+        self.assertNotIn("host-class failure(s)", err)
+
+    def test_it_charges_nobody_so_a_healthy_re_run_dispatches_every_cell(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        status, _err = self._run(d, floor, self.Refused(self.FLOOR, self.MESSAGE))
+        self.assertEqual("paused", status["status"], status)
+        attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
+        self.assertEqual([], [k for k, v in attempts.items() if v], attempts)
+        healthy = FakeRunner()
+        again = self._run_loop(d, floor, healthy, "--concurrency", str(self.WIDTH), seed=False)
+        self.assertEqual("complete", again["status"], again)
+        self.assertEqual(sorted("review-app-%s" % x for x in self.FLOOR),
+                         sorted(x for x in healthy.launched if x.startswith("review-")))
+
+    def test_the_message_is_composed_once_not_per_entry(self):
+        # Run 14 printed its identical failure once per entry per checkpoint,
+        # three checkpoints deep, which is how a defect two results had
+        # already proved stayed unreadable.
+        d, floor = self._repo(floor=self.FLOOR)
+        status, err = self._run(d, floor, self.Refused(self.FLOOR, self.MESSAGE))
+        self.assertEqual(1, (err + status["message"]).count(
+            "the first %d launches of this batch" % max(2, self.WIDTH)))
+
+    def test_different_messages_charge_exactly_as_before(self):
+        # Ten cells each failing for their OWN reason is not one launch being
+        # refused, and the rules that already bound it are untouched: every
+        # cell is charged for every launch it really got, and the review
+        # phase's own three-dispatch retry budget is what ends the run --
+        # `complete`, with those cells named as exhausted. No pause, no
+        # give-back, no uniform line.
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Refused(self.FLOOR, self.MESSAGE, per_entry=True)
+        status, err = self._run(d, floor, runner)
+        self.assertEqual("complete", status["status"], status)
+        self.assertEqual(len(self.FLOOR), status["cells_exhausted"])
+        self.assertNotIn("identical instant failure", err)
+        self.assertNotIn("paused", err)
+        attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
+        self.assertEqual(sorted("app/%s" % x for x in self.FLOOR), sorted(attempts))
+        self.assertEqual([], [k for k, v in attempts.items() if v != 3], attempts)
+
+    def test_an_instant_identical_batch_that_is_host_class_is_still_an_outage(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.HostRefused(self.FLOOR, self.MESSAGE)
+        status, err = self._run(d, floor, runner)
+        self.assertEqual("paused", status["status"], status)
+        self.assertIn(outage.HOST_OUTAGE_CLAUSE, status["message"])
+        self.assertNotIn("identical instant failure", err)
+        self.assertIn("host-class failure(s)", err)

@@ -342,6 +342,30 @@ HOST_OUTAGE = ("paused: the %s host failed %d of this batch's %d launches with a
                "itself) rather than an "
                "entry-class one, and %d of its entries were never launched; last: %s; "
                + HOST_OUTAGE_CLAUSE + ", with the same flags, once the host is back: `%s`")
+
+# How fast a launch has to fail to count as "before any entry did its work"
+# (#1732). Run 14's 103 refused launches each took ~120 ms -- the CLI parsing
+# its own argv, finding it invalid and exiting. Two seconds is an order of
+# magnitude above that and an order of magnitude below the cheapest real
+# entry, so a batch that clears it is not a batch of entries failing.
+UNIFORM_FAST_MS = 2000
+# #1732: the sibling of HOST_OUTAGE, for the OTHER thing a whole batch of
+# failures can mean. Its own constant rather than a clause of that one,
+# because the two name different causes and different remedies: HOST_OUTAGE
+# says wait for the host, this says fix the launch. Both end the run `paused`
+# and both give every attempt back.
+#
+# The message is composed ONCE, as the paused status -- never per entry. Run
+# 14 printed its 103 identical failures 103 times per checkpoint and three
+# checkpoints deep, which is how a defect that two results had already proved
+# stayed unreadable.
+UNIFORM_FAILURE = (
+    "paused: the first %d launches of this batch all failed in under %d ms with the same "
+    "entry-class message, which is the launch refusing before any entry did its work -- the "
+    "argv or the configuration, not %d different entries and not the host; %d of the batch's "
+    "entries were never launched; message: %s; no entry's attempt budget was charged and the "
+    "failed launches left nothing behind, so fix the cause and re-run the loop to resume this "
+    "run where it stopped: `%s`")
 class FailureTally:
     """The loop's failure bookkeeping for one INVOCATION: which entries are
     stuck, and whether a batch was really the host going down (#1623).
@@ -402,6 +426,12 @@ class FailureTally:
         self.streaks = {}        # entry id -> consecutive CHARGED failures
         self.last_error = {}     # entry id -> that entry's last failure message
         self._batch = []         # (entry id, message, class or None) for the open batch
+        # #1732: the open batch's results in ARRIVAL order -- (class, redacted
+        # message, launched-and-came-back, duration_ms) -- for `uniform`. By
+        # arrival rather than by `seq` because the question is "what did the
+        # first answers say", and the first answers are the only evidence
+        # available while the rest of the batch is still queued.
+        self._arrived = []
         # #1721, per batch: the launch order (`seq`) of the first host-class
         # failure of the run the batch is currently in, None when no run is
         # open, and how many host-class failures that run holds.
@@ -414,15 +444,28 @@ class FailureTally:
         # and NOT the same as `_trailing` by then: a success drained after the
         # stop can have closed the run and reset it to zero.
         self.stopped_at = None
+        # #1732: the same, for the OTHER stop rule -- how many identical
+        # instant failures `uniform` had seen when it first said stop, or
+        # None. A separate attribute rather than a discriminator on
+        # `stopped_at` so the loop's line can say which rule fired without
+        # unpacking a tuple, and so a reader of either one cannot mistake the
+        # two counts for each other.
+        self.stopped_uniform = None
 
-    def record(self, entry_id, result, refusal=None, seq=None):
+    def record(self, entry_id, result, refusal=None, seq=None, duration_ms=None):
         """One landed entry: `result` as the runner returned it, `refusal` the
         loop's own persist refusal -- which is panopticon's verdict on a launch
         that DID come back, so it is always the entry's own failure whatever
         the host would have said about it -- and `seq` this entry's LAUNCH
         order in the batch (#1721), which is what tells a success that proves
         the host is back from one that was merely in flight when it went
-        down."""
+        down.
+
+        `duration_ms` (#1732) is the runner's own measurement for this entry
+        (`iter_batch`'s `timing`), which is what `uniform` reads: a whole
+        batch failing identically in a tenth of a second is the launch being
+        refused, and the same batch failing identically after five minutes
+        each is not."""
         if refusal is not None:
             failure = (entry_id, refusal, ENTRY_FAILURE)
         elif getattr(result, "ok", False):
@@ -431,6 +474,13 @@ class FailureTally:
             failure = (entry_id, getattr(result, "error", None),
                        getattr(result, "failure_class", None) or ENTRY_FAILURE)
         self._batch.append(failure)
+        # #1732: `refusal is not None` is recorded as its own fact rather than
+        # inferred from the class. A persist refusal IS an entry-class failure
+        # -- but of a launch that came back, which is the one thing a uniform
+        # LAUNCH failure says did not happen, so the two must stay
+        # distinguishable here.
+        self._arrived.append((failure[2], redact.redact(failure[1]),
+                              refusal is not None, duration_ms))
         self._track(failure[2], seq)
 
     def _track(self, cls, seq):
@@ -471,16 +521,101 @@ class FailureTally:
             self.stopped_at = self._trailing
         return True
 
-    def settle(self, unlaunched=0):
+    def uniform(self, width=1):
+        """Whether the first `K = max(2, width)` results of this batch are one
+        launch failure repeated -- the loop's SECOND stop rule (#1732).
+
+        Run 14's tool-verify checkpoint launched 103 entries and every one of
+        them exited non-zero in ~120 ms with `claude -p printed no JSON
+        envelope (exit 1)`, because one argv token was wrong. Nothing here
+        could tell that from 103 entries each failing on its own account: the
+        per-entry cap needs three rounds to fire, so the loop launched all 103
+        three times -- 309 launches, ~35 minutes -- for a defect its first two
+        results had already proved.
+
+        Four conditions, and every one of them is a way for the batch to be
+        about the ENTRIES instead:
+
+        * K results have ARRIVED. The same `max(2, width)` `outage` uses, and
+          for the same reason: at width `w` the first `w` results are from
+          launches that overlapped, so anything less fires on one moment's
+          worth of evidence however wide the pool.
+        * every one is an entry-class LAUNCH failure. A success says the argv
+          is fine. A persist refusal says the launch came back, which is the
+          one thing this rule claims did not happen. A host-class failure is
+          the host's, and `outage` is the rule that governs it -- so the
+          precedence between the two rules needs no arbitration: a host-class
+          result simply is not uniform.
+        * each took less than `UNIFORM_FAST_MS`. An unmeasured duration counts
+          as not fast: a rule that stops a run may not fire on a fact nobody
+          measured.
+        * their REDACTED messages are byte-identical. Redacted because that is
+          also what the pause prints, and because a per-launch request id or
+          key inside an otherwise identical refusal would otherwise read as
+          two different failures.
+
+        The count at the FIRST yes is kept in `stopped_uniform`, exactly as
+        `outage` keeps `stopped_at`, for the loop's own "stopped launching"
+        line.
+        """
+        k = max(2, int(width or 1))
+        first = self._arrived[:k]
+        if len(first) < k:
+            return False
+        messages = set()
+        for cls, message, refused, duration_ms in first:
+            if refused or cls != ENTRY_FAILURE or not message:
+                return False
+            if duration_ms is None or duration_ms >= UNIFORM_FAST_MS:
+                return False
+            messages.add(message)
+        if len(messages) != 1:
+            return False
+        if self.stopped_uniform is None:
+            self.stopped_uniform = k
+        return True
+
+    def settle(self, unlaunched=0, width=1):
         """Close the batch: charge what it really proved, and return the
         operator's `paused` message when the batch ENDED inside a run of
         host-class failures (else None). Called once per batch, whatever the
         outcome -- it is the charge, not just the verdict. `unlaunched` is how
         many of the batch's entries the short-circuit never launched, which the
-        message names because they are neither done nor charged."""
+        message names because they are neither done nor charged.
+
+        #1732 adds the second verdict, read FIRST because it is the narrower
+        one: a batch whose first `max(2, width)` results were one launch
+        failure repeated charges nobody at all, since what failed was the
+        launch rather than any entry. `width` is the pool width, so this asks
+        exactly the question the live `uniform` stop asked; a caller that
+        passes none gets the floor of two, which is what a batch narrower than
+        its pool was measured against anyway. The two verdicts cannot both
+        describe the same K results -- a host-class failure among them is not
+        uniform -- so there is no precedence to arbitrate."""
+        was_uniform = self.stopped_uniform is not None or self.uniform(width)
         batch, self._batch = self._batch, []
+        self._arrived = []
         trailing, self._trailing, self._outage_seq = self._trailing, 0, None
         self.stopped_at = None
+        uniform_count, self.stopped_uniform = self.stopped_uniform, None
+        if was_uniform:
+            failed = [(eid, err) for eid, err, cls in batch if cls is not None]
+            self.uncharged = [eid for eid, _err in failed]
+            for eid, err, cls in batch:
+                if cls is None:
+                    self.streaks.pop(eid, None)
+                    continue
+                # Recorded, never CHARGED: the streak is what bounds an entry
+                # that is stuck, and none of these entries was given a turn.
+                self.last_error[eid] = err
+            k = uniform_count or max(2, int(width or 1))
+            return UNIFORM_FAILURE % (
+                k, UNIFORM_FAST_MS, k, unlaunched,
+                # Already redacted on arrival; redacted again on the way out
+                # for the same reason every other pause message is -- the
+                # composition is the guarantee, not the storage.
+                redact.redact(failed[-1][1] if failed else None),
+                self.resume_command())
         host = [(eid, err) for eid, err, cls in batch if cls == HOST_FAILURE]
         self.uncharged = [eid for eid, _err in host]
         for eid, err, cls in batch:
