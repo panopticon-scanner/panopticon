@@ -345,9 +345,19 @@ def main(argv=None):
     # #1735: `<report>-x0x.json.tmp` is the manifest's staging shape exactly --
     # a fixed name beside a `.panopticon` artifact, in the reviewed tree.
     x0x_tmp = x0x_path + ".tmp"
-    with safe_write.open_w_nofollow(x0x_tmp) as fh:
-        json.dump(x0x, fh, indent=2, sort_keys=True)
-    os.replace(x0x_tmp, x0x_path)
+    try:
+        with safe_write.open_w_nofollow(x0x_tmp) as fh:
+            json.dump(x0x, fh, indent=2, sort_keys=True)
+        os.replace(x0x_tmp, x0x_path)
+    finally:
+        # A refusal must not leave the planted link in the run folder for the
+        # next invocation to trip over -- the shape `discovery` already uses
+        # around its own staging write. `lexists` so a dangling link counts.
+        if os.path.lexists(x0x_tmp):
+            try:
+                os.remove(x0x_tmp)
+            except OSError:
+                pass
     print("X0X artifact: %s (%d candidates)" % (x0x_path, len(x0x["candidates"])))
     html_out = args.html_out
     if html_out is None and args.out:

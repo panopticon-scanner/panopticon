@@ -28,6 +28,8 @@ registration directory), `tools/egress` (a scratch dir, by design), and
 `strain_report.write_report` / `reconcile` (operator `--out` paths, no driver
 caller). The #1735 report carries the full table.
 """
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -97,6 +99,27 @@ class TestEpssCache(_Planted):
         self.assert_victim_intact()
         self.assertTrue(os.path.islink(path))      # nothing written through it
 
+    def test_a_refused_cache_path_is_said_on_stderr(self):
+        # Round 1 ruling: swallowed is not the same as unsaid. A planted
+        # epss-cache link is an ATTACK signal, and the operator is the only one
+        # who can act on it -- unlike a plain OSError, which stays quiet
+        # because a read-only cache path is a boring, self-correcting fact.
+        path = self.plant("epss-cache.json")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            citations._save_cache(path, {"CVE-2020-1": 0.5})
+        self.assertIn("epss", err.getvalue().lower())
+        self.assertIn("escapes .panopticon", err.getvalue())
+
+    def test_an_ordinary_write_failure_stays_quiet(self):
+        # The OSError half of the contract is unchanged: no directory, no line.
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            citations._save_cache(os.path.join(self.pano, "nope", "x.json"),
+                                  {"CVE-2020-1": 0.5})
+            with mock.patch.object(citations.safe_write, "open_w_nofollow",
+                                   side_effect=OSError("denied")):
+                citations._save_cache(os.path.join(self.pano, "c.json"), {})
+        self.assertEqual(err.getvalue(), "")
+
 
 class TestToolsManifest(_Planted):
     def test_run_tools_write_manifest_refuses_a_planted_link(self):
@@ -164,10 +187,13 @@ class TestX0xArtifact(_Planted):
         with open(findings, "w", encoding="utf-8") as fh:
             json.dump({"findings": []}, fh)
         out = os.path.join(self.pano, "report.json")
-        self.plant("report-x0x.json.tmp")
+        staging = self.plant("report-x0x.json.tmp")
         with self.assertRaises(ValueError):
             synthesize.main(["--out", out, findings])
         self.assert_victim_intact()
+        # Round 1 ruling: a refusal must not leave the planted link sitting in
+        # the run folder for the next invocation to trip over.
+        self.assertFalse(os.path.lexists(staging))
 
 
 class _PinnedUuid:

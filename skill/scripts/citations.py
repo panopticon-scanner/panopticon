@@ -150,13 +150,22 @@ def _save_cache(cache_path, cache):
     through the no-follow open. Its refusal (ValueError) joins OSError in the
     shrug rather than taking the run down: an uncacheable score has always been
     a shrug here, and the refusal has already done the only job that mattered.
+
+    Swallowed is not the same as unsaid, though (round 1 ruling). A refused
+    path means someone COMMITTED a link at this name, which is an attack signal
+    and the operator's to act on; an OSError means the directory is read-only,
+    which is boring and self-correcting. So the refusal gets one stderr line
+    and the OSError keeps its silence.
     """
     try:
         safe_write.confine_artifact_path(cache_path)
         os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
         with safe_write.open_w_nofollow(cache_path) as fh:
             json.dump(cache, fh)
-    except (OSError, ValueError):
+    except ValueError as exc:
+        print("citations: refusing to write the EPSS cache -- %s" % exc,
+              file=sys.stderr)
+    except OSError:
         pass
 
 

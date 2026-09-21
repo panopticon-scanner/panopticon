@@ -37,8 +37,8 @@ import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
 try:                                       # #1735: the no-follow artifact open
     from scripts import safe_write         # noqa: E402
-except ModuleNotFoundError:                # run flat, as driver.py runs this file
-    import safe_write                      # noqa: E402
+except ModuleNotFoundError:                # fallback: imported with only
+    import safe_write                      # noqa: E402  skill/scripts on sys.path
 
 # Files per review group before it splits into `<name>_<i>` chunks.
 #

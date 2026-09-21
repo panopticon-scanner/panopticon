@@ -20,6 +20,12 @@ sibling guard hooks carry their own O_EXCL|O_NOFOLLOW write -- deliberately,
 since a hook subprocess has no package on sys.path -- and `_rewrite` was
 simply never brought along).
 
+`phases/runio` binds all three under its own private names, as aliases of
+THESE objects (tests/test_safe_write.py pins the identity). A test patches the
+runio alias, not the name here: every existing caller reaches the primitive
+through `runio`, so a patch applied here would leave all of them running the
+real one.
+
 No makedirs in `open_w_nofollow`: a caller that must create the parent calls
 `confine_artifact_path` FIRST and then makedirs, which is the order
 `runio._write_json` and `open_a_nofollow` below already use -- confining after
