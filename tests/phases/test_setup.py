@@ -475,6 +475,20 @@ class TestDriverSetup(unittest.TestCase):
         self.assertNotEqual(m["run_id"], "FOREIGN")                # rebuilt, not reused
         self.assertIsNone(m["vocabulary_path"])                    # hostile path dropped
         self.assertIn("ignoring foreign setup-manifest", err.getvalue())
+        self.assertIn("stamped review_root '/somewhere/else' !=", err.getvalue())
+        self.assertNotIn("git-tracked", err.getvalue())
+
+    def test_tracked_setup_manifest_message_does_not_claim_the_stamp_differs(self):
+        root = self._repo()
+        args = driver.build_parser().parse_args(["setup", root])
+        setup.run_setup_flow(args)
+        self.assertEqual(root, setup.load_setup_manifest(root)["review_root"])
+        err = io.StringIO()
+        with mock.patch.object(runio, "_manifest_committed", return_value=True), \
+                contextlib.redirect_stderr(err):
+            setup.run_setup_flow(args)
+        self.assertIn("ignoring foreign setup-manifest.json (the file is git-tracked", err.getvalue())
+        self.assertNotIn("stamped review_root", err.getvalue())
 
     def test_reset_preserves_the_committed_root_config(self):
         d = self._repo()

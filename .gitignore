@@ -28,6 +28,10 @@ __pycache__/
 .idea/
 
 # Runtime artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 groups.json
 CodeReviewReport_*.json
 
