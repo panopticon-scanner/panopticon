@@ -36,7 +36,7 @@ class TestFdDuplicationIsNeitherReadNorWrite(unittest.TestCase):
     def test_2_greater_ampersand_1_is_recorded_nowhere(self):
         s = stage("curl https://example.test/x -o /tmp/x 2>&1\n")
         self.assertEqual([], s.reads)
-        self.assertNotIn("&1", s.writes)
+        self.assertEqual([], s.writes)
         self.assertEqual([], s.stdout_writes)
 
     def test_greater_ampersand_2_is_recorded_nowhere(self):
