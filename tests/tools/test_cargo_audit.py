@@ -110,7 +110,13 @@ class TestCargoAuditAdapter(unittest.TestCase):
         self.assertEqual(cmd[1], "audit")
         self.assertIn("--file", cmd)
         lockfile = cmd[cmd.index("--file") + 1]
-        self.assertEqual(lockfile, os.path.join("/tmp/fake", "Cargo.lock"))
+        # #1742 fix round 1 finding 5: os.path.join("/tmp/fake", ...) equals
+        # os.path.abspath(os.path.join("/tmp/fake", ...)) only because the
+        # target here is ALREADY absolute -- that equality would hold even if
+        # invoke() forgot the abspath() call entirely. Assert against the
+        # same abspath(join(...)) expression invoke() actually uses, so a
+        # relative target (a real, if unusual, caller shape) would be caught.
+        self.assertEqual(lockfile, os.path.abspath(os.path.join("/tmp/fake", "Cargo.lock")))
         self.assertTrue(os.path.isabs(lockfile))
         # cwd is a scratch dir, never the target or inside it.
         cwd = called_kwargs.get("cwd")

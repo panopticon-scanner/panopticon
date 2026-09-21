@@ -38,9 +38,9 @@ ADAPTERS = {
 # -- a target could alias `audit` to `cargo run` and get its own crate
 # (build.rs included) compiled and run inside the scanner. #1742 closed that
 # by invoking the `cargo-audit` binary directly, bypassing cargo's
-# alias/config resolution entirely, so it no longer belongs in this set.
-# Left here so the disclosure's scope stays documented rather than silently
-# shrinking.
+# alias/config resolution entirely, so cargo-audit is NOT in the frozenset
+# below. This comment is what stays, recording the closed exposure, so the
+# disclosure's scope stays documented rather than silently shrinking.
 EXECUTES_TARGET_BUILD = frozenset({"roslyn-secguard"})
 
 # Adapters with no offline mode (live advisory-API clients); dispatched only
