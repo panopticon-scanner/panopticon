@@ -300,6 +300,24 @@ class TestGitPathQuoting(unittest.TestCase):
         self.assertEqual(diff_map.parse_unified_diff(text),
                          {'sp ace"q.py': [(1, 1)]})
 
+    def test_a_trailing_space_in_the_name_survives_the_tab_terminator(self):
+        # `+++ b/endsp .py \t` (observed): stripping ALL trailing whitespace
+        # keyed "endsp .py" while discovery listed "endsp .py " -- the same
+        # name-chosen divergence, without any quoting at all.
+        text = ("diff --git a/endsp .py  b/endsp .py \n"
+                "--- a/endsp .py \t\n"
+                "+++ b/endsp .py \t\n"
+                "@@ -1 +1 @@\n-old\n+new\n")
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {"endsp .py ": [(1, 1)]})
+        # `rename to new sp .py ` (observed) carries no terminator at all, so
+        # rstrip() ate the trailing space there too.
+        ren = ('diff --git a/old.py b/new sp .py \n'
+               'similarity index 100%\n'
+               'rename from old.py\n'
+               'rename to new sp .py \n')
+        self.assertEqual(diff_map.parse_unified_diff(ren), {"new sp .py ": []})
+
     def test_hunkless_block_keys_on_the_quoted_diff_git_line(self):
         # a binary/mode-only change has no `+++` header at all, so the
         # `diff --git "a/<p>" "b/<p>"` line is the only key available.

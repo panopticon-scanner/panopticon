@@ -109,13 +109,18 @@ def _plus_header_path(rem):
     git terminates the ---/+++ name with a TAB when it contains a space (and
     it does so for a quoted name too: `+++ "b/sp ace\"q.py"\t`), then strips
     the `b/` prefix here. A quoted name is unquoted first (#1739), because
-    the `b/` prefix lives INSIDE the quotes.
+    the `b/` prefix lives INSIDE the quotes. Exactly one terminator tab is
+    peeled -- never a trailing-whitespace strip, which would silently rename
+    a file whose own name ends in a space.
     """
     if rem.endswith("\t"):
-        rem = rem[:-1]
+        rem = rem[:-1]               # EXACTLY the terminator: a name may itself
+                                     # end in a space, and stripping all
+                                     # trailing whitespace keyed `endsp .py`
+                                     # while discovery listed `endsp .py `
+                                     # (#1739). A name ending in a tab is
+                                     # always quoted, so this can't eat one.
     p = _unquote_git_path(rem)
-    if p == rem:                     # not quoted: legacy trailing-space strip
-        p = rem.rstrip()
     if p == "/dev/null":
         return None
     return p[2:] if p.startswith("b/") else p
@@ -234,7 +239,10 @@ def parse_unified_diff(text):
             # and the `diff --git` line of such a rename is mixed-quoting and
             # undecodable -- so a 100%-similarity rename to e.g. `re"n.py`
             # got no key at all and the changed file vanished from the map.
-            pending = _unquote_git_path(line[len(_RENAME_TO):].rstrip()) or pending
+            # No terminator on this line at all (observed: `rename to new sp
+            # .py `), so it is taken verbatim -- rstrip() renamed a file whose
+            # name ends in a space.
+            pending = _unquote_git_path(line[len(_RENAME_TO):]) or pending
             continue
         m = _NEWFILE_RE.match(line)
         if m:
