@@ -152,6 +152,7 @@ class TestDriverSetup(unittest.TestCase):
         self.assertTrue(entry["enforced"])
         self.assertEqual("panopticon-setup-scan", entry["agent"])
         self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+
         self.assertTrue(loop_batch.expected_enforced(d, "claude", "setup"))
 
     def test_a_stored_allow_unenforced_flag_grants_nothing(self):
@@ -659,6 +660,75 @@ class TestDriverSetup(unittest.TestCase):
         self.assertFalse(os.path.isfile(repo_config.draft_path(d)))
 
 
+class TestTheSetupAckDescribesThisInvocation(unittest.TestCase):
+    """#1737 fix round 1, nit (a). The ack borrowed the review ack's
+    never-overwrite rule, which exists there to protect a BINDING (#493 R2:
+    `plan_sha256` must stay as first written so a changed plan reads stale).
+    Setup's ack binds nothing downstream -- it is a record of what the
+    operator accepted about THIS dispatch -- so never-overwrite only made it
+    lie: an ack first written on one host kept that host's name, and one
+    written while the posture was refuted went on saying `acknowledged: true`
+    after the operator emitted their shells and the dispatch became enforced.
+    """
+
+    def _root(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        os.makedirs(os.path.join(d, ".panopticon"))
+        return d
+
+    def _entry(self, out_file="/abs/p.json"):
+        return {"id": "setup-scan", "agent": None, "enforced": False,
+                "out_file": out_file, "prompt": "BRIEF"}
+
+    def _manifest(self, host="claude"):
+        return {"host": host, "flags": {"allow_unenforced": True}}
+
+    def test_host_and_plan_hash_are_refreshed_on_every_write(self):
+        d = self._root()
+        setup.require_unenforced_scan_ack(d, self._manifest("claude"), [self._entry()])
+        first = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        setup.require_unenforced_scan_ack(
+            d, self._manifest("generic"), [self._entry("/abs/other.json")])
+        second = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        self.assertEqual("claude", first["host"])
+        self.assertEqual("generic", second["host"])
+        self.assertNotEqual(first["plan_sha256"], second["plan_sha256"])
+
+    def test_writing_the_same_acceptance_twice_changes_nothing(self):
+        d = self._root()
+        path = setup.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
+        before = open(path, "rb").read()
+        again = setup.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
+        self.assertEqual(path, again)
+        self.assertEqual(before, open(path, "rb").read())
+
+    def test_an_enforced_dispatch_supersedes_and_removes_a_standing_ack(self):
+        d = self._root()
+        path = setup.require_unenforced_scan_ack(d, self._manifest(), [self._entry()])
+        self.assertTrue(os.path.isfile(path))
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNone(setup.require_unenforced_scan_ack(
+                d, {"host": "claude"}, [self._entry()]))
+        self.assertFalse(os.path.exists(path),
+                         "a superseded acceptance stayed on the tree saying "
+                         "acknowledged: true about an enforced dispatch")
+        self.assertIn(setup.SETUP_UNENFORCED_ACK, err.getvalue())   # announced
+
+    def test_removing_it_is_never_fatal(self):
+        # The ack sits under `.panopticon`, which the target owns: a read-only
+        # directory, or a planted directory at the name, must not take down
+        # the enforced path -- the acknowledgement is not needed there.
+        d = self._root()
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        os.makedirs(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(setup.require_unenforced_scan_ack(
+                d, {"host": "claude"}, [self._entry()]))
+
+
 class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
     """#1737 fix round 1, Critical. `driver setup` -- the bootstrap verb, not
     `driver loop --setup` -- passed `posture=None`, so NOTHING wrote the setup
@@ -705,6 +775,21 @@ class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
         self.assertTrue(entry["enforced"])
         self.assertEqual("panopticon-setup-scan", entry["agent"])
         self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+
+    def test_a_standing_ack_is_dropped_once_the_shells_are_registered(self):
+        # The bootstrap sequence itself: accept the risk once, emit the
+        # shells, re-run. The acceptance must not outlive the posture it was
+        # about, saying `acknowledged: true` over an enforced dispatch.
+        d = self._repo()
+        self._setup(d, "--allow-unenforced", probes=_refuted_artifact)
+        ack = runio._pano(d, setup.SETUP_UNENFORCED_ACK)
+        self.assertTrue(os.path.isfile(ack))
+        os.remove(requests.request_path(d, namespace="setup"))
+        code, status = self._setup(d, probes=_all_proven_artifact)
+        self.assertEqual(0, code, status)
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        self.assertTrue(entry["enforced"])
+        self.assertFalse(os.path.exists(ack))
 
     def test_an_unenforceable_host_is_refused_with_both_remedies(self):
         d = self._repo()

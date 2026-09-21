@@ -631,24 +631,31 @@ def _record_unenforced_ack(review_root, manifest, entries, evidence, posture,
     return _merge_ack(runio._pano(review_root, UNENFORCED_ACK), body)
 
 
-def _merge_ack(path, body):
-    """Write an ack, or ADD to one already there; never overwrite (#1737 made
-    this shared, unchanged, with the setup gate below).
+def _merge_ack(path, body, refresh=_ACK_DISCLOSURE):
+    """Write an ack, or ADD to one already there; never overwrite except the
+    keys `refresh` names (#1737 made this shared with the setup gate).
 
-    Never-overwrite protects the BINDING -- plan_sha256 above all, whose whole
+    Never-overwrite protects a BINDING -- plan_sha256 above all, whose whole
     job (#493 R2) is to stay as the earlier invocation wrote it so a changed
-    plan reads as stale. It must not also freeze the DISCLOSURE: a second
+    plan reads as stale. It must not also freeze a DISCLOSURE: a second
     shadowing file appearing after the first ack leaves the state alone
     (refuted -> refuted), so capabilities_of() sees no drift and the run
     continues; if the detail were pinned to the first write, the ack would name
     one path forever while the tree shipped several -- losing the exact fact
     7.3 requires it to record.
+
+    So which keys are a binding and which are this invocation's own facts is
+    the CALLER's to state, and `refresh` is where it says so. The review ack
+    refreshes only its two disclosure keys. Setup's ack (#1737 fix round 1)
+    binds nothing downstream and refreshes everything: a stale `host` or
+    `plan_sha256` there is not a binding preserved, it is a record of an
+    acceptance that was never made.
     """
     stored = runio._load_json(path)
     if isinstance(stored, dict):
         merged = dict(stored)
         merged.update({k: v for k, v in body.items() if k not in stored})
-        merged.update({k: body[k] for k in _ACK_DISCLOSURE if k in body})
+        merged.update({k: body[k] for k in refresh if k in body})
         if merged == stored:
             return path                # idempotent across resumes
         body = merged

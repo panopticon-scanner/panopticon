@@ -196,6 +196,42 @@ class TestKimiModelAliasProbe(unittest.TestCase):
         self.assertEqual(kimi_probes.KIMI_MODEL_ALIAS, by)
         self.assertIn("kimi-code/k3", detail)
 
+    def _profile_model(self, role):
+        """The FILE's own value for this role -- the declaration that licenses
+        an unbound role, read directly rather than through resolve_model."""
+        profiles = kimi_probes.model_resolver._profiles()
+        return (((profiles.get("hosts") or {}).get("kimi") or {}).get(role) or {}).get("model")
+
+    def test_only_a_profile_declared_null_role_may_be_unbound(self):
+        # #1737 fix round 1, nit (c). The unbound allowance must be spendable
+        # only by a role the profile DECLARES null. A role that merely lost its
+        # tier would otherwise be skipped as "deliberately unbound" and launch
+        # on the session's model with nothing saying so.
+        declared = {role for role in probes_common.DRIVER_ROLES
+                    if self._profile_model(role) is None}
+        self.assertEqual({"setup_scan"}, declared)       # the canary
+        resolved_null = {role for role in probes_common.DRIVER_ROLES
+                         if kimi_probes.model_resolver.resolve_model("kimi", role)
+                         .get("model") is None}
+        self.assertEqual(declared, resolved_null)
+        # ...and with the profile file unreadable, the hardcoded fallback --
+        # the table `_normalize_kimi_model` would otherwise coerce -- agrees.
+        with mock.patch.object(kimi_probes.model_resolver, "_profiles", return_value={}):
+            fallback_null = {role for role in probes_common.DRIVER_ROLES
+                             if kimi_probes.model_resolver.resolve_model("kimi", role)
+                             .get("model") is None}
+        self.assertEqual(declared, fallback_null)
+
+    def test_the_probe_names_exactly_the_declared_role_as_unbound(self):
+        state, _by, detail = kimi_probes.probe_kimi_model_alias(
+            "kimi", configured=self.CONFIGURED)
+        self.assertEqual(hosts.PROVEN, state)
+        bound, _, unbound = detail.partition(
+            "; deliberately unbound, the session's model runs: ")
+        self.assertEqual({"setup_scan"}, set(unbound.split(", ")))
+        for role in probes_common.DRIVER_ROLES:
+            self.assertEqual(role != "setup_scan", ("%s->" % role) in bound, role)
+
     def test_a_deliberately_unbound_role_is_named_not_refuted(self):
         # #1737 R-F4-2: `setup_scan`'s profile resolves to None -- inherit the
         # session's model -- and `runners/kimi.py` binds `-m` only for an entry

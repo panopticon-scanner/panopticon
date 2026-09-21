@@ -136,6 +136,13 @@ def require_unenforced_scan_ack(review_root, manifest, entries):
     accepts the residual risk instead, and is recorded in
     `setup-unenforced-ack.json`.
 
+    That record describes THIS invocation and nothing else. Every field is
+    refreshed on every write, and once the posture proves enforcement the file
+    is DISCARDED: an acceptance that outlives the posture it was about is a
+    tree saying `acknowledged: true` over a dispatch that runs in a registered
+    shell, which is worse than no record at all. The bootstrap sequence makes
+    exactly that transition -- accept once, emit the shells, re-run.
+
     Its OWN file, beside setup's other artifacts, never the review run's
     `unenforced-ack.json`: that one's `plan_sha256` binds a review plan (#493
     R2) and is never-overwrite, so stamping setup's hash into it would make the
@@ -145,9 +152,11 @@ def require_unenforced_scan_ack(review_root, manifest, entries):
     Returns the ack path when one was written, else None.
     """
     host = manifest.get("host", "claude")
+    path = runio._pano(review_root, SETUP_UNENFORCED_ACK)
     if loop_batch.expected_enforced(review_root, host,
                                     namespace=loop_batch.SETUP_NAMESPACE):
-        return None                    # the shell is registered and proven
+        _discard_scan_ack(path)        # the shell is registered and proven
+        return None
     evidence = loop_batch.evidence_for(review_root, loop_batch.SETUP_NAMESPACE)
     posture = hosts.posture(host, evidence)
     row = evidence.get(hosts.TOOL_POLICY_ENFORCED) or {}
@@ -176,7 +185,7 @@ def require_unenforced_scan_ack(review_root, manifest, entries):
                host, row.get("by") or "none ran", row.get("detail") or "no evidence",
                emit, SETUP_UNENFORCED_ACK,
                ", ".join("--host " + n for n in enforcing)))
-    return requests._merge_ack(runio._pano(review_root, SETUP_UNENFORCED_ACK), {
+    body = {
         "acknowledged": True, "host": host,
         # The launch SHAPE the operator accepted (id, shell, posture,
         # destination), not the brief: that text carries the repository spine
@@ -191,7 +200,30 @@ def require_unenforced_scan_ack(review_root, manifest, entries):
                  "a general-purpose agent. The operator accepted this with "
                  "--allow-unenforced."),
         hosts.TOOL_POLICY_ENFORCED: posture[hosts.TOOL_POLICY_ENFORCED],
-        "tool_policy_detail": row.get("detail") or "no evidence"})
+        "tool_policy_detail": row.get("detail") or "no evidence"}
+    # Every key refreshed: see the docstring. Nothing downstream binds to this
+    # file, so there is no earlier write to preserve -- only an older set of
+    # facts to correct.
+    return requests._merge_ack(path, body, refresh=tuple(body))
+
+
+def _discard_scan_ack(path):
+    """Drop a standing acceptance the posture has superseded, and say so.
+
+    Announced rather than silent: the operator passed `--allow-unenforced` at
+    some point, and the file going away is the run telling them they no longer
+    need to. Never fatal -- the ack lives under `.panopticon`, which the target
+    owns, so a read-only directory or a directory planted at the name must not
+    take down the ENFORCED path, which needs no acknowledgement anyway.
+    """
+    try:
+        os.remove(path)
+    except OSError:
+        return None
+    print("driver setup: %s discarded -- this host now enforces the setup-scan "
+          "shell, so there is nothing left to acknowledge" % SETUP_UNENFORCED_ACK,
+          file=sys.stderr)
+    return path
 
 def scan_done(review_root, manifest):
     return (runio._json_parses(runio._pano(review_root, "setup-proposal.json"))
