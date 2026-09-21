@@ -102,8 +102,13 @@ def _tool_verify_queue(review_root, manifest):
     Additive only: it CALLS findings_mod.load_findings/normalize_finding,
     corroborate_mod.prepare_for_queue and evidence.build_verify_queue unchanged.
     include_fixtures/group/exclude are pinned to synthesize's main() tool-ingest
-    call (group=None, exclude_globs=None) for identity; _tools_include_fixtures
-    is the value synthesize_execute forwards. `target_root` is passed rather
+    call (group=None, and the SAME committed `exclude_paths:` globs
+    `synthesize_execute` passes as `--tools-exclude`) for identity;
+    _tools_include_fixtures is the value synthesize_execute forwards. #1740 fix
+    round 2: `exclude_globs=None` here was that pin going stale the moment the
+    committed policy reached synthesize -- this queue paid an advisor dispatch
+    for every finding the report then excluded, and a queued finding the report
+    does not carry is exactly the (queue_id, id) mismatch above. `target_root` is passed rather
     than derived, and stays identical for the same reason: `ingest_dir_detailed`
     derives exactly this root from the tools directory when a caller omits it
     (#1638 P09), so synthesize's own ingest of the same directory drops the same
@@ -115,7 +120,9 @@ def _tool_verify_queue(review_root, manifest):
     findings = findings_mod.load_findings(
         sorted(_glob.glob(runio._pano(review_root, "findings-*.json"))))
     tool_findings, _disp = ingest_tools.ingest_dir_detailed(
-        tools_dir, None, include_fixtures=_tools_include_fixtures(manifest),
+        tools_dir, None,
+        exclude_globs=runio.committed_exclude_paths(review_root),
+        include_fixtures=_tools_include_fixtures(manifest),
         target_root=review_root)
     for tf in tool_findings:
         findings.append(findings_mod.normalize_finding(tf))
