@@ -352,6 +352,9 @@ class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
         # said, and the message whose whole purpose is to surface an auth
         # failure is the likeliest of all of them to be carrying a credential.
         ("tests/test_orchestrate.py", "postgres://svc:hunter2@"),
+        # #1709: ledger error/refusal specimens, before and after masking.
+        ("tests/test_ledger.py", "postgres://worker:%s@"),
+        ("tests/test_ledger.py", "postgres://worker:[REDACTED]@"),
     }
 
     # The rule's own definition and its own specimens. They are full of
