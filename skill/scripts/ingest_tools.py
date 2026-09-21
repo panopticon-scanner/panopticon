@@ -671,7 +671,7 @@ _SUPPRESSION_REASON = {
 def _suppression_reasons(counts):
     """The stderr reason strings for a `{segment: count}` tally, one per class
     that actually fired, in `SUPPRESSION_CLASSES` order (#1740)."""
-    by_class = {}
+    by_class: dict[str, list[str]] = {}
     for segment in sorted(counts):
         by_class.setdefault(suppression_class(segment), []).append(
             "%s: %d" % (segment, counts[segment]))

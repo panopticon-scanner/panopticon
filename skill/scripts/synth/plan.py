@@ -429,7 +429,7 @@ def ingest_tool_findings(args):
     if not (args.tools_dir and os.path.isdir(args.tools_dir)):
         return [], {}, None, None, [], excluded_block(args, 0)
     dropped: list[dict[str, Any]] = []     # #1578/#1740: filled with the name-based drops, for the count
-    excluded = []    # #1740 fix round 2: the operator's own glob drops
+    excluded: list[dict[str, Any]] = []    # #1740 fix round 2: the operator's own glob drops
     tool_findings, dispositions = ingest_tools.ingest_dir_detailed(
         args.tools_dir, None, exclude_globs=args.tools_exclude,
         include_fixtures=args.include_fixtures, suppressed_out=dropped,

@@ -81,7 +81,7 @@ def glob_errors(label, field, globs):
 
 # One disclosure per (caller, pattern): `glob_to_re` is called per (path,
 # pattern), so an unconditional print would emit a line per file scanned.
-_warned_globs = set()
+_warned_globs: set[tuple[str, str]] = set()
 
 
 def glob_to_re(pat, label="config"):

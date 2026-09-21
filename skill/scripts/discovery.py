@@ -11,7 +11,7 @@ diff-hunks.json emission). Extracted from the now-retired orchestrator.py
 in P6.5 -- discovery.py is the sole discovery entry point the 5.0 driver
 subprocesses.
 """
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import argparse
 import fnmatch
 import functools
@@ -32,21 +32,29 @@ import yaml
 # requires changes to off-limits ``driver.py``; accepted as tech debt (#1201).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402
-try:                                       # #1740 fix round 2: ONE module
-    from scripts import groups_schema      # object, so the glob compiler this
-except ModuleNotFoundError:                # module and the TOOL side share is
-    import groups_schema                   # noqa: E402  one cache and one
-                                           # disclosure ledger, not two. Same
-                                           # fallback shape as safe_write
-                                           # below: the standalone CLI has only
-                                           # skill/scripts on sys.path.
+# #1740 fix round 2: ONE module object, so the glob compiler this module and
+# the TOOL side share is one cache and one disclosure ledger, not two. Same
+# fallback shape as safe_write below: the standalone CLI has only
+# skill/scripts on sys.path.
+if TYPE_CHECKING:
+    from scripts import groups_schema
+else:
+    try:
+        from scripts import groups_schema
+    except ModuleNotFoundError:
+        import groups_schema               # noqa: E402
 import plan_contract  # noqa: E402
 import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
-try:                                       # #1735: the no-follow artifact open
-    from scripts import safe_write         # noqa: E402
-except ModuleNotFoundError:                # fallback: imported with only
-    import safe_write                      # noqa: E402  skill/scripts on sys.path
+# #1735: the no-follow artifact open. Fallback arm: imported with only
+# skill/scripts on sys.path.
+if TYPE_CHECKING:
+    from scripts import safe_write
+else:
+    try:
+        from scripts import safe_write     # noqa: E402
+    except ModuleNotFoundError:
+        import safe_write                  # noqa: E402
 
 # Files per review group before it splits into `<name>_<i>` chunks.
 #

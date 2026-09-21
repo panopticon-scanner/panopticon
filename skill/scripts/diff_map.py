@@ -199,7 +199,7 @@ def parse_unified_diff(text):
     gate to half the change and passes vacuously for the rest, so it is never
     returned.
     """
-    result = {}
+    result: dict[str, list[tuple[int, int]]] = {}
     path = None        # key of the open block, None = no new side (deletion)
     pending = None     # fallback key, live until this block's `+++` header
     opened = False     # a file block has been framed at all

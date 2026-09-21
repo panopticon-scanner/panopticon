@@ -33,6 +33,7 @@ Usage:
     python3 skill/scripts/collect_usage.py --run-dir .panopticon/runs/<tag>
     python3 skill/scripts/collect_usage.py --run-dir <dir> --dry-run
 """
+from typing import TYPE_CHECKING
 import argparse
 import glob
 import json
@@ -40,10 +41,13 @@ import os
 import re
 import sys
 
-try:                                       # #1735: the no-follow artifact open
+if TYPE_CHECKING:                          # #1735: the no-follow artifact open
     from scripts import safe_write
-except ModuleNotFoundError:                # fallback: imported with only
-    import safe_write                      # skill/scripts on sys.path
+else:
+    try:
+        from scripts import safe_write
+    except ModuleNotFoundError:            # fallback: imported with only
+        import safe_write                  # skill/scripts on sys.path
 
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")

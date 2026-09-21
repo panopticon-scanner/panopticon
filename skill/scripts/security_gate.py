@@ -119,7 +119,7 @@ def _by_class(suppressed):
     line cannot drift from either.
     """
     counts = ingest_tools.suppressed_counts(suppressed)
-    by_class = {}
+    by_class: dict[str, list[str]] = {}
     for segment in sorted(counts):
         by_class.setdefault(ingest_tools.suppression_class(segment), []).append(
             "%s: %d" % (segment, counts[segment]))
@@ -137,7 +137,7 @@ def main(argv=None):
     parser.add_argument("--security", dest="security_mode", default="standard",
                         choices=list(SECURITY_MODES))
     args = parser.parse_args(argv)
-    excluded = []
+    excluded: list[dict[str, Any]] = []
     try:
         findings, _dispositions, failures, high, suppressed = evaluate(
             args.tools_dir, args.manifest, args.exclude, args.security_mode,
