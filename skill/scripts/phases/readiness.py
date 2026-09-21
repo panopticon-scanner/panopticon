@@ -110,6 +110,10 @@ def _git_root_row(review_root):
 def _checks(review_root, manifest):
     tools_flag = (manifest.get("flags") or {}).get("tools")
     checks = list(readiness_checks._docker_checks(tools_flag))
+    if (manifest.get("flags") or {}).get("online"):
+        proxy = readiness_checks.egress_proxy_row(True, tools_flag)
+        checks.append(("egress-proxy", "warn" if proxy["level"] == "warn" else proxy["ok"],
+                       proxy["detail"]))
     checks.append(_git_root_row(review_root))
     checks.append(setup_flow._check_groups_manifest(review_root))
     checks.append(_host_row(review_root))
@@ -155,7 +159,9 @@ def readiness_done(review_root, manifest):
     flags = body.get("flags")
     if not isinstance(flags, dict):
         return False
-    return flags.get("tools") == (manifest.get("flags") or {}).get("tools")
+    expected = manifest.get("flags") or {}
+    return (flags.get("tools") == expected.get("tools")
+            and bool(flags.get("online")) == bool(expected.get("online")))
 
 
 def readiness_execute(review_root, manifest):
@@ -171,9 +177,14 @@ def readiness_execute(review_root, manifest):
          "run_id": manifest.get("run_id"),
          "checked_at": run_manifest._now_iso(),
          "ready": not failed,
-         "flags": {"tools": (manifest.get("flags") or {}).get("tools")},
-         "checks": [{"name": name, "ok": ok, "detail": detail}
+         "flags": {"tools": (manifest.get("flags") or {}).get("tools"),
+                   "online": bool((manifest.get("flags") or {}).get("online"))},
+         "checks": [{"name": name, "ok": None if ok == "warn" else ok,
+                     "detail": detail, **({"level": "warn"} if ok == "warn" else {})}
                     for name, ok, detail in checks]})
+    for name, ok, detail in checks:
+        if ok == "warn":
+            print("readiness: WARN [%s] %s" % (name, detail), file=sys.stderr)
     if failed:
         raise runio.DriverError(_refusal(failed))
     return engine.PhaseResult(
@@ -455,7 +466,7 @@ def _capabilities_row(review_root, tag):
                                 + host_disclosure.notes(envelope))}
 
 
-def preflight(target=".", host=None):
+def preflight(target=".", host=None, online=None):
     """The whole document. Reads; never writes, never launches.
 
     `host` is the raw `--host`, which is usually absent. The host this document
@@ -472,6 +483,13 @@ def preflight(target=".", host=None):
     """
     review_root = runio.resolve_review_root(target)[0]
     host, selected_from = runio.resolve_host(host, review_root)
+    tools_flag = None
+    manifest = run_manifest.load_manifest(review_root)
+    if manifest and not runio._foreign_manifest(
+            manifest, review_root, run_manifest.manifest_path(review_root)):
+        tools_flag = (manifest.get("flags") or {}).get("tools")
+        if online is None:
+            online = bool((manifest.get("flags") or {}).get("online"))
     guide = _guide_row()
     matrix = _matrix_row(review_root)
     existing = _existing_run_row(review_root)
@@ -500,6 +518,7 @@ def preflight(target=".", host=None):
             "existing_run": existing,
             "cli": cli,
             "tools_image": tools_image,
+            "egress_proxy": readiness_checks.egress_proxy_row(online, tools_flag),
             "capabilities": _capabilities_row(review_root, existing["tag"])}
 
 
@@ -521,6 +540,8 @@ def _row_lines(document):
              _cli_cell(document["cli"])),
             ("tools-image", document["tools_image"]["ok"],
              document["tools_image"]["remedy"] or ""),
+            ("egress-proxy", "warn" if document["egress_proxy"]["level"] == "warn"
+             else document["egress_proxy"]["ok"], document["egress_proxy"]["detail"]),
             ("capabilities", None, document["capabilities"]["detail"]))
 
 
@@ -549,7 +570,7 @@ def render(document):
                 HOST_SOURCE_NOTES.get(document["selected_from"],
                                       document["selected_from"]))]
     for label, ok, detail in _row_lines(document):
-        state = "--" if ok is None else ("ok" if ok else "FAIL")
+        state = "WARN" if ok == "warn" else ("--" if ok is None else ("ok" if ok else "FAIL"))
         # rstrip: a row with nothing to remedy ends at its verdict (F7), and a
         # line of trailing spaces is not a blank cell, it is invisible noise.
         lines.append(("  %-*s %-4s %s" % (_LABEL, label, state, detail)).rstrip())
@@ -559,12 +580,12 @@ def render(document):
     return "\n".join(lines) + "\n"
 
 
-def emit_preflight(target=".", host=None, as_json=False, stream=None):
+def emit_preflight(target=".", host=None, as_json=False, stream=None, online=None):
     """Print the document and return the process exit code (0 ready, 1 not),
     so `driver readiness && driver loop` is a correct thing for a host to
     write. `sys.stdout` is read at CALL time, not bound at import, so a caller
     that redirects it gets the output."""
-    document = preflight(target, host)
+    document = preflight(target, host, online=online)
     out = stream if stream is not None else sys.stdout
     out.write(json.dumps(document, indent=2, sort_keys=True) + "\n"
               if as_json else render(document))

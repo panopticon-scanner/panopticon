@@ -105,6 +105,28 @@ class _ReadinessCase(unittest.TestCase):
 
 class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
 
+    def test_online_sidecar_warning_precedes_scouting_and_names_the_pull(self):
+        from scripts.tools import egress
+        d = self._repo()
+        def runner(cmd, **kw):
+            return _Probe(1 if cmd[-1] == egress.PROXY_IMAGE else 0)
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER", runner):
+            status = driver.run(self._args(d, "--online"))
+        self.assertEqual(status["checkpoint"], "scout", status)
+        row = self._rows(d)["egress-proxy"]
+        self.assertIsNone(row["ok"])
+        self.assertEqual(row["level"], "warn")
+        self.assertIn("docker pull " + egress.PROXY_IMAGE, row["detail"])
+        self.assertTrue(self._readiness_json(d)["flags"]["online"])
+
+    def test_offline_cached_readiness_is_not_valid_for_an_online_run(self):
+        d = self._repo()
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER", _docker_runner()):
+            driver.run(self._args(d))
+        manifest = run_manifest.load_manifest(d)
+        manifest["flags"]["online"] = True
+        self.assertFalse(readiness.readiness_done(d, manifest))
+
     def test_image_absent_with_tools_enabled_refuses_before_the_scout(self):
         d = self._repo()
         with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
@@ -205,7 +227,7 @@ class TestTheDisclosedOptOut(_ReadinessCase):
         self.assertEqual(body["schema_version"], 1)
         self.assertEqual(body["run_id"], run_manifest.load_manifest(d)["run_id"])
         self.assertIsInstance(body["checked_at"], str)
-        self.assertEqual(body["flags"], {"tools": False})
+        self.assertEqual(body["flags"], {"tools": False, "online": False})
         self.assertIsInstance(body["checks"], list)
         for row in body["checks"]:
             self.assertEqual(sorted(row), ["detail", "name", "ok"])

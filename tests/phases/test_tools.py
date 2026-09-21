@@ -19,7 +19,9 @@ class TestToolsPhase(unittest.TestCase):
         self.manifest = {"run_id": "R", "flags": {}}
 
     def test_produced_output_marks_ran(self):
+        self.manifest["flags"]["online"] = True
         def fake_run(cmd, **kw):
+            self.assertIn("--online", cmd)
             out = cmd[cmd.index("--out") + 1]
             os.makedirs(out, exist_ok=True)
             open(os.path.join(out, "trivy.json"), "w").close()

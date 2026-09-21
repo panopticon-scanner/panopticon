@@ -169,6 +169,20 @@ class TestTheUnreadyMachine(_VerbCase):
     """No committed matrix, and Docker up with the image absent -- run-13's own
     environment, plus the setup step it had never run."""
 
+    def test_online_json_and_human_output_name_the_sidecar_warning(self):
+        from scripts.tools import egress
+        d = self._repo(GROUPS_YML)
+        code, body = self._json(d, "--online", image=1, which=READY_CLI)
+        self.assertEqual(code, 1)  # the tools image is also absent in this fixture
+        self.assertEqual(body["egress_proxy"]["level"], "warn")
+        self.assertIsNone(body["egress_proxy"]["ok"])
+        self.assertNotIn("egress-proxy", body["failed"])
+        self.assertIn("docker pull " + egress.PROXY_IMAGE, body["egress_proxy"]["detail"])
+        _, text = self._run(d, "--online", image=1, which=READY_CLI)
+        self.assertRegex(text, r"egress-proxy\s+WARN")
+        _, offline = self._json(d, image=0, which=READY_CLI)
+        self.assertEqual(offline["egress_proxy"]["level"], "skip")
+
     def test_it_exits_1_and_every_failing_row_carries_its_remedy(self):
         d = self._repo()
         code, body = self._json(d, image=1, which=READY_CLI)
@@ -200,13 +214,13 @@ class TestTheUnreadyMachine(_VerbCase):
         code, text = self._run(d, image=1, which=READY_CLI)
         self.assertEqual(1, code)
         for row in ("guide", "dependencies", "sub-skills", "matrix",
-                    "existing-run", "cli", "tools-image", "capabilities"):
+                    "existing-run", "cli", "tools-image", "egress-proxy", "capabilities"):
             with self.subTest(row=row):
                 self.assertIn(row, text)
         self.assertIn("NOT READY", text)
         # One document, not a wall: one line per row plus a header and a
-        # verdict. (#1639 P15 I2 added the `dependencies` row, hence 10.)
-        self.assertLessEqual(len(text.strip().splitlines()), 10)
+        # verdict. #1687 adds the sidecar readiness row.
+        self.assertLessEqual(len(text.strip().splitlines()), 11)
 
 
 class TestTheDependenciesRow(_VerbCase):
@@ -712,7 +726,7 @@ class TestAHealthyCliRowReadsOk(_VerbCase):
         _code, text = self._run(d, "--host", "claude", which=READY_CLI)
         dashed = sorted(ln.split()[0] for ln in text.splitlines()
                         if ln.startswith("  ") and " -- " in ln + " ")
-        self.assertEqual(["capabilities", "existing-run", "sub-skills"], dashed)
+        self.assertEqual(["capabilities", "egress-proxy", "existing-run", "sub-skills"], dashed)
 
 
 class TestTheCiMachine(_VerbCase):
@@ -816,4 +830,3 @@ class TestCapabilitiesRowHostShape(unittest.TestCase):
         self.assertIs(True, row["measured"])
         self.assertEqual("claude", row["host"])
         self.assertEqual([], row["unproven"])
-

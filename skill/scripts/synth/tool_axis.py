@@ -163,6 +163,7 @@ class Reconciled:
     # `tools_sanitized`: coverage says which adapters PRODUCED output, and this
     # says what one of them could reach while doing it.
     tools_network: dict = field(default_factory=dict)
+    tools_network_excluded: dict = field(default_factory=dict)
     # #1644: why this run's tools-manifest could not be read, or None. Carried
     # beside `integrity` (which also publishes it) the way `integrity_ok` is:
     # certification takes it as an input, and must not have to read a section.
@@ -269,6 +270,9 @@ def reconcile(plan, tools, resolved):
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
         tool_divergence = {t: "requested_absent" for t in tools_absent}
+    network_excluded = ingest_tools.network_exclusions(tools.manifest)
+    tools_absent = sorted(set(tools_absent) | set(network_excluded))
+    tool_divergence.update({t: "network_unavailable" for t in network_excluded})
     # #1335: an adapter that ran but scanned nothing is disclosed, never gated.
     # It is absent from `tools_ran` (no coverage credit) which would otherwise
     # sink it into `tools_absent` on the scout-derived path above -- but a
@@ -276,7 +280,8 @@ def reconcile(plan, tools, resolved):
     # `produced_noscan` is non-gating by construction: it appears only in the
     # divergence map, and `tools_absent` is what reaches certify().
     noscan = sorted(name for name, d in (tools.dispositions or {}).items()
-                    if isinstance(d, dict) and d.get("status") == "noscan")
+                    if isinstance(d, dict) and d.get("status") == "noscan"
+                    and name not in network_excluded)
     if noscan:
         tools_absent = [t for t in tools_absent if t not in noscan]
         tool_divergence.update({t: "produced_noscan" for t in noscan})
@@ -409,5 +414,6 @@ def reconcile(plan, tools, resolved):
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
                       tools_sanitized=sanitized, tools_network=network,
+                      tools_network_excluded=network_excluded,
                       tools_manifest_invalid=tools.manifest_invalid,
                       gated_suppressed=gated)

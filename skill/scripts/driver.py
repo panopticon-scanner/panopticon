@@ -140,6 +140,7 @@ def _cli_flags(args, review_root=None, resolution=None):
               "diff_context": getattr(args, "diff_context", None),
               "tools": tools_flag if tools_flag is not None
                        else (True if cfg.get("tools") else None),
+              "online": True if getattr(args, "online", False) else None,
               "include_fixtures": True if (getattr(args, "include_fixtures", False)
                                            or cfg.get("include_fixtures")) else None,
               "max_per_group": getattr(args, "max_per_group", None)
@@ -262,6 +263,8 @@ def build_parser():
         tools_group = p.add_mutually_exclusive_group()
         tools_group.add_argument("--tools", action="store_true")
         tools_group.add_argument("--no-tools", action="store_true")
+        p.add_argument("--online", action="store_true", default=None,
+                       help="allow dependency auditors through the restricted egress proxy")
         p.add_argument("--include-fixtures", action="store_true")
         # #1519: when this invocation's MEASURED artifact_write_guard posture
         # is not proven, dispatching write-capable cells is refused unless the
@@ -342,6 +345,8 @@ def build_parser():
                     choices=list(hosts.driver_hosts()))
     rp.add_argument("--json", action="store_true",
                     help="the document as JSON instead of the human table")
+    rp.add_argument("--online", action="store_true", default=None,
+                    help="also check the pinned egress-proxy image")
     pp = sub.add_parser("persist")
     pp.add_argument("entry_id")
     pp.add_argument("target", nargs="?", default=".")
@@ -1066,7 +1071,7 @@ def main(argv=None):
         # protocol, and `driver readiness && driver loop` is the reason it
         # exists (#1637 P10).
         return readiness.emit_preflight(args.target, host=args.host,
-                                        as_json=args.json)
+                                        as_json=args.json, online=args.online)
     if args.verb == "setup":
         return engine.emit_status(setup.run_setup_flow(args))
     if args.verb == "migrate-config":

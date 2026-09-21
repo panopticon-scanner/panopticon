@@ -582,6 +582,22 @@ class TestManifestMustDeclareSelected(unittest.TestCase):
         self.assertEqual(report["summary"]["gate"], "PASS")
         self.assertTrue(report["summary"]["coverage_certified"])
 
+    def test_network_excluded_dependency_audit_cannot_certify(self):
+        for stale_noscan in (False, True):
+            with self.subTest(stale_noscan=stale_noscan):
+                dispositions = {"pip-audit": {"status": "noscan"}} if stale_noscan else {}
+                _, report, _ = self._run(
+                    {"schema_version": 1, "selected": [], "produced": [], "missing": [],
+                     "excluded_scope": ["pip-audit"],
+                     "network": {"pip-audit": "excluded:online egress unavailable"}},
+                    dispositions=dispositions)
+                self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+                self.assertFalse(report["summary"]["coverage_certified"])
+                self.assertIn("safe network unavailable", report["summary"]["coverage_note"])
+                self.assertIn("pip-audit", report["summary"]["coverage_note"])
+                self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"]["pip-audit"],
+                                 "network_unavailable")
+
 
 class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
     """#1701: the driver's own gate lost what the vendored-path exclusion drops.

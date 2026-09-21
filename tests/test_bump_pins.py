@@ -28,6 +28,50 @@ class TestParse(unittest.TestCase):
         self.assertEqual(shas, {})
 
 
+class TestTinyproxyFreshness(unittest.TestCase):
+    def _manifest(self, arches=("amd64", "arm64")):
+        return json.dumps({"schemaVersion": 2,
+                           "mediaType": "application/vnd.oci.image.index.v1+json",
+                           "manifests": [{"platform": {"os": "linux", "architecture": a}}
+                                         for a in arches]}).encode()
+
+    def test_public_registry_index_is_hashed_without_fetching_layers(self):
+        raw = self._manifest()
+        with mock.patch.object(bp, "_get", side_effect=[b'{"token":"fixture"}', raw]) as get:
+            digest = bp.latest_proxy_digest()
+        self.assertEqual(digest, "sha256:" + hashlib.sha256(raw).hexdigest())
+        self.assertEqual(get.call_count, 2)
+        request = get.call_args.args[0]
+        self.assertEqual(request.full_url,
+                         "https://registry-1.docker.io/v2/kalaksi/tinyproxy/manifests/latest")
+        self.assertEqual(request.get_header("Authorization"), "Bearer fixture")
+        self.assertIn("application/vnd.oci.image.index.v1+json", request.get_header("Accept"))
+
+    def test_a_platform_specific_or_malformed_response_is_not_a_freshness_result(self):
+        for raw in (b'{}', b'[]', self._manifest(("amd64",))):
+            with self.subTest(raw=raw), mock.patch.object(
+                    bp, "_get", side_effect=[b'{"token":"fixture"}', raw]):
+                with self.assertRaises(RuntimeError):
+                    bp.latest_proxy_digest()
+
+    def test_check_reports_drift_without_changing_or_executing_the_source(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "egress.py")
+            source = ('raise RuntimeError("never execute the source")\n'
+                      'PROXY_IMAGE = "docker.io/kalaksi/tinyproxy@sha256:' + 'a' * 64 + '"\n')
+            with open(path, "w") as fh:
+                fh.write(source)
+            for latest, warning in (("a" * 64, False), ("b" * 64, True)):
+                out = io.StringIO()
+                with mock.patch.object(bp, "latest_proxy_digest", return_value="sha256:" + latest), \
+                        mock.patch("sys.stdout", out):
+                    self.assertEqual(bp.main(["tinyproxy", "--source", path]), 0)
+                self.assertEqual("::warning" in out.getvalue(), warning)
+                with open(path) as fh:
+                    self.assertEqual(fh.read(), source)
+
+
 class TestRewrite(unittest.TestCase):
     def test_rewrites_version_and_both_shas(self):
         out = bp.rewrite_rustup_pin(DOCKERFILE, "1.30.0",

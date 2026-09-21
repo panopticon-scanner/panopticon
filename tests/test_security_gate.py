@@ -94,6 +94,15 @@ class TestSecurityGate(unittest.TestCase):
             data = gate.load_manifest(manifest)
         self.assertEqual(data["excluded_scope"], [])
 
+    def test_network_exclusion_is_lost_coverage_even_when_scope_excluded(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": ["semgrep"],
+                       "missing": [], "excluded_scope": ["pip-audit"],
+                       "network": {"pip-audit": "excluded:online egress unavailable"}}, _sarif())
+            _, _, failures, _, _ = gate.evaluate(tools, manifest)
+        self.assertEqual(failures, ["pip-audit: excluded:online egress unavailable"])
+
     def test_excluded_scope_overlapping_selected_is_invalid(self):
         with tempfile.TemporaryDirectory() as root:
             tools, manifest = self._write(
