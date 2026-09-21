@@ -20,7 +20,8 @@ from the guard until it was:
                     `<<'EOF'` does not
     substitutions   `eval "$(curl ...)"`, `bash <(curl ...)`, backticks
     quoting         a `|` or `;` inside '...' or "..." is text, not a pipeline
-    redirections    `curl ... > file`, `bash < file`, and `2>&1` is neither
+    redirections    `curl ... > file`, `bash < file`, and `2>&1`/`>&2`/`>&-`
+                    are neither -- `2>file` is a write, but not to stdout
     separators      `&&`, `||`, `;`, `&` -- which is where a shell says whether
                     a command's exit status is allowed to matter
     wrappers        `sudo`, `env FOO=1`, `timeout 300`, and the keywords (`if`,
@@ -36,10 +37,15 @@ import re
 import shlex
 
 # One shell command: its argv, the files it redirects into / reads from, the
-# heredoc body attached to it, and the command substitutions inside it -- the
+# heredoc body attached to it, the command substitutions inside it -- the
 # `$(...)`, `<(...)` and backtick texts, which are commands in their own right
-# and where `eval "$(curl ...)"` hides its download.
-Stage = collections.namedtuple("Stage", "argv writes reads heredoc substitutions")
+# and where `eval "$(curl ...)"` hides its download -- and stdout_writes, the
+# subset of `writes` a shell actually delivers to file descriptor 1. `writes`
+# also carries an explicit OTHER fd (`2>err.log`) so the guard's file-tracking
+# stays correct; `stdout_writes` is the one a caller may call THE destination
+# (#1733). A target beginning with `&` (`2>&1`, `>&2`, `>&-`) duplicates or
+# closes a descriptor rather than naming a file, and lands in neither list.
+Stage = collections.namedtuple("Stage", "argv writes reads heredoc substitutions stdout_writes")
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -268,8 +274,8 @@ def _stage(text, bodies, inners):
         tokens = shlex.split(text)
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
-    argv, writes, reads, heredoc, pending = [], [], [], None, None
-    substitutions = []
+    argv, writes, reads, heredoc = [], [], [], None
+    stdout_writes, substitutions, pending = [], [], None
 
     def take(token):
         # A redirection TARGET can be a command too (`bash < <(curl ...)`), so
@@ -281,11 +287,24 @@ def _stage(text, bodies, inners):
         substitutions.extend(inners[int(n)] for n in SUBST_REF.findall(token)
                              if int(n) < len(inners))
 
+    def write(fd, target):
+        # `1>x` and a bare `>x` both mean fd 1 -- the shell's default target
+        # for `>`/`>>` with no leading digit -- and only that one is where
+        # `curl`/`wget`'s stream actually goes; `2>x` is a real write this
+        # stage makes (kept in `writes` for the file-tracking that reads it),
+        # but never the destination a fetch is reported against (#1733).
+        writes.append(target)
+        if fd in ("", "1"):
+            stdout_writes.append(target)
+
     for token in tokens:
         if pending is not None:
+            is_write, fd, pending = pending[0], pending[1], None
             take(token)
-            (writes if pending else reads).append(token)
-            pending = None
+            if is_write:
+                write(fd, token)
+            else:
+                reads.append(token)
             continue
         ref = _HEREDOC_REF.match(token)
         if ref and int(ref.group(1)) < len(bodies):
@@ -298,16 +317,24 @@ def _stage(text, bodies, inners):
             continue
         redirect = _REDIRECT.match(token)
         if redirect:
-            target, is_write = redirect.group(3), redirect.group(2) != "<"
+            fd, op, target = redirect.groups()
+            is_write = op != "<"
             if target:
+                if target.startswith("&"):
+                    # `2>&1`, `>&2`, `>&-`: a file-descriptor duplication or
+                    # close, not a path -- neither a read nor a write (#1733).
+                    continue
                 take(target)
-                (writes if is_write else reads).append(target)
+                if is_write:
+                    write(fd, target)
+                else:
+                    reads.append(target)
             else:
-                pending = is_write
+                pending = (is_write, fd)
             continue
         take(token)
         argv.append(token)
-    return Stage(argv, writes, reads, heredoc, substitutions)
+    return Stage(argv, writes, reads, heredoc, substitutions, stdout_writes)
 
 
 def statements(script):
