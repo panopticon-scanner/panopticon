@@ -122,6 +122,12 @@ def tools_execute(review_root, manifest):
     cmd = [sys.executable, runio._script("run_tools.py"), "--target", review_root,
            "--out", out_dir, "--deps",
            "--run-id", manifest.get("run_id") or "",   # #17: manifest self-identifies
+           # #1740: the runner keeps three scanners out of a directory named
+           # `venv` on that name alone, which under redteam is the inference
+           # the gate exists to refuse -- so the mode travels to the scan, not
+           # only to discovery and synthesize. Off the run MANIFEST (the
+           # controller's write-once record), never off the target's config.
+           "--security", manifest.get("security_mode", "standard"),
            "--manifest", manifest_path]
     proc = child._run_child(cmd, review_root=review_root, phase="tools")
     # The runner's own report of what it did with the captures it wrote (#1639
