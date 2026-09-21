@@ -11,6 +11,7 @@ import os
 
 import scripts.evidence as evidence
 import scripts.findings_contract as findings_contract
+import scripts.safe_write as safe_write
 
 __all__ = ["entry_is_done", "pending_entries", "fan_out_coverage",
            "verdict_is_done", "pending_verdicts", "resume_stats"]
@@ -239,8 +240,12 @@ def snapshot_out_files(plan, out_path=None):
     if out_path is None:
         out_path = os.path.join(".panopticon", "out-file-hashes.json")
     if hashes:
+        # #1735: the snapshot lands in the reviewed tree's `.panopticon` and is
+        # the anchor content-substitution detection reads back, so confine the
+        # path before the makedirs and open without following a planted link.
+        safe_write.confine_artifact_path(out_path)
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as fh:
+        with safe_write.open_w_nofollow(out_path) as fh:
             json.dump(hashes, fh, indent=1, sort_keys=True)
     return hashes
 
