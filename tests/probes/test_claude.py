@@ -52,6 +52,14 @@ def _model_shell(directory, host, role_file, model, tools="Read, Grep, Glob",
     return path
 
 
+def _profile_model(host, role):
+    """`reference/model-profiles.yml`'s own value for this role, read from the
+    FILE rather than through `resolve_model` -- the point of the pin below is
+    that the declaration is what licenses an unbound role."""
+    return (((model_resolver._profiles().get("hosts") or {}).get(host) or {})
+            .get(role) or {}).get("model")
+
+
 class TestEntryModelBoundProbe(unittest.TestCase):
     """#1344 F4: registration must bind the model dispatch resolves, or an
     enforced dispatch runs on the shell's choice while the entry claims another.
@@ -67,7 +75,46 @@ class TestEntryModelBoundProbe(unittest.TestCase):
             self._register_all(d)
             state, by, detail = claude_probes.probe_entry_model_bound("claude", d)
         self.assertEqual((hosts.PROVEN, claude_probes.ENTRY_MODEL_BOUND), (state, by))
-        self.assertIn("%d/%d" % (len(dispatch.ROLE_FILES), len(dispatch.ROLE_FILES)), detail)
+        # #1737: the count is the roles that BIND one. `setup_scan` resolves to
+        # None -- "inherit the session's model" (R-F4-2) -- and its shell binds
+        # nothing, so the two agree and there is nothing to bind. It is named
+        # in the detail rather than counted or hidden.
+        binding = [role for role in dispatch.ROLE_FILES
+                   if model_resolver.resolve_model("claude", role).get("model")]
+        self.assertIn("%d/%d" % (len(binding), len(dispatch.ROLE_FILES)), detail)
+        self.assertIn("deliberately unbound", detail)
+        self.assertIn("setup_scan", detail)
+
+    def test_only_a_role_the_profile_declares_null_may_be_unbound(self):
+        # #1737 fix round 1, nit (c). The unbound allowance must be spendable
+        # ONLY by a role whose profile says `model: null` -- otherwise a role
+        # that lost its model (a deleted YAML row, a fallback table edit)
+        # would be waved through as "deliberately unbound" and its enforced
+        # launches would silently take the session's model. Behavioural, not a
+        # string search: every role's shell is stripped of its model in turn
+        # and only the declared-null one may still prove.
+        declared = {role for role in dispatch.ROLE_FILES
+                    if _profile_model("claude", role) is None}
+        self.assertEqual({"setup_scan"}, declared)       # the canary
+        for role, role_file in sorted(dispatch.ROLE_FILES.items()):
+            with self.subTest(role=role), tempfile.TemporaryDirectory() as d:
+                self._register_all(d)
+                _model_shell(d, "claude", role_file, None)      # binds nothing
+                state, _by, _detail = claude_probes.probe_entry_model_bound("claude", d)
+                self.assertEqual(hosts.PROVEN if role in declared else hosts.REFUTED,
+                                 state, role)
+
+    def test_a_shell_that_binds_nothing_while_the_entry_asks_for_one_still_refutes(self):
+        # The unbound ALLOWANCE above is agreement on BOTH sides, never a
+        # blanket pardon for a shell with no model line: a role the profile
+        # gives a model to, registered with none, is the silent session-model
+        # win this probe exists to catch.
+        with tempfile.TemporaryDirectory() as d:
+            self._register_all(d)
+            _model_shell(d, "claude", dispatch.ROLE_FILES["domain_panel"], None)
+            state, _by, detail = claude_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("binds no model", detail)
 
     def test_an_ambient_override_the_shell_cannot_see_is_refuted(self):
         # THE case the probe exists for: resolve_model honours

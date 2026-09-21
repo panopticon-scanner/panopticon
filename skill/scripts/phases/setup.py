@@ -4,8 +4,11 @@ import os
 import subprocess
 import sys
 
+from scripts import dispatch
 from scripts import hosts
+import scripts.loop_batch as loop_batch
 from scripts import read_guard_hook
+import scripts.synth.integrity as integrity_mod
 import scripts.host_disclosure as host_disclosure
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
@@ -57,23 +60,43 @@ def _setup_scan_entry(review_root, prompt, host):
     (mirrors _scout_entry): the host dispatches it, gets proposal JSON back, and
     persists it to out_file. #1608: the entry carries `delivery` saying so.
 
-    Unlike scout/panel/advisor roles, setup-scan is NEVER enforced: it is not in
-    dispatch.ROLE_FILES, so no `panopticon-setup-scan` shell is ever registered
-    for any host -- dispatching it as "enforced" would ask the host to invoke a
-    subagent that doesn't exist. It is read-only + return-persist by template
-    tool_policy (Read/Grep/Glob only), so a plain general-purpose dispatch is
-    sufficient and safe.
+    #1737 (AGT-B1D): this used to carry `agent: None, enforced: False`
+    unconditionally, with a docstring arguing that a plain general-purpose
+    dispatch was "sufficient and safe" because the template's tool_policy is
+    read-only -- but that policy travelled as PROSE only. Nothing bounded the
+    tool set a host hands a general-purpose agent, for the one dispatch that
+    reads the WHOLE untrusted tree. `setup_scan` is a registered role now, so
+    this entry names its shell and derives `enforced` from this invocation's
+    own posture exactly the way the five phase sites do (#1720) -- with
+    `--setup`'s own evidence artifact, which `driver loop --setup`'s posture
+    step writes flat beside setup's other artifacts.
+
+    When the posture does not prove enforcement -- no shells emitted yet, a
+    host that cannot enforce -- the entry falls back to the shell-less shape
+    it always had, and `scan_execute` makes the operator acknowledge that
+    before it dispatches (`requests.require_unenforced_scan_ack`).
+
+    The MODEL stays None either way: R-F4-2, deliberately unbound, so the
+    session's model runs this one-off classification. The registered shell
+    binds none either (model_resolver's `setup_scan` row).
     """
     out_file = os.path.abspath(runio._pano(review_root, "setup-proposal.json"))
-    # No run exists at setup time, so there is no evidence artifact; {} is the
-    # all-unknown posture. setup-scan.md grants no Write, so delivery() answers
-    # before it ever consults the posture -- return_json, empty prefix.
+    enforced = loop_batch.expected_enforced(review_root, host,
+                                            namespace=loop_batch.SETUP_NAMESPACE)
+    # The all-unknown posture `{}` is deliberate and unrelated to `enforced`
+    # above: setup-scan.md grants no Write, so delivery() answers return_json
+    # before it ever consults a posture, and handing it one would only invite
+    # a reader to think the answer depends on it.
     mode, prefix = requests.delivery(host, {}, "setup-scan.md", out_file)
     entry = {"id": "setup-scan",
-             "agent": None,
-             "enforced": False,
-             # R-F4-2: deliberately unbound -- no ROLE_FILES entry, no profile;
-             # see test_setup_scan_is_deliberately_not_model_bound.
+             # The role file SPELLED OUT, like the other four builders: the
+             # #1727 routing guard reads this constant out of the AST to prove
+             # the table names the shell this checkpoint really dispatches.
+             "agent": dispatch.registered_agent_name("setup-scan.md") if enforced else None,
+             "enforced": enforced,
+             # R-F4-2: deliberately unbound -- an explicit `model: null` row in
+             # model-profiles.yml, not an omission; see
+             # test_setup_scan_is_deliberately_not_model_bound.
              "model": None,
              "prompt": requests.entry_marker("setup-scan") + prefix + prompt,
              "marker": read_guard_hook.marker_line("setup-scan"),
@@ -84,6 +107,168 @@ def _setup_scan_entry(review_root, prompt, host):
     if mode:
         entry["delivery"] = mode
     return entry
+
+SETUP_UNENFORCED_ACK = "setup-unenforced-ack.json"
+
+# The operator's fix, not just an escape hatch: the refusal below names the
+# command that makes the refusal go away for good -- when there is one.
+_EMIT_REMEDY = "python3 skill/scripts/dispatch.py --emit-host-agents %s"
+# ...and when what is missing is a MEASUREMENT rather than a registration, the
+# invocation that takes it. `driver loop` resolves `--mode` to headless for any
+# host with a runner and writes it back onto `args` before the posture step, so
+# this is the one entry point that hands the probes a settings path (fix round
+# 2; verified against `orchestrate._resolve_mode` and
+# `driver._establish_host_posture`). `--mode headless` is spelled out even
+# though it is the default for these hosts: a remedy an operator pastes should
+# not depend on a resolution rule to be correct.
+_MEASURE_REMEDY = "driver loop --setup --host %s --mode headless"
+
+
+def require_unenforced_scan_ack(review_root, manifest, entries):
+    """Refuse to dispatch `setup-scan` SHELL-LESS unless the operator accepted
+    it explicitly (#1737, AGT-B1D) -- the setup analogue of
+    `requests.require_unenforced_ack`, sharing its never-overwrite writer.
+
+    The capability is TOOL_POLICY_ENFORCED, not ARTIFACT_WRITE_GUARD: this
+    dispatch writes nothing (it is return-persist by construction) and the risk
+    is the other one. It reads the WHOLE reviewed tree as untrusted content,
+    and without a registered shell nothing bounds the tool set the host hands
+    it -- the template's Read/Grep/Glob travels as the advisory line
+    `dispatch._tool_policy_line` appends to the brief, and that is all. This is
+    the acknowledgement every OTHER unenforced dispatch has required since
+    #1519 and this one never passed through.
+
+    A refusal is the normal outcome on a machine that has not emitted its
+    shells, and the remedy it names FIRST is to emit them -- `--allow-unenforced`
+    accepts the residual risk instead, and is recorded in
+    `setup-unenforced-ack.json`.
+
+    That record describes THIS invocation and nothing else. Every field is
+    refreshed on every write, and once the posture proves enforcement the file
+    is DISCARDED: an acceptance that outlives the posture it was about is a
+    tree saying `acknowledged: true` over a dispatch that runs in a registered
+    shell, which is worse than no record at all. The bootstrap sequence makes
+    exactly that transition -- accept once, emit the shells, re-run.
+
+    Its OWN file, beside setup's other artifacts, never the review run's
+    `unenforced-ack.json`: that one's `plan_sha256` binds a review plan (#493
+    R2) and is never-overwrite, so stamping setup's hash into it would make the
+    next review run's ack read as stale -- and `runio._pano` would resolve the
+    shared name into an unrelated run's folder besides (#1507).
+
+    Returns the ack path when one was written, else None.
+    """
+    host = manifest.get("host", "claude")
+    path = runio._pano(review_root, SETUP_UNENFORCED_ACK)
+    if loop_batch.expected_enforced(review_root, host,
+                                    namespace=loop_batch.SETUP_NAMESPACE):
+        _discard_scan_ack(path)        # the shell is registered and proven
+        return None
+    evidence = loop_batch.evidence_for(review_root, loop_batch.SETUP_NAMESPACE)
+    posture = hosts.posture(host, evidence)
+    row = evidence.get(hosts.TOOL_POLICY_ENFORCED) or {}
+    if not (manifest.get("flags") or {}).get("allow_unenforced"):
+        # declares(), NOT posture(), for the hint -- the same reason
+        # `requests.require_unenforced_ack` gives: we have no evidence for a
+        # host we are not running, so posture() would answer unknown for all
+        # of them and the hint would go empty.
+        enforcing = [n for n in hosts.driver_hosts()
+                     if hosts.declares(n, hosts.TOOL_POLICY_ENFORCED)]
+        emit = _remedy_clause(host, posture[hosts.TOOL_POLICY_ENFORCED])
+        raise runio.DriverError(
+            "%s is %s on host %r -- probe %s: %s. The setup-scan agent reads "
+            "the whole reviewed tree as untrusted content, and with no "
+            "registered shell nothing confines its tools to Read, Grep, Glob "
+            "-- the brief's tool policy is advisory prose. %s-run with "
+            "--allow-unenforced to accept that explicitly (it is recorded in "
+            "%s), or use one of: %s."
+            % (hosts.TOOL_POLICY_ENFORCED, posture[hosts.TOOL_POLICY_ENFORCED],
+               host, row.get("by") or "none ran", row.get("detail") or "no evidence",
+               emit, SETUP_UNENFORCED_ACK,
+               ", ".join("--host " + n for n in enforcing)))
+    body = {
+        "acknowledged": True, "host": host,
+        # The launch SHAPE the operator accepted (id, shell, posture,
+        # destination), not the brief: that text carries the repository spine
+        # and moves with the tree, so hashing it would bind the acceptance to
+        # a file listing rather than to the thing being acknowledged.
+        "plan_sha256": integrity_mod._plan_hash(
+            [{key: entry.get(key) for key in ("id", "agent", "enforced", "out_file")}
+             for entry in entries if isinstance(entry, dict)]),
+        "roles": ["setup_scan"],
+        "note": ("The setup classifier reads the whole reviewed tree with no "
+                 "registered shell: its tool grant is whatever this host gives "
+                 "a general-purpose agent. The operator accepted this with "
+                 "--allow-unenforced."),
+        hosts.TOOL_POLICY_ENFORCED: posture[hosts.TOOL_POLICY_ENFORCED],
+        "tool_policy_detail": row.get("detail") or "no evidence"}
+    # Every key refreshed: see the docstring. Nothing downstream binds to this
+    # file, so there is no earlier write to preserve -- only an older set of
+    # facts to correct.
+    return requests._merge_ack(path, body, refresh=tuple(body))
+
+
+def _remedy_clause(host, state):
+    """The fixing remedy this refusal may honestly name, as a sentence opener
+    ending in "re" for the `--allow-unenforced` clause that follows.
+
+    Three answers, and the rule is the capability's STATE, which is what says
+    whether a fix EXISTS and which one (fix round 2):
+
+    * REFUTED -- the host measured and said no. Every capability that gates
+      here maps to a registration probe, so re-emitting is the fix for its
+      ordinary cause, and the refusal quotes the probe's own detail for the
+      rest. Name the emit command.
+    * UNKNOWN -- NOTHING measured it. No amount of registering changes what
+      was never read, and naming the emit command there is the round-1
+      Critical one host over: `driver setup --host codex` cannot reach PROVEN
+      on any machine, because codex maps `tool_policy_enforced` to
+      `codex-effective-tools` and that probe answers UNKNOWN unless it is
+      handed a headless settings path, which only `driver loop` produces.
+      Name the invocation that can measure.
+    * A host that registers no shells at all (`--host generic`, owner ruling
+      D1, the permanent unenforced fallback) gets NEITHER: emitting refuses
+      and measuring finds nothing to measure, so the acceptance and the host
+      switch are the whole truthful list.
+
+    `headless_available` is the one owner of "does this family ship a runner",
+    and it is asked rather than assumed -- a host that registers shells and
+    ships no runner would otherwise be handed a `--mode headless` that
+    `runner_for` refuses, which is the same defect in a third place. Imported
+    locally, the way `probes.common.headless_settings_path` reaches the same
+    package: `phases` may import `runners` (only the reverse is banned), but
+    at call time, not at module import, so the cycle through
+    `runners.base -> dispatch` stays broken.
+    """
+    import scripts.runners.base as runners_base
+    row = hosts.spec(host)
+    if row is None or not row.shell_format:
+        return "Re"
+    if state == hosts.REFUTED:
+        return "Run %s and re-run `driver setup`, or re" % (_EMIT_REMEDY % host)
+    if runners_base.headless_available(host):
+        return ("Nothing measured it here -- re-run as `%s`, the invocation "
+                "that can, or re" % (_MEASURE_REMEDY % host))
+    return "Re"
+
+
+def _discard_scan_ack(path):
+    """Drop a standing acceptance the posture has superseded, and say so.
+
+    Announced rather than silent: the operator passed `--allow-unenforced` at
+    some point, and the file going away is the run telling them they no longer
+    need to. Never fatal -- the ack lives under `.panopticon`, which the target
+    owns, so a read-only directory or a directory planted at the name must not
+    take down the ENFORCED path, which needs no acknowledgement anyway.
+    """
+    try:
+        os.remove(path)
+    except OSError:
+        return None
+    print("driver setup: %s discarded -- this host now enforces the setup-scan "
+          "shell, so there is nothing left to acknowledge" % SETUP_UNENFORCED_ACK,
+          file=sys.stderr)
+    return path
 
 def scan_done(review_root, manifest):
     return (runio._json_parses(runio._pano(review_root, "setup-proposal.json"))
@@ -110,6 +295,10 @@ def scan_execute(review_root, manifest):
     brief_path = setup_flow.render_scan_brief(review_root, vocab, layers=layers,
                                               spine=spine, host=host)
     entry = _setup_scan_entry(review_root, _read_text(brief_path), host)
+    # Before the entry is written, let alone dispatched: an unenforced
+    # setup-scan needs the operator's acknowledgement, and a refusal must
+    # leave no dispatch request behind for a resume to pick up (#1737).
+    require_unenforced_scan_ack(review_root, manifest, [entry])
     # #1507: setup's own namespace -- never the per-run resolver, which routed
     # this into whatever runs/latest pointed at and clobbered that run's request.
     req, sha = requests.write_dispatch_request_bound(
@@ -139,7 +328,11 @@ SETUP_PHASES = (
 
 _SETUP_ARTIFACTS = ("setup-scan-brief.md", "setup-spine.json", "setup-proposal.json",
                     "setup-report.md", "setup-report.json",
-                    "setup-complete.json", SETUP_MANIFEST, runio.HOST_CAPABILITIES)
+                    "setup-complete.json", SETUP_MANIFEST, runio.HOST_CAPABILITIES,
+                    # #1737: an acceptance is this invocation's, not a
+                    # standing one. `--reset` starts over, and starting over
+                    # includes being asked again.
+                    SETUP_UNENFORCED_ACK)
 
 def _clear_setup_artifacts(review_root):
     """Remove derived setup artifacts + the setup-manifest for --reset. NEVER
@@ -287,12 +480,17 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
     `.panopticon/host-settings.json`) and the evidence lands beside setup's
     other artifacts rather than in some earlier review run's folder.
 
-    `driver loop --setup` passes it, because that is the path that ARMS both
-    guards headlessly and therefore the one whose subject a probe has to have
-    proven. `driver setup` on its own arms nothing and passes None, which
-    leaves it exactly as it was. Its refusal -- a posture that moved, a
-    planted shadow shell -- is this verb's `error` status, the same one every
-    other refusal here speaks."""
+    BOTH entrypoints pass it (#1737 fix round 1). `driver loop --setup` always
+    did, because that is the path that ARMS both guards headlessly and
+    therefore the one whose subject a probe has to have proven. `driver setup`
+    now does too, because the evidence that step writes is no longer only a
+    record: `_setup_scan_entry` and `require_unenforced_scan_ack` both read it,
+    so a run that skipped the probe would gate on an artifact nothing in this
+    invocation measured -- absent on a fresh target, or planted by the target.
+    `posture=None` is a UNIT seam only: it runs the flow against whatever
+    evidence the caller arranged, and no production caller passes it. Its
+    refusal -- a posture that moved, a planted shadow shell -- is this verb's
+    `error` status, the same one every other refusal here speaks."""
     review_root, _wt, _pr = runio.resolve_review_root(args.target, runner=runner)
     if getattr(args, "reset", False):
         _clear_setup_artifacts(review_root)               # Task 3
@@ -326,6 +524,15 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
                                       or overrides["max_per_group"]),
                     "max_groups": getattr(args, "max_groups", None) or overrides["max_groups"]}
         runio._write_json(_setup_manifest_path(review_root), manifest)
+    # #1737: read off THIS invocation's argv, every time, and never off the
+    # stored manifest. `setup-manifest.json` sits at a `.panopticon` path a
+    # hostile target can force-commit and is written once and reused, so a
+    # stored `allow_unenforced` could otherwise grant an acceptance the
+    # operator never made -- or withhold one they just made on the command
+    # line. Recorded in the manifest so `driver loop --setup`'s phases (which
+    # see only the manifest) read the same answer this invocation gave.
+    manifest["flags"] = {"allow_unenforced":
+                         bool(getattr(args, "allow_unenforced", False))}
     host = manifest.get("host", runio._DEFAULTS["host"])
     if posture is None and hosts.is_unenforced_fallback(host):
         # D1, mirroring driver.run()'s _establish_host_posture: printed from

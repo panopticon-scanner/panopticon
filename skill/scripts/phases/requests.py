@@ -479,6 +479,11 @@ def _write_driver_plan(review_root, manifest):
     return runio._write_json(path, entries)
 
 UNENFORCED_ACK = "unenforced-ack.json"
+# #1737: `--setup` has a gate of its own -- `phases/setup.
+# require_unenforced_scan_ack`. Same primitive (`_merge_ack` below),
+# different capability (TOOL_POLICY_ENFORCED, not the write guard) and a
+# separate ack file, for the reasons its docstring gives. It lives beside
+# the flow that calls it because this module is at its size ceiling.
 
 
 def write_capable_roles():
@@ -626,20 +631,34 @@ def _record_unenforced_ack(review_root, manifest, entries, evidence, posture,
         body["tool_policy_detail"] = (
             (evidence.get(hosts.TOOL_POLICY_ENFORCED) or {}).get("detail")
             or "refuted, but the artifact recorded no detail")
-    path = runio._pano(review_root, UNENFORCED_ACK)
+    return _merge_ack(runio._pano(review_root, UNENFORCED_ACK), body)
+
+
+def _merge_ack(path, body, refresh=_ACK_DISCLOSURE):
+    """Write an ack, or ADD to one already there; never overwrite except the
+    keys `refresh` names (#1737 made this shared with the setup gate).
+
+    Never-overwrite protects a BINDING -- plan_sha256 above all, whose whole
+    job (#493 R2) is to stay as the earlier invocation wrote it so a changed
+    plan reads as stale. It must not also freeze a DISCLOSURE: a second
+    shadowing file appearing after the first ack leaves the state alone
+    (refuted -> refuted), so capabilities_of() sees no drift and the run
+    continues; if the detail were pinned to the first write, the ack would name
+    one path forever while the tree shipped several -- losing the exact fact
+    7.3 requires it to record.
+
+    So which keys are a binding and which are this invocation's own facts is
+    the CALLER's to state, and `refresh` is where it says so. The review ack
+    refreshes only its two disclosure keys. Setup's ack (#1737 fix round 1)
+    binds nothing downstream and refreshes everything: a stale `host` or
+    `plan_sha256` there is not a binding preserved, it is a record of an
+    acceptance that was never made.
+    """
     stored = runio._load_json(path)
     if isinstance(stored, dict):
         merged = dict(stored)
-        # Never-overwrite protects the BINDING -- plan_sha256 above all, whose
-        # whole job (#493 R2) is to stay as the earlier invocation wrote it so a
-        # changed plan reads as stale. It must not also freeze the DISCLOSURE.
-        # A second shadowing file appearing after the first ack leaves the state
-        # alone (refuted -> refuted), so capabilities_of() sees no drift and the
-        # run continues; if the detail were pinned to the first write, the ack
-        # would name one path forever while the tree shipped several -- losing
-        # the exact fact 7.3 requires it to record.
         merged.update({k: v for k, v in body.items() if k not in stored})
-        merged.update({k: body[k] for k in _ACK_DISCLOSURE if k in body})
+        merged.update({k: body[k] for k in refresh if k in body})
         if merged == stored:
             return path                # idempotent across resumes
         body = merged

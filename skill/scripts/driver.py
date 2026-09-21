@@ -329,6 +329,14 @@ def build_parser():
     # max_groups), else the defaults (48; max(4, 2 x ceil(code_files / cap))).
     sp.add_argument("--max-per-group", type=_positive_int, default=None)
     sp.add_argument("--max-groups", type=_positive_int, default=None)
+    # #1737: `driver setup` dispatches too -- one agent, over the whole
+    # untrusted tree -- so it needs the same explicit acceptance `run`/`loop`
+    # take when that dispatch cannot be enforced. Without it the refusal names
+    # a remedy the verb does not accept, which is a refusal with no way out.
+    sp.add_argument("--allow-unenforced", action="store_true",
+                    help="accept a shell-less setup-scan dispatch when "
+                         "tool_policy_enforced is not proven; recorded in "
+                         "setup-unenforced-ack.json")
     # #1637 P10: the read-only preflight. It shares `run`/`loop`'s `target` and
     # `--host` and NOTHING else on purpose -- it is not a run, so a flag that
     # configures one (`--no-tools`, `--pr`, `--reset`, ...) would either have
@@ -486,10 +494,21 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     `driver loop --setup` would otherwise probe and then overwrite THAT run's
     evidence -- the hazard `phases/persist.run_dir` exists to resolve, and the
     one `test_setup_never_writes_into_a_stale_review_runs_folder` already pins
-    for setup's other artifacts. Nothing reads host evidence in the setup
-    namespace (`phases/setup._setup_scan_entry` passes the all-unknown posture
-    explicitly, because setup is what runs BEFORE a run exists), so this
-    writes a record rather than feeding a gate.
+    for setup's other artifacts.
+
+    That artifact FEEDS A GATE (#1737). It used to be a record and nothing
+    more, which is why both setup entrypoints could afford to differ about
+    whether they ran this step at all; now `loop_batch.expected_enforced(...,
+    namespace="setup")` reads it to decide whether the setup-scan dispatch
+    gets its registered shell, and `phases/setup.require_unenforced_scan_ack`
+    reads it to decide whether the shell-less fallback needs the operator's
+    acknowledgement. So EVERY caller of `run_setup_flow` passes this step --
+    `driver setup` as much as `driver loop --setup`. A caller that skipped it
+    would hand the gate a `.panopticon/host-capabilities.json` nothing in this
+    invocation measured: absent on a fresh target (refusing the bootstrap with
+    a remedy that cannot change the answer), or planted by the target and
+    believed. Writing it here, before any phase runs, is what makes the
+    evidence this invocation's own.
 
     `registration_dir` (#1609) is a TEST SEAM: None -- the default, and what
     every production caller passes -- keeps the registration probes reading the
@@ -1089,7 +1108,18 @@ def main(argv=None):
         return readiness.emit_preflight(args.target, host=args.host,
                                         as_json=args.json)
     if args.verb == "setup":
-        return engine.emit_status(setup.run_setup_flow(args))
+        # #1737 fix round 1: WITH the posture step, exactly as
+        # `orchestrate.loop --setup` passes it. `driver setup` dispatches an
+        # agent over the whole untrusted tree, and since #1737 that dispatch
+        # is gated on this host's measured `tool_policy_enforced` -- so a verb
+        # that probed nothing read whatever `.panopticon/host-capabilities.json`
+        # happened to be lying on the tree (or nothing at all, on a fresh
+        # target) and refused the bootstrap with a remedy that could not
+        # change the answer. The step is namespace-aware: it writes setup's
+        # own flat artifact and skips the drift COMPARISON, which is a
+        # statement about one run and this is not one.
+        return engine.emit_status(
+            setup.run_setup_flow(args, posture=_establish_host_posture))
     if args.verb == "migrate-config":
         # Its own exit code, like `readiness`: this verb writes one file and
         # says what it wrote, it is not a review and speaks no status protocol.

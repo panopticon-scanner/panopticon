@@ -536,6 +536,38 @@ class TestTheRolesTheLoopSetsReachTheCheck(unittest.TestCase):
         self.assertTrue(res.ok, res.error)
         self.assertIn("panopticon-domain-panel", launched[0])
 
+    def test_the_setup_scan_shell_launches_on_the_scan_checkpoints_roles(self):
+        # #1737, the wiring proof: `orchestrate.loop` sets `runner.roles` from
+        # `loop_batch.checkpoint_roles(checkpoint)`, so a setup-scan entry
+        # reaches the claude runner with `--agent panopticon-setup-scan` the
+        # way a scout entry reaches it with its own shell -- and a scout shell
+        # sent to the scan checkpoint is refused, because the routing table
+        # narrows it to one.
+        import scripts.loop_batch as loop_batch
+        launched = []
+
+        def fake_run(cmd, **kw):
+            launched.append(cmd)
+            class P: returncode = 0; stdout = json.dumps(ENVELOPE); stderr = ""
+            return P()
+
+        roles = loop_batch.checkpoint_roles("scan")
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=fake_run)
+            r.prepare(d, review_root=d)
+            r.roles = roles
+            res = r.run_entry(dict(_entry(True), id="setup-scan",
+                                   agent="panopticon-setup-scan"), {})
+            self.assertTrue(res.ok, res.error)
+            self.assertIn("--agent", launched[0])
+            self.assertIn("panopticon-setup-scan", launched[0])
+            misrouted = r.run_entry(dict(_entry(True), id="setup-scan",
+                                         agent="panopticon-scout"), {})
+        self.assertFalse(misrouted.ok)
+        self.assertIn("not a registered panopticon shell for this checkpoint",
+                      misrouted.error)
+        self.assertEqual(1, len(launched))
+
     def test_command_binds_no_agent_for_a_misrouted_shell(self):
         # `command` is the argv builder behind the refusal: it must not put a
         # misrouted shell on the launch line either, or a second caller would.

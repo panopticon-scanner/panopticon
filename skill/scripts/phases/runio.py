@@ -54,6 +54,10 @@ _TOP_LEVEL = frozenset({
     # at -- an unrelated review run, whose own dispatch-request.json setup then
     # overwrote. Setup is not a run; its artifacts live beside its siblings above.
     "setup-dispatch-request.json", "setup-prompts",
+    # #1737. Setup's own unenforced-ack, deliberately NOT the review run's
+    # `unenforced-ack.json`: that name is per-run by design, and setup is not
+    # a run.
+    "setup-unenforced-ack.json",
     "epss-cache.json", "write-allowlist.json",
     "report.json", "report.json.html",
 })
@@ -288,7 +292,17 @@ def host_evidence(review_root):
     file is written to a `.panopticon` path a hostile target can pre-commit,
     so "unparseable value" and "unparseable container" are the same defect.
     """
-    body = _load_json(_pano(review_root, HOST_CAPABILITIES))
+    return evidence_at(_pano(review_root, HOST_CAPABILITIES))
+
+def evidence_at(path):
+    """The `capabilities` block of ONE capability artifact, or {} (#1737).
+
+    Split out of `host_evidence` so a namespace that keeps its own artifact
+    -- `--setup`'s flat `.panopticon/host-capabilities.json`, which
+    `persist.run_dir("setup")` resolves and the manifest-tag lookup above
+    would route into an unrelated review run's folder -- reads it through the
+    same fail-closed parse rather than a second copy of it."""
+    body = _load_json(path)
     caps = body.get("capabilities") if isinstance(body, dict) else None
     return caps if isinstance(caps, dict) else {}
 

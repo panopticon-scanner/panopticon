@@ -33,18 +33,30 @@ SETUP_NAMESPACE = "setup"
 # launch, and a governing instruction set nobody in this run chose. The driver
 # owns the routing, so the driver states it, here, once.
 #
-# `scan` is deliberately EMPTY: `--setup`'s single entry is dispatched
-# shell-less by design (it is not in ROLE_FILES, so no host registers a shell
-# for it), and an empty row accepts no name at all rather than any.
+# #1737: `scan` used to be deliberately EMPTY, because `--setup`'s single
+# entry was dispatched shell-less by design. `setup_scan` is a registered role
+# now, so the row names it -- one shell, the one that checkpoint dispatches.
+# An UNENFORCED setup entry still carries `agent: None` and is still refused
+# for naming any shell at all, which is the second half `refuse_misrouted`
+# reads off this same table.
 CHECKPOINT_ROLES = {"scout": ("scout",),
                     "review": ("domain_panel",),
                     "verify": ("advisor", "domain_advisor"),
-                    "scan": ()}
+                    "scan": ("setup_scan",)}
 
 # Acceptance roles are derived from the controller-bound output path, never
 # from an entry's claimed shell. Verify has two roles with different charters.
+#
+# One row per `persist.role_of` family, and one row per `dispatch.ROLE_FILES`
+# role: the two tables are halves of a single statement, and a role added to
+# only one of them fails CLOSED and silently -- `role_of` resolves to a family
+# with no row here, `expected` comes out None, and no name the entry could
+# carry would match it. That is exactly what #1737's `setup_scan` hit, so
+# `test_no_role_can_be_added_to_one_side_of_the_routing_tables_only` pins them
+# against each other.
 OUTPUT_ROLES = {"scout": "scout", "review-cell": "domain_panel",
-                "verify-cell": "domain_advisor", "tool-advisor": "advisor"}
+                "verify-cell": "domain_advisor", "tool-advisor": "advisor",
+                "setup-scan": "setup_scan"}
 
 
 def expected_enforced(review_root, host, namespace=None):
@@ -58,19 +70,42 @@ def expected_enforced(review_root, host, namespace=None):
     the phases set it from exactly this, so the loop can check the request
     against the run rather than take its word.
 
-    Two postures are not read off the capability evidence at all:
+    ONE posture is not read off the capability evidence at all:
+    `hosts.is_unenforced_fallback` -- `--host generic` is the permanent
+    unenforced fallback (owner ruling D1), ack-gated and disclosed.
 
-    * the `setup` namespace, whose single `setup-scan` entry is dispatched
-      SHELL-LESS by design (phases/setup.py: it is not in
-      `dispatch.ROLE_FILES`, so no host registers a shell for it, and a fresh
-      machine runs `--setup` before it has registered anything);
-    * `hosts.is_unenforced_fallback` -- `--host generic` is the permanent
-      unenforced fallback (owner ruling D1), ack-gated and disclosed.
+    #1737 retired the second one. The `setup` namespace used to answer False
+    before it ever opened the evidence, because `setup-scan` had no registered
+    shell on any host; it has one now, so `--setup` asks the same question
+    every other dispatch asks. A machine that has not emitted its shells reads
+    REFUTED here -- exactly what it should -- and `phases/setup` takes the
+    ack-gated unenforced path rather than skipping the question.
+
+    `namespace` also decides WHICH evidence artifact answers. Setup keeps its
+    own (the flat `.panopticon/host-capabilities.json` that `driver loop
+    --setup`'s posture step writes); `runio.host_evidence` resolves through
+    the REVIEW run-manifest's tag, so on a tree that already holds a review
+    run it would answer with that run's posture -- the #1507 accident, one
+    file over.
     """
-    if namespace == SETUP_NAMESPACE or hosts.is_unenforced_fallback(host):
+    if hosts.is_unenforced_fallback(host):
         return False
-    return (hosts.posture(host, runio.host_evidence(review_root))
+    return (hosts.posture(host, evidence_for(review_root, namespace))
             [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
+
+
+def evidence_for(review_root, namespace):
+    """This namespace's own capability evidence, failing closed on absence.
+
+    Resolved through `persist.run_dir`, the namespace-aware resolver
+    `driver._establish_host_posture` writes the artifact through, so the
+    reader and the writer name the same file. `None` (a review run) keeps
+    `runio.host_evidence`'s manifest-tag resolution untouched.
+    """
+    if namespace is None:
+        return runio.host_evidence(review_root)
+    return runio.evidence_at(
+        os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES))
 
 
 def refuse_disagreeing(pending, expected):
@@ -114,6 +149,25 @@ def _allowed_shells(checkpoint):
             if role in dispatch.ROLE_FILES}
 
 
+def expected_shell(entry, checkpoint):
+    """The ONE registered shell this entry's output family may name here.
+
+    The acceptance role comes from the controller-bound `out_file`, never from
+    the entry's claimed `agent` (#1886). `None` whenever the family is
+    unknown, names a role this checkpoint does not dispatch, or names one no
+    host registers a shell for -- every one of those fails closed, since
+    `None` equals no name an entry could carry. The last of the three is the
+    same `in`-guard `_allowed_shells` applies: a role present in one routing
+    table and absent from the other must refuse, not raise `KeyError` for
+    `loop`'s catch-all to report as a Python type.
+    """
+    role = OUTPUT_ROLES.get(persist.role_of(entry))
+    if role is None or role not in checkpoint_roles(checkpoint):
+        return None
+    role_file = dispatch.ROLE_FILES.get(role)
+    return dispatch.registered_agent_name(role_file) if role_file else None
+
+
 def refuse_misrouted(pending, checkpoint):
     """The ids whose shell disagrees with their output role or checkpoint.
 
@@ -132,9 +186,7 @@ def refuse_misrouted(pending, checkpoint):
             continue
         agent = entry.get("agent")
         if entry.get("enforced"):
-            role = OUTPUT_ROLES.get(persist.role_of(entry))
-            expected = (dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
-                        if role is not None and role in checkpoint_roles(checkpoint) else None)
+            expected = expected_shell(entry, checkpoint)
             if not (isinstance(agent, str) and agent in allowed and agent == expected):
                 misrouted.append(entry.get("id"))
         elif agent is not None:
@@ -142,7 +194,7 @@ def refuse_misrouted(pending, checkpoint):
     return misrouted
 
 
-def misroute_refusal(misrouted, checkpoint):
+def misroute_refusal(misrouted, checkpoint, pending=()):
     """The operator's message for such a request -- a REQUEST-INTEGRITY
     refusal like `enforcement_refusal`, raised before the batch opens, so
     nothing has launched and nothing is charged.
@@ -151,13 +203,30 @@ def misroute_refusal(misrouted, checkpoint):
     checkpoint both did): they reach the operator's stderr and the status
     JSON, and repr renders a control character, an ANSI escape or an embedded
     newline as its escape sequence -- the reason `base.UNREGISTERED_AGENT`
-    does the same.
+    does the same. `expected` is not one of those: it is this module's own
+    constant, reached through `dispatch.ROLE_FILES`, so `%s` names it the way
+    an operator would type it.
+
+    `pending` names the ENTRY's own expectation as well as the checkpoint's
+    list. On `verify` that list holds both advisor shells, so it never said
+    which of them this entry's output family was owed -- and the whole point
+    of #1886 is that the family, not the list, decides. Read through the same
+    `expected_shell` the refusal was made with, so the message cannot become a
+    second opinion. Optional, and the clause is DROPPED rather than guessed
+    when a caller passes no entries: an "expects ..." sentence derived from no
+    entry is a statement about a request nobody read.
     """
     allowed = ", ".join(sorted(_allowed_shells(checkpoint))) or "no enforcement shell"
+    entry = next((e for e in pending
+                  if isinstance(e, dict) and e.get("id") == misrouted[0]), None)
+    owed = ""
+    if entry is not None:
+        owed = ("its output role expects %s; "
+                % (expected_shell(entry, checkpoint) or "no shell this checkpoint dispatches"))
     return ("driver loop: entry %r names an enforcement shell its output role or checkpoint does "
-            "not dispatch (checkpoint %r dispatches: %s); the dispatch request does "
+            "not dispatch (%scheckpoint %r dispatches: %s); the dispatch request does "
             "not match this run's own plan -- re-run with --reset"
-            % (misrouted[0], checkpoint, allowed))
+            % (misrouted[0], owed, checkpoint, allowed))
 
 
 def disarm_previous(guards, prev_req):
@@ -203,7 +272,7 @@ def request_refusal(review_root, host, namespace, req, pending):
         return enforcement_refusal(disagreeing, expected)
     misrouted = refuse_misrouted(pending, req.get("checkpoint"))
     if misrouted:
-        return misroute_refusal(misrouted, req.get("checkpoint"))
+        return misroute_refusal(misrouted, req.get("checkpoint"), pending)
     return None
 
 
