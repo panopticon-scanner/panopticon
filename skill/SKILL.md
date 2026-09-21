@@ -100,8 +100,14 @@ resolve against cwd; only the script path substitutes.
   row is marked `→` and GATES when its binary is off PATH — `driver loop` would resolve that
   host to headless and have nothing to launch. `--json` says which rule picked it
   (`selected_from`).
-- `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap; produces
-  `panopticon.yml.draft` (repo root) + `.panopticon/setup-report.md` (read the report first).
+- `driver setup [target] [--max-per-group N] [--max-groups N] [--allow-unenforced]` — one-time
+  bootstrap; produces `panopticon.yml.draft` (repo root) + `.panopticon/setup-report.md` (read
+  the report first). It dispatches one agent over the whole untrusted tree, so it probes this
+  host and **refuses** when `tool_policy_enforced` is not proven. Two remedies, and the refusal
+  names both: register this host's shells first with the `dispatch.py` registration command
+  (see the guide — the fix), or pass `--allow-unenforced` to accept a shell-less classifier
+  explicitly (the acceptance, recorded in `.panopticon/setup-unenforced-ack.json` and discarded
+  once the shells are registered).
 - `driver migrate-config [target]` — one-way move of a legacy `.panopticon/groups.yml` into the
   root `panopticon.yml`. Nothing reads the old path any more; commit the new file and delete
   the old one.
