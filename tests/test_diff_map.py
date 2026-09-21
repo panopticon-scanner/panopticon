@@ -55,6 +55,307 @@ class TestParse(unittest.TestCase):
         self.assertEqual(diff_map.parse_unified_diff("not a diff\nrandom\n"), {})
 
 
+# #1738 (COD-C2A / DAT-E1D). `git diff --unified=0` marks an ADDED line with a
+# single '+', so an added source line whose text begins with "++ " reaches the
+# parser as "+++ <text>" -- byte-identical to a `+++ b/<path>` file header.
+# Every fixture below is a real shape git emits under the flags hunk_map pins
+# (--unified=0 --no-color --find-renames --src-prefix=a/ --dst-prefix=b/),
+# checked against live `git diff` output rather than hand-imagined.
+FORGED = """diff --git a/app/db.py b/app/db.py
+index f696b4b..e9a07cf 100644
+--- a/app/db.py
++++ b/app/db.py
+@@ -3 +3 @@ def q():
+%s
+%s
+@@ -40,0 +41,2 @@ def r():
++real1
++real2
+"""
+
+NO_NEWLINE = """diff --git a/a.txt b/a.txt
+index ce01362..14be0d4 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-old
+\\ No newline at end of file
++++ x;
+@@ -5,0 +6 @@
++tail
+"""
+
+RENAME_AND_DELETE = """diff --git a/old.py b/new.py
+similarity index 80%
+rename from old.py
+rename to new.py
+index 1111111..2222222 100644
+--- a/old.py
++++ b/new.py
+@@ -2 +2 @@
+-b
++B
+diff --git a/gone.py b/gone.py
+deleted file mode 100644
+index 3333333..0000000
+--- a/gone.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-x
+-y
+"""
+
+HUNKLESS = """diff --git a/bin.dat b/bin.dat
+index c866266..5663091 100644
+Binary files a/bin.dat and b/bin.dat differ
+diff --git a/sh.sh b/sh.sh
+old mode 100644
+new mode 100755
+diff --git a/moved.py b/renamed.py
+similarity index 100%
+rename from moved.py
+rename to renamed.py
+"""
+
+
+class TestParseHunkState(unittest.TestCase):
+    """#1738: framing is recognized only BETWEEN hunks, so a PR's own added
+    content can never re-key, erase, or invent an entry in the hunk map."""
+
+    REAL = {"app/db.py": [(3, 3), (41, 42)]}
+
+    def _forged(self, added="+plain", removed="-line3"):
+        """The two payload lines of the first hunk, exactly as git prefixes them."""
+        return FORGED % (removed, added)
+
+    def test_the_fixture_is_a_faithful_two_hunk_diff(self):
+        # positive control: with innocent payload the map is the REAL one, so
+        # every failure below is about the forged line and nothing else.
+        self.assertEqual(diff_map.parse_unified_diff(self._forged()), self.REAL)
+
+    def test_added_line_forging_a_file_header_is_payload(self):      # (a)
+        # source line `++ x;` -> diff line `+++ x;`
+        self.assertEqual(diff_map.parse_unified_diff(self._forged(added="+++ x;")),
+                         self.REAL)
+
+    def test_added_line_forging_dev_null_does_not_drop_later_hunks(self):   # (b)
+        # source line `++ /dev/null` -> `+++ /dev/null`: used to set path=None,
+        # discarding every later hunk of the real file.
+        self.assertEqual(diff_map.parse_unified_diff(self._forged(added="+++ /dev/null")),
+                         self.REAL)
+
+    def test_added_line_forging_another_path_does_not_rekey(self):   # (c)
+        # source line `++ b/other/file` -> `+++ b/other/file`: used to re-key
+        # the later hunks onto a path of the author's choosing AND mint a key
+        # for a file the diff never touched.
+        m = diff_map.parse_unified_diff(self._forged(added="+++ b/other/file"))
+        self.assertEqual(m, self.REAL)
+
+    def test_added_line_starting_with_three_pluses_is_payload(self):  # (d)
+        # source line `+++ b/x` -> diff line `++++ b/x`: never matched the old
+        # header regex (it wants a space in position 4) -- pinned so the fix
+        # cannot widen the regex and make it match.
+        self.assertEqual(diff_map.parse_unified_diff(self._forged(added="++++ b/x")),
+                         self.REAL)
+
+    def test_removed_line_looking_like_an_old_file_header_does_nothing(self):  # (e)
+        # source line `-- a/x` -> diff line `--- a/x`
+        self.assertEqual(diff_map.parse_unified_diff(self._forged(removed="--- a/x")),
+                         self.REAL)
+
+    def test_no_newline_marker_consumes_no_budget(self):             # (f)
+        # `\ No newline at end of file` sits INSIDE the hunk and pays no line
+        # budget; if it did, the forged header after it would land at budget 0
+        # and be read as framing again.
+        self.assertEqual(diff_map.parse_unified_diff(NO_NEWLINE),
+                         {"a.txt": [(1, 1), (6, 6)]})
+
+    def test_rename_and_deletion_parse_as_before(self):               # (g)
+        # a rename WITH hunks keys on the new side; a deletion is not a
+        # new-side key at all. Unchanged by #1738.
+        self.assertEqual(diff_map.parse_unified_diff(RENAME_AND_DELETE),
+                         {"new.py": [(2, 2)]})
+
+    def test_hunkless_changes_keep_a_key_with_no_ranges(self):
+        # Binary, mode-only and 100%-similarity renames carry no `+++` header
+        # and no hunks. They ARE changed files, so they keep a key with no
+        # ranges -- classify()'s documented fail-open for a lineless (or
+        # lined-but-rangeless) finding on a changed file.
+        self.assertEqual(diff_map.parse_unified_diff(HUNKLESS),
+                         {"bin.dat": [], "sh.sh": [], "renamed.py": []})
+
+    def test_a_path_containing_spaces_keys_on_the_real_name(self):
+        # git tab-terminates the ---/+++ names when they contain a space, and
+        # the `diff --git a/<p> b/<p>` line is only decodable because both
+        # halves are the same path.
+        text = ("diff --git a/my file.txt b/my file.txt\n"
+                "index ce01362..14be0d4 100644\n"
+                "--- a/my file.txt\t\n"
+                "+++ b/my file.txt\t\n"
+                "@@ -1 +1 @@\n-hello\n+hello2\n"
+                "diff --git a/my bin.dat b/my bin.dat\n"
+                "index c866266..5663091 100644\n"
+                "Binary files a/my bin.dat and b/my bin.dat differ\n")
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {"my file.txt": [(1, 1)], "my bin.dat": []})
+
+    # #1738 fix round 1 (Critical). git frames a diff on "\n" and nothing else,
+    # but str.splitlines() also breaks on a lone \r, \x0b, \x0c, \x1c-\x1e,
+    # \x85 (NEL) and \u2028/\u2029 -- so one of those INSIDE an added source
+    # line split it into two fragments, over-spent the hunk budget, and handed
+    # the fragment after it to the framing branch. The original bypass through
+    # a second door.
+    SPLITTERS = [("CR", "\r"), ("VT", "\x0b"), ("FF", "\x0c"), ("FS", "\x1c"),
+                 ("GS", "\x1d"), ("RS", "\x1e"), ("NEL", "\x85"),
+                 ("LS", "\u2028"), ("PS", "\u2029")]
+
+    def test_only_a_newline_frames_a_line(self):
+        for name, ch in self.SPLITTERS:
+            with self.subTest(name):
+                m = diff_map.parse_unified_diff(
+                    self._forged(added="+payload%s+++ b/other/file" % ch))
+                self.assertEqual(m, self.REAL)
+
+    def test_an_embedded_hunk_header_neither_forges_nor_stalls_the_parse(self):
+        # the denial-of-service face of the same bug: the fragment after the
+        # split was read as a `@@` header, opening a 198-line budget that ate
+        # the rest of the diff and ended in a (loud, run-killing) DiffMapError.
+        for name, ch in self.SPLITTERS:
+            with self.subTest(name):
+                m = diff_map.parse_unified_diff(
+                    self._forged(added="+x=1%s@@ -1,99 +1,99 @@" % ch))
+                self.assertEqual(m, self.REAL)
+
+    def test_classify_still_sees_a_hunk_after_a_forged_header(self):  # (i)
+        # The whole point: a finding at line 41 (second hunk) used to come back
+        # on_diff False -- the PR's own content had scoped the gate away from it.
+        m = diff_map.parse_unified_diff(self._forged(added="+++ b/other/file"))
+        verdict = diff_map.classify(
+            {"location": {"file": "app/db.py", "line_start": 41}}, m)
+        self.assertTrue(verdict["on_diff"])
+        self.assertEqual(verdict["hunk"], [41, 42])
+
+
+class TestGitPathQuoting(unittest.TestCase):
+    r"""#1739 (COD-C2D / SEC-G2B). git C-quotes a path whose name carries a
+    byte >= 0x80 (under the default core.quotepath), or a `"`, `\`, tab or
+    newline (whatever quotepath says). Observed against real git 2.x in a
+    temp repo:
+
+        diff --git "a/caf\303\251.py" "b/caf\303\251.py"
+        +++ "b/we\"ird.py"
+        rename to "re\\n.py"
+
+    An un-decoded quoted spelling keys the map under a name no other surface
+    uses, so the file's hunks are unreachable and the on-diff gate scopes
+    past it -- the silent drop this issue is about.
+    """
+
+    def test_unquote_plain_string_is_returned_unchanged(self):
+        for s in ("app/db.py", "my file.txt", "", '"', 'x"y'):
+            self.assertEqual(diff_map._unquote_git_path(s), s)
+
+    def test_unquote_octal_escapes_decode_as_utf8(self):
+        # real git output for a file named café.py
+        self.assertEqual(diff_map._unquote_git_path(r'"caf\303\251.py"'),
+                         "café.py")
+
+    def test_unquote_named_escapes(self):
+        self.assertEqual(diff_map._unquote_git_path(r'"we\"ird.py"'), 'we"ird.py')
+        self.assertEqual(diff_map._unquote_git_path(r'"back\\slash.py"'),
+                         "back\\slash.py")
+        self.assertEqual(diff_map._unquote_git_path(r'"ta\tb.py"'), "ta\tb.py")
+        self.assertEqual(diff_map._unquote_git_path(r'"new\nline.py"'), "new\nline.py")
+        self.assertEqual(diff_map._unquote_git_path(r'"a\a\b\f\r\v.py"'),
+                         "a\a\b\f\r\v.py")
+
+    def test_unquote_undecodable_bytes_use_surrogateescape_like_os_fsdecode(self):
+        # the SAME spelling discovery's os.fsdecode produces, so the hunk-map
+        # key and the reviewed-file-set entry are equal strings.
+        self.assertEqual(diff_map._unquote_git_path(r'"\377.py"'),
+                         os.fsdecode(b"\xff.py"))
+
+    def test_unquote_refuses_to_invent_a_path_from_invalid_quoting(self):
+        # git never emits these; if one arrives, keep the literal rather than
+        # guess a different file.
+        for bad in (r'"bad\q.py"', r'"\777.py"', '"dangling\\"', '"unterminated'):
+            self.assertEqual(diff_map._unquote_git_path(bad), bad)
+
+    def test_plus_header_with_a_quoted_path_keys_the_real_name(self):
+        text = ('diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"\n'
+                'index 111..222 100644\n'
+                '--- "a/caf\\303\\251.py"\n'
+                '+++ "b/caf\\303\\251.py"\n'
+                '@@ -1 +1 @@\n-old\n+new\n')
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {"café.py": [(1, 1)]})
+
+    def test_plus_header_quoted_name_with_a_space_is_tab_terminated(self):
+        # observed: git appends a tab to the ---/+++ names when the path
+        # contains a space, INCLUDING when the name is also quoted.
+        text = ('diff --git "a/sp ace\\"q.py" "b/sp ace\\"q.py"\n'
+                '--- "a/sp ace\\"q.py"\t\n'
+                '+++ "b/sp ace\\"q.py"\t\n'
+                '@@ -1 +1 @@\n-old\n+new\n')
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {'sp ace"q.py': [(1, 1)]})
+
+    def test_a_trailing_space_in_the_name_survives_the_tab_terminator(self):
+        # `+++ b/endsp .py \t` (observed): stripping ALL trailing whitespace
+        # keyed "endsp .py" while discovery listed "endsp .py " -- the same
+        # name-chosen divergence, without any quoting at all.
+        text = ("diff --git a/endsp .py  b/endsp .py \n"
+                "--- a/endsp .py \t\n"
+                "+++ b/endsp .py \t\n"
+                "@@ -1 +1 @@\n-old\n+new\n")
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {"endsp .py ": [(1, 1)]})
+        # `rename to new sp .py ` (observed) carries no terminator at all, so
+        # rstrip() ate the trailing space there too.
+        ren = ('diff --git a/old.py b/new sp .py \n'
+               'similarity index 100%\n'
+               'rename from old.py\n'
+               'rename to new sp .py \n')
+        self.assertEqual(diff_map.parse_unified_diff(ren), {"new sp .py ": []})
+
+    def test_hunkless_block_keys_on_the_quoted_diff_git_line(self):
+        # a binary/mode-only change has no `+++` header at all, so the
+        # `diff --git "a/<p>" "b/<p>"` line is the only key available.
+        text = ('diff --git "a/caf\\303\\251.dat" "b/caf\\303\\251.dat"\n'
+                'index c866266..5663091 100644\n'
+                'Binary files a/x and b/x differ\n')
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {"café.dat": []})
+
+    def test_hundred_percent_rename_to_a_quoted_name_keeps_a_key(self):
+        # observed for `git mv ren.py 're"n.py'`: the diff --git line is MIXED
+        # (`a/ren.py "b/re\"n.py"`), so only `rename to` names the new path.
+        text = ('diff --git a/ren.py "b/re\\"n.py"\n'
+                'similarity index 100%\n'
+                'rename from ren.py\n'
+                'rename to "re\\"n.py"\n')
+        self.assertEqual(diff_map.parse_unified_diff(text), {'re"n.py': []})
+
+    def test_dev_null_is_still_a_deletion_not_a_key(self):
+        text = ("diff --git a/gone.py b/gone.py\n"
+                "deleted file mode 100644\n"
+                "--- a/gone.py\n"
+                "+++ /dev/null\n"
+                "@@ -1,2 +0,0 @@\n-x\n-y\n")
+        self.assertEqual(diff_map.parse_unified_diff(text), {})
+
+    def test_a_quoted_header_forged_inside_a_hunk_is_still_payload(self):
+        # #1738 must not regress: unquoting happens only where framing is
+        # recognized, between hunks.
+        text = ('diff --git a/app/db.py b/app/db.py\n'
+                '--- a/app/db.py\n'
+                '+++ b/app/db.py\n'
+                '@@ -1,0 +1,1 @@\n'
+                '+++ "b/caf\\303\\251.py"\n')
+        self.assertEqual(diff_map.parse_unified_diff(text),
+                         {"app/db.py": [(1, 1)]})
+
+
 def _make_repo(test_case):
     return make_git_repo(
         test_case=test_case,
@@ -94,6 +395,71 @@ class TestHunkMap(unittest.TestCase):
         m2 = diff_map.hunk_map(d, "main")
         self.assertEqual(m2["c.py"], [(1, 3)])
 
+    def test_a_forged_header_in_the_content_cannot_scope_the_gate(self):
+        # #1738 end-to-end through the REAL pinned `git diff --unified=0`: a
+        # branch whose own added line reads "++ /dev/null" is emitted as
+        # "+++ /dev/null" and used to erase every LATER hunk of the same file
+        # from the map -- so a finding at line 9 came back off-diff.
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        p = os.path.join(d, "a.py")
+        with open(p, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        lines[1] = "++ /dev/null"      # the forged header, first hunk
+        lines[8] = "CHANGED9"          # the real change, a later hunk
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        _git(d, "commit", "-qam", "c")
+        m = diff_map.hunk_map(d, "main")
+        self.assertEqual(sorted(m), ["a.py"])          # no forged/erased keys
+        self.assertTrue(any(s <= 2 <= e for (s, e) in m["a.py"]), m)
+        self.assertTrue(any(s <= 9 <= e for (s, e) in m["a.py"]), m)
+        self.assertTrue(diff_map.classify(
+            {"location": {"file": "a.py", "line_start": 9}}, m)["on_diff"])
+
+    def test_a_carriage_return_inside_a_line_cannot_split_it(self):
+        # #1738 fix round 1 (Critical), end-to-end through REAL git: a lone \r
+        # inside an added line used to be turned into a line break TWICE --
+        # once by the universal-newline translation in _run_git's text-mode
+        # pipe (which rewrites \r to \n before the parser sees a thing) and
+        # once by str.splitlines() -- so `+++ b/other/file` after it was read
+        # as a file header and the later hunk was re-keyed off the real file.
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        lines = ["line%d" % i for i in range(1, 11)]
+        lines[1] = "payload\r+++ b/other/file"   # forged header behind a CR
+        lines[8] = "CHANGED9"                    # the real change, later hunk
+        # newline="" so nothing on the way out of Python rewrites the \r (or
+        # the \n) -- the bytes git sees are the bytes written here.
+        with open(os.path.join(d, "a.py"), "w", encoding="utf-8", newline="") as fh:
+            fh.write("\n".join(lines) + "\n")
+        _git(d, "commit", "-qam", "c")
+        m = diff_map.hunk_map(d, "main")
+        self.assertEqual(sorted(m), ["a.py"], m)      # no forged key
+        self.assertTrue(any(s <= 2 <= e for (s, e) in m["a.py"]), m)
+        self.assertTrue(any(s <= 9 <= e for (s, e) in m["a.py"]), m)
+        self.assertTrue(diff_map.classify(
+            {"location": {"file": "a.py", "line_start": 9}}, m)["on_diff"], m)
+
+    def test_diff_output_that_is_not_utf8_fails_loud(self):
+        # The diff is read as BYTES (so no newline translation) and decoded
+        # here, pinned to UTF-8 rather than the operator's locale. Undecodable
+        # output must stay a loud DiffMapError -- what text-mode strict
+        # decoding already did -- never a silently empty map (#5.0-08).
+        def fake(repo, args, timeout=60, text=True):
+            r = mock.Mock()
+            if args[0] == "merge-base":
+                r.returncode, r.stdout, r.stderr = 0, "deadbeef\n", ""
+            elif args[0] == "-c":
+                r.returncode, r.stdout, r.stderr = 0, b"+++ b/\xff\xfe.py\n", b""
+            else:
+                r.returncode, r.stdout, r.stderr = 0, "", ""
+            return r
+        with mock.patch.object(diff_map, "_run_git", side_effect=fake):
+            with self.assertRaises(diff_map.DiffMapError) as ctx:
+                diff_map.hunk_map(".", "main")
+        self.assertIn("UTF-8", str(ctx.exception))
+
     def test_unresolvable_base_raises_instead_of_returning_empty(self):
         # #1256: this used to return {}. An empty map scopes the on-diff gate to
         # nothing, so a typo'd or unfetched base would PASS vacuously.
@@ -102,15 +468,20 @@ class TestHunkMap(unittest.TestCase):
         self.assertIn("does not resolve to a commit", str(caught.exception))
 
     def _fake_git(self, seen, diff_rc=0, diff_err=""):
-        def fake(repo, args, timeout=60):
+        def fake(repo, args, timeout=60, text=True):
             r = mock.Mock()
             if args[0] == "merge-base":
                 r.returncode, r.stdout, r.stderr = 0, "deadbeef\n", ""
             elif args[0] == "-c":                 # the pinned `git -c ... diff`
                 seen["diff"] = args
-                r.returncode, r.stdout, r.stderr = diff_rc, "", diff_err
-            else:                                  # ls-files --others
-                r.returncode, r.stdout, r.stderr = 0, "", ""
+                seen["text"] = text
+                # bytes, because #1738 reads the diff with text=False -- the
+                # universal-newline translation of text mode forges diff lines.
+                r.returncode = diff_rc
+                r.stdout, r.stderr = b"", diff_err.encode("utf-8")
+            else:                                  # ls-files --others -z
+                # bytes: #1739 reads the untracked listing with -z/text=False.
+                r.returncode, r.stdout, r.stderr = 0, b"", b""
             return r
         return fake
 
@@ -127,10 +498,13 @@ class TestHunkMap(unittest.TestCase):
         # #run7 OPS-E1A: an INFRA failure on merge-base (git missing/timeout) must
         # raise DiffMapError like the diff step, not silently return {} and pass
         # the delta gate vacuously. (A genuinely unresolvable base still -> {}.)
-        def raising(repo, args, timeout=60):
+        def raising(repo, args, timeout=60, text=True):
             if args[0] == "merge-base":
                 raise FileNotFoundError("git not found")
-            return mock.Mock(returncode=0, stdout="", stderr="")
+            # Mirror production: only the diff call reads bytes (text=False);
+            # merge-base / ls-files stay in text mode.
+            empty = b"" if not text else ""
+            return mock.Mock(returncode=0, stdout=empty, stderr=empty)
         with mock.patch.object(diff_map, "_run_git", side_effect=raising):
             with self.assertRaises(diff_map.DiffMapError):
                 diff_map.hunk_map(".", "main")
@@ -171,6 +545,66 @@ class TestHunkMap(unittest.TestCase):
         self.assertIn("diff.mnemonicPrefix=false", argv)
         self.assertIn("core.quotepath=false", argv)
         self.assertIn("--dst-prefix=b/", argv)
+        # #1738 fix round 1: and the diff is read as BYTES, because text mode
+        # rewrites a lone \r to \n and forges a diff line out of payload.
+        self.assertFalse(seen["text"])
+
+
+class TestHunkMapUntrackedQuotedPaths(unittest.TestCase):
+    r"""#1739: `git ls-files --others` C-quotes the same names, and the
+    quoted spelling then failed `open()` with FileNotFoundError -- an OSError
+    the loop swallowed with a bare `continue`. The untracked file was in
+    neither the hunk map nor any warning.
+    """
+
+    def _repo(self):
+        return _make_repo(self)
+
+    def test_untracked_files_with_quoted_names_are_keyed_by_their_real_name(self):
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        names = ["naïve.txt", 'we"ird.txt', "back\\slash.txt"]
+        for name in names:
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write("x\ny\n")
+        m = diff_map.hunk_map(d, "main")
+        for name in names:
+            self.assertIn(name, m)
+            self.assertEqual(m[name], [(1, 2)])
+
+    def test_a_newline_in_an_untracked_name_does_not_fragment_the_listing(self):
+        # -z frames on NUL; splitlines() would have split this one name into
+        # two bogus entries (and str.splitlines() splits on \r, \x0c, \x85 and
+        # U+2028 as well -- #1738's lesson, applied to the file list).
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        name = "two\nlines.txt"
+        try:
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write("x\n")
+        except OSError:
+            self.skipTest("filesystem refuses a newline in a filename")
+        m = diff_map.hunk_map(d, "main")
+        self.assertEqual(sorted(m), [name])
+
+    def test_an_unreadable_untracked_file_is_reported_not_swallowed(self):
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        p = os.path.join(d, "locked.txt")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        os.chmod(p, 0)
+        self.addCleanup(os.chmod, p, 0o644)
+        try:
+            with open(p, "rb"):
+                self.skipTest("this user can read a mode-000 file (root?)")
+        except OSError:
+            pass
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            m = diff_map.hunk_map(d, "main")
+        self.assertNotIn("locked.txt", m)
+        self.assertIn("locked.txt", err.getvalue())
 
 
 class TestClassify(unittest.TestCase):
@@ -534,15 +968,16 @@ class TestDiffMapFailures(unittest.TestCase):
             _git(d, "add", "committed.txt")
             _git(d, "commit", "-qm", "init")
 
-            def fake_run_git(repo, args, timeout=60):
+            def fake_run_git(repo, args, timeout=60, text=True):
                 if args[:2] == ["merge-base", "HEAD"]:
                     class R: returncode = 0; stdout = "HEAD\n"; stderr = ""
                     return R()
                 if len(args) > 4 and args[4] == "diff":
-                    class R: returncode = 0; stdout = ""; stderr = ""
+                    class R: returncode = 0; stdout = b""; stderr = b""
                     return R()
                 if args[:2] == ["ls-files", "--others"]:
-                    class R: returncode = 1; stdout = ""; stderr = "mock ls-files failure"
+                    # bytes: #1739 reads this listing with -z/text=False.
+                    class R: returncode = 1; stdout = b""; stderr = b"mock ls-files failure"
                     return R()
                 return subprocess.run([shutil.which("git") or "git", "-C", repo, *args],
                                       capture_output=True, text=True, timeout=timeout)
