@@ -217,10 +217,22 @@ def _split(text):
     statements, stages, buf = [], [], []
     quote, at_token_start, i, n = None, True, 0, len(text)
     cases: list[str] = []
+    # A `case` header is exactly three words (`case`, the word, `in`), so the
+    # shlex probe below only has to run while the buffer can still BE one --
+    # `header_words` counts the words the buffer has closed, `header_live`
+    # goes false as soon as the first word is not `case` or a third word has
+    # gone by without a header, and both reset when the buffer does. Probing
+    # unconditionally re-split the WHOLE buffer on every whitespace character,
+    # which made `_split` quadratic: 42 KB of one statement took ~93 s against
+    # 0.02 s before the probe existed, from a `run:` block this module reads
+    # out of the TARGET repository (fix round on #1714, Critical 1).
+    header_words, header_live = 0, True
 
     def end_stage():
+        nonlocal header_words, header_live
         stages.append("".join(buf))
         del buf[:]
+        header_words, header_live = 0, True
 
     def end_statement(separator):
         end_stage()
@@ -254,7 +266,15 @@ def _split(text):
             continue
         # A case header ends at its `in`, even when its first arm shares
         # the line. Quoted/escaped words remain intact until shlex reads them.
-        if ch.isspace():
+        # The count asks the BUFFER, not the source text, whether a word just
+        # closed here: whitespace that only extends a run of whitespace ends
+        # nothing, an escaped space ends nothing, and the character before a
+        # statement's first space may be the `;` that ENDED the last one --
+        # a source-text test miscounted that as a word and killed the probe
+        # one word early, losing the second header of `case ... esac; case
+        # ... in ...`. Whitespace inside a quote never reaches this branch.
+        if ch.isspace() and header_live and buf and not buf[-1][-1].isspace():
+            header_words += 1
             try:
                 words = shlex.split("".join(buf))
             except ValueError:
@@ -263,6 +283,8 @@ def _split(text):
             if len(words) == 3 and words[0] == "case" and words[-1] == "in":
                 end_statement(";")
                 cases.append("pattern")
+            elif header_words >= 3 or (words and words[0] != "case"):
+                header_live = False         # this buffer is not a header
         if ch == "(" and not (cases and cases[-1] == "pattern"):
             # Preserve function headers: `f()` and `f ()` are not subshells.
             if text[i:i + 2] == "()" and _NAME.fullmatch("".join(buf).strip()):
