@@ -27,6 +27,13 @@ __pycache__/
 .vscode/
 .idea/
 
+# Tool caches. The clean-tree compromise check (#436) reads an unignored
+# directory as tampering, so every checker CI and a workstation both run has
+# to have its cache named here — ruff's since the lint job was added, mypy's
+# since #1533 put a type-check step beside it.
+.mypy_cache/
+.ruff_cache/
+
 # Runtime artifacts
 .coverage
 .coverage.*
