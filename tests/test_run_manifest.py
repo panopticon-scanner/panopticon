@@ -261,5 +261,71 @@ class TestManifestRejectsAnUnknownHost(unittest.TestCase):
                               host="evilhost", security_mode="standard")
 
 
+class TestRewriteDoesNotFollowAPlantedTmpSymlink(unittest.TestCase):
+    """#1735 (SEC-D1C): `_rewrite` staged at `<manifest>.tmp` with a plain
+    `open(tmp, "w")`.
+
+    `.panopticon/` lives INSIDE the reviewed tree and `run-manifest.json.tmp`
+    is a FIXED name, so a redteam target can commit it as a symlink to any
+    file the invoking user can write: the open followed the link and replaced
+    that file's contents with the manifest JSON, and the `os.replace` then
+    renamed the LINK itself over `run-manifest.json` (rename does not
+    dereference), so every later `load_manifest` read through it. Reachable on
+    essentially every run -- `record_posture_disclosure` rewrites on the first
+    invocation. `write_manifest` was never exposed: mode "x" is O_EXCL.
+    """
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.root = self._d.name
+        self.addCleanup(self._d.cleanup)
+        rm.write_manifest(self.root, {"run_id": "r1", "host": "claude"})
+        self.tmp = rm.manifest_path(self.root) + ".tmp"
+
+    def _victim(self, where):
+        victim = os.path.join(where, "victim.txt")
+        with open(victim, "w", encoding="utf-8") as fh:
+            fh.write("PRECIOUS")
+        return victim
+
+    def test_a_link_out_of_the_tree_is_refused_and_the_victim_untouched(self):
+        victim = self._victim(self.root)            # stands in for ~/.ssh/authorized_keys
+        os.symlink(victim, self.tmp)                # committed by the reviewed repo
+        manifest = rm.load_manifest(self.root)
+        with self.assertRaises(ValueError):
+            rm.record_posture_disclosure(self.root, manifest, "d1")
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "PRECIOUS")
+        self.assertNotIn(rm.POSTURE_DISCLOSED, rm.load_manifest(self.root))
+
+    def test_a_link_inside_panopticon_is_replaced_not_written_through(self):
+        # The confinement above answers a link pointing OUT; O_NOFOLLOW answers
+        # the one that stays in, which is the half a whole-path check cannot see.
+        victim = self._victim(os.path.dirname(self.tmp))
+        os.symlink(victim, self.tmp)
+        rm.record_posture_disclosure(self.root, rm.load_manifest(self.root), "d2")
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "PRECIOUS")
+        path = rm.manifest_path(self.root)
+        self.assertFalse(os.path.islink(path))      # the link never became the manifest
+        self.assertEqual(rm.load_manifest(self.root)[rm.POSTURE_DISCLOSED]["digest"],
+                         "d2")
+        self.assertFalse(os.path.exists(self.tmp))  # staging file renamed away
+
+    def test_the_other_two_rewriters_stage_the_same_way(self):
+        # One `_rewrite`, three callers (#1637 P08 F2, #1596, #1727): the fix
+        # is on the shared write, so record it is reached from each of them.
+        victim = self._victim(self.root)
+        for record in (lambda m: rm.record_tools_downgrade(self.root, m),
+                       lambda m: rm.record_dispatch_request(self.root, m,
+                                                            "scout", "a" * 64)):
+            os.symlink(victim, self.tmp)
+            with self.assertRaises(ValueError):
+                record(rm.load_manifest(self.root))
+            with open(victim, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "PRECIOUS")
+            os.unlink(self.tmp)
+
+
 if __name__ == "__main__":
     unittest.main()
