@@ -2390,12 +2390,20 @@ class TestExpectedEnforced(unittest.TestCase):
         # dispatches exactly one shell now, so a setup entry naming a scout
         # shell -- a reviewer's charter in a round that only classifies -- is
         # refused, and the entry's own shell is accepted.
+        #
+        # `out_file` is what makes these ENTRIES: since #1886 the acceptance
+        # role is read off the controller-bound output path, so a fixture
+        # without one describes nothing the phases build and fails closed on
+        # the missing family rather than on the shell under test.
+        out_file = "/repo/.panopticon/setup-proposal.json"
         self.assertEqual(("setup_scan",), loop_batch.checkpoint_roles("scan"))
         self.assertEqual([], loop_batch.refuse_misrouted(
-            [{"id": "setup-scan", "agent": "panopticon-setup-scan", "enforced": True}],
+            [{"id": "setup-scan", "out_file": out_file,
+              "agent": "panopticon-setup-scan", "enforced": True}],
             "scan"))
         self.assertEqual(["setup-scan"], loop_batch.refuse_misrouted(
-            [{"id": "setup-scan", "agent": "panopticon-scout", "enforced": True}],
+            [{"id": "setup-scan", "out_file": out_file,
+              "agent": "panopticon-scout", "enforced": True}],
             "scan"))
         self.assertIn("panopticon-setup-scan",
                       loop_batch.misroute_refusal(["setup-scan"], "scan"))
@@ -2657,6 +2665,45 @@ class TestTheEntrysShellIsBoundToItsCheckpoint(LoopCase):
         for kind, roles in loop_batch.CHECKPOINT_ROLES.items():
             for role in roles:
                 self.assertIn(role, dispatch.ROLE_FILES, (kind, role))
+
+    def test_no_role_can_be_added_to_one_side_of_the_routing_tables_only(self):
+        # #1886's `OUTPUT_ROLES` and `dispatch.ROLE_FILES` are two halves of
+        # ONE statement: the second says which shells exist, the first says
+        # which output family may carry each. #1737 registered `setup_scan`
+        # in the second and not the first, and every enforced setup entry was
+        # refused -- `role_of` resolved to a family with no row, so `expected`
+        # came out None and no name could match it. The failure mode is
+        # SILENT (an entry that is simply never accepted, on a path that only
+        # runs once the shells are emitted), so the two sides are pinned
+        # against each other rather than left to the next reader.
+        import scripts.dispatch as dispatch
+        import scripts.phases.persist as persist
+        self.assertEqual(sorted(dispatch.ROLE_FILES),
+                         sorted(set(loop_batch.OUTPUT_ROLES.values())))
+        # One family per role would be wrong in the other direction too:
+        # `verify` has two roles with different charters and one file family
+        # each, so a value used twice means two families share a shell.
+        self.assertEqual(len(loop_batch.OUTPUT_ROLES),
+                         len(set(loop_batch.OUTPUT_ROLES.values())))
+        # ...and every KEY is an out_file family `persist.role_of` can really
+        # return -- read out of its AST rather than restated here, since a
+        # duplicated list is the thing that drifts. A key it never produces is
+        # a row nothing reaches; a family it produces with no row fails closed.
+        with open(persist.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), "persist.py")
+        fn = next(node for node in ast.walk(tree)
+                  if isinstance(node, ast.FunctionDef) and node.name == "role_of")
+        families = set()
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Return):
+                continue
+            # The returned expression only -- walking the whole Return would
+            # also collect the `startswith` argument in its ternary's test.
+            returned = ([node.value.body, node.value.orelse]
+                        if isinstance(node.value, ast.IfExp) else [node.value])
+            families |= {n.value for n in returned
+                         if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        self.assertEqual(sorted(loop_batch.OUTPUT_ROLES), sorted(families))
 
     def test_the_table_matches_the_shells_the_phases_actually_assign(self):
         # Read out of the phase modules rather than trusted: each builder

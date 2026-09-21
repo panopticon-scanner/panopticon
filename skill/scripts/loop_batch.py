@@ -46,8 +46,17 @@ CHECKPOINT_ROLES = {"scout": ("scout",),
 
 # Acceptance roles are derived from the controller-bound output path, never
 # from an entry's claimed shell. Verify has two roles with different charters.
+#
+# One row per `persist.role_of` family, and one row per `dispatch.ROLE_FILES`
+# role: the two tables are halves of a single statement, and a role added to
+# only one of them fails CLOSED and silently -- `role_of` resolves to a family
+# with no row here, `expected` comes out None, and no name the entry could
+# carry would match it. That is exactly what #1737's `setup_scan` hit, so
+# `test_no_role_can_be_added_to_one_side_of_the_routing_tables_only` pins them
+# against each other.
 OUTPUT_ROLES = {"scout": "scout", "review-cell": "domain_panel",
-                "verify-cell": "domain_advisor", "tool-advisor": "advisor"}
+                "verify-cell": "domain_advisor", "tool-advisor": "advisor",
+                "setup-scan": "setup_scan"}
 
 
 def expected_enforced(review_root, host, namespace=None):
