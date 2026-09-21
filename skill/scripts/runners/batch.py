@@ -45,14 +45,20 @@ of the rollback: the artifact half here, and the interrupted phase's
 per-dispatch marker in `phases.persist.rollback_markers`.
 """
 import os
+import re
 import socket
 import time
 
 import scripts.write_guard_hook as write_guard_hook
 
-# The manifest's file-name prefix. One owner: the loop writes these, the
-# operator greps for them, and the suite asserts a clean batch leaves none.
+# The manifest's file name. One owner: the loop writes these, the operator
+# greps for them, the `--setup --reset` sweep deletes them and the suite
+# asserts a clean batch leaves none. The PATTERN is shared too, not just the
+# prefix (#1698 round 2): `recover_stale` reads the iteration number back out
+# of the name, so a file that carries none is not a record at all -- and a
+# sweep matching on prefix-and-suffix alone would delete it anyway.
 MANIFEST_PREFIX = "batch-"
+MANIFEST_RE = re.compile(r"%s([0-9]+)\.json" % re.escape(MANIFEST_PREFIX))
 
 # #1698: what `owner_state` can conclude about the process that wrote a
 # record. Only ONE of the four clears it for recovery.

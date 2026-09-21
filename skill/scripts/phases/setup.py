@@ -158,12 +158,39 @@ def _setup_capabilities_path(review_root):
     return os.path.join(persist.run_dir(review_root, "setup"), runio.HOST_CAPABILITIES)
 
 def _stale_batch_records(run_dir):
-    """Every `batch-<n>.json` in `run_dir` (#1698) -- a pattern, not a name."""
+    """The `batch-<n>.json` records in `run_dir` that `--reset` may delete.
+
+    The NAME is `batch.MANIFEST_RE`, the same pattern `loop_batch.recover_stale`
+    matches: that one reads the iteration number back out of the name, so a
+    file carrying none is not a record -- and a sweep sold as "batch-*.json"
+    would still have deleted it (#1698 round 2).
+
+    STALE is the other half. `--setup`'s records share the flat `.panopticon/`
+    with every other setup run against this tree, so a record whose owner is
+    still alive belongs to a `driver loop --setup` that is running RIGHT NOW,
+    and deleting it is the same accident `recover_stale` refuses from the
+    other direction: that loop's own rollback would then find nothing to take
+    back. It is kept and said out loud. Every other answer -- a dead owner, a
+    pid from another machine, no stamp at all -- goes: `--reset` is the
+    operator saying this run is over, and none of those is a live process.
+    """
     try:
-        return [os.path.join(run_dir, n) for n in sorted(os.listdir(run_dir))
-                if n.startswith(batch.MANIFEST_PREFIX) and n.endswith(".json")]
+        names = sorted(os.listdir(run_dir))
     except OSError:
         return []
+    keep = []
+    for name in names:
+        if not batch.MANIFEST_RE.fullmatch(name):
+            continue
+        path = os.path.join(run_dir, name)
+        doc = None if os.path.islink(path) else runio._load_json(path)
+        if batch.owner_state(doc) == batch.OWNER_LIVE:
+            print("driver setup: keeping %s -- a `driver loop --setup` is still "
+                  "running here (pid %r)" % (name, doc.get("pid")),
+                  file=sys.stderr, flush=True)
+            continue
+        keep.append(path)
+    return keep
 
 def _clear_setup_artifacts(review_root):
     """Remove derived setup artifacts + the setup-manifest for --reset. NEVER

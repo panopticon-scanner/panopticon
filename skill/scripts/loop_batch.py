@@ -143,7 +143,7 @@ def recover_stale(review_root, request, host, mode, namespace=None):
     declared = {e["id"]: e for e in request.get("entries", [])
                 if isinstance(e, dict) and isinstance(e.get("id"), str)}
     for name in sorted(os.listdir(root)):
-        match = re.fullmatch(r"batch-([0-9]+)\.json", name)
+        match = batch_mod.MANIFEST_RE.fullmatch(name)
         if not match:
             continue
         path = os.path.join(root, name)
