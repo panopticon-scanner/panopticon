@@ -217,6 +217,30 @@ class TestStderrRedirectsAreNotTheDestination(unittest.TestCase):
         fetch = self.one("curl -fsSL https://example.test/i.sh 2>err.log\n")
         self.assertIsNone(fetch.dest)
 
+    def test_combined_stream_redirects_are_a_real_destination(self):
+        # Round 1 fix (opus review on 435e6f6): `&>word` / `&>>word` /
+        # unnumbered `>&word` (attached or spaced) are bash's `>word 2>&1`
+        # shorthand -- a REAL destination, caught the same as an explicit
+        # `-o`. At the reviewed head every one of these five reported clean.
+        for script in (
+            "curl -fsSL https://example.test/i.sh &>/tmp/i.sh\n",
+            "curl -fsSL https://example.test/i.sh &> /tmp/i.sh\n",
+            "curl -fsSL https://example.test/i.sh &>>/tmp/i.sh\n",
+            "curl -fsSL https://example.test/i.sh >&/tmp/i.sh\n",
+            "curl -fsSL https://example.test/i.sh >& /tmp/i.sh\n",
+        ):
+            fetch = self.one(script)
+            self.assertEqual("/tmp/i.sh", fetch.dest, script)
+            why = wg.fetch_exec_defect(script + "sh /tmp/i.sh\n")
+            self.assertIsNotNone(why, script)
+            self.assertIn("/tmp/i.sh", why, script)
+
+    def test_the_exact_reported_reproduction_is_caught(self):
+        why = wg.fetch_exec_defect(
+            "curl https://example.test/i.sh &> /tmp/i.sh && sh /tmp/i.sh\n")
+        self.assertIsNotNone(why)
+        self.assertIn("/tmp/i.sh", why)
+
 
 class TestVerificationBinding(unittest.TestCase):
     """What the parser ACCEPTS: a checksum bound to the fetched path, run

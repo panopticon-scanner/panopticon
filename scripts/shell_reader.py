@@ -20,8 +20,10 @@ from the guard until it was:
                     `<<'EOF'` does not
     substitutions   `eval "$(curl ...)"`, `bash <(curl ...)`, backticks
     quoting         a `|` or `;` inside '...' or "..." is text, not a pipeline
-    redirections    `curl ... > file`, `bash < file`, and `2>&1`/`>&2`/`>&-`
-                    are neither -- `2>file` is a write, but not to stdout
+    redirections    `curl ... > file`, `bash < file`; `curl ... &>file` /
+                    `>&file` (bash's combined-stream form) are real
+                    destinations too; `2>&1`/`>&2`/`>&-` are neither, and
+                    `2>file` is a write, but not to stdout
     separators      `&&`, `||`, `;`, `&` -- which is where a shell says whether
                     a command's exit status is allowed to matter
     wrappers        `sudo`, `env FOO=1`, `timeout 300`, and the keywords (`if`,
@@ -43,8 +45,10 @@ import shlex
 # subset of `writes` a shell actually delivers to file descriptor 1. `writes`
 # also carries an explicit OTHER fd (`2>err.log`) so the guard's file-tracking
 # stays correct; `stdout_writes` is the one a caller may call THE destination
-# (#1733). A target beginning with `&` (`2>&1`, `>&2`, `>&-`) duplicates or
-# closes a descriptor rather than naming a file, and lands in neither list.
+# (#1733). `&>word`/`&>>word` and the UNNUMBERED `>&word` land there too --
+# bash's `>word 2>&1` shorthand, a real file whatever `word` looks like. A
+# target beginning with `&` whose remainder IS a duplication or close (`&1`,
+# `&-`) -- `2>&1`, `>&2`, `>&-` -- lands in neither list.
 Stage = collections.namedtuple("Stage", "argv writes reads heredoc substitutions stdout_writes")
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
@@ -79,6 +83,10 @@ _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 ARM = re.compile(r"^(?!\(\)$)\S(?:.*[^(])?\)$")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _REDIRECT = re.compile(r"^(\d*)(>>|>|<)(.*)$")
+# `&>word`/`&>>word`: bash's combined-stream shorthand for `>word 2>&1` --
+# always fd 1, and `_split` already keeps it glued to `word` (the `&`/`>`
+# handling it shares with `2>&1`). It never takes a leading fd digit.
+_AMP_REDIRECT = re.compile(r"^&(>>|>)(.*)$")
 _HEREDOC_OP = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
 _HEREDOC_REF = re.compile(r"^@@heredoc(\d+)@@$")
 SUBST_REF = re.compile(r"@@subst(\d+)@@")
@@ -267,6 +275,18 @@ def _split(text):
     return statements
 
 
+def _fd_or_close(word):
+    """True for the historical ambiguity of the UNNUMBERED `>&word` form:
+    real bash reads a word made only of digits, or exactly `-`, as a file
+    descriptor to duplicate or close -- never a path -- and anything else as
+    the file `>word 2>&1` would have named. Checked against bash 5 (round 1
+    of #1733's fix): `>&2extra` writes a file called `2extra`; `>&2` does
+    not. The `&>word` spelling carries no such ambiguity at all (`&>2` is
+    always a file named `2`), so this is never consulted for it.
+    """
+    return word == "-" or word.isdigit()
+
+
 def _stage(text, bodies, inners):
     """One pipeline stage, with its redirections, heredoc and substitutions
     lifted out."""
@@ -297,9 +317,30 @@ def _stage(text, bodies, inners):
         if fd in ("", "1"):
             stdout_writes.append(target)
 
+    def combined_write(target):
+        # `&>word`, `&>>word`, and the UNNUMBERED `>&word`: bash's shorthand
+        # for `>word 2>&1` -- always fd 1, and always a real file, whatever
+        # `word` looks like (round 1 of #1733's fix; see `_fd_or_close`).
+        take(target)
+        write("1", target)
+
     for token in tokens:
         if pending is not None:
-            is_write, fd, pending = pending[0], pending[1], None
+            kind, fd, is_write = pending
+            pending = None
+            if kind == "amp":
+                # `>& word` / `&> word`: the target landed in its own token
+                # because whitespace separates it from the operator. Only the
+                # unnumbered `>&`/`&>` (write side) carries a real file here:
+                # a numbered `N>&` (`is_write` but `fd` set) is a bash
+                # "ambiguous redirect" runtime error for a non-digit word,
+                # and the read side (`<&`) has no file-fallback AT ALL, so
+                # neither is modelled as a write.
+                if not fd and _fd_or_close(token):
+                    continue                     # `>& 2`, `>& -`
+                if is_write and not fd:
+                    combined_write(token)         # `>& word`, `&> word`
+                continue
             take(token)
             if is_write:
                 write(fd, token)
@@ -315,14 +356,27 @@ def _stage(text, bodies, inners):
                 # `$(...)` in there produced.
                 substitutions.extend(_lift_substitutions(heredoc)[1])
             continue
+        amp = _AMP_REDIRECT.match(token)
+        if amp:
+            target = amp.group(2)
+            if target:
+                combined_write(target)
+            else:
+                pending = ("amp", "", True)      # `&> word`: always unnumbered
+            continue
         redirect = _REDIRECT.match(token)
         if redirect:
             fd, op, target = redirect.groups()
             is_write = op != "<"
             if target:
                 if target.startswith("&"):
-                    # `2>&1`, `>&2`, `>&-`: a file-descriptor duplication or
-                    # close, not a path -- neither a read nor a write (#1733).
+                    remainder = target[1:]
+                    if is_write and not fd and remainder and (
+                            not _fd_or_close(remainder)):
+                        combined_write(remainder)  # unnumbered `>&word`
+                    elif not remainder:
+                        pending = ("amp", fd, is_write)  # bare `>&`/`<&`
+                    # else `2>&1`, `>&2`, `>&-`: duplication/close -- nothing
                     continue
                 take(target)
                 if is_write:
@@ -330,7 +384,7 @@ def _stage(text, bodies, inners):
                 else:
                     reads.append(target)
             else:
-                pending = (is_write, fd)
+                pending = ("write" if is_write else "read", fd, is_write)
             continue
         take(token)
         argv.append(token)

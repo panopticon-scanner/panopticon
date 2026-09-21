@@ -77,5 +77,45 @@ class TestStdoutWrites(unittest.TestCase):
         self.assertEqual(["out.log"], s.stdout_writes)
 
 
+class TestCombinedStreamRedirectsAreARealDestination(unittest.TestCase):
+    """Round 1 fix (opus review on 435e6f6): `&>word` and the UNNUMBERED
+    `>&word` are bash's shorthand for `>word 2>&1` -- `word` is a real file,
+    not a duplication target, whatever it looks like. Verified against real
+    bash: `&>2` writes a file literally named `2` (no digit ambiguity at
+    all for the `&>` spelling); `>&2extra` writes a file named `2extra`
+    (ambiguous only when the word is ALL digits or `-`). `>&2`, `2>&1` and
+    `>&-` -- where the remainder after `&` really is a duplication or a
+    close -- still record nothing, attached or spaced."""
+
+    SPELLINGS = (
+        "curl https://example.test/x &>/tmp/i.sh\n",
+        "curl https://example.test/x &> /tmp/i.sh\n",
+        "curl https://example.test/x &>>/tmp/i.sh\n",
+        "curl https://example.test/x >&/tmp/i.sh\n",
+        "curl https://example.test/x >& /tmp/i.sh\n",
+    )
+
+    def test_each_spelling_is_a_stdout_write(self):
+        for script in self.SPELLINGS:
+            s = stage(script)
+            self.assertEqual(["/tmp/i.sh"], s.stdout_writes, script)
+            self.assertIn("/tmp/i.sh", s.writes, script)
+
+    def test_amp_never_treats_an_all_digit_word_as_a_duplication(self):
+        # `&>2`: real bash writes a file named `2`, unlike `>&2`.
+        s = stage("curl https://example.test/x &>2\n")
+        self.assertEqual(["2"], s.stdout_writes)
+
+    def test_the_ambiguous_forms_still_record_nothing(self):
+        for script in ("curl https://example.test/x >&2\n",
+                       "curl https://example.test/x 2>&1\n",
+                       "curl https://example.test/x >&-\n",
+                       "curl https://example.test/x >& 2\n",
+                       "curl https://example.test/x >& -\n"):
+            s = stage(script)
+            self.assertEqual([], s.stdout_writes, script)
+            self.assertEqual([], s.writes, script)
+
+
 if __name__ == "__main__":
     unittest.main()
