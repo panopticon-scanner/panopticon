@@ -49,6 +49,7 @@ INTERRUPTED_IDLE = ("interrupted: no batch was in flight, so nothing was rolled 
 # `--reset` is named in two of them and deliberately NOT in the live one:
 # telling an operator to reset a run folder another `driver loop` is working
 # in is the very accident this refusal exists to prevent.
+#
 # No "driver loop: " lead: these are RAISED, and the one catch in
 # `orchestrate.loop` prefixes every refusal out of this function.
 BATCH_OWNER_LIVE = (
@@ -92,6 +93,16 @@ def recover_stale(review_root, request, host, mode, namespace=None):
     The manifest lists artifacts, but the bound outgoing request supplies the
     authority: entries, output paths and checkpoint must agree. Nothing from a
     foreign run is followed; the normal first-run path discards that run.
+
+    Two records reach here and they owe different things (#1698). An
+    UNFLAGGED one is a crash nobody has accounted for: its artifacts go, its
+    entries are ledgered as cancelled or rolled back, and the attempt each
+    one charged at dispatch is given back. A record already carrying
+    `recovering` was flagged by whoever wrote those rows -- `rolled_back` on
+    the interrupt path, or a previous recovery here -- and all this one owes
+    it is finishing the file removals. Ledgering it again is a second
+    ROLLED_BACK row per entry and a second decrement of one attempt counter,
+    which is exactly what the flag is for.
     """
     plan_contract.artifact_root(review_root)
     manifest = (setup.load_setup_manifest(review_root) if namespace == "setup"
@@ -125,8 +136,6 @@ def recover_stale(review_root, request, host, mode, namespace=None):
                 or doc.get("checkpoint") != request.get("checkpoint")
                 or not isinstance(doc.get("entries"), list) or not doc["entries"]):
             raise ValueError(refusal + "invalid manifest or unbound checkpoint")
-        if doc.get("recovering"):
-            raise ValueError(refusal + "a previous recovery was interrupted")
         pending, seen = [], set()
         for row in doc["entries"]:
             if not isinstance(row, dict) or not isinstance(row.get("id"), str):
@@ -156,24 +165,33 @@ def recover_stale(review_root, request, host, mode, namespace=None):
         batch = batch_mod.Batch(root, doc["batch"], doc["checkpoint"], pending)
         batch.opened_at = doc.get("opened_at")
         batch.entries = doc["entries"]
-        batches.append((batch, pending))
+        # #1698: a record that is ALREADY flagged was ledgered by whoever
+        # flagged it. All this recovery owes it is the file removals.
+        batches.append((batch, pending, bool(doc.get("recovering"))))
     ledger = ledger_mod.Ledger(root)
-    for batch, pending in batches:
+    for batch, pending, ledgered in batches:
+        # Unconditional, flagged or not: the write re-stamps the record with
+        # THIS pid, so a loop arriving mid-recovery asks about the process
+        # that is doing the work rather than the one it is finishing for.
         batch.begin_recovery()
+        # BEFORE the removals: `rollback_rows` needs to know which entries had
+        # actually landed, and three lines down there is nothing left to ask.
         completed = {row["id"] for row in batch.entries
                      if any(os.path.lexists(p) for p in row["artifacts"])}
         removed, problems = batch.roll_back(close=False)
         if problems:
             raise OSError("stale batch rollback incomplete: " + "; ".join(problems))
-        ledger.rollback_rows(pending, completed, batch.checkpoint, mode, host,
-                             reason="previous process stopped")
-        persist.rollback_markers(review_root, batch.checkpoint, pending)
+        if not ledgered:
+            ledger.rollback_rows(pending, completed, batch.checkpoint, mode, host,
+                                 reason="previous process stopped")
+            persist.rollback_markers(review_root, batch.checkpoint, pending)
         problems = batch.close()
         if problems:
             raise OSError("stale batch rollback incomplete: " + "; ".join(problems))
-        print("driver loop: recovered stale batch %s; removed %d artifact(s); "
-              "retrying %s" % (batch.number, len(removed), batch.checkpoint),
-              file=sys.stderr, flush=True)
+        print("driver loop: %s; removed %d artifact(s); retrying %s"
+              % (("finished the interrupted recovery of stale batch %s" % batch.number)
+                 if ledgered else "recovered stale batch %s" % batch.number,
+                 len(removed), batch.checkpoint), file=sys.stderr, flush=True)
 
 
 def rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
@@ -226,6 +244,19 @@ def rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
             guards.disarm(pending)
     except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
         notes.append("guards not disarmed: %s: %s" % (type(exc).__name__, exc))
+    try:
+        # #1698: the record is FLAGGED before the first rollback EFFECT, never
+        # after. `roll_back` keeps the manifest when it has problems (an
+        # artifact path that is a non-empty directory is enough), and an
+        # UNFLAGGED leftover is what `recover_stale` treats as a fresh crash:
+        # the next loop wrote a second ROLLED_BACK/CANCELLED row per entry and
+        # decremented the same attempt counter a second time, on top of the
+        # rows and the refund three lines below. Flagged, that next loop
+        # finishes the file removals and ledgers nothing.
+        batch.begin_recovery()
+    except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
+        notes.append("the crash record was not flagged, so a leftover may be "
+                     "recovered twice: %s: %s" % (type(exc).__name__, exc))
     try:
         ledger.rollback_rows(pending, finished, checkpoint, mode, runner.host)
     except BaseException as exc:          # noqa: BLE001 -- `loop` never raises

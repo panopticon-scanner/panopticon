@@ -778,6 +778,59 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(resumed.launched, [])
         self.assertEqual(self._untouched(d, crashed.run_dir), before)
 
+    def _obstruct(self, d, entry_id):
+        """Make `entry_id`'s artifact un-removable: a non-empty directory
+        where the reply file was. `os.remove` raises, which is what a
+        rollback with PROBLEMS looks like."""
+        req = orchestrate.requests.load_dispatch_request(d) or {}
+        out = next(e for e in req["entries"] if e["id"] == entry_id)["out_file"]
+        os.remove(out)
+        os.makedirs(out)
+        with open(os.path.join(out, "keep.txt"), "w") as fh:
+            fh.write("keep")
+        return out
+
+    def test_a_rollback_that_could_not_finish_is_flagged_and_never_re_ledgered(self):
+        # #1698: `roll_back` keeps the manifest when it has problems, so the
+        # Ctrl-C path could leave a record carrying NO `recovering` flag after
+        # the rollback rows were written and the markers refunded. The next
+        # loop then recovered it from scratch: a second ROLLED_BACK/CANCELLED
+        # row per entry and a second decrement of the same attempt counter.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        obstructed = []
+
+        def obstruct_then_interrupt():
+            obstructed.append(self._obstruct(d, "review-app-SEC"))
+            raise KeyboardInterrupt
+
+        self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC",
+                           then=obstruct_then_interrupt)
+        status = self._return_persist(d, floor, runner)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("rollback incomplete", status["message"])
+        # the record survived the rollback it could not finish -- FLAGGED, so
+        # that what was already ledgered is never ledgered again
+        run_dir = runner.run_dir
+        self.assertEqual(self._manifests(run_dir), ["batch-1.json"])
+        self.assertIs(self._crash_record(run_dir).get("recovering"), True)
+        rows = ledger_mod.Ledger(run_dir).lines()
+        rolled = [r for r in rows if r.get("status") in (ledger_mod.ROLLED_BACK,
+                                                         ledger_mod.CANCELLED)]
+        self.assertEqual(len(rolled), 2, rolled)
+        attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
+        # the operator clears the obstruction; a LATER loop finishes the job
+        shutil.rmtree(obstructed[0])
+        self._stamp_crash_owner(run_dir, pid=self._dead_pid())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            orchestrate.loop_batch.recover_stale(
+                d, orchestrate.requests.previous_request(d), "claude", "headless")
+        self.assertIn("finished the interrupted recovery", err.getvalue())
+        self.assertEqual(self._manifests(run_dir), [])
+        self.assertEqual(ledger_mod.Ledger(run_dir).lines(), rows)
+        self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)), attempts)
+
     def test_open_never_overwrites_an_existing_batch_record(self):
         with tempfile.TemporaryDirectory() as root:
             batch = batch_mod.Batch(root, 1, "review", [])
@@ -801,8 +854,11 @@ class TestHeadlessLoop(LoopCase):
         # #1698: flagging the record took it over, so it now names THIS
         # process. The next loop is a later one, and that one died too.
         self._stamp_crash_owner(crashed.run_dir, pid=self._dead_pid())
-        with self.assertRaisesRegex(ValueError, "previous recovery was interrupted"):
+        with contextlib.redirect_stderr(io.StringIO()):
             orchestrate.loop_batch.recover_stale(d, req, "claude", "headless")
+        # it FINISHED the file removals and nothing else: the rows and the
+        # refund the interrupted recovery had already written stand alone.
+        self.assertEqual(self._manifests(crashed.run_dir), [])
         self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)), attempts)
         self.assertEqual(ledger_mod.Ledger(crashed.run_dir).lines(), rows)
 
