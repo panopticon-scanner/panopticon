@@ -26,49 +26,175 @@ try:
 except ImportError:
     import repo_config
 
-_NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
-_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
-
-
-def parse_unified_diff(text):
-    """{path: [(start, end), ...]} of changed NEW-side line ranges.
-
-    `+++ b/<path>` opens a file (kept as a key even with no ranges, so a
-    lineless finding on a changed file can fail-open in classify()); a
-    `+++ /dev/null` target (deleted file) is skipped. `@@ -a,b +c,d @@` gives
-    new-side range (c, c+d-1); d==0 (pure deletion) adds nothing.
-    """
-    result = {}
-    path = None
-    for line in text.splitlines():
-        m = _NEWFILE_RE.match(line)
-        if m:
-            path = None if m.group(1) == "/dev/null" else m.group(1)
-            if path is not None:
-                result.setdefault(path, [])
-            continue
-        if path is None:
-            continue
-        h = _HUNK_RE.match(line)
-        if h:
-            start = int(h.group(1))
-            count = int(h.group(2)) if h.group(2) is not None else 1
-            if count > 0:
-                result[path].append((start, start + count - 1))
-    return result
-
-
-def _run_git(repo, args, timeout=60):
-    git_bin = shutil.which("git") or "git"
-    return subprocess.run([git_bin, "-C", repo, *args],  # nosec B603
-                          capture_output=True, text=True, timeout=timeout,
-                          env={"PATH": os.environ.get("PATH", "")})
-
-
 class DiffMapError(Exception):
     """A delta-map computation failed in a way that must NOT silently degrade to
     an empty (and therefore vacuous-PASS) hunk map — the caller fails loud
     instead of scoping the on-diff gate to nothing (#5.0-08)."""
+
+
+_NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_FILE_HEADER = "diff --git "
+_RENAME_TO = "rename to "
+_COMBINED_HEADERS = ("diff --cc ", "diff --combined ")
+
+
+def _git_header_path(line):
+    """The new-side path of a `diff --git a/<p> b/<p>` line, or None.
+
+    Only the SAME-path form is decoded, by halving the remainder: a path may
+    contain spaces, so `a/<x> b/<y>` with x != y is genuinely ambiguous, and a
+    C-quoted name is not decoded here at all. Both of those fall through to the
+    `rename to` / `+++` lines, which are unambiguous. This line is therefore
+    only ever the FALLBACK key (see parse_unified_diff).
+    """
+    rem = line[len(_FILE_HEADER):]
+    if rem.startswith('"'):
+        return None
+    half, odd = divmod(len(rem) - 5, 2)          # "a/" + p + " b/" + p
+    if odd or half <= 0 or rem[:2] != "a/" or rem[2 + half:5 + half] != " b/":
+        return None
+    p = rem[2:2 + half]
+    return p if rem[5 + half:] == p else None
+
+
+def parse_unified_diff(text):
+    r"""{path: [(start, end), ...]} of changed NEW-side line ranges.
+
+    #1738 (COD-C2A/DAT-E1D): this is a STATE MACHINE, not a line scanner,
+    because the diff it parses is attacker-authored content. Under
+    `--unified=0` (the flags `hunk_map` pins) an ADDED line carries a single
+    '+', so a source line whose text begins with "++ " arrives as
+    `+++ <text>` -- byte-identical to a file header. A flat scanner read it as
+    one and re-keyed (`++ b/other`), erased (`++ /dev/null`) or invented
+    (`++ x;`) map entries, dropping the PR's own later hunks off the on-diff
+    gate.
+
+    The frame: `diff --git` opens a file block; `---`/`+++` head it;
+    `@@ -a,b +c,d @@` opens a hunk whose payload under --unified=0 is EXACTLY
+    b removed + d added lines (a missing `,n` means 1), plus
+    `\ No newline at end of file` markers, which pay no budget. So while that
+    budget is unspent every line is PAYLOAD whatever it looks like, and
+    framing is recognized ONLY between hunks -- where a payload line can
+    never stand.
+
+    Keys: the `+++ b/<path>` header is authoritative (unambiguous even for a
+    name with spaces, which git tab-terminates); `+++ /dev/null` marks a
+    deletion and takes no key. A block with NO `+++` header at all (binary,
+    mode-only, a 100%-similarity rename) still changed a file, so it keeps a
+    key with no ranges -- classify()'s documented fail-open -- under the path
+    from its `rename to` line or, failing that, from the `diff --git` line.
+    `@@ -a,b +c,d @@` gives new-side range (c, c+d-1); d==0 (pure deletion)
+    adds no range.
+
+    RAISES DiffMapError on a diff the budget cannot reconcile -- text that
+    ends inside a hunk, a hunk before any file header, or a COMBINED (merge)
+    diff, whose `@@@` payload cannot be budgeted at all and whose two-column
+    markers forge a header from content beginning with "+ " (defence-in-depth
+    for a direct caller: hunk_map's own `git diff <base_sha>` never emits
+    one, see the guard). Same contract as
+    hunk_map's other guards (#5.0-08, #1256): half a map scopes the on-diff
+    gate to half the change and passes vacuously for the rest, so it is never
+    returned.
+    """
+    result = {}
+    path = None        # key of the open block, None = no new side (deletion)
+    pending = None     # fallback key, live until this block's `+++` header
+    opened = False     # a file block has been framed at all
+    budget = 0         # payload lines the open hunk still owes
+    # split("\n"), NOT splitlines(): git frames a diff on "\n" and nothing
+    # else, while splitlines() also breaks on \r, \x0b, \x0c, \x1c-\x1e,
+    # \x85 and \u2028/\u2029. Any of those inside an ADDED source line would
+    # split it in two, over-spend the hunk budget, and hand the fragment after
+    # it to the framing branch -- the #1738 bypass again, through a character
+    # class instead of a prefix. The trailing "" of the final newline is
+    # dropped; it is not a payload line and must not spend budget.
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    for line in lines:
+        if budget > 0:                                   # inside a hunk
+            if not line.startswith("\\"):                # no-newline marker
+                budget -= 1
+            continue
+        if line.startswith(_FILE_HEADER):
+            if pending is not None:                      # hunkless block
+                result.setdefault(pending, [])
+            path, pending, opened = None, _git_header_path(line), True
+            continue
+        if line.startswith(_COMBINED_HEADERS) or line.startswith("@@@"):
+            # Defence-in-depth, and believed unreachable from hunk_map: only an
+            # ARGUMENT-LESS `git diff` emits combined format for unmerged
+            # paths. `git diff <base_sha>` -- the only diff this module runs --
+            # returns an ordinary two-way `diff --git` even with `UU` entries
+            # in the index (probed on a real conflicted merge). Kept for any
+            # other caller of this parser: a combined hunk's `@@@` header does
+            # not describe a payload that can be counted, and its two-column
+            # markers let content beginning with "+ " forge a header exactly as
+            # "++ " does here -- so refusing beats mis-parsing.
+            raise DiffMapError(
+                "combined (merge) diff format cannot be parsed here: %r. Its "
+                "payload cannot be line-budgeted, so content would be read as "
+                "framing (#1738). This parser takes two-way diffs only." % line[:80])
+        if line.startswith(_RENAME_TO) and not line[len(_RENAME_TO):].startswith('"'):
+            pending = line[len(_RENAME_TO):].rstrip() or pending
+            continue
+        m = _NEWFILE_RE.match(line)
+        if m:
+            path, pending = (None if m.group(1) == "/dev/null" else m.group(1)), None
+            opened = True
+            if path is not None:
+                result.setdefault(path, [])
+            continue
+        h = _HUNK_RE.match(line)
+        if h:
+            if not opened:
+                raise DiffMapError(
+                    "hunk header before any file header: %r. The diff is "
+                    "malformed and the ranges cannot be attributed to a file; "
+                    "an unattributed hunk map would scope the on-diff gate to "
+                    "nothing and pass vacuously (#5.0-08)." % line[:80])
+            removed = int(h.group(1)) if h.group(1) is not None else 1
+            start = int(h.group(2))
+            count = int(h.group(3)) if h.group(3) is not None else 1
+            budget = removed + count
+            if path is not None and count > 0:
+                result.setdefault(path, []).append((start, start + count - 1))
+    if budget > 0:
+        raise DiffMapError(
+            "the diff ended inside a hunk: its @@ header still owes %d payload "
+            "line(s). The map read so far covers only part of the change, and "
+            "the rest would come back off-diff -- the same vacuous pass the "
+            "diff/merge-base guards refuse (#5.0-08)." % budget)
+    if pending is not None:
+        result.setdefault(pending, [])
+    return result
+
+
+def _run_git(repo, args, timeout=60, text=True):
+    r"""Run git in `repo`. `text=False` returns BYTES.
+
+    #1738 fix round 1: text mode is universal-newline mode -- it rewrites a
+    lone `\r` (and `\r\n`) to `\n` on the way out of the pipe, which invents
+    diff lines that git never emitted and hands parse_unified_diff a forged
+    file header inside an added line. The diff is therefore read as bytes and
+    decoded by its caller; every other call here reads a ref or a file list,
+    where the translation is harmless.
+    """
+    git_bin = shutil.which("git") or "git"
+    return subprocess.run([git_bin, "-C", repo, *args],  # nosec B603
+                          capture_output=True, text=text, timeout=timeout,
+                          env={"PATH": os.environ.get("PATH", "")})
+
+
+def _decode_git(raw, lossy=False):
+    """UTF-8-decode what `_run_git(..., text=False)` returned.
+
+    Strict by default so undecodable diff output fails loud at the call site
+    rather than quietly losing a path; `lossy` is for stderr, which is only
+    ever quoted back to the operator in a message.
+    """
+    return (raw or b"").decode("utf-8", "replace" if lossy else "strict")
 
 
 def _merge_base_cause(repo, base):
@@ -93,9 +219,10 @@ def hunk_map(repo, base, exclude=()):
     including untracked non-ignored files as whole-file ranges.
 
     RAISES DiffMapError when the base cannot be resolved, when HEAD and the base
-    share no common ancestor, or when the diff itself fails — none of these may
-    fall through to an empty map that passes the delta gate vacuously
-    (#5.0-08, #1256).
+    share no common ancestor, when the diff itself fails, or when the diff text
+    does not reconcile against its own hunk budget (#1738) — none of these may
+    fall through to an empty or partial map that passes the delta gate
+    vacuously (#5.0-08, #1256).
 
     `exclude`: repo-root-relative paths (exact match, no directory component)
     dropped from the map before it is returned. Only the `--pr` worktree
@@ -134,16 +261,33 @@ def hunk_map(repo, base, exclude=()):
     # headers parse_unified_diff keys on — which would yield an empty map and a
     # vacuous PASS (#5.0-08).
     try:
+        # text=False (#1738 fix round 1): universal-newline translation would
+        # rewrite a lone `\r` inside an added line to `\n`, splitting one
+        # payload line into two before the parser can budget them.
         diff = _run_git(repo, ["-c", "diff.mnemonicPrefix=false",
                                "-c", "core.quotepath=false", "diff",
                                "--unified=0", "--no-color", "--find-renames",
-                               "--src-prefix=a/", "--dst-prefix=b/", base_sha])
+                               "--src-prefix=a/", "--dst-prefix=b/", base_sha],
+                        text=False)
     except Exception as e:
         raise DiffMapError("git diff against %s failed: %s" % (base_sha, e))
     if diff.returncode != 0:
         raise DiffMapError("git diff against %s failed (rc=%s): %s"
-                           % (base_sha, diff.returncode, (diff.stderr or "").strip()))
-    result = parse_unified_diff(diff.stdout)
+                           % (base_sha, diff.returncode,
+                              _decode_git(diff.stderr, lossy=True).strip()))
+    try:
+        # Pinned to UTF-8, not the operator's locale: git hands back path and
+        # content bytes as they are, and every other surface this map meets
+        # (the findings' location.file, diff-hunks.json) is UTF-8. Undecodable
+        # output stays a loud DiffMapError -- exactly what strict text-mode
+        # decoding already raised here -- never a silently empty map (#5.0-08).
+        diff_text = _decode_git(diff.stdout)
+    except UnicodeDecodeError as e:
+        raise DiffMapError(
+            "git diff against %s produced output that is not UTF-8 (%s). The "
+            "delta cannot be computed, and an empty diff would pass the "
+            "on-diff gate vacuously." % (base_sha, e))
+    result = parse_unified_diff(diff_text)
     # `git diff` omits untracked files; add them as whole-file ranges.
     try:
         # Include new untracked files, matching discovery.collect_changed_files.
