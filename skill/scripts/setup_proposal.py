@@ -10,6 +10,7 @@ function of its inputs (the only I/O is reading a data file whose path it is
 handed). See docs/superpowers/specs/2026-08-14-panopticon-5.0-setup-scan-design.md
 and the 5.2 grouping-engine spec (§3 catalogs, §5.3 assembly).
 """
+from typing import Any
 
 import re
 
@@ -55,7 +56,7 @@ def _load_catalog(path, root_key, kind, noun):
     the SHIPPED data so fixtures can stay minimal); strict about the two
     things that break routing: a duplicate name, and an alias that resolves
     to two entries (first owner kept, collision reported)."""
-    empty = {"names": [], "hints": {}, "entries": {}, "aliases": {}}
+    empty: dict[str, Any] = {"names": [], "hints": {}, "entries": {}, "aliases": {}}
     with open(path, encoding="utf-8") as fh:
         try:
             doc = yaml.safe_load(fh) or {}
@@ -68,7 +69,11 @@ def _load_catalog(path, root_key, kind, noun):
         items = []
     elif not isinstance(items, list):
         return empty, ["%s: %s must be a list" % (kind, root_key)]
-    names, hints, entries, aliases, errors = [], {}, {}, {}, []
+    names = []
+    hints: dict[str, list[str]] = {}
+    entries = {}
+    aliases: dict[str, str] = {}
+    errors = []
     for entry in items:
         if not isinstance(entry, dict):
             errors.append("%s: %s entry must be a mapping" % (kind, noun))
@@ -85,7 +90,7 @@ def _load_catalog(path, root_key, kind, noun):
             continue
         raw_hints = entry.get("hints")
         if raw_hints is None:
-            entry_hints = []
+            entry_hints: list[str] = []
         elif not isinstance(raw_hints, list):
             errors.append("%s %s: hints must be a list" % (kind, name))
             entry_hints = []
@@ -93,7 +98,7 @@ def _load_catalog(path, root_key, kind, noun):
             entry_hints = [h for h in raw_hints if isinstance(h, str)]
         raw_aliases = entry.get("aliases")
         if raw_aliases is None:
-            entry_aliases = []
+            entry_aliases: list[str] = []
         elif not isinstance(raw_aliases, list):
             errors.append("%s %s: aliases must be a list" % (kind, name))
             entry_aliases = []
@@ -215,7 +220,7 @@ def _validate_str_list(group_label, field, values, required):
     (`values is None`, required=False) is skipped. Enforces the #1107 caps
     on entry count and single-entry length.
     """
-    errors = []
+    errors: list[str] = []
     if values is None and not required:
         return errors
     if required:
@@ -450,7 +455,7 @@ def _clean_profile(profile):
         if profile.get(field):
             out[field] = profile[field]
     for field in _PROFILE_LIST_FIELDS:
-        values = []
+        values: list[str] = []
         _union_into(values, profile.get(field) or [])
         out[field] = values
     return out
@@ -504,8 +509,8 @@ def assemble(proposal, vocabulary, affinity, layers=None):
         aliases.setdefault(alias_key(n), n)
     layer_aliases = dict((layers or {}).get("aliases") or {})
     out = {}
-    custom_seen = {}     # alias_key -> first spelling of a custom name
-    disclosure = {"groups": [], "errors": [], "collisions": [], "warnings": []}
+    custom_seen: dict[str, str] = {}     # alias_key -> first spelling of a custom name
+    disclosure: dict[str, list[Any]] = {"groups": [], "errors": [], "collisions": [], "warnings": []}
     for g in proposal["groups"]:
         raw = g["capability"]
         label = _group_name(raw).strip()
@@ -575,7 +580,7 @@ def _nested_leaves(groups):
     """The assembled mapping in the shape the draft is written (a layered
     group nests its layers as subgroups, the carrier holding the parent's
     globs), leaf fields only -- what groups_schema.parse_groups validates."""
-    nested = {}
+    nested: dict[str, dict[str, Any]] = {}
     for name, body in groups.items():
         leaf = {k: list(v) for k, v in body.items() if k in groups_schema.RESERVED}
         if body.get("layers"):
@@ -606,7 +611,7 @@ def flatten_groups(groups):
 
 def _copy_body(body):
     """Deep-enough copy of a group body (lists and the subgroups mapping)."""
-    out = {}
+    out: dict[str, Any] = {}
     for k, v in body.items():
         if k == "subgroups" and isinstance(v, dict):
             out[k] = {sub: {sk: (list(sv) if isinstance(sv, list) else sv)
@@ -654,7 +659,7 @@ def merge_additive(committed, assembled, claims):
                             subgroup structure is theirs to edit.
     """
     merged = {name: _copy_body(body) for name, body in committed.items()}
-    diff = {"new_groups": [], "extended_groups": [], "dropped_redundant": [],
+    diff: dict[str, list[Any]] = {"new_groups": [], "extended_groups": [], "dropped_redundant": [],
             "layers_dropped": [], "skipped_committed_parent": []}
     for name, body in assembled.items():
         if not claims.get(name):

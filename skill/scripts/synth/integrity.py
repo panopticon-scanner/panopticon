@@ -22,7 +22,8 @@ def duplicate_out_files(plan):
     reconcile_findings_files' set-keyed view structurally cannot see."""
     if not isinstance(plan, list):
         return []
-    seen, dupes = set(), set()
+    seen: set[str] = set()
+    dupes: set[str] = set()
     for e in plan:
         if isinstance(e, dict) and isinstance(e.get("out_file"), str) and e.get("out_file"):
             of = os.path.normpath(e["out_file"])

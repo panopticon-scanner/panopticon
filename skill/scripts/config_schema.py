@@ -26,6 +26,7 @@ run-artifact reader at the bottom, so any module may import it. The config
 FILENAMES live in `repo_config.py` and are never spelled here
 (tests/test_repo_config_literals.py).
 """
+from typing import Any
 import json
 import math
 import os
@@ -227,7 +228,10 @@ def parse_settings(doc):
     decides what a well-typed value is worth. Nothing raises -- a hostile
     section is REFUSED, key by key, never fatal.
     """
-    requested, typed, refused, disclosures = {}, {}, [], []
+    requested: dict[str, Any] = {}
+    typed: dict[str, Any] = {}
+    refused: list[dict[str, Any]] = []
+    disclosures: list[str] = []
     raw = (doc or {}).get("settings")
     if raw is None:
         return Parsed(requested, typed, refused, disclosures)
@@ -457,7 +461,7 @@ def load_resolution(run_dir):
     unchecked. "Nothing asked for" and "nobody looked" read the same here on
     purpose: both are honestly empty.
     """
-    blank = {"requested": {}, "effective": {}, "refused": [], "clamped": [],
+    blank: dict[str, Any] = {"requested": {}, "effective": {}, "refused": [], "clamped": [],
              "disclosures": []}
     try:
         with open(os.path.join(run_dir or ".", RESOLUTION_NAME), encoding="utf-8") as fh:

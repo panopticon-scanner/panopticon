@@ -13,7 +13,8 @@ import scripts.redact as redact
 from .base import (cve_ids, make_finding, normalize_severity, omit_none,
                    parse_json_bytes, run_tool, target_root_cv)
 
-_manifest_path_cv = contextvars.ContextVar("pip_audit_manifest_path", default=None)
+_manifest_path_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "pip_audit_manifest_path", default=None)
 
 # The last resort, for a caller that hands over bytes and NO tree (#1649).
 # Every real route names one: ingest through `target_root_cv`, the in-process

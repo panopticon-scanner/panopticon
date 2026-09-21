@@ -1,4 +1,5 @@
 """Pluggable static-analysis tool adapters for panopticon."""
+from .base import ToolAdapter
 from .pip_audit import PipAuditAdapter
 from .npm_audit import NpmAuditAdapter
 from .osv_scanner import OsvScannerAdapter
@@ -11,7 +12,7 @@ from .dependency_check import DependencyCheckAdapter
 from .cargo_audit import CargoAuditAdapter
 from .roslyn_secguard import RoslynSecGuardAdapter
 
-ADAPTERS = {
+ADAPTERS: dict[str, ToolAdapter] = {
     "pip-audit": PipAuditAdapter(),
     "npm-audit": NpmAuditAdapter(),
     "osv-scanner": OsvScannerAdapter(),

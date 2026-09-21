@@ -10,7 +10,8 @@ from .base import (as_list, cve_ids, has_any_file, make_finding, normalize_sever
 # for the reason pip_audit carries one: ADAPTERS holds a single shared adapter
 # object, so instance state would let a second invoke overwrite the first
 # invocation's answer before its output was parsed.
-_manifest_path_cv = contextvars.ContextVar("npm_audit_manifest_path", default=None)
+_manifest_path_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "npm_audit_manifest_path", default=None)
 
 # npm reads npm-shrinkwrap.json in preference to package-lock.json, so the
 # order here is the order npm resolves in -- and it is ONE list, read by both

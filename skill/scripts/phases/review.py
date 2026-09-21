@@ -1,4 +1,5 @@
 """Phase 4 -- review: the matrix-cell dispatch checkpoint and its cell artifacts."""
+from typing import Any
 import functools
 import os
 
@@ -442,7 +443,8 @@ def review_execute(review_root, manifest):
     # (group+domain in its id/out_file), and the host installs the write-guard
     # from the full entry set, so the fail-closed allowlist still covers every cell
     # (_write_driver_plan above already declared them all for reconcile).
-    all_entries, ngroups = [], 0
+    all_entries: list[dict[str, Any]] = []
+    ngroups = 0
     tools_context = _tools_context(review_root)
     # Read once for the whole batch: the inventory verdict for any one unit is
     # computed against every OTHER unit's assigned files (#1638 P13). `units`

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fail-closed CI gate for trusted Panopticon scanner output."""
+from typing import Any
 import argparse
 import json
 import os
@@ -36,8 +37,8 @@ def load_manifest(path):
     # never required. Optional for backward compatibility with older manifests.
     excluded_scope = data.get("excluded_scope", [])
     data["excluded_scope"] = excluded_scope
-    if not all(isinstance(value, list)
-               for value in (selected, produced, missing, excluded_scope)):
+    if (not isinstance(selected, list) or not isinstance(produced, list)
+            or not isinstance(missing, list) or not isinstance(excluded_scope, list)):
         raise ValueError("scanner manifest lists are malformed")
     if not selected or not all(isinstance(name, str) and name for name in selected):
         raise ValueError("scanner manifest selected no tools")
@@ -64,7 +65,7 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     drop is disclosed rather than silent.
     """
     manifest = load_manifest(manifest_path)
-    suppressed = []
+    suppressed: list[dict[str, Any]] = []
     findings, dispositions = ingest_tools.ingest_dir_detailed(
         tools_dir, "ci", exclude_globs=exclude_globs or [],
         suppressed_out=suppressed)

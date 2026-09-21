@@ -415,7 +415,7 @@ def declares(host, capability):
     §7.1 describes.
     """
     row = HOSTS.get(host)
-    return bool(row) and capability in row.claims
+    return row is not None and capability in row.claims
 
 
 def posture(host, evidence):

@@ -99,8 +99,9 @@ def fan_out_coverage(plan):
     is the disclosure axis that makes a truncated run visible instead of
     silently biased toward 'no findings'.
     """
-    planned, executed = {}, {}
-    by_group = {}
+    planned: dict[str, int] = {}
+    executed: dict[str, int] = {}
+    by_group: dict[str, dict[str, int]] = {}
     for e in plan:
         group, panel = _group_panel(e)
         if group is None or panel is None:

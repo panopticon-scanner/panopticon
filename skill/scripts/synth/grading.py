@@ -1,4 +1,5 @@
 """Grades, gate verdict, certification and the health index."""
+from typing import Any
 from dataclasses import dataclass
 import os
 
@@ -332,7 +333,7 @@ def _roll_up_to_parent(group_objs, groups_meta, by_panel):
     """
     parents = [_parent_of(g) for g in groups_meta]
     rolled = []
-    nodes_by_parent = {}
+    nodes_by_parent: dict[str, dict[str, Any]] = {}
     for unit, parent in zip(group_objs, parents):
         if unit["name"] == parent:
             # Leaf / self-parented: unmodified, today's shape.
@@ -400,7 +401,7 @@ def grade_report(run, resolved, reconciled):
     # `panel_grades` mapping below and in the roll-up takes its key order from
     # this dict, and a set's order is randomised per process, so two reports
     # built from identical inputs were not byte-identical.
-    by_panel = {p: [] for p in findings_mod.PANEL_ORDER}
+    by_panel: dict[str, list[dict[str, Any]]] = {p: [] for p in findings_mod.PANEL_ORDER}
     for f in gate_eligible:
         by_panel.get(f["panel"], by_panel["code"]).append(f)
 

@@ -33,6 +33,7 @@ per-dispatch marker in `phases.persist.rollback_markers`.
 """
 import os
 import time
+from typing import TypedDict
 
 import scripts.write_guard_hook as write_guard_hook
 
@@ -43,6 +44,11 @@ MANIFEST_PREFIX = "batch-"
 
 def manifest_path(run_dir, number):
     return os.path.join(run_dir, "%s%s.json" % (MANIFEST_PREFIX, int(number)))
+
+
+class BatchEntry(TypedDict):
+    id: str | None
+    artifacts: list[str]
 
 
 class Batch:
@@ -60,7 +66,7 @@ class Batch:
         self.number = int(number)
         self.checkpoint = checkpoint
         self.opened_at = None
-        self.entries = [
+        self.entries: list[BatchEntry] = [
             {"id": e.get("id"),
              "artifacts": [os.path.abspath(e["out_file"])] if e.get("out_file") else []}
             for e in entries or [] if isinstance(e, dict)]

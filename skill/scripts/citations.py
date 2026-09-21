@@ -2,6 +2,7 @@
 """Citation enrichment for panopticon findings: CWE validation, OWASP
 derivation, reduced-SSVC decisioning, and opt-in EPSS lookup. Stdlib-only.
 """
+from typing import TYPE_CHECKING, Any
 import logging
 import json
 import os
@@ -10,14 +11,19 @@ import sys
 import urllib.parse
 import urllib.request
 
-try:
+if TYPE_CHECKING:
     from scripts import _version
     from scripts._version import __version__
     from scripts.evidence import is_tool_sourced
-except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-    import _version
-    from _version import __version__
-    from evidence import is_tool_sourced
+else:
+    try:
+        from scripts import _version
+        from scripts._version import __version__
+        from scripts.evidence import is_tool_sourced
+    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+        import _version
+        from _version import __version__
+        from evidence import is_tool_sourced
 
 CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 CWE_RE = re.compile(r"^CWE-\d+$", re.IGNORECASE)
@@ -241,9 +247,10 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
             raw = {}
         try:
             tool_sourced = is_tool_sourced(f)
-            clean = {}
+            clean: dict[str, Any] = {}
             cwe_objs = []
-            for entry in raw.get("cwe") if isinstance(raw.get("cwe"), list) else []:
+            raw_cwes = raw.get("cwe")
+            for entry in raw_cwes if isinstance(raw_cwes, list) else []:
                 if isinstance(entry, dict):
                     cid = entry.get("id")
                     if isinstance(cid, str):

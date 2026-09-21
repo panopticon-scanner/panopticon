@@ -2,6 +2,7 @@
 flavours). The TOOL round -- its queue, its entries and the claim-location
 confinement they share with `_render_findings` -- is `phases/verify_tools.py`.
 """
+from typing import Any
 import json
 import os
 import sys
@@ -65,7 +66,7 @@ def _verify_out_file(review_root, group, domain, stage, part=0):
 
 def _cell_verdicts(review_root, group, domain, stage, parts=1):
     """Every verdict on disk for this cell/stage, merged across its parts."""
-    merged = []
+    merged: list[dict[str, Any]] = []
     for part in range(max(1, parts)):
         data = runio._load_json(
             _verify_out_file(review_root, group, domain, stage, part))
@@ -282,9 +283,10 @@ def verify_execute(review_root, manifest):
     # checkpoint (like review + scout), instead of one group per round trip. The
     # BACKUP and TOOL rounds below stay sequential -- they depend on the primary
     # verdicts being complete first (verify_done gates them on all-primary-done).
-    all_entries, ngroups = [], 0
+    all_entries: list[dict[str, Any]] = []
+    ngroups = 0
     for group, files in coverage._discovered_groups(review_root):
-        pending = []
+        pending: list[tuple[str, list[dict[str, Any]], int]] = []
         for domain in coverage._effective_domains(review_root, group):
             cell = review._load_cell_findings(review_root, manifest, group, domain)
             if cell is None or not score_gate.should_engage_primary(cell):
@@ -361,7 +363,7 @@ def _cell_backup_findings(review_root, manifest, group, domain):
     by_fid = evidence.by_finding_id(verdicts, "primary")
     for f in cell:
         f["evidence"] = evidence.derive_evidence(f, by_fid.get(str(f["id"])))
-    by_cat = {}
+    by_cat: dict[str, list[dict[str, Any]]] = {}
     for f in cell:
         by_cat.setdefault(f.get("category") or "general", []).append(f)
     out = []
@@ -453,7 +455,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
     # trips against a 20-wide host (run-7).
     all_entries, ngroups = [], 0
     for group, files in coverage._discovered_groups(review_root):
-        pending = []
+        pending: list[tuple[str, list[dict[str, Any]], int]] = []
         for domain in coverage._effective_domains(review_root, group):
             scope = _cell_backup_findings(review_root, manifest, group, domain)
             if not scope:
@@ -484,7 +486,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
             # and a one-hop import neighbourhood -- not the whole group, and the
             # grant it was given is recorded in its prompt.
             for d, c, part in pending:
-                ambiguous = []      # #1688: names that meant several files
+                ambiguous: list[str] = []      # #1688: names that meant several files
                 grant = _backup_grant(review_root, files, c, ambiguous)
                 all_entries.append(
                     _verify_entry(review_root, manifest, group, d,

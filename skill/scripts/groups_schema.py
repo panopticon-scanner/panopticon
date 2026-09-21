@@ -78,7 +78,7 @@ def glob_errors(label, field, globs):
 
 
 def _as_domain_set(name, field, raw, errors):
-    out = set()
+    out: set[str] = set()
     if raw is None:
         return out
     if not isinstance(raw, list):
@@ -120,7 +120,7 @@ def _parse_leaf(name, raw, errors):
     errors.extend(glob_errors("group %s" % name, "match", match))
     raw_tests = raw.get("tests")
     if raw_tests is None:
-        tests = []
+        tests: list[str] = []
     elif not isinstance(raw_tests, list):
         errors.append(f"group {name}: tests must be a list")
         tests = []
@@ -256,7 +256,7 @@ def parse_exclude_paths(doc):
     empty-string entries are errors individually; the valid string entries
     are still kept.
     """
-    errors = []
+    errors: list[str] = []
     raw = (doc or {}).get("exclude_paths")
     if raw is None:
         return [], errors

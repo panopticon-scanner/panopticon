@@ -23,10 +23,11 @@ zero -- with the measurement run through plain grep, never `git grep -E`, whose
 POSIX ERE silently ignores \b. See tests/test_redact.py::TestRedactRejectsGenericDetection.
 """
 import re
+from collections.abc import Callable
 
 # (compiled pattern, replacement). Replacements use \1 back-refs where the match
 # keeps a benign prefix (Bearer). Ordered generic->specific; each is independent.
-_PATTERNS = [
+_PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = [
     (re.compile(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}"),
      "[REDACTED_TOKEN]"),                                   # GitHub PAT / OAuth
     (re.compile(r"sk-[A-Za-z0-9_-]{16,}"), "[REDACTED_KEY]"),  # OpenAI-style key

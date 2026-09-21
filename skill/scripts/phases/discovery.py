@@ -107,7 +107,7 @@ def discovery_execute(review_root, manifest):
         cmd += ["--scope-files"] + list(scope.get("target") or [])
     else:
         _scope_arg = {"file": "--scope-file", "directory": "--scope-dir",
-                      "group": "--scope-group"}.get(mode)
+                      "group": "--scope-group"}.get(mode or "")
         if _scope_arg and scope.get("target"):
             cmd += [_scope_arg, scope["target"]]
     if manifest.get("base"):

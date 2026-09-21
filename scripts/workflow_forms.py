@@ -38,6 +38,7 @@ import collections
 import fnmatch
 import os
 import re
+from typing import cast
 
 import shell_reader
 from shell_reader import ARM, command, conditional, negated
@@ -165,6 +166,8 @@ def parse_fetch(tool, args, stage, piped_to):
         # wget writes the URL's basename by default; curl streams to stdout
         # unless asked for the remote name.
         dest = _basename(url) if (tool == "wget" or remote_name) else None
+    # The sentinel has been resolved; remaining destinations are paths or stdout.
+    dest = cast(str | None, dest)
     if directory and dest and not os.path.isabs(dest) and (
             tool == "curl" or not named):
         dest = os.path.join(directory, dest)
@@ -345,7 +348,9 @@ def regions(stmts):
     command was expected; `echo then` is an argument, and counting it would
     open a body that never closes.
     """
-    where, stack, opened = {}, [], 0
+    where = {}
+    stack: list[tuple[int, str]] = []
+    opened = 0
     for index, statement in enumerate(stmts):
         head = statement.stages[0].argv if statement.stages else []
         token = head[0] if head else None

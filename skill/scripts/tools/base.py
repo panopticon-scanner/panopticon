@@ -23,7 +23,8 @@ from scripts.provenance import tool_provenance
 # cannot carry that answer across -- it has to resolve it a second time, from
 # the tree, on the side that parses. `ingest_tools` is the one place that both
 # parses and holds the root, so it is the one place that sets this.
-target_root_cv = contextvars.ContextVar("panopticon_target_root", default=None)
+target_root_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "panopticon_target_root", default=None)
 
 
 # Adapters may drop results with no actionable location, or synthesize one.
@@ -73,7 +74,7 @@ SEV_MAP = {
 
 # Distinct unmapped values already reported, so a scanner that emits one on
 # every finding costs one line, not thousands.
-_warned_severities = set()
+_warned_severities: set[str] = set()
 
 ID_RE = re.compile(r"^[A-Z]{2,4}-\d{3,}$")
 
@@ -165,7 +166,9 @@ def _cvss_v3_score(vector: str) -> float | None:
         impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15 if s == "C" else 6.42 * iss
         av_score = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}.get(av, 0.85)
         ac_score = {"L": 0.77, "H": 0.44}.get(ac, 0.77)
-        pr_scores = {"N": 0.85, "L": {"U": 0.62, "C": 0.68}, "H": {"U": 0.27, "C": 0.5}}.get(pr, 0.85)
+        pr_weights: dict[str, float | dict[str, float]] = {
+            "N": 0.85, "L": {"U": 0.62, "C": 0.68}, "H": {"U": 0.27, "C": 0.5}}
+        pr_scores = pr_weights.get(pr, 0.85)
         pr_score = pr_scores.get(s, 0.85) if isinstance(pr_scores, dict) else pr_scores
         ui_score = {"N": 0.85, "R": 0.62}.get(ui, 0.85)
         exploitability = 8.22 * av_score * ac_score * pr_score * ui_score
@@ -233,7 +236,7 @@ def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
     one edit here instead of one per adapter. Adapter-specific content arrives
     via the keyword fields.
     """
-    finding = {
+    finding: dict[str, Any] = {
         "id": new_finding_id(adapter.prefix, n),
         "title": _sanitize_label(title),          # #run9 SEC-B1C: untrusted tool/target text
         "severity": severity,
@@ -258,7 +261,10 @@ def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
 
 class ToolAdapter(Protocol):
     name: str
-    prefix: str
+
+    @property
+    def prefix(self) -> str:
+        ...
 
     def is_applicable(self, target: str) -> bool:
         ...
@@ -297,7 +303,7 @@ def drain_stderr_async(proc, cap=MAX_TOOL_STDERR_BYTES):
 
     Returns a ``join(timeout=2.0) -> bytes`` callable.
     """
-    chunks = collections.deque()
+    chunks: collections.deque[bytes] = collections.deque()
     kept = [0]
 
     def _pump():
@@ -370,6 +376,7 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
     join_stderr = drain_stderr_async(proc)
 
     try:
+        assert proc.stdout is not None, "tool stdout must be captured with PIPE"
         chunks: list[bytes] = []
         collected = 0
         truncated = False
@@ -418,13 +425,15 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
     finally:
         timer.cancel()
         try:
-            proc.stdout.close()
+            if proc.stdout is not None:
+                proc.stdout.close()
         except Exception:
             pass
         # Closing stderr wakes the drain thread if it is still blocked.
         join_stderr(0.5)
         try:
-            proc.stderr.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
         except Exception:
             pass
         if proc.poll() is None:

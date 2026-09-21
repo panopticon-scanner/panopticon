@@ -36,14 +36,14 @@ TEARDOWN_DIRECTIVE = (
 @dataclasses.dataclass
 class PhaseResult:
     kind: str                     # "advanced" | "checkpoint"
-    checkpoint: str = None        # a runio.CHECKPOINT_KINDS member, iff kind == "checkpoint"
-    group: str = None
-    dispatch_request: str = None  # absolute path (iff checkpoint)
+    checkpoint: str | None = None  # a runio.CHECKPOINT_KINDS member, iff kind == "checkpoint"
+    group: str | None = None
+    dispatch_request: str | None = None  # absolute path (iff checkpoint)
     # #1727: sha256 of the bytes `requests.write_dispatch_request_bound` just
     # wrote, carried IN PROCESS to the loop. The loop compares it against the
     # manifest's record before it reads a single entry -- two reads of the same
     # tamperable file would compare nothing.
-    request_sha256: str = None
+    request_sha256: str | None = None
     message: str = ""
 
     def __post_init__(self):
@@ -67,7 +67,7 @@ def run_engine(review_root, manifest, phases, max_steps=None):
     The cursor is recomputed every iteration, so a mixed phase that advances one
     unit at a time is simply re-selected until its done() is satisfied.
     """
-    advanced = []
+    advanced: list[str] = []
     # Progress guard: a buggy phase that returns "advanced" but never satisfies
     # done() would spin forever. Cap the work and fail loudly. The bound is far
     # above any real (phase-count + group-count) unit total.

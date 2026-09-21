@@ -4,6 +4,7 @@ The TOOL axis -- the runner's manifest, the per-adapter dispositions and
 `reconcile` -- is `synth/tool_axis.py`, split out of here when this module
 reached the 700-line ceiling (#1701).
 """
+from typing import Any
 from dataclasses import dataclass, field
 import glob
 import json
@@ -106,7 +107,7 @@ def engaged_matrix_cells(findings):
     driver-engaged cell already has a verdict bundle on disk by the time this
     runs; the discrepancy only shows up as a possible undercount in
     meta.coverage.verify_matrix.engaged when exact-duplicate findings collapse."""
-    cells = {}
+    cells: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for f in findings:
         grp, dom = f.get("_group"), f.get("domain")
         if grp is None or dom is None:
@@ -135,7 +136,7 @@ def out_of_scope_findings(findings_paths, plan):
     Returns {"checked": N, "count": N, "examples": [...]} or None when no
     plan/group could be checked.
     """
-    group_files = {}
+    group_files: dict[str | None, set[str]] = {}
     for e in plan or []:
         if isinstance(e, dict) and isinstance(e.get("files"), list):
             group_files.setdefault(e.get("group"), set()).update(
@@ -143,7 +144,7 @@ def out_of_scope_findings(findings_paths, plan):
     if not group_files:
         return None
     checked = count = 0
-    examples = []
+    examples: list[dict[str, Any]] = []
     for path in findings_paths or []:
         m = findings_mod.GROUP_RE.match(os.path.basename(str(path)))
         if not m or m.group(1) not in group_files:
@@ -319,7 +320,7 @@ def load_test_inventory(run_dir):
     `.panopticon`, which a hostile target can pre-commit, and an invented
     state in the artifact is worse than a missing group.
     """
-    out = {}
+    out: dict[str, str] = {}
     try:
         with open(os.path.join(run_dir, TEST_INVENTORY), encoding="utf-8") as fh:
             body = json.load(fh)
@@ -338,7 +339,7 @@ def load_scout_requests(run_dir):
     """(tools requested, profiles seen) across <run_dir>/scout-*.json. #471: a
     scout can return tools:[] -- a silent decline of the tool layer -- so the
     profile count is recorded separately and the decline is announced."""
-    requested = set()
+    requested: set[str] = set()
     profiles_seen = 0
     for sp in glob.glob(os.path.join(run_dir, "scout-*.json")):
         try:
@@ -415,7 +416,7 @@ def ingest_tool_findings(args):
                   % (default_tools, default_tools), file=sys.stderr)
     if not (args.tools_dir and os.path.isdir(args.tools_dir)):
         return [], {}, None, None, []
-    dropped = []     # #1578: filled with the vendored-path drops, for the count
+    dropped: list[dict[str, Any]] = []     # #1578: filled with the vendored-path drops, for the count
     tool_findings, dispositions = ingest_tools.ingest_dir_detailed(
         args.tools_dir, None, exclude_globs=args.tools_exclude,
         include_fixtures=args.include_fixtures, suppressed_out=dropped)

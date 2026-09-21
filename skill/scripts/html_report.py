@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """Render a CodeReviewReport as a self-contained HTML document."""
+from typing import TYPE_CHECKING
+from typing import Any
 import hashlib
 import html
 import os
 import re
 
-try:
+if TYPE_CHECKING:
     import scripts.evidence as evidence
     import scripts.host_disclosure as host_disclosure
     import scripts.hosts as hosts
-except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-    import evidence
-    import host_disclosure
-    import hosts
+else:
+    try:
+        import scripts.evidence as evidence
+        import scripts.host_disclosure as host_disclosure
+        import scripts.hosts as hosts
+    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+        import evidence
+        import host_disclosure
+        import hosts
 
 _CSS = """
 :root {
@@ -330,7 +337,7 @@ def _panel_counts(findings):
 
 def _top_category_counts(findings, limit=8):
     """Return the top `limit` categories by count, plus an 'Other' bucket."""
-    counts = {}
+    counts: dict[str, int] = {}
     for f in findings:
         cat = f.get("category") or "unknown"
         counts[cat] = counts.get(cat, 0) + 1
@@ -374,15 +381,15 @@ def _match_findings(a_findings, b_findings):
     are marked 'unchanged' or 'severity changed'; unmatched head findings are
     'new'; unmatched base findings are 'resolved'.
     """
-    a_by_fp = {}
+    a_by_fp: dict[str, list[dict[str, Any]]] = {}
     for f in a_findings:
         a_by_fp.setdefault(_fingerprint(f), []).append(f)
-    b_by_fp = {}
+    b_by_fp: dict[str, list[dict[str, Any]]] = {}
     for f in b_findings:
         b_by_fp.setdefault(_fingerprint(f), []).append(f)
 
     all_fps = sorted(set(a_by_fp) | set(b_by_fp))
-    matches = []
+    matches: list[dict[str, Any]] = []
     for fp in all_fps:
         a_list = a_by_fp.get(fp, [])
         b_list = b_by_fp.get(fp, [])
@@ -1059,7 +1066,7 @@ _SEV_RANK = {sev: i for i, sev in enumerate(_SEV_ORDER)}
 
 
 def _heatmap_data(findings):
-    files = {}
+    files: dict[str, dict[str, Any]] = {}
     for f in findings:
         loc = f.get("location") or {}
         path = loc.get("file")
@@ -1163,7 +1170,7 @@ def _heatmap_grid(report):
         panel_seen.add(f.get("panel") if f.get("panel") in _PANEL_ORDER else "code")
     active_panels = [p for p in _PANEL_ORDER if p in panel_seen]
 
-    grid = {}
+    grid: dict[str, dict[str, Any]] = {}
     order = []
     for g in report.get("groups") or []:
         name = g.get("name", "")
@@ -1234,7 +1241,7 @@ def _render_findings(report):
     unverified = [f for f in findings
                   if (f.get("evidence") or {}).get("status") in unverified_statuses]
 
-    by_sev = {sev: [] for sev in _SEV_ORDER}
+    by_sev: dict[str, list[dict[str, Any]]] = {sev: [] for sev in _SEV_ORDER}
     by_sev["ALL"] = []
     for f in verified:
         by_sev["ALL"].append(f)
@@ -1243,7 +1250,7 @@ def _render_findings(report):
             by_sev[sev].append(f)
 
     def _grouped_cards(flist):
-        buckets = {}
+        buckets: dict[str, list[dict[str, Any]]] = {}
         order = []
         for f in flist:
             name = _group_of((f.get("location") or {}).get("file"),

@@ -156,7 +156,7 @@ def _porcelain_z_records(output):
     endpoints: the entry's own (new) path plus the NUL-separated original path
     that immediately follows it (#1033/SEC-1)."""
     tokens = output.split("\0")
-    records = set()
+    records: set[tuple[str, tuple[str, ...]]] = set()
     i = 0
     while i < len(tokens):
         tok = tokens[i]

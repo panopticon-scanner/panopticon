@@ -2,6 +2,7 @@
 changed-line-range map, and classify findings against it. Stdlib only; pure
 functions plus thin git/gh subprocess wrappers.
 """
+from typing import TYPE_CHECKING
 import hashlib
 import json as _json
 import os
@@ -21,10 +22,13 @@ import uuid
 # importing this module as `scripts.diff_map`), it succeeds and binds the
 # SAME module object every other caller sees -- see host_disclosure.py for the
 # same fallback on the same seam.
-try:
+if TYPE_CHECKING:
     import scripts.repo_config as repo_config
-except ImportError:
-    import repo_config
+else:
+    try:
+        import scripts.repo_config as repo_config
+    except ImportError:
+        import repo_config
 
 _NEWFILE_RE = re.compile(r"^\+\+\+ (?:b/)?(.*?)\s*$")
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -38,7 +42,7 @@ def parse_unified_diff(text):
     `+++ /dev/null` target (deleted file) is skipped. `@@ -a,b +c,d @@` gives
     new-side range (c, c+d-1); d==0 (pure deletion) adds nothing.
     """
-    result = {}
+    result: dict[str, list[tuple[int, int]]] = {}
     path = None
     for line in text.splitlines():
         m = _NEWFILE_RE.match(line)

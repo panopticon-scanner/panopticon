@@ -228,7 +228,9 @@ def scan(path, since=None, until=None):
     0.443 B when collected in-run and 0.751 B once ripgrep had run in the same
     session). The floor makes the number reproducible only until the next run.
     """
-    totals, n, models = _zero(), 0, {}
+    totals = _zero()
+    n = 0
+    models: dict[str, int] = {}
     for rec in _iter_records(path):
         msg = rec.get("message")
         if not isinstance(msg, dict):
@@ -259,9 +261,11 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
 
     by_phase = {p: _zero() for p in PHASES}
     by_source = {"controller": _zero(), "subagents": _zero()}
-    models, sources, agents = {}, [], 0
+    models: dict[str, int] = {}
+    sources = []
+    agents = 0
     controller_records, subagent_records = 0, 0
-    by_phase_transcripts = {}
+    by_phase_transcripts: dict[str, int] = {}
 
     if controller:
         t, n, m = scan(controller, since, until)

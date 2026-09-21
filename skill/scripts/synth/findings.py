@@ -3,6 +3,7 @@
 Dedupe, cross-panel corroboration and the `prepare_*` pipeline live in
 `synth/corroborate.py`, which reads three names back out of this module.
 """
+from typing import Any
 from dataclasses import dataclass, field
 import fnmatch
 import os
@@ -378,7 +379,7 @@ def apply_doc_severity_policy(findings, security_mode, doc_globs=None):
         return None
     globs = doc_globs or DOC_PATH_GLOBS
     downgraded = 0
-    examples = []
+    examples: list[dict[str, str]] = []
     for f in findings:
         if not isinstance(f, dict):
             continue
@@ -443,7 +444,9 @@ def aggregate_tool_findings(findings):
         corroborated = (evidence_mod.norm_path(loc.get("file")), line) in agent_loci
         return (0 if corroborated else 1, line if isinstance(line, int) else 0)
 
-    out, groups, order = [], {}, []
+    out = []
+    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    order = []
     for f in findings:
         rule = evidence_mod.tool_rule_id(f)
         if not evidence_mod.is_tool_sourced(f) or not rule:

@@ -295,7 +295,7 @@ def render_summary(report):
         # Deliberately not an integrity failure and deliberately not gating:
         # a reviewer filing outside its lane is a fact about the review, not
         # about whether the artifacts on disk can be trusted (#calibration-4).
-        by = {}
+        by: dict[tuple[str | None, str | None], int] = {}
         for r in xdom:
             if isinstance(r, dict):
                 by.setdefault((r.get("cell_domain"), r.get("finding_domain")), 0)

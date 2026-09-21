@@ -5,6 +5,7 @@ the driver's realpath-normalised grants, then opened component by component
 without following links. Platforms without secure descriptor-relative opens
 fail closed; a sandbox or a prompt is not this server's policy boundary.
 """
+from typing import Any
 from contextlib import contextmanager
 import fnmatch
 import json
@@ -379,7 +380,10 @@ class Reader:
                 if not self.scope["dirs"]:
                     raise ValueError("search outside directory scope denied; supply an explicit granted file")
                 files, walk_truncated = self._files(self._roots(arguments))
-            matches, skipped, more, total = [], [], 0, 0
+            matches = []
+            skipped: list[str] = []
+            more = 0
+            total = 0
             note_bytes = 0
             for path in files:
                 try:
@@ -457,7 +461,7 @@ def serve(reader, source, sink, binding_error=None):
                 raise ValueError("invalid request parameters")
             if method == "initialize":
                 version = params.get("protocolVersion")
-                result = {"protocolVersion": version if version in (
+                result: dict[str, Any] = {"protocolVersion": version if version in (
                     "2024-11-05", "2025-03-26", "2025-06-18") else "2025-06-18",
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "panopticon-read-scope", "version": "1.0"}}

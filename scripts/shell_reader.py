@@ -203,7 +203,9 @@ def _split(text):
     Quote-aware by hand rather than by regex, because the whole defect being
     fixed is a regex that could not tell a `|` inside a URL from a pipeline.
     """
-    statements, stages, buf = [], [], []
+    statements = []
+    stages = []
+    buf: list[str] = []
     quote, at_token_start, i, n = None, True, 0, len(text)
 
     def end_stage():
@@ -268,8 +270,12 @@ def _stage(text, bodies, inners):
         tokens = shlex.split(text)
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
-    argv, writes, reads, heredoc, pending = [], [], [], None, None
-    substitutions = []
+    argv = []
+    writes: list[str] = []
+    reads: list[str] = []
+    heredoc = None
+    pending = None
+    substitutions: list[str] = []
 
     def take(token):
         # A redirection TARGET can be a command too (`bash < <(curl ...)`), so

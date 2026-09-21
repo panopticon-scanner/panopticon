@@ -12,6 +12,7 @@ It reads three names back out of `findings` (`_sev_rank`, `_norm_line`,
 `aggregate_tool_findings`), never the other way round: the dependency runs one
 way, so neither module needs the other to be fully imported first.
 """
+from typing import Any
 import scripts.evidence as evidence_mod
 from . import findings as findings_mod
 
@@ -72,7 +73,7 @@ def dedupe(findings):
     unmerged (clustering them on file+category alone would drop distinct issues
     that merely omit a line number)."""
     passthrough = []
-    by_locus = {}
+    by_locus: dict[tuple[str, int], list[dict[str, Any]]] = {}
     order = []
     for f in findings:
         loc = f.get("location") or {}
@@ -100,7 +101,7 @@ def dedupe(findings):
             evidence_mod.record_merged_id(best, other)
             result.append(best)
         else:
-            by_cat = {}
+            by_cat: dict[str | None, list[dict[str, Any]]] = {}
             corder = []
             for f in group:
                 ck = f.get("category")
@@ -118,7 +119,7 @@ def dedupe(findings):
                 # silently discarded real CVEs (calibration 2026-08-03: 22
                 # osv findings -> 3 survivors). Distinct rule_ids are distinct
                 # issues; agent findings (no rule_id) share one bucket as before.
-                by_rule = {}
+                by_rule: dict[str | None, list[dict[str, Any]]] = {}
                 rorder = []
                 for m in members:
                     rk = evidence_mod.tool_rule_id(m) if _is_tool_sourced(m) else None
