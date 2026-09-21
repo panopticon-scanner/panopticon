@@ -396,16 +396,30 @@ def hunk_map(repo, base, exclude=()):
     # `git diff` omits untracked files; add them as whole-file ranges.
     try:
         # Include new untracked files, matching discovery.collect_changed_files.
-        others = _run_git(repo, ["ls-files", "--others", "--exclude-standard"])
+        # -z + text=False (#1739): without -z git C-quotes any name carrying a
+        # byte >= 0x80 (default core.quotepath) or a quote, backslash, tab or
+        # newline, and the quoted spelling then failed open() with an OSError
+        # the loop below swallowed -- the untracked file was in neither the map
+        # nor any warning, and a PR author picks the name. With -z git never
+        # quotes at all, so the bytes are the name.
+        others = _run_git(repo, ["ls-files", "--others", "--exclude-standard",
+                                 "-z"], text=False)
     except Exception as e:
         raise RuntimeError(f"git ls-files failed: {e}")
     if others is not None:
         if others.returncode != 0:
-            raise RuntimeError(f"git ls-files failed: {others.stderr}")
-        for rel in others.stdout.splitlines():
-            rel = rel.strip()
-            if not rel:
+            raise RuntimeError("git ls-files failed: %s"
+                               % _decode_git(others.stderr, lossy=True))
+        # split on NUL, never str.splitlines(): splitlines() also breaks on a
+        # lone \r, \x0b, \x0c, \x1c-\x1e, \x85 and U+2028/9 (#1738), any of
+        # which a filename may legally carry -- a fragment is then a path that
+        # does not exist and the real file is lost. os.fsdecode matches
+        # discovery's spelling exactly, which is what keeps the reviewed file
+        # set and this map comparable.
+        for raw in others.stdout.split(b"\0"):
+            if not raw:
                 continue
+            rel = os.fsdecode(raw)
             full = os.path.join(repo, rel)
             if os.path.islink(full):
                 continue
@@ -433,7 +447,13 @@ def hunk_map(repo, base, exclude=()):
                         last = chunk
                     if last and not last.endswith(b"\n"):
                         n += 1
-            except OSError:
+            except OSError as e:
+                # #1739: a bare `continue` made an unreadable-but-present file
+                # indistinguishable from one git never listed. It still gets no
+                # ranges -- there are no lines to count -- but never in silence.
+                print("panopticon: untracked file %r could not be read for the "
+                      "delta map, so it contributes no changed-line ranges: %s"
+                      % (rel, e), file=sys.stderr)
                 continue
             result[rel] = [(1, max(n, 1))]
     for name in exclude:

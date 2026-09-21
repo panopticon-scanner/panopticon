@@ -479,8 +479,9 @@ class TestHunkMap(unittest.TestCase):
                 # universal-newline translation of text mode forges diff lines.
                 r.returncode = diff_rc
                 r.stdout, r.stderr = b"", diff_err.encode("utf-8")
-            else:                                  # ls-files --others
-                r.returncode, r.stdout, r.stderr = 0, "", ""
+            else:                                  # ls-files --others -z
+                # bytes: #1739 reads the untracked listing with -z/text=False.
+                r.returncode, r.stdout, r.stderr = 0, b"", b""
             return r
         return fake
 
@@ -547,6 +548,63 @@ class TestHunkMap(unittest.TestCase):
         # #1738 fix round 1: and the diff is read as BYTES, because text mode
         # rewrites a lone \r to \n and forges a diff line out of payload.
         self.assertFalse(seen["text"])
+
+
+class TestHunkMapUntrackedQuotedPaths(unittest.TestCase):
+    r"""#1739: `git ls-files --others` C-quotes the same names, and the
+    quoted spelling then failed `open()` with FileNotFoundError -- an OSError
+    the loop swallowed with a bare `continue`. The untracked file was in
+    neither the hunk map nor any warning.
+    """
+
+    def _repo(self):
+        return _make_repo(self)
+
+    def test_untracked_files_with_quoted_names_are_keyed_by_their_real_name(self):
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        names = ["naïve.txt", 'we"ird.txt', "back\\slash.txt"]
+        for name in names:
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write("x\ny\n")
+        m = diff_map.hunk_map(d, "main")
+        for name in names:
+            self.assertIn(name, m)
+            self.assertEqual(m[name], [(1, 2)])
+
+    def test_a_newline_in_an_untracked_name_does_not_fragment_the_listing(self):
+        # -z frames on NUL; splitlines() would have split this one name into
+        # two bogus entries (and str.splitlines() splits on \r, \x0c, \x85 and
+        # U+2028 as well -- #1738's lesson, applied to the file list).
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        name = "two\nlines.txt"
+        try:
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write("x\n")
+        except OSError:
+            self.skipTest("filesystem refuses a newline in a filename")
+        m = diff_map.hunk_map(d, "main")
+        self.assertEqual(sorted(m), [name])
+
+    def test_an_unreadable_untracked_file_is_reported_not_swallowed(self):
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        p = os.path.join(d, "locked.txt")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        os.chmod(p, 0)
+        self.addCleanup(os.chmod, p, 0o644)
+        try:
+            with open(p, "rb"):
+                self.skipTest("this user can read a mode-000 file (root?)")
+        except OSError:
+            pass
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            m = diff_map.hunk_map(d, "main")
+        self.assertNotIn("locked.txt", m)
+        self.assertIn("locked.txt", err.getvalue())
 
 
 class TestClassify(unittest.TestCase):
@@ -918,7 +976,8 @@ class TestDiffMapFailures(unittest.TestCase):
                     class R: returncode = 0; stdout = b""; stderr = b""
                     return R()
                 if args[:2] == ["ls-files", "--others"]:
-                    class R: returncode = 1; stdout = ""; stderr = "mock ls-files failure"
+                    # bytes: #1739 reads this listing with -z/text=False.
+                    class R: returncode = 1; stdout = b""; stderr = b"mock ls-files failure"
                     return R()
                 return subprocess.run([shutil.which("git") or "git", "-C", repo, *args],
                                       capture_output=True, text=True, timeout=timeout)
