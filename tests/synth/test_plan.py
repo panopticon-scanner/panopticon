@@ -15,6 +15,7 @@ import scripts.synth.delta as delta_mod
 import scripts.synth.render as render_mod
 import scripts.html_report as html_report
 import scripts.synth.plan as plan_mod
+import scripts.synth.repair as repair_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
 import scripts.group_runner as gr
@@ -597,6 +598,30 @@ class TestManifestMustDeclareSelected(unittest.TestCase):
                 self.assertIn("pip-audit", report["summary"]["coverage_note"])
                 self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"]["pip-audit"],
                                  "network_unavailable")
+
+    def test_network_excluded_unpublishable_name_still_sinks_certification(self):
+        # #1899: an over-long tool name in the `network` block cannot survive
+        # `repair_tools_network`'s NAME_MAX bound, so `meta.tools.network`
+        # never publishes it -- naming it in `coverage_note` (the raw-manifest
+        # read this fixes) would cite text the report itself never printed.
+        # Design pick, fail closed: an unpublishable row still sinks
+        # certification -- a hostile manifest cannot buy back a PASS by
+        # naming its excluded tool something too long to report -- but with a
+        # GENERIC reason, never the dropped name, since that name is exactly
+        # what could not be published.
+        long_name = "x" * (repair_mod.NAME_MAX + 1)
+        _, report, _ = self._run(
+            {"schema_version": 1, "selected": [], "produced": [], "missing": [],
+             "network": {long_name: "excluded:online egress unavailable"}})
+        self.assertEqual(report["meta"]["tools"]["network"], {})
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertNotIn(long_name, report["summary"]["coverage_note"])
+        self.assertIn("safe network unavailable", report["summary"]["coverage_note"])
+        div_tools = report["meta"]["coverage"]["divergence"]["tools"]
+        self.assertNotIn(long_name, div_tools)
+        self.assertEqual(div_tools[tool_axis_mod.UNPUBLISHABLE_NETWORK_TOOL],
+                         "network_unavailable")
 
 
 class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
