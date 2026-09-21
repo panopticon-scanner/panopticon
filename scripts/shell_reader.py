@@ -75,6 +75,19 @@ _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 # Only a pattern parsed INSIDE a case body receives this marker. A closing
 # subshell parenthesis (or a quoted command name ending in one) is not an arm.
+# LIMITATION, shared with `@@substN@@` and `@@heredocN@@`: a marker is a
+# spelling, not a capability, so a target script CAN write one -- and since
+# `command()` drops a leading arm marker, a step spelling `@@casearm@@curl`
+# hides the fetch behind it. There is no cheap unforgeable alternative: every
+# character survives `shlex` quoting, and a control character does not help
+# either: PyYAML's reader does reject a RAW control character in a workflow
+# file, but a double-quoted YAML scalar spells one with a backslash-u escape
+# and loads the real thing (checked, this fix round). Closing it needs a
+# per-parse nonce, or `statements()` neutralising the whole marker family in
+# its input before parsing -- either of which changes the marker CONTRACT, not
+# a constant, so it is a change of its own. The index guard in `_stage.take`
+# ("an index past the end belongs to ANOTHER parse") is the shape of the
+# defence that is in place today.
 _CASE_ARM = "@@casearm@@"
 ARM = re.compile(r"^@@casearm@@")
 _GROUP_TOKENS = ("@@group-open@@", "@@group-close@@")
