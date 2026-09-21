@@ -213,6 +213,29 @@ def _git(repo, args, timeout=30, text=True):
                           capture_output=True, text=text, check=True,
                           timeout=timeout, env={"PATH": os.environ.get("PATH", "")})
 
+def _nul_separated_paths(raw):
+    """The non-empty paths in `git ... -z` output, decoded like os.fsdecode.
+
+    Splitting on NUL, never str.splitlines(): splitlines() also breaks on a
+    lone \r, \x0b, \x0c, \x1c-\x1e, \x85 and U+2028/9 (#1738), every one of
+    which a filename may legally carry -- a fragment is then a path that does
+    not exist, and the real file is lost. os.fsdecode is the spelling every
+    other surface here uses (`_git_listed_files`, diff_map's hunk keys), so
+    the file sets stay comparable as plain strings.
+    """
+    return [os.fsdecode(chunk) for chunk in (raw or b"").split(b"\0") if chunk]
+
+
+def _unreviewable_reason(full):
+    """Why a path git listed is not reviewable surface, in the operator's terms."""
+    if not os.path.lexists(full):
+        return "no longer exists in the working tree"
+    if not os.path.isfile(full):
+        return ("is not a regular file (a directory or nested repository, a "
+                "device, or a dangling symlink)")
+    return "resolves outside the repository"
+
+
 def _worktree_dirty(repo, exclude=()):
     """True when repo's working tree has uncommitted changes (git status
     --porcelain is non-empty) -- used to set diff-hunks.json's
@@ -293,31 +316,43 @@ def collect_changed_files(repo, base=None, exclude=()):
         # --find-renames: same rename semantics as diff_map.hunk_map, so the
         # reviewed file set and the on-diff hunk map can never diverge on a
         # similarity-threshold edge (#978).
-        out = _git(repo, ["diff", "--name-only", "--diff-filter=d",
-                          "--find-renames", mb])
-        for p in out.stdout.splitlines():
-            p = p.strip()
-            if p:
-                changed.add(p)
+        # -z + text=False + os.fsdecode (#1739), the SAME treatment
+        # _git_listed_files already gives the whole-repo listing: without -z
+        # git C-quotes any path carrying a byte >= 0x80 (default
+        # core.quotepath) or a `"`, `\`, tab or newline (whatever quotepath
+        # says) -- `"src/caf\303\251.py"` -- and that spelling is not a file,
+        # so the isfile filter below dropped the changed file out of the
+        # reviewed set in silence. A PR author picks the filename, so that is
+        # an author-chosen exemption from delta review. core.quotepath=false
+        # is belt and braces; with -z git never quotes at all.
+        out = _git(repo, ["-c", "core.quotepath=false", "diff", "--name-only",
+                          "--diff-filter=d", "--find-renames", "-z", mb],
+                   text=False)
+        changed.update(_nul_separated_paths(out.stdout))
     except Exception as e:
         print(f"Warning: git diff failed: {e}")
         return None
     # Include new untracked files so a branch with only added files isn't empty.
     try:
-        out = _git(repo, ["ls-files", "--others", "--exclude-standard"])
-        for p in out.stdout.splitlines():
-            p = p.strip()
-            if p:
-                changed.add(p)
+        out = _git(repo, ["-c", "core.quotepath=false", "ls-files", "--others",
+                          "--exclude-standard", "-z"], text=False)
+        changed.update(_nul_separated_paths(out.stdout))
     except Exception:
         pass
     for name in exclude:
-        changed.discard(name)
+        changed.discard(name)          # a deliberate drop: never warned about
     out = []
     for p in sorted(changed):
         full = os.path.join(repo, p)
         if os.path.isfile(full) and _within(repo, full):
             out.append(p.replace(os.sep, "/"))
+        else:
+            # #1739: the drop itself is correct -- the reviewed set is files --
+            # but doing it in silence is what made the quoting bug invisible
+            # for as long as it lived. One line per path, naming which and why.
+            print("Warning: git lists %r as changed, but it %s; it is NOT in "
+                  "the reviewed file set." % (p, _unreviewable_reason(full)),
+                  file=sys.stderr)
     return out
 
 def _even_sizes(total, n_chunks):
