@@ -391,6 +391,34 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
         self.assertEqual(high, [])
         self.assertEqual(suppressed, [])
 
+    def test_the_gate_line_counts_what_the_operator_excluded(self):
+        # Fix round 1, ruling 3: the line counted suppressions and said nothing
+        # about `--exclude`, so an operator who UN-GATED a payload with
+        # `--exclude '**/venv/**'` under redteam saw a clean gate line with no
+        # trace of the glob that emptied it.
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, "app/venv/patched_auth.py")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest,
+                                "--exclude", "app/venv/*",
+                                "--security", "redteam"])
+        line = buf.getvalue()
+        self.assertEqual(rc, 0)                    # un-gated, by operator policy
+        self.assertIn("1 excluded by --exclude", line)
+        self.assertNotIn("suppressed", line)       # it never reached that channel
+
+    def test_the_gate_line_says_nothing_about_globs_that_matched_nothing(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, "app/auth.py")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                gate.main(["--tools-dir", tools, "--manifest", manifest,
+                           "--exclude", "ops/*"])
+        self.assertNotIn("excluded by --exclude", buf.getvalue())
+
     def test_the_gate_line_names_each_suppression_class_with_its_counts(self):
         with tempfile.TemporaryDirectory() as root:
             tools = os.path.join(root, "tools")

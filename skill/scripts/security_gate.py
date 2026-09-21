@@ -55,7 +55,8 @@ def load_manifest(path):
     return data
 
 
-def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standard"):
+def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standard",
+             excluded_out=None):
     """Return (findings, dispositions, failures, high_findings, suppressed).
 
     #1578: `suppressed` is what a NAME-BASED exclusion dropped, each entry
@@ -79,13 +80,16 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     guess a redteam gate needs to second-guess. And `exclude_globs` are
     operator POLICY: the operator scoped those paths out of THIS gate, so they
     are excluded and counted, never gated, and a path matching both a glob and
-    a name rule is counted as the operator's exclusion.
+    a name rule is counted as the operator's exclusion. `excluded_out`, when a
+    list, collects that second set so `main` can COUNT it beside the verdict
+    (fix round 1, ruling 3): un-gating a payload with `--exclude` is a
+    legitimate operator act, and it may not be an invisible one.
     """
     manifest = load_manifest(manifest_path)
     suppressed = []
     findings, dispositions = ingest_tools.ingest_dir_detailed(
         tools_dir, "ci", exclude_globs=exclude_globs or [],
-        suppressed_out=suppressed)
+        suppressed_out=suppressed, excluded_out=excluded_out)
     # #1512: one definition of lost required coverage, shared with the report's
     # tool axis. Extracted, not duplicated -- the two views disagreeing is what
     # let a scanner that wrote unparseable bytes certify in the report while
@@ -132,9 +136,11 @@ def main(argv=None):
     parser.add_argument("--security", dest="security_mode", default="standard",
                         choices=list(SECURITY_MODES))
     args = parser.parse_args(argv)
+    excluded = []
     try:
         findings, _dispositions, failures, high, suppressed = evaluate(
-            args.tools_dir, args.manifest, args.exclude, args.security_mode)
+            args.tools_dir, args.manifest, args.exclude, args.security_mode,
+            excluded_out=excluded)
     except ValueError as exc:
         print("security-gate: %s" % exc, file=sys.stderr)
         return 2
@@ -149,6 +155,12 @@ def main(argv=None):
                 % (len(suppressed), _by_class(suppressed),
                    " -- GATED, --security redteam" if args.security_mode == REDTEAM
                    else " -- NOT gated; re-run with --security redteam to gate them"))
+    if excluded:
+        # Fix round 1 (ruling 3): the operator's own globs, counted where the
+        # verdict is. `--exclude '**/venv/**'` under redteam un-gates exactly
+        # what this gate exists to catch, and the line said nothing at all.
+        note += ("; %d excluded by --exclude (%s)"
+                 % (len(excluded), ", ".join(sorted(set(args.exclude)))))
     print("Ingested %d non-excluded tool findings; %d HIGH/CRITICAL%s"
           % (len(findings), len(high), note))
     if failures:

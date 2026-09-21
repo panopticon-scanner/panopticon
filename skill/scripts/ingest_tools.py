@@ -297,7 +297,7 @@ def suppression_class(segment):
 
 def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
                             target_root=None, venv_cache=None,
-                            suppressed_out=None):
+                            suppressed_out=None, excluded_out=None):
     """Split one adapter's parse into (kept, gl, ra, suppressed-by-segment).
 
     #1578: a vendored drop is no longer anonymous. Each one is counted against
@@ -336,8 +336,18 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
         if _is_run_artifact_path(fpath, target_root, venv_cache):   # not project source
             ra_count += 1
             continue
-        if exclude_globs and any(fnmatch.fnmatch(fpath, g) for g in exclude_globs):
+        glob_hit = next((g for g in exclude_globs or ()
+                         if fnmatch.fnmatch(fpath, g)), None)
+        if glob_hit is not None:
             gl_count += 1                                           # operator policy
+            if excluded_out is not None:
+                # #1740 fix round 1 (ruling 3): the gate line has to be able to
+                # say what the operator's own globs took off it. Rows, not a
+                # count, for the same reason `suppressed_out` is rows: the glob
+                # that matched is the part an operator needs to see.
+                item = dict(f)
+                item["excluded"] = glob_hit
+                excluded_out.append(item)
             continue
         if (segment := _vendored_segment(fpath)) is None:           # #1578
             segment = _venv_name_segment(fpath)                     # #1740
@@ -445,7 +455,7 @@ def _cap_findings(parsed, tool):
 
 
 def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False,
-                        target_root=None, suppressed_out=None):
+                        target_root=None, suppressed_out=None, excluded_out=None):
     """Ingest raw tool-output files and report each adapter's disposition.
 
     Returns (findings, dispositions). dispositions maps each output file's
@@ -475,7 +485,11 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
 
     exclude_globs (F-CAL-2): additional fnmatch patterns matched against each
     finding's location.file; matches are dropped too. Both filters share one
-    aggregate stderr note.
+    aggregate stderr note. #1740 fix round 1: `excluded_out`, when a list, is
+    filled with those drops, each carrying an `excluded` key naming the GLOB
+    that matched -- so a caller can say how much of its own policy applied.
+    They are never gated: an `--exclude` glob is a decision the operator made
+    about this run, and no security mode overturns it.
 
     suppressed_out (#1578, widened by #1740): an optional list every
     NAME-BASED drop is appended to, each carrying a `suppressed` key naming the
@@ -578,7 +592,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         # first means only in-scope findings ever compete for the cap.
         parsed, gl_cnt, ra_cnt, sup_cnt = _filter_parsed_findings(
             parsed, include_fixtures, exclude_globs, root, venv_cache,
-            suppressed_out)
+            suppressed_out, excluded_out)
         gl_excluded += gl_cnt
         ra_excluded += ra_cnt
         for seg, n in sup_cnt.items():
