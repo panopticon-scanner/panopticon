@@ -756,6 +756,62 @@ class TestAdapterFindingCap(unittest.TestCase):
         # A bound that fires on a normal repo would silently degrade every run.
         self.assertGreaterEqual(it.MAX_ADAPTER_FINDINGS, 1000)
 
+    def test_the_cap_runs_after_the_exclusion_filter(self):
+        # #1741: a target that plants noise under an excluded path must not be
+        # able to evict real project findings from the cap. Raw yield =
+        # MAX_ADAPTER_FINDINGS + 50; the first 100 (highest severity) sit under
+        # a fixture-corpus dir and a vendored dir, the rest are real,
+        # lower-severity project findings. Capping the RAW list (the old,
+        # buggy order) sorts the 100 excluded findings to the front by
+        # severity and keeps the first 1900 of the 1950 real ones, silently
+        # evicting the last 50 real findings before the filter ever sees them.
+        # Filtering first means the excluded 100 never compete for the cap, so
+        # all 1950 real findings survive untouched (well under the cap).
+        cap = it.MAX_ADAPTER_FINDINGS
+        noise = [{"ruleId": "NOISE%04d" % i, "level": "error",
+                 "message": {"text": "planted noise %d" % i},
+                 "locations": [{"physicalLocation": {
+                     "artifactLocation": {"uri": (
+                         "tests/fixtures/corpus/n%d.py" % i if i < 50
+                         else "vendor/lib/n%d.py" % i)},
+                     "region": {"startLine": i + 1}}}]}
+                 for i in range(100)]
+        real = self._results(cap + 50 - 100, level="note")
+        findings, disp, err = self._ingest(noise + real, cap=cap)
+        self.assertEqual(len(findings), len(real))
+        self.assertTrue(all(f["title"].startswith("finding ") for f in findings))
+        # Raw yield is unaffected by the reorder -- still the adapter's true
+        # pre-filter, pre-cap count.
+        self.assertEqual(disp["semgrep"]["findings"], len(noise) + len(real))
+        # Nothing was capped: the 1950 real findings fit comfortably under the
+        # cap once the 100 excluded ones are out of contention.
+        self.assertNotIn("truncated", disp["semgrep"])
+        # The 100 planted findings are accounted for as excluded, not silently
+        # lost to the cap.
+        self.assertIn("excluded 100", err)
+
+    def test_the_cap_notice_names_the_post_filter_count(self):
+        # #1741: when the exclusion filter removes some of an adapter's raw
+        # yield and what remains STILL exceeds the cap, the stderr note and
+        # disposition['truncated'] must describe the post-filter total, never
+        # the raw (pre-filter) one -- otherwise "kept N of M" names an M that
+        # was never really in contention.
+        noise = [{"ruleId": "NOISE%d" % i, "level": "error",
+                 "message": {"text": "planted noise %d" % i},
+                 "locations": [{"physicalLocation": {
+                     "artifactLocation": {"uri": "vendor/lib/n%d.py" % i},
+                     "region": {"startLine": i + 1}}}]}
+                 for i in range(3)]
+        real = self._results(10, level="note")
+        findings, disp, err = self._ingest(noise + real, cap=5)
+        self.assertEqual(len(findings), 5)
+        # 13 raw, 3 excluded, 10 survive the filter, 5 of those are kept: the
+        # cap dropped 5 (10 - 5), not 8 (13 - 5).
+        self.assertEqual(disp["semgrep"]["truncated"], 5)
+        self.assertEqual(disp["semgrep"]["findings"], 13)  # raw_count, unchanged
+        self.assertIn("10", err)      # the post-filter total the cap saw
+        self.assertNotIn("13", err)   # never the pre-filter (raw) total
+
 
 class TestVirtualenvExclusion(unittest.TestCase):
     """#1638 P09 (D8): a virtualenv is vendored code -- drop it on the tool axis.
