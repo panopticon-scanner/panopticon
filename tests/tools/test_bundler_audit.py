@@ -177,7 +177,13 @@ class TestBundlerAuditAdapter(unittest.TestCase):
         self.assertIn("--config", json_cmd)
         self.assertIn("--format", json_cmd)
         self.assertEqual(text_cmd[:3], ["bundle-audit", "check", "/tmp/fake"])
-        self.assertIn("--config", text_cmd)
+        # #1742 fix round 1 finding 3: --config arrived in bundler-audit 0.9.0
+        # alongside .bundler-audit.yml support -- the SAME release as
+        # --format json (0.8.0 predates both, roughly). A gem old enough to
+        # hit this fallback neither reads that config file nor accepts the
+        # switch, so passing it here would turn a working fallback into a
+        # second "Unknown switches" failure with nothing left to fall back to.
+        self.assertNotIn("--config", text_cmd)
         self.assertNotIn("--format", text_cmd)
         # Both calls run from the SAME scratch cwd, never the target.
         self.assertIsNotNone(json_cwd)

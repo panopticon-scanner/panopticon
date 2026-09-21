@@ -70,9 +70,19 @@ class BundlerAuditAdapter:
             # bundler-audit added --format json in 0.8.0. Older gems reject the
             # switch (Thor prints "Unknown switches '--format'" and exits non-zero).
             # Fall back to the legacy text output and let parse() shape-guard it.
+            #
+            # #1742 fix round 1 finding 3: the fallback carries NO --config.
+            # --config arrived in 0.9.0, the SAME release that added
+            # .bundler-audit.yml support -- a gem old enough to reject
+            # --format json predates both. Passing --config to a gem that
+            # does not recognise it would turn a working fallback into a
+            # second "Unknown switches" failure, with no further fallback
+            # left. The scratch cwd and the explicit positional target stay
+            # (bundle-audit's `dir` argument and its cwd are orthogonal to
+            # --config), so the fallback still never reads the target's cwd.
             if rc not in (0, 1) or b"Unknown switches" in stderr:
-                return run_tool(["bundle-audit", "check", abs_target, "--config",
-                                config_path, "--no-update"], timeout=300, cwd=scratch)
+                return run_tool(["bundle-audit", "check", abs_target, "--no-update"],
+                                timeout=300, cwd=scratch)
             return raw, rc
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
