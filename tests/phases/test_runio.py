@@ -392,10 +392,10 @@ class TestAtomicArtifactWrite(unittest.TestCase):
         # of a per-entry usage.json was exposed to.
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "usage.json")
-            runio._write_json(p, {"total": 1})
+            runio._write_json(p, {"total": 1}, atomic=False)
             with mock.patch.object(runio.json, "dump", side_effect=OSError("ENOSPC")), \
                  self.assertRaises(OSError):
-                runio._write_json(p, {"total": 2})
+                runio._write_json(p, {"total": 2}, atomic=False)
             with open(p) as fh:
                 self.assertEqual("", fh.read())
 
