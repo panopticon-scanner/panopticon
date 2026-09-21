@@ -288,3 +288,54 @@ class TestLedgerRowTime(LoopCase):
         row = self._record(timing=None, frozen=time.gmtime(0))
         self.assertEqual("1970-01-01T00:00:00Z", row["ts"])
         self.assertIsNone(row["started_at"])
+
+
+class TestTheStderrRow(LoopCase):
+    """#1732 part 3: a failed row says what the CLI printed on stderr.
+
+    Run 14 lost 309 launches to one wrong argv while every ledger row said
+    `claude -p printed no JSON envelope (exit 1)` -- the symptom. The
+    diagnosis (`--json-schema is not valid JSON: JSON Parse error:
+    Unrecognized token '/'`) was on stderr and no row carried it.
+    """
+
+    def _ledger(self):
+        d, _floor = self._repo()
+        return ledger_mod.Ledger(d)
+
+    def _row(self, **kw):
+        ledger = self._ledger()
+        ledger.record({"id": "e"}, "review",
+                      base.RunResult(entry_id="e", text="", usage={}, cost_usd=None,
+                                     model=None, session_id=None, denials=[], **kw),
+                      "headless", "claude")
+        return ledger.lines()[0]
+
+    def test_a_failed_row_carries_the_launchs_stderr(self):
+        row = self._row(ok=False, error="claude -p printed no JSON envelope (exit 1)",
+                        stderr="--json-schema is not valid JSON")
+        self.assertEqual("--json-schema is not valid JSON", row["stderr"])
+        # the composed error is unchanged: the row's `stderr` is the diagnosis
+        self.assertEqual("claude -p printed no JSON envelope (exit 1)", row["error"])
+
+    def test_the_ledger_redacts_again_at_the_chokepoint(self):
+        # A family is where the first redaction happens; this is the one place
+        # every row goes through, so it redacts too rather than trusting six
+        # call sites to have done it.
+        row = self._row(ok=False, error="boom",
+                        stderr="Incorrect API key provided: sk-ant-api03-AAAABBBBCCCCDDDD")
+        self.assertNotIn("sk-ant-", row["stderr"])
+
+    def test_the_ledger_bounds_it_at_the_seams_own_constant(self):
+        row = self._row(ok=False, error="boom", stderr="x" * (base.STDERR_HEAD * 4))
+        self.assertEqual(base.STDERR_HEAD, len(row["stderr"]))
+
+    def test_a_successful_row_has_no_stderr_key_at_all(self):
+        # ruling 5 of #1662 restated: a completed row's shape is what every
+        # existing reader already parses.
+        row = self._row(ok=True, error=None, stderr="a warning nobody needs")
+        self.assertNotIn("stderr", row)
+
+    def test_a_failed_row_with_no_stderr_has_no_key_either(self):
+        row = self._row(ok=False, error="boom")
+        self.assertNotIn("stderr", row)

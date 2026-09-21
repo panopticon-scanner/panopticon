@@ -544,3 +544,53 @@ class TestTheRolesTheLoopSetsReachTheCheck(unittest.TestCase):
         cmd = r.command(dict(_entry(True), agent="panopticon-domain-panel"),
                         "/run/host-settings.json", max_turns=40)
         self.assertNotIn("--agent", cmd)
+
+
+class TestTheFailedLaunchesStderr(unittest.TestCase):
+    """#1732 part 3: what the CLI said on stderr reaches the ledger row.
+
+    Run 14's tool-verify checkpoint failed all 103 launches in ~120 ms with
+    `claude -p printed no JSON envelope (exit 1)` -- a message that names the
+    symptom and diagnoses nothing. The diagnosis was on stderr the whole time
+    (`--json-schema is not valid JSON: JSON Parse error: Unrecognized token
+    '/'`) and this runner never read `proc.stderr` at all, so 309 launches and
+    ~35 minutes bought one sentence nobody could see.
+    """
+
+    SECRET = ("--json-schema is not valid JSON: JSON Parse error: "
+              "Unrecognized token '/' (key sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF)")
+
+    def _run(self, stdout, returncode, stderr):
+        def fake_run(cmd, **kw):
+            class P:
+                pass
+            P.returncode, P.stdout, P.stderr = returncode, stdout, stderr
+            return P()
+        with tempfile.TemporaryDirectory() as d:
+            r = claude_runner.Runner("claude", runner=fake_run)
+            r.prepare(d, review_root=d)
+            return r.run_entry(_entry(True), {base.ENV_ENTRY_ID: "review-app-SEC"})
+
+    def test_a_failed_launch_carries_the_redacted_head_of_stderr(self):
+        res = self._run("", 1, self.SECRET)
+        self.assertFalse(res.ok)
+        # the error stays exactly what it was -- the row's `stderr` is the
+        # diagnosis, not a replacement for the symptom
+        self.assertEqual("claude -p printed no JSON envelope (exit 1)", res.error)
+        self.assertIn("Unrecognized token", res.stderr)
+        self.assertNotIn("sk-ant-", res.stderr)
+        self.assertLessEqual(len(res.stderr), base.STDERR_HEAD)
+
+    def test_it_is_bounded_at_the_seams_own_constant(self):
+        res = self._run("", 1, "x" * (base.STDERR_HEAD * 3))
+        self.assertEqual("x" * base.STDERR_HEAD, res.stderr)
+
+    def test_a_successful_launch_carries_none(self):
+        res = self._run(json.dumps(ENVELOPE), 0, self.SECRET)
+        self.assertTrue(res.ok)
+        self.assertIsNone(res.stderr)
+
+    def test_an_empty_stderr_is_none_not_an_empty_string(self):
+        res = self._run("", 1, "   \n")
+        self.assertFalse(res.ok)
+        self.assertIsNone(res.stderr)

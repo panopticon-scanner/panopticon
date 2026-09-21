@@ -416,8 +416,15 @@ class Runner(base.HostRunner):
                 session_id = record["session_id"]
         if returncode != 0:
             host = (stderr or "").strip()      # #1623: the HOST's surface; `text` is the AGENT's
+            # #1732: `error` already folds up to 200 characters of the tail
+            # (the agent's, or stderr's) into one operator sentence; `stderr`
+            # keeps the CLI's own words as a field, redacted and bounded, so
+            # the ledger row is diagnosable without re-reading a composed
+            # message.
             return base.RunResult.failed(entry_id, "kimi -p exited %s: %s"
-                                         % (returncode, (text or host)[:200]), host_error=host or None)
+                                         % (returncode, (text or host)[:200]),
+                                         host_error=host or None,
+                                         stderr=base.stderr_head(stderr))
         return text, session_id
 
     def launch_env(self, overlay=None):

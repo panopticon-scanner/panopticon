@@ -161,7 +161,11 @@ class Runner(base.HostRunner):
         return base.RunResult(entry_id=entry_id, ok=error is None, text=text,
                          usage=usage, cost_usd=None, model=model,
                          session_id=session_id, denials=denials, error=error,
-                         host_error=host_error)
+                         host_error=host_error,
+                         # #1732: the same stream, kept as a FIELD as well. It
+                         # reaches the classifier only through `host_error`
+                         # above, whose rules are unchanged.
+                         stderr=base.stderr_head(stderr) if error is not None else None)
 
     def run_entry(self, entry, env):
         entry_id = entry.get("id", "") if isinstance(entry, dict) else ""

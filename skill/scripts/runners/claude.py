@@ -131,13 +131,27 @@ class Runner(base.HostRunner):
         cmd.append(entry["prompt"])
         return cmd
 
-    def parse_envelope(self, entry_id, stdout, returncode):
+    def parse_envelope(self, entry_id, stdout, returncode, stderr=None):
+        """The envelope, plus (#1732) whatever the CLI said on `stderr`.
+
+        `stderr` is kept on the result only when the result FAILED, and only
+        as `base.stderr_head` characters of it. This family read `proc.stdout`
+        and nothing else, so every one of run 14's 309 failed launches was
+        ledgered as "printed no JSON envelope (exit 1)" while the CLI's own
+        sentence -- the one that named the wrong argv -- went to a stream
+        nobody kept. The message below is UNCHANGED: it is the symptom, and
+        the new field is the diagnosis beside it.
+        """
+        diagnosis = base.stderr_head(stderr)
         try:
             data = json.loads(stdout or "")
         except ValueError:
-            return base.RunResult.failed(entry_id, "claude -p printed no JSON envelope (exit %s)" % returncode)
+            return base.RunResult.failed(
+                entry_id, "claude -p printed no JSON envelope (exit %s)" % returncode,
+                stderr=diagnosis)
         if not isinstance(data, dict):
-            return base.RunResult.failed(entry_id, "claude -p envelope is not an object")
+            return base.RunResult.failed(entry_id, "claude -p envelope is not an object",
+                                         stderr=diagnosis)
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         model_usage = data.get("modelUsage") if isinstance(data.get("modelUsage"), dict) else {}
         model = next(iter(model_usage), None)
@@ -171,7 +185,8 @@ class Runner(base.HostRunner):
         return base.RunResult(entry_id=entry_id, ok=error is None, text=text if error is None else "",
                                usage=usage, cost_usd=data.get("total_cost_usd"), model=model,
                                session_id=data.get("session_id"), denials=denials, error=error,
-                               host_error=host_error)
+                               host_error=host_error,
+                               stderr=diagnosis if error is not None else None)
 
     def launch_env(self, overlay=None):
         """The seam's preparation (`base.HostRunner.launch_env`) plus this
@@ -225,4 +240,5 @@ class Runner(base.HostRunner):
         except Exception as exc:          # run_entry never raises (spec 4.4): anything else is a failed entry
             return base.RunResult.failed(entry.get("id"),
                                           "claude -p launch raised %s: %s" % (type(exc).__name__, exc))
-        return self.parse_envelope(entry.get("id"), proc.stdout, proc.returncode)
+        return self.parse_envelope(entry.get("id"), proc.stdout, proc.returncode,
+                                   stderr=proc.stderr)

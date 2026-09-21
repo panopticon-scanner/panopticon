@@ -64,6 +64,27 @@ def test_a_rate_limited_launch_that_printed_nothing_reads_its_stderr():
     assert codex.Runner.parse_envelope("e", "", 1).failure_class == outage.ENTRY_FAILURE
 
 
+def test_a_failed_codex_launch_carries_the_redacted_head_of_stderr():
+    # #1732 part 3: the same stderr this family already hands the classifier
+    # is also kept ON the result, bounded and redacted, so the ledger row can
+    # say what the CLI actually complained about. `host_error` and its
+    # classification are untouched -- the new field is never fed to the
+    # classifier.
+    noisy = "boom " * 200 + "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF"
+    result = codex.Runner.parse_envelope("e", "", 1, stderr=noisy)
+    assert not result.ok
+    assert len(result.stderr) == base.STDERR_HEAD
+    assert result.stderr.startswith("boom")
+    assert "sk-ant-" not in result.stderr
+
+
+def test_a_successful_codex_launch_carries_no_stderr():
+    result = codex.Runner.parse_envelope("e", envelope(START, REPLY, DONE), 0,
+                                         stderr="a warning nobody needs")
+    assert result.ok
+    assert result.stderr is None
+
+
 def test_exec_jsonl_preserves_final_reply_and_session_without_inventing_cost_or_model():
     result = codex.Runner.parse_envelope("e", envelope(START, REPLY, DONE), 0)
     assert result.ok

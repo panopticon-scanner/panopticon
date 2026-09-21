@@ -152,6 +152,22 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertEqual("provider.auth_error: 403", res.host_error)
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
 
+    def test_a_failed_launch_also_keeps_stderr_on_the_result(self):
+        # #1732 part 3: `error` already folds up to 200 characters of stderr
+        # (or of the agent's tail) into an operator sentence; the ROW needs
+        # the CLI's own words as a field, redacted and bounded, so the ledger
+        # is diagnosable without re-reading a composed message.
+        res = kimi_runner.Runner("kimi").parse_envelope(
+            "e1", "", 1, stderr="Error: rate limit exceeded key sk-ant-api03-AAAABBBBCCCC\n")
+        self.assertIn("rate limit exceeded", res.stderr)
+        self.assertNotIn("sk-ant-", res.stderr)
+        self.assertLessEqual(len(res.stderr), base.STDERR_HEAD)
+
+    def test_a_successful_launch_carries_no_stderr(self):
+        r = kimi_runner.Runner("kimi")
+        text, _session = r.parse_envelope("e1", STREAM, 0, stderr="a warning")
+        self.assertEqual("the final reply", text)
+
     def test_garbage_lines_are_tolerated(self):
         text, session_id = kimi_runner.Runner("kimi").parse_envelope(
             "e1", "not json\n" + STREAM + "\n{broken", 0)

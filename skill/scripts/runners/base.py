@@ -85,6 +85,16 @@ class RunResult:
                                    # printed, NEVER the agent's text. `error` is the operator's
                                    # message and may quote the agent; this is what is classified.
     failure_class: object = None   # "host" | "entry" (#1623); None means "classify it for me"
+    stderr: object = None          # #1732: what the CLI printed on stderr, on a FAILED result
+                                   # only -- `stderr_head` characters, already redacted. The
+                                   # DIAGNOSIS, beside `error`'s symptom: run 14 failed 309
+                                   # launches with "claude -p printed no JSON envelope (exit 1)"
+                                   # while the reason ("--json-schema is not valid JSON: JSON
+                                   # Parse error: Unrecognized token '/'") sat on a stream this
+                                   # family never read. Deliberately NOT fed to the classifier:
+                                   # `host_error` is what decides whose failure it was, and
+                                   # widening that input would read an entry's own stderr noise
+                                   # as an outage.
 
     def __post_init__(self):
         """Classify any result that did not say (#1623).
@@ -101,7 +111,7 @@ class RunResult:
 
     @classmethod
     def failed(cls, entry_id, error, usage=None, text="", host_error=None,
-               failure_class=None):
+               failure_class=None, stderr=None):
         """A failed entry, with whatever evidence the launch did produce.
 
         D10 ruling 5: a timed-out entry is often the most expensive one in a
@@ -115,7 +125,7 @@ class RunResult:
         """
         return cls(entry_id=entry_id, ok=False, text=text, usage=usage or {}, cost_usd=None,
                     model=None, session_id=None, denials=[], error=str(error),
-                    host_error=host_error, failure_class=failure_class)
+                    host_error=host_error, failure_class=failure_class, stderr=stderr)
 
 
 class HostRunner:
@@ -471,6 +481,38 @@ class HostRunner:
         for entry, result, _timing in self.iter_batch(entries, concurrency, env_for):
             results[slots[id(entry)].pop(0)] = result
         return results
+
+
+# #1732: how much of a failed launch's stderr travels with the result, and
+# how much of it the ledger row keeps. ONE number, on the seam every family
+# and the ledger already share: the families bound it on the way out and
+# `ledger.Ledger.record` bounds it again on the way in, and two spellings of
+# "200" would be two different guarantees about the same field.
+#
+# 200 for the same reason `error` quotes 200 characters of the reply: enough
+# for a CLI's own refusal line (the one run 14 needed is 84 characters), far
+# short of a transcript, and a fixed cost per row in a file the budget gate
+# reads back on every batch.
+STDERR_HEAD = 200
+
+
+def stderr_head(text):
+    """A failed launch's stderr, redacted and bounded (#1732); None for nothing.
+
+    REDACTED FIRST, then cut -- never the other way round. `redact.redact`
+    rewrites a whole secret to its placeholder, so redacting the truncated
+    text would leave whatever fragment of an API key the cut happened to end
+    in, verbatim, in a file the loop appends to on every launch. The one
+    message whose PURPOSE is to surface an auth failure is the likeliest of
+    all of them to be carrying a credential.
+
+    None rather than "" for an empty stream, so a caller can put the field on
+    a row only when there is something to say (`Ledger.record` writes no key
+    at all in that case, which is what keeps a completed row's shape exactly
+    what every existing reader parses).
+    """
+    text = redact.redact((text or "").strip())
+    return text[:STDERR_HEAD] or None
 
 
 def partial_output(exc):
