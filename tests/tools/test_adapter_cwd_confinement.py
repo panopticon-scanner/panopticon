@@ -34,6 +34,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.run_tools as rt
 from _test_helpers import FakePopen
 from scripts.tools import ADAPTERS
 
@@ -72,6 +73,24 @@ ALLOWED_TARGET_CWD = {
         "`toolchain` directive) was fixed well before the pinned Go 1.25.14"
     ),
 }
+
+# #1742 fix round 1 (opus review, #1877): every adapter below passes NO cwd
+# to run_tool at all, which in the real deployment means the tools
+# container's default `WORKDIR /src` -- the target mount -- since none of
+# them is in `run_tools.ADAPTERS_NEEDING_EMPTY_CWD`. That is a real,
+# already-existing exposure this issue did not create and does not close
+# (tracked separately as #1877); it is listed here, one line each, so the
+# pin stays honest about what is and is not actually confined rather than
+# reading `cwd=None` as safe.
+_INHERITS_CONTAINER_WORKDIR = (
+    "inherits the container WORKDIR (the target mount); tracked in #1877"
+)
+ALLOWED_TARGET_CWD.update(dict.fromkeys(
+    ("npm-audit", "osv-scanner", "eslint-security", "brakeman",
+     "spotbugs", "dependency-check", "roslyn-secguard",
+     "semgrep", "bandit", "trivy", "gitleaks"),
+    _INHERITS_CONTAINER_WORKDIR,
+))
 
 
 def _seed_fixture(name, root):
@@ -127,9 +146,25 @@ def _record_popen_calls(adapter, target):
     return calls
 
 
-def _is_inside(cwd, root):
+def _is_inside(name, cwd, root):
+    """True when *cwd* -- the argument an adapter passed `run_tool`, for the
+    adapter named *name* -- is the target or inside it.
+
+    #1742 fix round 1 (opus review): `cwd=None` is NOT "somewhere neutral".
+    `run_tool` -> `subprocess.Popen` with no `cwd` kwarg inherits the CALLING
+    PROCESS's cwd, and in the real deployment that calling process is
+    `_run_adapter.py` running inside the tools container, whose default
+    working directory is the image's `WORKDIR /src` (Dockerfile) -- and
+    `/src` IS the target mount (`run_tools.py`'s `docker run ... -v
+    target:/src:ro`). `run_tools.ADAPTERS_NEEDING_EMPTY_CWD` is the one
+    documented exception: only those adapters get an explicit `docker run -w
+    <empty dir>` that moves the container's cwd off `/src` before the
+    adapter ever runs. So `cwd=None` means "the target" for every adapter
+    NOT in that tuple -- imported here (not re-declared) so the two can never
+    silently drift apart.
+    """
     if cwd is None:
-        return False
+        return name not in rt.ADAPTERS_NEEDING_EMPTY_CWD
     cwd_real = os.path.realpath(cwd)
     root_real = os.path.realpath(root)
     return cwd_real == root_real or cwd_real.startswith(root_real + os.sep)
@@ -155,7 +190,7 @@ class TestAdapterCwdConfinement(unittest.TestCase):
                     "this adapter's cwd; give it a fixture in _seed_fixture "
                     "or confirm it never scans" % name)
                 for cmd, cwd in calls:
-                    if _is_inside(cwd, root) and name not in ALLOWED_TARGET_CWD:
+                    if _is_inside(name, cwd, root) and name not in ALLOWED_TARGET_CWD:
                         offenders.append(
                             "%s: cwd=%r is the target (or inside it); argv=%r"
                             % (name, cwd, cmd))
@@ -175,7 +210,7 @@ class TestAdapterCwdConfinement(unittest.TestCase):
                 self.assertTrue(reason.strip(), "empty allowlist reason")
                 root, calls = self._invoke_in_fresh_target(name, ADAPTERS[name])
                 self.assertTrue(
-                    any(_is_inside(cwd, root) for _cmd, cwd in calls),
+                    any(_is_inside(name, cwd, root) for _cmd, cwd in calls),
                     "%s is allowlisted for cwd=target but no recorded call "
                     "actually used it -- the allowlist entry is stale" % name)
 
