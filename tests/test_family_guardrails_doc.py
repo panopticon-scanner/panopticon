@@ -73,7 +73,12 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
                       # from this document was told the usage-source probe
                       # made the measurement -- true for claude, impossible
                       # for codex, whose row maps no such probe.
-                      "HELP_ARGV", "cli-flags"):
+                      "HELP_ARGV", "cli-flags",
+                      # #1732: the shape proof launches through the family's
+                      # own run_entry, so two things are now part of the
+                      # contract -- the reserved entry id it launches under,
+                      # and the stderr field a failed result carries.
+                      "probe-output-schema", "RunResult.stderr", "shape"):
             self.assertIn(token, doc, token)
 
     def test_the_registry_rules_cover_the_discovery_surface(self):
