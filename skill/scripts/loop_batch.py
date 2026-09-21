@@ -134,7 +134,7 @@ def refuse_misrouted(pending, checkpoint):
         if entry.get("enforced"):
             role = OUTPUT_ROLES.get(persist.role_of(entry))
             expected = (dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
-                        if role in checkpoint_roles(checkpoint) else None)
+                        if role is not None and role in checkpoint_roles(checkpoint) else None)
             if not (isinstance(agent, str) and agent in allowed and agent == expected):
                 misrouted.append(entry.get("id"))
         elif agent is not None:
