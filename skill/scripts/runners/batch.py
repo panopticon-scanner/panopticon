@@ -21,6 +21,24 @@ A later loop validates a leftover against the bound dispatch request and
 rolls it back BEFORE a phase can read a partial artifact as complete. Opening
 an existing manifest is refused, so the recovery record cannot be overwritten.
 
+TODO (#1698, follow-up): this document is NOT hash-bound to the run the way
+`dispatch-request.json` has been since #1727 -- serialise, hash, write, and
+record the sha256 in the run manifest, so every reader can ask whether the
+file it just read is the one the driver wrote. It lives inside the reviewed
+tree, so everything it carries is target-writable, the owner stamp below
+included: `owner_state` is a LIVENESS check (is the process that wrote this
+still running?) and never an authenticity one. Two things make the binding
+more than the one-line mirror it looks like. `Batch` is in `runners/`, which
+may not import `scripts.phases.*` (tests/test_layout.py rule 3), so it cannot
+reach `requests.record_request_hash` -- and that helper is where the two
+namespaces are told apart (`--setup` anchors in its own manifest, #1507), so
+the recorder would have to be threaded in from `loop_batch`. And the record
+is rewritten three times, not once (`open`, `add_artifact` per retained
+reply, `begin_recovery`), so each rewrite owes the manifest a new hash and
+each one opens a window where the two disagree. What is defended today is
+what the rollback ACTS on: every artifact path is re-derived from the bound
+request before a single file is deleted (`loop_batch.recover_stale`).
+
 It lives in `runners/` rather than in `phases/` because `tests/test_layout.py`
 forbids `runners/* -> phases` imports and the loop is what calls both halves
 of the rollback: the artifact half here, and the interrupted phase's
@@ -135,10 +153,14 @@ class Batch:
                 **({"recovering": True} if self.recovering else {})}
 
     def begin_recovery(self):
-        """Mark before any rollback effect; a second crash must require reset.
+        """Mark before any rollback EFFECT -- the ledger row, the artifact,
+        the refund -- so a rollback that stops partway is never re-ledgered.
 
-        The ledger and attempt counters are separate files, so replaying a
-        half-finished recovery could refund one attempt more than once.
+        The ledger and the attempt counters are separate files, so a recovery
+        replayed from scratch writes one entry's rollback row twice and
+        refunds one attempt twice. A flagged record says "somebody has already
+        accounted for this": `loop_batch.recover_stale` finishes the file
+        removals it names and writes nothing (#1698).
         """
         self.recovering = True
         self._write()
@@ -184,6 +206,11 @@ class Batch:
     def roll_back(self, *, close=True):
         """Delete exactly the artifacts this manifest lists, then the manifest
         itself. Returns `(removed, problems)`.
+
+        The manifest goes LAST and only when everything before it went: a
+        record whose artifacts are still on disk is the one thing that says
+        so. `close=False` leaves it to the caller, which has its own work to
+        finish -- the ledger rows and the refund -- before this batch is over.
 
         `os.remove` unlinks a SYMLINK rather than following it, so a link
         planted at an artifact path costs the run its link and never the file
