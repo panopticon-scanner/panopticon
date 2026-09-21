@@ -12,6 +12,7 @@ explicit `parent` field (self for a leaf, the parent's name for a subgroup).
 Subgroups cannot themselves be parents ("one nesting level only").
 """
 import re
+import sys
 
 DOMAINS = frozenset(
     {"SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG"})
@@ -75,6 +76,125 @@ def glob_errors(label, field, globs):
     """`glob_defect` over one authored list, as parse errors."""
     return ["%s: %s glob %r is invalid: %s" % (label, field, g, defect)
             for g in globs for defect in [glob_defect(g)] if defect]
+
+
+
+# One disclosure per (caller, pattern): `glob_to_re` is called per (path,
+# pattern), so an unconditional print would emit a line per file scanned.
+_warned_globs = set()
+
+
+def glob_to_re(pat, label="config"):
+    """Compile one gitignore-flavored glob to a regex over repo-relative paths.
+
+    #1740 fix round 2: THE translator, for every consumer of a committed glob.
+    It lived in `discovery` while `run_tools`/`ingest_tools` matched the same
+    `exclude_paths:` lines with `fnmatch`, so one committed line meant two
+    different things -- `tests/*` excluded the whole subtree from the gate and
+    only the direct children from discovery, and `docs/` excluded a tree from
+    discovery and nothing at all from the gate. `label` names the caller in the
+    two disclosures below, which is all that moving it here changed.
+
+    Semantics (#499): ``*`` and ``?`` stay within a path segment, ``**``
+    crosses segments, and a pattern containing no ``/`` matches the basename
+    at any depth (gitignore's unanchored form). Patterns with a ``/`` are
+    anchored to the repo root, and a TRAILING ``/`` claims the directory and
+    everything under it (#1501: ``docs/`` is gitignore's most natural idiom
+    and used to compile to a regex requiring the path to end in ``/``, which a
+    repo-relative FILE path never does -- a silent zero-match).
+    """
+    # A glob this compiler cannot translate faithfully must never be
+    # translated wrongly (#1501). A setup proposal carrying one is refused
+    # outright, but a committed root config's parse errors are disclosed and
+    # NOT blocking (this module's standing policy, `_committed_matrix`), so
+    # one still reaches this compiler -- where the old behaviour was to
+    # `re.escape` the brackets into a literal that claimed the wrong files.
+    # Disclose and compile to a never-matching regex instead: refuse to guess.
+    defect = glob_defect(pat)
+    if defect:
+        if (label, pat) not in _warned_globs:
+            _warned_globs.add((label, pat))
+            print("%s: glob %r matches nothing: %s (#1501)"
+                  % (label, pat[:80], defect), file=sys.stderr)
+        return re.compile(r"(?!)")
+    # Collapse runs of adjacent segment-crossing wildcards BEFORE compiling.
+    # `**/**/.../x` compiles to sequential `(?:[^/]+/)*` quantifiers -- the
+    # textbook catastrophic-backtracking ReDoS shape -- and repo-supplied
+    # root-config `match:` patterns reach this compiler, so a hostile repo
+    # could hang discovery (run-4 self-scan). Adjacent `**`
+    # segments are semantically redundant, so fold each run down to one.
+    pat = re.sub(r"(?:\*\*/)+", "**/", pat)
+    pat = re.sub(r"\*\*\*+", "**", pat)
+    # #run7 SEC-H4A: the `**`-collapse above only tames adjacent `**` runs. A
+    # SINGLE-`*` pattern like `a*a*...Z` compiles to `a[^/]*a[^/]*...Z` -- the
+    # classic (.*a)+ catastrophic-backtracking shape (empirically >5s on a
+    # moderate filename), unaffected by the collapse. Atomic groups can't fix it
+    # (a glob `*` MUST backtrack so a trailing literal can match), so bound
+    # complexity AFTER the collapse: a legitimate glob has a handful of wildcards,
+    # so an over-long / over-wildcarded pattern is hostile or degenerate --
+    # disclose it and compile to a never-matching regex rather than hang discovery
+    # (which reads the root config from the untrusted redteam target, BEFORE
+    # dispatch).
+    if len(pat) > 256 or pat.count("*") > 20:
+        print("%s: ignoring over-complex glob pattern "
+              "(len=%d, wildcards=%d): %r"
+              % (label, len(pat), pat.count("*"), pat[:80]), file=sys.stderr)
+        return re.compile(r"(?!)")   # matches nothing
+    anchored = "/" in pat[:-1] if pat.endswith("/") else "/" in pat
+    if pat.startswith("/"):
+        pat = pat[1:]
+    # `docs/` == `docs/**`: the directory tree, never the directory's own
+    # path. Anchoring was already decided on the authored form above, so an
+    # unanchored `docs/` still means "a docs directory at any depth", exactly
+    # as gitignore reads it.
+    if pat.endswith("/"):
+        pat += "**"
+    out, i = [], 0
+    while i < len(pat):
+        c = pat[i]
+        if c == "*":
+            if pat[i:i + 3] == "**/":
+                out.append(r"(?:[^/]+/)*")
+                i += 3
+            elif pat[i:i + 2] == "**":
+                out.append(r".*")
+                i += 2
+            else:
+                out.append(r"[^/]*")
+                i += 1
+        elif c == "?":
+            out.append(r"[^/]")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    body = "".join(out)
+    if not anchored:
+        body = r"(?:.*/)?" + body
+    return re.compile("^" + body + "$")
+
+
+def matched_glob(path, patterns, label="config"):
+    """The committed glob that EXCLUDES `path`, or None (#1740 fix round 2).
+
+    gitignore's last-match-wins over an ordered list, with `!` negating, which
+    is what `discovery.match_patterns` does for `match:`/`tests:` -- the same
+    rule, returning the pattern instead of a bool because the tool side has to
+    disclose WHICH glob dropped a finding (`security_gate`'s verdict line, the
+    ingest's `excluded_out` rows).
+
+    `path` must already be repo-relative and "/"-separated; every caller
+    normalizes before it asks.
+    """
+    hit = None
+    for pat in patterns or ():
+        if not isinstance(pat, str) or not pat:
+            continue
+        negate = pat.startswith("!")
+        raw = pat[1:] if negate else pat
+        if raw and glob_to_re(raw, label).match(path):
+            hit = None if negate else pat
+    return hit
 
 
 def _as_domain_set(name, field, raw, errors):

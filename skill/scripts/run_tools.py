@@ -7,7 +7,6 @@ no-secret container (recorded in report meta); pip-audit/npm-audit run only
 under --online. Degrades gracefully when Docker is absent. Stdlib-only.
 """
 import configparser
-import fnmatch
 import json
 import os
 import re
@@ -18,6 +17,7 @@ import tempfile
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts import groups_schema
 from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts.tools import egress
 from scripts.tools.base import drain_stderr_async
@@ -418,10 +418,17 @@ def select_adapters(target: str, adapters: dict | None = None) -> dict:
 
 
 def _is_excluded(rel, exclude_globs):
-    """True if a repo-relative path matches any exclusion glob (fnmatch `*`
-    spans `/`, so `tests/fixtures/*` covers the whole subtree)."""
+    """True if a repo-relative path matches any exclusion glob.
+
+    #1740 fix round 2: GITIGNORE semantics, through the one translator
+    `discovery` reads the same committed `exclude_paths:` lines with
+    (`groups_schema.matched_glob`). It was `fnmatch` here, where `*` spans `/`
+    and a trailing `/` matches nothing -- so `tests/*` covered the whole
+    subtree on this side and only the direct children on discovery's, and
+    `docs/` covered a tree there and nothing here. Subtree is spelled `**`.
+    """
     rel = str(rel).replace(os.sep, "/")
-    return any(fnmatch.fnmatch(rel, g) for g in exclude_globs or [])
+    return groups_schema.matched_glob(rel, exclude_globs, "run_tools") is not None
 
 
 def partition_by_exclusion(adapters, target, exclude_globs):

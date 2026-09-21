@@ -386,7 +386,7 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             tools, manifest = self._repo(root, "tests/fixtures/x/app.js")
             _f, _d, _failures, high, suppressed = gate.evaluate(
-                tools, manifest, exclude_globs=["tests/fixtures/*"],
+                tools, manifest, exclude_globs=["tests/fixtures/**"],
                 security_mode="redteam")
         self.assertEqual(high, [])
         self.assertEqual(suppressed, [])

@@ -119,11 +119,27 @@ class TestRunTools(unittest.TestCase):
                 self.assertEqual(json.load(fh), payload)
 
     def test_is_excluded_matches_subtree(self):
+        # #1740 fix round 2: the subtree is spelled `**`. Under the gitignore
+        # semantics discovery has always used for these globs, `*` stays inside
+        # a path segment -- `tests/fixtures/*` is the direct children and
+        # nothing deeper, which is the next assertion.
         self.assertTrue(rt._is_excluded("tests/fixtures/insecure-js/app.js",
-                                        ["tests/fixtures/*"]))
+                                        ["tests/fixtures/**"]))
         self.assertFalse(rt._is_excluded("skill/scripts/x.py",
-                                         ["tests/fixtures/*"]))
+                                         ["tests/fixtures/**"]))
         self.assertFalse(rt._is_excluded("a.js", []))
+
+    def test_a_single_star_stops_at_the_separator_like_gitignore(self):
+        # The semantics change itself, pinned: `fnmatch` spanned `/` here and
+        # discovery never did, so one committed `exclude_paths:` line meant two
+        # different scopes (#1740 fix round 2).
+        self.assertTrue(rt._is_excluded("tests/fixtures/app.js",
+                                        ["tests/fixtures/*"]))
+        self.assertFalse(rt._is_excluded("tests/fixtures/insecure-js/app.js",
+                                         ["tests/fixtures/*"]))
+        # a trailing `/` claims the tree, which fnmatch matched never
+        self.assertTrue(rt._is_excluded("tests/fixtures/insecure-js/app.js",
+                                        ["tests/fixtures/"]))
 
     def test_partition_demotes_adapter_with_only_excluded_files(self):
         class _Ad:
@@ -133,11 +149,12 @@ class TestRunTools(unittest.TestCase):
                 return [os.path.join(target, f) for f in self._files]
         class _NoFiles:  # lockfile-triggered adapter: stays required
             pass
+        # `**`, not `*`: the glob vocabulary is discovery's (#1740 fix round 2).
         adapters = {"eslint-security": _Ad(["tests/fixtures/insecure-js/app.js"]),
                     "with-src": _Ad(["skill/x.js", "tests/fixtures/y.js"]),
                     "osv-scanner": _NoFiles()}
         required, excluded = rt.partition_by_exclusion(
-            adapters, "/repo", ["tests/fixtures/*"])
+            adapters, "/repo", ["tests/fixtures/**"])
         self.assertEqual(excluded, ["eslint-security"])
         self.assertCountEqual(required, ["with-src", "osv-scanner"])
 

@@ -6,12 +6,12 @@ registered adapters in ``scripts.tools.ADAPTERS`` and routed to the matching
 adapter for parsing. SARIF or JSON files whose basename has no registered
 adapter are skipped with a diagnostic. Stdlib-only.
 """
-import fnmatch
 import glob
 import json
 import os
 import sys
 
+from scripts import groups_schema
 from scripts.tools import ADAPTERS
 from scripts.tools.base import strip_ansi, target_root_cv
 from scripts.tools.sarif_utils import (
@@ -336,8 +336,10 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
         if _is_run_artifact_path(fpath, target_root, venv_cache):   # not project source
             ra_count += 1
             continue
-        glob_hit = next((g for g in exclude_globs or ()
-                         if fnmatch.fnmatch(fpath, g)), None)
+        # #1740 fix round 2: gitignore semantics, through the translator
+        # `discovery` compiles the SAME committed `exclude_paths:` lines with
+        # -- `fnmatch` here made one committed line mean two different scopes.
+        glob_hit = groups_schema.matched_glob(fpath, exclude_globs, "ingest")
         if glob_hit is not None:
             gl_count += 1                                           # operator policy
             if excluded_out is not None:
@@ -483,8 +485,11 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     caller which may not lose a finding to a directory name can now ask for
     them, the same way it asks for the vendored ones.
 
-    exclude_globs (F-CAL-2): additional fnmatch patterns matched against each
-    finding's location.file; matches are dropped too. Both filters share one
+    exclude_globs (F-CAL-2): additional gitignore-flavored path globs matched
+    against each finding's location.file -- compiled by the same translator
+    discovery reads `exclude_paths:` with (#1740 fix round 2), so `*` stays
+    inside a segment, `**` crosses, and a trailing `/` claims a subtree;
+    matches are dropped too. Both filters share one
     aggregate stderr note. #1740 fix round 1: `excluded_out`, when a list, is
     filled with those drops, each carrying an `excluded` key naming the GLOB
     that matched -- so a caller can say how much of its own policy applied.

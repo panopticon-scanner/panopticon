@@ -31,7 +31,14 @@ import yaml
 # requires changes to off-limits ``driver.py``; accepted as tech debt (#1201).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402
-import groups_schema  # noqa: E402
+try:                                       # #1740 fix round 2: ONE module
+    from scripts import groups_schema      # object, so the glob compiler this
+except ModuleNotFoundError:                # module and the TOOL side share is
+    import groups_schema                   # noqa: E402  one cache and one
+                                           # disclosure ledger, not two. Same
+                                           # fallback shape as safe_write
+                                           # below: the standalone CLI has only
+                                           # skill/scripts on sys.path.
 import plan_contract  # noqa: E402
 import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
@@ -394,90 +401,17 @@ def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
     # a chunk happened to land in.
     return sorted((sorted(c) for c in chunks), key=lambda c: c[0])
 
-# One disclosure per distinct pattern: `_glob_to_re` is called per (path,
-# pattern), so an unconditional print would emit a line per file scanned.
-_warned_globs = set()
-
 def _glob_to_re(pat):
     """Compile one gitignore-flavored glob to a regex over repo-relative paths.
 
-    Semantics (#499): ``*`` and ``?`` stay within a path segment, ``**``
-    crosses segments, and a pattern containing no ``/`` matches the basename
-    at any depth (gitignore's unanchored form). Patterns with a ``/`` are
-    anchored to the repo root, and a TRAILING ``/`` claims the directory and
-    everything under it (#1501: ``docs/`` is gitignore's most natural idiom
-    and used to compile to a regex requiring the path to end in ``/``, which a
-    repo-relative FILE path never does -- a silent zero-match).
+    The compiler itself is `groups_schema.glob_to_re` (#1740 fix round 2): the
+    tool side matches the SAME committed `exclude_paths:` lines and must read
+    them the same way, so the translator lives beside `glob_defect` in the
+    module that owns the glob vocabulary. This wrapper is discovery's own name
+    for it, and pins the label its disclosures carry.
     """
-    # A glob this compiler cannot translate faithfully must never be
-    # translated wrongly (#1501). A setup proposal carrying one is refused
-    # outright, but a committed root config's parse errors are disclosed and
-    # NOT blocking (this module's standing policy, `_committed_matrix`), so
-    # one still reaches this compiler -- where the old behaviour was to
-    # `re.escape` the brackets into a literal that claimed the wrong files.
-    # Disclose and compile to a never-matching regex instead: refuse to guess.
-    defect = groups_schema.glob_defect(pat)
-    if defect:
-        if pat not in _warned_globs:
-            _warned_globs.add(pat)
-            print("discovery: glob %r matches nothing: %s (#1501)"
-                  % (pat[:80], defect), file=sys.stderr)
-        return re.compile(r"(?!)")
-    # Collapse runs of adjacent segment-crossing wildcards BEFORE compiling.
-    # `**/**/.../x` compiles to sequential `(?:[^/]+/)*` quantifiers -- the
-    # textbook catastrophic-backtracking ReDoS shape -- and repo-supplied
-    # root-config `match:` patterns reach this compiler, so a hostile repo
-    # could hang discovery (run-4 self-scan). Adjacent `**`
-    # segments are semantically redundant, so fold each run down to one.
-    pat = re.sub(r"(?:\*\*/)+", "**/", pat)
-    pat = re.sub(r"\*\*\*+", "**", pat)
-    # #run7 SEC-H4A: the `**`-collapse above only tames adjacent `**` runs. A
-    # SINGLE-`*` pattern like `a*a*...Z` compiles to `a[^/]*a[^/]*...Z` -- the
-    # classic (.*a)+ catastrophic-backtracking shape (empirically >5s on a
-    # moderate filename), unaffected by the collapse. Atomic groups can't fix it
-    # (a glob `*` MUST backtrack so a trailing literal can match), so bound
-    # complexity AFTER the collapse: a legitimate glob has a handful of wildcards,
-    # so an over-long / over-wildcarded pattern is hostile or degenerate --
-    # disclose it and compile to a never-matching regex rather than hang discovery
-    # (which reads the root config from the untrusted redteam target, BEFORE
-    # dispatch).
-    if len(pat) > 256 or pat.count("*") > 20:
-        print("discovery: ignoring over-complex glob pattern "
-              "(len=%d, wildcards=%d): %r"
-              % (len(pat), pat.count("*"), pat[:80]), file=sys.stderr)
-        return re.compile(r"(?!)")   # matches nothing
-    anchored = "/" in pat[:-1] if pat.endswith("/") else "/" in pat
-    if pat.startswith("/"):
-        pat = pat[1:]
-    # `docs/` == `docs/**`: the directory tree, never the directory's own
-    # path. Anchoring was already decided on the authored form above, so an
-    # unanchored `docs/` still means "a docs directory at any depth", exactly
-    # as gitignore reads it.
-    if pat.endswith("/"):
-        pat += "**"
-    out, i = [], 0
-    while i < len(pat):
-        c = pat[i]
-        if c == "*":
-            if pat[i:i + 3] == "**/":
-                out.append(r"(?:[^/]+/)*")
-                i += 3
-            elif pat[i:i + 2] == "**":
-                out.append(r".*")
-                i += 2
-            else:
-                out.append(r"[^/]*")
-                i += 1
-        elif c == "?":
-            out.append(r"[^/]")
-            i += 1
-        else:
-            out.append(re.escape(c))
-            i += 1
-    body = "".join(out)
-    if not anchored:
-        body = r"(?:.*/)?" + body
-    return re.compile("^" + body + "$")
+    return groups_schema.glob_to_re(pat, "discovery")
+
 
 def match_patterns(path, patterns):
     """gitignore-style decision for one path against an ordered pattern list.
