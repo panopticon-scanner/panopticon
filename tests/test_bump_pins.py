@@ -47,6 +47,18 @@ class TestTinyproxyFreshness(unittest.TestCase):
         self.assertEqual(request.get_header("Authorization"), "Bearer fixture")
         self.assertIn("application/vnd.oci.image.index.v1+json", request.get_header("Accept"))
 
+    def test_tag_parameter_selects_the_manifest_compared_against(self):
+        # #1899: the tag compared against is a parameter, not baked into
+        # `PROXY_MANIFEST` -- a repo that has deliberately declined a release
+        # and pinned to a specific tag instead of the floating `latest` can
+        # still be checked against ITS chosen tag.
+        raw = self._manifest()
+        with mock.patch.object(bp, "_get", side_effect=[b'{"token":"fixture"}', raw]) as get:
+            bp.latest_proxy_digest(tag="1.11.1")
+        request = get.call_args.args[0]
+        self.assertEqual(request.full_url,
+                         "https://registry-1.docker.io/v2/kalaksi/tinyproxy/manifests/1.11.1")
+
     def test_a_platform_specific_or_malformed_response_is_not_a_freshness_result(self):
         for raw in (b'{}', b'[]', self._manifest(("amd64",))):
             with self.subTest(raw=raw), mock.patch.object(
