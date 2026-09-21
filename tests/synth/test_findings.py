@@ -19,6 +19,20 @@ import scripts.evidence as evidence_mod
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _make_finding, _cli_args
 
 
+class TestFindingIdShape(unittest.TestCase):
+    """REM-11.3 (#1535): the id pattern is anchored with \A/\Z, not ^/$.
+
+    `$` matches before a trailing newline, so `"COD-001\n"` -- an agent-
+    supplied id read at the report boundary (report.py validate) -- passed
+    the old pattern and became an id nothing else could look up.
+    """
+
+    def test_a_trailing_newline_is_rejected(self):
+        self.assertIsNone(findings_mod.ID_RE.match("COD-001\n"))
+        self.assertIsNotNone(findings_mod.ID_RE.match("COD-001"))
+
+
+
 class TestNormalize(unittest.TestCase):
     def test_verdict_maps_to_confidence(self):
         f = findings_mod.normalize_finding({"severity": "high", "verdict": "CONFIRMED", "panel": "security"})
