@@ -196,6 +196,24 @@ class TestKimiModelAliasProbe(unittest.TestCase):
         self.assertEqual(kimi_probes.KIMI_MODEL_ALIAS, by)
         self.assertIn("kimi-code/k3", detail)
 
+    def test_a_deliberately_unbound_role_is_named_not_refuted(self):
+        # #1737 R-F4-2: `setup_scan`'s profile resolves to None -- inherit the
+        # session's model -- and `runners/kimi.py` binds `-m` only for an entry
+        # that carries one, so there is no alias for it to fail to resolve.
+        state, _by, detail = kimi_probes.probe_kimi_model_alias(
+            "kimi", configured=self.CONFIGURED)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("deliberately unbound", detail)
+        self.assertIn("setup_scan", detail)
+
+    def test_every_role_inheriting_measures_nothing_and_says_so(self):
+        with mock.patch.object(kimi_probes.model_resolver, "resolve_model",
+                               return_value={"model": None}):
+            state, _by, detail = kimi_probes.probe_kimi_model_alias(
+                "kimi", configured=self.CONFIGURED)
+        self.assertEqual(hosts.UNKNOWN, state)     # never a vacuous PROVEN
+        self.assertIn("no role carries an entry model", detail)
+
     def test_an_unresolvable_role_is_refuted_and_named(self):
         state, _by, detail = kimi_probes.probe_kimi_model_alias(
             "kimi", configured=frozenset({"kimi-code/k3"}))

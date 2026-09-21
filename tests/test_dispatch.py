@@ -487,11 +487,14 @@ class TestEmitHostAgents(unittest.TestCase):
             written = dispatch.emit_host_agents("claude", d)
             names = sorted(os.path.basename(p) for p in written)
             # #run10: the 4.x panel_review/lens_sweep shells retired with their
-            # roles; the registered set is the 5.x matrix + scout + advisor.
+            # roles; the registered set is the 5.x matrix + scout + advisor --
+            # and, since #1737, the setup classifier, which reads the whole
+            # untrusted tree and had no shell at all.
             self.assertEqual(names, ["panopticon-advisor.md",
                                      "panopticon-domain-advisor.md",
                                      "panopticon-domain-panel.md",
-                                     "panopticon-scout.md"])
+                                     "panopticon-scout.md",
+                                     "panopticon-setup-scan.md"])
 
     def test_claude_frontmatter_is_enforcement_shell(self):
         with tempfile.TemporaryDirectory() as d:
@@ -532,7 +535,8 @@ class TestEmitHostAgents(unittest.TestCase):
     def test_codex_toml_agents_are_read_only(self):
         with tempfile.TemporaryDirectory() as d:
             written = dispatch.emit_host_agents("codex", d)
-            self.assertEqual(len(written), 4)   # #run10: 4.x roles retired
+            # #run10: 4.x roles retired; #1737: setup_scan joined ROLE_FILES.
+            self.assertEqual(len(written), len(dispatch.ROLE_FILES))
             self.assertTrue(all(path.endswith(".toml") for path in written))
             with open(os.path.join(d, "panopticon-domain-panel.toml"), encoding="utf-8") as fh:
                 text = fh.read()
@@ -593,13 +597,17 @@ class TestEmitHostAgents(unittest.TestCase):
     def test_kimi_agent_file_includes_model_preference_and_when_to_use(self):
         with tempfile.TemporaryDirectory() as d:
             paths = dispatch.emit_host_agents("kimi", d)
-            self.assertEqual(len(paths), 4)   # #run10: 4.x roles retired
+            # #run10: 4.x roles retired; #1737: setup_scan joined ROLE_FILES.
+            self.assertEqual(len(paths), len(dispatch.ROLE_FILES))
             for p in paths:
                 with open(p, encoding="utf-8") as fh:
                     content = fh.read()
                 self.assertIn("whenToUse:", content)
                 self.assertIn("override: false", content)
-                self.assertIn("model_preference:", content)
+                # setup-scan is deliberately model-UNBOUND (R-F4-2), and a
+                # kimi agent file says that by carrying no preference at all.
+                self.assertEqual(p.endswith("panopticon-setup-scan.md"),
+                                 "model_preference:" not in content)
 
             # role-specific preferences
             scout = os.path.join(d, "panopticon-scout.md")
@@ -670,6 +678,64 @@ class TestEmitHostAgents(unittest.TestCase):
                 text = fh.read()
         self.assertIn("model: haiku", text)
         self.assertNotIn("model: opus", text)
+
+
+class TestSetupScanIsARegisteredShell(unittest.TestCase):
+    """#1737 (AGT-B1D): the one dispatch that reads the WHOLE untrusted tree
+    used to be the only role with no registered shell, so its tool grant was
+    whatever the host hands a general-purpose agent and the only restriction
+    that travelled with it was prose. It is a driver role now -- every host
+    that registers shells writes `panopticon-setup-scan` -- and the model
+    stays UNBOUND (R-F4-2): no `model:` line, so the shell inherits the
+    session's model rather than silently moving the one judgement-heavy
+    one-off dispatch onto a cheaper tier.
+    """
+
+    def test_setup_scan_is_a_driver_role(self):
+        self.assertEqual("setup-scan.md", dispatch.ROLE_FILES["setup_scan"])
+        self.assertEqual("panopticon-setup-scan",
+                         dispatch.registered_agent_name(dispatch.ROLE_FILES["setup_scan"]))
+
+    def test_claude_shell_grants_exactly_read_grep_glob_and_binds_no_model(self):
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("claude", d)
+            path = os.path.join(d, "panopticon-setup-scan.md")
+            self.assertTrue(os.path.isfile(path))
+            text = open(path, encoding="utf-8").read()
+        self.assertIn("name: panopticon-setup-scan", text)
+        self.assertIn("tools: Read, Grep, Glob", text)
+        # R-F4-2: unbound, so the session's model is what runs.
+        self.assertNotIn("\nmodel:", text)
+
+    def test_kimi_shell_grants_the_same_tools_and_binds_no_tier(self):
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("kimi", d)
+            text = open(os.path.join(d, "panopticon-setup-scan.md"),
+                        encoding="utf-8").read()
+        self.assertIn("name: panopticon-setup-scan", text)
+        for tool in ("  - Read", "  - Grep", "  - Glob"):
+            self.assertIn(tool, text)
+        for tool in ("  - Bash", "  - Edit", "  - Write", "  - Agent"):
+            self.assertIn(tool, text)          # the disallowedTools block
+        self.assertNotIn("model_preference", text)
+
+    def test_codex_shell_is_read_only_with_the_broker_tools_and_no_model(self):
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("codex", d)
+            text = open(os.path.join(d, "panopticon-setup-scan.toml"),
+                        encoding="utf-8").read()
+        self.assertIn('name = "panopticon-setup-scan"', text)
+        self.assertIn('sandbox_mode = "read-only"', text)
+        self.assertIn('enabled_tools = ["read_file", "search", "list_files"]', text)
+        self.assertNotIn("\nmodel =", text)
+
+    def test_generic_registers_no_shells_at_all(self):
+        # The permanent unenforced fallback (owner ruling D1) has no emitter,
+        # so setup-scan reaches it shell-less and ack-gated, like every other
+        # role there.
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                dispatch.emit_host_agents("generic", d)
 
 
 class TestPruneRetiredShells(unittest.TestCase):

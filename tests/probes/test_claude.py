@@ -67,7 +67,27 @@ class TestEntryModelBoundProbe(unittest.TestCase):
             self._register_all(d)
             state, by, detail = claude_probes.probe_entry_model_bound("claude", d)
         self.assertEqual((hosts.PROVEN, claude_probes.ENTRY_MODEL_BOUND), (state, by))
-        self.assertIn("%d/%d" % (len(dispatch.ROLE_FILES), len(dispatch.ROLE_FILES)), detail)
+        # #1737: the count is the roles that BIND one. `setup_scan` resolves to
+        # None -- "inherit the session's model" (R-F4-2) -- and its shell binds
+        # nothing, so the two agree and there is nothing to bind. It is named
+        # in the detail rather than counted or hidden.
+        binding = [role for role in dispatch.ROLE_FILES
+                   if model_resolver.resolve_model("claude", role).get("model")]
+        self.assertIn("%d/%d" % (len(binding), len(dispatch.ROLE_FILES)), detail)
+        self.assertIn("deliberately unbound", detail)
+        self.assertIn("setup_scan", detail)
+
+    def test_a_shell_that_binds_nothing_while_the_entry_asks_for_one_still_refutes(self):
+        # The unbound ALLOWANCE above is agreement on BOTH sides, never a
+        # blanket pardon for a shell with no model line: a role the profile
+        # gives a model to, registered with none, is the silent session-model
+        # win this probe exists to catch.
+        with tempfile.TemporaryDirectory() as d:
+            self._register_all(d)
+            _model_shell(d, "claude", dispatch.ROLE_FILES["domain_panel"], None)
+            state, _by, detail = claude_probes.probe_entry_model_bound("claude", d)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("binds no model", detail)
 
     def test_an_ambient_override_the_shell_cannot_see_is_refuted(self):
         # THE case the probe exists for: resolve_model honours
