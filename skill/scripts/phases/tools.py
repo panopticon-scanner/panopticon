@@ -129,6 +129,8 @@ def tools_execute(review_root, manifest):
            # controller's write-once record), never off the target's config.
            "--security", manifest.get("security_mode", "standard"),
            "--manifest", manifest_path]
+    if (manifest.get("flags") or {}).get("online"):
+        cmd.append("--online")
     # #1740 fix round 1: the committed `exclude_paths:` policy, threaded to the
     # scan. Same globs `phases/synthesize.py` hands the ingest as
     # `--tools-exclude`, from the same seam, so the report and the gate are

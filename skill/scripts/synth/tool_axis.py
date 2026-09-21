@@ -28,6 +28,12 @@ from . import plan as plan_mod
 from . import repair as repair_mod
 from . import validate_schema as validate_schema_mod
 
+# #1899: stands in for a network-excluded row the raw manifest named but
+# `repair_tools_network` could not publish (over `NAME_MAX`, or past
+# `ROWS_MAX`) -- fail closed, it still sinks certification, but as one
+# generic marker rather than the name a hostile manifest chose.
+UNPUBLISHABLE_NETWORK_TOOL = "(unpublishable)"
+
 
 class ToolManifestError(ValueError):
     """A stale or foreign tool manifest cannot be used for synthesis."""
@@ -174,6 +180,7 @@ class Reconciled:
     # `tools_sanitized`: coverage says which adapters PRODUCED output, and this
     # says what one of them could reach while doing it.
     tools_network: dict = field(default_factory=dict)
+    tools_network_excluded: dict = field(default_factory=dict)
     # #1644: why this run's tools-manifest could not be read, or None. Carried
     # beside `integrity` (which also publishes it) the way `integrity_ok` is:
     # certification takes it as an input, and must not have to read a section.
@@ -268,8 +275,12 @@ def reconcile(plan, tools, resolved):
         # usability by, inferring "unusable" from their absence would fail every
         # selected adapter on a run that never ingested.
         if tools.tools_ran is not None:
-            lost = ingest_tools.lost_required_coverage(tools.manifest,
-                                                       tools.dispositions or {})
+            # #1899: the helper takes its own read of the `network` block;
+            # hand it the REPAIRED table so a row `repair_tools_network`
+            # dropped is never republished here under `requested_absent`
+            # (`security_gate` shares the helper and keeps the raw read).
+            lost = ingest_tools.lost_required_coverage(
+                {**tools.manifest, "network": network}, tools.dispositions or {})
             tools_absent = sorted(set(tools_absent) | set(lost))
             tool_divergence.update(
                 {t: "produced_unusable" if info["kind"] == "unusable"
@@ -280,6 +291,25 @@ def reconcile(plan, tools, resolved):
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
         tool_divergence = {t: "requested_absent" for t in tools_absent}
+    # #1899: certify on the SAME repaired `network` table `meta.tools.network`
+    # publishes (the `network` local above), not a second raw read of
+    # `tools.manifest` -- a row `repair_tools_network` drops used to sink
+    # `coverage_certified` and be NAMED in `coverage_note` while never
+    # appearing in the table the report actually printed. The published table
+    # and the verdict are one thing now.
+    network_excluded = ingest_tools.network_exclusions({"network": network})
+    # A row the raw manifest excluded for network but the repair above could
+    # not publish is unpublishable, not resolved: fail closed, it still counts
+    # as a gap, as one generic marker standing in for however many such rows
+    # there were -- never the name a hostile manifest chose, since that name
+    # is exactly what could not be published.
+    if isinstance(tools.manifest, dict):
+        raw_network_excluded = ingest_tools.network_exclusions(tools.manifest)
+        if set(raw_network_excluded) - set(network_excluded):
+            network_excluded = dict(network_excluded)
+            network_excluded[UNPUBLISHABLE_NETWORK_TOOL] = "excluded:unpublishable"
+    tools_absent = sorted(set(tools_absent) | set(network_excluded))
+    tool_divergence.update({t: "network_unavailable" for t in network_excluded})
     # #1335: an adapter that ran but scanned nothing is disclosed, never gated.
     # It is absent from `tools_ran` (no coverage credit) which would otherwise
     # sink it into `tools_absent` on the scout-derived path above -- but a
@@ -287,7 +317,8 @@ def reconcile(plan, tools, resolved):
     # `produced_noscan` is non-gating by construction: it appears only in the
     # divergence map, and `tools_absent` is what reaches certify().
     noscan = sorted(name for name, d in (tools.dispositions or {}).items()
-                    if isinstance(d, dict) and d.get("status") == "noscan")
+                    if isinstance(d, dict) and d.get("status") == "noscan"
+                    and name not in network_excluded)
     if noscan:
         tools_absent = [t for t in tools_absent if t not in noscan]
         tool_divergence.update({t: "produced_noscan" for t in noscan})
@@ -425,5 +456,6 @@ def reconcile(plan, tools, resolved):
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
                       tools_sanitized=sanitized, tools_network=network,
+                      tools_network_excluded=network_excluded,
                       tools_manifest_invalid=tools.manifest_invalid,
                       gated_suppressed=gated)

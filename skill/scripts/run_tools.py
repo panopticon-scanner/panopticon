@@ -1191,7 +1191,8 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     like `redacted` -- and an explicit value is for a caller that did not run
     the loop. The third posture also MOVES the adapter: it leaves `selected`
     for `excluded_scope`, the shape the gate already reads as "applicable, not
-    required, disclosed", because an adapter left in both would read as a
+    required by scope, disclosed"; the network refusal independently prevents
+    coverage certification. An adapter left in both lists would read as a
     required scanner that went missing (and `security_gate` rejects the
     overlap outright).
     """

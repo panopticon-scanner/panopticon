@@ -366,6 +366,17 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
     return kept, gl_count, ra_count, suppressed
 
 
+def network_exclusions(manifest):
+    """Adapters refused safe egress, distinct from an operator's scope choice."""
+    from scripts.tools import egress
+    network = manifest.get("network") if isinstance(manifest, dict) else None
+    if not isinstance(network, dict):
+        return {}
+    return {name: posture for name, posture in network.items()
+            if isinstance(name, str) and isinstance(posture, str)
+            and posture.startswith(egress.EXCLUDED_PREFIX)}
+
+
 def lost_required_coverage(manifest, dispositions):
     """Selected scanners that did not deliver usable coverage, with reasons.
 
@@ -382,7 +393,8 @@ def lost_required_coverage(manifest, dispositions):
     - `unusable` -- output exists but ingestion could not use it: malformed,
                     truncated, oversized, unreadable, or no registered adapter.
 
-    `excluded_scope` adapters are never required, so they are never named here.
+    Operator scope exclusions are never required. An adapter excluded because
+    safe egress was unavailable is lost coverage and is named as `network`.
     `empty` is completed coverage -- a scanner that ran and found nothing is the
     outcome the pipeline hopes for. `noscan` is deliberately NOT lost coverage
     either: #1335 judged it separately as a no-surface disclosure
@@ -400,6 +412,8 @@ def lost_required_coverage(manifest, dispositions):
         elif disposition.get("status") == "failed":
             lost[name] = {"kind": "unusable",
                           "reason": disposition.get("reason") or "failed"}
+    lost.update({name: {"kind": "network", "reason": reason}
+                 for name, reason in network_exclusions(manifest).items()})
     return lost
 
 

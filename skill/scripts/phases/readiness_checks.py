@@ -20,9 +20,11 @@ dispatch. See DEVELOPMENT.md, "Test-only injection seams";
 import importlib.util
 import os
 import shutil
+import subprocess
 
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
+from scripts.tools import egress
 
 
 # The repo root, resolved from `skill/`'s own location rather than from cwd:
@@ -59,6 +61,26 @@ _NOT_APPLICABLE = "not applicable (--no-tools)"
 # launch seams in tests/test_host_launch_guard.py; this one is not a host CLI,
 # so it is not spelled DEFAULT_RUNNER and does not belong in LAUNCH_SEAMS.
 DOCKER_RUNNER = None
+
+
+def egress_proxy_row(online, tools_flag=None):
+    """A missing optional sidecar is a warning before any paid dispatch."""
+    if not online or tools_flag is False:
+        return {"ok": None, "level": "skip", "detail": "not requested (--online with tools)"}
+    runner = DOCKER_RUNNER if DOCKER_RUNNER is not None else setup_flow.DEFAULT_RUNNER
+    try:
+        proc = runner(["docker", "image", "inspect", egress.PROXY_IMAGE],
+                      capture_output=True, text=True, timeout=15)
+        present = proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        present = False
+    if present:
+        return {"ok": True, "level": "ok", "detail": egress.PROXY_IMAGE}
+    return {"ok": None, "level": "warn",
+            "detail": "online dependency audits need the pinned sidecar; pull it before "
+                      "starting: `docker pull %s`. If egress remains unavailable, "
+                      "the report cannot certify tool coverage." % egress.PROXY_IMAGE}
+
 
 def _docker_checks(tools_flag):
     """The daemon + image rows, or two `ok: null` rows under `--no-tools`.

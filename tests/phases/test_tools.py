@@ -19,7 +19,9 @@ class TestToolsPhase(unittest.TestCase):
         self.manifest = {"run_id": "R", "flags": {}}
 
     def test_produced_output_marks_ran(self):
+        self.manifest["flags"]["online"] = True
         def fake_run(cmd, **kw):
+            self.assertIn("--online", cmd)
             out = cmd[cmd.index("--out") + 1]
             os.makedirs(out, exist_ok=True)
             open(os.path.join(out, "trivy.json"), "w").close()
@@ -30,6 +32,37 @@ class TestToolsPhase(unittest.TestCase):
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
         self.assertTrue(marker["ran"])
         self.assertTrue(tools_phase.tools_done(self.root, self.manifest))
+
+    def test_online_flag_pinned_to_the_online_manifest_flag(self):
+        # #1899: `--online` must be PINNED to `flags.online`, not appended
+        # unconditionally -- an unconditional append still passes every other
+        # test in this module (none of them assert its ABSENCE), so this is
+        # the one test that would catch that regression.
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            out = cmd[cmd.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            open(os.path.join(out, "trivy.json"), "w").close()
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        # Absent: the manifest's `flags` dict has no `online` key at all.
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            tools_phase.tools_execute(self.root, self.manifest)
+        self.assertNotIn("--online", captured["cmd"])
+
+        # Explicitly false.
+        self.manifest["flags"]["online"] = False
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            tools_phase.tools_execute(self.root, self.manifest)
+        self.assertNotIn("--online", captured["cmd"])
+
+        # True.
+        self.manifest["flags"]["online"] = True
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            tools_phase.tools_execute(self.root, self.manifest)
+        self.assertIn("--online", captured["cmd"])
 
     def _run_with_manifest(self, redacted):
         """A scan that writes one capture and the runner's own coverage

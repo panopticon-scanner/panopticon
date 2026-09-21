@@ -15,6 +15,7 @@ import scripts.synth.delta as delta_mod
 import scripts.synth.render as render_mod
 import scripts.html_report as html_report
 import scripts.synth.plan as plan_mod
+import scripts.synth.repair as repair_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
 import scripts.group_runner as gr
@@ -584,6 +585,62 @@ class TestManifestMustDeclareSelected(unittest.TestCase):
         self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
         self.assertEqual(report["summary"]["gate"], "PASS")
         self.assertTrue(report["summary"]["coverage_certified"])
+
+    def test_network_excluded_dependency_audit_cannot_certify(self):
+        for stale_noscan in (False, True):
+            with self.subTest(stale_noscan=stale_noscan):
+                dispositions = {"pip-audit": {"status": "noscan"}} if stale_noscan else {}
+                _, report, _ = self._run(
+                    {"schema_version": 1, "selected": [], "produced": [], "missing": [],
+                     "excluded_scope": ["pip-audit"],
+                     "network": {"pip-audit": "excluded:online egress unavailable"}},
+                    dispositions=dispositions)
+                self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+                self.assertFalse(report["summary"]["coverage_certified"])
+                self.assertIn("safe network unavailable", report["summary"]["coverage_note"])
+                self.assertIn("pip-audit", report["summary"]["coverage_note"])
+                self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"]["pip-audit"],
+                                 "network_unavailable")
+
+    def test_network_excluded_unpublishable_name_still_sinks_certification(self):
+        # #1899: an over-long tool name in the `network` block cannot survive
+        # `repair_tools_network`'s NAME_MAX bound, so `meta.tools.network`
+        # never publishes it -- naming it in `coverage_note` (the raw-manifest
+        # read this fixes) would cite text the report itself never printed.
+        # Design pick, fail closed: an unpublishable row still sinks
+        # certification -- a hostile manifest cannot buy back a PASS by
+        # naming its excluded tool something too long to report -- but with a
+        # GENERIC reason, never the dropped name, since that name is exactly
+        # what could not be published.
+        long_name = "x" * (repair_mod.NAME_MAX + 1)
+        _, report, _ = self._run(
+            {"schema_version": 1, "selected": [], "produced": [], "missing": [],
+             "network": {long_name: "excluded:online egress unavailable"}})
+        self.assertEqual(report["meta"]["tools"]["network"], {})
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertNotIn(long_name, report["summary"]["coverage_note"])
+        self.assertIn("safe network unavailable", report["summary"]["coverage_note"])
+        div_tools = report["meta"]["coverage"]["divergence"]["tools"]
+        self.assertNotIn(long_name, div_tools)
+        self.assertEqual(div_tools[tool_axis_mod.UNPUBLISHABLE_NETWORK_TOOL],
+                         "network_unavailable")
+
+    def test_network_excluded_unpublishable_name_stays_out_of_divergence_after_an_ingest(self):
+        # #1899 re-review residual: with `tools_ran` set (a real ingest ran)
+        # the coverage-loss helper took a SECOND raw read of the manifest's
+        # `network` block and republished the over-long name verbatim under
+        # `divergence.tools` as `requested_absent`. Feed it the repaired
+        # table, so the one name the report could not print never appears.
+        long_name = "x" * (repair_mod.NAME_MAX + 1)
+        _, report, _ = self._run(
+            {"schema_version": 1, "selected": [], "produced": [], "missing": [],
+             "network": {long_name: "excluded:online egress unavailable"}},
+            tools_ran=set())
+        div_tools = report["meta"]["coverage"]["divergence"]["tools"]
+        self.assertNotIn(long_name, div_tools)
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertNotIn(long_name, json.dumps(report))
 
 
 class TestRedteamGatesVendoredToolFindings(unittest.TestCase):

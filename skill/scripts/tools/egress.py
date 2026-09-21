@@ -83,12 +83,10 @@ ALLOWLIST = {
 # root. The digest is the OCI image INDEX digest, so one pin covers both
 # architectures.
 #
-# Not in `scripts/bump_pins.py`: that script bumps the Dockerfile's
-# curl-and-checksum artifacts (rustup today), and the repo's other image
-# digests -- `ARG NVD_DATA_REF`, the `python:3.12-slim` base -- are BUILD-time
-# `Dockerfile` pins that `docker build` resolves. This one is resolved by
-# `docker run` on the operator's machine at scan time, so it lives beside the
-# code that runs it. Bumping it is a deliberate edit here.
+# `scripts/bump_pins.py tinyproxy` checks this digest against the current
+# multi-platform index weekly in pin-freshness.yml. It warns without changing
+# the pin: an update still needs proxy tests on both architectures. The tools
+# image already has nightly builds and tools-image-health.yml freshness checks.
 PROXY_IMAGE = ("docker.io/kalaksi/tinyproxy@sha256:"
                "8f9269b0b5b7b872b2fe8471299330c9fcf2ffb12eebdbb152feb7b9084f866a")
 PROXY_PORT = 8888

@@ -27,6 +27,8 @@ different upstreams and different verification steps:
                 API. Versions are NOT chosen here -- the `name==version` pins in
                 those files are, and this mode fills in what bytes each one is
                 allowed to be.
+  tinyproxy     read-only check of the egress sidecar's multi-platform digest;
+                a stale pin produces a workflow warning for manual review.
 
 RULE, inherited from the #run7 FIXME this automates: never guess a checksum.
 Every SHA written here is read from upstream's own metadata AND recomputed from
@@ -38,6 +40,7 @@ against a live index (tests/test_bump_pins.py drives it off canned responses).
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -54,7 +57,7 @@ REQUIREMENTS_FILES = (".github/requirements-gate.txt", "requirements-fixtures.tx
 TIMEOUT = 120
 
 
-def _get(url: str) -> bytes:
+def _get(url: str | urllib.request.Request) -> bytes:
     with urllib.request.urlopen(url, timeout=TIMEOUT) as fh:  # nosec B310 - https literal
         return fh.read()
 
@@ -151,6 +154,82 @@ def run_rustup(args) -> int:
     print("bump-pins: wrote rustup %s" % want)
     for arch, sha in sorted(shas.items()):
         print("  %s %s" % (arch, sha))
+    return 0
+
+
+# --- family: tinyproxy (read-only) --------------------------------------------
+
+PROXY_SOURCE = "skill/scripts/tools/egress.py"
+PROXY_REPOSITORY = "kalaksi/tinyproxy"
+PROXY_TOKEN = ("https://auth.docker.io/token?service=registry.docker.io"
+               "&scope=repository:kalaksi/tinyproxy:pull")
+PROXY_MANIFEST = "https://registry-1.docker.io/v2/kalaksi/tinyproxy/manifests/%s"
+PROXY_MEDIA_TYPES = ("application/vnd.oci.image.index.v1+json",
+                     "application/vnd.docker.distribution.manifest.list.v2+json")
+
+
+def current_proxy_digest(text: str) -> str:
+    """Read the literal pin without importing or executing the reviewed tree."""
+    for node in ast.parse(text).body:
+        if (isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "PROXY_IMAGE" for t in node.targets)):
+            value = ast.literal_eval(node.value)
+            prefix = "docker.io/" + PROXY_REPOSITORY + "@"
+            if isinstance(value, str) and value.startswith(prefix):
+                digest = value[len(prefix):]
+                if re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                    return digest
+    raise RuntimeError("no literal digest-pinned tinyproxy image in " + PROXY_SOURCE)
+
+
+def latest_proxy_digest(tag: str = "latest") -> str:
+    """Hash the registry's multi-platform manifest for `tag`; fetch no image
+    layers.
+
+    Registry V2's public pull token and manifest endpoints, not an authenticated
+    Docker CLI or a platform-specific image ID. See Docker's registry/auth docs
+    and distribution.github.io/distribution/spec/api/#pulling-an-image-manifest.
+
+    `tag` defaults to the floating `latest` Docker Hub resolves at pull time --
+    the tag `run_tinyproxy` compares the pinned digest against. This check is
+    read-only advice for manual review (the module docstring: "a stale pin
+    produces a workflow warning"), never a write -- so a repo that has
+    deliberately declined a newer release and stayed on an older one warns
+    here too, on every run, until an operator dismisses it or a caller passes
+    the declined release's own tag instead.
+    """
+    auth = json.loads(_get(PROXY_TOKEN))
+    token = (auth.get("token") or auth.get("access_token")) if isinstance(auth, dict) else None
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("Docker registry did not return a public pull token")
+    request = urllib.request.Request(PROXY_MANIFEST % tag, headers={
+        "Authorization": "Bearer " + token, "Accept": ", ".join(PROXY_MEDIA_TYPES)})
+    raw = _get(request)
+    manifest = json.loads(raw)
+    if (not isinstance(manifest, dict) or manifest.get("schemaVersion") != 2
+            or manifest.get("mediaType") not in PROXY_MEDIA_TYPES):
+        raise RuntimeError("tinyproxy %s is not a supported multi-platform manifest" % tag)
+    architectures: set[str | None] = set()
+    for entry in manifest.get("manifests") or []:
+        platform = entry.get("platform") if isinstance(entry, dict) else None
+        if isinstance(platform, dict) and platform.get("os") == "linux":
+            architectures.add(platform.get("architecture"))
+    if not {"amd64", "arm64"} <= architectures:
+        raise RuntimeError("tinyproxy %s does not cover linux/amd64 and linux/arm64" % tag)
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def run_tinyproxy(args) -> int:
+    with open(args.source, encoding="utf-8") as fh:
+        have = current_proxy_digest(fh.read())
+    want = latest_proxy_digest()
+    print("bump-pins: tinyproxy pinned=%s latest=%s" % (have, want))
+    if have == want:
+        print("bump-pins: up to date")
+    else:
+        print("::warning title=Tinyproxy pin is stale::Review docker.io/%s@%s "
+              "and update PROXY_IMAGE after testing the proxy on both architectures. "
+              "The pin was not changed." % (PROXY_REPOSITORY, want))
     return 0
 
 
@@ -336,6 +415,10 @@ def main(argv=None):
                       help="a requirements file to refresh (repeatable; "
                            "default: %s)" % ", ".join(REQUIREMENTS_FILES))
     reqs.set_defaults(run=run_requirements)
+
+    proxy = families.add_parser("tinyproxy", help="check the egress sidecar digest (read-only)")
+    proxy.add_argument("--source", default=PROXY_SOURCE)
+    proxy.set_defaults(run=run_tinyproxy)
 
     for parser in (rustup, reqs):
         parser.add_argument("--write", action="store_true",

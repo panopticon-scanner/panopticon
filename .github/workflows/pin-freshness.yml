@@ -26,6 +26,15 @@ permissions:
 # be a no-op PR every Monday. The operator refreshes it beside the version bump
 # -- DEVELOPMENT.md, "Regenerating the pinned dependency hashes".
 jobs:
+  tinyproxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Inherits contents:read. A changed digest is a warning for manual review.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the egress sidecar digest
+        run: python3 scripts/bump_pins.py tinyproxy
+
   rustup:
     runs-on: ubuntu-latest
     timeout-minutes: 10
