@@ -332,6 +332,7 @@ groups:
     - tests/test_nvd_cache_decision.py
     - tests/test_workflow_pins.py
     - tests/test_workflow_guard.py
+    - tests/test_shell_reader.py
     - tests/test_pyproject.py
     - tests/test_pyproject_metadata.py
     panels:
