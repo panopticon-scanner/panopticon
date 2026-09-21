@@ -249,7 +249,7 @@ def agent_finding(raw, path="<agent payload>"):
     if isinstance(prov, dict):
         clean["provenance"] = dict(prov)
         for key in ("confirmation_status", "confirmed_by", "confirmation_reasoning",
-                    "confirmed_by_model"):
+                    "confirmed_by_model", "advisor_code"):
             if key in prov:
                 print("synthesize: stripped self-asserted provenance.%s from %s in %s"
                       % (key, raw.get("id", "?"), path), file=sys.stderr)

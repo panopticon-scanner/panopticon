@@ -766,6 +766,18 @@ class TestEvidenceIntegrity(unittest.TestCase):
         for key in ("_repo_root", "_future_controller_key", "fingerprint"):
             self.assertNotIn(key, loaded)
 
+    def test_forged_advisor_code_is_stripped_from_provenance(self):
+        # #1674 review: `provenance.advisor_code` is written by
+        # `evidence.apply_verdict` and read by `strain_report` as THE OCRDb
+        # mis-fit signal; an unverdicted panel finding must not fabricate an
+        # advisor's second opinion.
+        forged = _make_finding(provenance={"advisor_code": "SEC-forged",
+                                           "reviewer": "panel"})
+        with tempfile.TemporaryDirectory() as d:
+            loaded = findings_mod.load_findings([self._agent_file(d, [forged])])[0]
+        self.assertNotIn("advisor_code", loaded["provenance"])
+        self.assertEqual("panel", loaded["provenance"]["reviewer"])
+
     def test_forged_group_is_removed_even_without_a_group_in_the_filename(self):
         with tempfile.TemporaryDirectory() as d:
             for name, expected in (("findings-real-SEC.json", "real"), ("claims.json", None)):
