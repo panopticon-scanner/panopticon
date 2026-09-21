@@ -202,7 +202,7 @@ def _split(text):
     """
     statements, stages, buf = [], [], []
     quote, at_token_start, i, n = None, True, 0, len(text)
-    cases = []
+    cases: list[str] = []
 
     def end_stage():
         stages.append("".join(buf))
