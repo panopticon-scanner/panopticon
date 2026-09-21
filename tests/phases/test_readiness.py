@@ -230,10 +230,20 @@ class TestTheDisclosedOptOut(_ReadinessCase):
         self.assertEqual(body["flags"], {"tools": False, "online": False})
         self.assertIsInstance(body["checks"], list)
         for row in body["checks"]:
-            self.assertEqual(sorted(row), ["detail", "name", "ok"])
+            # `level` is optional -- readiness_execute only adds it (always
+            # "warn", alongside `ok: None`) to a row whose raw check answered
+            # "warn" rather than True/False/None. This run's rows do not
+            # (--no-tools takes every check off the warn-capable path), but
+            # the shape pin has to allow the key a row CAN carry, not just
+            # the keys these particular rows happen to have.
+            self.assertLessEqual(set(row), {"detail", "name", "ok", "level"})
+            self.assertGreaterEqual(set(row), {"detail", "name", "ok"})
             self.assertIsInstance(row["name"], str)
             self.assertIsInstance(row["detail"], str)
             self.assertIn(row["ok"], (True, False, None))
+            if "level" in row:
+                self.assertEqual(row["level"], "warn")
+                self.assertIsNone(row["ok"])
         # The host posture is recorded, never re-derived and never gating.
         self.assertIsNone(self._rows(d)["host-capabilities"]["ok"])
 

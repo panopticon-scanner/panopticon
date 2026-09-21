@@ -81,6 +81,7 @@ def egress_proxy_row(online, tools_flag=None):
                       "starting: `docker pull %s`. If egress remains unavailable, "
                       "the report cannot certify tool coverage." % egress.PROXY_IMAGE}
 
+
 def _docker_checks(tools_flag):
     """The daemon + image rows, or two `ok: null` rows under `--no-tools`.
 
