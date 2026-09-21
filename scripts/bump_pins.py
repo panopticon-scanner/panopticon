@@ -53,7 +53,8 @@ RUSTUP_TRIPLES = {"AMD64": "x86_64-unknown-linux-gnu",
                   "ARM64": "aarch64-unknown-linux-gnu"}
 PYPI_RELEASE = "https://pypi.org/pypi/{name}/{version}/json"
 # The files the `requirements` family maintains when none is named.
-REQUIREMENTS_FILES = (".github/requirements-gate.txt", "requirements-fixtures.txt")
+REQUIREMENTS_FILES = (".github/requirements-gate.txt", "requirements-fixtures.txt",
+                      "requirements-tools.txt")
 TIMEOUT = 120
 
 
@@ -275,14 +276,30 @@ def parse_requirements(text: str) -> list[tuple[str, str]]:
     return pins
 
 
-def wheel_is_installable(filename: str) -> bool:
-    """Could the linux x86_64 builds this repo pins for select this wheel?
+# The machine architectures the builds these pins protect actually run on.
+# ubuntu-latest (the gate) is amd64 only, but docker-publish.yml builds the
+# tools image -- and with it the fixtures image FROM it -- for linux/amd64 AND
+# linux/arm64, so an x86_64-only hash block fails `--require-hashes` on the
+# arm64 leg alone (#1734). Both are kept for every file: pip only needs ONE
+# `--hash` on a line to match the artifact it actually fetched, so the digests
+# an amd64 build never uses cost it nothing.
+LINUX_ARCHES = ("x86_64", "aarch64")
 
-    Both surfaces are linux/amd64 -- ubuntu-latest for the gate, the
-    `python:3.12-slim` tools image for the fixtures -- so the answer is the
-    pure-Python wheels plus the linux x86_64 binary ones. Every CPython ABI is
-    kept rather than just today's: the gate's `python-version` is a pin of its
-    own and moving it must not silently leave pip with nothing it may install.
+
+def wheel_is_installable(filename: str) -> bool:
+    """Could the linux builds this repo pins for select this wheel?
+
+    The surfaces are ubuntu-latest for the gate and the `python:3.12-slim`
+    images for the fixtures and the tools -- so the answer is the pure-Python
+    wheels plus the linux binary ones for either architecture in
+    `LINUX_ARCHES`. Every CPython ABI is kept rather than just today's: the
+    gate's `python-version` is a pin of its own and moving it must not silently
+    leave pip with nothing it may install.
+
+    `"linux" in tag` is load-bearing next to the arch suffix, not decoration:
+    `macosx_11_0_arm64` also ends in an arm64 spelling, and `aarch64` is the
+    one manylinux uses, so the two tests together are what keep a macOS wheel
+    out of a linux build's hash block.
     """
     if not filename.endswith(".whl"):
         return False
@@ -290,7 +307,7 @@ def wheel_is_installable(filename: str) -> bool:
     for tag in platform_tag.split("."):
         if tag == "any":
             return True
-        if "linux" in tag and tag.endswith("x86_64"):
+        if "linux" in tag and tag.endswith(LINUX_ARCHES):
             return True
     return False
 

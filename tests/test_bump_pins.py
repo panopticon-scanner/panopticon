@@ -240,9 +240,9 @@ PURE = [("pytest-9.1.1-py3-none-any.whl", WHEEL, WHEEL_SHA)]
 
 
 class TestWheelSelection(unittest.TestCase):
-    """Which artifacts a linux x86_64 build could actually be served."""
+    """Which artifacts the linux builds this repo pins for could be served."""
 
-    def test_pure_python_and_linux_x86_64_wheels_are_selected(self):
+    def test_pure_python_and_linux_wheels_are_selected(self):
         for name in ("pytest-9.1.1-py3-none-any.whl",
                      "six-1.17.0-py2.py3-none-any.whl",
                      "pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64."
@@ -250,11 +250,26 @@ class TestWheelSelection(unittest.TestCase):
                      "pyyaml-6.0.3-cp312-cp312-musllinux_1_2_x86_64.whl"):
             self.assertTrue(bp.wheel_is_installable(name), name)
 
+    def test_linux_aarch64_wheels_are_selected_too(self):
+        # #1734: the tools image publishes linux/amd64 AND linux/arm64
+        # (docker-publish.yml), so a hash block holding only the x86_64 wheel
+        # makes `--require-hashes` fail the arm64 leg of the build -- the one
+        # architecture nobody develops on, on a matrix build where the other leg
+        # goes green. The gate and fixture files gain the extra digests
+        # harmlessly: pip needs ONE hash on the line to match what it fetched.
+        for name in ("pyyaml-6.0.3-cp312-cp312-manylinux2014_aarch64."
+                     "manylinux_2_17_aarch64.whl",
+                     "pyyaml-6.0.3-cp312-cp312-musllinux_1_2_aarch64.whl"):
+            self.assertTrue(bp.wheel_is_installable(name), name)
+
     def test_other_platforms_and_sdists_are_not(self):
+        # macosx_*_arm64 is the trap the aarch64 widening must not spring: it
+        # ends in `arm64`, and a substring rule that forgot to require `linux`
+        # would pin a wheel no build here can install.
         for name in ("pyyaml-6.0.3-cp312-cp312-macosx_11_0_arm64.whl",
                      "pyyaml-6.0.3-cp312-cp312-macosx_10_13_x86_64.whl",
                      "pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
-                     "pyyaml-6.0.3-cp312-cp312-manylinux_2_17_aarch64.whl",
+                     "pywin32-311-cp312-cp312-win_arm64.whl",
                      "pytest-9.1.1.tar.gz"):
             self.assertFalse(bp.wheel_is_installable(name), name)
 
@@ -381,6 +396,17 @@ class TestRequirementsMain(unittest.TestCase):
         # how the wrong file gets rewritten.
         with self.assertRaises(SystemExit):
             bp.main([])
+
+    def test_every_privileged_requirements_file_is_on_the_default_list(self):
+        # The default list is what `bump_pins requirements` refreshes when no
+        # --file is named, which is how an operator refreshes them all beside a
+        # version bump. A hashed file missing from it is one nobody re-reads:
+        # its digests go stale silently and the next build fails on a pin
+        # nothing was watching. #1734 added the tools image's closure.
+        self.assertEqual(
+            (".github/requirements-gate.txt", "requirements-fixtures.txt",
+             "requirements-tools.txt"),
+            bp.REQUIREMENTS_FILES)
 
 
 if __name__ == "__main__":
