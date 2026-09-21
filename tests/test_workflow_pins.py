@@ -330,14 +330,13 @@ EXEMPT_INSTALLS = (
      "pyproject.toml's and Dependabot bumps them."),
     ("ci.yml", "pip install -e .[test]",
      "same, for the test matrix."),
-    ("Dockerfile", "semgrep==${SEMGREP_VERSION}",
-     "version-pinned by ARG in the same file and rebuilt from a digest-pinned "
-     "base; the scanner image is built from main, published to GHCR and pulled "
-     "by digest, so the artifact the gate runs is fixed by the image digest "
-     "rather than by this line."),
-    ("Dockerfile", "pip-audit==${PIP_AUDIT_VERSION}",
-     "same: ARG-pinned version inside the digest-pinned scanner image."),
 )
+# #1734 retired the two Dockerfile exemptions that used to sit here. Their
+# reasoning -- that the image digest fixes what the gate runs -- was true and
+# beside the point: it pins the image, not the 88 transitive packages the build
+# resolved from PyPI as root to MAKE that image. Both lines now install from
+# `requirements-tools.txt` under --require-hashes --no-deps and need no
+# exemption. The remaining entries are all ci.yml's, the unprivileged surface.
 
 
 def _write_scopes(permissions):

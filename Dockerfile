@@ -49,19 +49,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # tightening the transitive dependency policy. Direct binary downloads retain
 # their separate checksum requirements above and below.
 #
-# Python tools. semgrep pinned (#outage 2026-08-18): the rules-corpus pin
-# below is a commit SHA on a live branch, but that pin is only meaningful
-# paired with a known-compatible semgrep build -- an unpinned `pip install`
-# would keep re-validating tomorrow's semgrep release against today's rules.
-RUN pip install --timeout=300 --no-cache-dir "semgrep==${SEMGREP_VERSION}" "bandit==${BANDIT_VERSION}" "bandit-sarif-formatter==${BANDIT_SARIF_FORMATTER_VERSION}"
+# Python tools, installed from the closure this repo commits rather than from
+# whatever PyPI resolves on the day: requirements-tools.txt holds all 92
+# packages the four tools pull in, each with the sha256 of every wheel a linux
+# build may legitimately be served. --require-hashes makes pip refuse an
+# artifact whose digest is not in that file; --no-deps makes the file the
+# COMPLETE list rather than a resolver's starting point, so a missing line
+# fails the build loudly here instead of quietly fetching something unpinned.
+# `scripts/bump_pins.py requirements` is what writes the digests; it reads each
+# from PyPI AND recomputes it from the downloaded wheel.
+#
+# semgrep's version (#outage 2026-08-18) is why the four tools keep their own
+# ARGs above: the rules-corpus pin below is a commit SHA on a live branch, and
+# that pin is only meaningful paired with a known-compatible semgrep build --
+# an unconstrained upgrade would keep re-validating tomorrow's semgrep release
+# against today's rules. A test fails when an ARG and the closure disagree, so
+# neither can be bumped alone.
+COPY requirements-tools.txt /tmp/requirements-tools.txt
+RUN pip install --timeout=300 --no-cache-dir --require-hashes --no-deps -r /tmp/requirements-tools.txt \
+    && rm /tmp/requirements-tools.txt
 
 # Ruby (brakeman + bundler-audit)
 RUN timeout 300 gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
     && timeout 120 bundle-audit update
 
-# Node (eslint + security plugin) + Python dependency audit
-RUN npm install --fetch-timeout=600000 -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}" \
-    && pip install --timeout=300 --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
+# Node (eslint + security plugin). pip-audit used to ride along on this line;
+# it is one of the four tools in the closure above now.
+RUN npm install --fetch-timeout=600000 -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}"
 
 # OSV scanner (static Go binary)
 ARG OSV_SCANNER_VERSION=1.8.2
