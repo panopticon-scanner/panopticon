@@ -100,6 +100,23 @@ class TestMarkerGuard(DispatchScriptTestCase):
         self.assertIn("read guard", out["error"])
         self.assertIn("e1", out["error"])
 
+    def test_a_marker_whose_id_extends_the_entrys_own_id_is_rejected(self):
+        # A guard loosened from `===` to `startsWith` would accept the marker
+        # for `e10` on entry `e1`; the `e2` case above shares no prefix and
+        # cannot tell the two guards apart.
+        entry = _entry("e1", marker="panopticon-entry: e10")
+        out = self.run_harness({"args": {"entries": [entry]}})
+        self.assertIsNotNone(out["error"])
+        self.assertIn("read guard", out["error"])
+
+    def test_a_marker_with_trailing_text_after_the_id_is_rejected(self):
+        # Same loosening, other direction: a marker line that continues past
+        # the id is not the exact marker the read guard armed.
+        entry = _entry("e1", marker="panopticon-entry: e1 extra")
+        out = self.run_harness({"args": {"entries": [entry]}})
+        self.assertIsNotNone(out["error"])
+        self.assertIn("read guard", out["error"])
+
     def test_the_exact_marker_passes(self):
         out = self.run_harness({"args": {"entries": [_entry("e1")]},
                                 "replies": {"e1": "ok"}})
