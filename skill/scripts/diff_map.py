@@ -100,7 +100,17 @@ def parse_unified_diff(text):
     pending = None     # fallback key, live until this block's `+++` header
     opened = False     # a file block has been framed at all
     budget = 0         # payload lines the open hunk still owes
-    for line in text.splitlines():
+    # split("\n"), NOT splitlines(): git frames a diff on "\n" and nothing
+    # else, while splitlines() also breaks on \r, \x0b, \x0c, \x1c-\x1e,
+    # \x85 and \u2028/\u2029. Any of those inside an ADDED source line would
+    # split it in two, over-spend the hunk budget, and hand the fragment after
+    # it to the framing branch -- the #1738 bypass again, through a character
+    # class instead of a prefix. The trailing "" of the final newline is
+    # dropped; it is not a payload line and must not spend budget.
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    for line in lines:
         if budget > 0:                                   # inside a hunk
             if not line.startswith("\\"):                # no-newline marker
                 budget -= 1
@@ -151,11 +161,30 @@ def parse_unified_diff(text):
     return result
 
 
-def _run_git(repo, args, timeout=60):
+def _run_git(repo, args, timeout=60, text=True):
+    r"""Run git in `repo`. `text=False` returns BYTES.
+
+    #1738 fix round 1: text mode is universal-newline mode -- it rewrites a
+    lone `\r` (and `\r\n`) to `\n` on the way out of the pipe, which invents
+    diff lines that git never emitted and hands parse_unified_diff a forged
+    file header inside an added line. The diff is therefore read as bytes and
+    decoded by its caller; every other call here reads a ref or a file list,
+    where the translation is harmless.
+    """
     git_bin = shutil.which("git") or "git"
     return subprocess.run([git_bin, "-C", repo, *args],  # nosec B603
-                          capture_output=True, text=True, timeout=timeout,
+                          capture_output=True, text=text, timeout=timeout,
                           env={"PATH": os.environ.get("PATH", "")})
+
+
+def _decode_git(raw, lossy=False):
+    """UTF-8-decode what `_run_git(..., text=False)` returned.
+
+    Strict by default so undecodable diff output fails loud at the call site
+    rather than quietly losing a path; `lossy` is for stderr, which is only
+    ever quoted back to the operator in a message.
+    """
+    return (raw or b"").decode("utf-8", "replace" if lossy else "strict")
 
 
 def _merge_base_cause(repo, base):
@@ -222,16 +251,33 @@ def hunk_map(repo, base, exclude=()):
     # headers parse_unified_diff keys on — which would yield an empty map and a
     # vacuous PASS (#5.0-08).
     try:
+        # text=False (#1738 fix round 1): universal-newline translation would
+        # rewrite a lone `\r` inside an added line to `\n`, splitting one
+        # payload line into two before the parser can budget them.
         diff = _run_git(repo, ["-c", "diff.mnemonicPrefix=false",
                                "-c", "core.quotepath=false", "diff",
                                "--unified=0", "--no-color", "--find-renames",
-                               "--src-prefix=a/", "--dst-prefix=b/", base_sha])
+                               "--src-prefix=a/", "--dst-prefix=b/", base_sha],
+                        text=False)
     except Exception as e:
         raise DiffMapError("git diff against %s failed: %s" % (base_sha, e))
     if diff.returncode != 0:
         raise DiffMapError("git diff against %s failed (rc=%s): %s"
-                           % (base_sha, diff.returncode, (diff.stderr or "").strip()))
-    result = parse_unified_diff(diff.stdout)
+                           % (base_sha, diff.returncode,
+                              _decode_git(diff.stderr, lossy=True).strip()))
+    try:
+        # Pinned to UTF-8, not the operator's locale: git hands back path and
+        # content bytes as they are, and every other surface this map meets
+        # (the findings' location.file, diff-hunks.json) is UTF-8. Undecodable
+        # output stays a loud DiffMapError -- exactly what strict text-mode
+        # decoding already raised here -- never a silently empty map (#5.0-08).
+        diff_text = _decode_git(diff.stdout)
+    except UnicodeDecodeError as e:
+        raise DiffMapError(
+            "git diff against %s produced output that is not UTF-8 (%s). The "
+            "delta cannot be computed, and an empty diff would pass the "
+            "on-diff gate vacuously." % (base_sha, e))
+    result = parse_unified_diff(diff_text)
     # `git diff` omits untracked files; add them as whole-file ranges.
     try:
         # Include new untracked files, matching discovery.collect_changed_files.

@@ -199,6 +199,33 @@ class TestParseHunkState(unittest.TestCase):
         self.assertEqual(diff_map.parse_unified_diff(text),
                          {"my file.txt": [(1, 1)], "my bin.dat": []})
 
+    # #1738 fix round 1 (Critical). git frames a diff on "\n" and nothing else,
+    # but str.splitlines() also breaks on a lone \r, \x0b, \x0c, \x1c-\x1e,
+    # \x85 (NEL) and \u2028/\u2029 -- so one of those INSIDE an added source
+    # line split it into two fragments, over-spent the hunk budget, and handed
+    # the fragment after it to the framing branch. The original bypass through
+    # a second door.
+    SPLITTERS = [("CR", "\r"), ("VT", "\x0b"), ("FF", "\x0c"), ("FS", "\x1c"),
+                 ("GS", "\x1d"), ("RS", "\x1e"), ("NEL", "\x85"),
+                 ("LS", "\u2028"), ("PS", "\u2029")]
+
+    def test_only_a_newline_frames_a_line(self):
+        for name, ch in self.SPLITTERS:
+            with self.subTest(name):
+                m = diff_map.parse_unified_diff(
+                    self._forged(added="+payload%s+++ b/other/file" % ch))
+                self.assertEqual(m, self.REAL)
+
+    def test_an_embedded_hunk_header_neither_forges_nor_stalls_the_parse(self):
+        # the denial-of-service face of the same bug: the fragment after the
+        # split was read as a `@@` header, opening a 198-line budget that ate
+        # the rest of the diff and ended in a (loud, run-killing) DiffMapError.
+        for name, ch in self.SPLITTERS:
+            with self.subTest(name):
+                m = diff_map.parse_unified_diff(
+                    self._forged(added="+x=1%s@@ -1,99 +1,99 @@" % ch))
+                self.assertEqual(m, self.REAL)
+
     def test_classify_still_sees_a_hunk_after_a_forged_header(self):  # (i)
         # The whole point: a finding at line 41 (second hunk) used to come back
         # on_diff False -- the PR's own content had scoped the gate away from it.
@@ -270,6 +297,49 @@ class TestHunkMap(unittest.TestCase):
         self.assertTrue(diff_map.classify(
             {"location": {"file": "a.py", "line_start": 9}}, m)["on_diff"])
 
+    def test_a_carriage_return_inside_a_line_cannot_split_it(self):
+        # #1738 fix round 1 (Critical), end-to-end through REAL git: a lone \r
+        # inside an added line used to be turned into a line break TWICE --
+        # once by the universal-newline translation in _run_git's text-mode
+        # pipe (which rewrites \r to \n before the parser sees a thing) and
+        # once by str.splitlines() -- so `+++ b/other/file` after it was read
+        # as a file header and the later hunk was re-keyed off the real file.
+        d = self._repo()
+        _git(d, "checkout", "-q", "-b", "feat")
+        lines = ["line%d" % i for i in range(1, 11)]
+        lines[1] = "payload\r+++ b/other/file"   # forged header behind a CR
+        lines[8] = "CHANGED9"                    # the real change, later hunk
+        # newline="" so nothing on the way out of Python rewrites the \r (or
+        # the \n) -- the bytes git sees are the bytes written here.
+        with open(os.path.join(d, "a.py"), "w", encoding="utf-8", newline="") as fh:
+            fh.write("\n".join(lines) + "\n")
+        _git(d, "commit", "-qam", "c")
+        m = diff_map.hunk_map(d, "main")
+        self.assertEqual(sorted(m), ["a.py"], m)      # no forged key
+        self.assertTrue(any(s <= 2 <= e for (s, e) in m["a.py"]), m)
+        self.assertTrue(any(s <= 9 <= e for (s, e) in m["a.py"]), m)
+        self.assertTrue(diff_map.classify(
+            {"location": {"file": "a.py", "line_start": 9}}, m)["on_diff"], m)
+
+    def test_diff_output_that_is_not_utf8_fails_loud(self):
+        # The diff is read as BYTES (so no newline translation) and decoded
+        # here, pinned to UTF-8 rather than the operator's locale. Undecodable
+        # output must stay a loud DiffMapError -- what text-mode strict
+        # decoding already did -- never a silently empty map (#5.0-08).
+        def fake(repo, args, timeout=60, text=True):
+            r = mock.Mock()
+            if args[0] == "merge-base":
+                r.returncode, r.stdout, r.stderr = 0, "deadbeef\n", ""
+            elif args[0] == "-c":
+                r.returncode, r.stdout, r.stderr = 0, b"+++ b/\xff\xfe.py\n", b""
+            else:
+                r.returncode, r.stdout, r.stderr = 0, "", ""
+            return r
+        with mock.patch.object(diff_map, "_run_git", side_effect=fake):
+            with self.assertRaises(diff_map.DiffMapError) as ctx:
+                diff_map.hunk_map(".", "main")
+        self.assertIn("UTF-8", str(ctx.exception))
+
     def test_unresolvable_base_raises_instead_of_returning_empty(self):
         # #1256: this used to return {}. An empty map scopes the on-diff gate to
         # nothing, so a typo'd or unfetched base would PASS vacuously.
@@ -278,13 +348,17 @@ class TestHunkMap(unittest.TestCase):
         self.assertIn("does not resolve to a commit", str(caught.exception))
 
     def _fake_git(self, seen, diff_rc=0, diff_err=""):
-        def fake(repo, args, timeout=60):
+        def fake(repo, args, timeout=60, text=True):
             r = mock.Mock()
             if args[0] == "merge-base":
                 r.returncode, r.stdout, r.stderr = 0, "deadbeef\n", ""
             elif args[0] == "-c":                 # the pinned `git -c ... diff`
                 seen["diff"] = args
-                r.returncode, r.stdout, r.stderr = diff_rc, "", diff_err
+                seen["text"] = text
+                # bytes, because #1738 reads the diff with text=False -- the
+                # universal-newline translation of text mode forges diff lines.
+                r.returncode = diff_rc
+                r.stdout, r.stderr = b"", diff_err.encode("utf-8")
             else:                                  # ls-files --others
                 r.returncode, r.stdout, r.stderr = 0, "", ""
             return r
@@ -303,10 +377,10 @@ class TestHunkMap(unittest.TestCase):
         # #run7 OPS-E1A: an INFRA failure on merge-base (git missing/timeout) must
         # raise DiffMapError like the diff step, not silently return {} and pass
         # the delta gate vacuously. (A genuinely unresolvable base still -> {}.)
-        def raising(repo, args, timeout=60):
+        def raising(repo, args, timeout=60, text=True):
             if args[0] == "merge-base":
                 raise FileNotFoundError("git not found")
-            return mock.Mock(returncode=0, stdout="", stderr="")
+            return mock.Mock(returncode=0, stdout=b"", stderr=b"")
         with mock.patch.object(diff_map, "_run_git", side_effect=raising):
             with self.assertRaises(diff_map.DiffMapError):
                 diff_map.hunk_map(".", "main")
@@ -347,6 +421,9 @@ class TestHunkMap(unittest.TestCase):
         self.assertIn("diff.mnemonicPrefix=false", argv)
         self.assertIn("core.quotepath=false", argv)
         self.assertIn("--dst-prefix=b/", argv)
+        # #1738 fix round 1: and the diff is read as BYTES, because text mode
+        # rewrites a lone \r to \n and forges a diff line out of payload.
+        self.assertFalse(seen["text"])
 
 
 class TestClassify(unittest.TestCase):
@@ -710,12 +787,12 @@ class TestDiffMapFailures(unittest.TestCase):
             _git(d, "add", "committed.txt")
             _git(d, "commit", "-qm", "init")
 
-            def fake_run_git(repo, args, timeout=60):
+            def fake_run_git(repo, args, timeout=60, text=True):
                 if args[:2] == ["merge-base", "HEAD"]:
                     class R: returncode = 0; stdout = "HEAD\n"; stderr = ""
                     return R()
                 if len(args) > 4 and args[4] == "diff":
-                    class R: returncode = 0; stdout = ""; stderr = ""
+                    class R: returncode = 0; stdout = b""; stderr = b""
                     return R()
                 if args[:2] == ["ls-files", "--others"]:
                     class R: returncode = 1; stdout = ""; stderr = "mock ls-files failure"
