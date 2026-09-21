@@ -69,8 +69,48 @@ COPY requirements-tools.txt /tmp/requirements-tools.txt
 RUN pip install --timeout=300 --no-cache-dir --require-hashes --no-deps -r /tmp/requirements-tools.txt \
     && rm /tmp/requirements-tools.txt
 
-# Ruby (brakeman + bundler-audit)
-RUN timeout 300 gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
+# Ruby (brakeman + bundler-audit). `gem install name:version` pins the two
+# NAMED gems and lets RubyGems resolve and fetch whatever they require, so the
+# closure is written out here instead and no resolver runs at all: each .gem is
+# downloaded to a file, gated on the sha256 rubygems published for it, and
+# installed with --local --ignore-dependencies.
+#
+# The closure comes from rubygems' own API (`/api/v2/rubygems/<name>/versions/
+# <version>.json`, field `dependencies.runtime`): brakeman requires racc,
+# bundler-audit requires bundler and thor. racc and bundler are DEFAULT gems of
+# the ruby installed above, so thor is the only addition -- which is also why
+# nothing here is allowed to be silent about it: `bundle-audit update` on the
+# last line exercises thor and bundler-audit immediately, and
+# smoke_adapters.py runs `brakeman --version` at the end of the build, so a
+# base image that stopped shipping racc fails THERE rather than on a customer's
+# Rails repo months later.
+#
+# One digest per gem and no arch split: a .gem is platform-independent, and
+# both published architectures install the same bytes.
+#
+# `bundle-audit update` is the ruby-advisory-db -- data, not code -- and is
+# refreshed again below the ASSET_REFRESH cache boundary.
+ARG THOR_VERSION=1.5.0
+ARG THOR_GEM_SHA256=e3a9e55fe857e44859ce104a84675ab6e8cd59c650a49106a05f55f136425e73
+ARG BRAKEMAN_GEM_SHA256=759cc69341115e6c2dcd47b6fd8649a0b9bd540e3585ac8a0a94e31c66fee386
+ARG BUNDLER_AUDIT_GEM_SHA256=81c8766c71e47d0d28a0f98c7eed028539f21a6ea3cd8f685eb6f42333c9b4e9
+# DL3028 asks for `gem install <name>:<version>`, which is precisely the
+# registry install this replaces. These are local files, already pinned by
+# version in the URL and by digest in the ARGs above, and --local means the
+# index is never consulted.
+# hadolint ignore=DL3028
+RUN curl -sfL --connect-timeout 5 --max-time 60 "https://rubygems.org/downloads/thor-${THOR_VERSION}.gem" \
+        -o /tmp/thor.gem \
+    && echo "${THOR_GEM_SHA256}  /tmp/thor.gem" | sha256sum -c - \
+    && curl -sfL --connect-timeout 5 --max-time 120 "https://rubygems.org/downloads/brakeman-${BRAKEMAN_VERSION}.gem" \
+        -o /tmp/brakeman.gem \
+    && echo "${BRAKEMAN_GEM_SHA256}  /tmp/brakeman.gem" | sha256sum -c - \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://rubygems.org/downloads/bundler-audit-${BUNDLER_AUDIT_VERSION}.gem" \
+        -o /tmp/bundler-audit.gem \
+    && echo "${BUNDLER_AUDIT_GEM_SHA256}  /tmp/bundler-audit.gem" | sha256sum -c - \
+    && gem install --local --no-document --ignore-dependencies \
+        /tmp/thor.gem /tmp/brakeman.gem /tmp/bundler-audit.gem \
+    && rm /tmp/thor.gem /tmp/brakeman.gem /tmp/bundler-audit.gem \
     && timeout 120 bundle-audit update
 
 # Node (eslint + security plugin). pip-audit used to ride along on this line;

@@ -409,5 +409,178 @@ class TestRequirementsMain(unittest.TestCase):
             bp.REQUIREMENTS_FILES)
 
 
+# --- family: gems (#1734) ----------------------------------------------------
+# Canned rubygems, never the live index: what these hold is that a digest is
+# read from upstream AND recomputed from the .gem, and a test that fetched the
+# real gem would be testing rubygems' uptime instead.
+
+GEM_DOCKERFILE = """\
+ARG BRAKEMAN_VERSION=8.0.6
+ARG BUNDLER_AUDIT_VERSION=0.9.3
+ARG THOR_VERSION=1.5.0
+ARG THOR_GEM_SHA256=%s
+ARG BRAKEMAN_GEM_SHA256=%s
+ARG BUNDLER_AUDIT_GEM_SHA256=%s
+RUN curl -sfL "https://rubygems.org/downloads/thor-${THOR_VERSION}.gem" -o /tmp/thor.gem
+""" % ("a" * 64, "b" * 64, "c" * 64)
+
+GEM = b"gem bytes"
+GEM_SHA = hashlib.sha256(GEM).hexdigest()
+
+
+def _canned_gem(sha, runtime=(), latest="1.5.0", artifact=GEM):
+    """A `_get` answering rubygems' three endpoints for one gem."""
+    def get(url):
+        if "/api/v1/versions/" in url:
+            return json.dumps({"version": latest}).encode()
+        if "/api/v2/rubygems/" in url:
+            return json.dumps({
+                "sha": sha, "platform": "ruby",
+                "dependencies": {"runtime": [{"name": n} for n in runtime],
+                                 "development": []}}).encode()
+        return artifact
+    return get
+
+
+class TestGemPins(unittest.TestCase):
+    def test_reads_every_current_pin(self):
+        self.assertEqual(
+            {"BRAKEMAN": ("8.0.6", "b" * 64),
+             "BUNDLER_AUDIT": ("0.9.3", "c" * 64),
+             "THOR": ("1.5.0", "a" * 64)},
+            bp.current_gem_pins(GEM_DOCKERFILE))
+
+    def test_a_half_written_pin_is_not_a_pin(self):
+        # A version with no digest beside it is the shape a careless bump
+        # leaves behind; reporting it as pinned would hide exactly that.
+        self.assertEqual({}, bp.current_gem_pins("ARG THOR_VERSION=1.5.0\n"))
+        self.assertEqual({}, bp.current_gem_pins("FROM scratch\n"))
+
+    def test_malformed_versions_are_refused_before_fetch_or_rewrite(self):
+        for version in ("1.5.0/evil", "1.5.0 extra", "1.5.0\n", "v1.5.0",
+                        "1.5.0.pre1"):
+            with self.subTest(version=version):
+                with mock.patch.object(bp, "_get") as fetch:
+                    with self.assertRaisesRegex(RuntimeError, "invalid gem version"):
+                        bp.verified_gem_sha("thor", version)
+                    fetch.assert_not_called()
+                with self.assertRaisesRegex(RuntimeError, "invalid gem version"):
+                    bp.rewrite_gem_pin(GEM_DOCKERFILE, "THOR", version, "d" * 64)
+
+
+class TestGemVerification(unittest.TestCase):
+    def test_sha_is_read_from_upstream_and_recomputed(self):
+        with mock.patch.object(bp, "_get", _canned_gem(GEM_SHA, ("bundler",))):
+            sha, runtime = bp.verified_gem_sha("bundler-audit", "0.9.3")
+        self.assertEqual(GEM_SHA, sha)
+        self.assertEqual(["bundler"], runtime)
+
+    def test_a_published_sha_that_does_not_match_is_refused(self):
+        with mock.patch.object(bp, "_get", _canned_gem("f" * 64)):
+            with self.assertRaises(RuntimeError) as cm:
+                bp.verified_gem_sha("thor", "1.5.0")
+        self.assertIn("refusing to pin", str(cm.exception))
+
+    def test_a_non_sha_response_is_refused(self):
+        for body in ("<html>404</html>", "", None):
+            with self.subTest(body=body), mock.patch.object(
+                    bp, "_get", _canned_gem(body)):
+                with self.assertRaises(RuntimeError):
+                    bp.verified_gem_sha("thor", "1.5.0")
+
+
+class TestGemRewrite(unittest.TestCase):
+    def test_rewrites_version_and_digest_together(self):
+        out = bp.rewrite_gem_pin(GEM_DOCKERFILE, "THOR", "1.6.0", "d" * 64)
+        self.assertEqual(("1.6.0", "d" * 64), bp.current_gem_pins(out)["THOR"])
+        # the fetch is templated on ${THOR_VERSION} and must not be edited, or
+        # a bump would have two places to keep in sync.
+        self.assertIn("thor-${THOR_VERSION}.gem", out)
+        # the other two gems are untouched
+        self.assertEqual(("8.0.6", "b" * 64), bp.current_gem_pins(out)["BRAKEMAN"])
+
+    def test_missing_line_raises_rather_than_silently_no_op(self):
+        for text in ("FROM scratch\n", "ARG THOR_VERSION=1.5.0\n"):
+            with self.assertRaises(RuntimeError):
+                bp.rewrite_gem_pin(text, "THOR", "1.6.0", "d" * 64)
+
+
+class TestGemsMain(unittest.TestCase):
+    """The gems family end to end through its subcommand."""
+
+    def _run(self, tmp, get, write=False, text=GEM_DOCKERFILE):
+        path = os.path.join(tmp, "Dockerfile")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        buf = io.StringIO()
+        with mock.patch.object(bp, "_get", get), mock.patch("sys.stdout", buf):
+            rc = bp.main(["gems", "--dockerfile", path]
+                         + (["--write"] if write else []))
+        with open(path, encoding="utf-8") as fh:
+            return rc, buf.getvalue(), fh.read()
+
+    def test_up_to_date_is_a_no_op(self):
+        import tempfile
+        # every gem already at the latest version rubygems reports
+        def get(url):
+            for name, version in (("thor", "1.5.0"), ("brakeman", "8.0.6"),
+                                  ("bundler-audit", "0.9.3")):
+                if "/%s/" % name in url or "/%s.json" % name in url:
+                    return json.dumps({"version": version}).encode()
+            raise AssertionError("unexpected url " + url)
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, text = self._run(d, get, write=True)
+        self.assertEqual(0, rc)
+        self.assertIn("up to date", out)
+        self.assertEqual(GEM_DOCKERFILE, text, "an up-to-date pin was rewritten")
+
+    def test_report_only_by_default(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, text = self._run(d, _canned_gem(GEM_SHA, latest="9.9.9"))
+        self.assertEqual(0, rc)
+        self.assertIn("re-run with --write", out)
+        self.assertEqual(GEM_DOCKERFILE, text, "no --write must mean no edit")
+
+    def test_write_applies_the_bump(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            rc, _out, text = self._run(d, _canned_gem(GEM_SHA, latest="9.9.9"),
+                                       write=True)
+        self.assertEqual(0, rc)
+        for prefix in ("THOR", "BRAKEMAN", "BUNDLER_AUDIT"):
+            self.assertEqual(("9.9.9", GEM_SHA), bp.current_gem_pins(text)[prefix])
+
+    def test_a_grown_runtime_closure_refuses_to_pin(self):
+        # The whole point of the Dockerfile's `--ignore-dependencies` install is
+        # that the closure is written down. A new release that requires
+        # something nobody installs would be pinned green here and then fail --
+        # or worse, half-work -- inside the image, so it must stop the bump and
+        # say the name.
+        import tempfile
+        get = _canned_gem(GEM_SHA, runtime=("rainbow",), latest="9.9.9")
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "Dockerfile")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(GEM_DOCKERFILE)
+            with mock.patch.object(bp, "_get", get), \
+                    mock.patch("sys.stdout", io.StringIO()):
+                with self.assertRaises(RuntimeError) as cm:
+                    bp.main(["gems", "--dockerfile", path, "--write"])
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(GEM_DOCKERFILE, fh.read())
+        self.assertIn("rainbow", str(cm.exception))
+
+    def test_a_dependency_the_ruby_runtime_ships_is_not_a_grown_closure(self):
+        # bundler and racc are default gems of the base image's ruby, which is
+        # why brakeman and bundler-audit install without them.
+        import tempfile
+        get = _canned_gem(GEM_SHA, runtime=("bundler", "racc"), latest="9.9.9")
+        with tempfile.TemporaryDirectory() as d:
+            rc, _out, text = self._run(d, get, write=True)
+        self.assertEqual(0, rc)
+        self.assertEqual(("9.9.9", GEM_SHA), bp.current_gem_pins(text)["THOR"])
+
+
 if __name__ == "__main__":
     unittest.main()

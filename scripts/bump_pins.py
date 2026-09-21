@@ -27,6 +27,12 @@ different upstreams and different verification steps:
                 API. Versions are NOT chosen here -- the `name==version` pins in
                 those files are, and this mode fills in what bytes each one is
                 allowed to be.
+  gems          the Dockerfile's `ARG <GEM>_VERSION` + `ARG <GEM>_GEM_SHA256`
+                pairs, read from rubygems' own API. The tools image installs
+                each .gem from a checksum-gated file with
+                --ignore-dependencies (#1734), so this also refuses to pin a
+                release whose runtime closure has GROWN past what the image
+                installs -- that is the one change the digest cannot catch.
   tinyproxy     read-only check of the egress sidecar's multi-platform digest;
                 a stale pin produces a workflow warning for manual review.
 
@@ -52,6 +58,9 @@ RUSTUP_ARCHIVE = "https://static.rust-lang.org/rustup/archive/{v}/{triple}/rustu
 RUSTUP_TRIPLES = {"AMD64": "x86_64-unknown-linux-gnu",
                   "ARM64": "aarch64-unknown-linux-gnu"}
 PYPI_RELEASE = "https://pypi.org/pypi/{name}/{version}/json"
+RUBYGEMS_LATEST = "https://rubygems.org/api/v1/versions/{name}/latest.json"
+RUBYGEMS_RELEASE = "https://rubygems.org/api/v2/rubygems/{name}/versions/{version}.json"
+RUBYGEMS_DOWNLOAD = "https://rubygems.org/downloads/{name}-{version}.gem"
 # The files the `requirements` family maintains when none is named.
 REQUIREMENTS_FILES = (".github/requirements-gate.txt", "requirements-fixtures.txt",
                       "requirements-tools.txt")
@@ -155,6 +164,168 @@ def run_rustup(args) -> int:
     print("bump-pins: wrote rustup %s" % want)
     for arch, sha in sorted(shas.items()):
         print("  %s %s" % (arch, sha))
+    return 0
+
+
+# --- family: gems -------------------------------------------------------------
+# The tools image no longer runs RubyGems' resolver: it downloads each .gem,
+# gates it on `sha256sum -c`, and installs it with --local
+# --ignore-dependencies (#1734). That makes these pins the same shape as the
+# release binaries above, drifting the same silent way, so the rustup family's
+# answer applies unchanged -- read the digest from upstream's own metadata AND
+# recompute it from the artifact before writing it down.
+
+# ARG prefix -> gem name. The Dockerfile spells each pin as a PAIR:
+# `ARG <PREFIX>_VERSION` and `ARG <PREFIX>_GEM_SHA256`.
+GEMS = (("BRAKEMAN", "brakeman"),
+        ("BUNDLER_AUDIT", "bundler-audit"),
+        ("THOR", "thor"))
+# Gems the base image's ruby already ships, which is why the Dockerfile does
+# not install them and why seeing one required is not a grown closure.
+RUBY_DEFAULT_GEMS = frozenset({"bundler", "racc"})
+
+
+def _gem_version(version: str) -> str:
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", version):
+        raise RuntimeError("invalid gem version: %r" % version)
+    return version
+
+
+def current_gem_pins(text: str) -> dict[str, tuple[str, str]]:
+    """{ARG prefix: (version, sha256)} as pinned in the Dockerfile today. Pure.
+
+    A gem is reported only when BOTH halves are present. A version with no
+    digest beside it is precisely what a careless bump leaves behind, and
+    calling that "pinned" would hide the one state this tool exists to find.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for prefix, _name in GEMS:
+        version = re.search(r"^ARG %s_VERSION=(\S+)\s*$" % prefix, text, re.M)
+        sha = re.search(r"^ARG %s_GEM_SHA256=([0-9a-f]{64})\s*$" % prefix,
+                        text, re.M)
+        if version and sha:
+            out[prefix] = (version.group(1), sha.group(1))
+    return out
+
+
+def latest_gem_version(name: str) -> str:
+    """The current release of `name`, from rubygems' own API."""
+    body = _get(RUBYGEMS_LATEST.format(name=name))
+    try:
+        doc = json.loads(body.decode("utf-8", "replace"))
+    except ValueError as exc:
+        raise RuntimeError("rubygems did not answer with JSON for %s: %s"
+                           % (name, exc)) from exc
+    version = doc.get("version") if isinstance(doc, dict) else None
+    if not isinstance(version, str):
+        raise RuntimeError("rubygems named no version for %s" % name)
+    return _gem_version(version)
+
+
+def verified_gem_sha(name: str, version: str) -> tuple[str, list[str]]:
+    """(sha256, runtime dependency names) for `name-version.gem`.
+
+    The digest is read from rubygems' release document AND recomputed from the
+    downloaded .gem, for the reason the rustup family states: the published
+    value alone proves only that the index agrees with itself.
+
+    The runtime dependencies come back with it because the image installs with
+    --ignore-dependencies, which makes the closure something this repo asserts
+    rather than something RubyGems works out. A release that requires a new gem
+    would carry a perfectly good digest and still be wrong to pin.
+    """
+    version = _gem_version(version)
+    body = _get(RUBYGEMS_RELEASE.format(name=name, version=version))
+    try:
+        release = json.loads(body.decode("utf-8", "replace"))
+    except ValueError as exc:
+        raise RuntimeError("rubygems did not answer with JSON for %s %s: %s"
+                           % (name, version, exc)) from exc
+    published = (release.get("sha") or "") if isinstance(release, dict) else ""
+    if not re.fullmatch(r"[0-9a-f]{64}", published or ""):
+        raise RuntimeError("%s %s: published sha is not a sha256: %r"
+                           % (name, version, (published or "")[:80]))
+    actual = hashlib.sha256(
+        _get(RUBYGEMS_DOWNLOAD.format(name=name, version=version))).hexdigest()
+    if actual != published:
+        raise RuntimeError(
+            "%s %s: published sha256 %s != actual %s -- refusing to pin"
+            % (name, version, published, actual))
+    runtime = (release.get("dependencies") or {}).get("runtime") or []
+    names = sorted(d["name"] for d in runtime
+                   if isinstance(d, dict) and isinstance(d.get("name"), str))
+    return actual, names
+
+
+def rewrite_gem_pin(text: str, prefix: str, version: str, sha: str) -> str:
+    """Dockerfile text with one gem's version AND digest updated.
+
+    Pure, and total: raises rather than silently no-op'ing if either line it
+    expects is absent. Writing one of the two would leave a digest that cannot
+    match the artifact the new version's URL serves, which is a build that
+    breaks at `sha256sum -c` with nothing in the diff to explain it.
+    """
+    version = _gem_version(version)
+    new = re.sub(r"^ARG %s_VERSION=\S+\s*$" % prefix,
+                 "ARG %s_VERSION=%s" % (prefix, version), text, count=1,
+                 flags=re.M)
+    if new == text:
+        raise RuntimeError("no ARG %s_VERSION line to update" % prefix)
+    after = re.sub(r"^ARG %s_GEM_SHA256=[0-9a-f]{64}\s*$" % prefix,
+                   "ARG %s_GEM_SHA256=%s" % (prefix, sha), new, count=1,
+                   flags=re.M)
+    if after == new:
+        raise RuntimeError("no ARG %s_GEM_SHA256 line to update" % prefix)
+    return after
+
+
+def run_gems(args) -> int:
+    with open(args.dockerfile, encoding="utf-8") as fh:
+        text = fh.read()
+    pins = current_gem_pins(text)
+    if not pins:
+        print("bump-pins: no gem pins found; nothing to do")
+        return 0
+    stale = []
+    for prefix, name in GEMS:
+        if prefix not in pins:
+            continue
+        have, _sha = pins[prefix]
+        want = latest_gem_version(name)
+        print("bump-pins: %s pinned=%s latest=%s" % (name, have, want))
+        if have != want:
+            stale.append((prefix, name, want))
+    if not stale:
+        print("bump-pins: up to date")
+        return 0
+    if not args.write:
+        for _prefix, name, want in stale:
+            print("bump-pins: %s -> %s available (re-run with --write)"
+                  % (name, want))
+        return 0
+
+    # Verify EVERY bump before writing ANY of them: a half-applied pass leaves
+    # the file describing a build that was never checked.
+    verified = []
+    for prefix, name, want in stale:
+        sha, runtime = verified_gem_sha(name, want)   # raises unless it verifies
+        grown = sorted(set(runtime)
+                       - RUBY_DEFAULT_GEMS
+                       - {gem for _p, gem in GEMS})
+        if grown:
+            raise RuntimeError(
+                "%s %s requires %s, which the image does not install -- it "
+                "installs with --ignore-dependencies, so pinning this would "
+                "ship a gem with a missing dependency. Add the new gem to the "
+                "Dockerfile and to GEMS, then re-run."
+                % (name, want, ", ".join(grown)))
+        verified.append((prefix, name, want, sha))
+    for prefix, _name, want, sha in verified:
+        text = rewrite_gem_pin(text, prefix, want, sha)
+    with open(args.dockerfile, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    for _prefix, name, want, sha in verified:
+        print("bump-pins: wrote %s %s\n  %s" % (name, want, sha))
     return 0
 
 
@@ -433,11 +604,16 @@ def main(argv=None):
                            "default: %s)" % ", ".join(REQUIREMENTS_FILES))
     reqs.set_defaults(run=run_requirements)
 
+    gems = families.add_parser(
+        "gems", help="the Dockerfile's gem versions + their .gem checksums")
+    gems.add_argument("--dockerfile", default="Dockerfile")
+    gems.set_defaults(run=run_gems)
+
     proxy = families.add_parser("tinyproxy", help="check the egress sidecar digest (read-only)")
     proxy.add_argument("--source", default=PROXY_SOURCE)
     proxy.set_defaults(run=run_tinyproxy)
 
-    for parser in (rustup, reqs):
+    for parser in (rustup, reqs, gems):
         parser.add_argument("--write", action="store_true",
                             help="apply the bump (default: report only)")
     args = ap.parse_args(argv)
