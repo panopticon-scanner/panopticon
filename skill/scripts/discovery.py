@@ -35,6 +35,10 @@ import groups_schema  # noqa: E402
 import plan_contract  # noqa: E402
 import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
+try:                                       # #1735: the no-follow artifact open
+    from scripts import safe_write         # noqa: E402
+except ModuleNotFoundError:                # run flat, as driver.py runs this file
+    import safe_write                      # noqa: E402
 
 # Files per review group before it splits into `<name>_<i>` chunks.
 #
@@ -807,7 +811,9 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
     os.makedirs(out_dir, exist_ok=True)
     tmp = os.path.join(out_dir, ".diff-hunks-%s.tmp" % uuid.uuid4().hex)
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
+        # #1735: staged inside the reviewed tree's `.panopticon`; the uuid makes
+        # the leaf unplantable, the no-follow open confines the rest of the path.
+        with safe_write.open_w_nofollow(tmp) as fh:
             json.dump(artifact, fh, indent=2)
             fh.write("\n")
         os.replace(tmp, out_path)
@@ -1707,7 +1713,7 @@ def main(argv=None):
         os.makedirs(out_dir, exist_ok=True)
         tmp = os.path.join(out_dir, ".discovery-%s.tmp" % uuid.uuid4().hex)
         try:
-            with open(tmp, "w", encoding="utf-8") as fh:
+            with safe_write.open_w_nofollow(tmp) as fh:   # #1735, as above
                 emit(result, fh)
             os.replace(tmp, args.out)
         finally:

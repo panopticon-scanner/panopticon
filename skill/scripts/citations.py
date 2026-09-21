@@ -12,10 +12,12 @@ import urllib.request
 
 try:
     from scripts import _version
+    from scripts import safe_write
     from scripts._version import __version__
     from scripts.evidence import is_tool_sourced
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     import _version
+    import safe_write
     from _version import __version__
     from evidence import is_tool_sourced
 
@@ -141,11 +143,20 @@ def _load_cache(cache_path):
 
 
 def _save_cache(cache_path, cache):
+    """Best-effort: the EPSS cache is an optimization, never a run input.
+
+    #1735: it defaults to `.panopticon/epss-cache.json` in the REVIEWED tree,
+    a fixed name a target can pre-commit as a symlink -- so the write goes
+    through the no-follow open. Its refusal (ValueError) joins OSError in the
+    shrug rather than taking the run down: an uncacheable score has always been
+    a shrug here, and the refusal has already done the only job that mattered.
+    """
     try:
+        safe_write.confine_artifact_path(cache_path)
         os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
-        with open(cache_path, "w", encoding="utf-8") as fh:
+        with safe_write.open_w_nofollow(cache_path) as fh:
             json.dump(cache, fh)
-    except OSError:
+    except (OSError, ValueError):
         pass
 
 

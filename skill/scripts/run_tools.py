@@ -23,6 +23,7 @@ from scripts.tools import egress
 from scripts.tools.base import drain_stderr_async
 from scripts import plan_contract
 from scripts import redact
+from scripts import safe_write
 from scripts.progress import NullProgress, make_progress
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS, TOOL_CMD
 
@@ -1137,8 +1138,12 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"])}
                                  for d in excluded_dirs or ()],
                "depth_bound": depth_bound}
+    # #1735: the driver points --manifest at `<run folder>/tools-manifest.json`,
+    # inside the reviewed tree. Confine before the makedirs (a symlinked
+    # intermediate would be traversed by it) and never open through a link.
+    safe_write.confine_artifact_path(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    with safe_write.open_w_nofollow(path) as fh:
         json.dump(payload, fh, indent=2)
         fh.write("\n")
     return payload
