@@ -2367,14 +2367,28 @@ class TestRunConvertsAConfinementRefusal(unittest.TestCase):
         self._assert_refusal(status, victim)
 
     def test_a_refused_tools_downgrade_is_an_error_status(self):
+        # Ruling 1's SECOND site, on a real in-flight run rather than a forced
+        # branch: round 1's version planted the link and mocked the predicate on
+        # a repo with no manifest, so `run()` took the first-invocation branch
+        # and neither `is_tools_downgrade` nor `record_tools_downgrade` was ever
+        # called -- the assertion was satisfied by the posture-disclosure
+        # refusal three stanzas later, leaving this site unpinned.
+        #
+        # So: one invocation to establish the run (flags.tools unset), THEN the
+        # plant, then `--no-tools` -- the allowed mid-run downgrade (#1637 P08
+        # F2), whose rewrite stages through the planted name. No mock on the
+        # path under test; `wraps` only so the call itself can be asserted.
         d = self._repo()
+        with mock.patch("scripts.phases.engine.run_engine",
+                        return_value={"status": "in_progress"}):
+            first = driver.run(driver.build_parser().parse_args(["run", d]))
+        self.assertNotEqual(first["status"], "error", first)
         victim = self._plant(d, "run-manifest.json.tmp")
-        boom = ValueError("artifact path escapes .panopticon via a symlinked "
-                          "component: '%s/.panopticon/run-manifest.json.tmp'" % d)
         args = driver.build_parser().parse_args(["run", d, "--no-tools"])
-        with mock.patch.object(run_manifest, "is_tools_downgrade", return_value=True), \
-             mock.patch.object(run_manifest, "record_tools_downgrade", side_effect=boom):
+        with mock.patch.object(run_manifest, "record_tools_downgrade",
+                               wraps=run_manifest.record_tools_downgrade) as rec:
             status = driver.run(args)
+        self.assertTrue(rec.called, "the downgrade branch was never taken")
         self._assert_refusal(status, victim)
 
     def test_a_planted_runs_directory_link_is_an_error_status(self):
