@@ -129,6 +129,14 @@ def tools_execute(review_root, manifest):
            # controller's write-once record), never off the target's config.
            "--security", manifest.get("security_mode", "standard"),
            "--manifest", manifest_path]
+    # #1740 fix round 1: the committed `exclude_paths:` policy, threaded to the
+    # scan. Same globs `phases/synthesize.py` hands the ingest as
+    # `--tools-exclude`, from the same seam, so the scanners, the report and
+    # the gate are scoped by the ONE thing the repository committed. An
+    # adapter whose whole surface is excluded is disclosed as `excluded_scope`
+    # rather than required, and the manifest records the globs themselves.
+    for glob in runio.committed_exclude_paths(review_root):
+        cmd += ["--exclude", glob]
     proc = child._run_child(cmd, review_root=review_root, phase="tools")
     # The runner's own report of what it did with the captures it wrote (#1639
     # P11 F5). Tolerant: a crash before the manifest was written leaves nothing

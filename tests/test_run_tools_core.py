@@ -669,6 +669,31 @@ class TestVirtualenvExclusion(unittest.TestCase):
             with open(os.path.join(d, "m.json"), encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh), payload)
 
+    def test_manifest_records_the_exclude_globs_it_was_given(self):
+        # #1740 fix round 1: the committed `exclude_paths:` policy now reaches
+        # the scan, so the manifest says which globs this run was handed --
+        # beside `excluded_scope` (the adapters those globs disqualified) and
+        # `excluded_dirs` (the virtualenvs). Stated on every manifest, `[]`
+        # included: absence must not read as "nobody measured".
+        with tempfile.TemporaryDirectory() as d:
+            payload = rt.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [],
+                                        exclude_globs=["tests/fixtures/**"])
+            self.assertEqual(payload["exclude_globs"], ["tests/fixtures/**"])
+            bare = rt.write_manifest(os.path.join(d, "b.json"), ["semgrep"], [])
+            self.assertEqual(bare["exclude_globs"], [])
+
+    def test_main_records_the_exclude_globs_it_was_passed(self):
+        with tempfile.TemporaryDirectory() as d:
+            manifest = os.path.join(d, "tools-manifest.json")
+            with mock.patch.object(rt, "docker_available", return_value=False), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rt.main(["--target", d, "--out", os.path.join(d, "out"),
+                         "--tools", "semgrep", "--manifest", manifest,
+                         "--exclude", "tests/fixtures/**"])
+            with open(manifest, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["exclude_globs"],
+                                 ["tests/fixtures/**"])
+
     def test_manifest_records_what_the_sanitizer_dropped(self):
         # #1646 ruling 3: the audit was PARTIAL and the manifest says so.
         block = {"pip-audit": {"source": "requirements.txt", "kept": 2,

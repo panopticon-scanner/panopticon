@@ -1126,7 +1126,7 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
 
 def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
-                   network=None):
+                   network=None, exclude_globs=()):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `excluded_scope` names adapters that were applicable but whose entire
@@ -1156,6 +1156,13 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     audit can be PARTIAL, and this is where it says by how much and which lines.
     Stated on every manifest, `{}` included, so its absence cannot be read as
     "nothing was dropped" on a run that never measured.
+
+    `exclude_globs` (#1740 fix round 1) are the `--exclude` path globs this
+    scan was given -- the driver passes the repository's committed
+    `exclude_paths:`, CI passes its own. `excluded_scope` beside it names the
+    ADAPTERS those globs disqualified; this is the policy itself, so a reader
+    can tell "no adapter was excluded" from "no policy was applied". Stated on
+    every manifest, `[]` included, like `sanitized`.
 
     `redacted` (#1639 P11) says whether every capture this run wrote went
     through the redaction choke point, read off the ledger `_redact_capture`
@@ -1199,6 +1206,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "excluded_scope": sorted(dict.fromkeys(str(t) for t in excluded_scope)),
                "network": network,
                "sanitized": dict(sanitized or {}),
+               "exclude_globs": [str(g) for g in exclude_globs or ()],
                "excluded_dirs": [{"path": str(d["path"]), "reason": str(d["reason"]),
                                   # #1740: `skipped` is the whole point of the
                                   # row under redteam -- a name-only venv is
@@ -1299,7 +1307,7 @@ def main(argv=None):
         if a.manifest:
             write_manifest(a.manifest, effective, [], excluded_scope=excluded_scope,
                            run_id=a.run_id, excluded_dirs=venv_rows,
-                           sanitized=sanitized)
+                           sanitized=sanitized, exclude_globs=a.exclude)
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
                       progress=make_progress(a.progress), venv_dirs=skip_dirs,
@@ -1307,7 +1315,7 @@ def main(argv=None):
     if a.manifest:
         write_manifest(a.manifest, effective, paths, excluded_scope=excluded_scope,
                        run_id=a.run_id, excluded_dirs=venv_rows,
-                       sanitized=sanitized)
+                       sanitized=sanitized, exclude_globs=a.exclude)
     print("\n".join(paths))
     return 0
 

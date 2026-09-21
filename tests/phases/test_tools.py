@@ -147,6 +147,25 @@ class TestToolsPhase(unittest.TestCase):
         cmd = self._captured_cmd(self.manifest)
         self.assertEqual(cmd[cmd.index("--security") + 1], "standard")
 
+    def _commit_config(self, body):
+        with open(os.path.join(self.root, "panopticon.yml"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(body)
+
+    def test_passes_the_committed_exclude_paths_to_the_scanner_run(self):
+        # #1740 fix round 1 (controller addition): `exclude_paths:` governed
+        # discovery alone, so the committed policy could not scope the tool
+        # axis or the gate at all. One glob per `--exclude`, in the committed
+        # order, the same spelling `security_gate` takes.
+        self._commit_config("version: 1\nexclude_paths:\n"
+                            "  - 'tests/fixtures/**'\n  - 'vendor/**'\n")
+        cmd = self._captured_cmd(self.manifest)
+        got = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--exclude"]
+        self.assertEqual(got, ["tests/fixtures/**", "vendor/**"])
+
+    def test_no_committed_globs_means_no_exclude_flag(self):
+        self.assertNotIn("--exclude", self._captured_cmd(self.manifest))
+
     def test_docker_absent_is_disclosed_skip_that_advances(self):
         def fake_run(cmd, **kw):   # produces nothing, exits 0 (docker missing)
             return mock.Mock(returncode=0, stdout="",

@@ -619,7 +619,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         return hit
 
     def _run(self, security, rel="app/vendor/patched_auth.py", severity="all",
-             delta=False, groups_json=None):
+             delta=False, groups_json=None, tools_exclude=None):
         """One synthesis over a single bandit HIGH at `rel`.
 
         `rel` is the only thing that moves between the suppressed and the
@@ -659,8 +659,10 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                         json.dump(groups_json, fh)
             args = _cli_args(tools_dir=tools, security=security, fail_on="high",
                              target=d, run_dir=d, severity=severity,
-                             diff_hunks=hunks, gate_scope="on-diff")
-            with _chdir(d), contextlib.redirect_stderr(io.StringIO()):
+                             diff_hunks=hunks, gate_scope="on-diff",
+                             tools_exclude=tools_exclude)
+            err = io.StringIO()
+            with _chdir(d), contextlib.redirect_stderr(err):
                 body, disp, ran, suppressed, gated = plan_mod.ingest_tool_findings(args)
                 axis = tool_axis_mod.ToolAxis.load(args, d, [], disp, ran,
                                                    suppressed, gated)
@@ -680,6 +682,9 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                     plan=plan_mod.PlanInputs(groups_meta=[
                         {"name": "g", "files": [rel]}]),
                     tools=axis))
+            # #1740 fix round 1: the ingest's own disclosure line, kept for the
+            # test that asserts an operator exclusion is COUNTED, not silent.
+            self.stderr = err.getvalue()
             return body, report
 
     def _gate(self, **kw):
@@ -767,6 +772,32 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                 html = fh.read()
         self.assertIn("suppressed by directory name but", html)
         self.assertIn("this run", html)
+
+    # -- #1740 fix round 1: the committed exclude_paths policy scopes the gate -
+
+    FIXTURE = "tests/fixtures/vulnerable/patched_auth.py"
+
+    def test_a_fixture_high_gates_under_redteam_when_no_policy_excludes_it(self):
+        # The oracle for the test below: #1740 made the fixture-corpus prune a
+        # DISCLOSED drop, so under redteam this run's gate counts it.
+        _body, report = self._run("redteam", rel=self.FIXTURE)
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"],
+                         {"fixture-corpus": 1})
+
+    def test_the_committed_exclude_policy_takes_it_off_the_gate(self):
+        # ... and with the repo's own `exclude_paths: [tests/fixtures/**]`
+        # threaded to this ingest as `--tools-exclude`, the same finding is an
+        # operator EXCLUSION: counted, disclosed on stderr, never gated and
+        # never re-admitted by the mode.
+        _body, report = self._run("redteam", rel=self.FIXTURE,
+                                  tools_exclude=["tests/fixtures/**"])
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"], {})
+        self.assertEqual(report["meta"]["coverage"]["tools_suppressed"], {})
+        self.assertIn("excluded 1 finding", self.stderr)
+        self.assertIn("tests/fixtures/**", self.stderr)
 
     def test_the_two_tallies_sum_to_the_ingest_count_in_either_mode(self):
         """One tally, split -- `ingest_tools.suppressed_counts`' one-definition
