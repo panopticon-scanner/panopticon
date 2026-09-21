@@ -113,8 +113,17 @@ def _setup_scan_entry(review_root, prompt, host):
 SETUP_UNENFORCED_ACK = "setup-unenforced-ack.json"
 
 # The operator's fix, not just an escape hatch: the refusal below names the
-# command that makes the refusal go away for good.
+# command that makes the refusal go away for good -- when there is one.
 _EMIT_REMEDY = "python3 skill/scripts/dispatch.py --emit-host-agents %s"
+# ...and when what is missing is a MEASUREMENT rather than a registration, the
+# invocation that takes it. `driver loop` resolves `--mode` to headless for any
+# host with a runner and writes it back onto `args` before the posture step, so
+# this is the one entry point that hands the probes a settings path (fix round
+# 2; verified against `orchestrate._resolve_mode` and
+# `driver._establish_host_posture`). `--mode headless` is spelled out even
+# though it is the default for these hosts: a remedy an operator pastes should
+# not depend on a resolution rule to be correct.
+_MEASURE_REMEDY = "driver loop --setup --host %s --mode headless"
 
 
 def require_unenforced_scan_ack(review_root, manifest, entries):
@@ -167,13 +176,7 @@ def require_unenforced_scan_ack(review_root, manifest, entries):
         # of them and the hint would go empty.
         enforcing = [n for n in hosts.driver_hosts()
                      if hosts.declares(n, hosts.TOOL_POLICY_ENFORCED)]
-        # The emit remedy only where it is one. `--host generic` registers no
-        # shells at all (owner ruling D1, the permanent unenforced fallback),
-        # so telling its operator to emit them names a command that refuses --
-        # a remedy that does not remedy is worse than the two that do.
-        row_spec = hosts.spec(host)
-        emit = ("Run %s and re-run `driver setup`, or re" % (_EMIT_REMEDY % host)
-                if row_spec is not None and row_spec.shell_format else "Re")
+        emit = _remedy_clause(host, posture[hosts.TOOL_POLICY_ENFORCED])
         raise runio.DriverError(
             "%s is %s on host %r -- probe %s: %s. The setup-scan agent reads "
             "the whole reviewed tree as untrusted content, and with no "
@@ -205,6 +208,50 @@ def require_unenforced_scan_ack(review_root, manifest, entries):
     # file, so there is no earlier write to preserve -- only an older set of
     # facts to correct.
     return requests._merge_ack(path, body, refresh=tuple(body))
+
+
+def _remedy_clause(host, state):
+    """The fixing remedy this refusal may honestly name, as a sentence opener
+    ending in "re" for the `--allow-unenforced` clause that follows.
+
+    Three answers, and the rule is the capability's STATE, which is what says
+    whether a fix EXISTS and which one (fix round 2):
+
+    * REFUTED -- the host measured and said no. Every capability that gates
+      here maps to a registration probe, so re-emitting is the fix for its
+      ordinary cause, and the refusal quotes the probe's own detail for the
+      rest. Name the emit command.
+    * UNKNOWN -- NOTHING measured it. No amount of registering changes what
+      was never read, and naming the emit command there is the round-1
+      Critical one host over: `driver setup --host codex` cannot reach PROVEN
+      on any machine, because codex maps `tool_policy_enforced` to
+      `codex-effective-tools` and that probe answers UNKNOWN unless it is
+      handed a headless settings path, which only `driver loop` produces.
+      Name the invocation that can measure.
+    * A host that registers no shells at all (`--host generic`, owner ruling
+      D1, the permanent unenforced fallback) gets NEITHER: emitting refuses
+      and measuring finds nothing to measure, so the acceptance and the host
+      switch are the whole truthful list.
+
+    `headless_available` is the one owner of "does this family ship a runner",
+    and it is asked rather than assumed -- a host that registers shells and
+    ships no runner would otherwise be handed a `--mode headless` that
+    `runner_for` refuses, which is the same defect in a third place. Imported
+    locally, the way `probes.common.headless_settings_path` reaches the same
+    package: `phases` may import `runners` (only the reverse is banned), but
+    at call time, not at module import, so the cycle through
+    `runners.base -> dispatch` stays broken.
+    """
+    import scripts.runners.base as runners_base
+    row = hosts.spec(host)
+    if row is None or not row.shell_format:
+        return "Re"
+    if state == hosts.REFUTED:
+        return "Run %s and re-run `driver setup`, or re" % (_EMIT_REMEDY % host)
+    if runners_base.headless_available(host):
+        return ("Nothing measured it here -- re-run as `%s`, the invocation "
+                "that can, or re" % (_MEASURE_REMEDY % host))
+    return "Re"
 
 
 def _discard_scan_ack(path):

@@ -24,6 +24,7 @@ import scripts.host_probes as host_probes
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
 import scripts.model_resolver as model_resolver
+import scripts.probes.codex as codex_probes
 import scripts.repo_config as repo_config
 
 from conftest import write_host_evidence
@@ -93,15 +94,24 @@ class TestDriverSetup(unittest.TestCase):
     def test_setup_refuses_a_shell_less_scan_without_the_operators_ack(self):
         # #1737 brief case (b). The one dispatch that reads the whole untrusted
         # tree now passes the acknowledgement every other unenforced dispatch
-        # has required since #1519. A machine that has not emitted its shells
-        # is refused BEFORE anything is dispatched, and the refusal names the
-        # emit command first.
+        # has required since #1519, and a refusal lands BEFORE anything is
+        # dispatched.
+        #
+        # This is the UNIT shape: no posture step, so no probe ran and the
+        # state is UNKNOWN -- for which the remedy is the invocation that
+        # measures, never the emit command (fix round 2: a remedy that cannot
+        # change the answer is the defect, not the wording). The real verb
+        # probes, and a fresh machine with no registration directory measures
+        # REFUTED and IS told to emit --
+        # TestStandaloneSetupProbesItsOwnPosture covers that end to end.
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d])
         status = setup.run_setup_flow(args)
         self.assertEqual("error", status["status"], status)
         self.assertIn("tool_policy_enforced", status["message"])
-        self.assertIn("--emit-host-agents claude", status["message"])
+        self.assertIn("driver loop --setup --host claude --mode headless",
+                      status["message"])
+        self.assertNotIn("--emit-host-agents", status["message"])
         self.assertIn("--allow-unenforced", status["message"])
         self.assertIn("setup-unenforced-ack.json", status["message"])
         # nothing was dispatched
@@ -658,6 +668,89 @@ class TestDriverSetup(unittest.TestCase):
         for name in ("setup-report.md", "setup-report.json"):
             self.assertFalse(os.path.isfile(runio._pano(d, name)), name)
         self.assertFalse(os.path.isfile(repo_config.draft_path(d)))
+
+
+class TestTheRefusalNamesARemedyThatCanWork(unittest.TestCase):
+    """#1737 fix round 2. The round-1 Critical was an impotent remedy --
+    `--emit-host-agents` named to an operator nothing would re-probe for. One
+    host over, the same shape survived: codex maps `tool_policy_enforced` to
+    `codex-effective-tools`, and that probe short-circuits to UNKNOWN whenever
+    `settings_path` is None -- which `driver setup` always leaves it, having no
+    `--mode`. So `driver setup --host codex` cannot reach PROVEN on any
+    machine, however many times its operator emits shells.
+
+    The rule is the state, and it is host-agnostic. REFUTED means the host
+    measured and said no -- for every capability that maps to a registration
+    probe, re-emitting is the fix, and the quoted detail names the specific
+    fault. UNKNOWN means NOTHING measured it, and no amount of registering
+    changes what was never read: the remedy is the invocation that can
+    measure, which is the headless loop.
+    """
+
+    def _repo(self):
+        return make_git_repo(test_case=self, files={"src/a.py": "x = 1\n"},
+                             branch="main", user_email="t@t", user_name="t")
+
+    def _refuse(self, d, host, row):
+        """`driver setup --host <host>` against an artifact carrying `row` for
+        tool_policy_enforced, returning the refusal message."""
+        body = _all_proven_artifact(host)
+        body["capabilities"][hosts.TOOL_POLICY_ENFORCED] = row
+        out = io.StringIO()
+        with mock.patch("scripts.host_probes.run_probes",
+                        side_effect=lambda h, target, **kw: body), \
+                contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            driver.main(["setup", d, "--host", host])
+        status = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual("error", status["status"], status)
+        return status["message"]
+
+    def _codex_unmeasurable_row(self):
+        """The row the REAL codex probe produces for `driver setup` -- taken
+        from the production probe rather than retyped, and reached without
+        launching anything: the short-circuit is before the launch."""
+        with tempfile.TemporaryDirectory() as reg:
+            state, by, detail = codex_probes.probe_codex_tool_policy(
+                "codex", registration_dir=reg, settings_path=None)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("--mode headless", detail)
+        return {"state": state, "by": by, "detail": detail}
+
+    def test_codex_is_pointed_at_the_invocation_that_can_measure_it(self):
+        message = self._refuse(self._repo(), "codex", self._codex_unmeasurable_row())
+        self.assertIn("driver loop --setup --host codex --mode headless", message)
+        self.assertNotIn("--emit-host-agents", message)
+        self.assertIn("--allow-unenforced", message)
+        # ...and the probe's own reason is still quoted, so the operator can
+        # see WHY this invocation could not answer.
+        self.assertIn("measured for driver loop --mode headless only", message)
+
+    def test_a_refuted_host_still_gets_the_emit_remedy(self):
+        message = self._refuse(self._repo(), "claude",
+                               {"state": hosts.REFUTED, "by": "registered-shell-tools",
+                                "detail": "no registration directory at /nope"})
+        self.assertIn("--emit-host-agents claude", message)
+        self.assertNotIn("driver loop --setup", message)
+        self.assertIn("--allow-unenforced", message)
+
+    def test_an_unmeasured_claude_is_not_told_to_emit_either(self):
+        # The same rule, on the host the round-1 fix was written for: an
+        # unreadable registration directory is UNKNOWN, and emitting into a
+        # directory that cannot be read changes nothing.
+        message = self._refuse(self._repo(), "claude",
+                               {"state": hosts.UNKNOWN, "by": "registered-shell-tools",
+                                "detail": "cannot read /nope, so nothing could be checked"})
+        self.assertNotIn("--emit-host-agents", message)
+        self.assertIn("driver loop --setup --host claude --mode headless", message)
+
+    def test_a_host_that_registers_nothing_is_offered_neither(self):
+        message = self._refuse(self._repo(), "generic",
+                               {"state": hosts.UNKNOWN, "by": None, "detail": "no shells"})
+        self.assertNotIn("--emit-host-agents", message)
+        self.assertNotIn("driver loop --setup", message)
+        self.assertIn("--allow-unenforced", message)
+        self.assertIn("--host claude", message)
 
 
 class TestTheSetupAckDescribesThisInvocation(unittest.TestCase):
