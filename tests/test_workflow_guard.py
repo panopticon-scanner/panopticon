@@ -241,6 +241,22 @@ class TestStderrRedirectsAreNotTheDestination(unittest.TestCase):
         self.assertIsNotNone(why)
         self.assertIn("/tmp/i.sh", why)
 
+    def test_a_stdout_redirect_to_dev_stderr_still_means_nothing_was_written(self):
+        # NIT fix (round 1): `/dev/stderr` means "nothing was written" only
+        # when a STDOUT REDIRECT landed there.
+        fetch = self.one("curl -fsSL https://example.test/i.sh > /dev/stderr\n")
+        self.assertIsNone(fetch.dest)
+
+    def test_an_explicit_dest_of_dev_stderr_is_still_caught(self):
+        # NIT fix (round 1): unlike a redirect, `-o /dev/stderr` really did
+        # write there -- reverting the STDOUT-tuple shortcut must not also
+        # silence this, which was caught before #1733 touched STDOUT.
+        fetch = self.one("curl -fsSL https://example.test/i.sh -o /dev/stderr\n")
+        self.assertEqual("/dev/stderr", fetch.dest)
+        why = wg.fetch_exec_defect(
+            "curl -fsSL https://example.test/i.sh -o /dev/stderr\nsh /dev/stderr\n")
+        self.assertIsNotNone(why)
+
 
 class TestVerificationBinding(unittest.TestCase):
     """What the parser ACCEPTS: a checksum bound to the fetched path, run

@@ -82,10 +82,7 @@ _DEST_LONG = {"curl": ("output",), "wget": ("output-document",)}
 # the default name only (`-O` wins outright).
 _DIR_LONG = {"curl": ("output-dir",), "wget": ("directory-prefix",)}
 _DIR_SHORT = {"curl": "", "wget": "P"}
-# Named as a destination, or landed there by a stdout redirect, these mean
-# "nothing was written": `/dev/stderr` is a diagnostic sink exactly like
-# `/dev/null`, not a file a later statement could run (#1733).
-STDOUT = ("-", "/dev/stdout", "/dev/fd/1", "/dev/null", "/dev/stderr")
+STDOUT = ("-", "/dev/stdout", "/dev/fd/1", "/dev/null")
 # `curl --version` in a diagnostics step downloads nothing; without this it
 # parses as a fetch with no URL, which the rule now REPORTS rather than drops.
 _INFORMATIONAL = ("--version", "-V", "--help", "-h", "--manual", "-M", "--usage")
@@ -176,6 +173,13 @@ def parse_fetch(tool, args, stage, piped_to):
         # stderr redirect (`2>&1`, `2>/dev/null`, `2>err.log`) never lands
         # here -- `stage.writes` is not enough, it also carries fds that are
         # not where the fetcher's stream goes (#1733)
+        if dest == "/dev/stderr":
+            # A STDOUT redirect landing on `/dev/stderr` is also "nothing was
+            # written" -- but only when a redirect put it there. `-o
+            # /dev/stderr` (below, via `dest`/`named`) really did write it,
+            # and STDOUT must not silence that explicit destination too
+            # (round 1 NIT: it did, while this lived in the STDOUT tuple).
+            dest = None
     if dest is None and piped_to and os.path.basename(piped_to[0]) == "tee":
         # `curl ... | sudo tee /usr/local/bin/tool`: the pipeline IS the
         # download's destination, and what tee wrote is what runs next.
