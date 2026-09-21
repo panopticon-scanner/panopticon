@@ -2352,16 +2352,53 @@ class TestExpectedEnforced(unittest.TestCase):
         write_host_evidence(d, states)
         return d
 
-    def test_the_setup_namespace_is_never_enforced(self):
-        # phases/setup.py dispatches `setup-scan` shell-less BY DESIGN: it is
-        # not in dispatch.ROLE_FILES, so no host registers a shell for it, and
-        # a fresh machine runs `--setup` before it has registered anything.
+    def test_the_setup_namespace_reads_the_same_posture_as_a_run(self):
+        # #1737 flips the old "the setup namespace is never enforced"
+        # short-circuit. `setup_scan` IS in dispatch.ROLE_FILES now, so a host
+        # that has registered its shells enforces this dispatch like any other
+        # -- and a machine that has not registered anything reads REFUTED here
+        # and goes down the ack-gated unenforced path instead of skipping the
+        # question entirely.
         d = self._root(_ALL_PROVEN)
         self.assertTrue(loop_batch.expected_enforced(d, "claude", None))
-        self.assertFalse(loop_batch.expected_enforced(d, "claude", "setup"))
+        self.assertTrue(loop_batch.expected_enforced(d, "claude", "setup"))
         self.assertEqual([], loop_batch.refuse_disagreeing(
-            [{"id": "setup-scan", "agent": None, "enforced": False}],
+            [{"id": "setup-scan", "agent": "panopticon-setup-scan", "enforced": True}],
             loop_batch.expected_enforced(d, "claude", "setup")))
+
+    def test_an_unregistered_machine_is_unenforced_in_the_setup_namespace(self):
+        d = self._root({hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED})
+        self.assertFalse(loop_batch.expected_enforced(d, "claude", "setup"))
+
+    def test_the_setup_namespace_reads_setups_own_evidence_artifact(self):
+        # #1507's class of accident, one file over: `runio.host_evidence`
+        # resolves host-capabilities.json through the RUN manifest's tag, so on
+        # a tree that already holds a review run it would answer with THAT
+        # run's posture. `driver loop --setup` writes and reads the flat one.
+        d = self._root(_ALL_PROVEN)                 # flat: setup's own
+        runio._write_json(
+            driver.run_manifest.manifest_path(d),
+            {"schema_version": 1, "run_id": "r1", "host": "claude",
+             "created": "2026-09-21T00:00:00Z", "review_root": os.path.abspath(d)})
+        # ...and a DIFFERENT posture in the review run's own folder.
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED})
+        self.assertFalse(loop_batch.expected_enforced(d, "claude", None))
+        self.assertTrue(loop_batch.expected_enforced(d, "claude", "setup"))
+
+    def test_the_scan_checkpoint_dispatches_the_setup_scan_shell(self):
+        # #1727's routing table: `scan` used to accept NO name at all. It
+        # dispatches exactly one shell now, so a setup entry naming a scout
+        # shell -- a reviewer's charter in a round that only classifies -- is
+        # refused, and the entry's own shell is accepted.
+        self.assertEqual(("setup_scan",), loop_batch.checkpoint_roles("scan"))
+        self.assertEqual([], loop_batch.refuse_misrouted(
+            [{"id": "setup-scan", "agent": "panopticon-setup-scan", "enforced": True}],
+            "scan"))
+        self.assertEqual(["setup-scan"], loop_batch.refuse_misrouted(
+            [{"id": "setup-scan", "agent": "panopticon-scout", "enforced": True}],
+            "scan"))
+        self.assertIn("panopticon-setup-scan",
+                      loop_batch.misroute_refusal(["setup-scan"], "scan"))
 
     def test_the_unenforced_fallback_host_is_never_enforced(self):
         d = self._root(_ALL_PROVEN)
@@ -2394,9 +2431,12 @@ class TestEnforcedIsDerivedInOnePlace(unittest.TestCase):
     trap, one shape over)."""
 
     PHASES = os.path.join(os.path.dirname(orchestrate.__file__), "phases")
-    # The four builders that STAMP `enforced` onto dispatch entries, plus the
-    # driver plan that declares it for the same cells.
-    SITES = ("coverage.py", "review.py", "verify.py", "verify_tools.py", "requests.py")
+    # The builders that STAMP `enforced` onto dispatch entries, plus the
+    # driver plan that declares it for the same cells. #1737 added `setup.py`:
+    # its one entry used to hardcode False, which is the same second copy of
+    # the expression by another name.
+    SITES = ("coverage.py", "review.py", "verify.py", "verify_tools.py",
+             "requests.py", "setup.py")
 
     def _tree(self, name):
         path = os.path.join(self.PHASES, name)

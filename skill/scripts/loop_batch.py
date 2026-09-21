@@ -33,13 +33,16 @@ SETUP_NAMESPACE = "setup"
 # launch, and a governing instruction set nobody in this run chose. The driver
 # owns the routing, so the driver states it, here, once.
 #
-# `scan` is deliberately EMPTY: `--setup`'s single entry is dispatched
-# shell-less by design (it is not in ROLE_FILES, so no host registers a shell
-# for it), and an empty row accepts no name at all rather than any.
+# #1737: `scan` used to be deliberately EMPTY, because `--setup`'s single
+# entry was dispatched shell-less by design. `setup_scan` is a registered role
+# now, so the row names it -- one shell, the one that checkpoint dispatches.
+# An UNENFORCED setup entry still carries `agent: None` and is still refused
+# for naming any shell at all, which is the second half `refuse_misrouted`
+# reads off this same table.
 CHECKPOINT_ROLES = {"scout": ("scout",),
                     "review": ("domain_panel",),
                     "verify": ("advisor", "domain_advisor"),
-                    "scan": ()}
+                    "scan": ("setup_scan",)}
 
 
 def expected_enforced(review_root, host, namespace=None):
@@ -53,19 +56,42 @@ def expected_enforced(review_root, host, namespace=None):
     the phases set it from exactly this, so the loop can check the request
     against the run rather than take its word.
 
-    Two postures are not read off the capability evidence at all:
+    ONE posture is not read off the capability evidence at all:
+    `hosts.is_unenforced_fallback` -- `--host generic` is the permanent
+    unenforced fallback (owner ruling D1), ack-gated and disclosed.
 
-    * the `setup` namespace, whose single `setup-scan` entry is dispatched
-      SHELL-LESS by design (phases/setup.py: it is not in
-      `dispatch.ROLE_FILES`, so no host registers a shell for it, and a fresh
-      machine runs `--setup` before it has registered anything);
-    * `hosts.is_unenforced_fallback` -- `--host generic` is the permanent
-      unenforced fallback (owner ruling D1), ack-gated and disclosed.
+    #1737 retired the second one. The `setup` namespace used to answer False
+    before it ever opened the evidence, because `setup-scan` had no registered
+    shell on any host; it has one now, so `--setup` asks the same question
+    every other dispatch asks. A machine that has not emitted its shells reads
+    REFUTED here -- exactly what it should -- and `phases/setup` takes the
+    ack-gated unenforced path rather than skipping the question.
+
+    `namespace` also decides WHICH evidence artifact answers. Setup keeps its
+    own (the flat `.panopticon/host-capabilities.json` that `driver loop
+    --setup`'s posture step writes); `runio.host_evidence` resolves through
+    the REVIEW run-manifest's tag, so on a tree that already holds a review
+    run it would answer with that run's posture -- the #1507 accident, one
+    file over.
     """
-    if namespace == SETUP_NAMESPACE or hosts.is_unenforced_fallback(host):
+    if hosts.is_unenforced_fallback(host):
         return False
-    return (hosts.posture(host, runio.host_evidence(review_root))
+    return (hosts.posture(host, _evidence(review_root, namespace))
             [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
+
+
+def _evidence(review_root, namespace):
+    """This namespace's own capability evidence, failing closed on absence.
+
+    Resolved through `persist.run_dir`, the namespace-aware resolver
+    `driver._establish_host_posture` writes the artifact through, so the
+    reader and the writer name the same file. `None` (a review run) keeps
+    `runio.host_evidence`'s manifest-tag resolution untouched.
+    """
+    if namespace is None:
+        return runio.host_evidence(review_root)
+    return runio.evidence_at(
+        os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES))
 
 
 def refuse_disagreeing(pending, expected):

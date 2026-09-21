@@ -342,7 +342,17 @@ def host_evidence(review_root):
     file is written to a `.panopticon` path a hostile target can pre-commit,
     so "unparseable value" and "unparseable container" are the same defect.
     """
-    body = _load_json(_pano(review_root, HOST_CAPABILITIES))
+    return evidence_at(_pano(review_root, HOST_CAPABILITIES))
+
+def evidence_at(path):
+    """The `capabilities` block of ONE capability artifact, or {} (#1737).
+
+    Split out of `host_evidence` so a namespace that keeps its own artifact
+    -- `--setup`'s flat `.panopticon/host-capabilities.json`, which
+    `persist.run_dir("setup")` resolves and the manifest-tag lookup above
+    would route into an unrelated review run's folder -- reads it through the
+    same fail-closed parse rather than a second copy of it."""
+    body = _load_json(path)
     caps = body.get("capabilities") if isinstance(body, dict) else None
     return caps if isinstance(caps, dict) else {}
 

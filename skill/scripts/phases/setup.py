@@ -4,7 +4,9 @@ import os
 import subprocess
 import sys
 
+from scripts import dispatch
 from scripts import hosts
+import scripts.loop_batch as loop_batch
 from scripts import read_guard_hook
 import scripts.host_disclosure as host_disclosure
 import scripts.repo_config as repo_config
@@ -59,23 +61,43 @@ def _setup_scan_entry(review_root, prompt, host):
     (mirrors _scout_entry): the host dispatches it, gets proposal JSON back, and
     persists it to out_file. #1608: the entry carries `delivery` saying so.
 
-    Unlike scout/panel/advisor roles, setup-scan is NEVER enforced: it is not in
-    dispatch.ROLE_FILES, so no `panopticon-setup-scan` shell is ever registered
-    for any host -- dispatching it as "enforced" would ask the host to invoke a
-    subagent that doesn't exist. It is read-only + return-persist by template
-    tool_policy (Read/Grep/Glob only), so a plain general-purpose dispatch is
-    sufficient and safe.
+    #1737 (AGT-B1D): this used to carry `agent: None, enforced: False`
+    unconditionally, with a docstring arguing that a plain general-purpose
+    dispatch was "sufficient and safe" because the template's tool_policy is
+    read-only -- but that policy travelled as PROSE only. Nothing bounded the
+    tool set a host hands a general-purpose agent, for the one dispatch that
+    reads the WHOLE untrusted tree. `setup_scan` is a registered role now, so
+    this entry names its shell and derives `enforced` from this invocation's
+    own posture exactly the way the five phase sites do (#1720) -- with
+    `--setup`'s own evidence artifact, which `driver loop --setup`'s posture
+    step writes flat beside setup's other artifacts.
+
+    When the posture does not prove enforcement -- no shells emitted yet, a
+    host that cannot enforce -- the entry falls back to the shell-less shape
+    it always had, and `scan_execute` makes the operator acknowledge that
+    before it dispatches (`requests.require_unenforced_scan_ack`).
+
+    The MODEL stays None either way: R-F4-2, deliberately unbound, so the
+    session's model runs this one-off classification. The registered shell
+    binds none either (model_resolver's `setup_scan` row).
     """
     out_file = os.path.abspath(runio._pano(review_root, "setup-proposal.json"))
-    # No run exists at setup time, so there is no evidence artifact; {} is the
-    # all-unknown posture. setup-scan.md grants no Write, so delivery() answers
-    # before it ever consults the posture -- return_json, empty prefix.
+    enforced = loop_batch.expected_enforced(review_root, host,
+                                            namespace=loop_batch.SETUP_NAMESPACE)
+    # The all-unknown posture `{}` is deliberate and unrelated to `enforced`
+    # above: setup-scan.md grants no Write, so delivery() answers return_json
+    # before it ever consults a posture, and handing it one would only invite
+    # a reader to think the answer depends on it.
     mode, prefix = requests.delivery(host, {}, "setup-scan.md", out_file)
     entry = {"id": "setup-scan",
-             "agent": None,
-             "enforced": False,
-             # R-F4-2: deliberately unbound -- no ROLE_FILES entry, no profile;
-             # see test_setup_scan_is_deliberately_not_model_bound.
+             # The role file SPELLED OUT, like the other four builders: the
+             # #1727 routing guard reads this constant out of the AST to prove
+             # the table names the shell this checkpoint really dispatches.
+             "agent": dispatch.registered_agent_name("setup-scan.md") if enforced else None,
+             "enforced": enforced,
+             # R-F4-2: deliberately unbound -- an explicit `model: null` row in
+             # model-profiles.yml, not an omission; see
+             # test_setup_scan_is_deliberately_not_model_bound.
              "model": None,
              "prompt": requests.entry_marker("setup-scan") + prefix + prompt,
              "marker": read_guard_hook.marker_line("setup-scan"),

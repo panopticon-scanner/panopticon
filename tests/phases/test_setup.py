@@ -16,6 +16,7 @@ import scripts.phases.setup as setup_phase
 import scripts.phases.requests as requests
 
 import scripts.driver as driver
+import scripts.loop_batch as loop_batch
 import scripts.coverage_model as coverage_model
 import scripts.host_disclosure as host_disclosure
 import scripts.host_probes as host_probes
@@ -24,6 +25,7 @@ import scripts.setup_flow as setup_flow
 import scripts.model_resolver as model_resolver
 import scripts.repo_config as repo_config
 
+from conftest import write_host_evidence
 from tools.git_repo import make_git_repo
 
 
@@ -76,17 +78,56 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(1, err.getvalue().count(host_disclosure.GENERIC_FALLBACK_NOTICE))
 
     def test_setup_scan_is_deliberately_not_model_bound(self):
-        # R-F4-2. setup-scan has no role in dispatch.ROLE_FILES and no profile
-        # entry; resolve_model would hand it the host's catch-all default and
+        # R-F4-2. `resolve_model` would hand setup-scan a role tier and
         # silently move the one judgement-heavy, one-off `driver setup`
-        # dispatch off the session's model. The exception is pinned so it
-        # stays a decision rather than becoming an omission.
+        # dispatch off the session's model. #1737 registered the SHELL and
+        # left the MODEL exactly here: the role now has a ROLE_FILES row and
+        # an explicit `model: null` profile, and the entry still carries None,
+        # so the exception stays a decision rather than becoming an omission.
         d = self._repo()
         with mock.patch.object(model_resolver, "resolve_model",
                                return_value={"model": "SENTINEL"}) as rm:
             entry = setup._setup_scan_entry(d, "PROMPT", "claude")
         self.assertIsNone(entry["model"])
         rm.assert_not_called()
+
+    def test_setup_scan_names_its_registered_shell_on_a_proven_host(self):
+        # #1737 (AGT-B1D): the one dispatch that reads the WHOLE untrusted
+        # tree used to carry `agent: None, enforced: False` unconditionally,
+        # so its tool grant was whatever the host gives a general-purpose
+        # agent. It is a registered role now, and `enforced` is DERIVED from
+        # this invocation's own posture the way the five phase sites are.
+        d = self._repo()
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+        self.assertEqual("panopticon-setup-scan", entry["agent"])
+        self.assertTrue(entry["enforced"])
+        self.assertIsNone(entry["model"])          # R-F4-2, unchanged
+        self.assertTrue(loop_batch.expected_enforced(d, "claude", "setup"))
+
+    def test_setup_scan_falls_back_shell_less_when_the_host_cannot_enforce(self):
+        # No evidence at all is the all-unknown posture, and UNKNOWN gates as
+        # REFUTED: a machine that has not emitted its shells dispatches
+        # shell-less -- and `scan_execute` makes the operator say so.
+        d = self._repo()
+        entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+        self.assertIsNone(entry["agent"])
+        self.assertFalse(entry["enforced"])
+        self.assertIsNone(entry["model"])
+
+    def test_the_entry_agrees_with_what_the_loop_expects_either_way(self):
+        # The #1720 request-integrity check, run against the builder: an entry
+        # whose self-asserted `enforced` disagrees with the run's own evidence
+        # stops the batch before anything launches.
+        d = self._repo()
+        for states in ({hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN},
+                       {hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED}):
+            with self.subTest(states=states):
+                write_host_evidence(d, states)
+                entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+                self.assertEqual([], loop_batch.refuse_disagreeing(
+                    [entry], loop_batch.expected_enforced(d, "claude", "setup")))
+                self.assertEqual([], loop_batch.refuse_misrouted([entry], "scan"))
 
     def test_setup_scan_entry_is_return_persist_and_says_so(self):
         # #1608. Its docstring always said "return-persist"; now the entry does.
@@ -95,7 +136,8 @@ class TestDriverSetup(unittest.TestCase):
                                return_value=("SENTINEL-MODE", "")) as dl:
             entry = setup._setup_scan_entry(d, "PROMPT", "claude")
         self.assertEqual("SENTINEL-MODE", entry["delivery"])
-        self.assertFalse(entry["enforced"])       # unchanged: no shell exists for it
+        # unenforced here because this repo has no capability evidence (#1737)
+        self.assertFalse(entry["enforced"])
         self.assertIsNone(entry["model"])         # unchanged: R-F4-2
         (host, _evidence, role_file, out_file), _kw = dl.call_args
         self.assertEqual(("claude", "setup-scan.md", entry["out_file"]),
