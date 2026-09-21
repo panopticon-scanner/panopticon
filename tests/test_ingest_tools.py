@@ -756,6 +756,62 @@ class TestAdapterFindingCap(unittest.TestCase):
         # A bound that fires on a normal repo would silently degrade every run.
         self.assertGreaterEqual(it.MAX_ADAPTER_FINDINGS, 1000)
 
+    def test_the_cap_runs_after_the_exclusion_filter(self):
+        # #1741: a target that plants noise under an excluded path must not be
+        # able to evict real project findings from the cap. Raw yield =
+        # MAX_ADAPTER_FINDINGS + 50; the first 100 (highest severity) sit under
+        # a fixture-corpus dir and a vendored dir, the rest are real,
+        # lower-severity project findings. Capping the RAW list (the old,
+        # buggy order) sorts the 100 excluded findings to the front by
+        # severity and keeps the first 1900 of the 1950 real ones, silently
+        # evicting the last 50 real findings before the filter ever sees them.
+        # Filtering first means the excluded 100 never compete for the cap, so
+        # all 1950 real findings survive untouched (well under the cap).
+        cap = it.MAX_ADAPTER_FINDINGS
+        noise = [{"ruleId": "NOISE%04d" % i, "level": "error",
+                 "message": {"text": "planted noise %d" % i},
+                 "locations": [{"physicalLocation": {
+                     "artifactLocation": {"uri": (
+                         "tests/fixtures/corpus/n%d.py" % i if i < 50
+                         else "vendor/lib/n%d.py" % i)},
+                     "region": {"startLine": i + 1}}}]}
+                 for i in range(100)]
+        real = self._results(cap + 50 - 100, level="note")
+        findings, disp, err = self._ingest(noise + real, cap=cap)
+        self.assertEqual(len(findings), len(real))
+        self.assertTrue(all(f["title"].startswith("finding ") for f in findings))
+        # Raw yield is unaffected by the reorder -- still the adapter's true
+        # pre-filter, pre-cap count.
+        self.assertEqual(disp["semgrep"]["findings"], len(noise) + len(real))
+        # Nothing was capped: the 1950 real findings fit comfortably under the
+        # cap once the 100 excluded ones are out of contention.
+        self.assertNotIn("truncated", disp["semgrep"])
+        # The 100 planted findings are accounted for as excluded, not silently
+        # lost to the cap.
+        self.assertIn("excluded 100", err)
+
+    def test_the_cap_notice_names_the_post_filter_count(self):
+        # #1741: when the exclusion filter removes some of an adapter's raw
+        # yield and what remains STILL exceeds the cap, the stderr note and
+        # disposition['truncated'] must describe the post-filter total, never
+        # the raw (pre-filter) one -- otherwise "kept N of M" names an M that
+        # was never really in contention.
+        noise = [{"ruleId": "NOISE%d" % i, "level": "error",
+                 "message": {"text": "planted noise %d" % i},
+                 "locations": [{"physicalLocation": {
+                     "artifactLocation": {"uri": "vendor/lib/n%d.py" % i},
+                     "region": {"startLine": i + 1}}}]}
+                 for i in range(3)]
+        real = self._results(10, level="note")
+        findings, disp, err = self._ingest(noise + real, cap=5)
+        self.assertEqual(len(findings), 5)
+        # 13 raw, 3 excluded, 10 survive the filter, 5 of those are kept: the
+        # cap dropped 5 (10 - 5), not 8 (13 - 5).
+        self.assertEqual(disp["semgrep"]["truncated"], 5)
+        self.assertEqual(disp["semgrep"]["findings"], 13)  # raw_count, unchanged
+        self.assertIn("10", err)      # the post-filter total the cap saw
+        self.assertNotIn("13", err)   # never the pre-filter (raw) total
+
 
 class TestVirtualenvExclusion(unittest.TestCase):
     """#1638 P09 (D8): a virtualenv is vendored code -- drop it on the tool axis.
@@ -775,13 +831,16 @@ class TestVirtualenvExclusion(unittest.TestCase):
 
     def test_conventional_venv_paths_drop_without_any_tree_to_stat(self):
         # The name fallback: ingest reads SARIF paths and may have no target
-        # root at all (the CI gate points at a temp dir of artifacts).
+        # root at all (the CI gate points at a temp dir of artifacts). #1740
+        # moved it out of the silent predicate into the DISCLOSED one -- the
+        # finding is still dropped, and now it says which name dropped it.
         for p in (".venv/lib/python3.12/site-packages/x.py",
                   "venv/lib/python3.11/site-packages/requests/api.py",
                   "venv/bin/rst2html.py",
                   "tools/.venv/lib/python3.12/site-packages/y.py",
                   "build/site-packages/z.py"):
-            self.assertTrue(it._is_run_artifact_path(p), p)
+            self.assertFalse(it._is_run_artifact_path(p), p)
+            self.assertIsNotNone(it._venv_name_segment(p), p)
 
     def test_metadata_marks_a_venv_with_an_unconventional_name(self):
         # `python -m venv env` is as common as `.venv`; only pyvenv.cfg knows.
@@ -793,9 +852,12 @@ class TestVirtualenvExclusion(unittest.TestCase):
 
     def test_name_fallback_applies_even_when_the_tree_says_nothing(self):
         # D8's accepted trade-off: a `venv/` with no marker is excluded anyway.
+        # #1740: excluded from the report, DISCLOSED to the gate -- the tree
+        # said nothing, so only the name justifies the drop.
         with tempfile.TemporaryDirectory() as root:
             os.makedirs(os.path.join(root, "venv"))
-            self.assertTrue(it._is_run_artifact_path("venv/app.py", root))
+            self.assertFalse(it._is_run_artifact_path("venv/app.py", root))
+            self.assertEqual(it._venv_name_segment("venv/app.py"), "venv")
 
     def test_the_name_matches_a_segment_never_a_substring(self):
         with tempfile.TemporaryDirectory() as root:
@@ -998,3 +1060,156 @@ class TestRedactedCaptureStillIngests(unittest.TestCase):
             self.assertEqual(plain[key], masked[key], key)
         self.assertIn(self.MARKER, plain["title"])       # the hole this closes
         self.assertNotIn(self.MARKER, masked["title"])
+
+
+class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
+    """#1740 (ARC-F2A): #1578 gave ONE name-based drop class a disclosed
+    channel; the rest stayed silent.
+
+    `_is_run_artifact_path` dropped any `venv`/`.venv`/`site-packages` segment
+    at any depth on the NAME alone -- no `pyvenv.cfg` needed -- and the
+    fixture-corpus prune dropped a whole directory tree the same way, both
+    invisibly: they fed one aggregate stderr count, never `suppressed_out`, so
+    `security_gate --security redteam` re-admitted a payload under
+    `app/vendor/` and lost the identical payload under `app/venv/`.
+
+    The split this pins: a drop justified by a NAME travels the disclosed
+    channel (per-segment count + `suppressed_out`), and a drop justified by
+    EVIDENCE -- a `pyvenv.cfg` marker, the scanner's own artifacts, generated
+    bytecode -- stays silent. Operator policy (`exclude_globs`) is neither: it
+    is excluded and counted, never handed back.
+    """
+
+    def _ingest(self, path, **kw):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w", encoding="utf-8") as fh:
+                json.dump(_sarif_fixture(path), fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                out, _disp = it.ingest_dir_detailed(d, "g1", **kw)
+            return out, err.getvalue()
+
+    def test_a_name_only_virtualenv_is_suppressed_not_silent(self):
+        for path, segment in (("app/venv/patched_auth.py", "venv"),
+                              ("tools/.venv/lib/x.py", ".venv"),
+                              ("lib/site-packages/requests/api.py", "site-packages")):
+            suppressed = []
+            out, err = self._ingest(path, suppressed_out=suppressed)
+            self.assertEqual(out, [], path)
+            self.assertEqual([f["suppressed"] for f in suppressed], [segment], path)
+            self.assertIn(segment, err, path)
+
+    def test_a_marker_confirmed_virtualenv_stays_silent(self):
+        # Evidence, not a name: `pyvenv.cfg` says the tree really is installed
+        # code, so the drop needs no disclosure and the gate never sees it.
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "app", "venv"))
+            with open(os.path.join(root, "app", "venv", "pyvenv.cfg"), "w") as fh:
+                fh.write("home = /usr/bin\n")
+            suppressed = []
+            out, err = self._ingest("app/venv/patched_auth.py",
+                                    target_root=root, suppressed_out=suppressed)
+        self.assertEqual(out, [])
+        self.assertEqual(suppressed, [])
+        self.assertIn("not project source", err)
+
+    def test_the_fixture_prune_routes_through_the_same_channel(self):
+        suppressed = []
+        out, err = self._ingest("tests/fixtures/vulnerable-node/app.js",
+                                suppressed_out=suppressed)
+        self.assertEqual(out, [])
+        self.assertEqual([f["suppressed"] for f in suppressed],
+                         [it.FIXTURE_SEGMENT])
+        self.assertIn("test-fixture corpus", err)
+
+    def test_include_fixtures_keeps_them_instead_of_suppressing_them(self):
+        suppressed = []
+        out, _err = self._ingest("tests/fixtures/vulnerable-node/app.js",
+                                 include_fixtures=True, suppressed_out=suppressed)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(suppressed, [])
+
+    def test_operator_exclude_globs_are_excluded_and_never_handed_back(self):
+        # `--exclude` is operator POLICY, not a guess from a directory name:
+        # the operator said this path is out of scope, so it is counted and
+        # dropped in every mode -- the gate must not re-admit it.
+        suppressed = []
+        out, err = self._ingest("ops/deploy.py", exclude_globs=["ops/*"],
+                                suppressed_out=suppressed)
+        self.assertEqual(out, [])
+        self.assertEqual(suppressed, [])
+        self.assertIn("excluded 1 finding", err)
+
+    def test_the_evidence_backed_classes_stay_silent(self):
+        for path in (".panopticon/runs/t/report-discarded.json",
+                     ".worktrees/a2/app/auth.py",
+                     ".git/config",
+                     "skill/scripts/__pycache__/driver.cpython-314.pyc",
+                     "a/b/c.pyo"):
+            for kw in ({}, {"include_fixtures": True}):
+                suppressed = []
+                out, err = self._ingest(path, suppressed_out=suppressed, **kw)
+                self.assertEqual(out, [], path)
+                self.assertEqual(suppressed, [], path)
+                self.assertIn("not project source", err, path)
+
+    def test_the_name_only_venv_predicate_matches_segments_only(self):
+        for p in ("app/venv/x.py", "a/.venv/b/c.py", "lib/site-packages/x.py"):
+            self.assertIsNotNone(it._venv_name_segment(p), p)
+        for p in ("src/venvutils.py", "app/environments/x.py", "venv.py",
+                  "app/venv",                       # the BASENAME never counts
+                  "src/site_packages/x.py"):
+            self.assertIsNone(it._venv_name_segment(p), p)
+
+    def test_every_dropped_finding_is_counted_in_exactly_one_bucket(self):
+        # Honesty of the tally: the stderr line's total is the sum of the
+        # buckets, and `suppressed_out` holds exactly the suppressed ones.
+        parsed = [{"location": {"file": p}} for p in (
+            "app/models/order.rb",                     # kept
+            "app/vendor/j.js",                         # suppressed: vendored
+            "app/venv/x.py",                           # suppressed: venv name
+            "lib/site-packages/y.py",                  # suppressed: venv name
+            "tests/fixtures/node/app.js",              # suppressed: fixtures
+            ".panopticon/old-report.json",             # silent: run artifact
+            "a/__pycache__/x.pyc",                     # silent: bytecode
+            "ops/deploy.py",                           # excluded: operator glob
+        )]
+        suppressed_out = []
+        kept, gl, ra, suppressed = it._filter_parsed_findings(
+            parsed, False, ["ops/*"], None, None, suppressed_out)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual((gl, ra), (1, 2))
+        self.assertEqual(suppressed, {"vendor": 1, "venv": 1,
+                                      "site-packages": 1,
+                                      it.FIXTURE_SEGMENT: 1})
+        self.assertEqual(len(suppressed_out), sum(suppressed.values()))
+        self.assertEqual(len(kept) + gl + ra + sum(suppressed.values()),
+                         len(parsed))
+
+    def test_each_suppression_names_its_class(self):
+        self.assertEqual(it.suppression_class("vendor"), "vendored")
+        self.assertEqual(it.suppression_class("node_modules"), "vendored")
+        self.assertEqual(it.suppression_class("venv"), "virtualenv-by-name")
+        self.assertEqual(it.suppression_class("site-packages"), "virtualenv-by-name")
+        self.assertEqual(it.suppression_class(it.FIXTURE_SEGMENT), "fixture-corpus")
+
+    def test_the_stderr_line_names_each_class_with_its_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            sarif = {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
+                               "results": [
+                {"ruleId": "r1", "level": "error", "message": {"text": "m"},
+                 "locations": [{"physicalLocation": {
+                     "artifactLocation": {"uri": uri},
+                     "region": {"startLine": 1}}}]}
+                for uri in ("app/vendor/j.js", "app/venv/x.py",
+                            "tests/fixtures/n/app.js")]}]}
+            with open(os.path.join(d, "semgrep.sarif"), "w", encoding="utf-8") as fh:
+                json.dump(sarif, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                it.ingest_dir(d, "g1")
+        text = err.getvalue()
+        self.assertIn("excluded 3 finding", text)
+        self.assertIn("vendored dependencies (vendor: 1)", text)
+        self.assertIn("venv: 1", text)
+        self.assertIn("test-fixture corpus", text)

@@ -435,23 +435,18 @@ def _disclose_posture(review_root, manifest, fresh, namespace=None):
     resolves the per-run folder off the manifest, so creating one mid-flow
     would move `host-capabilities.json` out from under this very function.
 
-    ...and never in the setup namespace (#1616 item 3), for the mirror-image
-    reason. `record_posture_disclosure` writes `run-manifest.json` -- that
-    path is unconditional -- while `driver loop --setup` is driving its OWN
-    `setup-manifest.json`, so stamping there would overwrite a prior review
-    run's manifest with setup's body: a new run_id, a new tag, and every
-    `_pano` path of that run pointing somewhere else. The cost of not
-    stamping is that setup prints the full block on each of its two
-    invocations instead of once, which is the cheap half of the trade.
+    Setup stamps its own `setup-manifest.json` through the same namespace
+    resolver. A prior review run's manifest and capability evidence remain
+    associated with that review run.
     """
     digest = host_disclosure.disclosure_digest(fresh)
     since = run_manifest.posture_disclosed_at(manifest, digest)
     _emit_posture_disclosure(fresh, since=since)
-    if (since is None and namespace is None
-            and os.path.isfile(run_manifest.manifest_path(review_root))):
+    if (since is None
+            and os.path.isfile(run_manifest.manifest_path(review_root, namespace))):
         try:
             run_manifest.record_posture_disclosure(review_root, manifest, digest,
-                                                   fresh.get("probed_at"))
+                                                   fresh.get("probed_at"), namespace=namespace)
         except OSError as exc:
             # The stamp is EXPENDABLE, and a stamp that cannot be written must
             # not be the thing that kills an invocation. Losing it costs one
@@ -466,6 +461,16 @@ def _disclose_posture(review_root, manifest, fresh, namespace=None):
                 "driver: could not record the posture disclosure stamp (%s: %s)"
                 " -- the full block will print again next invocation\n"
                 % (type(exc).__name__, exc))
+        except ValueError as exc:
+            # #1735: NOT the expendable case above. A ValueError here is the
+            # whole-path confinement refusing a planted component -- the tree is
+            # hostile, so the run must stop rather than shrug and continue. It
+            # stops the way this verb stops: as its own error STATUS. Returned
+            # rather than raised for exactly the reason the OSError comment
+            # gives -- `driver run` speaks a status protocol, and a traceback is
+            # not a status. The raise stays inside `_rewrite`, where fail-closed
+            # and loud belongs; this is only where it becomes a sentence.
+            return ("refusing to record the posture disclosure stamp: %s" % exc)
 
 
 def _establish_host_posture(review_root, manifest, args, *, registration_dir=None,
@@ -622,7 +627,9 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
     stored = runio._load_json(path)
     _carry_output_schema_shape(fresh, stored)
-    _disclose_posture(review_root, manifest, fresh, namespace)
+    disclosure_refusal = _disclose_posture(review_root, manifest, fresh, namespace)
+    if disclosure_refusal:                         # #1735: a planted staging path
+        return disclosure_refusal
     # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
     # tool_policy_enforced is already REFUTED for an unrelated reason -- no
     # registration directory, i.e. every machine that has not run `driver
@@ -982,7 +989,10 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         # tools phase rewrites its marker as the operator's own skip, and
         # synthesis discloses it as meta.tools.disabled_mid_run.
         if run_manifest.is_tools_downgrade(manifest, cli_flags):
-            manifest = run_manifest.record_tools_downgrade(review_root, manifest)
+            try:
+                manifest = run_manifest.record_tools_downgrade(review_root, manifest)
+            except ValueError as exc:     # #1735: the same refusal, the same protocol
+                return runio._error_status(str(exc))
     # In-memory only, and deliberately NOT a manifest field: it names where the
     # HOST SESSION runs, which is a property of this invocation rather than of
     # the run, and it feeds nothing but the cost-ledger transcript lookup. Not
@@ -1001,15 +1011,25 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # fresh token per iteration by construction, since every iteration calls
     # this function.
     manifest["invocation"] = run_manifest.new_run_id()
-    # §5.1: point runs/latest at the active run folder now that the manifest (hence
-    # the tag) is established — so the pointer exists throughout the run, not just
-    # after synthesize writes the report.
-    runio._ensure_run_symlinks(review_root)
-    # I2: capture the clean-tree baseline unconditionally and BEFORE the engine
-    # runs. Idempotent (returns the existing baseline if present) -> no-op on a
-    # normal resume, but self-heals a baseline that a mid-first-run interrupt
-    # left missing (which had silently disabled the clean-tree guard).
-    validate.capture_tree_baseline(review_root, runner=runner)
+    # Both writes below land inside the REVIEWED tree, and each can refuse a
+    # planted component -- `_ensure_run_symlinks` with DriverError, the baseline
+    # write with the confinement's ValueError. They sat outside every `except` on
+    # this path, so on the hostile tree #1735 is about they ended the invocation
+    # with a traceback and no JSON. Same rule as `run_engine` below: refusing is
+    # the guard working, and it speaks this verb's status protocol.
+    try:
+        # §5.1: point runs/latest at the active run folder now that the manifest
+        # (hence the tag) is established — so the pointer exists throughout the
+        # run, not just after synthesize writes the report.
+        runio._ensure_run_symlinks(review_root)
+        # I2: capture the clean-tree baseline unconditionally and BEFORE the
+        # engine runs. Idempotent (returns the existing baseline if present) ->
+        # no-op on a normal resume, but self-heals a baseline that a
+        # mid-first-run interrupt left missing (which had silently disabled the
+        # clean-tree guard).
+        validate.capture_tree_baseline(review_root, runner=runner)
+    except (runio.DriverError, ValueError) as exc:
+        return runio._error_status(str(exc))
     # 5.2: establish this host's capability posture BEFORE any phase can build
     # a dispatch entry, and re-establish it on every resume. Not an
     # engine.Phase: phases are skipped once their done-predicate holds, which

@@ -2747,6 +2747,42 @@ class TestTheEntrysShellIsBoundToItsCheckpoint(LoopCase):
         self.assertIn(("review-app-SEC", ("domain_panel",)), seen)
         self.assertIn(("verify-app-SEC-primary", ("advisor", "domain_advisor")), seen)
 
+    def test_verify_shells_are_bound_to_each_entries_output_family(self):
+        outputs = (("/run/verdicts/abc123.json", "panopticon-advisor"),
+                   ("/run/verdicts/verdicts-app-SEC-primary.json", "panopticon-domain-advisor"))
+        for path, expected in outputs:
+            for shell in ("panopticon-advisor", "panopticon-domain-advisor"):
+                with self.subTest(path=path, shell=shell):
+                    entry = {"id": "verify-e", "out_file": path,
+                             "enforced": True, "agent": shell}
+                    self.assertEqual([] if shell == expected else ["verify-e"],
+                                     loop_batch.refuse_misrouted([entry], "verify"))
+
+    def test_unknown_output_role_fails_closed(self):
+        entry = {"id": "e", "out_file": "/run/rejected/verdicts-app-SEC.json",
+                 "enforced": True, "agent": "panopticon-domain-advisor"}
+        self.assertEqual(["e"], loop_batch.refuse_misrouted([entry], "verify"))
+
+    def test_swapping_advisor_shells_stops_the_loop_before_verify_launches(self):
+        root, floor = self._repo()
+        runner = FakeRunner()
+        real = orchestrate.requests.load_bound_request
+
+        def swap(review_root, namespace=None, expected_sha256=None):
+            request, refusal = real(review_root, namespace, expected_sha256)
+            if (request or {}).get("checkpoint") == "verify":
+                for entry in request["entries"]:
+                    entry["agent"] = "panopticon-advisor"
+            return request, refusal
+
+        with mock.patch.object(orchestrate.requests, "load_bound_request", swap), \
+                contextlib.redirect_stderr(io.StringIO()):
+            status = self._run_loop(root, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("output role", status["message"])
+        self.assertTrue(runner.launched)
+        self.assertFalse(any(entry_id.startswith("verify-") for entry_id in runner.launched))
+
 
 class TestNoDriverReaderTakesTheUnboundRead(unittest.TestCase):
     """#1727 drift guard. `requests.load_dispatch_request` proves NOTHING about

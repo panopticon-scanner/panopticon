@@ -576,19 +576,22 @@ def require_unenforced_ack(review_root, manifest, entries):
         # for a host we are not running, so posture() would answer unknown for
         # all of them and the hint would go empty.
         guarded = [name for name in hosts.driver_hosts()
-                   if hosts.declares(name, hosts.ARTIFACT_WRITE_GUARD)]
+                   if name != manifest.get("host", "claude")
+                   and hosts.declares(name, hosts.ARTIFACT_WRITE_GUARD)]
+        alternative = (", or use one of: " + ", ".join("--host " + n for n in guarded)
+                       if guarded else "")
         row = evidence.get(hosts.ARTIFACT_WRITE_GUARD) or {}
         raise runio.DriverError(
             "%s is %s on host %r -- probe %s: %s. %s are granted Write, and "
             "nothing would confine that Write to the declared out_file; a "
             "write outside the reviewed tree is invisible to the clean-tree "
             "check too. Re-run with --allow-unenforced to accept that "
-            "explicitly (it is recorded in %s), or use one of: %s."
+            "explicitly (it is recorded in %s)%s."
             % (hosts.ARTIFACT_WRITE_GUARD, posture[hosts.ARTIFACT_WRITE_GUARD],
                manifest.get("host"), row.get("by") or "none ran",
                row.get("detail") or "no evidence",
                ", ".join(sorted(write_capable_roles())), UNENFORCED_ACK,
-               ", ".join("--host " + n for n in guarded)))
+               alternative))
     return _record_unenforced_ack(review_root, manifest, entries, evidence,
                                   posture, guard_mediates=False)
 

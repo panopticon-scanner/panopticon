@@ -502,8 +502,8 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
         # `run_probes` now always passes a session_root, defaulting it to cwd.
         # That is only safe because _resolve(None, None, os.getcwd()) and
         # _resolve(None, None, None) name the SAME file -- one absolute, one
-        # cwd-relative. Measured here rather than assumed: the two differ in
-        # `used_defaults`, which is what makes it worth checking.
+        # cwd-relative. Both derive their paths from the session defaults and
+        # must therefore require an existing settings file (#1591).
         with tempfile.TemporaryDirectory() as cwd, _in(cwd):
             self._session_root(cwd)
             default = write_guard_hook._resolve(None, None, None)
@@ -512,7 +512,7 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
                              os.path.abspath(explicit[0]))
             self.assertEqual(os.path.abspath(default[1]),
                              os.path.abspath(explicit[1]))
-            self.assertNotEqual(default[2], explicit[2])   # used_defaults does differ
+            self.assertEqual((default[2], explicit[2]), (True, True))
             self.assertEqual(
                 claude_probes.probe_write_guard_armed("claude")[0],
                 claude_probes.probe_write_guard_armed(

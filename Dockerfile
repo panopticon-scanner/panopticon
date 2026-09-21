@@ -39,6 +39,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git gnupg ruby nodejs npm \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Registry policy (#1534): requested tool versions are pinned below; their
+# transitive registry dependencies currently resolve at image-build time.
+# pip --require-hashes and npm ci need complete per-platform lock sets, which
+# these standalone/global installs do not yet maintain. gem, cargo and dotnet
+# installs likewise select package versions without a repository-owned lock
+# of the whole dependency graph. This is the current version-pin baseline,
+# not a claim of reproducible or hash-verified registry inputs; #1734 tracks
+# tightening the transitive dependency policy. Direct binary downloads retain
+# their separate checksum requirements above and below.
+#
 # Python tools. semgrep pinned (#outage 2026-08-18): the rules-corpus pin
 # below is a commit SHA on a live branch, but that pin is only meaningful
 # paired with a known-compatible semgrep build -- an unpinned `pip install`

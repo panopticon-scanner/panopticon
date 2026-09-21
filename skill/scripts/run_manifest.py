@@ -33,8 +33,14 @@ import sys
 import uuid
 
 from scripts import hosts
+# #1735: the no-follow artifact open. It lives in a leaf module rather than in
+# `phases/runio`, where it was written, precisely so THIS module can reach it:
+# `phases/*` imports `run_manifest`, and layout rule 3 keeps that arrow
+# pointing one way.
+from scripts import safe_write
 
 MANIFEST_NAME = "run-manifest.json"
+SETUP_MANIFEST_NAME = "setup-manifest.json"
 SCHEMA_VERSION = 1
 
 
@@ -94,8 +100,12 @@ _FLAG_KEYS = ("fail_on", "severity", "gate_scope", "diff_context", "tools",
               "max_verify")
 
 
-def manifest_path(review_root):
-    return os.path.join(review_root, ".panopticon", MANIFEST_NAME)
+def manifest_path(review_root, namespace=None):
+    """The parameter record for a review run or the independent setup flow."""
+    if namespace not in (None, "setup"):
+        raise ValueError("unknown manifest namespace: %r" % namespace)
+    name = SETUP_MANIFEST_NAME if namespace == "setup" else MANIFEST_NAME
+    return os.path.join(review_root, ".panopticon", name)
 
 
 def new_run_id():
@@ -296,7 +306,7 @@ POSTURE_DISCLOSED = "posture_disclosed"
 DISPATCH_REQUEST = "dispatch_request"
 
 
-def _rewrite(review_root, manifest):
+def _rewrite(review_root, manifest, *, namespace=None):
     """Write the manifest back through a temp file + `os.replace`.
 
     The manifest is otherwise write-once, and stays so for every anti-drift
@@ -304,11 +314,23 @@ def _rewrite(review_root, manifest):
     why. Atomic because this is the one artifact that anchors the run tag: an
     interrupt mid-write would leave every `_pano` path unresolvable. The
     ephemeral keys are stripped here, once, rather than at each caller.
+
+    #1735 (SEC-D1C): the STAGING file is as exposed as the artifact. `.panopticon/`
+    is inside the reviewed tree and `run-manifest.json.tmp` is a fixed name, so a
+    redteam target can commit it as a symlink to any file the invoking user can
+    write; the plain `open(tmp, "w")` this used followed the link, replaced that
+    file's contents with the manifest JSON, and then `os.replace` renamed the LINK
+    over `run-manifest.json` (rename does not dereference), so every later
+    `load_manifest` read through it. `write_manifest` escaped only because mode "x"
+    is O_EXCL. The staging write now goes through the same no-follow open every
+    other `.panopticon` writer uses, and refuses LOUDLY rather than writing
+    somewhere else -- the two fixes this class already had (#1577, and the guard
+    hooks' own `_atomic_write_json`) fail the same way.
     """
     body = {k: v for k, v in manifest.items() if k not in _EPHEMERAL_KEYS}
-    path = manifest_path(review_root)
+    path = manifest_path(review_root, namespace)
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    with safe_write.open_w_nofollow(tmp) as fh:
         json.dump(body, fh, indent=2, sort_keys=True)
     os.replace(tmp, path)
     return manifest
@@ -328,7 +350,7 @@ def record_tools_downgrade(review_root, manifest):
     return _rewrite(review_root, manifest)
 
 
-def record_posture_disclosure(review_root, manifest, digest, at=None):
+def record_posture_disclosure(review_root, manifest, digest, at=None, *, namespace=None):
     """Remember that this run's FULL posture block has now been printed (#1596).
 
     Not an anti-drift key and never read as one: it records what an operator
@@ -338,7 +360,7 @@ def record_posture_disclosure(review_root, manifest, digest, at=None):
     loop rewrites this file once per run rather than once per turn.
     """
     manifest[POSTURE_DISCLOSED] = {"digest": digest, "at": at or _now_iso()}
-    return _rewrite(review_root, manifest)
+    return _rewrite(review_root, manifest, namespace=namespace)
 
 
 def record_dispatch_request(review_root, manifest, checkpoint, sha256, at=None):

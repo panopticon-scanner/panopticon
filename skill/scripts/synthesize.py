@@ -14,6 +14,7 @@ import scripts.html_report as html_report
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
 import scripts.redact as redact
+import scripts.safe_write as safe_write
 import scripts.x0x_report as x0x_report
 import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
@@ -253,14 +254,14 @@ def main(argv=None):
         tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False),
         config=config_schema.load_resolution(run_dir))
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
-    # #1701: `gated_suppressed` is the vendored-path drops the gate must still
+    # #1701: `gated_suppressed` is the name-based drops the gate must still
     # count under --security redteam; empty otherwise. It rides to certification
     # on the ToolAxis and never joins `tool_findings`, so the report body is the
     # same in both modes.
     (tool_findings, dispositions, tools_ran, suppressed,
-     gated_suppressed) = plan_mod.ingest_tool_findings(args)
+     gated_suppressed, tools_excluded) = plan_mod.ingest_tool_findings(args)
     tools = tool_axis_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran,
-                                        suppressed, gated_suppressed)
+                                        suppressed, gated_suppressed, tools_excluded)
     prepared = findings_mod.FindingSet.prepare(args, tool_findings, run.security_mode)
     # #1634: redact the INPUT, not only the output -- and do it HERE, upstream
     # of the --emit-verify-queue branch, so both passes of a run see identical
@@ -341,10 +342,22 @@ def main(argv=None):
                                   report.get("meta") or {}, args.run_id)
     x0x_stem = out[:-len(".json")] if out.endswith(".json") else out
     x0x_path = x0x_stem + "-x0x.json"
+    # #1735: `<report>-x0x.json.tmp` is the manifest's staging shape exactly --
+    # a fixed name beside a `.panopticon` artifact, in the reviewed tree.
     x0x_tmp = x0x_path + ".tmp"
-    with open(x0x_tmp, "w", encoding="utf-8") as fh:
-        json.dump(x0x, fh, indent=2, sort_keys=True)
-    os.replace(x0x_tmp, x0x_path)
+    try:
+        with safe_write.open_w_nofollow(x0x_tmp) as fh:
+            json.dump(x0x, fh, indent=2, sort_keys=True)
+        os.replace(x0x_tmp, x0x_path)
+    finally:
+        # A refusal must not leave the planted link in the run folder for the
+        # next invocation to trip over -- the shape `discovery` already uses
+        # around its own staging write. `lexists` so a dangling link counts.
+        if os.path.lexists(x0x_tmp):
+            try:
+                os.remove(x0x_tmp)
+            except OSError:
+                pass
     print("X0X artifact: %s (%d candidates)" % (x0x_path, len(x0x["candidates"])))
     html_out = args.html_out
     if html_out is None and args.out:
