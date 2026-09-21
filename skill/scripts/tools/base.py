@@ -376,7 +376,13 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
     join_stderr = drain_stderr_async(proc)
 
     try:
-        assert proc.stdout is not None, "tool stdout must be captured with PIPE"
+        if proc.stdout is None:
+            # `popen_kwargs.setdefault("stdout", PIPE)` above makes this
+            # unreachable unless a caller passes stdout=None explicitly. It
+            # stays a raise rather than an assert because `python -O` strips
+            # the assert, and the next line would be an AttributeError on
+            # None instead of this sentence (#1533 review).
+            raise RuntimeError("tool stdout must be captured with PIPE")
         chunks: list[bytes] = []
         collected = 0
         truncated = False
