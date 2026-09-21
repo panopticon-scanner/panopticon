@@ -385,8 +385,9 @@ def gate_counts_suppressed(args):
 def ingest_tool_findings(args):
     """The --tools-dir ingest (WS-0 S3): (raw tool findings, per-adapter
     dispositions, tools_ran, the #1578 `{segment: count}` of name-based drops
-    -- the findings themselves stay suppressed -- and the #1701 subset of those
-    findings this run's GATE must still count). tools_ran is None when
+    -- the findings themselves stay suppressed -- the #1701 subset of those
+    findings this run's GATE must still count, and the #1740 `{globs, count}`
+    of what the OPERATOR's own `--tools-exclude` policy took off the axis). tools_ran is None when
     --tools-dir wasn't supplied -- reconcile infers build_executing_tools then;
     an empty set would ASSERT "no build-executing tool ran" from an absence of
     evidence (the inversion #450 was about). A "failed" disposition (empty /
@@ -418,11 +419,13 @@ def ingest_tool_findings(args):
                   "include tool findings in this report"
                   % (default_tools, default_tools), file=sys.stderr)
     if not (args.tools_dir and os.path.isdir(args.tools_dir)):
-        return [], {}, None, None, []
+        return [], {}, None, None, [], excluded_block(args, 0)
     dropped = []     # #1578/#1740: filled with the name-based drops, for the count
+    excluded = []    # #1740 fix round 2: the operator's own glob drops
     tool_findings, dispositions = ingest_tools.ingest_dir_detailed(
         args.tools_dir, None, exclude_globs=args.tools_exclude,
-        include_fixtures=args.include_fixtures, suppressed_out=dropped)
+        include_fixtures=args.include_fixtures, suppressed_out=dropped,
+        excluded_out=excluded)
     gated = []
     if gate_counts_suppressed(args):
         gated = [findings_mod.normalize_finding(f) for f in dropped]
@@ -434,4 +437,21 @@ def ingest_tool_findings(args):
             gated = [f for f in gated if evidence_mod.sev_rank(f) <= threshold]
     return (tool_findings, dispositions,
             tool_axis_mod.tools_ran_from_dispositions(dispositions),
-            ingest_tools.suppressed_counts(dropped), gated)
+            ingest_tools.suppressed_counts(dropped), gated,
+            excluded_block(args, len(excluded)))
+
+
+def excluded_block(args, count):
+    """`{"globs": [...], "count": N}` -- the exclusion POLICY this ingest ran
+    under and what it took off the tool axis (#1740 fix round 2).
+
+    Published on every report, empty included, because the globs are the
+    disclosure: `exclude_paths:` is authored by the repository under review and
+    now scopes the scanners, the report and the gate, so a `['**']` that
+    empties the tool axis has to be visible in `report.json` itself -- not only
+    in `groups.json`, `tools-manifest.json` and a stderr line nobody keeps. A
+    glob that matched nothing this run is still published: it scoped the run,
+    and a reader comparing two runs needs to see it.
+    """
+    return {"globs": [str(g) for g in (getattr(args, "tools_exclude", None) or [])],
+            "count": int(count)}

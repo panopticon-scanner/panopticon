@@ -324,6 +324,22 @@
               "description": "#1701: the other half of the `tools_suppressed` tally -- `{segment: count}` of TOOL findings that a directory-NAME exclusion withheld from `findings[]` and that THIS RUN'S GATE counted anyway (#1740: all three classes of it -- vendored, virtualenv-by-name, fixture-corpus). Non-empty only under `--security redteam`, where a finding may not be dropped on the strength of a conventional directory name: those findings count toward `summary.gate`, `summary.risk_level`, `summary.gate_severities` and the health index exactly as un-suppressed findings of the same severity and location would, after the same `--severity` floor and the same delta / `gate_scope` filter, but they are NOT added to `findings[]` -- so a gate that FAILs on them shows no finding, and this count is the only thing in the artifact that explains it. Read it beside `tools_suppressed`: the two sum, per segment, to the number the ingest printed on stderr and the number `security_gate.py` prints beside its own verdict, which is the one-definition rule `ingest_tools.suppressed_counts` exists to keep. `{}` means this run's gate counted nothing suppressed -- the `standard`-mode answer, and also the redteam answer when the drops were scoped out by the diff or the severity floor. The suppressed findings are never sent through the verify round (they are not in the body to be queued), so unlike the rest of the gate population they are counted without an advisor verdict; that asymmetry is #1578's open question.",
               "$comment": "Repaired to these types at the read by synth.repair.repair_tools_suppressed, like its sibling."
             },
+            "tools_excluded": {
+              "type": "object",
+              "properties": {
+                "globs": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "description": "The path globs that scoped this run's tool ingest: the repository's committed top-level `exclude_paths:` (threaded by the driver as `--tools-exclude`, and to the scan as `run_tools --exclude`), or whatever an operator passed directly. Published even when a glob matched nothing this run -- the policy scoped the run either way, and a reader comparing two runs has to see it. Repaired at the read (`synth.repair.repair_tools_excluded`): a non-string or over-long glob is dropped rather than cut, because a cut glob is a different glob and would misstate the policy."
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "How many TOOL findings those globs dropped at ingest. Distinct from `tools_suppressed`/`tools_suppressed_gated` in kind, not just in number: a suppression is this system's own inference from a conventional DIRECTORY NAME, and under `--security redteam` the gate counts it anyway (#1578/#1740), while an exclusion is a decision the operator or the repository made about scope -- so these findings are counted, disclosed, and never gated in any mode."
+                }
+              },
+              "description": "#1740 (ARC-F2A, fix round 2): the exclusion POLICY this run's tool ingest applied, and what it removed. `exclude_paths:` is authored by the repository under review and (since #1740) scopes the scanners, this report and the gate, so a committed `['**']` that empties the tool axis is a fact the ARTIFACT must carry -- it was visible only in `groups.json`, `tools-manifest.json` and an ingest stderr line nobody keeps. Stated on every report, `{\"globs\": [], \"count\": 0}` included: the field's absence must never be readable as `nothing was excluded`. `security_gate.py` prints the same two numbers beside its own verdict line."
+            },
             "test_inventory": {
               "type": "object",
               "additionalProperties": {

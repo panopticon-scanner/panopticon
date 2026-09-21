@@ -338,6 +338,52 @@ def repair_tools_network(value, warn=None):
     return out
 
 
+def repair_tools_excluded(value, warn=None):
+    """The `--tools-exclude` / committed `exclude_paths:` policy block,
+    normalized to what the schema pins for `meta.coverage.tools_excluded`
+    (#1740 fix round 2).
+
+    `{"globs": [str], "count": int}` -- which globs scoped this run's tool
+    ingest, and how many findings they dropped. The globs come from the
+    repository's own `panopticon.yml`, so they are a target-carried input
+    reaching a published artifact and are repaired here like every other one:
+    a non-string or over-long glob is DROPPED rather than cut (a cut glob is a
+    different glob, which would misstate the policy), the list is bounded, and
+    a count with no honest integer becomes 0 rather than a fabrication.
+
+    Always returns the full block, `{"globs": [], "count": 0}` included: the
+    field's absence must never be readable as "nothing was excluded".
+    """
+    changes = []
+    if not isinstance(value, dict):
+        if value not in (None, {}):
+            changes.append(("tools_excluded", "dropped: not an object"))
+        value = {}
+    raw = value.get("globs")
+    if raw is not None and not isinstance(raw, list):
+        changes.append(("tools_excluded.globs", "dropped: not a list"))
+        raw = []
+    globs = []
+    for glob in _bounded(list(raw or []), "tools_excluded.globs", changes):
+        if not isinstance(glob, str) or not glob:
+            changes.append(("tools_excluded.globs[%r]" % (glob,),
+                            "dropped: not a non-empty string"))
+            continue
+        if len(glob) > NAME_MAX:
+            changes.append(("tools_excluded.globs.%s..." % glob[:40],
+                            "dropped: longer than %d characters in" % NAME_MAX))
+            continue
+        globs.append(glob)
+    count = value.get("count", 0)
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        if count not in (None, 0):
+            changes.append(("tools_excluded.count",
+                            "dropped: not a non-negative integer"))
+        count = 0
+    warn_repairs("tool ingest", changes, warn)
+    return {"globs": globs, "count": count}
+
+
 def repair_tools_suppressed(value, warn=None):
     """The directory-NAME suppression tally, normalized to what the schema pins
     for `meta.coverage.tools_suppressed` (#1578, widened by #1740).

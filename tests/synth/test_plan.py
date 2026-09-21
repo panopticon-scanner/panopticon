@@ -379,7 +379,8 @@ class PlanLoadersTest(unittest.TestCase):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()),
-                                     ([], {}, None, None, []))
+                                     ([], {}, None, None, [],
+                                      {"globs": [], "count": 0}))
                 self.assertEqual(err.getvalue(), "")
                 # a non-empty default tools dir left un-ingested is announced
                 os.makedirs(os.path.join(".panopticon", "tools"))
@@ -388,7 +389,8 @@ class PlanLoadersTest(unittest.TestCase):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(plan_mod.ingest_tool_findings(_cli_args()),
-                                     ([], {}, None, None, []))
+                                     ([], {}, None, None, [],
+                                      {"globs": [], "count": 0}))
                 self.assertIn("appears un-ingested", err.getvalue())
                 # --tools-dir pointing nowhere is still "not measured"
                 self.assertEqual(
@@ -401,7 +403,8 @@ class PlanLoadersTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             tools_dir = os.path.join(d, "tools")
             os.makedirs(tools_dir)
-            found, dispositions, ran, suppressed, gated = plan_mod.ingest_tool_findings(
+            (found, dispositions, ran, suppressed, gated,
+             _excluded) = plan_mod.ingest_tool_findings(
                 _cli_args(tools_dir=tools_dir))
             self.assertEqual(found, [])
             self.assertEqual(dispositions, {})
@@ -663,9 +666,10 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                              tools_exclude=tools_exclude)
             err = io.StringIO()
             with _chdir(d), contextlib.redirect_stderr(err):
-                body, disp, ran, suppressed, gated = plan_mod.ingest_tool_findings(args)
+                (body, disp, ran, suppressed, gated,
+                 excluded) = plan_mod.ingest_tool_findings(args)
                 axis = tool_axis_mod.ToolAxis.load(args, d, [], disp, ran,
-                                                   suppressed, gated)
+                                                   suppressed, gated, excluded)
                 prepared = findings_mod.FindingSet.prepare(args, body, security)
                 run = report_mod.RunConfig.from_args(
                     args, groups_json or {}, self.TS) if groups_json is not None \
@@ -798,6 +802,30 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed"], {})
         self.assertIn("excluded 1 finding", self.stderr)
         self.assertIn("tests/fixtures/**", self.stderr)
+
+    def test_the_report_names_the_policy_that_emptied_the_tool_axis(self):
+        # #1740 fix round 2: `exclude_paths:` is TARGET-authored and now scopes
+        # the scanners, the report and the gate, so a report whose tool axis a
+        # committed `['**']` emptied must say so IN THE REPORT -- not only in
+        # groups.json, tools-manifest.json and a stderr line nobody keeps.
+        _body, report = self._run("redteam", rel=self.FIXTURE,
+                                  tools_exclude=["tests/fixtures/**"])
+        self.assertEqual(report["meta"]["coverage"]["tools_excluded"],
+                         {"globs": ["tests/fixtures/**"], "count": 1})
+
+    def test_the_excluded_block_is_present_when_no_policy_applied(self):
+        # Stated on every report, empty included: absence must never be
+        # readable as "nobody measured", the rule its two siblings follow.
+        _body, report = self._run("redteam")
+        self.assertEqual(report["meta"]["coverage"]["tools_excluded"],
+                         {"globs": [], "count": 0})
+
+    def test_the_globs_are_published_even_when_they_matched_nothing(self):
+        # The policy is the disclosure. A glob that matched nothing this run
+        # still scoped the run, and a reader comparing two runs needs to see it.
+        _body, report = self._run("redteam", tools_exclude=["ops/**"])
+        self.assertEqual(report["meta"]["coverage"]["tools_excluded"],
+                         {"globs": ["ops/**"], "count": 0})
 
     def test_the_two_tallies_sum_to_the_ingest_count_in_either_mode(self):
         """One tally, split -- `ingest_tools.suppressed_counts`' one-definition

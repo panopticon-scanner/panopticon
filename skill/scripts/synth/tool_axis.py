@@ -53,10 +53,16 @@ class ToolAxis:
     # report DISCLOSES, this is what certification COUNTS. Never merged into
     # the report's findings body; `reconcile` hands it to `grade_report`.
     gated_suppressed: list | None = None
+    # #1740 fix round 2: `{globs, count}` -- the operator/committed exclusion
+    # POLICY this ingest ran under. Not a suppression: these findings were
+    # never candidates for any gate in any mode, which is exactly why the
+    # policy that removed them has to be published beside the two tallies that
+    # are.
+    excluded: dict | None = None
 
     @classmethod
     def load(cls, args, run_dir, plan_lists, dispositions, tools_ran, suppressed=None,
-             gated_suppressed=None):
+             gated_suppressed=None, excluded=None):
         """The tool axis from the run folder (WS-0 S3): the runner's
         tools-manifest with its two FATAL (#17) checks, the policy mode the
         dispatch plans declare, and the ingest results `ingest_tool_findings`
@@ -138,7 +144,8 @@ class ToolAxis:
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
                    ingested_paths=args.files, manifest_invalid=manifest_invalid,
                    suppressed=suppressed,                     # #1578
-                   gated_suppressed=list(gated_suppressed or []))   # #1701
+                   gated_suppressed=list(gated_suppressed or []),   # #1701
+                   excluded=excluded)                          # #1740 round 2
 
 
 @dataclass(frozen=True)
@@ -372,6 +379,10 @@ def reconcile(plan, tools, resolved):
         # the mode that changed the gate was the mode that stopped disclosing,
         # and the report contradicted its own run's stderr and CI gate line.
         "tools_suppressed_gated": gated_counts,
+        # #1740 fix round 2: the exclusion POLICY, repaired at the read like
+        # its two siblings -- `exclude_paths:` is target-authored, so a glob
+        # reaching a published artifact is a target-carried input.
+        "tools_excluded": repair_mod.repair_tools_excluded(tools.excluded),
         "tools_ran": (sorted(tools_ran) if tools_ran is not None
                       else sorted(resolved.tool_names)),
         "build_executing_tools": sorted(
