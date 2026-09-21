@@ -345,6 +345,7 @@ class TestSchemaParity(unittest.TestCase):
         # `meta` keys no other producer writes.
         self.assertIsNotNone(self.report, "the fixture wrote no readable report")
         meta = self.report["meta"]
+        self.assertEqual(meta["gate_security_mode"], "redteam")
         self.assertTrue(meta.get("parts"), "the split writer did not run")
         self.assertTrue(meta.get("discarded_claims_file"),
                         "the discarded sibling was not written")

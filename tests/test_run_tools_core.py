@@ -119,11 +119,27 @@ class TestRunTools(unittest.TestCase):
                 self.assertEqual(json.load(fh), payload)
 
     def test_is_excluded_matches_subtree(self):
+        # #1740 fix round 2: the subtree is spelled `**`. Under the gitignore
+        # semantics discovery has always used for these globs, `*` stays inside
+        # a path segment -- `tests/fixtures/*` is the direct children and
+        # nothing deeper, which is the next assertion.
         self.assertTrue(rt._is_excluded("tests/fixtures/insecure-js/app.js",
-                                        ["tests/fixtures/*"]))
+                                        ["tests/fixtures/**"]))
         self.assertFalse(rt._is_excluded("skill/scripts/x.py",
-                                         ["tests/fixtures/*"]))
+                                         ["tests/fixtures/**"]))
         self.assertFalse(rt._is_excluded("a.js", []))
+
+    def test_a_single_star_stops_at_the_separator_like_gitignore(self):
+        # The semantics change itself, pinned: `fnmatch` spanned `/` here and
+        # discovery never did, so one committed `exclude_paths:` line meant two
+        # different scopes (#1740 fix round 2).
+        self.assertTrue(rt._is_excluded("tests/fixtures/app.js",
+                                        ["tests/fixtures/*"]))
+        self.assertFalse(rt._is_excluded("tests/fixtures/insecure-js/app.js",
+                                         ["tests/fixtures/*"]))
+        # a trailing `/` claims the tree, which fnmatch matched never
+        self.assertTrue(rt._is_excluded("tests/fixtures/insecure-js/app.js",
+                                        ["tests/fixtures/"]))
 
     def test_partition_demotes_adapter_with_only_excluded_files(self):
         class _Ad:
@@ -133,11 +149,12 @@ class TestRunTools(unittest.TestCase):
                 return [os.path.join(target, f) for f in self._files]
         class _NoFiles:  # lockfile-triggered adapter: stays required
             pass
+        # `**`, not `*`: the glob vocabulary is discovery's (#1740 fix round 2).
         adapters = {"eslint-security": _Ad(["tests/fixtures/insecure-js/app.js"]),
                     "with-src": _Ad(["skill/x.js", "tests/fixtures/y.js"]),
                     "osv-scanner": _NoFiles()}
         required, excluded = rt.partition_by_exclusion(
-            adapters, "/repo", ["tests/fixtures/*"])
+            adapters, "/repo", ["tests/fixtures/**"])
         self.assertEqual(excluded, ["eslint-security"])
         self.assertCountEqual(required, ["with-src", "osv-scanner"])
 
@@ -656,14 +673,43 @@ class TestVirtualenvExclusion(unittest.TestCase):
                 os.path.join(d, "m.json"), ["semgrep"], [],
                 excluded_dirs=[{"path": ".venv", "reason": "pyvenv.cfg"},
                                {"path": "venv", "reason": "name"}])
+            # #1740: `skipped` defaults to True, the pre-#1740 meaning of
+            # this list, for a caller handing `find_virtualenvs` output in.
             self.assertEqual(payload["excluded_dirs"],
-                             [{"path": ".venv", "reason": "pyvenv.cfg"},
-                              {"path": "venv", "reason": "name"}])
+                             [{"path": ".venv", "reason": "pyvenv.cfg",
+                               "skipped": True},
+                              {"path": "venv", "reason": "name",
+                               "skipped": True}])
             # F2: the list is what the SCAN was told to skip, found by a
             # depth-bounded walk -- ingest prunes a superset, at any depth.
             self.assertEqual(payload["depth_bound"], rt.VENV_MAX_DEPTH)
             with open(os.path.join(d, "m.json"), encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh), payload)
+
+    def test_manifest_records_the_exclude_globs_it_was_given(self):
+        # #1740 fix round 1: the committed `exclude_paths:` policy now reaches
+        # the scan, so the manifest says which globs this run was handed --
+        # beside `excluded_scope` (the adapters those globs disqualified) and
+        # `excluded_dirs` (the virtualenvs). Stated on every manifest, `[]`
+        # included: absence must not read as "nobody measured".
+        with tempfile.TemporaryDirectory() as d:
+            payload = rt.write_manifest(os.path.join(d, "m.json"), ["semgrep"], [],
+                                        exclude_globs=["tests/fixtures/**"])
+            self.assertEqual(payload["exclude_globs"], ["tests/fixtures/**"])
+            bare = rt.write_manifest(os.path.join(d, "b.json"), ["semgrep"], [])
+            self.assertEqual(bare["exclude_globs"], [])
+
+    def test_main_records_the_exclude_globs_it_was_passed(self):
+        with tempfile.TemporaryDirectory() as d:
+            manifest = os.path.join(d, "tools-manifest.json")
+            with mock.patch.object(rt, "docker_available", return_value=False), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rt.main(["--target", d, "--out", os.path.join(d, "out"),
+                         "--tools", "semgrep", "--manifest", manifest,
+                         "--exclude", "tests/fixtures/**"])
+            with open(manifest, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh)["exclude_globs"],
+                                 ["tests/fixtures/**"])
 
     def test_manifest_records_what_the_sanitizer_dropped(self):
         # #1646 ruling 3: the audit was PARTIAL and the manifest says so.
@@ -746,8 +792,112 @@ class TestVirtualenvExclusion(unittest.TestCase):
             with open(manifest, encoding="utf-8") as fh:
                 written = json.load(fh)
             self.assertEqual(written["excluded_dirs"],
-                             [{"path": ".venv", "reason": "pyvenv.cfg"}])
+                             [{"path": ".venv", "reason": "pyvenv.cfg",
+                               "skipped": True}])
             self.assertEqual(written["depth_bound"], rt.VENV_MAX_DEPTH)
+
+    # #1740 (ARC-F2A): the scan side of "no drop on a directory NAME alone".
+    # `find_virtualenvs` flags `venv`/`.venv` by name with no `pyvenv.cfg`
+    # behind it, and semgrep/trivy/bandit were told to skip it in every mode --
+    # so `app/venv/` was a blind spot for three scanners on the very runs whose
+    # gate exists to refuse that inference. Under redteam the name-only dirs
+    # are SCANNED, and the manifest says so per directory.
+
+    def test_partition_skips_every_venv_under_standard(self):
+        dirs = [{"path": ".venv", "reason": "pyvenv.cfg"},
+                {"path": "venv", "reason": "name"}]
+        skip, rows = rt.partition_venv_dirs(dirs, "standard")
+        self.assertEqual(skip, dirs)
+        self.assertEqual(rows, [{"path": ".venv", "reason": "pyvenv.cfg",
+                                 "skipped": True},
+                                {"path": "venv", "reason": "name",
+                                 "skipped": True}])
+
+    def test_partition_scans_the_name_only_dirs_under_redteam(self):
+        dirs = [{"path": ".venv", "reason": "pyvenv.cfg"},
+                {"path": "venv", "reason": "name"}]
+        skip, rows = rt.partition_venv_dirs(dirs, "redteam")
+        self.assertEqual(skip, [{"path": ".venv", "reason": "pyvenv.cfg"}])
+        self.assertEqual(rows, [{"path": ".venv", "reason": "pyvenv.cfg",
+                                 "skipped": True},
+                                {"path": "venv", "reason": "name",
+                                 "skipped": False}])
+
+    def test_a_name_only_venv_gets_no_scanner_skip_flag_under_redteam(self):
+        # The argv is the control: a directory the manifest says was scanned
+        # must not appear in any scanner's exclusion knob.
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            self._venv(d, ".venv")                     # marker: still skipped
+            self._venv(d, "venv", marker=False)        # name only: scanned
+            skip, _rows = rt.partition_venv_dirs(rt.find_virtualenvs(d), "redteam")
+            rt.run_tools(d, ["semgrep", "trivy", "bandit"],
+                         os.path.join(d, "out"), runner=runner, venv_dirs=skip)
+        semgrep, trivy, bandit = calls
+        self.assertIn("--exclude=.venv", semgrep)
+        self.assertNotIn("--exclude=venv", semgrep)
+        self.assertIn("--skip-dirs=.venv", trivy)
+        self.assertNotIn("--skip-dirs=venv", trivy)
+        entries = [a for a in bandit if a.startswith("--exclude=")][0].split(",")
+        self.assertIn("/src/.venv", entries)
+        self.assertNotIn("/src/venv", entries)
+
+    def test_main_records_which_venvs_the_scan_skipped(self):
+        for mode, skipped in (("standard", True), ("redteam", False)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as d:
+                self._venv(d, "venv", marker=False)
+                manifest = os.path.join(d, "tools-manifest.json")
+                with mock.patch.object(rt, "docker_available", return_value=False), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    rt.main(["--target", d, "--out", os.path.join(d, "out"),
+                             "--tools", "semgrep", "--manifest", manifest,
+                             "--security", mode])
+                with open(manifest, encoding="utf-8") as fh:
+                    written = json.load(fh)
+                self.assertEqual(written["excluded_dirs"],
+                                 [{"path": "venv", "reason": "name",
+                                   "skipped": skipped}])
+
+    def test_main_hands_the_scanners_only_the_dirs_it_skips(self):
+        captured = {}
+
+        def fake_run_tools(target, tools, out, **kw):
+            captured.update(kw)
+            return []
+        with tempfile.TemporaryDirectory() as d:
+            self._venv(d, ".venv")
+            self._venv(d, "venv", marker=False)
+            with mock.patch.object(rt, "docker_available", return_value=True), \
+                    mock.patch.object(rt, "run_tools", side_effect=fake_run_tools), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rt.main(["--target", d, "--out", os.path.join(d, "out"),
+                         "--tools", "semgrep", "--security", "redteam"])
+        self.assertEqual(captured["venv_dirs"],
+                         [{"path": ".venv", "reason": "pyvenv.cfg"}])
+
+    def test_the_default_mode_is_standard(self):
+        # Under `standard` nothing changes: both spellings stay out of the scan.
+        captured = {}
+
+        def fake_run_tools(target, tools, out, **kw):
+            captured.update(kw)
+            return []
+        with tempfile.TemporaryDirectory() as d:
+            self._venv(d, "venv", marker=False)
+            with mock.patch.object(rt, "docker_available", return_value=True), \
+                    mock.patch.object(rt, "run_tools", side_effect=fake_run_tools), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rt.main(["--target", d, "--out", os.path.join(d, "out"),
+                         "--tools", "semgrep"])
+        self.assertEqual(captured["venv_dirs"],
+                         [{"path": "venv", "reason": "name"}])
 
     def test_bandit_config_excludes_both_venv_spellings(self):
         import configparser

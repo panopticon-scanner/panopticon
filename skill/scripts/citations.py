@@ -80,23 +80,6 @@ def validate_cwe(cwe_id, catalog, tool_sourced=False):
     return {"id": cwe_id, "name": None, "verified": bool(tool_sourced)}
 
 
-def normalize_cwe_entries(entries, catalog, tool_sourced=False):
-    """Normalize a mixed list of CWE strings/dicts to validated dicts.
-
-    Dict entries are preserved as-is; string entries are validated against
-    the catalog. Invalid or malformed entries are dropped.
-    """
-    out = []
-    for entry in entries:
-        if isinstance(entry, dict):
-            out.append(entry)
-        elif isinstance(entry, str):
-            v = validate_cwe(entry, catalog, tool_sourced=tool_sourced)
-            if v:
-                out.append(v)
-    return out
-
-
 def derive_owasp(cwe_ids, asserted, catalog):
     """Derive OWASP mappings from CWE IDs and asserted OWASP tags."""
     out = []
@@ -236,20 +219,6 @@ def _compute_citation_quality(citations, finding_cvss=None):
     if has_derived_cwe or citations or finding_cvss:
         return "minimal"
     return "none"
-
-
-def _raw_cwe_ids(raw):
-    ids = []
-    entries = raw.get("cwe")
-    entries = entries if isinstance(entries, list) else []
-    for entry in entries:
-        if isinstance(entry, dict):
-            cid = entry.get("id")
-        else:
-            cid = entry
-        if isinstance(cid, str):
-            ids.append(cid)
-    return ids
 
 
 def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, opener=None):

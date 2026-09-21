@@ -2352,16 +2352,61 @@ class TestExpectedEnforced(unittest.TestCase):
         write_host_evidence(d, states)
         return d
 
-    def test_the_setup_namespace_is_never_enforced(self):
-        # phases/setup.py dispatches `setup-scan` shell-less BY DESIGN: it is
-        # not in dispatch.ROLE_FILES, so no host registers a shell for it, and
-        # a fresh machine runs `--setup` before it has registered anything.
+    def test_the_setup_namespace_reads_the_same_posture_as_a_run(self):
+        # #1737 flips the old "the setup namespace is never enforced"
+        # short-circuit. `setup_scan` IS in dispatch.ROLE_FILES now, so a host
+        # that has registered its shells enforces this dispatch like any other
+        # -- and a machine that has not registered anything reads REFUTED here
+        # and goes down the ack-gated unenforced path instead of skipping the
+        # question entirely.
         d = self._root(_ALL_PROVEN)
         self.assertTrue(loop_batch.expected_enforced(d, "claude", None))
-        self.assertFalse(loop_batch.expected_enforced(d, "claude", "setup"))
+        self.assertTrue(loop_batch.expected_enforced(d, "claude", "setup"))
         self.assertEqual([], loop_batch.refuse_disagreeing(
-            [{"id": "setup-scan", "agent": None, "enforced": False}],
+            [{"id": "setup-scan", "agent": "panopticon-setup-scan", "enforced": True}],
             loop_batch.expected_enforced(d, "claude", "setup")))
+
+    def test_an_unregistered_machine_is_unenforced_in_the_setup_namespace(self):
+        d = self._root({hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED})
+        self.assertFalse(loop_batch.expected_enforced(d, "claude", "setup"))
+
+    def test_the_setup_namespace_reads_setups_own_evidence_artifact(self):
+        # #1507's class of accident, one file over: `runio.host_evidence`
+        # resolves host-capabilities.json through the RUN manifest's tag, so on
+        # a tree that already holds a review run it would answer with THAT
+        # run's posture. `driver loop --setup` writes and reads the flat one.
+        d = self._root(_ALL_PROVEN)                 # flat: setup's own
+        runio._write_json(
+            driver.run_manifest.manifest_path(d),
+            {"schema_version": 1, "run_id": "r1", "host": "claude",
+             "created": "2026-09-21T00:00:00Z", "review_root": os.path.abspath(d)})
+        # ...and a DIFFERENT posture in the review run's own folder.
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED})
+        self.assertFalse(loop_batch.expected_enforced(d, "claude", None))
+        self.assertTrue(loop_batch.expected_enforced(d, "claude", "setup"))
+
+    def test_the_scan_checkpoint_dispatches_the_setup_scan_shell(self):
+        # #1727's routing table: `scan` used to accept NO name at all. It
+        # dispatches exactly one shell now, so a setup entry naming a scout
+        # shell -- a reviewer's charter in a round that only classifies -- is
+        # refused, and the entry's own shell is accepted.
+        #
+        # `out_file` is what makes these ENTRIES: since #1886 the acceptance
+        # role is read off the controller-bound output path, so a fixture
+        # without one describes nothing the phases build and fails closed on
+        # the missing family rather than on the shell under test.
+        out_file = "/repo/.panopticon/setup-proposal.json"
+        self.assertEqual(("setup_scan",), loop_batch.checkpoint_roles("scan"))
+        self.assertEqual([], loop_batch.refuse_misrouted(
+            [{"id": "setup-scan", "out_file": out_file,
+              "agent": "panopticon-setup-scan", "enforced": True}],
+            "scan"))
+        self.assertEqual(["setup-scan"], loop_batch.refuse_misrouted(
+            [{"id": "setup-scan", "out_file": out_file,
+              "agent": "panopticon-scout", "enforced": True}],
+            "scan"))
+        self.assertIn("panopticon-setup-scan",
+                      loop_batch.misroute_refusal(["setup-scan"], "scan"))
 
     def test_the_unenforced_fallback_host_is_never_enforced(self):
         d = self._root(_ALL_PROVEN)
@@ -2394,9 +2439,12 @@ class TestEnforcedIsDerivedInOnePlace(unittest.TestCase):
     trap, one shape over)."""
 
     PHASES = os.path.join(os.path.dirname(orchestrate.__file__), "phases")
-    # The four builders that STAMP `enforced` onto dispatch entries, plus the
-    # driver plan that declares it for the same cells.
-    SITES = ("coverage.py", "review.py", "verify.py", "verify_tools.py", "requests.py")
+    # The builders that STAMP `enforced` onto dispatch entries, plus the
+    # driver plan that declares it for the same cells. #1737 added `setup.py`:
+    # its one entry used to hardcode False, which is the same second copy of
+    # the expression by another name.
+    SITES = ("coverage.py", "review.py", "verify.py", "verify_tools.py",
+             "requests.py", "setup.py")
 
     def _tree(self, name):
         path = os.path.join(self.PHASES, name)
@@ -2618,6 +2666,45 @@ class TestTheEntrysShellIsBoundToItsCheckpoint(LoopCase):
             for role in roles:
                 self.assertIn(role, dispatch.ROLE_FILES, (kind, role))
 
+    def test_no_role_can_be_added_to_one_side_of_the_routing_tables_only(self):
+        # #1886's `OUTPUT_ROLES` and `dispatch.ROLE_FILES` are two halves of
+        # ONE statement: the second says which shells exist, the first says
+        # which output family may carry each. #1737 registered `setup_scan`
+        # in the second and not the first, and every enforced setup entry was
+        # refused -- `role_of` resolved to a family with no row, so `expected`
+        # came out None and no name could match it. The failure mode is
+        # SILENT (an entry that is simply never accepted, on a path that only
+        # runs once the shells are emitted), so the two sides are pinned
+        # against each other rather than left to the next reader.
+        import scripts.dispatch as dispatch
+        import scripts.phases.persist as persist
+        self.assertEqual(sorted(dispatch.ROLE_FILES),
+                         sorted(set(loop_batch.OUTPUT_ROLES.values())))
+        # One family per role would be wrong in the other direction too:
+        # `verify` has two roles with different charters and one file family
+        # each, so a value used twice means two families share a shell.
+        self.assertEqual(len(loop_batch.OUTPUT_ROLES),
+                         len(set(loop_batch.OUTPUT_ROLES.values())))
+        # ...and every KEY is an out_file family `persist.role_of` can really
+        # return -- read out of its AST rather than restated here, since a
+        # duplicated list is the thing that drifts. A key it never produces is
+        # a row nothing reaches; a family it produces with no row fails closed.
+        with open(persist.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), "persist.py")
+        fn = next(node for node in ast.walk(tree)
+                  if isinstance(node, ast.FunctionDef) and node.name == "role_of")
+        families = set()
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Return):
+                continue
+            # The returned expression only -- walking the whole Return would
+            # also collect the `startswith` argument in its ternary's test.
+            returned = ([node.value.body, node.value.orelse]
+                        if isinstance(node.value, ast.IfExp) else [node.value])
+            families |= {n.value for n in returned
+                         if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        self.assertEqual(sorted(loop_batch.OUTPUT_ROLES), sorted(families))
+
     def test_the_table_matches_the_shells_the_phases_actually_assign(self):
         # Read out of the phase modules rather than trusted: each builder
         # spells its shell as `dispatch.registered_agent_name("<role>.md")`,
@@ -2706,6 +2793,90 @@ class TestTheEntrysShellIsBoundToItsCheckpoint(LoopCase):
         self.assertEqual("complete", status["status"], status)
         self.assertIn(("review-app-SEC", ("domain_panel",)), seen)
         self.assertIn(("verify-app-SEC-primary", ("advisor", "domain_advisor")), seen)
+
+    def test_verify_shells_are_bound_to_each_entries_output_family(self):
+        outputs = (("/run/verdicts/abc123.json", "panopticon-advisor"),
+                   ("/run/verdicts/verdicts-app-SEC-primary.json", "panopticon-domain-advisor"))
+        for path, expected in outputs:
+            for shell in ("panopticon-advisor", "panopticon-domain-advisor"):
+                with self.subTest(path=path, shell=shell):
+                    entry = {"id": "verify-e", "out_file": path,
+                             "enforced": True, "agent": shell}
+                    self.assertEqual([] if shell == expected else ["verify-e"],
+                                     loop_batch.refuse_misrouted([entry], "verify"))
+
+    def test_unknown_output_role_fails_closed(self):
+        entry = {"id": "e", "out_file": "/run/rejected/verdicts-app-SEC.json",
+                 "enforced": True, "agent": "panopticon-domain-advisor"}
+        self.assertEqual(["e"], loop_batch.refuse_misrouted([entry], "verify"))
+
+    def test_a_role_with_no_registered_shell_is_a_refusal_not_a_key_error(self):
+        # `_allowed_shells` skips a role `ROLE_FILES` does not hold; the
+        # acceptance side has to agree, or the two disagree exactly where a
+        # half-added role lands -- and a KeyError out of `refuse_misrouted` is
+        # `loop`'s catch-all reporting a Python type instead of the routing
+        # refusal it is (the same shape as the unhashable checkpoint above).
+        # The drift guard forbids this pair in production; the code must still
+        # fail closed if it ever holds.
+        entry = {"id": "setup-scan", "out_file": "/repo/.panopticon/setup-proposal.json",
+                 "enforced": True, "agent": "panopticon-setup-scan"}
+        with mock.patch.dict(loop_batch.OUTPUT_ROLES, {"setup-scan": "unregistered"}), \
+             mock.patch.dict(loop_batch.CHECKPOINT_ROLES, {"scan": ("unregistered",)}):
+            self.assertEqual(["setup-scan"], loop_batch.refuse_misrouted([entry], "scan"))
+            self.assertIn("no enforcement shell",
+                          loop_batch.misroute_refusal(["setup-scan"], "scan", [entry]))
+
+    def test_the_refusal_names_the_shell_the_entry_should_have_carried(self):
+        # The operator gets the checkpoint's whole list either way, and on
+        # `verify` that list holds both advisor shells -- so it does not say
+        # WHICH one this entry's output family was owed. The refusal is the
+        # only place that answer surfaces, and reading it off the same
+        # `expected_shell` the refusal was made with is what keeps the message
+        # from becoming a second opinion.
+        entry = {"id": "verify-e", "out_file": "/run/verdicts/abc123.json",
+                 "enforced": True, "agent": "panopticon-domain-advisor"}
+        self.assertEqual(["verify-e"], loop_batch.refuse_misrouted([entry], "verify"))
+        message = loop_batch.misroute_refusal(["verify-e"], "verify", [entry])
+        self.assertIn("its output role expects panopticon-advisor;", message)
+        self.assertIn("panopticon-domain-advisor", message)   # the checkpoint's list
+
+    def test_the_refusal_says_when_the_output_family_is_owed_no_shell(self):
+        # The fail-closed half: a family no rule knows (a retained record) is
+        # owed nothing, and claiming it "expects" some shell would name a
+        # remedy that is not one.
+        entry = {"id": "e", "out_file": "/run/rejected/verdicts-app-SEC.json",
+                 "enforced": True, "agent": "panopticon-domain-advisor"}
+        message = loop_batch.misroute_refusal(["e"], "verify", [entry])
+        self.assertIn("its output role expects no shell this checkpoint dispatches",
+                      message)
+
+    def test_the_refusal_claims_nothing_about_an_entry_it_was_not_given(self):
+        # `pending` is optional, and the clause is DROPPED rather than guessed
+        # when the caller passes none: an "expects ..." sentence derived from
+        # no entry is a statement about a request nobody read.
+        message = loop_batch.misroute_refusal(["e"], "verify")
+        self.assertNotIn("its output role expects", message)
+        self.assertIn("does not dispatch", message)
+
+    def test_swapping_advisor_shells_stops_the_loop_before_verify_launches(self):
+        root, floor = self._repo()
+        runner = FakeRunner()
+        real = orchestrate.requests.load_bound_request
+
+        def swap(review_root, namespace=None, expected_sha256=None):
+            request, refusal = real(review_root, namespace, expected_sha256)
+            if (request or {}).get("checkpoint") == "verify":
+                for entry in request["entries"]:
+                    entry["agent"] = "panopticon-advisor"
+            return request, refusal
+
+        with mock.patch.object(orchestrate.requests, "load_bound_request", swap), \
+                contextlib.redirect_stderr(io.StringIO()):
+            status = self._run_loop(root, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("output role", status["message"])
+        self.assertTrue(runner.launched)
+        self.assertFalse(any(entry_id.startswith("verify-") for entry_id in runner.launched))
 
 
 class TestNoDriverReaderTakesTheUnboundRead(unittest.TestCase):
