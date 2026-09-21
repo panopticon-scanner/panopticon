@@ -187,6 +187,38 @@ class TestToolQueueParity(_ToolVerifyBase):
         self.assertEqual({f["id"] for _q, f in queue}, {"SG-002"})
         self.assertEqual(driver_pairs, self._report_tool_pairs(d, m))
 
+    def test_the_committed_exclude_policy_empties_the_queue_too(self):
+        """#1740 fix round 2: the queue must ingest with the SAME exclusions.
+
+        `phases/synthesize.py` passes the committed `exclude_paths:` globs to
+        the report's ingest, so a finding under one of them is excluded from
+        the report -- while this queue ingested with `exclude_globs=None` and
+        queued it anyway, paying an advisor dispatch for a finding the report
+        would never carry and breaking the (queue_id, id) identity contract
+        this class exists to pin.
+
+        The excluded path is `ops/`, not a fixture corpus: a fixture path is
+        dropped by the corpus prune in standard mode regardless, which would
+        make the assertion vacuous.
+        """
+        d = self._repo([_result("r1", "src/app.py", 1),
+                        _result("r2", "ops/deploy.py", 3)])
+        os.makedirs(os.path.join(d, "ops"), exist_ok=True)
+        with open(os.path.join(d, "ops", "deploy.py"), "w") as fh:
+            fh.write("import os\nx = 1\n")
+        m = self._manifest()
+        # Non-vacuity: with no committed policy BOTH findings queue.
+        self.assertEqual(
+            {f["location"]["file"] for _q, f in verify_tools._tool_verify_queue(d, m)},
+            {"src/app.py", "ops/deploy.py"})
+        with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\nexclude_paths:\n  - 'ops/**'\n")
+        queue = verify_tools._tool_verify_queue(d, m)
+        self.assertEqual({f["location"]["file"] for _q, f in queue}, {"src/app.py"})
+        # ... and the queue still equals what synthesize's own ingest reports.
+        self.assertEqual({(qid, f["id"]) for qid, f in queue},
+                         self._report_tool_pairs(d, m))
+
     def test_empty_queue_when_tools_did_not_run(self):
         d = self._repo([_result("r1", "src/app.py", 1)])
         runio._write_json(runio._pano(d, "tools-ran.json"), {"ran": False, "run_id": RUN_ID})
