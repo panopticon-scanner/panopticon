@@ -288,9 +288,18 @@ class FlatImportModeTest(unittest.TestCase):
     is unreachable, which is the whole point.
     """
 
+    # #1735 adds three: `safe_write` (the no-follow artifact open, reached by
+    # the flat-importable modules below), and `discovery` / `collect_usage`,
+    # which now carry the same `try: from scripts import ... except
+    # ModuleNotFoundError` FALLBACK for it. Not the mode the driver's own
+    # children run in -- `phases/child._child_env` puts `skill/` on PYTHONPATH,
+    # so they take the packaged branch. The flat branch answers a direct
+    # `python3 skill/scripts/discovery.py` with no PYTHONPATH, and nothing else
+    # pins that it still works.
     FLAT_MODULES = ("evidence", "x0x_report", "citations", "html_report",
                     "ocrdb", "plan_contract", "host_disclosure",
-                    "model_resolver", "redact")
+                    "model_resolver", "redact", "safe_write",
+                    "discovery", "collect_usage")
 
     def test_every_flat_importable_module_still_imports_flat(self):
         env = dict(os.environ)
