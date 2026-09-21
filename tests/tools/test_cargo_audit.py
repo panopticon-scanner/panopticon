@@ -105,7 +105,7 @@ class TestCargoAuditAdapter(unittest.TestCase):
         self.assertEqual(rc, 0)
         popen_mock.assert_called_once()
         called_args, called_kwargs = popen_mock.call_args
-        cmd = called_args[0]
+        cmd = first(called_args)
         self.assertEqual(cmd[0], "cargo-audit")
         self.assertEqual(cmd[1], "audit")
         self.assertIn("--file", cmd)
