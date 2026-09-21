@@ -7,6 +7,7 @@ import uuid
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.redact as redact
+import scripts.safe_write as safe_write
 from . import findings as findings_mod
 from . import grading as grading_mod
 
@@ -440,7 +441,10 @@ def write_report(report, out_path, max_bytes=800000):
         try:
             for _fp, _txt in targets:
                 tmp = os.path.join(out_dir, ".report-%s.tmp" % uuid.uuid4().hex)
-                with open(tmp, "w", encoding="utf-8") as fh:
+                # #1735: the uuid leaves no plantable leaf name, but the staging
+                # file still lands in the reviewed tree's `.panopticon` -- the
+                # no-follow open is also what confines a symlinked intermediate.
+                with safe_write.open_w_nofollow(tmp) as fh:
                     fh.write(_txt)
                 temp_files.append((tmp, _fp))
             for tmp, _fp in reversed(temp_files):   # sibling first, main last
@@ -518,7 +522,7 @@ def write_report(report, out_path, max_bytes=800000):
             parent = os.path.dirname(os.path.abspath(final_path)) or "."
             os.makedirs(parent, exist_ok=True)
             tmp_p = os.path.join(parent, ".part-%s.tmp" % uuid.uuid4().hex)
-            with open(tmp_p, "w", encoding="utf-8") as fh:
+            with safe_write.open_w_nofollow(tmp_p) as fh:   # #1735, as above
                 json.dump(content, fh, indent=2)
             temp_files.append((tmp_p, final_path))
 

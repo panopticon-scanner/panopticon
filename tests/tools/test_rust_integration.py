@@ -32,14 +32,20 @@ class TestRustIntegration(unittest.TestCase):
         skip_or_fail(self, reason)
 
     def test_cargo_audit_finds_rustsec_advisories(self):
-        if not shutil.which("cargo"):
-            self._skip_or_fail("cargo not installed")
-        proc = subprocess.run(["cargo", "audit", "--version"],
+        # #1742: the adapter invokes the `cargo-audit` BINARY directly, never
+        # through `cargo`'s dispatcher (see cargo_audit.py). Probe the same
+        # binary this gate is meant to validate, in the same argv shape
+        # invoke() uses (`cargo-audit audit ...`) -- probing `cargo audit
+        # --version` would validate the dispatcher path we deliberately
+        # abandoned, not the one actually shipped.
+        if not shutil.which("cargo-audit"):
+            self._skip_or_fail("cargo-audit not installed")
+        proc = subprocess.run(["cargo-audit", "audit", "--version"],
                               capture_output=True, text=True, timeout=30)
         if proc.returncode != 0:
             self._skip_or_fail(
-                "cargo-audit subcommand not installed "
-                "(`cargo audit --version` rc %d)" % proc.returncode)
+                "cargo-audit not installed "
+                "(`cargo-audit audit --version` rc %d)" % proc.returncode)
         if not os.path.isdir(os.path.join(FIXTURE_ROOT, "vulnerable-rust")):
             self._skip_or_fail("vulnerable-rust fixture not vendored")
         findings = assert_adapter_finds(

@@ -9,10 +9,12 @@ try:
     import scripts.evidence as evidence
     import scripts.host_disclosure as host_disclosure
     import scripts.hosts as hosts
+    import scripts.safe_write as safe_write
 except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
     import evidence
     import host_disclosure
     import hosts
+    import safe_write
 
 _CSS = """
 :root {
@@ -1320,9 +1322,16 @@ def _render_discarded_claims(discarded):
 
 
 def write_html(report, path, compare_report=None):
-    """Write a rendered HTML report to disk."""
+    """Write a rendered HTML report to disk.
+
+    #1735: `<tag>-report.json.html` is derived from the driver's `--out`, so it
+    lands in the REVIEWED tree's `.panopticon` -- a name a target can pre-commit
+    as a symlink. Confine the whole path BEFORE the makedirs (which would
+    traverse a symlinked directory) and never open through a link.
+    """
+    safe_write.confine_artifact_path(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)) if os.path.dirname(path) else ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
+    with safe_write.open_w_nofollow(path) as fh:
         fh.write(render(report, compare_report=compare_report))
 
 
