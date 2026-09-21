@@ -264,8 +264,12 @@ def reconcile(plan, tools, resolved):
         # usability by, inferring "unusable" from their absence would fail every
         # selected adapter on a run that never ingested.
         if tools.tools_ran is not None:
-            lost = ingest_tools.lost_required_coverage(tools.manifest,
-                                                       tools.dispositions or {})
+            # #1899: the helper takes its own read of the `network` block;
+            # hand it the REPAIRED table so a row `repair_tools_network`
+            # dropped is never republished here under `requested_absent`
+            # (`security_gate` shares the helper and keeps the raw read).
+            lost = ingest_tools.lost_required_coverage(
+                {**tools.manifest, "network": network}, tools.dispositions or {})
             tools_absent = sorted(set(tools_absent) | set(lost))
             tool_divergence.update(
                 {t: "produced_unusable" if info["kind"] == "unusable"

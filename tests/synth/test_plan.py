@@ -623,6 +623,22 @@ class TestManifestMustDeclareSelected(unittest.TestCase):
         self.assertEqual(div_tools[tool_axis_mod.UNPUBLISHABLE_NETWORK_TOOL],
                          "network_unavailable")
 
+    def test_network_excluded_unpublishable_name_stays_out_of_divergence_after_an_ingest(self):
+        # #1899 re-review residual: with `tools_ran` set (a real ingest ran)
+        # the coverage-loss helper took a SECOND raw read of the manifest's
+        # `network` block and republished the over-long name verbatim under
+        # `divergence.tools` as `requested_absent`. Feed it the repaired
+        # table, so the one name the report could not print never appears.
+        long_name = "x" * (repair_mod.NAME_MAX + 1)
+        _, report, _ = self._run(
+            {"schema_version": 1, "selected": [], "produced": [], "missing": [],
+             "network": {long_name: "excluded:online egress unavailable"}},
+            tools_ran=set())
+        div_tools = report["meta"]["coverage"]["divergence"]["tools"]
+        self.assertNotIn(long_name, div_tools)
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertNotIn(long_name, json.dumps(report))
+
 
 class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
     """#1701: the driver's own gate lost what the vendored-path exclusion drops.
