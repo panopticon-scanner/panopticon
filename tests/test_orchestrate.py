@@ -2810,6 +2810,54 @@ class TestTheEntrysShellIsBoundToItsCheckpoint(LoopCase):
                  "enforced": True, "agent": "panopticon-domain-advisor"}
         self.assertEqual(["e"], loop_batch.refuse_misrouted([entry], "verify"))
 
+    def test_a_role_with_no_registered_shell_is_a_refusal_not_a_key_error(self):
+        # `_allowed_shells` skips a role `ROLE_FILES` does not hold; the
+        # acceptance side has to agree, or the two disagree exactly where a
+        # half-added role lands -- and a KeyError out of `refuse_misrouted` is
+        # `loop`'s catch-all reporting a Python type instead of the routing
+        # refusal it is (the same shape as the unhashable checkpoint above).
+        # The drift guard forbids this pair in production; the code must still
+        # fail closed if it ever holds.
+        entry = {"id": "setup-scan", "out_file": "/repo/.panopticon/setup-proposal.json",
+                 "enforced": True, "agent": "panopticon-setup-scan"}
+        with mock.patch.dict(loop_batch.OUTPUT_ROLES, {"setup-scan": "unregistered"}), \
+             mock.patch.dict(loop_batch.CHECKPOINT_ROLES, {"scan": ("unregistered",)}):
+            self.assertEqual(["setup-scan"], loop_batch.refuse_misrouted([entry], "scan"))
+            self.assertIn("no enforcement shell",
+                          loop_batch.misroute_refusal(["setup-scan"], "scan", [entry]))
+
+    def test_the_refusal_names_the_shell_the_entry_should_have_carried(self):
+        # The operator gets the checkpoint's whole list either way, and on
+        # `verify` that list holds both advisor shells -- so it does not say
+        # WHICH one this entry's output family was owed. The refusal is the
+        # only place that answer surfaces, and reading it off the same
+        # `expected_shell` the refusal was made with is what keeps the message
+        # from becoming a second opinion.
+        entry = {"id": "verify-e", "out_file": "/run/verdicts/abc123.json",
+                 "enforced": True, "agent": "panopticon-domain-advisor"}
+        self.assertEqual(["verify-e"], loop_batch.refuse_misrouted([entry], "verify"))
+        message = loop_batch.misroute_refusal(["verify-e"], "verify", [entry])
+        self.assertIn("its output role expects panopticon-advisor;", message)
+        self.assertIn("panopticon-domain-advisor", message)   # the checkpoint's list
+
+    def test_the_refusal_says_when_the_output_family_is_owed_no_shell(self):
+        # The fail-closed half: a family no rule knows (a retained record) is
+        # owed nothing, and claiming it "expects" some shell would name a
+        # remedy that is not one.
+        entry = {"id": "e", "out_file": "/run/rejected/verdicts-app-SEC.json",
+                 "enforced": True, "agent": "panopticon-domain-advisor"}
+        message = loop_batch.misroute_refusal(["e"], "verify", [entry])
+        self.assertIn("its output role expects no shell this checkpoint dispatches",
+                      message)
+
+    def test_the_refusal_claims_nothing_about_an_entry_it_was_not_given(self):
+        # `pending` is optional, and the clause is DROPPED rather than guessed
+        # when the caller passes none: an "expects ..." sentence derived from
+        # no entry is a statement about a request nobody read.
+        message = loop_batch.misroute_refusal(["e"], "verify")
+        self.assertNotIn("its output role expects", message)
+        self.assertIn("does not dispatch", message)
+
     def test_swapping_advisor_shells_stops_the_loop_before_verify_launches(self):
         root, floor = self._repo()
         runner = FakeRunner()

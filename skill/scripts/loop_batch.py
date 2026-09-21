@@ -149,6 +149,25 @@ def _allowed_shells(checkpoint):
             if role in dispatch.ROLE_FILES}
 
 
+def expected_shell(entry, checkpoint):
+    """The ONE registered shell this entry's output family may name here.
+
+    The acceptance role comes from the controller-bound `out_file`, never from
+    the entry's claimed `agent` (#1886). `None` whenever the family is
+    unknown, names a role this checkpoint does not dispatch, or names one no
+    host registers a shell for -- every one of those fails closed, since
+    `None` equals no name an entry could carry. The last of the three is the
+    same `in`-guard `_allowed_shells` applies: a role present in one routing
+    table and absent from the other must refuse, not raise `KeyError` for
+    `loop`'s catch-all to report as a Python type.
+    """
+    role = OUTPUT_ROLES.get(persist.role_of(entry))
+    if role is None or role not in checkpoint_roles(checkpoint):
+        return None
+    role_file = dispatch.ROLE_FILES.get(role)
+    return dispatch.registered_agent_name(role_file) if role_file else None
+
+
 def refuse_misrouted(pending, checkpoint):
     """The ids whose shell disagrees with their output role or checkpoint.
 
@@ -167,9 +186,7 @@ def refuse_misrouted(pending, checkpoint):
             continue
         agent = entry.get("agent")
         if entry.get("enforced"):
-            role = OUTPUT_ROLES.get(persist.role_of(entry))
-            expected = (dispatch.registered_agent_name(dispatch.ROLE_FILES[role])
-                        if role is not None and role in checkpoint_roles(checkpoint) else None)
+            expected = expected_shell(entry, checkpoint)
             if not (isinstance(agent, str) and agent in allowed and agent == expected):
                 misrouted.append(entry.get("id"))
         elif agent is not None:
@@ -177,7 +194,7 @@ def refuse_misrouted(pending, checkpoint):
     return misrouted
 
 
-def misroute_refusal(misrouted, checkpoint):
+def misroute_refusal(misrouted, checkpoint, pending=()):
     """The operator's message for such a request -- a REQUEST-INTEGRITY
     refusal like `enforcement_refusal`, raised before the batch opens, so
     nothing has launched and nothing is charged.
@@ -186,13 +203,30 @@ def misroute_refusal(misrouted, checkpoint):
     checkpoint both did): they reach the operator's stderr and the status
     JSON, and repr renders a control character, an ANSI escape or an embedded
     newline as its escape sequence -- the reason `base.UNREGISTERED_AGENT`
-    does the same.
+    does the same. `expected` is not one of those: it is this module's own
+    constant, reached through `dispatch.ROLE_FILES`, so `%s` names it the way
+    an operator would type it.
+
+    `pending` names the ENTRY's own expectation as well as the checkpoint's
+    list. On `verify` that list holds both advisor shells, so it never said
+    which of them this entry's output family was owed -- and the whole point
+    of #1886 is that the family, not the list, decides. Read through the same
+    `expected_shell` the refusal was made with, so the message cannot become a
+    second opinion. Optional, and the clause is DROPPED rather than guessed
+    when a caller passes no entries: an "expects ..." sentence derived from no
+    entry is a statement about a request nobody read.
     """
     allowed = ", ".join(sorted(_allowed_shells(checkpoint))) or "no enforcement shell"
+    entry = next((e for e in pending
+                  if isinstance(e, dict) and e.get("id") == misrouted[0]), None)
+    owed = ""
+    if entry is not None:
+        owed = ("its output role expects %s; "
+                % (expected_shell(entry, checkpoint) or "no shell this checkpoint dispatches"))
     return ("driver loop: entry %r names an enforcement shell its output role or checkpoint does "
-            "not dispatch (checkpoint %r dispatches: %s); the dispatch request does "
+            "not dispatch (%scheckpoint %r dispatches: %s); the dispatch request does "
             "not match this run's own plan -- re-run with --reset"
-            % (misrouted[0], checkpoint, allowed))
+            % (misrouted[0], owed, checkpoint, allowed))
 
 
 def disarm_previous(guards, prev_req):
@@ -238,7 +272,7 @@ def request_refusal(review_root, host, namespace, req, pending):
         return enforcement_refusal(disagreeing, expected)
     misrouted = refuse_misrouted(pending, req.get("checkpoint"))
     if misrouted:
-        return misroute_refusal(misrouted, req.get("checkpoint"))
+        return misroute_refusal(misrouted, req.get("checkpoint"), pending)
     return None
 
 
