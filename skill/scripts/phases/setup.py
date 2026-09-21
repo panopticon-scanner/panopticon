@@ -313,8 +313,9 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
         _clear_setup_artifacts(review_root)               # Task 3
     _drop_stale_fallback_marker(review_root)
     manifest = load_setup_manifest(review_root)
-    if manifest is not None and runio._foreign_manifest(
-            manifest, review_root, _setup_manifest_path(review_root)):
+    foreign_reason = runio._foreign_manifest_reason(
+        manifest, review_root, _setup_manifest_path(review_root))
+    if foreign_reason:
         # #run7/#run8 AGT-C1A: a target repo can force-commit its own
         # .panopticon/setup-manifest.json (gitignored but `git add -f`-able) to
         # preset an attacker-chosen `vocabulary_path` -- which setup_flow reads and
@@ -322,9 +323,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
         # run-manifest guard (#1093): a manifest that is git-tracked in this tree,
         # or whose stamped review_root isn't THIS checkout, is not a legitimate
         # resume state; discard and rebuild from args.
-        print("driver: ignoring foreign setup-manifest.json (stamped review_root "
-              "%r != %r)" % (manifest.get("review_root"),
-                             os.path.abspath(review_root)),
+        print("driver: ignoring foreign setup-manifest.json (%s)" % foreign_reason,
               file=sys.stderr, flush=True)
         manifest = None
     if manifest is None:

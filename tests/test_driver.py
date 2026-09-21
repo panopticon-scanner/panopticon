@@ -105,6 +105,25 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
     def _args(self, target, *extra):
         return driver.build_parser().parse_args(["run", target, *extra])
 
+    def test_foreign_manifest_message_names_the_actual_signal(self):
+        for tracked in (True, False):
+            with self.subTest(tracked=tracked):
+                root = self._repo()
+                args = self._args(root)
+                driver.run(args)
+                path = run_manifest.manifest_path(root)
+                manifest = run_manifest.load_manifest(root)
+                manifest["review_root"] = root if tracked else "/different/tree"
+                runio._write_json(path, manifest)
+                error = io.StringIO()
+                with mock.patch.object(runio, "_manifest_committed", return_value=tracked), \
+                        contextlib.redirect_stderr(error):
+                    driver.run(args)
+                line = next(line for line in error.getvalue().splitlines()
+                            if "ignoring foreign run-manifest.json" in line)
+                self.assertIn("git-tracked" if tracked else "stamped review_root", line)
+                self.assertNotIn("stamped review_root" if tracked else "git-tracked", line)
+
     def _inject_scouts(self, root):
         for g, _ in coverage._discovered_groups(root):
             p = runio._pano(root, "scout-%s.json" % g)
