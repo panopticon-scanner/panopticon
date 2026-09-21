@@ -651,8 +651,8 @@ class TestSkillMd(unittest.TestCase):
         # seam, false of all three shipped runners. Read off the constant, not
         # re-typed: the `%d of %d` is the only part a prose sentence cannot
         # carry, so it is the only part dropped.
-        import scripts.orchestrate as orchestrate
-        clause = orchestrate.INTERRUPTED.split(";")[0].split("%d of %d ")[-1]
+        import scripts.loop_batch as loop_batch
+        clause = loop_batch.INTERRUPTED.split(";")[0].split("%d of %d ")[-1]
         self.assertEqual("entries had been handled and have been rolled back", clause)
         self.assertIn(clause, loop)
         # ...and the termination claim says whose children it can actually reach

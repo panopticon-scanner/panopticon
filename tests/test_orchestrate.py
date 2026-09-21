@@ -637,8 +637,8 @@ class TestHeadlessLoop(LoopCase):
         runner = FakeRunner()
         # Model a process that never reached its interrupt rollback. The
         # finished peer's artifact, real paid row and batch record survive.
-        with mock.patch.object(orchestrate, "_rolled_back", return_value={
-                "status": "error", "message": "simulated process loss"}):
+        with mock.patch.object(loop_batch, "rolled_back",
+                               return_value="simulated process loss"):
             self._interrupt_mid_batch(d, floor, runner)
         return runner
 
@@ -801,7 +801,7 @@ class TestHeadlessLoop(LoopCase):
         runner.prepare = prepare
         status = self._run(d, floor, runner)
         self.assertEqual("error", status["status"], status)
-        self.assertEqual(orchestrate.INTERRUPTED_IDLE, status["message"])
+        self.assertEqual(loop_batch.INTERRUPTED_IDLE, status["message"])
         self.assertIn("no batch was in flight", status["message"])
         self.assertIn("`--reset`", status["message"])
 
