@@ -380,7 +380,10 @@ class TestHunkMap(unittest.TestCase):
         def raising(repo, args, timeout=60, text=True):
             if args[0] == "merge-base":
                 raise FileNotFoundError("git not found")
-            return mock.Mock(returncode=0, stdout=b"", stderr=b"")
+            # Mirror production: only the diff call reads bytes (text=False);
+            # merge-base / ls-files stay in text mode.
+            empty = b"" if not text else ""
+            return mock.Mock(returncode=0, stdout=empty, stderr=empty)
         with mock.patch.object(diff_map, "_run_git", side_effect=raising):
             with self.assertRaises(diff_map.DiffMapError):
                 diff_map.hunk_map(".", "main")
