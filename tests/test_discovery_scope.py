@@ -420,6 +420,49 @@ def test_repo_scan_plain_delta_still_reviews_a_changed_root_config(tmp_path):
     assert "panopticon.yml" in _reviewed_files(out)
 
 
+# --- #1740 fix round 2: one glob means one thing on both sides --------------
+#
+# `exclude_paths:` is compiled by discovery with GITIGNORE semantics (`*` stays
+# inside a segment, a trailing `/` claims the subtree, a pattern with no `/`
+# matches the basename at any depth) and was matched on the tool side with
+# `fnmatch` (`*` crosses `/`, a trailing `/` matches nothing at all). The same
+# committed line therefore meant two different things: `tests/*` excluded the
+# whole subtree from the gate but only the direct children from discovery, and
+# `docs/` excluded a tree from discovery and NOTHING from the gate. The tool
+# side now compiles through the same translator.
+
+_PARITY_GLOBS = ["tests/*", "docs/"]
+_PARITY_PATHS = ("tests/test_a.py",          # direct child: both exclude it
+                 "tests/unit/test_b.py",     # nested: gitignore `*` stops at /
+                 "docs/guide/intro.md")      # trailing `/` claims the subtree
+
+
+def _discovery_excludes(path, globs):
+    """Exactly what `discovery`'s `_apply_exclude` asks of a file."""
+    return any(orchestrator._glob_to_re(g).match(path) for g in globs)
+
+
+def test_the_tool_exclusion_agrees_with_discovery_on_every_path():
+    import scripts.ingest_tools as it
+    import scripts.run_tools as rt
+    for path in _PARITY_PATHS:
+        want = _discovery_excludes(path, _PARITY_GLOBS)
+        # the scan side (adapter demotion)
+        assert rt._is_excluded(path, _PARITY_GLOBS) is want, path
+        # the ingest side (what the report and the gate see)
+        kept, gl, _ra, _sup = it._filter_parsed_findings(
+            [{"location": {"file": path}}], True, _PARITY_GLOBS)
+        assert (gl == 1) is want, path
+        assert (kept == []) is want, path
+
+
+def test_the_parity_check_is_not_vacuous():
+    # The three paths really do split three ways under gitignore semantics, so
+    # a tool side that answered "everything" or "nothing" could not pass above.
+    assert [_discovery_excludes(p, _PARITY_GLOBS) for p in _PARITY_PATHS] \
+        == [True, False, True]
+
+
 # --------------------------------------------------------------------------
 # #1739 (COD-C2D / SEC-G2B): git quotes paths, and a quoted spelling silently
 # left the reviewed set.
