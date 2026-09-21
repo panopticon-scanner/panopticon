@@ -330,7 +330,7 @@ def collect_changed_files(repo, base=None, exclude=()):
                    text=False)
         changed.update(_nul_separated_paths(out.stdout))
     except Exception as e:
-        print(f"Warning: git diff failed: {e}")
+        print(f"Warning: git diff failed: {e}", file=sys.stderr)
         return None
     # Include new untracked files so a branch with only added files isn't empty.
     try:

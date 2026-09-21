@@ -432,6 +432,11 @@ def hunk_map(repo, base, exclude=()):
                     continue
             except ValueError:
                 continue
+            # An untracked NESTED repository is listed by `ls-files --others`
+            # as `dir/`; it is not a reviewable file, so it is skipped without
+            # the "could not be read" warning a genuinely unreadable file earns.
+            if os.path.isdir(real_full):
+                continue
             try:
                 # #1083: count newlines in bounded chunks so an untracked file
                 # with few/no newlines (a huge blob) can't be buffered wholesale.
