@@ -53,6 +53,10 @@ _TOP_LEVEL = frozenset({
     # at -- an unrelated review run, whose own dispatch-request.json setup then
     # overwrote. Setup is not a run; its artifacts live beside its siblings above.
     "setup-dispatch-request.json", "setup-prompts",
+    # #1737. Setup's own unenforced-ack, deliberately NOT the review run's
+    # `unenforced-ack.json`: that name is per-run by design, and setup is not
+    # a run.
+    "setup-unenforced-ack.json",
     "epss-cache.json", "write-allowlist.json",
     "report.json", "report.json.html",
 })

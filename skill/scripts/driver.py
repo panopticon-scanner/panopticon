@@ -329,6 +329,14 @@ def build_parser():
     # max_groups), else the defaults (48; max(4, 2 x ceil(code_files / cap))).
     sp.add_argument("--max-per-group", type=_positive_int, default=None)
     sp.add_argument("--max-groups", type=_positive_int, default=None)
+    # #1737: `driver setup` dispatches too -- one agent, over the whole
+    # untrusted tree -- so it needs the same explicit acceptance `run`/`loop`
+    # take when that dispatch cannot be enforced. Without it the refusal names
+    # a remedy the verb does not accept, which is a refusal with no way out.
+    sp.add_argument("--allow-unenforced", action="store_true",
+                    help="accept a shell-less setup-scan dispatch when "
+                         "tool_policy_enforced is not proven; recorded in "
+                         "setup-unenforced-ack.json")
     # #1637 P10: the read-only preflight. It shares `run`/`loop`'s `target` and
     # `--host` and NOTHING else on purpose -- it is not a run, so a flag that
     # configures one (`--no-tools`, `--pr`, `--reset`, ...) would either have

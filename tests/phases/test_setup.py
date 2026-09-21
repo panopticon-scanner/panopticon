@@ -30,14 +30,25 @@ from tools.git_repo import make_git_repo
 
 
 class TestDriverSetup(unittest.TestCase):
-    def _repo(self):
-        return make_git_repo(
+    def _repo(self, enforcement=None):
+        """A target tree. `enforcement` seeds this host's capability evidence
+        (#1737): PROVEN is the registered machine every scan test but the ack
+        ones assumes, and None leaves the tree with no evidence at all -- the
+        all-unknown posture, which gates as REFUTED and takes the ack path."""
+        repo = make_git_repo(
             test_case=self,
             files={"src/checkout/pay.py": "x = 1\n"},
             branch="main",
             user_email="t@t",
             user_name="t",
         )
+        if enforcement is not None:
+            write_host_evidence(repo, {hosts.TOOL_POLICY_ENFORCED: enforcement})
+        return repo
+
+    def _registered_repo(self):
+        """A machine that HAS emitted its enforcement shells and proved it."""
+        return self._repo(enforcement=hosts.PROVEN)
 
     def _write_settings(self, repo, max_per_group, max_groups):
         """A root config carrying only `settings:` (#1681 retired config.json)."""
@@ -52,7 +63,10 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(args.verb, "setup")
 
     def test_scan_emits_setup_scan_checkpoint_when_vocab_present(self):
-        d = self._repo()
+        # #1737: a machine that has emitted its shells -- the normal state for
+        # every scan test below. The unregistered machine's path (refusal, or
+        # the acknowledged shell-less dispatch) has its own tests above.
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "checkpoint")
@@ -64,6 +78,112 @@ class TestDriverSetup(unittest.TestCase):
         self.assertTrue(entry["out_file"].endswith("setup-proposal.json"))
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-scan-brief.md")))
         self.assertEqual("return_json", entry["delivery"])
+
+    def test_setup_refuses_a_shell_less_scan_without_the_operators_ack(self):
+        # #1737 brief case (b). The one dispatch that reads the whole untrusted
+        # tree now passes the acknowledgement every other unenforced dispatch
+        # has required since #1519. A machine that has not emitted its shells
+        # is refused BEFORE anything is dispatched, and the refusal names the
+        # emit command first.
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d])
+        status = setup.run_setup_flow(args)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("tool_policy_enforced", status["message"])
+        self.assertIn("--emit-host-agents claude", status["message"])
+        self.assertIn("--allow-unenforced", status["message"])
+        self.assertIn("setup-unenforced-ack.json", status["message"])
+        # nothing was dispatched
+        self.assertFalse(os.path.isfile(requests.request_path(d, namespace="setup")))
+
+    def test_the_ack_lets_the_shell_less_scan_proceed_and_is_recorded(self):
+        d = self._repo()
+        args = driver.build_parser().parse_args(["setup", d, "--allow-unenforced"])
+        status = setup.run_setup_flow(args)
+        self.assertEqual("checkpoint", status["status"], status)
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        self.assertFalse(entry["enforced"])
+        self.assertIsNone(entry["agent"])
+        ack = runio._load_json(runio._pano(d, setup.SETUP_UNENFORCED_ACK))
+        self.assertTrue(ack["acknowledged"])
+        self.assertEqual(["setup_scan"], ack["roles"])
+        self.assertEqual("claude", ack["host"])
+        self.assertTrue(ack["plan_sha256"])
+        self.assertIn("tool_policy_enforced", ack)
+        # ...and it lands FLAT, beside setup's other artifacts, never in a
+        # review run's folder and never as the review ack's name (#1507/#493).
+        self.assertTrue(os.path.isfile(os.path.join(
+            d, ".panopticon", setup.SETUP_UNENFORCED_ACK)))
+        self.assertFalse(os.path.exists(os.path.join(
+            d, ".panopticon", requests.UNENFORCED_ACK)))
+
+    def test_the_refusal_names_no_emit_command_on_a_host_with_no_shells(self):
+        # `--host generic` is the permanent unenforced fallback (ruling D1) and
+        # registers nothing, so `--emit-host-agents generic` is a command that
+        # refuses. The refusal offers the two remedies that exist instead.
+        d = self._repo()
+        status = setup.run_setup_flow(driver.build_parser().parse_args(
+            ["setup", d, "--host", "generic"]))
+        self.assertEqual("error", status["status"], status)
+        self.assertNotIn("--emit-host-agents", status["message"])
+        self.assertIn("--allow-unenforced", status["message"])
+        self.assertIn("--host claude", status["message"])
+
+    def test_a_proven_host_needs_no_ack_at_all(self):
+        # #1737 brief case (c): the shell is registered and the posture proves
+        # it, so the entry is enforced and nothing is acknowledged.
+        d = self._repo()
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        args = driver.build_parser().parse_args(["setup", d])
+        status = setup.run_setup_flow(args)
+        self.assertEqual("checkpoint", status["status"], status)
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        self.assertTrue(entry["enforced"])
+        self.assertEqual("panopticon-setup-scan", entry["agent"])
+        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+        self.assertTrue(loop_batch.expected_enforced(d, "claude", "setup"))
+
+    def test_a_stored_allow_unenforced_flag_grants_nothing(self):
+        # `setup-manifest.json` sits at a `.panopticon` path a hostile target
+        # can force-commit (`git add -f`), and it is written once and reused --
+        # so the flag is read off THIS invocation's argv every time. A stored
+        # acceptance is not an acceptance.
+        d = self._repo()
+        setup.run_setup_flow(driver.build_parser().parse_args(
+            ["setup", d, "--allow-unenforced"]))
+        manifest = setup.load_setup_manifest(d)
+        manifest["flags"] = {"allow_unenforced": True}
+        runio._write_json(setup._setup_manifest_path(d), manifest)
+        setup._clear_setup_artifacts(d)         # keeps nothing but the tree
+        runio._write_json(setup._setup_manifest_path(d), manifest)
+        status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("--allow-unenforced", status["message"])
+        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+
+    def test_the_flag_the_operator_typed_reaches_the_phases(self):
+        # `scan_execute` sees only the manifest, so the argv answer has to be
+        # recorded on the in-memory one the engine is handed.
+        d = self._repo()
+        seen = {}
+        real = setup.require_unenforced_scan_ack
+
+        def spy(review_root, manifest, entries):
+            seen.update(manifest.get("flags") or {})
+            return real(review_root, manifest, entries)
+
+        with mock.patch.object(setup, "require_unenforced_scan_ack", spy):
+            setup.run_setup_flow(driver.build_parser().parse_args(
+                ["setup", d, "--allow-unenforced"]))
+        self.assertEqual({"allow_unenforced": True}, seen)
+
+    def test_reset_discards_the_acceptance(self):
+        d = self._repo()
+        setup.run_setup_flow(driver.build_parser().parse_args(
+            ["setup", d, "--allow-unenforced"]))
+        self.assertTrue(os.path.isfile(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
+        setup._clear_setup_artifacts(d)
+        self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
 
     def test_setup_host_generic_prints_the_fallback_notice_once(self):
         # D1: run_setup_flow resolves `host` itself (a manifest field it pins
@@ -160,7 +280,7 @@ class TestDriverSetup(unittest.TestCase):
         # .gitignore untouched (no migration to /*). #1681 retired the
         # `git add -f` note with it: the committed config is at the ROOT, so
         # nothing setup writes under .panopticon/ needs force-adding.
-        d = self._repo()
+        d = self._registered_repo()
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write(".panopticon/\n")
         args = driver.build_parser().parse_args(["setup", d])
@@ -202,7 +322,7 @@ class TestDriverSetup(unittest.TestCase):
     def test_vocab_absent_falls_back_to_seed_and_completes(self):
         # The bundled fixture is always present, so force absence at the loader
         # boundary to exercise the fallback path deterministically.
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
@@ -217,7 +337,7 @@ class TestDriverSetup(unittest.TestCase):
     def test_stale_fallback_marker_self_heals_when_vocab_returns(self):
         # First run: vocab absent -> fallback marker written, run completes
         # without a checkpoint.
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
@@ -394,7 +514,7 @@ class TestDriverSetup(unittest.TestCase):
     def test_setup_end_to_end_loop(self):
         """scan checkpoint -> host persists proposal -> re-invoke ingests ->
         complete, draft present, the committed root config never written."""
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         s1 = setup.run_setup_flow(args)
         self.assertEqual(s1["checkpoint"], "scan")
@@ -413,7 +533,7 @@ class TestDriverSetup(unittest.TestCase):
         # 5.2: --max-per-group/--max-groups are pinned in setup-manifest.json at
         # scan time and honoured by ingest; the report artifacts are written
         # and the completion message points at the report.
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(
             ["setup", d, "--max-per-group", "3", "--max-groups", "5"])
         setup.run_setup_flow(args)                       # scan checkpoint
@@ -473,7 +593,7 @@ class TestDriverSetup(unittest.TestCase):
         # 5.2 stage 1: the scan phase computes the spine ONCE with the sizes
         # the manifest pinned, persists it, and the brief carries the same
         # numbers -- what the agent plans against is what ingest applies.
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(
             ["setup", d, "--max-per-group", "3", "--max-groups", "5"])
         status = setup.run_setup_flow(args)
@@ -640,6 +760,9 @@ class TestSetupScanExecuteUsesTheNamespace(unittest.TestCase):
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("x = 1\n")
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        # #1737: a registered machine, so the scan dispatches enforced rather
+        # than being refused for want of the operator's acknowledgement.
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
         result = setup_phase.scan_execute(d, {"run_id": "RID", "host": "claude"})
         if result.kind != "checkpoint":
             self.skipTest("vocab-absent fallback path")
