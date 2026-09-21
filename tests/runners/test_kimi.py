@@ -152,6 +152,22 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertEqual("provider.auth_error: 403", res.host_error)
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
 
+    def test_a_failed_launch_also_keeps_stderr_on_the_result(self):
+        # #1732 part 3: `error` already folds up to 200 characters of stderr
+        # (or of the agent's tail) into an operator sentence; the ROW needs
+        # the CLI's own words as a field, redacted and bounded, so the ledger
+        # is diagnosable without re-reading a composed message.
+        res = kimi_runner.Runner("kimi").parse_envelope(
+            "e1", "", 1, stderr="Error: rate limit exceeded key sk-ant-api03-AAAABBBBCCCC\n")
+        self.assertIn("rate limit exceeded", res.stderr)
+        self.assertNotIn("sk-ant-", res.stderr)
+        self.assertLessEqual(len(res.stderr), base.STDERR_HEAD)
+
+    def test_a_successful_launch_carries_no_stderr(self):
+        r = kimi_runner.Runner("kimi")
+        text, _session = r.parse_envelope("e1", STREAM, 0, stderr="a warning")
+        self.assertEqual("the final reply", text)
+
     def test_garbage_lines_are_tolerated(self):
         text, session_id = kimi_runner.Runner("kimi").parse_envelope(
             "e1", "not json\n" + STREAM + "\n{broken", 0)
@@ -424,6 +440,28 @@ class TestRunEntry(unittest.TestCase):
         self.assertIn("timed out after", res.error)
         self.assertEqual(partial, res.text)
         self.assertEqual({}, res.usage)
+
+    def test_a_timed_out_launch_carries_the_killed_childs_stderr(self):
+        # #1732 fix round 2: the `TimeoutExpired` path kept the partial stream
+        # and dropped stderr, so the failure that costs a whole entry timeout
+        # ledgered no diagnosis. `TimeoutExpired` carries both streams UNDECODED
+        # even from a text-mode launch (see `base.partial_output`).
+        noisy = "kimi: auth failed for key sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF"
+
+        def slow(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"), stderr=noisy.encode())
+
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+            r = kimi_runner.Runner("kimi", runner=slow)
+            r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
+            res = r.run_entry(_entry(False), {})
+        self.assertFalse(res.ok)
+        self.assertIn("timed out after", res.error)
+        self.assertIn("auth failed", res.stderr)
+        self.assertNotIn("sk-ant-", res.stderr)
+        self.assertLessEqual(len(res.stderr), base.STDERR_HEAD)
 
     def test_a_timeout_or_launch_failure_is_a_failed_result(self):
         def boom(cmd, **kw):
@@ -1262,7 +1300,7 @@ class TestTheEntryAgentIsAllowlistedAndContained(unittest.TestCase):
     symlinked out of the registration directory did the same thing one step
     later. Two rules, both fail-closed: the name must be one of the four
     registered shells, and the path it resolves to must stay inside the
-    registration directory (`base.published_schema`'s containment rule,
+    registration directory (`runners.schema.published_schema`'s containment rule,
     second application).
     """
 

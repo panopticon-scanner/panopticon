@@ -595,6 +595,14 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # thing for this posture (#1596). Emitted even when the shadow refusal
     # below is about to stop the run, so the operator sees the posture the
     # refusal is about.
+    # #1732: the artifact is READ before the disclosure now, because the
+    # disclosure block says this run's output-schema shape and the shape is
+    # recorded by the LOOP (under the armed guards), not here. Carrying it
+    # into `fresh` is what makes it survive a re-probe -- see
+    # `_carry_output_schema_shape`.
+    path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
+    stored = runio._load_json(path)
+    _carry_output_schema_shape(fresh, stored)
     _disclose_posture(review_root, manifest, fresh, namespace)
     # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
     # tool_policy_enforced is already REFUTED for an unrelated reason -- no
@@ -605,8 +613,6 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     refusal = _surface_refusal((shadow, surface), manifest)
     if refusal:
         return refusal
-    path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
-    stored = runio._load_json(path)
     # A namespace that is not a run is RECORDED, never compared (fix round 1,
     # F2). Everything the drift refusal says is about one run -- "entries
     # already dispatched were built under the previous posture", and the remedy
@@ -666,6 +672,34 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
         # actually written.
         runio._write_json(path, fresh)
     return None
+
+
+def _carry_output_schema_shape(fresh, stored):
+    """Keep this run's recorded output-schema SHAPE across a re-probe (#1732).
+
+    The shape is measured once per run by `loop_batch.prove_output_schema_shape`,
+    inside the loop, after `Guards.arm` -- not here. This step runs before
+    anything is armed and before the run folder holds a settings file, so a
+    launch from here would be one unconfined turn in the reviewed tree per
+    run, naming a file that does not exist yet.
+
+    What this step owes the verdict is SURVIVAL. `fresh` is a new probe result
+    on every invocation, and the artifact is rewritten whenever `cli_flags`
+    differ from what is stored -- so a `fresh` that simply omitted the
+    recorded shape would erase it on the next turn of a resumable loop, and
+    the turn after that would spend another launch re-measuring it. The
+    `--help` half (`flag`, `advertised`, `detail`) is this invocation's own
+    and is left exactly as the probe found it; only the launch's verdict is
+    carried.
+    """
+    fact = (fresh.get(hosts.CLI_FLAGS) or {}).get(hosts.OUTPUT_SCHEMA)
+    prior = ((stored.get(hosts.CLI_FLAGS) if isinstance(stored, dict) else None)
+             or {}).get(hosts.OUTPUT_SCHEMA)
+    if not isinstance(fact, dict) or not isinstance(prior, dict):
+        return
+    if prior.get(hosts.SHAPE):
+        fact[hosts.SHAPE] = prior[hosts.SHAPE]
+        fact[hosts.SHAPE_DETAIL] = prior.get(hosts.SHAPE_DETAIL)
 
 
 def _gating_states(states):

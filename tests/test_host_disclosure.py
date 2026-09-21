@@ -628,10 +628,77 @@ class TestTheConstrainedOutputDisclosure(unittest.TestCase):
         self.assertIn("not schema-constrained", lines[0])
         self.assertIn("timed out", lines[0])
 
-    def test_an_advertised_flag_and_an_unasked_host_say_nothing(self):
-        for fact in ({"flag": "--json-schema", "advertised": True, "detail": "d"}, None):
-            with self.subTest(fact=fact):
-                self.assertEqual([], host_disclosure.notes(self._envelope(fact)))
+    def test_an_unasked_host_says_nothing(self):
+        # No `cli_flags` block at all: session mode, where the loop launches
+        # none of our CLIs. Inventing a line about a binary nobody
+        # interrogated is the "mood" 5.1 rules out.
+        self.assertEqual([], host_disclosure.notes(self._envelope(None)))
+
+    def test_an_advertised_flag_with_no_verdict_yet_says_so(self):
+        # #1732 ruling 4: the proof happens inside the loop, on the first
+        # batch that carries a schema-stamped entry, under that batch's own
+        # guards -- so the FIRST invocation of a run has an advertised flag
+        # and no measurement, and says exactly that rather than going quiet
+        # (which would read as "it passed").
+        lines = host_disclosure.notes(self._envelope(
+            {"flag": "--json-schema", "advertised": True, "detail": "d"}))
+        self.assertEqual(1, len(lines))
+        self.assertIn("shape unmeasured until the first batch launches", lines[0])
+        self.assertIn("--json-schema", lines[0])
+        self.assertNotIn("REFUTED", lines[0])
+
+    # ---- #1732: the SHAPE of an advertised flag ---------------------------
+    #
+    # `advertised` is a read of the flag's NAME. Run 14's CLI advertised
+    # `--json-schema` and then refused what the driver put after it, at a cost
+    # of 309 launches -- so once a run has spent one launch measuring the
+    # shape, every surface says which of the three answers it got.
+
+    def _shaped(self, shape, detail="the probe's own sentence"):
+        return host_disclosure.notes(self._envelope(
+            {"flag": "--json-schema", "advertised": True, "detail": "advertised",
+             hosts.SHAPE: shape, hosts.SHAPE_DETAIL: detail}))
+
+    def test_a_proven_shape_says_one_launch_proved_it(self):
+        lines = self._shaped(hosts.SHAPE_PROVEN)
+        self.assertEqual(1, len(lines))
+        self.assertIn("--json-schema", lines[0])
+        self.assertIn("shape proven by one launch", lines[0])
+
+    def test_a_refuted_shape_says_what_the_run_does_instead(self):
+        lines = self._shaped(hosts.SHAPE_REFUTED, "failed in 120 ms with no envelope")
+        self.assertEqual(1, len(lines))
+        self.assertIn("shape REFUTED by one launch", lines[0])
+        self.assertIn("failed in 120 ms with no envelope", lines[0])
+        self.assertIn("launch without the flag", lines[0])
+        self.assertIn("fenced JSON", lines[0])
+
+    def test_an_unmeasured_shape_says_why_and_claims_nothing(self):
+        lines = self._shaped(hosts.SHAPE_UNMEASURED, "no `claude` on PATH")
+        self.assertEqual(1, len(lines))
+        self.assertIn("shape unmeasured: no `claude` on PATH", lines[0])
+        self.assertNotIn("REFUTED", lines[0])
+
+    def test_the_shape_never_reaches_the_capability_headline(self):
+        # The flag is not a capability, so five stay five whatever the shape
+        # says -- `headline` counts `lines()`, which this note is not in.
+        for shape in (hosts.SHAPE_PROVEN, hosts.SHAPE_REFUTED, hosts.SHAPE_UNMEASURED):
+            with self.subTest(shape=shape):
+                body = self._envelope({"flag": "--json-schema", "advertised": True,
+                                       "detail": "advertised", hosts.SHAPE: shape})
+                self.assertEqual(host_disclosure.ALL_PROVEN, host_disclosure.headline(body))
+                self.assertEqual([], host_disclosure.lines(body))
+                self.assertIn("5 of 5 capabilities proven",
+                              host_disclosure.unchanged_headline(body, "T"))
+
+    def test_an_unadvertised_flag_ignores_a_shape_that_should_not_be_there(self):
+        # Nothing writes one, and if something did, the advertised answer is
+        # the one that already decides what reaches an argv.
+        lines = host_disclosure.notes(self._envelope(
+            {"flag": "--json-schema", "advertised": False, "detail": "does not advertise",
+             hosts.SHAPE: hosts.SHAPE_PROVEN}))
+        self.assertEqual(1, len(lines))
+        self.assertIn("not schema-constrained", lines[0])
 
 
 class TestTheNoteIsNotACapability(unittest.TestCase):

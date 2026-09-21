@@ -74,7 +74,7 @@ The seam's contract, in `skill/scripts/runners/base.py`:
 - `OUTPUT_SCHEMA_FLAG` is optional and empty by default. Set it to the argv
   token(s) that make ONE launch constrain its final message to a JSON Schema
   (claude: `("--json-schema",)`; codex: `("--output-schema",)`), and append
-  `base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)` to the argv your
+  `schema.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry)` (`runners/schema.py`) to the argv your
   `command()` builds — that helper returns the flag plus the entry's
   `output_schema` only when the entry names one AND the path is one of the
   schemas published under `skill/reference/`, and `[]` otherwise, so you append
@@ -85,8 +85,12 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   1, no envelope — run 14 burned 3 × 103 launches on it), so the claude runner
   passes `inline=True` and gets the published file as one line of JSON. The
   `--help` probe that marks the flag `advertised` cannot see this: it reads the
-  flag's name, not its shape (#1732), so prove the shape with one real launch
-  before you ship the runner. Leaving it empty is the right answer for a CLI that
+  flag's name, not its shape (#1732). **The driver now proves the shape for
+  you**, with one real launch on the first headless invocation of every run —
+  see the shape-proof bullet below — so a family that gets this wrong costs its
+  operators one launch and a disclosure line rather than three launches per
+  entry per checkpoint. Check it anyway: a refuted shape means nothing you
+  ship under that flag ever reaches a launch. Leaving it empty is the right answer for a CLI that
   advertises no such flag (Kimi): nothing is stamped on your entries and your
   `command()` is unchanged. Do **not** pass the flag on your own authority: a
   CLI that does not know the option exits non-zero on it and takes every entry
@@ -111,6 +115,43 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   (`true` / `false` / `null` when the read could not be made) and only `true`
   passes the flag; `host_disclosure.notes` says so on all four surfaces when it
   is anything else.
+- **The shape proof runs automatically, once per run**, for any family whose
+  `OUTPUT_SCHEMA_FLAG` is non-empty and whose flag the `--help` read found
+  `advertised` (#1732). It happens **inside the loop**
+  (`loop_batch.prove_output_schema_shape`, driven from `orchestrate.loop`), on
+  the first batch that carries a schema-stamped `return_json` entry and
+  **after `Guards.arm`** — so the probe launch is confined by that batch's own
+  read scope and write allowlist, and the `host-settings.json` your argv names
+  has been written. `probes/shape.py` builds the entry: the reserved id
+  **`probe-output-schema`**, which is never in a dispatch request, never
+  ledgered and never persisted; the published
+  `skill/reference/probe-output-schema.json`; and the `agent`, `enforced` and
+  `model` **copied off a real pending cell**, so it goes out under the same
+  shell, posture and model an entry will. It runs through **your own
+  `run_entry`** with `max_turns = 1` and `entry_timeout = 30` (saved and
+  restored around the launch), and its env is `Guards.env_for(probe_entry)` —
+  the same three binding keys a cell gets. Its `out_file` is under the run
+  folder and deliberately **not** in the write allowlist: a probe with a side
+  effect is not a probe, and the guard denying a write is the correct outcome.
+  The verdict is written beside `advertised` as `shape`: `proven`, `refuted`
+  (an entry-class failure in under 2000 ms, from a CLI that really started,
+  with no envelope — the launch refusing its own argv) or `unmeasured`
+  (a host-class failure, a timeout, a `LaunchRefused`, or a refusal of yours
+  that never reached the CLI). Only `refuted` changes anything: the flag comes
+  off that batch's entries in memory before they launch, and every later
+  request is regenerated without it. Two consequences for a family PR: do not
+  use `probe-output-schema` as an entry id, and make sure your `run_entry`
+  builds the same argv for it as for the cell it was cloned from — a
+  precondition refusal of your own reads as `unmeasured`, so the shape of your
+  flag simply never gets proven.
+- `RunResult.stderr` (#1732) is what your CLI printed on stderr, and you fill
+  it on a FAILED result only: `base.stderr_head(proc.stderr)` gives you the
+  first `base.STDERR_HEAD` (200) characters, redacted before they are cut. The
+  ledger writes it as a row field on failed rows (redacted and bounded again
+  there), so an operator reading `dispatch-ledger.jsonl` gets the CLI's own
+  diagnosis beside your composed `error` message. It is deliberately NOT fed
+  to the outage classifier — `host_error` still decides whose failure it was —
+  and a successful result carries none.
 - `Runner.teardown(status)` releases whatever `prepare` acquired. The loop calls
   it exactly once, from `orchestrate._finish`, on a terminal status and never
   between iterations, and hands it that status so a runner can drop a scratch

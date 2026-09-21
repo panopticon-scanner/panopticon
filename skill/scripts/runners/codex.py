@@ -5,6 +5,7 @@ import subprocess
 
 from scripts import codex_host
 import scripts.runners.base as base
+import scripts.runners.schema as schema_argv_rules
 
 
 # The launcher, as a MODULE attribute rather than a default argument, so a
@@ -160,7 +161,11 @@ class Runner(base.HostRunner):
         return base.RunResult(entry_id=entry_id, ok=error is None, text=text,
                          usage=usage, cost_usd=None, model=model,
                          session_id=session_id, denials=denials, error=error,
-                         host_error=host_error)
+                         host_error=host_error,
+                         # #1732: the same stream, kept as a FIELD as well. It
+                         # reaches the classifier only through `host_error`
+                         # above, whose rules are unchanged.
+                         stderr=base.stderr_head(stderr) if error is not None else None)
 
     def run_entry(self, entry, env):
         entry_id = entry.get("id", "") if isinstance(entry, dict) else ""
@@ -190,7 +195,8 @@ class Runner(base.HostRunner):
                 return base.refuse_unregistered_agent(entry, roles=self.roles)
             command = codex_host.command(entry, child_env, self.review_root, self.run_dir,
                                          runner=self.runner,
-                                         schema_argv=base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry))
+                                         schema_argv=schema_argv_rules.schema_argv(
+                                             self.OUTPUT_SCHEMA_FLAG, entry))
             codex_host.validate_command(command, child_env, self.review_root)
             # #1657 step 2 / CX-9: the child's PROCESS cwd is the same
             # run-owned scratch `--cd` names, never the review root. A codex
@@ -213,6 +219,7 @@ class Runner(base.HostRunner):
             partial = base.partial_output(exc)
             return base.RunResult.failed(entry_id, "codex timed out after %ss" % self.entry_timeout,
                                           usage=self.parse_envelope(entry_id, partial, 0).usage,
+                                          stderr=base.stderr_head(getattr(exc, "stderr", None)),
                                           text=partial)
         except Exception as exc:
             return base.RunResult.failed(entry_id, "%s: %s" % (type(exc).__name__, exc))

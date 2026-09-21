@@ -306,12 +306,55 @@ def _output_schema_line(envelope, host):
                 "read `<cli> --help`; the driver validates every reply either way"
                 % (host, CLI_FLAGS_PROBE)]
     if row.get("advertised") is True:
-        return []
+        return _shape_line(row, host)
     return ["replies are not schema-constrained this run on host %r -- probe %s: %s. "
             "fix: upgrade the CLI if you want %s enforced output; the driver validates "
             "every reply either way"
             % (host, CLI_FLAGS_PROBE, row.get("detail") or "no detail recorded",
                row.get("flag") or "its")]
+
+
+def _shape_line(row, host):
+    """What one real launch found out about an ADVERTISED flag (#1732).
+
+    `advertised` is a read of the flag's NAME out of `<cli> --help`. Run 14
+    proved a name is not a contract: `claude --help` advertises
+    `--json-schema`, the driver handed it the schema's PATH where the CLI
+    wants its TEXT, and 309 launches went to that gap under a posture line
+    saying "5 of 5 capabilities proven". So an advertised flag is no longer
+    silent -- it says which of the three answers this run's own probe got.
+
+    No `shape` recorded yet is its OWN answer, not silence. The proof happens
+    inside the loop, on the first batch that carries a schema-stamped entry,
+    under the guards that batch armed -- so the first invocation of a run
+    discloses honestly that the measurement has not been made yet rather than
+    implying it passed. (Session mode reaches none of this: it carries no
+    `cli_flags` block at all, because the loop launches none of our CLIs, and
+    `_output_schema_line` returns above.)
+
+    Still a NOTE and never a capability line: the flag gates nothing, the
+    headline counts five capabilities whatever this says, and the driver
+    validates every reply either way.
+    """
+    shape, flag = row.get(hosts.SHAPE), row.get("flag") or "its output-schema flag"
+    detail = row.get(hosts.SHAPE_DETAIL) or "no detail recorded"
+    if shape == hosts.SHAPE_PROVEN:
+        return ["replies are schema-constrained this run on host %r -- %s advertised, "
+                "shape proven by one launch (%s)" % (host, flag, detail)]
+    if shape == hosts.SHAPE_REFUTED:
+        return ["replies are not schema-constrained this run on host %r -- %s "
+                "advertised, shape REFUTED by one launch (%s) -- entries launch "
+                "without the flag and reply in fenced JSON, which the driver "
+                "validates against the same schema on receipt" % (host, flag, detail)]
+    if shape == hosts.SHAPE_UNMEASURED:
+        return ["replies may be schema-constrained this run on host %r -- %s "
+                "advertised (shape unmeasured: %s); entries carry the flag as "
+                "before, and the driver validates every reply either way"
+                % (host, flag, detail)]
+    return ["replies may be schema-constrained this run on host %r -- %s "
+            "advertised (shape unmeasured until the first batch launches); the "
+            "loop proves it once, under that batch's own guards, and says so here "
+            "from then on" % (host, flag)]
 
 
 def disclosure_digest(envelope):

@@ -340,7 +340,7 @@ class Runner(base.HostRunner):
         * the name must be one of `base.REGISTERED_AGENT_NAMES` (that alone
           stops `../../tmp/evil` and `/tmp/x`);
         * the path it RESOLVES to must still be under the registration
-          directory -- `base.published_schema`'s realpath containment, second
+          directory -- `runners.schema.published_schema`'s realpath containment, second
           application -- so a registered name symlinked out of that directory
           fails closed too.
         """
@@ -416,8 +416,15 @@ class Runner(base.HostRunner):
                 session_id = record["session_id"]
         if returncode != 0:
             host = (stderr or "").strip()      # #1623: the HOST's surface; `text` is the AGENT's
+            # #1732: `error` already folds up to 200 characters of the tail
+            # (the agent's, or stderr's) into one operator sentence; `stderr`
+            # keeps the CLI's own words as a field, redacted and bounded, so
+            # the ledger row is diagnosable without re-reading a composed
+            # message.
             return base.RunResult.failed(entry_id, "kimi -p exited %s: %s"
-                                         % (returncode, (text or host)[:200]), host_error=host or None)
+                                         % (returncode, (text or host)[:200]),
+                                         host_error=host or None,
+                                         stderr=base.stderr_head(stderr))
         return text, session_id
 
     def launch_env(self, overlay=None):
@@ -482,7 +489,8 @@ class Runner(base.HostRunner):
             # D10 ruling 5: the stream it printed is kept; usage is not, because
             # this family reads it from the session wire file, not from stdout.
             return base.RunResult.failed(entry_id, "kimi -p timed out after %ss" % self.entry_timeout,
-                                          text=base.partial_output(exc))
+                                          text=base.partial_output(exc),
+                                          stderr=base.stderr_head(getattr(exc, "stderr", None)))
         except OSError as exc:
             return base.RunResult.failed(entry_id, "could not launch %s: %s" % (self.CLI, exc))
         except Exception as exc:          # run_entry never raises (spec 4.4)

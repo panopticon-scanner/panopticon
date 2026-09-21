@@ -614,6 +614,16 @@ class TestSkillMd(unittest.TestCase):
         import scripts.runners.outage as outage
         self.assertIn("`paused`", loop)
         self.assertIn(outage.HOST_OUTAGE_CLAUSE, loop)
+        # #1732: the SECOND stop rule ends a run the same way, for a
+        # different cause and a different remedy -- an operator whose run
+        # stopped has to be able to tell "wait for the host" from "fix the
+        # launch", and the give-back is the part they act on.
+        self.assertIn("%d ms" % outage.UNIFORM_FAST_MS, loop)
+        self.assertIn("charges **nobody**", loop)
+        # ...and the ledger row that makes an identical batch diagnosable at
+        # all: the CLI's own words, which run 14's rows did not carry.
+        self.assertIn("`stderr`", loop)
+        self.assertIn("200", loop)
         # I6 (fix round 3): `driver persist` grew `--pr`/`--base` because a PR
         # run's review root is the worktree; a session host that does not pass
         # them gets "no entry in the current dispatch request" and no clue why.

@@ -16,6 +16,7 @@ import time
 
 import scripts.money as money
 import scripts.phases.runio as runio
+import scripts.redact as redact
 import scripts.runners.base as runners_base
 
 PHASE_OF_CHECKPOINT = {"scout": "scout", "review": "review", "verify": "verify",
@@ -96,6 +97,19 @@ class Ledger:
                 "session_id": result.session_id, "denials": result.denials,
                 "rejected_file": rejected_file,
                 "error": refusal if refusal is not None else result.error}
+        # #1732: what the CLI printed on stderr, on a FAILED row only. Written
+        # ONLY when the launch produced something, so a completed row's shape
+        # is byte-for-byte what it was (the same rule `status`/`rolled_back`
+        # follow) and no success row carries a stream nobody asked about.
+        #
+        # Redacted AGAIN here even though every family redacts on the way out:
+        # this method is the single appender to dispatch-ledger.jsonl, so it
+        # is where the guarantee can be made once instead of trusted from six
+        # call sites -- and bounded again at the same seam constant, because a
+        # family that grew its own idea of "the head" must not widen a row.
+        stderr = getattr(result, "stderr", None)
+        if stderr and not line["ok"]:
+            line["stderr"] = redact.redact(str(stderr))[:runners_base.STDERR_HEAD]
         if status is not None:
             line["status"] = status
         if rolled_back:

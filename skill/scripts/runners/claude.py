@@ -6,6 +6,7 @@ import subprocess
 
 import scripts.runners.base as base
 import scripts.runners.outage as outage
+import scripts.runners.schema as schema_argv_rules
 
 
 # The launcher a Runner built without an injected `runner=` uses. Read at
@@ -27,7 +28,7 @@ class Runner(base.HostRunner):
     ENVELOPE_FLAGS = ("-p", "--output-format")
     # D10 ruling 3: `claude -p --json-schema <schema>` ("JSON Schema for
     # structured output") -- the schema's TEXT, not a file (MEASURED on
-    # 2.1.276; see base.inline_schema). Appended only for an entry whose role
+    # 2.1.276; see runners/schema.py). Appended only for an entry whose role
     # publishes one.
     OUTPUT_SCHEMA_FLAG = ("--json-schema",)
     mode = "headless"
@@ -124,18 +125,33 @@ class Runner(base.HostRunner):
         elif not entry.get("enforced") and entry.get("model"):
             cmd += ["--model", entry["model"]]
         # `--json-schema <schema>` takes the JSON text, not a file (see
-        # base.inline_schema for the measurement and the run it cost).
-        cmd += base.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry, inline=True)
+        # `runners/schema.py` for the measurement and the run it cost).
+        cmd += schema_argv_rules.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry,
+                                             inline=True)
         cmd.append(entry["prompt"])
         return cmd
 
-    def parse_envelope(self, entry_id, stdout, returncode):
+    def parse_envelope(self, entry_id, stdout, returncode, stderr=None):
+        """The envelope, plus (#1732) whatever the CLI said on `stderr`.
+
+        `stderr` is kept on the result only when the result FAILED, and only
+        as `base.stderr_head` characters of it. This family read `proc.stdout`
+        and nothing else, so every one of run 14's 309 failed launches was
+        ledgered as "printed no JSON envelope (exit 1)" while the CLI's own
+        sentence -- the one that named the wrong argv -- went to a stream
+        nobody kept. The message below is UNCHANGED: it is the symptom, and
+        the new field is the diagnosis beside it.
+        """
+        diagnosis = base.stderr_head(stderr)
         try:
             data = json.loads(stdout or "")
         except ValueError:
-            return base.RunResult.failed(entry_id, "claude -p printed no JSON envelope (exit %s)" % returncode)
+            return base.RunResult.failed(
+                entry_id, "claude -p printed no JSON envelope (exit %s)" % returncode,
+                stderr=diagnosis)
         if not isinstance(data, dict):
-            return base.RunResult.failed(entry_id, "claude -p envelope is not an object")
+            return base.RunResult.failed(entry_id, "claude -p envelope is not an object",
+                                         stderr=diagnosis)
         usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         model_usage = data.get("modelUsage") if isinstance(data.get("modelUsage"), dict) else {}
         model = next(iter(model_usage), None)
@@ -169,7 +185,8 @@ class Runner(base.HostRunner):
         return base.RunResult(entry_id=entry_id, ok=error is None, text=text if error is None else "",
                                usage=usage, cost_usd=data.get("total_cost_usd"), model=model,
                                session_id=data.get("session_id"), denials=denials, error=error,
-                               host_error=host_error)
+                               host_error=host_error,
+                               stderr=diagnosis if error is not None else None)
 
     def launch_env(self, overlay=None):
         """The seam's preparation (`base.HostRunner.launch_env`) plus this
@@ -216,11 +233,15 @@ class Runner(base.HostRunner):
             # it: `claude -p` prints its envelope once, at the end, so a
             # partial stdout carries no figure to read -- recorded as the empty
             # truth rather than a fabricated zero.
+            # ...but stderr IS kept (#1732 fix round 2): a killed child's
+            # complaint is the only diagnosis a timeout ever ledgers.
             return base.RunResult.failed(entry.get("id"), "claude -p timed out after %ss" % self.entry_timeout,
-                                          text=base.partial_output(exc))
+                                          text=base.partial_output(exc),
+                                          stderr=base.stderr_head(getattr(exc, "stderr", None)))
         except OSError as exc:
             return base.RunResult.failed(entry.get("id"), "could not launch %s: %s" % (self.CLI, exc))
         except Exception as exc:          # run_entry never raises (spec 4.4): anything else is a failed entry
             return base.RunResult.failed(entry.get("id"),
                                           "claude -p launch raised %s: %s" % (type(exc).__name__, exc))
-        return self.parse_envelope(entry.get("id"), proc.stdout, proc.returncode)
+        return self.parse_envelope(entry.get("id"), proc.stdout, proc.returncode,
+                                   stderr=proc.stderr)

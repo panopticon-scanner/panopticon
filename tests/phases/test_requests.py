@@ -375,6 +375,46 @@ class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
                                  "out_file": runio._pano(self.root, "scout-app.json")})
         self.assertNotIn("output_schema", written)
 
+    def test_a_refuted_shape_leaves_the_flag_off_every_entry(self):
+        # #1732: `advertised` is a read of the flag's NAME. Run 14's CLI
+        # advertised `--json-schema` and then refused what the driver put
+        # after it, so every return_json entry of every checkpoint burned its
+        # three launches. A refuted SHAPE is the same answer an unadvertised
+        # flag gets -- omit -- and the reply falls back to fenced JSON, which
+        # the persist layer validates against this very schema on receipt.
+        cell = {"id": "review-app-SEC", "prompt": "p", "delivery": "return_json",
+                "out_file": runio._pano(self.root, "findings-app-SEC.json")}
+        refuted = {hosts.OUTPUT_SCHEMA: dict(self.ADVERTISED[hosts.OUTPUT_SCHEMA],
+                                             **{hosts.SHAPE: hosts.SHAPE_REFUTED,
+                                                hosts.SHAPE_DETAIL: "failed in 120 ms"})}
+        write_host_evidence(self.root, {}, cli_flags=refuted)
+        self.assertNotIn("output_schema", self._written(cell))
+
+    def test_every_other_shape_stamps_exactly_as_before(self):
+        # proven is the measurement that says yes; unmeasured is the probe
+        # saying it could not ask, and a fact nobody measured may not take a
+        # capability away; absent is every artifact written before this
+        # shipped.
+        cell = {"id": "review-app-SEC", "prompt": "p", "delivery": "return_json",
+                "out_file": runio._pano(self.root, "findings-app-SEC.json")}
+        for shape in (hosts.SHAPE_PROVEN, hosts.SHAPE_UNMEASURED, None):
+            with self.subTest(shape=shape):
+                fact = dict(self.ADVERTISED[hosts.OUTPUT_SCHEMA])
+                if shape is not None:
+                    fact[hosts.SHAPE] = shape
+                write_host_evidence(self.root, {}, cli_flags={hosts.OUTPUT_SCHEMA: fact})
+                self.assertIn("output_schema", self._written(cell))
+
+    def test_a_refuted_shape_on_an_unadvertised_flag_changes_nothing(self):
+        # Belt and braces: the two conditions are ANDed, so neither half can
+        # turn the other on.
+        cell = {"id": "review-app-SEC", "prompt": "p", "delivery": "return_json",
+                "out_file": runio._pano(self.root, "findings-app-SEC.json")}
+        write_host_evidence(self.root, {}, cli_flags={hosts.OUTPUT_SCHEMA: {
+            "flag": "--json-schema", "advertised": False, "detail": "fixture",
+            hosts.SHAPE: hosts.SHAPE_PROVEN}})
+        self.assertNotIn("output_schema", self._written(cell))
+
 
 class RequestIntegrityCase(unittest.TestCase):
     """#1727: `.panopticon/dispatch-request.json` lives INSIDE the reviewed

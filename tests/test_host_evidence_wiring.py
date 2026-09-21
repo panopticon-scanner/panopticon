@@ -1480,3 +1480,135 @@ class TestThePostureBlockIsSaidInFullOncePerPosture(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheOutputSchemaShapeSurvivesEveryReProbe(unittest.TestCase):
+    """#1732 part 1, as relocated: this step does not MEASURE the shape, it
+    keeps the measurement alive.
+
+    The proof is one real launch, and it happens inside `orchestrate.loop`
+    after `Guards.arm` -- so it is confined by the batch's own read scope and
+    write allowlist, and the settings file its argv names exists. Establishing
+    it here would be one unconfined turn in the reviewed tree per run, before
+    anything is armed.
+
+    What this step owes is survival: `fresh` is a new probe result every
+    invocation and the artifact is rewritten whenever `cli_flags` moves, so a
+    `fresh` that dropped the recorded verdict would erase it on the next turn
+    of the loop and the turn after that would spend another launch.
+    """
+
+    def _repo(self):
+        d = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        return d
+
+    def _manifest(self):
+        return {"host": "claude", "run_id": "r1" * 4, "created": "2026-09-20",
+                "security_mode": "standard"}
+
+    def _artifact(self, advertised=True, detail="`claude --help` advertises it"):
+        body = _all_proven_artifact("claude")
+        body[hosts.CLI_FLAGS] = {hosts.OUTPUT_SCHEMA: {
+            "flag": "--json-schema", "advertised": advertised, "detail": detail}}
+        return body
+
+    def _headless(self, d):
+        args = driver.build_parser().parse_args(["run", d])
+        args.mode = "headless"
+        return args
+
+    def _establish(self, d, args=None, artifact=None):
+        probe = mock.Mock()
+        err = io.StringIO()
+        with mock.patch("scripts.host_probes.run_probes",
+                        return_value=artifact or self._artifact()), \
+                mock.patch("scripts.probes.shape.prove", probe), \
+                contextlib.redirect_stderr(err):
+            error = driver._establish_host_posture(
+                d, self._manifest(), args or self._headless(d))
+        return error, probe, err.getvalue()
+
+    def _flags(self, d):
+        return runio._load_json(
+            runio._pano(d, runio.HOST_CAPABILITIES))[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA]
+
+    def _record(self, d, shape, detail="one launch, 900 ms"):
+        path = runio._pano(d, runio.HOST_CAPABILITIES)
+        body = runio._load_json(path)
+        body[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA].update(
+            {hosts.SHAPE: shape, hosts.SHAPE_DETAIL: detail})
+        runio._write_json(path, body)
+
+    def test_establishing_the_posture_never_launches_the_probe(self):
+        # Not in headless mode, not in session mode, not on a second
+        # invocation: nothing here is armed, so nothing here may launch.
+        d = self._repo()
+        for args in (self._headless(d), driver.build_parser().parse_args(["run", d])):
+            with self.subTest(mode=getattr(args, "mode", None)):
+                _error, probe, _err = self._establish(d, args)
+                self.assertEqual(0, probe.call_count)
+
+    def test_the_first_invocation_records_the_help_read_and_no_verdict(self):
+        d = self._repo()
+        error, _probe, _err = self._establish(d)
+        self.assertIsNone(error)
+        fact = self._flags(d)
+        self.assertIs(True, fact["advertised"])
+        self.assertNotIn(hosts.SHAPE, fact)
+
+    def test_a_recorded_verdict_survives_the_next_re_probe(self):
+        d = self._repo()
+        self._establish(d)
+        self._record(d, hosts.SHAPE_REFUTED, "failed in 120 ms with no envelope")
+        self._establish(d)                      # the loop's next `driver run`
+        fact = self._flags(d)
+        self.assertEqual(hosts.SHAPE_REFUTED, fact[hosts.SHAPE])
+        self.assertIn("120 ms", fact[hosts.SHAPE_DETAIL])
+        # ...and the `--help` half is still this invocation's own
+        self.assertIs(True, fact["advertised"])
+
+    def test_it_survives_a_changed_help_detail_too(self):
+        # The rewrite trigger compares the whole `cli_flags` block, so a
+        # moved `detail` is exactly the case that used to erase the verdict.
+        d = self._repo()
+        self._establish(d)
+        self._record(d, hosts.SHAPE_PROVEN)
+        self._establish(d, artifact=self._artifact(detail="a DIFFERENT --help sentence"))
+        fact = self._flags(d)
+        self.assertEqual(hosts.SHAPE_PROVEN, fact[hosts.SHAPE])
+        self.assertIn("DIFFERENT", fact["detail"])
+
+    def test_the_verdict_is_in_the_artifact_before_it_is_disclosed(self):
+        # The disclosure block says the shape, so a verdict carried forward
+        # after `_disclose_posture` would be announced an invocation late.
+        d = self._repo()
+        self._establish(d)
+        self._record(d, hosts.SHAPE_REFUTED, "failed in 120 ms")
+        seen = {}
+        with mock.patch("scripts.host_probes.run_probes", return_value=self._artifact()), \
+                mock.patch.object(driver, "_disclose_posture",
+                                  side_effect=lambda rr, m, fresh, ns: seen.update(
+                                      fresh[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA])), \
+                contextlib.redirect_stderr(io.StringIO()):
+            driver._establish_host_posture(d, self._manifest(), self._headless(d))
+        self.assertEqual(hosts.SHAPE_REFUTED, seen.get(hosts.SHAPE))
+
+    def test_nothing_is_carried_when_the_flag_was_never_interrogated(self):
+        d = self._repo()
+        plain = _all_proven_artifact("claude")          # no cli_flags block at all
+        error, _probe, _err = self._establish(d, artifact=plain)
+        self.assertIsNone(error)
+        self.assertNotIn(hosts.CLI_FLAGS, runio._load_json(
+            runio._pano(d, runio.HOST_CAPABILITIES)))
+
+    def test_the_readiness_verb_launches_nothing(self):
+        # It reads the artifact the run already wrote; it probes nothing and
+        # it may not spend a launch.
+        d = self._repo()
+        _write_evidence(d, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
+        with mock.patch("scripts.probes.shape.prove") as probe, \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            driver.main(["readiness", d])
+        self.assertEqual(0, probe.call_count)

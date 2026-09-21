@@ -376,6 +376,10 @@ def loop(args):
                 return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256)
             done, total = 0, len(pending)
             handled = []
+            # #1732: the run's ONE shape proof, here rather than at posture
+            # time -- the guards are armed NOW, so it is confined like a cell.
+            loop_batch.prove_output_schema_shape(run_dir, host, runner, pending,
+                                                 guards.env_for)
             # #1721: the pool is FIFO, so an entry's index in `pending` is its
             # LAUNCH order -- which is what tells the tally a success that
             # proves the host is back from one that was merely in flight when
@@ -393,16 +397,21 @@ def loop(args):
             # how much that was. `closing` because an exception here abandons the generator: it
             # drains the pool now, before `_finish` tears the guards and the runner's scratch area
             # down, rather than at GC's convenience.
+            # #1732: TWO stop rules. `outage` asks whether the HOST went
+            # down; `uniform` asks whether the LAUNCH is being refused (run 14:
+            # 103 launches, ~120 ms each, one identical message, one wrong
+            # argv token). Neither can be true of the same results.
             with contextlib.closing(runner.iter_batch(
                     pending, getattr(args, "concurrency", None), guards.env_for,
-                    stop=lambda: tally.outage(width))) as stream:
+                    stop=lambda: tally.outage(width) or tally.uniform(width))) as stream:
                 for entry, result, timing in stream:
                     eid = entry.get("id")
                     refusal = loop_batch.record_entry(
                         entry, result, timing, run_dir, batch, ledger, req,
                         mode, runner)
                     handled.append(eid)
-                    tally.record(eid, result, refusal, seq=order.get(eid))
+                    tally.record(eid, result, refusal, seq=order.get(eid),
+                                 duration_ms=timing.get("duration_ms"))
                     done += 1
                     # Best-effort, exactly as `_finish`'s own call is (F1): derived
                     # from a ledger already on disk, and `_finish` rewrites it. Fatal
@@ -426,9 +435,16 @@ def loop(args):
                 # What the STOP saw, not what is left over: a success drained
                 # afterwards may have closed the run, and the settle verdict
                 # below is the only thing entitled to call this an outage.
-                print("driver loop: stopped launching after %d host-class failure(s); "
-                      "%d of %d entries not launched"
-                      % (tally.stopped_at or 0, len(unlaunched), len(pending)),
+                #
+                # #1732: which RULE fired, too. One wording for each, because
+                # a batch stopped for an argv defect reported as "N host-class
+                # failure(s)" sends the operator to wait for a host that is
+                # perfectly healthy.
+                rule = ("%d identical instant failure(s)" % tally.stopped_uniform
+                        if tally.stopped_uniform
+                        else "%d host-class failure(s)" % (tally.stopped_at or 0))
+                print("driver loop: stopped launching after %s; %d of %d entries "
+                      "not launched" % (rule, len(unlaunched), len(pending)),
                       file=sys.stderr, flush=True)
             for note in batch.close():        # a clean batch leaves no manifest
                 print("driver loop: batch manifest not removed: %s" % note,
@@ -443,7 +459,7 @@ def loop(args):
             # nothing, so no ARTIFACT is rolled back; the per-dispatch attempt marker is
             # given back exactly as the interrupt gives it back, or three paused runs
             # exhaust the same budget the automatic iterations used to.
-            paused = tally.settle(len(unlaunched))
+            paused = tally.settle(len(unlaunched), width)
             # NOT every pending entry (#1721): an entry-class failure during an
             # outage is still the entry's own and keeps its charge, and a cell
             # that landed is done. What is given back is what the host took

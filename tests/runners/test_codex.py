@@ -64,6 +64,27 @@ def test_a_rate_limited_launch_that_printed_nothing_reads_its_stderr():
     assert codex.Runner.parse_envelope("e", "", 1).failure_class == outage.ENTRY_FAILURE
 
 
+def test_a_failed_codex_launch_carries_the_redacted_head_of_stderr():
+    # #1732 part 3: the same stderr this family already hands the classifier
+    # is also kept ON the result, bounded and redacted, so the ledger row can
+    # say what the CLI actually complained about. `host_error` and its
+    # classification are untouched -- the new field is never fed to the
+    # classifier.
+    noisy = "boom " * 200 + "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF"
+    result = codex.Runner.parse_envelope("e", "", 1, stderr=noisy)
+    assert not result.ok
+    assert len(result.stderr) == base.STDERR_HEAD
+    assert result.stderr.startswith("boom")
+    assert "sk-ant-" not in result.stderr
+
+
+def test_a_successful_codex_launch_carries_no_stderr():
+    result = codex.Runner.parse_envelope("e", envelope(START, REPLY, DONE), 0,
+                                         stderr="a warning nobody needs")
+    assert result.ok
+    assert result.stderr is None
+
+
 def test_exec_jsonl_preserves_final_reply_and_session_without_inventing_cost_or_model():
     result = codex.Runner.parse_envelope("e", envelope(START, REPLY, DONE), 0)
     assert result.ok
@@ -494,6 +515,31 @@ def test_a_timed_out_launch_keeps_its_partial_jsonl_and_the_usage_in_it(tmp_path
     assert result.text == partial
     assert result.usage == {"input_tokens": 40, "output_tokens": 20,
                             "cache_read_input_tokens": 60, "cache_creation_input_tokens": 0}
+
+
+def test_a_timed_out_launch_carries_the_killed_childs_stderr(tmp_path):
+    # #1732 fix round 2: the `TimeoutExpired` path kept the partial JSONL and
+    # dropped stderr, so the failure that costs a whole entry timeout ledgered
+    # no diagnosis. `TimeoutExpired` carries both streams UNDECODED even from a
+    # text-mode launch (see `base.partial_output`), so bytes is the usual case.
+    noisy = "stream error: exceeded rate limit sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF"
+
+    def slow(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"),
+                                        stderr=noisy.encode())
+
+    overlay = {base.ENV_ENTRY_ID: entry()["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
+               base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
+    with mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)), \
+            mock.patch.object(codex.codex_host, "validate_command"):
+        runner = codex.Runner(runner=slow)
+        runner.prepare(str(tmp_path), str(tmp_path))
+        result = runner.run_entry(entry(), overlay)
+    assert not result.ok
+    assert "timed out after" in result.error
+    assert "exceeded rate limit" in result.stderr
+    assert "sk-ant-" not in result.stderr
+    assert len(result.stderr) <= base.STDERR_HEAD
 
 
 def test_a_foreign_agent_name_is_refused_before_any_launch(tmp_path):

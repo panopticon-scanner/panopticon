@@ -74,6 +74,25 @@ CLI_FLAGS = "cli_flags"
 # "detail": "<what the --help read saw>"}. `advertised` is a tri-state and
 # only True means yes -- absent, null and False are all "do not pass one".
 OUTPUT_SCHEMA = "output_schema"
+# #1732: the second half of that fact, and the one a `--help` read cannot
+# reach. `advertised` is the flag's NAME appearing in the help text; `shape`
+# is whether the CLI accepts what this driver actually puts AFTER it,
+# established by one real launch per run (`probes/shape.py`).
+#
+# Run 14 is why the two are separate facts: `claude --help` advertises
+# `--json-schema`, the driver handed it the schema's PATH, the CLI wants its
+# TEXT, and every return_json entry of every checkpoint exited 1 in ~120 ms
+# with no envelope -- 309 launches for one wrong token, under a posture line
+# reading "5 of 5 capabilities proven".
+#
+# Three values, and `unmeasured` is deliberately not `UNKNOWN`: the capability
+# states below are about CONTROLS, and reusing their vocabulary for an
+# operational fact that gates nothing is how a reader starts treating it as
+# one. `unmeasured` never blocks and never changes what is stamped on an
+# entry; only `refuted` does.
+SHAPE = "shape"
+SHAPE_DETAIL = "shape_detail"
+SHAPE_PROVEN, SHAPE_REFUTED, SHAPE_UNMEASURED = "proven", "refuted", "unmeasured"
 
 # --- capability states (F3 consumes these; defined here so one module owns
 # the vocabulary) ----------------------------------------------------------
