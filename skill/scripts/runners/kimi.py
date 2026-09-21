@@ -416,15 +416,18 @@ class Runner(base.HostRunner):
                 session_id = record["session_id"]
         if returncode != 0:
             host = (stderr or "").strip()      # #1623: the HOST's surface; `text` is the AGENT's
-            # #1732: `error` already folds up to 200 characters of the tail
-            # (the agent's, or stderr's) into one operator sentence; `stderr`
-            # keeps the CLI's own words as a field, redacted and bounded, so
-            # the ledger row is diagnosable without re-reading a composed
-            # message.
-            return base.RunResult.failed(entry_id, "kimi -p exited %s: %s"
-                                         % (returncode, (text or host)[:200]),
-                                         host_error=host or None,
-                                         stderr=base.stderr_head(stderr))
+            # #1719: partial assistant output is evidence about the turn, not
+            # the host's failure reason. Keep it for the rejected-reply record;
+            # an empty host surface cannot prove an auth/quota outage.
+            detail = base.stderr_head(host)[:200] if host else "host provided no failure reason"
+            if text:
+                detail += "; partial assistant output retained separately"
+            result = base.RunResult.failed(entry_id, "kimi -p exited %s: %s"
+                                            % (returncode, detail), text=text,
+                                            host_error=host or None,
+                                            stderr=base.stderr_head(stderr))
+            result.session_id = session_id
+            return result
         return text, session_id
 
     def launch_env(self, overlay=None):

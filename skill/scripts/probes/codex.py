@@ -73,6 +73,12 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
                              % (linked, exc))
         probe_paths = None if fixture_error else (inside, outside, linked)
         jobs = []
+        # #1737: `setup_scan` is in DRIVER_ROLES now, so its REGISTERED shell
+        # is inspected with every other role's. The extra hyphenated pass
+        # measures the surface of the path that remains shell-less -- an
+        # UNENFORCED setup dispatch, ack-gated but still reachable -- which is
+        # a different launch shape and therefore a second measurement, not a
+        # duplicate of the first.
         for role in (*common.DRIVER_ROLES, "setup-scan"):
             setup = role == "setup-scan"
             role_file = None if setup else dispatch.ROLE_FILES[role]

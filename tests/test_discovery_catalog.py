@@ -909,7 +909,7 @@ class TestGitignoreDivergences(unittest.TestCase):
 
     def test_character_class_matches_nothing_and_says_so(self):
         with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-            orchestrator._warned_globs.clear()
+            groups_schema._warned_globs.clear()
             self.assertFalse(self._m("main.c", ["*.[ch]"]))
             # and not as a literal either -- the old behaviour re.escape'd the
             # brackets, so `*.[ch]` claimed a file actually named `main.[ch]`
@@ -919,7 +919,7 @@ class TestGitignoreDivergences(unittest.TestCase):
 
     def test_the_disclosure_is_one_line_per_distinct_pattern(self):
         with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-            orchestrator._warned_globs.clear()
+            groups_schema._warned_globs.clear()
             for path in ("a.c", "b.c", "c.c"):
                 self._m(path, ["*.[ch]", "src/[abc]/**"])
         lines = [ln for ln in err.getvalue().splitlines() if ln.strip()]

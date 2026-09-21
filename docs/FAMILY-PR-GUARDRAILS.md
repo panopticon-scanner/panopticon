@@ -167,9 +167,11 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   checkpoint dispatches, and you MUST pass it through: every
   `base.registered_agent(entry)` / `base.refuse_unregistered_agent(entry)` call
   on your launch path becomes `(entry, roles=self.roles)`. The allowlist alone
-  accepts any of the four registered shells for any round, so without this a
+  accepts any registered shell for any round, so without this a
   `verify` entry naming `panopticon-domain-panel` launches a reviewer's
-  write-granting charter in a round that only adjudicates. `request_sha256` is
+  write-granting charter in a round that only adjudicates. The `scan`
+  checkpoint's row is `("setup_scan",)` (#1737): `--setup` dispatches one
+  shell, and only that one. `request_sha256` is
   the hash the run manifest recorded for `dispatch_request`; only session mode
   reads it (it prints it so the host can check the file it is about to read),
   and a headless runner, which gets its entries in memory, needs nothing from
@@ -378,7 +380,12 @@ Machine:
 
 - Register your own shells with `python3 skill/scripts/dispatch.py
   --emit-host-agents <host>`; that writes only `panopticon-*` files under your
-  family's registration dir and prunes only those. Do not hand-edit anything
+  family's registration dir and prunes only those. It writes one shell per
+  `dispatch.ROLE_FILES` row -- today `panopticon-scout`,
+  `panopticon-advisor`, `panopticon-domain-panel`, `panopticon-domain-advisor`
+  and `panopticon-setup-scan` (#1737: `driver setup`'s classifier, whose shell
+  grants Read/Grep/Glob and deliberately binds NO model, so the session's own
+  model runs it). Your emit branch must render every one of them. Do not hand-edit anything
   else under `~/.claude`, `~/.codex`, `~/.kimi-code`, or the Gemini config, and
   never touch this repo's `.claude/settings.local.json` (it is the Claude
   write-guard's install target; the headless loop never touches it either).
@@ -439,7 +446,9 @@ Then the evidence only a real run can give:
    names the file or surface it inspected.
 2. The mutation runs from section 2, one per probe, each showing `refuted`.
 3. `python3 skill/scripts/dispatch.py --emit-host-agents <host>` followed by
-   `driver setup .` showing your shells registered and no shadow shells.
+   `driver setup .` showing your shells registered and no shadow shells --
+   `panopticon-setup-scan` included, without which `driver setup` refuses
+   unless the operator passes `--allow-unenforced` (#1737).
 4. For read confinement: one dispatched reviewer attempting a read outside its
    `scope` and being denied, on your host, by your primitive. Show the denial.
 

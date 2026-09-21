@@ -7,6 +7,33 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`driver setup` refuses an unenforceable setup-scan (#1737, AGT-B1D).** The
+  one dispatch that reads the whole untrusted tree was the only role with no
+  registered shell: its tool grant was whatever the host hands a
+  general-purpose agent, and the template's `Read, Grep, Glob` travelled as
+  advisory prose in the brief. `setup_scan` is a driver role now, so
+  `--emit-host-agents` writes `panopticon-setup-scan` for every host that
+  registers shells (tools `Read, Grep, Glob`; **no bound model** — the
+  session's own model runs the classification, R-F4-2), `registered-shell-tools`
+  proves it grants no Bash, and the `scan` checkpoint dispatches that shell and
+  only that one. `enforced` is derived from this invocation's measured posture
+  like every other dispatch, and both entrypoints — `driver setup` as much as
+  `driver loop --setup` — probe the host for themselves before the gate reads
+  the evidence. **Operator-visible:** on a machine that has not registered its
+  shells, `driver setup` now stops and names two remedies —
+  `python3 skill/scripts/dispatch.py --emit-host-agents <host>` (the fix) or
+  `--allow-unenforced` (the acceptance, recorded in
+  `.panopticon/setup-unenforced-ack.json` and discarded once the posture
+  proves enforcement). Registering the shells is a one-time step; until it is
+  done `tool_policy_enforced` reads REFUTED for review runs too, which is the
+  registry honestly reporting itself incomplete. The refusal names the remedy
+  that can actually change the answer: emitting shells where the capability is
+  REFUTED, and `driver loop --setup --host <h> --mode headless` where nothing
+  measured it at all — on Codex that is the ONLY invocation that can, since its
+  tool-policy probe needs a headless settings path and `driver setup` has no
+  `--mode`. Probing costs no paid turn and, Kimi's `kimi --version` and `kimi doctor` reads aside,
+  launches no host CLI at all: everything `driver setup` measures is a
+  filesystem read.
 - **`usage_ledger` follows the mode.** The probe is now `usage-source` (was
   `transcript-dir`): in headless mode it measures the launch envelope path —
   a run folder that can hold `dispatch-ledger.jsonl`, the host CLI on PATH,

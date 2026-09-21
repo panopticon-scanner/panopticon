@@ -219,6 +219,16 @@ def test_exclude_paths_invalid_types():
     assert errs2
 
 
+def test_exclude_paths_rejects_negation():
+    # #1740 re-review nit: `exclude_paths:` documents no `!` negation, and the
+    # two consumers disagreed on it (the tool matcher honoured it, discovery
+    # did not). A negated entry is an error and is dropped, so neither side
+    # ever sees it.
+    globs, errs = gs.parse_exclude_paths({"exclude_paths": ["tests/**", "!tests/critical/**"]})
+    assert globs == ["tests/**"]
+    assert any("negation" in e for e in errs), errs
+
+
 if __name__ == "__main__":
     unittest.main()
 
