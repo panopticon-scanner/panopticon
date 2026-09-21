@@ -167,7 +167,7 @@ class Reconciled:
     # beside `integrity` (which also publishes it) the way `integrity_ok` is:
     # certification takes it as an input, and must not have to read a section.
     tools_manifest_invalid: str | None = None
-    # #1701: the vendored-path drops this run's gate counts anyway (redteam
+    # #1701: the name-based drops this run's gate counts anyway (redteam
     # only; `[]` in every other mode). Beside `coverage` like the two blocks
     # above and for the same reason: `meta.coverage` is what the report SAYS,
     # and this is a population certification consumes but never publishes.
@@ -350,7 +350,8 @@ def reconcile(plan, tools, resolved):
     cell_audit = coverage_io.audit_floor_cells(plan.coverages or [], present)
     coverage = {
         "adapters": tools.dispositions or {},
-        # #1578 (SEC-G2B): the vendored-path drops, per segment; schema has the
+        # #1578 (SEC-G2B), widened by #1740: the name-based drops, per
+        # segment (vendored / virtualenv-by-name / fixture-corpus); schema has the
         # why. #1701 fix round 1 (F2): ONE tally, split in two. `gated` is what
         # this run's gate counted anyway; this key is the remainder -- what the
         # exclusion kept out of the gate as well as out of the body, which is

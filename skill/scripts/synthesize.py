@@ -254,7 +254,7 @@ def main(argv=None):
         tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False),
         config=config_schema.load_resolution(run_dir))
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
-    # #1701: `gated_suppressed` is the vendored-path drops the gate must still
+    # #1701: `gated_suppressed` is the name-based drops the gate must still
     # count under --security redteam; empty otherwise. It rides to certification
     # on the ToolAxis and never joins `tool_findings`, so the report body is the
     # same in both modes.

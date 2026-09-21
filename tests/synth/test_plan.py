@@ -765,7 +765,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
             html_report.write_html(report, out)
             with open(out, encoding="utf-8") as fh:
                 html = fh.read()
-        self.assertIn("suppressed as vendored but", html)
+        self.assertIn("suppressed by directory name but", html)
         self.assertIn("this run", html)
 
     def test_the_two_tallies_sum_to_the_ingest_count_in_either_mode(self):

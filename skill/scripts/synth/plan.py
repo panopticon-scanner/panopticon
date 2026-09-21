@@ -359,14 +359,18 @@ def load_scout_requests(run_dir):
     return requested, profiles_seen
 
 
-# #1701: the security mode under which the vendored-path drops are the GATE's
+# #1701: the security mode under which the name-based drops are the GATE's
 # business and not only the report's -- the same constant `security_gate.py`
 # keys its own `--security redteam` branch on.
 REDTEAM = "redteam"
 
 
 def gate_counts_suppressed(args):
-    """Does this run's gate count what the vendored-path exclusion dropped?
+    """Does this run's gate count what a directory-NAME exclusion dropped?
+
+    #1740: three rules feed that set -- vendored, virtualenv-by-name and the
+    fixture corpus -- and the answer is the same for all of them, because the
+    evidence is the same: a conventional directory name and nothing else.
 
     #1701, item-14 principle: the answer is read from `args.security`, which
     `phases/synthesize.py` threads verbatim off the run MANIFEST -- the
@@ -380,7 +384,7 @@ def gate_counts_suppressed(args):
 
 def ingest_tool_findings(args):
     """The --tools-dir ingest (WS-0 S3): (raw tool findings, per-adapter
-    dispositions, tools_ran, the #1578 `{segment: count}` of vendored-path drops
+    dispositions, tools_ran, the #1578 `{segment: count}` of name-based drops
     -- the findings themselves stay suppressed -- and the #1701 subset of those
     findings this run's GATE must still count). tools_ran is None when
     --tools-dir wasn't supplied -- reconcile infers build_executing_tools then;
@@ -415,7 +419,7 @@ def ingest_tool_findings(args):
                   % (default_tools, default_tools), file=sys.stderr)
     if not (args.tools_dir and os.path.isdir(args.tools_dir)):
         return [], {}, None, None, []
-    dropped = []     # #1578: filled with the vendored-path drops, for the count
+    dropped = []     # #1578/#1740: filled with the name-based drops, for the count
     tool_findings, dispositions = ingest_tools.ingest_dir_detailed(
         args.tools_dir, None, exclude_globs=args.tools_exclude,
         include_fixtures=args.include_fixtures, suppressed_out=dropped)
