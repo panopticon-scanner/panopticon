@@ -2333,3 +2333,69 @@ class TestRunConvertsAConfinementRefusal(unittest.TestCase):
             status = driver.run(args)
         self.assertEqual(status["status"], "error", status)
         self.assertIn("escapes .panopticon", status["message"])
+
+    # #1735 fix round 1: the same rule, for the three writes that happen BEFORE
+    # `run_engine` and were therefore outside that `except`. Every one of them
+    # can now refuse (the manifest rewrite could not, before this issue), and on
+    # exactly the hostile tree the fix targets they would have died as a raw
+    # traceback with no JSON behind them.
+
+    def _plant(self, d, name):
+        """A `.panopticon/<name>` symlink at a victim outside the artifact root."""
+        pano = os.path.join(d, ".panopticon")
+        os.makedirs(pano, exist_ok=True)
+        victim = os.path.join(d, "victim.txt")
+        with open(victim, "w", encoding="utf-8") as fh:
+            fh.write("PRECIOUS")
+        os.symlink(victim, os.path.join(pano, name))
+        return victim
+
+    def _assert_refusal(self, status, victim, fragment="escapes .panopticon"):
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn(fragment, status["message"])
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "PRECIOUS")
+
+    def test_a_planted_manifest_tmp_is_an_error_status_not_a_traceback(self):
+        # The #1735 tree itself: `record_posture_disclosure` runs on the first
+        # invocation of every run, and its staging path is a fixed name a target
+        # can commit.
+        d = self._repo()
+        victim = self._plant(d, "run-manifest.json.tmp")
+        args = driver.build_parser().parse_args(["run", d])
+        status = driver.run(args)
+        self._assert_refusal(status, victim)
+
+    def test_a_refused_tools_downgrade_is_an_error_status(self):
+        d = self._repo()
+        victim = self._plant(d, "run-manifest.json.tmp")
+        boom = ValueError("artifact path escapes .panopticon via a symlinked "
+                          "component: '%s/.panopticon/run-manifest.json.tmp'" % d)
+        args = driver.build_parser().parse_args(["run", d, "--no-tools"])
+        with mock.patch.object(run_manifest, "is_tools_downgrade", return_value=True), \
+             mock.patch.object(run_manifest, "record_tools_downgrade", side_effect=boom):
+            status = driver.run(args)
+        self._assert_refusal(status, victim)
+
+    def test_a_planted_runs_directory_link_is_an_error_status(self):
+        # `_ensure_run_symlinks` runs before the posture probe and refuses a
+        # planted `runs` with DriverError -- the other exception type, on the
+        # other side of the same missing `try`.
+        d = self._repo()
+        victim = self._plant(d, "runs")
+        args = driver.build_parser().parse_args(["run", d])
+        status = driver.run(args)
+        self._assert_refusal(status, victim, "symlinked path")
+
+    def test_a_refused_baseline_capture_is_an_error_status(self):
+        # `capture_tree_baseline` writes a `.panopticon` artifact on the same
+        # stretch, so it answers to the same rule.
+        d = self._repo()
+        victim = self._plant(d, "run-manifest.json.tmp.unused")
+        boom = ValueError("artifact path escapes .panopticon via a symlinked "
+                          "component: '%s/.panopticon/runs/t/tree-baseline.json'" % d)
+        args = driver.build_parser().parse_args(["run", d])
+        with mock.patch.object(validate_phase, "capture_tree_baseline",
+                               side_effect=boom):
+            status = driver.run(args)
+        self._assert_refusal(status, victim)
