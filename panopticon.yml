@@ -172,6 +172,7 @@ groups:
       - skill/scripts/kimi_guard_hook.py
       - skill/scripts/read_guard_hook.py
       - skill/scripts/probes/**
+      - skill/reference/probe-output-schema.json
       - skill/workflows/**
       tests:
       - tests/probes/__init__.py
@@ -181,6 +182,7 @@ groups:
       - tests/probes/test_common.py
       - tests/probes/test_discovery_surface.py
       - tests/probes/test_kimi.py
+      - tests/probes/test_shape.py
       - tests/test_hosts.py
       - tests/test_host_probes.py
       - tests/test_host_disclosure.py
