@@ -17,14 +17,9 @@ guard files; a batch that finishes -- cleanly or rolled back -- deletes it, so
 a manifest on disk means a batch that did neither: a run killed outright
 (SIGKILL, a power loss), which reaches no teardown at all.
 
-Such a leftover is a RECORD, not an instruction. Nothing applies it on a later
-invocation -- a rollback nobody is watching is what `--reset` is for -- and it
-is not durable either: `<n>` is the loop's iteration counter, so the next
-`driver loop` on this run opens batch 1 again and `open()` OVERWRITES it. An
-operator who wants to know what a killed run had in flight has to read the
-file BEFORE re-running. Keeping it across runs means naming manifests so they
-cannot collide and deciding what a resume owes a stale one; that is a
-follow-up, and deliberately not smuggled in here.
+A later loop validates a leftover against the bound dispatch request and
+rolls it back BEFORE a phase can read a partial artifact as complete. Opening
+an existing manifest is refused, so the recovery record cannot be overwritten.
 
 It lives in `runners/` rather than in `phases/` because `tests/test_layout.py`
 forbids `runners/* -> phases` imports and the loop is what calls both halves
@@ -60,6 +55,7 @@ class Batch:
         self.number = int(number)
         self.checkpoint = checkpoint
         self.opened_at = None
+        self.recovering = False
         self.entries = [
             {"id": e.get("id"),
              "artifacts": [os.path.abspath(e["out_file"])] if e.get("out_file") else []}
@@ -68,11 +64,25 @@ class Batch:
     def document(self):
         return {"schema_version": 1, "batch": self.number,
                 "checkpoint": self.checkpoint, "opened_at": self.opened_at,
-                "entries": self.entries}
+                "entries": self.entries,
+                **({"recovering": True} if self.recovering else {})}
+
+    def begin_recovery(self):
+        """Mark before any rollback effect; a second crash must require reset.
+
+        The ledger and attempt counters are separate files, so replaying a
+        half-finished recovery could refund one attempt more than once.
+        """
+        self.recovering = True
+        self._write()
 
     def open(self):
         """Write the manifest. Called BEFORE the first submit, so an interrupt
         that lands on the very first entry still has the list."""
+        # Reserve this name exclusively: a crash record belongs to recovery,
+        # never to the next batch with the same iteration number.
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
         self.opened_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self._write()
         return self
@@ -104,7 +114,7 @@ class Batch:
     def artifacts(self):
         return [path for row in self.entries for path in row["artifacts"]]
 
-    def roll_back(self):
+    def roll_back(self, *, close=True):
         """Delete exactly the artifacts this manifest lists, then the manifest
         itself. Returns `(removed, problems)`.
 
@@ -126,7 +136,8 @@ class Batch:
                 continue
             except OSError as exc:
                 problems.append("%s: %s" % (path, exc))
-        problems += self.close()
+        if close and not problems:
+            problems += self.close()
         return removed, problems
 
     def close(self):

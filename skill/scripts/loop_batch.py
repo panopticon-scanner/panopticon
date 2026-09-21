@@ -12,15 +12,107 @@ A flat module rather than `runners/loop_batch.py`: `runners/*` may not import
 does. Same shape, and the same reason, as `money.py` and `ledger.py`.
 """
 import os
+import re
 import sys
 
 import scripts.dispatch as dispatch
 import scripts.hosts as hosts
+import scripts.ledger as ledger_mod
+import scripts.plan_contract as plan_contract
 import scripts.phases.persist as persist
+import scripts.phases.requests as requests
 import scripts.phases.runio as runio
+import scripts.phases.setup as setup
 import scripts.probes.shape as shape_probe
+import scripts.run_manifest as run_manifest
+from scripts.runners.batch import Batch
 
 SETUP_NAMESPACE = "setup"
+
+
+def recover_stale(review_root, request, host, mode, namespace=None):
+    """Validate every crash record before deleting anything, then retry the phase.
+
+    The manifest lists artifacts, but the bound outgoing request supplies the
+    authority: entries, output paths and checkpoint must agree. Nothing from a
+    foreign run is followed; the normal first-run path discards that run.
+    """
+    plan_contract.artifact_root(review_root)
+    manifest = (setup.load_setup_manifest(review_root) if namespace == "setup"
+                else run_manifest.load_manifest(review_root))
+    mpath = (setup._setup_manifest_path(review_root) if namespace == "setup"
+             else run_manifest.manifest_path(review_root))
+    if manifest is None or runio._foreign_manifest(manifest, review_root, mpath):
+        return
+    folder = persist.run_dir(review_root, namespace)
+    runio._confine_artifact_path(folder)
+    root = os.path.realpath(folder)
+    if not os.path.isdir(root):
+        return
+    batches, claimed = [], set()
+    declared = {e["id"]: e for e in request.get("entries", [])
+                if isinstance(e, dict) and isinstance(e.get("id"), str)}
+    for name in sorted(os.listdir(root)):
+        match = re.fullmatch(r"batch-([0-9]+)\.json", name)
+        if not match:
+            continue
+        path = os.path.join(root, name)
+        doc = None if os.path.islink(path) else runio._load_json(path)
+        refusal = "cannot recover stale batch %s; use --reset: " % name
+        if (not isinstance(doc, dict) or doc.get("schema_version") != 1
+                or doc.get("batch") != int(match[1])
+                or doc.get("checkpoint") != request.get("checkpoint")
+                or not isinstance(doc.get("entries"), list) or not doc["entries"]):
+            raise ValueError(refusal + "invalid manifest or unbound checkpoint")
+        if doc.get("recovering"):
+            raise ValueError(refusal + "a previous recovery was interrupted")
+        pending, seen = [], set()
+        for row in doc["entries"]:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+                raise ValueError(refusal + "invalid entry")
+            eid = row["id"]
+            entry = declared.get(eid)
+            paths = row.get("artifacts")
+            if (entry is None or not isinstance(entry.get("out_file"), str)
+                    or persist.role_of(entry) is None or eid in seen
+                    or not isinstance(paths, list) or not paths
+                    or paths[0] != os.path.abspath(entry.get("out_file") or "")):
+                raise ValueError(refusal + "entry differs from the bound dispatch request")
+            seen.add(eid)
+            if eid in claimed:
+                raise ValueError(refusal + "several stale batches claim the same entry")
+            claimed.add(eid)
+            safe_id = requests._PROMPT_FILE_SAFE.sub("_", eid) or "entry"
+            for i, artifact in enumerate(paths):
+                if (not isinstance(artifact, str) or not os.path.isabs(artifact)
+                        or os.path.commonpath((root, os.path.realpath(os.path.dirname(artifact)))) != root):
+                    raise ValueError(refusal + "artifact escapes the run folder")
+                if i and (os.path.realpath(os.path.dirname(artifact)) != os.path.join(root, persist.REJECTED_DIR)
+                          or not re.fullmatch(re.escape(safe_id) + r"-[0-9]+\.json",
+                                              os.path.basename(artifact))):
+                    raise ValueError(refusal + "unexpected retained-reply artifact")
+            pending.append(entry)
+        batch = Batch(root, doc["batch"], doc["checkpoint"], pending)
+        batch.opened_at = doc.get("opened_at")
+        batch.entries = doc["entries"]
+        batches.append((batch, pending))
+    ledger = ledger_mod.Ledger(root)
+    for batch, pending in batches:
+        batch.begin_recovery()
+        completed = {row["id"] for row in batch.entries
+                     if any(os.path.lexists(p) for p in row["artifacts"])}
+        removed, problems = batch.roll_back(close=False)
+        if problems:
+            raise OSError("stale batch rollback incomplete: " + "; ".join(problems))
+        ledger.rollback_rows(pending, completed, batch.checkpoint, mode, host,
+                             reason="previous process stopped")
+        persist.rollback_markers(review_root, batch.checkpoint, pending)
+        problems = batch.close()
+        if problems:
+            raise OSError("stale batch rollback incomplete: " + "; ".join(problems))
+        print("driver loop: recovered stale batch %s; removed %d artifact(s); "
+              "retrying %s" % (batch.number, len(removed), batch.checkpoint),
+              file=sys.stderr, flush=True)
 
 # #1727: which enforcement shells each checkpoint DISPATCHES -- `ROLE_FILES`
 # keys, one row per `runio.CHECKPOINT_KINDS` member, pinned by a test that

@@ -230,6 +230,11 @@ def loop(args):
     # the READ and the ACT can sit on opposite sides of `_first_run`, which I4 requires.
     # #1727: read BOUND -- uninstall is keyed by strings that file supplies.
     prev_req = requests.previous_request(review_root, namespace)
+    if not getattr(args, "reset", False):
+        try:
+            loop_batch.recover_stale(review_root, prev_req, host, mode, namespace)
+        except (ValueError, OSError) as exc:
+            return _status("error", "driver loop: %s" % exc)
     if mode == "session":
         # Guards constructed HERE, before `_first_run`, and unconditionally -- not only once this
         # invocation reaches a fresh checkpoint. Session mode is the only mode whose guards can

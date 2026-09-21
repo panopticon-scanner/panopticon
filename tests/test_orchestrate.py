@@ -620,6 +620,7 @@ class TestHeadlessLoop(LoopCase):
         self.assertIn("the phase will re-run from its checkpoint on the next "
                       "`driver loop`", status["message"])
         self.assertIn("use `--reset` to discard the whole run", status["message"])
+
         # the reply the loop had persisted is gone, and the entry is pending again
         req = orchestrate.requests.load_dispatch_request(d) or {}
         entries = {e["id"]: e for e in req.get("entries") or []}
@@ -631,6 +632,83 @@ class TestHeadlessLoop(LoopCase):
         settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
         self.assertFalse(write_guard_hook.is_armed(
             settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+
+    def _leave_crashed_batch(self, d, floor):
+        runner = FakeRunner()
+        # Model a process that never reached its interrupt rollback. The
+        # finished peer's artifact, real paid row and batch record survive.
+        with mock.patch.object(orchestrate, "_rolled_back", return_value={
+                "status": "error", "message": "simulated process loss"}):
+            self._interrupt_mid_batch(d, floor, runner)
+        return runner
+
+    def test_resume_rolls_back_a_crashed_batch_before_reading_done_artifacts(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        run_dir = crashed.run_dir
+        self.assertTrue(self._manifests(run_dir))
+        before = ledger_mod.Ledger(run_dir).lines()
+        attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
+        self.assertTrue(all(n >= 1 for n in attempts.values()))
+        resumed = FakeRunner()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven), \
+                mock.patch("scripts.runners.base.runner_for", return_value=resumed):
+            status = orchestrate.loop(self._args(d, "--allow-unenforced"))
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("review-app-SEC", resumed.launched)
+        self.assertIn("review-app-ACC", resumed.launched)
+        self.assertIn("recovered stale batch", err.getvalue())
+        self.assertEqual(self._manifests(run_dir), [])
+        after = ledger_mod.Ledger(run_dir).lines()
+        self.assertEqual(after[:len(before)], before)
+        self.assertTrue(any(r.get("status") == ledger_mod.ROLLED_BACK for r in after))
+        self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)), attempts)
+
+    def test_an_outside_path_in_a_crash_record_refuses_before_any_deletion(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        path = os.path.join(crashed.run_dir, self._manifests(crashed.run_dir)[0])
+        doc = runio._load_json(path)
+        victim = os.path.join(d, "keep.txt")
+        with open(victim, "w") as fh:
+            fh.write("keep")
+        doc["entries"][0]["artifacts"].append(victim)
+        runio._write_json(path, doc)
+        existing = [p for row in doc["entries"] for p in row["artifacts"] if os.path.exists(p)]
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("escapes the run folder", status["message"])
+        self.assertEqual(resumed.launched, [])
+        self.assertTrue(all(os.path.exists(p) for p in existing))
+        self.assertTrue(os.path.exists(path))
+
+    def test_open_never_overwrites_an_existing_batch_record(self):
+        with tempfile.TemporaryDirectory() as root:
+            batch = batch_mod.Batch(root, 1, "review", [])
+            batch.open()
+            with open(batch.path, "rb") as fh:
+                before = fh.read()
+            with self.assertRaises(FileExistsError):
+                batch_mod.Batch(root, 1, "scout", []).open()
+            with open(batch.path, "rb") as fh:
+                self.assertEqual(fh.read(), before)
+
+    def test_an_interrupted_recovery_never_refunds_the_attempt_twice(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        req = orchestrate.requests.previous_request(d)
+        with mock.patch.object(batch_mod.Batch, "close", return_value=["simulated interruption"]):
+            with self.assertRaises(OSError):
+                orchestrate.loop_batch.recover_stale(d, req, "claude", "headless")
+        attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
+        rows = ledger_mod.Ledger(crashed.run_dir).lines()
+        with self.assertRaisesRegex(ValueError, "previous recovery was interrupted"):
+            orchestrate.loop_batch.recover_stale(d, req, "claude", "headless")
+        self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)), attempts)
+        self.assertEqual(ledger_mod.Ledger(crashed.run_dir).lines(), rows)
 
     def test_the_interrupt_ledgers_what_it_cut_and_keeps_what_was_spent(self):
         # Spend is a fact and is never rolled back: the completed entry's row
