@@ -1,6 +1,8 @@
 """cargo-audit adapter for Rust dependency CVEs."""
 from __future__ import annotations
 import os
+import shutil
+import tempfile
 from .base import (as_list, cve_ids, cvss_bucket, make_finding, normalize_severity,
                    omit_none, parse_json_bytes, run_tool, _cvss_v3_score)
 
@@ -19,8 +21,43 @@ class CargoAuditAdapter:
         return os.path.exists(os.path.join(target, "Cargo.lock"))
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        cmd = ["cargo", "audit", "--no-fetch", "--format", "json"]
-        return run_tool(cmd, timeout=300, cwd=target)
+        # ---------------------------------------------------------------
+        # #1742 (SEC-E3A) -- same class #1646 closed for pip-audit.
+        #
+        # `cargo audit` runs through `cargo`, which is a DISPATCHER: `audit`
+        # is not a cargo built-in, it is an external subcommand, so before
+        # cargo hands off to the `cargo-audit` binary it reads
+        # `.cargo/config.toml` from the CURRENT WORKING DIRECTORY upward and
+        # honours any `[alias]` entry for `audit` -- cargo only refuses an
+        # alias that shadows a BUILT-IN command (cargo issue #10049). A
+        # target that commits
+        #   [alias] audit = ["run", "--manifest-path", "x/Cargo.toml", "--"]
+        # plus a writable `[build] target-dir` makes `cargo audit` (with
+        # cwd=target) COMPILE AND RUN the target's own crate -- build.rs
+        # included -- inside the scanner container. The same cwd also lets
+        # cargo-audit read the target's `.cargo/audit.toml`
+        # (`[advisories] ignore`, `[database] path`) and silently suppress
+        # advisories.
+        #
+        # The fix: invoke the external subcommand BINARY directly --
+        # `cargo-audit`, never `cargo audit` -- so cargo's config/alias
+        # resolution is never consulted at all (the image installs it via
+        # `cargo install cargo-audit`, on PATH at /usr/local/cargo/bin).
+        # `cargo-audit` still expects to see its own subcommand name first
+        # (`audit`), exactly as cargo would have passed it. Run it from an
+        # EMPTY scratch directory -- never the target mount -- so no
+        # `.cargo/*.toml` anywhere in the target tree is reachable, and name
+        # the lockfile with an ABSOLUTE `--file` path so nothing here
+        # depends on the working directory either.
+        # ---------------------------------------------------------------
+        lockfile = os.path.abspath(os.path.join(target, "Cargo.lock"))
+        cmd = ["cargo-audit", "audit", "--no-fetch", "--format", "json",
+               "--file", lockfile]
+        scratch = tempfile.mkdtemp(prefix="cargo-audit-cwd-")
+        try:
+            return run_tool(cmd, timeout=300, cwd=scratch)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)
