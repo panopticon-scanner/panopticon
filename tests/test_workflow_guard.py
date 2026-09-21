@@ -143,6 +143,81 @@ class TestFetchParsing(unittest.TestCase):
         self.assertEqual([], wg.fetches("make test\nchmod +x ./run.sh\n"))
 
 
+class TestStderrRedirectsAreNotTheDestination(unittest.TestCase):
+    """#1733 (COD-C2C): `stage.writes[-1]` used to overwrite a correctly
+    parsed `-o`/`-O` destination with whatever a trailing `2>&1` or
+    `2>/dev/null` happened to file as a write, so an ordinary stderr redirect
+    on a fetch line silently defeated the guard. `shell_reader`'s own spec for
+    the parser change is in tests/test_shell_reader.py; these are the
+    guard-level shapes the issue named."""
+
+    def one(self, script):
+        found = wg.fetches(script)
+        self.assertEqual(1, len(found), "expected exactly one fetch in %r, got %r"
+                         % (script, found))
+        return found[0]
+
+    def test_a_stderr_redirect_after_the_output_flag_does_not_replace_the_dest(self):
+        fetch = self.one(
+            "curl -fsSL https://example.test/install.sh -o /tmp/i.sh 2>/dev/null\n")
+        self.assertEqual("/tmp/i.sh", fetch.dest)
+
+    def test_that_shape_is_still_caught_end_to_end(self):
+        script = ("curl -fsSL https://example.test/install.sh -o /tmp/i.sh "
+                  "2>/dev/null && bash /tmp/i.sh\n")
+        why = wg.fetch_exec_defect(script)
+        self.assertIsNotNone(why)
+        self.assertIn("/tmp/i.sh", why)
+
+    def test_fd_duplication_after_the_output_flag_does_not_replace_the_dest(self):
+        fetch = self.one(
+            "curl -fsSL https://example.test/i.sh -o /tmp/i.sh 2>&1 | tee log\n")
+        self.assertEqual("/tmp/i.sh", fetch.dest)
+
+    def test_that_shape_is_still_caught_end_to_end_too(self):
+        script = ("curl -fsSL https://example.test/i.sh -o /tmp/i.sh 2>&1 | "
+                  "tee log && sh /tmp/i.sh\n")
+        why = wg.fetch_exec_defect(script)
+        self.assertIsNotNone(why)
+        self.assertIn("/tmp/i.sh", why)
+
+    def test_a_stdout_redirect_followed_by_a_stderr_dup_still_names_the_file(self):
+        fetch = self.one("curl -fsSL https://example.test/i.sh > /tmp/i.sh 2>&1\n")
+        self.assertEqual("/tmp/i.sh", fetch.dest)
+
+    def test_that_shape_is_caught_end_to_end_with_a_semicolon(self):
+        script = "curl -fsSL https://example.test/i.sh > /tmp/i.sh 2>&1; sh /tmp/i.sh\n"
+        why = wg.fetch_exec_defect(script)
+        self.assertIsNotNone(why)
+        self.assertIn("/tmp/i.sh", why)
+
+    def test_a_bare_fd_dup_with_no_output_flag_stays_stdout(self):
+        # No file at all -- the destination stays what it always was
+        # (stdout), not the literal `&2`.
+        fetch = self.one("curl -fsSL https://example.test/i.sh >&2\n")
+        self.assertIsNone(fetch.dest)
+
+    def test_that_shape_stays_clean_with_no_pipe(self):
+        # Regression guard: nothing landed on disk and nothing consumed the
+        # stream, so this is not the rule's business, same as before #1733.
+        self.assertIsNone(
+            wg.fetch_exec_defect("curl -fsSL https://example.test/i.sh >&2\n"))
+
+    def test_wget_piped_to_sh_with_a_stderr_redirect_is_still_caught(self):
+        # The headline pipe-to-shell shape must survive the fix untouched.
+        script = "wget -qO- https://example.test/i.sh 2>/dev/null | sh\n"
+        fetch = self.one(script)
+        self.assertIsNone(fetch.dest)
+        self.assertEqual(("sh",), fetch.piped_to)
+        why = wg.fetch_exec_defect(script)
+        self.assertIsNotNone(why)
+        self.assertIn("sh", why)
+
+    def test_a_stderr_redirect_with_no_output_flag_does_not_become_the_dest(self):
+        fetch = self.one("curl -fsSL https://example.test/i.sh 2>err.log\n")
+        self.assertIsNone(fetch.dest)
+
+
 class TestVerificationBinding(unittest.TestCase):
     """What the parser ACCEPTS: a checksum bound to the fetched path, run
     before the bytes are used. Everything else is theatre."""
