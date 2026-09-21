@@ -32,7 +32,6 @@ import scripts.host_disclosure as host_disclosure  # noqa: E402
 import scripts.host_probes as host_probes  # noqa: E402
 import scripts.money as money  # noqa: E402
 import scripts.probes.common as probes_common  # noqa: E402
-import scripts.probes.shape as shape_probe  # noqa: E402
 import scripts.setup_flow as setup_flow  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
@@ -596,26 +595,22 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # thing for this posture (#1596). Emitted even when the shadow refusal
     # below is about to stop the run, so the operator sees the posture the
     # refusal is about.
+    # #1732: the artifact is READ before the disclosure now, because the
+    # disclosure block says this run's output-schema shape and the shape is
+    # recorded by the LOOP (under the armed guards), not here. Carrying it
+    # into `fresh` is what makes it survive a re-probe -- see
+    # `_carry_output_schema_shape`.
+    path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
+    stored = runio._load_json(path)
+    _carry_output_schema_shape(fresh, stored)
+    _disclose_posture(review_root, manifest, fresh, namespace)
     # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
     # tool_policy_enforced is already REFUTED for an unrelated reason -- no
     # registration directory, i.e. every machine that has not run `driver
     # setup` -- a shadow file planted mid-run gives refuted -> refuted, no
     # mismatch, and a refusal evaluated only under `stored is None` would never
     # look at it again.
-    #
-    # #1732: COMPUTED before the disclosure, RETURNED after it. The disclosure
-    # still prints when the refusal is about to stop the run (the operator
-    # needs the posture the refusal is about) -- but the shape proof below
-    # LAUNCHES, and launching a host CLI inside a tree this invocation is
-    # about to refuse is the one order that cannot be right.
     refusal = _surface_refusal((shadow, surface), manifest)
-    run_folder = persist.run_dir(review_root, namespace)
-    path = os.path.join(run_folder, runio.HOST_CAPABILITIES)
-    stored = runio._load_json(path)
-    if not refusal:
-        _prove_output_schema_shape(host, fresh, stored, run_folder, review_root,
-                                   headless=settings_path is not None)
-    _disclose_posture(review_root, manifest, fresh, namespace)
     if refusal:
         return refusal
     # A namespace that is not a run is RECORDED, never compared (fix round 1,
@@ -679,58 +674,32 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     return None
 
 
-SHAPE_REFUTED_NOTICE = (
-    "driver: host %r advertises %s but REFUSED it on one probe launch (%s) -- this run's "
-    "entries launch without the flag and reply in fenced JSON, which the driver validates "
-    "as it always has")
+def _carry_output_schema_shape(fresh, stored):
+    """Keep this run's recorded output-schema SHAPE across a re-probe (#1732).
 
+    The shape is measured once per run by `loop_batch.prove_output_schema_shape`,
+    inside the loop, after `Guards.arm` -- not here. This step runs before
+    anything is armed and before the run folder holds a settings file, so a
+    launch from here would be one unconfined turn in the reviewed tree per
+    run, naming a file that does not exist yet.
 
-def _prove_output_schema_shape(host, fresh, stored, run_dir, review_root, headless):
-    """Stamp `cli_flags.output_schema.shape` onto `fresh`, launching at most
-    once per RUN (#1732).
-
-    `probe_cli_flags` answers whether the CLI advertises the flag, which is a
-    read of its NAME. Run 14 proved a name is not a contract and cost 309
-    launches finding out. This is the other half: one real launch, the
-    family's real argv, before the phase engine writes the first dispatch
-    request -- so the first batch already honours the verdict.
-
-    ONCE PER RUN, not once per invocation, and that is the whole reason this
-    reads `stored`. `driver run` is a resumable loop and every turn of it
-    re-probes; a shape re-proved each turn would be a launch per turn, and the
-    artifact's rewrite trigger compares `cli_flags`, so a `fresh` that simply
-    omitted the recorded verdict would also erase it. `--reset` starts a new
-    run, a new run folder and therefore a new measurement, which is exactly
-    the moment a CLI upgrade should be re-measured.
-
-    Launches only where there is something to measure: a HEADLESS invocation
-    (session mode launches none of our CLIs), and a flag this machine's CLI
-    actually advertises. An unadvertised flag is never put on an argv, so its
-    shape is unmeasurable and uninteresting.
+    What this step owes the verdict is SURVIVAL. `fresh` is a new probe result
+    on every invocation, and the artifact is rewritten whenever `cli_flags`
+    differ from what is stored -- so a `fresh` that simply omitted the
+    recorded shape would erase it on the next turn of a resumable loop, and
+    the turn after that would spend another launch re-measuring it. The
+    `--help` half (`flag`, `advertised`, `detail`) is this invocation's own
+    and is left exactly as the probe found it; only the launch's verdict is
+    carried.
     """
     fact = (fresh.get(hosts.CLI_FLAGS) or {}).get(hosts.OUTPUT_SCHEMA)
-    if not isinstance(fact, dict):
-        return
     prior = ((stored.get(hosts.CLI_FLAGS) if isinstance(stored, dict) else None)
              or {}).get(hosts.OUTPUT_SCHEMA)
-    if isinstance(prior, dict) and prior.get(hosts.SHAPE):
+    if not isinstance(fact, dict) or not isinstance(prior, dict):
+        return
+    if prior.get(hosts.SHAPE):
         fact[hosts.SHAPE] = prior[hosts.SHAPE]
         fact[hosts.SHAPE_DETAIL] = prior.get(hosts.SHAPE_DETAIL)
-        return
-    if not headless or fact.get("advertised") is not True:
-        return
-    verdict = shape_probe.prove(host, run_dir, review_root)
-    fact.update(verdict)
-    if verdict.get(hosts.SHAPE) == hosts.SHAPE_REFUTED:
-        # ONE line, from here rather than from the probe: this is the call
-        # site that knows it is a run being established, and `notes()` renders
-        # the same fact into the posture block and into both reports. A
-        # refutation is the one verdict that changes what the run does, so it
-        # is the one that gets an operator's attention on stderr.
-        print(SHAPE_REFUTED_NOTICE
-              % (host, fact.get("flag") or "an output-schema flag",
-                 verdict.get(hosts.SHAPE_DETAIL) or "no detail recorded"),
-              file=sys.stderr)
 
 
 def _gating_states(states):

@@ -18,6 +18,7 @@ import scripts.dispatch as dispatch
 import scripts.hosts as hosts
 import scripts.phases.persist as persist
 import scripts.phases.runio as runio
+import scripts.probes.shape as shape_probe
 
 SETUP_NAMESPACE = "setup"
 
@@ -261,3 +262,82 @@ def record_entry(entry, result, timing, run_dir, batch, ledger, req, mode, runne
     ledger.record(entry, req.get("checkpoint"), result, mode, runner.host,
                   refusal=refusal, timing=timing, rejected_file=rejected)
     return refusal
+
+
+# #1732: the one line an operator gets when the CLI refuses the very flag it
+# advertises. Said once per run, from the batch that measured it, because it
+# is the one verdict that changes what the run does.
+SHAPE_REFUTED_NOTICE = (
+    "driver loop: host %r advertises %s but REFUSED it on one probe launch (%s) -- this "
+    "run's entries launch without the flag and reply in fenced JSON, which the driver "
+    "validates against the same schema on receipt")
+
+
+def prove_output_schema_shape(run_dir, host, runner, pending, env_for):
+    """Spend this run's ONE shape-proof launch, if it is owed (#1732).
+
+    Called from `orchestrate.loop` after `Guards.arm(pending)` and before the
+    batch's first `iter_batch`. That position is the whole point: the launch
+    goes out under the read scope and write allowlist this batch just armed,
+    and under the settings file `arm` just wrote -- confined exactly as a cell
+    is. Proving it at posture time instead (where this started) meant one
+    unconfined turn in the reviewed tree per run, before anything was armed,
+    naming a settings file that did not exist yet.
+
+    ONCE PER RUN, and the record is the run's own evidence artifact rather
+    than anything in memory: a `paused` run resumed tomorrow reads the verdict
+    back and launches nothing. `--reset` starts a new run folder and therefore
+    measures again, which is exactly when a CLI upgrade should be re-measured.
+
+    Owed only when there is something to measure AND something to measure it
+    with: the flag is advertised (the `--help` read), the family declares one,
+    no verdict is recorded yet, and this batch carries at least one
+    schema-stamped `return_json` entry to clone a binding from. A checkpoint
+    of self-writing entries, or a host that stamps nothing, simply waits for
+    one that does.
+
+    On `refuted` the flag comes off THIS batch's entries in memory, before
+    they launch. The request FILE is left exactly as written -- its sha256 is
+    what `load_bound_request` binds, and rewriting it mid-iteration would
+    break that binding to save a stamp that the next `_run` will not re-apply
+    anyway (`requests._materialize_prompts` consults the recorded shape).
+
+    Returns the verdict, or None when no launch was owed. Never raises: this
+    is one measurement, and a run must not end on it.
+    """
+    path = os.path.join(run_dir, runio.HOST_CAPABILITIES)
+    body = runio._load_json(path)
+    fact = ((body.get(hosts.CLI_FLAGS) if isinstance(body, dict) else None)
+            or {}).get(hosts.OUTPUT_SCHEMA)
+    if not isinstance(fact, dict) or fact.get(hosts.SHAPE):
+        return None                       # never asked, or already answered
+    if fact.get("advertised") is not True:
+        return None
+    if not (getattr(runner, "OUTPUT_SCHEMA_FLAG", ()) or ()):
+        return None
+    template = next((e for e in pending or ()
+                     if isinstance(e, dict) and e.get("delivery") == "return_json"
+                     and e.get("output_schema")), None)
+    if template is None:
+        return None
+    entry = shape_probe.probe_entry(template, run_dir)
+    if entry is None:
+        return None                       # the probe schema is not published
+    verdict = shape_probe.prove(host, runner, entry, env_for(entry))
+    fact.update(verdict)
+    try:
+        runio._write_json(path, body)
+    except (OSError, ValueError) as exc:   # noqa: BLE001 -- a lost record costs
+        # one repeated launch next invocation; raising costs the run.
+        print("driver loop: the output-schema shape verdict was not recorded (%s: %s)"
+              % (type(exc).__name__, exc), file=sys.stderr, flush=True)
+    if verdict.get(hosts.SHAPE) != hosts.SHAPE_REFUTED:
+        return verdict
+    for candidate in pending or ():
+        if isinstance(candidate, dict):
+            candidate.pop("output_schema", None)
+    print(SHAPE_REFUTED_NOTICE
+          % (host, fact.get("flag") or "an output-schema flag",
+             verdict.get(hosts.SHAPE_DETAIL) or "no detail recorded"),
+          file=sys.stderr, flush=True)
+    return verdict

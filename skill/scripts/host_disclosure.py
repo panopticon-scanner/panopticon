@@ -324,11 +324,13 @@ def _shape_line(row, host):
     saying "5 of 5 capabilities proven". So an advertised flag is no longer
     silent -- it says which of the three answers this run's own probe got.
 
-    Silent only when there is no `shape` at all: an artifact written before
-    this shipped, or a run that legitimately never asked (session mode
-    launches none of our CLIs). Inventing a line about a measurement nobody
-    made is the "mood" 5.1 rules out, and this is the same silence an
-    advertised flag has always had.
+    No `shape` recorded yet is its OWN answer, not silence. The proof happens
+    inside the loop, on the first batch that carries a schema-stamped entry,
+    under the guards that batch armed -- so the first invocation of a run
+    discloses honestly that the measurement has not been made yet rather than
+    implying it passed. (Session mode reaches none of this: it carries no
+    `cli_flags` block at all, because the loop launches none of our CLIs, and
+    `_output_schema_line` returns above.)
 
     Still a NOTE and never a capability line: the flag gates nothing, the
     headline counts five capabilities whatever this says, and the driver
@@ -349,7 +351,10 @@ def _shape_line(row, host):
                 "advertised (shape unmeasured: %s); entries carry the flag as "
                 "before, and the driver validates every reply either way"
                 % (host, flag, detail)]
-    return []
+    return ["replies may be schema-constrained this run on host %r -- %s "
+            "advertised (shape unmeasured until the first batch launches); the "
+            "loop proves it once, under that batch's own guards, and says so here "
+            "from then on" % (host, flag)]
 
 
 def disclosure_digest(envelope):

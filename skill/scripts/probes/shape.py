@@ -11,8 +11,14 @@ capabilities proven", because the one thing nobody had measured was whether
 the argv the driver builds is an argv the CLI accepts.
 
 So: one real launch per run, through the family's own `run_entry`, with the
-family's real argv, BEFORE the phase engine writes the first dispatch request.
-Cheap (one bounded turn, a trivial prompt, a three-key schema) and decisive.
+family's real argv. It is driven from `loop_batch.prove_output_schema_shape`,
+inside `orchestrate.loop`, on the first batch that carries a schema-stamped
+entry -- AFTER `Guards.arm`, so the launch is confined by this run's real read
+scope and write allowlist exactly as a cell is, and the settings file the
+family's argv names has been written. Establishing it at posture time instead
+would mean one unconfined turn in the reviewed tree per run, before anything
+is armed. Cheap (one bounded turn, a trivial prompt, a three-key schema) and
+decisive.
 
 NOT a capability probe, and deliberately not in `host_probes.PROBE_IDS`: it
 returns no `(state, by, detail)` triple, maps to no capability and gates
@@ -71,6 +77,8 @@ _TIMED_OUT = "timed out"
 # message (spec 4.4: `run_entry` never raises) -- so it arrives both as a type
 # and as a name inside a string, and both mean "no measurement was made".
 _REFUSED = runners_base.LaunchRefused.__name__
+# "this attribute was not there" -- distinct from a real None.
+_UNSET = object()
 
 
 def _verdict(state, detail):
@@ -93,8 +101,40 @@ def _spend(result):
     return "; cost: %s" % ", ".join(parts) if parts else ""
 
 
-def prove(host, run_dir, review_root, runner=None):
-    """Launch once and answer `{shape, shape_detail}` -- never raise.
+def probe_entry(template, run_dir):
+    """The entry this probe launches: a real entry's BINDING, this probe's
+    payload. None when the probe schema is not published.
+
+    `template` is the first pending entry of the batch that carries a stamped
+    `output_schema` -- so `agent`, `enforced` and `model` are copied off a
+    cell this run is about to launch anyway. That is what makes the
+    measurement a measurement: the probe goes out under the same registered
+    shell, the same enforcement posture and the same model a real entry will,
+    through the same `command()`. Building a bare unenforced entry instead
+    (the first cut of this) meant codex refused it for want of a model and a
+    shell BEFORE ever reaching its CLI, so the one family besides claude whose
+    runner takes the flag could never be measured at all.
+
+    `out_file` is under the run folder and is deliberately NOT in the write
+    allowlist `Guards.arm` just installed: a probe that wrote anything would
+    be a probe with a side effect, and the guard denying it is the correct
+    outcome rather than an accident. Nothing reads it, and nothing creates it.
+    """
+    schema = runners_schema.published_schema(
+        os.path.abspath(version.reference_path(PROBE_SCHEMA)))
+    if schema is None:
+        return None
+    template = template if isinstance(template, dict) else {}
+    return {"id": PROBE_ENTRY_ID, "prompt": PROBE_PROMPT,
+            "delivery": "return_json", "output_schema": schema,
+            "agent": template.get("agent"),
+            "enforced": bool(template.get("enforced")),
+            "model": template.get("model"),
+            "out_file": os.path.join(run_dir, PROBE_ENTRY_ID + ".json")}
+
+
+def prove(host, runner, entry, env):
+    """Launch `entry` once and answer `{shape, shape_detail}` -- never raise.
 
     THE RULE, in one place (ruling 3). "The CLI accepted the argv" is any of:
 
@@ -106,62 +146,52 @@ def prove(host, run_dir, review_root, runner=None):
         of its own.
 
     Anything else that is an ENTRY-class failure refutes the shape. Everything
-    the probe could not ask -- no runner, no flag, no published schema, a
-    host-class failure (that is the host, not the argv), a timeout, a
-    `LaunchRefused`, a failure that never reached the CLI at all -- is
-    `unmeasured`, which blocks nothing and changes no stamping.
+    the probe could not ask -- no flag, no published schema, a host-class
+    failure (that is the host, not the argv), a timeout, a `LaunchRefused`, a
+    failure that never reached the CLI at all -- is `unmeasured`, which blocks
+    nothing and changes no stamping.
 
-    `runner` is a test seam; production resolves the family's own through
-    `runners_base.runner_for`, exactly as `probe_cli_flags` does.
+    `runner` is the loop's own, already prepared and already carrying this
+    checkpoint's `roles`; `env` is `Guards.env_for(entry)`, the same three-key
+    binding overlay a cell gets. The two per-launch bounds are set HERE and
+    restored in `finally`, because they belong to this launch and not to the
+    batch the loop is about to run: a probe that left `max_turns` at 1 would
+    cap every cell of the run at one turn.
     """
-    try:
-        runner = runners_base.runner_for(host, "headless") if runner is None else runner
-        flag = tuple(getattr(runner, "OUTPUT_SCHEMA_FLAG", ()) or ())
-    except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
-        return _verdict(hosts.SHAPE_UNMEASURED,
-                        "host %r has no usable headless runner to launch: %s: %s"
-                        % (host, type(exc).__name__, exc))
+    flag = tuple(getattr(runner, "OUTPUT_SCHEMA_FLAG", ()) or ())
     if not flag:
         return _verdict(hosts.SHAPE_UNMEASURED,
                         "host %r declares no output-schema flag, so there is no shape "
                         "to prove" % host)
-    schema = runners_schema.published_schema(
-        os.path.abspath(version.reference_path(PROBE_SCHEMA)))
-    if schema is None:
+    if not isinstance(entry, dict) or not entry.get("output_schema"):
         return _verdict(hosts.SHAPE_UNMEASURED,
-                        "the probe schema %s is not published under skill/reference/, so "
-                        "no launch would carry the flag at all" % PROBE_SCHEMA)
-    entry = {"id": PROBE_ENTRY_ID, "prompt": PROBE_PROMPT, "enforced": False,
-             "model": None, "delivery": "return_json", "output_schema": schema,
-             # Named because a family's argv builder may read it; nothing ever
-             # writes it, and the probe asserts nothing about it.
-             "out_file": os.path.join(run_dir, PROBE_ENTRY_ID + ".json")}
-    try:
-        runner.prepare(run_dir, review_root)
-    except Exception as exc:          # noqa: BLE001
-        return _verdict(hosts.SHAPE_UNMEASURED,
-                        "host %r could not be prepared for a probe launch: %s: %s"
-                        % (host, type(exc).__name__, exc))
-    runner.max_turns, runner.entry_timeout = PROBE_MAX_TURNS, PROBE_ENTRY_TIMEOUT
+                        "no published probe schema to put on a launch, so the flag "
+                        "would not reach the argv at all")
+    # Saved by ABSENCE as well as by value: a runner that inherits either
+    # bound from its class must get its class attribute back, not an instance
+    # attribute this probe invented.
+    saved = {name: getattr(runner, name, _UNSET)
+             for name in ("max_turns", "entry_timeout")}
     # Did the CLI really START? A family refuses an entry it cannot build an
-    # argv for BEFORE it calls its launcher (codex requires an explicit model;
-    # kimi requires a resolvable shell), and those refusals are instant and
-    # entry-class -- indistinguishable, from the result alone, from the CLI
-    # rejecting its own argv. They are measurements of THIS driver, not of the
-    # CLI, so they must not refute anything. The launcher is the family's own
-    # injected seam (`runner.runner`, what the suite swaps for a refusal), so
-    # wrapping it here observes the one fact that separates them. A family
-    # that exposes no such attribute is unobservable and is given the benefit
-    # of the plain rule.
+    # argv for BEFORE it calls its launcher, and those refusals are instant
+    # and entry-class -- indistinguishable, from the result alone, from the
+    # CLI rejecting its own argv. They are measurements of THIS driver, not of
+    # the CLI, so they must not refute anything. The launcher is the family's
+    # own injected seam (`runner.runner`, what the suite swaps for a refusal),
+    # so wrapping it observes the one fact that separates them. A family that
+    # exposes no such attribute is unobservable and gets the plain rule.
     started, launcher = [], getattr(runner, "runner", None)
-    if launcher is not None:
-        def watched(*args, **kwargs):
-            started.append(True)
-            return launcher(*args, **kwargs)
-        runner.runner = watched
-    clock = time.monotonic()
+
+    def watched(*args, **kwargs):
+        started.append(True)
+        return launcher(*args, **kwargs)
+
     try:
-        result = runner.run_entry(entry, {runners_base.ENV_ENTRY_ID: PROBE_ENTRY_ID})
+        runner.max_turns, runner.entry_timeout = PROBE_MAX_TURNS, PROBE_ENTRY_TIMEOUT
+        if launcher is not None:
+            runner.runner = watched
+        clock = time.monotonic()
+        result = runner.run_entry(entry, env)
     except runners_base.LaunchRefused as exc:
         return _verdict(hosts.SHAPE_UNMEASURED, "no launch was made: %s" % exc)
     except Exception as exc:          # noqa: BLE001 -- spec 4.4 says this cannot happen
@@ -170,6 +200,11 @@ def prove(host, run_dir, review_root, runner=None):
     finally:
         if launcher is not None:
             runner.runner = launcher
+        for name, value in saved.items():
+            if value is _UNSET:
+                runner.__dict__.pop(name, None)
+            else:
+                setattr(runner, name, value)
     duration_ms = int((time.monotonic() - clock) * 1000)
     error = redact.redact(getattr(result, "error", None) or "")
     if getattr(result, "ok", False):

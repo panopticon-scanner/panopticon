@@ -376,6 +376,10 @@ def loop(args):
                 return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256)
             done, total = 0, len(pending)
             handled = []
+            # #1732: the run's ONE shape proof, here rather than at posture
+            # time -- the guards are armed NOW, so it is confined like a cell.
+            loop_batch.prove_output_schema_shape(run_dir, host, runner, pending,
+                                                 guards.env_for)
             # #1721: the pool is FIFO, so an entry's index in `pending` is its
             # LAUNCH order -- which is what tells the tally a success that
             # proves the host is back from one that was merely in flight when
@@ -394,11 +398,9 @@ def loop(args):
             # drains the pool now, before `_finish` tears the guards and the runner's scratch area
             # down, rather than at GC's convenience.
             # #1732: TWO stop rules. `outage` asks whether the HOST went
-            # down; `uniform` asks whether the LAUNCH is being refused -- run
-            # 14 failed all 103 of a checkpoint's launches in ~120 ms with one
-            # identical message over one wrong argv token, and the per-entry
-            # cap needed three whole rounds (309 launches) to notice. Neither
-            # can be true of the same first results, so the order is arbitrary.
+            # down; `uniform` asks whether the LAUNCH is being refused (run 14:
+            # 103 launches, ~120 ms each, one identical message, one wrong
+            # argv token). Neither can be true of the same results.
             with contextlib.closing(runner.iter_batch(
                     pending, getattr(args, "concurrency", None), guards.env_for,
                     stop=lambda: tally.outage(width) or tally.uniform(width))) as stream:

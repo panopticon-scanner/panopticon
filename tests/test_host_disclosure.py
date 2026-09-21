@@ -628,10 +628,24 @@ class TestTheConstrainedOutputDisclosure(unittest.TestCase):
         self.assertIn("not schema-constrained", lines[0])
         self.assertIn("timed out", lines[0])
 
-    def test_an_advertised_flag_and_an_unasked_host_say_nothing(self):
-        for fact in ({"flag": "--json-schema", "advertised": True, "detail": "d"}, None):
-            with self.subTest(fact=fact):
-                self.assertEqual([], host_disclosure.notes(self._envelope(fact)))
+    def test_an_unasked_host_says_nothing(self):
+        # No `cli_flags` block at all: session mode, where the loop launches
+        # none of our CLIs. Inventing a line about a binary nobody
+        # interrogated is the "mood" 5.1 rules out.
+        self.assertEqual([], host_disclosure.notes(self._envelope(None)))
+
+    def test_an_advertised_flag_with_no_verdict_yet_says_so(self):
+        # #1732 ruling 4: the proof happens inside the loop, on the first
+        # batch that carries a schema-stamped entry, under that batch's own
+        # guards -- so the FIRST invocation of a run has an advertised flag
+        # and no measurement, and says exactly that rather than going quiet
+        # (which would read as "it passed").
+        lines = host_disclosure.notes(self._envelope(
+            {"flag": "--json-schema", "advertised": True, "detail": "d"}))
+        self.assertEqual(1, len(lines))
+        self.assertIn("shape unmeasured until the first batch launches", lines[0])
+        self.assertIn("--json-schema", lines[0])
+        self.assertNotIn("REFUTED", lines[0])
 
     # ---- #1732: the SHAPE of an advertised flag ---------------------------
     #

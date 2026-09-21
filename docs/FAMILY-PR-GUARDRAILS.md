@@ -117,22 +117,33 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   is anything else.
 - **The shape proof runs automatically, once per run**, for any family whose
   `OUTPUT_SCHEMA_FLAG` is non-empty and whose flag the `--help` read found
-  `advertised` (#1732). `probes/shape.py` builds a synthetic entry — the
-  reserved id **`probe-output-schema`**, which is never in a dispatch request,
-  never ledgered and never persisted, naming the published
-  `skill/reference/probe-output-schema.json` — and runs it through **your own
-  `run_entry`** with `max_turns = 1` and `entry_timeout = 30`, so the argv it
-  measures is the argv your `command()` really builds, `schema_argv` included.
+  `advertised` (#1732). It happens **inside the loop**
+  (`loop_batch.prove_output_schema_shape`, driven from `orchestrate.loop`), on
+  the first batch that carries a schema-stamped `return_json` entry and
+  **after `Guards.arm`** — so the probe launch is confined by that batch's own
+  read scope and write allowlist, and the `host-settings.json` your argv names
+  has been written. `probes/shape.py` builds the entry: the reserved id
+  **`probe-output-schema`**, which is never in a dispatch request, never
+  ledgered and never persisted; the published
+  `skill/reference/probe-output-schema.json`; and the `agent`, `enforced` and
+  `model` **copied off a real pending cell**, so it goes out under the same
+  shell, posture and model an entry will. It runs through **your own
+  `run_entry`** with `max_turns = 1` and `entry_timeout = 30` (saved and
+  restored around the launch), and its env is `Guards.env_for(probe_entry)` —
+  the same three binding keys a cell gets. Its `out_file` is under the run
+  folder and deliberately **not** in the write allowlist: a probe with a side
+  effect is not a probe, and the guard denying a write is the correct outcome.
   The verdict is written beside `advertised` as `shape`: `proven`, `refuted`
   (an entry-class failure in under 2000 ms, from a CLI that really started,
   with no envelope — the launch refusing its own argv) or `unmeasured`
   (a host-class failure, a timeout, a `LaunchRefused`, or a refusal of yours
-  that never reached the CLI). Only `refuted` changes anything: entries are
-  then stamped without the flag and reply in fenced JSON. Two consequences for
-  a family PR: do not use `probe-output-schema` as an entry id, and make sure
-  your `run_entry` can build an argv for an entry that is **not** enforced and
-  names **no model** — a precondition refusal there reads as `unmeasured`, so
-  the shape of your flag simply never gets proven.
+  that never reached the CLI). Only `refuted` changes anything: the flag comes
+  off that batch's entries in memory before they launch, and every later
+  request is regenerated without it. Two consequences for a family PR: do not
+  use `probe-output-schema` as an entry id, and make sure your `run_entry`
+  builds the same argv for it as for the cell it was cloned from — a
+  precondition refusal of your own reads as `unmeasured`, so the shape of your
+  flag simply never gets proven.
 - `RunResult.stderr` (#1732) is what your CLI printed on stderr, and you fill
   it on a FAILED result only: `base.stderr_head(proc.stderr)` gives you the
   first `base.STDERR_HEAD` (200) characters, redacted before they are cut. The

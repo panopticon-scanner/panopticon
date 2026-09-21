@@ -1482,19 +1482,20 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestTheOutputSchemaShapeIsProvenOncePerRun(unittest.TestCase):
-    """#1732 part 1: the flag is advertised -- but does the CLI take what this
-    driver puts after it?
+class TestTheOutputSchemaShapeSurvivesEveryReProbe(unittest.TestCase):
+    """#1732 part 1, as relocated: this step does not MEASURE the shape, it
+    keeps the measurement alive.
 
-    `probe_cli_flags` reads `<cli> --help`, which names the flag and says
-    nothing about its shape. Run 14 cost 309 launches and ~35 minutes to that
-    gap: `claude --help` advertises `--json-schema`, the driver handed it the
-    schema's PATH, the CLI wants its TEXT, and every return_json entry of
-    every checkpoint exited 1 in ~120 ms with no envelope.
+    The proof is one real launch, and it happens inside `orchestrate.loop`
+    after `Guards.arm` -- so it is confined by the batch's own read scope and
+    write allowlist, and the settings file its argv names exists. Establishing
+    it here would be one unconfined turn in the reviewed tree per run, before
+    anything is armed.
 
-    So one real launch, once per run, before the phase engine writes the first
-    dispatch request -- and every later invocation of the same run reads the
-    verdict off the artifact and launches nothing.
+    What this step owes is survival: `fresh` is a new probe result every
+    invocation and the artifact is rewritten whenever `cli_flags` moves, so a
+    `fresh` that dropped the recorded verdict would erase it on the next turn
+    of the loop and the turn after that would spend another launch.
     """
 
     def _repo(self):
@@ -1506,116 +1507,86 @@ class TestTheOutputSchemaShapeIsProvenOncePerRun(unittest.TestCase):
         return {"host": "claude", "run_id": "r1" * 4, "created": "2026-09-20",
                 "security_mode": "standard"}
 
-    def _artifact(self, advertised=True, host="claude"):
-        body = _all_proven_artifact(host)
+    def _artifact(self, advertised=True, detail="`claude --help` advertises it"):
+        body = _all_proven_artifact("claude")
         body[hosts.CLI_FLAGS] = {hosts.OUTPUT_SCHEMA: {
-            "flag": "--json-schema", "advertised": advertised,
-            "detail": "`claude --help` %s advertise --json-schema"
-                      % ("does" if advertised else "does not")}}
+            "flag": "--json-schema", "advertised": advertised, "detail": detail}}
         return body
-
-    def _establish(self, d, args, advertised=True, verdict=None, host="claude"):
-        proof = mock.Mock(return_value=verdict or {
-            hosts.SHAPE: hosts.SHAPE_PROVEN, hosts.SHAPE_DETAIL: "one launch, 900 ms"})
-        err = io.StringIO()
-        with mock.patch("scripts.host_probes.run_probes",
-                        return_value=self._artifact(advertised, host)), \
-                mock.patch("scripts.probes.shape.prove", proof), \
-                contextlib.redirect_stderr(err):
-            error = driver._establish_host_posture(d, self._manifest(), args)
-        return error, proof, err.getvalue()
 
     def _headless(self, d):
         args = driver.build_parser().parse_args(["run", d])
         args.mode = "headless"
         return args
 
+    def _establish(self, d, args=None, artifact=None):
+        probe = mock.Mock()
+        err = io.StringIO()
+        with mock.patch("scripts.host_probes.run_probes",
+                        return_value=artifact or self._artifact()), \
+                mock.patch("scripts.probes.shape.prove", probe), \
+                contextlib.redirect_stderr(err):
+            error = driver._establish_host_posture(
+                d, self._manifest(), args or self._headless(d))
+        return error, probe, err.getvalue()
+
     def _flags(self, d):
         return runio._load_json(
             runio._pano(d, runio.HOST_CAPABILITIES))[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA]
 
-    def test_a_headless_invocation_proves_the_shape_and_records_it(self):
+    def _record(self, d, shape, detail="one launch, 900 ms"):
+        path = runio._pano(d, runio.HOST_CAPABILITIES)
+        body = runio._load_json(path)
+        body[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA].update(
+            {hosts.SHAPE: shape, hosts.SHAPE_DETAIL: detail})
+        runio._write_json(path, body)
+
+    def test_establishing_the_posture_never_launches_the_probe(self):
+        # Not in headless mode, not in session mode, not on a second
+        # invocation: nothing here is armed, so nothing here may launch.
         d = self._repo()
-        error, proof, _err = self._establish(d, self._headless(d))
+        for args in (self._headless(d), driver.build_parser().parse_args(["run", d])):
+            with self.subTest(mode=getattr(args, "mode", None)):
+                _error, probe, _err = self._establish(d, args)
+                self.assertEqual(0, probe.call_count)
+
+    def test_the_first_invocation_records_the_help_read_and_no_verdict(self):
+        d = self._repo()
+        error, _probe, _err = self._establish(d)
         self.assertIsNone(error)
-        self.assertEqual(1, proof.call_count)
         fact = self._flags(d)
-        # BESIDE the `--help` read, in the row that row already owns
         self.assertIs(True, fact["advertised"])
+        self.assertNotIn(hosts.SHAPE, fact)
+
+    def test_a_recorded_verdict_survives_the_next_re_probe(self):
+        d = self._repo()
+        self._establish(d)
+        self._record(d, hosts.SHAPE_REFUTED, "failed in 120 ms with no envelope")
+        self._establish(d)                      # the loop's next `driver run`
+        fact = self._flags(d)
+        self.assertEqual(hosts.SHAPE_REFUTED, fact[hosts.SHAPE])
+        self.assertIn("120 ms", fact[hosts.SHAPE_DETAIL])
+        # ...and the `--help` half is still this invocation's own
+        self.assertIs(True, fact["advertised"])
+
+    def test_it_survives_a_changed_help_detail_too(self):
+        # The rewrite trigger compares the whole `cli_flags` block, so a
+        # moved `detail` is exactly the case that used to erase the verdict.
+        d = self._repo()
+        self._establish(d)
+        self._record(d, hosts.SHAPE_PROVEN)
+        self._establish(d, artifact=self._artifact(detail="a DIFFERENT --help sentence"))
+        fact = self._flags(d)
         self.assertEqual(hosts.SHAPE_PROVEN, fact[hosts.SHAPE])
-        self.assertIn("900 ms", fact[hosts.SHAPE_DETAIL])
-
-    def test_the_probe_is_handed_this_runs_own_folder_and_the_reviewed_tree(self):
-        d = self._repo()
-        _error, proof, _err = self._establish(d, self._headless(d))
-        host, run_dir, review_root = proof.call_args.args
-        self.assertEqual("claude", host)
-        self.assertEqual(d, review_root)
-        self.assertEqual(os.path.dirname(probes_common.headless_settings_path(d)), run_dir)
-
-    def test_a_second_invocation_of_the_same_run_launches_nothing(self):
-        # "Exactly once per run": the verdict is carried forward off the
-        # stored artifact, so a resumable loop does not spend a launch a turn.
-        d = self._repo()
-        self._establish(d, self._headless(d))
-        _error, proof, _err = self._establish(d, self._headless(d))
-        self.assertEqual(0, proof.call_count)
-        self.assertEqual(hosts.SHAPE_PROVEN, self._flags(d)[hosts.SHAPE])
-        self.assertIn("900 ms", self._flags(d)[hosts.SHAPE_DETAIL])
-
-    def test_session_mode_launches_nothing(self):
-        # `driver run` on its own sets no mode; session mode launches none of
-        # our CLIs, so there is nothing to interrogate and nothing to prove.
-        d = self._repo()
-        args = driver.build_parser().parse_args(["run", d])
-        _error, proof, _err = self._establish(d, args)
-        self.assertEqual(0, proof.call_count)
-        self.assertNotIn(hosts.SHAPE, self._flags(d))
-
-    def test_a_flag_that_is_not_advertised_is_never_proven(self):
-        d = self._repo()
-        _error, proof, _err = self._establish(d, self._headless(d), advertised=False)
-        self.assertEqual(0, proof.call_count)
-        self.assertNotIn(hosts.SHAPE, self._flags(d))
-
-    def test_a_refutation_gets_its_own_line_on_stderr_exactly_once(self):
-        # The posture block says the shape too (`host_disclosure.notes`, the
-        # one voice every surface renders). This is the EXTRA line, for the
-        # one verdict that changes what the run does -- said once, from the
-        # step that established it.
-        d = self._repo()
-        _error, _proof, err = self._establish(
-            d, self._headless(d),
-            verdict={hosts.SHAPE: hosts.SHAPE_REFUTED,
-                     hosts.SHAPE_DETAIL: "failed in 120 ms with no envelope"})
-        self.assertEqual(hosts.SHAPE_REFUTED, self._flags(d)[hosts.SHAPE])
-        self.assertIn("--json-schema", err)
-        self.assertIn("failed in 120 ms", err)
-        self.assertEqual(1, err.count("REFUSED it on one probe launch"))
-
-    def test_only_a_refutation_gets_that_line(self):
-        d = self._repo()
-        for shape in (hosts.SHAPE_PROVEN, hosts.SHAPE_UNMEASURED):
-            with self.subTest(shape=shape):
-                other = self._repo()
-                _error, _proof, err = self._establish(
-                    other, self._headless(other),
-                    verdict={hosts.SHAPE: shape,
-                             hosts.SHAPE_DETAIL: "no `claude` on PATH"})
-                self.assertEqual(shape, self._flags(other)[hosts.SHAPE])
-                self.assertNotIn("REFUSED it on one probe launch", err)
-        del d
+        self.assertIn("DIFFERENT", fact["detail"])
 
     def test_the_verdict_is_in_the_artifact_before_it_is_disclosed(self):
-        # The disclosure block says the shape, so a verdict established after
-        # `_disclose_posture` would be announced a whole invocation late.
+        # The disclosure block says the shape, so a verdict carried forward
+        # after `_disclose_posture` would be announced an invocation late.
         d = self._repo()
+        self._establish(d)
+        self._record(d, hosts.SHAPE_REFUTED, "failed in 120 ms")
         seen = {}
-        with mock.patch("scripts.host_probes.run_probes",
-                        return_value=self._artifact()), \
-                mock.patch("scripts.probes.shape.prove",
-                           return_value={hosts.SHAPE: hosts.SHAPE_REFUTED,
-                                         hosts.SHAPE_DETAIL: "failed in 120 ms"}), \
+        with mock.patch("scripts.host_probes.run_probes", return_value=self._artifact()), \
                 mock.patch.object(driver, "_disclose_posture",
                                   side_effect=lambda rr, m, fresh, ns: seen.update(
                                       fresh[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA])), \
@@ -1623,13 +1594,21 @@ class TestTheOutputSchemaShapeIsProvenOncePerRun(unittest.TestCase):
             driver._establish_host_posture(d, self._manifest(), self._headless(d))
         self.assertEqual(hosts.SHAPE_REFUTED, seen.get(hosts.SHAPE))
 
+    def test_nothing_is_carried_when_the_flag_was_never_interrogated(self):
+        d = self._repo()
+        plain = _all_proven_artifact("claude")          # no cli_flags block at all
+        error, _probe, _err = self._establish(d, artifact=plain)
+        self.assertIsNone(error)
+        self.assertNotIn(hosts.CLI_FLAGS, runio._load_json(
+            runio._pano(d, runio.HOST_CAPABILITIES)))
+
     def test_the_readiness_verb_launches_nothing(self):
         # It reads the artifact the run already wrote; it probes nothing and
         # it may not spend a launch.
         d = self._repo()
         _write_evidence(d, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
-        with mock.patch("scripts.probes.shape.prove") as proof, \
+        with mock.patch("scripts.probes.shape.prove") as probe, \
                 contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
             driver.main(["readiness", d])
-        self.assertEqual(0, proof.call_count)
+        self.assertEqual(0, probe.call_count)
