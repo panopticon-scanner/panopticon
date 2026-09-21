@@ -86,5 +86,55 @@ class MergeBaseFailClosedTest(unittest.TestCase):
         self.assertIsNone(anchors["delta_start"])
 
 
+class MalformedDiffFailClosedTest(unittest.TestCase):
+    """#1738: same contract one layer down -- a diff `parse_unified_diff`
+    cannot reconcile against its own hunk budget must RAISE, not return the
+    half of the map it managed to read. A partial map is the vacuous pass
+    again: the findings in the part it dropped come back off-diff.
+    """
+
+    WELL_FORMED = ("diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+                   "@@ -1,0 +2,3 @@\n+one\n+two\n+three\n")
+
+    def test_the_control_diff_really_parses(self):
+        # the fixtures below are this one, damaged -- so a raise there is about
+        # the damage and not about the shape.
+        self.assertEqual(diff_map.parse_unified_diff(self.WELL_FORMED),
+                         {"a.py": [(2, 4)]})
+
+    def test_a_truncated_hunk_raises_instead_of_a_partial_map(self):
+        truncated = self.WELL_FORMED[:self.WELL_FORMED.index("+three")]
+        with self.assertRaises(diff_map.DiffMapError) as ctx:
+            diff_map.parse_unified_diff(truncated)
+        self.assertIn("ended inside a hunk", str(ctx.exception))
+
+    def test_a_hunk_before_any_file_header_raises(self):
+        with self.assertRaises(diff_map.DiffMapError) as ctx:
+            diff_map.parse_unified_diff("@@ -1 +1 @@\n-old\n+new\n")
+        self.assertIn("before any file header", str(ctx.exception))
+
+    def test_a_combined_merge_diff_is_refused_not_mis_parsed(self):
+        # Defence-in-depth for a DIRECT caller of the parser, not a path
+        # hunk_map can reach: `git diff <base_sha>` returns an ordinary
+        # two-way diff even for unmerged (`UU`) paths -- only an
+        # argument-less `git diff` emits combined format. Where it does
+        # occur, every added line carries TWO markers, so content beginning
+        # with "+ " forges a header again and the `@@@` header describes no
+        # payload that can be counted. Refuse rather than mis-parse.
+        combined = ("diff --cc merged.py\n"
+                    "index 1111111,2222222..3333333\n"
+                    "--- a/merged.py\n+++ b/merged.py\n"
+                    "@@@ -1,2 -1,2 +1,2 @@@\n"
+                    "++ b/elsewhere\n")
+        with self.assertRaises(diff_map.DiffMapError) as ctx:
+            diff_map.parse_unified_diff(combined)
+        self.assertIn("combined", str(ctx.exception))
+
+    def test_garbage_that_is_not_a_diff_is_still_tolerated(self):
+        # the loud path is for a diff that framed itself and then broke, not
+        # for text that never claimed to be one (pinned in test_diff_map.py too).
+        self.assertEqual(diff_map.parse_unified_diff("not a diff\nrandom\n"), {})
+
+
 if __name__ == "__main__":
     unittest.main()
