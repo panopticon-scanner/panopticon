@@ -887,12 +887,13 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # the flags were composed from.
     resolution = _resolve_config(args, review_root)
     manifest = run_manifest.load_manifest(review_root)
-    if runio._foreign_manifest(manifest, review_root, run_manifest.manifest_path(review_root)):
+    foreign_reason = runio._foreign_manifest_reason(
+        manifest, review_root, run_manifest.manifest_path(review_root))
+    if foreign_reason:
         # #1093: a target-committed run-manifest.json (foreign review_root) could
         # preset flags to skip tools / force gate:PASS. Drop it and rebuild from
         # the real CLI args, exactly like a corrupt manifest below.
-        print("driver: ignoring foreign run-manifest.json (stamped review_root "
-              "%r != %r)" % (manifest.get("review_root"), os.path.abspath(review_root)),
+        print("driver: ignoring foreign run-manifest.json (%s)" % foreign_reason,
               file=sys.stderr, flush=True)
         manifest = None
     if manifest is None:

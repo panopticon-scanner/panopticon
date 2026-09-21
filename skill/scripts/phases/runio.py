@@ -606,8 +606,16 @@ def _foreign_manifest(manifest, review_root, manifest_file=None):
       * the stamped `review_root` differs from this checkout (the original #1093
         signal, kept as a fallback for a non-git target where nothing is tracked
         and for a manifest carried over from another machine)."""
+    return _foreign_manifest_reason(manifest, review_root, manifest_file) is not None
+
+
+def _foreign_manifest_reason(manifest, review_root, manifest_file=None):
+    """The signal that made a manifest foreign, or None for a valid resume."""
     if not isinstance(manifest, dict):
-        return False
+        return None
     if _manifest_committed(review_root, manifest_file):
-        return True
-    return manifest.get("review_root") != os.path.abspath(review_root)
+        return "the file is git-tracked in the target; a driver-written manifest is never committed"
+    if manifest.get("review_root") != os.path.abspath(review_root):
+        return "stamped review_root %r != %r" % (manifest.get("review_root"),
+                                                os.path.abspath(review_root))
+    return None
