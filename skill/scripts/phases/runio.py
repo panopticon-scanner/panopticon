@@ -16,6 +16,7 @@ import scripts.ocrdb as ocrdb
 import scripts.redact as redact
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
+import scripts.safe_write as safe_write
 
 
 CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
@@ -212,74 +213,19 @@ def _load_json(path):
     except (OSError, ValueError):
         return None
 
-def _confine_artifact_path(path):
-    """Reject a `.panopticon` artifact path whose REAL location escapes the real
-    `.panopticon` via a symlinked component (#run9 SEC-X0X). plan_contract.
-    artifact_root() vets only the TOP-LEVEL `.panopticon` (once, at run start) and
-    _open_w_nofollow's O_NOFOLLOW only the FINAL component, so a hostile target can
-    plant an INTERMEDIATE symlink (`.panopticon/runs -> /elsewhere`) that a write
-    would traverse. Anchor on the path's own `.panopticon` segment and require the
-    realpath (which resolves any symlinked intermediate dir) to stay inside the
-    real root. A planted `runs` link resolves outside and is rejected; a legit
-    not-yet-created path resolves lexically against its real parent and passes, and
-    the intentional `runs/latest` link (which points WITHIN `.panopticon`) passes.
-    A path with no `.panopticon` segment is not an artifact path and is left be."""
-    apath = os.path.abspath(path)
-    parts = apath.split(os.sep)
-    if ".panopticon" not in parts:
-        return
-    root = os.sep.join(parts[:parts.index(".panopticon") + 1]) or os.sep
-    real_root = os.path.realpath(root)
-    real = os.path.realpath(apath)
-    if not (real == real_root or real.startswith(real_root + os.sep)):
-        raise ValueError(
-            "artifact path escapes .panopticon via a symlinked component: %r" % path)
-
-def _open_w_nofollow(path):
-    """Open `path` for writing, refusing to follow a symlink at the final path
-    component. A target repo (untrusted under redteam) can pre-commit a
-    `.panopticon` artifact path as a symlink to a file the invoking user can
-    write (a dotfile, authorized_keys, ...); plain open() would follow it and
-    clobber that target. O_NOFOLLOW makes the open fail on a symlink; we then
-    replace the link with a fresh regular file instead of writing through it
-    (#1095 -- mirrors run_manifest's exclusive-create precedent).
-
-    #run9 SEC-X0X: O_NOFOLLOW guards only the FINAL component, so confine the whole
-    resolved path to the real `.panopticon` first -- an intermediate symlinked dir
-    (`.panopticon/runs -> /elsewhere`) would otherwise carry this write outside."""
-    _confine_artifact_path(path)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags, 0o644)
-    except OSError:
-        if os.path.islink(path):
-            os.unlink(path)                       # neutralize the link, never follow it
-            fd = os.open(path, flags, 0o644)
-        else:
-            raise
-    return os.fdopen(fd, "w", encoding="utf-8")
-
-def _open_a_nofollow(path):
-    """Open `path` for APPENDING, refusing to follow a symlink at the final
-    path component -- the O_APPEND analogue of `_open_w_nofollow` (#1095,
-    plan 6 review round 1) for a caller that must ADD a line without ever
-    truncating what is already there (Ledger.record's dispatch-ledger.jsonl,
-    one line per launch). Folds the confine-then-makedirs sequence
-    `_write_json` applies around `_open_w_nofollow` INTO this call, so a
-    caller needs neither a separate `_confine_artifact_path` nor its own
-    `os.makedirs` -- `Ledger.record` no longer carries either."""
-    _confine_artifact_path(path)              # SEC-X0X: before makedirs, which would
-    os.makedirs(os.path.dirname(path), exist_ok=True)   # otherwise follow a symlinked dir
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags, 0o644)
-    except OSError:
-        if os.path.islink(path):
-            os.unlink(path)                       # neutralize the link, never follow it
-            fd = os.open(path, flags, 0o644)
-        else:
-            raise
-    return os.fdopen(fd, "a", encoding="utf-8")
+# The no-follow artifact open lives in `scripts.safe_write` (#1735), not here:
+# `run_manifest` needs it for the manifest's own `<name>.tmp` staging write and
+# may not import this package (layout rule 3 -- `phases/*` imports
+# `run_manifest`, not the other way), and `synth/*` may not either. An alias of
+# a definition from OUTSIDE the package is what rule 4 leaves legal and asks to
+# justify: ~15 call sites across `phases/` and `setup_flow.py` -- and the
+# suite's one `mock.patch("scripts.phases.runio._open_w_nofollow")` -- spell it
+# with these names, so keeping them is what keeps ONE patch target for them.
+# tests/test_safe_write.py pins the identity, so a second implementation
+# cannot appear behind the alias.
+_confine_artifact_path = safe_write.confine_artifact_path
+_open_w_nofollow = safe_write.open_w_nofollow
+_open_a_nofollow = safe_write.open_a_nofollow
 
 def _write_json(path, data, atomic=True):
     """Write `data` as the artifact at `path`.
