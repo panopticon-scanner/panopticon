@@ -1349,6 +1349,29 @@ class TestGatesWhenSuppressed(unittest.TestCase):
             _tool_finding(tool="semgrep", severity="HIGH",
                           cwe=["CWE-79"])))
 
+    def test_the_enriched_object_shape_of_a_citation_is_read_too(self):
+        # Review I2: `report-schema.json` pins `citations.cwe.items` as
+        # `anyOf: [string, object]`, and `citations.enrich_citations` rewrites
+        # the list into `{"id", "name", "verified"}` objects -- both renderers
+        # read both shapes. Reading only the string shape is a security rule
+        # that switches itself off, silently, the day the gated set is routed
+        # through enrichment (which #1578's own option A would have done).
+        self.assertTrue(it.gates_when_suppressed(
+            _tool_finding(cwe=[{"id": "CWE-798", "name": "Hard-coded "
+                                "Credentials", "verified": True}])))
+        self.assertFalse(it.gates_when_suppressed(
+            _tool_finding(cwe=[{"id": "CWE-79", "name": "XSS"}])))
+
+    def test_a_lower_case_severity_answers_the_way_the_gate_does(self):
+        # Review M5: `security_gate` tests `severity in GATE_SEVERITIES`
+        # case-sensitively, so a predicate that case-folded was ANSWERING A
+        # DIFFERENT QUESTION than the gate it feeds -- the exact divergence one
+        # predicate exists to prevent. Both ingest paths emit upper case.
+        self.assertFalse(it.gates_when_suppressed(
+            _tool_finding(severity="critical")))
+        self.assertTrue(it.gates_when_suppressed(
+            _tool_finding(severity="CRITICAL")))
+
     def test_the_cwe_is_read_off_the_rule_id_too(self):
         # The dependency adapters put the rule id in `tool_evidence.rule_id`
         # and cite nothing; a rule named for its CWE must still be recognised.
@@ -1364,6 +1387,13 @@ class TestGatesWhenSuppressed(unittest.TestCase):
         # The tally and the set are derived from scanner output; a renderer or
         # a gate is not the place to discover a bad row.
         for bad in (None, {}, {"severity": None}, {"citations": "lots"},
-                    {"citations": {"cwe": "CWE-798"}}):
+                    {"citations": {"cwe": "CWE-798"}},
+                    {"citations": {"cwe": [None, 798]}},
+                    # Review M1: `evidence.tool_rule_id` does
+                    # `(finding.get("tool_evidence") or {}).get(...)`, so these
+                    # two RAISED AttributeError against a docstring promising
+                    # totality. The name of this test was the over-claim.
+                    {"tool_evidence": "nope"}, {"provenance": "nope"},
+                    {"tool_evidence": ["nope"], "provenance": 3}):
             with self.subTest(bad=bad):
                 self.assertFalse(it.gates_when_suppressed(bad))

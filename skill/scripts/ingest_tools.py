@@ -376,19 +376,53 @@ def suppression_class(segment):
 SECRET_CWES = frozenset({"CWE-798", "CWE-259", "CWE-321", "CWE-522"})
 
 
+# The two fields `evidence.tool_rule_id` reads, each with `(x or {}).get(...)`.
+_RULE_ID_FIELDS = ("tool_evidence", "provenance")
+
+
+def _rule_id(finding):
+    """`evidence.tool_rule_id`, made TOTAL (#1578 fix round 1, review M1).
+
+    That helper reads `(finding.get("tool_evidence") or {}).get("rule_id")` and
+    the same for `provenance`, so a finding whose either field is a STRING
+    raises `AttributeError` instead of answering. No caller can reach this
+    module with such a finding today -- both gates take findings straight from
+    `make_finding` / `sarif_to_findings`, and the driver path additionally runs
+    `repair_finding` -- but `gates_when_suppressed` promises totality, and a
+    merge gate is not the place to discover the promise was narrower than it
+    read. Unreadable fields are dropped, never coerced: the shared helper still
+    answers, using whichever of the two is a mapping.
+    """
+    readable = {k: v for k, v in finding.items()
+                if k not in _RULE_ID_FIELDS or isinstance(v, dict)}
+    return evidence_mod.tool_rule_id(readable) or ""
+
+
 def _cwe_tags(finding):
     """Every CWE this finding carries, from both places an adapter puts one.
 
     `citations.cwe` is where `sarif_utils.sarif_to_findings` files the tags it
-    scraped off the rule; the dependency adapters cite nothing and carry the
+    scraped off the rule -- including, since fix round 1, gosec's
+    `relationships` channel; the dependency adapters cite nothing and carry the
     rule in `tool_evidence.rule_id` (`evidence.tool_rule_id`), where a rule
     named for its CWE is the only tag there is.
+
+    BOTH shapes of `citations.cwe` are read (review I2). `report-schema.json`
+    pins the item as `anyOf: [string, object]`, `citations.enrich_citations`
+    rewrites the list into `{"id", "name", "verified"}` objects on the way to
+    the report, and both renderers already handle either. The gated-suppressed
+    set bypasses enrichment today, so only the string shape is reachable -- and
+    that is exactly the hazard: reading one shape is a security rule that turns
+    itself off, silently, the day someone routes that set through enrichment.
     """
-    cites = (finding.get("citations") or {}) if isinstance(finding, dict) else {}
+    cites = finding.get("citations")
     raw = cites.get("cwe") if isinstance(cites, dict) else None
-    tags = [str(c).upper() for c in raw] if isinstance(raw, list) else []
-    rule = evidence_mod.tool_rule_id(finding) or ""
-    tags.extend(m.group(1).upper() for m in CWE_TAG.finditer(str(rule)))
+    tags = []
+    for entry in (raw if isinstance(raw, list) else []):
+        ident = entry.get("id") if isinstance(entry, dict) else entry
+        if isinstance(ident, str):
+            tags.append(ident.upper())
+    tags.extend(m.group(1).upper() for m in CWE_TAG.finditer(_rule_id(finding)))
     return tags
 
 
@@ -411,14 +445,23 @@ def gates_when_suppressed(finding):
     credential CWE (`SECRET_CWES`) -- and nothing else. Option A (send the
     suppressed set through tool-verify) was rejected on dispatch cost.
 
+    Severity is compared EXACTLY, not case-folded (fix round 1, review M5).
+    `security_gate` tests `severity in GATE_SEVERITIES` case-sensitively, and a
+    predicate looser than the gate it feeds is answering a different question
+    -- a lower-case `"critical"` admitted here and dropped there is precisely
+    the divergence one predicate exists to prevent. Both ingest paths emit
+    upper case (`LEVEL_TO_SEV`, `tools.base.normalize_severity`, and
+    `findings.normalize_finding` on the driver side).
+
     Total on a malformed row rather than raising: the finding was built from
     scanner output about the reviewed tree, and a gate is not the place to
-    discover that. A row this cannot read does not gate -- the report still
-    discloses it in `meta.coverage.tools_suppressed`.
+    discover that. `_rule_id` is what makes the claim true for the two fields
+    the shared rule-id helper reads. A row this cannot read does not gate --
+    the report still discloses it in `meta.coverage.tools_suppressed`.
     """
     if not isinstance(finding, dict):
         return False
-    if str(finding.get("severity") or "").upper() == "CRITICAL":
+    if finding.get("severity") == "CRITICAL":
         return True
     if evidence_mod.tool_name(finding) in SECRET_ADAPTERS:
         return True
