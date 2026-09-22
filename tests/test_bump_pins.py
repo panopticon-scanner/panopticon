@@ -1,12 +1,192 @@
+import email.message
 import hashlib
 import io
 import json
 import os
 import re
 import unittest
+import urllib.request
+import urllib.response
 from unittest import mock
 
 import bump_pins as bp
+
+
+class _CannedTransport:
+    """In-memory HTTP(S) transport that still uses urllib's redirect plumbing."""
+
+    def __init__(self, responses):
+        self.responses = responses
+        self.requests = []
+
+    def open(self, request):
+        self.requests.append(request)
+        try:
+            code, location, body = self.responses[request.full_url]
+        except KeyError as exc:
+            raise AssertionError("unexpected transport I/O") from exc
+        headers = email.message.Message()
+        if location is not None:
+            headers["Location"] = location
+        response = urllib.response.addinfourl(
+            io.BytesIO(body), headers, request.full_url, code)
+        response.msg = "Found" if code in (301, 302, 303, 307, 308) else "OK"
+        return response
+
+
+class _CannedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, transport):
+        super().__init__()
+        self.transport = transport
+
+    def https_open(self, request):
+        return self.transport.open(request)
+
+
+class _CannedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, transport):
+        super().__init__()
+        self.transport = transport
+
+    def http_open(self, request):
+        return self.transport.open(request)
+
+
+class TestDownloadPolicy(unittest.TestCase):
+    def _assert_refused_before_transport(self, url, message):
+        opener = mock.Mock()
+        with mock.patch.object(bp.urllib.request, "urlopen") as old_transport, \
+                mock.patch.object(bp.urllib.request, "build_opener",
+                                  return_value=opener):
+            with self.assertRaisesRegex(RuntimeError, message):
+                bp._get(url)
+        old_transport.assert_not_called()
+        opener.open.assert_not_called()
+
+    def test_non_https_and_unapproved_destinations_are_refused_before_io(self):
+        for url, message in (
+                ("file:///tmp/harmless-bump-pins-marker", "HTTPS"),
+                ("http://pypi.org/project/release", "HTTPS"),
+                ("ftp://static.rust-lang.org/release", "HTTPS"),
+                ("https://example.com/artifact", "not approved")):
+            with self.subTest(url=url):
+                self._assert_refused_before_transport(url, message)
+
+    def test_userinfo_and_nonstandard_or_invalid_ports_are_refused_before_io(self):
+        for url, message in (
+                ("https://operator:do-not-print@pypi.org/project", "credentials"),
+                ("https://pypi.org:444/project", "port 443"),
+                ("https://pypi.org:/project", "invalid port"),
+                ("https://pypi.org:not-a-port/project", "invalid port")):
+            with self.subTest(url=url):
+                opener = mock.Mock()
+                with mock.patch.object(bp.urllib.request, "urlopen") as old_transport, \
+                        mock.patch.object(bp.urllib.request, "build_opener",
+                                          return_value=opener):
+                    with self.assertRaisesRegex(RuntimeError, message) as raised:
+                        bp._get(url)
+                old_transport.assert_not_called()
+                opener.open.assert_not_called()
+                self.assertNotIn("do-not-print", str(raised.exception))
+
+    def test_each_canonical_upstream_host_is_allowed(self):
+        hosts = ("static.rust-lang.org", "pypi.org", "files.pythonhosted.org",
+                 "rubygems.org", "auth.docker.io", "registry-1.docker.io")
+        for host in hosts:
+            with self.subTest(host=host):
+                opener = mock.Mock()
+                opener.open.return_value = io.BytesIO(b"upstream bytes")
+                with mock.patch.object(bp.urllib.request, "urlopen") as old_transport, \
+                        mock.patch.object(bp.urllib.request, "build_opener",
+                                          return_value=opener):
+                    self.assertEqual(b"upstream bytes",
+                                     bp._get("https://%s/artifact" % host))
+                old_transport.assert_not_called()
+                opener.open.assert_called_once()
+
+    def test_request_headers_object_and_timeout_reach_the_transport(self):
+        request = urllib.request.Request(
+            "https://registry-1.docker.io/v2/image/manifests/latest",
+            headers={"Authorization": "Bearer fixture", "Accept": "application/json"})
+        opener = mock.Mock()
+        opener.open.return_value = io.BytesIO(b"manifest")
+        with mock.patch.object(bp.urllib.request, "urlopen") as old_transport, \
+                mock.patch.object(bp.urllib.request, "build_opener",
+                                  return_value=opener):
+            self.assertEqual(b"manifest", bp._get(request))
+        old_transport.assert_not_called()
+        sent = opener.open.call_args
+        self.assertIs(request, sent.args[0])
+        self.assertEqual(bp.TIMEOUT, sent.kwargs["timeout"])
+        self.assertEqual("Bearer fixture", sent.args[0].get_header("Authorization"))
+
+    def _get_through_canned_redirects(self, first, responses, headers=None,
+                                      transport=None):
+        transport = transport or _CannedTransport(responses)
+        https = _CannedHTTPSHandler(transport)
+        http = _CannedHTTPHandler(transport)
+        real_build_opener = urllib.request.build_opener
+        legacy_opener = real_build_opener(https, http)
+
+        def build_policy_opener(*handlers):
+            return real_build_opener(*handlers, https, http)
+
+        request = urllib.request.Request(first, headers=headers or {})
+        with mock.patch.object(
+                bp.urllib.request, "urlopen",
+                side_effect=lambda req, timeout: legacy_opener.open(req, timeout=timeout)), \
+                mock.patch.object(bp.urllib.request, "build_opener",
+                                  side_effect=build_policy_opener):
+            body = bp._get(request)
+        return body, transport.requests
+
+    def test_public_redirect_between_approved_origins_is_allowed(self):
+        first = "https://pypi.org/packages/example"
+        final = "https://files.pythonhosted.org/packages/example.whl"
+        body, requests = self._get_through_canned_redirects(
+            first, {first: (302, final, b""), final: (200, None, b"wheel")})
+        self.assertEqual(b"wheel", body)
+        self.assertEqual([first, final], [request.full_url for request in requests])
+
+    def test_same_origin_authenticated_redirect_preserves_authorization(self):
+        first = "https://registry-1.docker.io/v2/image/manifests/latest"
+        final = "https://registry-1.docker.io/v2/image/manifests/current"
+        body, requests = self._get_through_canned_redirects(
+            first, {first: (307, final, b""), final: (200, None, b"manifest")},
+            {"Authorization": "Bearer fixture"})
+        self.assertEqual(b"manifest", body)
+        self.assertEqual("Bearer fixture", requests[1].get_header("Authorization"))
+
+    def test_redirect_downgrade_is_refused_before_target_io(self):
+        first = "https://pypi.org/packages/example"
+        target = "http://pypi.org/packages/example.whl"
+        transport = _CannedTransport(
+            {first: (302, target, b""), target: (200, None, b"wheel")})
+        with self.assertRaisesRegex(RuntimeError, "HTTPS"):
+            self._get_through_canned_redirects(
+                first, transport.responses, transport=transport)
+        self.assertEqual([first], [request.full_url for request in transport.requests])
+
+    def test_redirect_error_does_not_disclose_destination_userinfo(self):
+        first = "https://pypi.org/packages/example"
+        target = "file://operator:do-not-print@localhost/tmp/example.whl"
+        transport = _CannedTransport({first: (302, target, b"")})
+        with self.assertRaisesRegex(RuntimeError, "HTTPS") as raised:
+            self._get_through_canned_redirects(
+                first, transport.responses, transport=transport)
+        self.assertNotIn("do-not-print", str(raised.exception))
+        self.assertEqual([first], [request.full_url for request in transport.requests])
+
+    def test_authenticated_cross_origin_redirect_is_refused_before_target_io(self):
+        first = "https://registry-1.docker.io/v2/image/manifests/latest"
+        target = "https://auth.docker.io/credential-target"
+        transport = _CannedTransport(
+            {first: (302, target, b""), target: (200, None, b"should not arrive")})
+        with self.assertRaisesRegex(RuntimeError, "authenticated redirect"):
+            self._get_through_canned_redirects(
+                first, transport.responses, {"Authorization": "Bearer fixture"},
+                transport=transport)
+        self.assertEqual([first], [request.full_url for request in transport.requests])
 
 DOCKERFILE = """\
 ENV PATH="/usr/local/cargo/bin:${PATH}"

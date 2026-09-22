@@ -53,6 +53,7 @@ import hashlib
 import json
 import re
 import sys
+import urllib.parse
 import urllib.request
 
 RUSTUP_STABLE = "https://static.rust-lang.org/rustup/release-stable.toml"
@@ -67,10 +68,73 @@ RUBYGEMS_DOWNLOAD = "https://rubygems.org/downloads/{name}-{version}.gem"
 REQUIREMENTS_FILES = (".github/requirements-gate.txt", "requirements-fixtures.txt",
                       "requirements-tools.txt")
 TIMEOUT = 120
+DOWNLOAD_HOSTS = frozenset({
+    "auth.docker.io",
+    "files.pythonhosted.org",
+    "pypi.org",
+    "registry-1.docker.io",
+    "rubygems.org",
+    "static.rust-lang.org",
+})
+
+
+def _download_origin(url: str) -> tuple[str, str, int]:
+    """Validate a download URL and return its normalized HTTPS origin."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError as exc:
+        raise RuntimeError("download URL is malformed") from exc
+    if parsed.scheme.lower() != "https":
+        raise RuntimeError("download URL must use HTTPS")
+    if parsed.username is not None or parsed.password is not None:
+        raise RuntimeError("download URL must not contain credentials")
+    if parsed.netloc.endswith(":"):
+        raise RuntimeError("download URL has an invalid port")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("download URL has an invalid port") from exc
+    host = parsed.hostname.lower() if parsed.hostname else None
+    if host not in DOWNLOAD_HOSTS:
+        raise RuntimeError("download host is not approved: %r" % host)
+    if port not in (None, 443):
+        raise RuntimeError("download URL must use HTTPS port 443")
+    return "https", host, 443
+
+
+def _has_authorization(request: urllib.request.Request) -> bool:
+    return any(name.lower() == "authorization"
+               for name, _value in request.header_items())
+
+
+class _DownloadRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Apply the download policy before urllib sends each redirect."""
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        location = headers.get("Location") or headers.get("URI")
+        if location is not None:
+            # urllib's default handler reports unsupported redirect URLs in an
+            # HTTPError, including their userinfo. Validate first so even a
+            # rejected Location cannot disclose embedded credentials.
+            _download_origin(urllib.parse.urljoin(req.full_url, location))
+        return super().http_error_302(req, fp, code, msg, headers)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_origin = _download_origin(newurl)
+        if (_has_authorization(req)
+                and _download_origin(req.full_url) != new_origin):
+            raise RuntimeError(
+                "refusing authenticated redirect to a different origin")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _get(url: str | urllib.request.Request) -> bytes:
-    with urllib.request.urlopen(url, timeout=TIMEOUT) as fh:  # nosec B310 - https literal
+    request_url = url.full_url if isinstance(url, urllib.request.Request) else url
+    _download_origin(request_url)
+    opener = urllib.request.build_opener(_DownloadRedirectHandler())
+    with opener.open(url, timeout=TIMEOUT) as fh:
         return fh.read()
 
 
