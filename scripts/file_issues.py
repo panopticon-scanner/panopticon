@@ -256,7 +256,7 @@ def _ledger_lock(path):
     if fcntl is None:                      # pragma: no cover - posix in CI
         yield
         return
-    with open(path + ".lock", "a") as handle:
+    with open(path + ".lock", "a", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield

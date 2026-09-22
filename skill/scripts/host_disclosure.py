@@ -305,15 +305,15 @@ def _output_schema_line(envelope, host):
     if not isinstance(row, dict):
         if hosts.OUTPUT_SCHEMA not in (getattr(hosts.spec(host), "cli_flag_facts", ()) or ()):
             return []
-        return ["the output schema was not interrogated on host %r -- probe %s recorded "
-                "nothing, so the flag will not be passed. fix: re-run so the probe can "
-                "read `<cli> --help`; the driver validates every reply either way"
+        return [("the output schema was not interrogated on host %r -- probe %s recorded "
+                 + "nothing, so the flag will not be passed. fix: re-run so the probe can "
+                 + "read `<cli> --help`; the driver validates every reply either way")
                 % (host, CLI_FLAGS_PROBE)]
     if row.get("advertised") is True:
         return _shape_line(row, host)
-    return ["replies are not schema-constrained this run on host %r -- probe %s: %s. "
-            "fix: upgrade the CLI if you want %s enforced output; the driver validates "
-            "every reply either way"
+    return [("replies are not schema-constrained this run on host %r -- probe %s: %s. "
+             + "fix: upgrade the CLI if you want %s enforced output; the driver validates "
+             + "every reply either way")
             % (host, CLI_FLAGS_PROBE, row.get("detail") or "no detail recorded",
                row.get("flag") or "its")]
 
@@ -343,22 +343,22 @@ def _shape_line(row, host):
     shape, flag = row.get(hosts.SHAPE), row.get("flag") or "its output-schema flag"
     detail = row.get(hosts.SHAPE_DETAIL) or "no detail recorded"
     if shape == hosts.SHAPE_PROVEN:
-        return ["replies are schema-constrained this run on host %r -- %s advertised, "
-                "shape proven by one launch (%s)" % (host, flag, detail)]
+        return [("replies are schema-constrained this run on host %r -- %s advertised, "
+                 + "shape proven by one launch (%s)") % (host, flag, detail)]
     if shape == hosts.SHAPE_REFUTED:
-        return ["replies are not schema-constrained this run on host %r -- %s "
-                "advertised, shape REFUTED by one launch (%s) -- entries launch "
-                "without the flag and reply in fenced JSON, which the driver "
-                "validates against the same schema on receipt" % (host, flag, detail)]
+        return [("replies are not schema-constrained this run on host %r -- %s "
+                 + "advertised, shape REFUTED by one launch (%s) -- entries launch "
+                 + "without the flag and reply in fenced JSON, which the driver "
+                 + "validates against the same schema on receipt") % (host, flag, detail)]
     if shape == hosts.SHAPE_UNMEASURED:
-        return ["replies may be schema-constrained this run on host %r -- %s "
-                "advertised (shape unmeasured: %s); entries carry the flag as "
-                "before, and the driver validates every reply either way"
+        return [("replies may be schema-constrained this run on host %r -- %s "
+                 + "advertised (shape unmeasured: %s); entries carry the flag as "
+                 + "before, and the driver validates every reply either way")
                 % (host, flag, detail)]
-    return ["replies may be schema-constrained this run on host %r -- %s "
-            "advertised (shape unmeasured until the first batch launches); the "
-            "loop proves it once, under that batch's own guards, and says so here "
-            "from then on" % (host, flag)]
+    return [("replies may be schema-constrained this run on host %r -- %s "
+             + "advertised (shape unmeasured until the first batch launches); the "
+             + "loop proves it once, under that batch's own guards, and says so here "
+             + "from then on") % (host, flag)]
 
 
 def disclosure_digest(envelope):

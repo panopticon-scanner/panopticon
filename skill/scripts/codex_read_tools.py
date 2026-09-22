@@ -114,7 +114,7 @@ TOOLS = [
     _tool("search", "Literal substring search. File-only scopes require an explicit file path.", {
         "pattern": {"type": "string"}, "path": {"type": "string"}}, ("pattern",)),
     _tool("list_files", "List files within this entry's directory grants; no file-only listing. "
-          "Pass path to list one granted subdirectory.", {
+          + "Pass path to list one granted subdirectory.", {
         "pattern": {"type": "string"}, "path": {"type": "string"}}),
 ]
 
