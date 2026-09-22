@@ -14,7 +14,14 @@ import scripts.runners.schema as schema_argv_rules
 # for a refusal for the whole suite (family guardrails section 3, #1616), so
 # forgetting `runner=<fake>` in a test costs one failed RunResult rather than a
 # real `claude -p` launch and the money it spends.
-DEFAULT_RUNNER = subprocess.run
+#
+# #1575: None is the SENTINEL for "this runner's own `HostRunner.launch`" --
+# a process-group-aware Popen that registers its child, so a family-side
+# timeout and an operator's Ctrl-C reach the workers `claude` spawns and not
+# just its own pid. The attribute stays here, at module level and under this
+# name, because that is what tests/conftest.py's `LAUNCH_SEAMS` swaps and what
+# tests/test_host_launch_guard.py walks the AST for; only its VALUE changed.
+DEFAULT_RUNNER = None
 
 
 class Runner(base.HostRunner):
@@ -36,7 +43,7 @@ class Runner(base.HostRunner):
 
     def __init__(self, host="claude", runner=None):
         super().__init__(host)
-        self.runner = DEFAULT_RUNNER if runner is None else runner
+        self.runner = self.launcher(runner, DEFAULT_RUNNER)
         self.settings_path = None
         self.allowlist_path = None
         self.scope_path = None

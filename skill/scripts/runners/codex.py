@@ -12,7 +12,13 @@ import scripts.runners.schema as schema_argv_rules
 # single monkeypatch can refuse every un-injected launch in the suite (the
 # autouse `_no_live_codex_launches` fixture in tests/conftest.py does exactly
 # that). A default argument is bound at import and cannot be swapped.
-DEFAULT_RUNNER = subprocess.run
+#
+# #1575: None is the SENTINEL for "this runner's own `HostRunner.launch`" --
+# a process-group-aware Popen that registers its child, so a family-side
+# timeout reaches the workers `codex exec` spawns and not just its own pid.
+# The attribute keeps its name and its place (LAUNCH_SEAMS, the AST walk in
+# tests/test_host_launch_guard.py); only its value changed.
+DEFAULT_RUNNER = None
 # The loop's value for `runner.namespace` under `--setup` (runners/base.py).
 SETUP_NAMESPACE = "setup"
 
@@ -40,7 +46,7 @@ class Runner(base.HostRunner):
 
     def __init__(self, host="codex", runner=None):
         super().__init__(host)
-        self.runner = DEFAULT_RUNNER if runner is None else runner
+        self.runner = self.launcher(runner, DEFAULT_RUNNER)
         self.run_dir = None
         self.review_root = None
         self.entry_timeout = 1800

@@ -52,6 +52,27 @@ class ChildProcesses:
     # stop, and the operator is watching a terminal.
     INTERRUPT_GRACE = 5.0
 
+    def launcher(self, *candidates):
+        """The callable a launch goes through: the first of `candidates` that
+        is not None, and otherwise this runner's own `launch`.
+
+        The ONE place the seam's resolution order is written down, so the
+        three families spell it identically. Each of them passes what it has,
+        in priority order: an injected `runner=` (a fake, in every test that
+        does not mean to spawn anything), then the module's `DEFAULT_RUNNER`
+        -- which tests/conftest.py swaps for a refusal across the whole suite,
+        and which ships as None precisely so that an un-injected runner in a
+        REAL run falls through to the last candidate: `launch`.
+
+        Kept as a method rather than a module function because the fallback is
+        bound to THIS instance: `launch` registers its child on the runner
+        whose `terminate_children` an interrupt will call.
+        """
+        for candidate in candidates:
+            if candidate is not None:
+                return candidate
+        return self.launch
+
     def launch(self, argv, *, input=None, cwd=None, env=None, timeout=None,
                text=True, capture_output=True):
         """Run `argv` to completion and return its `CompletedProcess`.
