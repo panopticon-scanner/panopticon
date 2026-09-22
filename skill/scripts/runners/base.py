@@ -13,6 +13,7 @@ import time
 
 import scripts.dispatch as dispatch
 import scripts.read_guard_hook as read_guard_hook
+import scripts.runners.children as children
 import scripts.redact as redact
 import scripts.runners.outage as outage
 
@@ -128,7 +129,7 @@ class RunResult:
                     host_error=host_error, failure_class=failure_class, stderr=stderr)
 
 
-class HostRunner:
+class HostRunner(children.ChildProcesses):
     host = ""
     mode = "headless"
     default_concurrency = 1
@@ -220,11 +221,9 @@ class HostRunner:
     # the seam's reference implementation honours it -- and a family that
     # cannot says so here, once, instead of documenting it in prose.
     HONOURS_MAX_TURNS = True
-    # #1662: how long a terminated child is given to exit before it is killed,
-    # and the bound on how long an INTERRUPTED batch waits for the workers
-    # that were holding those children. Short on purpose -- a Ctrl-C means
-    # stop, and the operator is watching a terminal.
-    INTERRUPT_GRACE = 5.0
+    # `INTERRUPT_GRACE`, `launch`, `register_child`, `unregister_child` and
+    # `terminate_children` come from `runners/children.py` (#1575): one
+    # subject, one module, and this one was at the 700-line ratchet.
 
     def __init__(self, host=None):
         if host:
@@ -277,64 +276,6 @@ class HostRunner:
 
     def run_entry(self, entry, env):
         raise NotImplementedError("a host runner must implement run_entry")
-
-    def register_child(self, proc):
-        """Record a live child, so a Ctrl-C can end it (#1662).
-
-        `proc` is anything `subprocess.Popen`-shaped -- `terminate()`,
-        `kill()`, `wait(timeout=)` are all this seam uses.
-
-        Stored on the INSTANCE dict lazily rather than in `__init__`: a family
-        (and several fakes in this suite) may define its own `__init__`
-        without chaining to this one, and a registry that only exists when
-        somebody remembered to call `super()` is a registry that silently
-        holds nothing on the one host that needed it. `setdefault` and
-        `append` are each atomic under the GIL, which is all the synchronising
-        a list appended to from the pool's workers and read from the main
-        thread needs.
-
-        The three families shipped today launch through a blocking
-        `subprocess.run`, which hands back no handle at all, so they register
-        nothing and `terminate_children` is a no-op for them: an operator's
-        terminal Ctrl-C already SIGINTs every child in the foreground process
-        group, and what this module adds for those hosts is refusing to LAUNCH
-        the rest of the batch and refusing to wait the running ones out. A
-        family that adopts `Popen` -- or any host whose children leave the
-        foreground group -- registers here and gets the path below.
-        """
-        self.__dict__.setdefault("_children", []).append(proc)
-
-    def terminate_children(self, grace=None):
-        """End every child this runner still has in flight -- `terminate()`
-        (SIGTERM on POSIX), then `kill()` (SIGKILL) for whatever has not
-        exited within `grace` -- and return the children it acted on (#1662).
-
-        Called by `iter_batch` on the interrupt path, before the loop tears
-        the guard files down. It installs NO signal handler and replaces none:
-        `runners/kimi.py` chains a SIGTERM secret-stripper onto whatever was
-        already registered, and an interrupt path that installed its own would
-        unlink that chain. The registry is EMPTIED as it is read, so a second
-        call is a no-op rather than a second kill at a pid the OS may since
-        have reused.
-        """
-        grace = self.INTERRUPT_GRACE if grace is None else grace
-        children = list(self.__dict__.get("_children") or ())
-        self.__dict__["_children"] = []
-        for proc in children:
-            try:
-                proc.terminate()
-            except (OSError, ValueError):        # already gone
-                pass
-        deadline = time.monotonic() + max(0.0, float(grace))
-        for proc in children:
-            try:
-                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-            except Exception:    # noqa: BLE001 -- TimeoutExpired, or a handle that cannot wait
-                try:
-                    proc.kill()
-                except (OSError, ValueError):
-                    pass
-        return children
 
     def iter_batch(self, entries, concurrency, env_for, stop=None):
         """Run every entry through run_entry on a thread pool, yielding
