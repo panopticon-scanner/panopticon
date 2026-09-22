@@ -28,6 +28,7 @@ def _runner(returncode=0, stdout=b"", stderr=b""):
 
 _GOOD_SARIF = b'{"version":"2.1.0","runs":[{"results":[]}]}'
 _SARIF_WITH_FINDINGS = b'{"version":"2.1.0","runs":[{"results":[{"ruleId":"x"}]}]}'
+_MISSING = object()
 
 
 def _bandit_entry(provider="bandit",
@@ -39,7 +40,8 @@ def _bandit_entry(provider="bandit",
 
 
 def _bandit_sarif(version="test-runtime", semantic_version="test-runtime",
-                  results=None, driver_name="Bandit"):
+                  results=None, driver_name="Bandit",
+                  sarif_version="2.1.0"):
     if results is None:
         results = [{"ruleId": "B105", "message": {"text": "finding"}}]
     driver = {"name": driver_name}
@@ -47,10 +49,12 @@ def _bandit_sarif(version="test-runtime", semantic_version="test-runtime",
         driver["version"] = version
     if semantic_version is not None:
         driver["semanticVersion"] = semantic_version
-    return json.dumps({
-        "version": "2.1.0",
+    document = {
         "runs": [{"tool": {"driver": driver}, "results": results}],
-    }).encode("utf-8")
+    }
+    if sarif_version is not _MISSING:
+        document["version"] = sarif_version
+    return json.dumps(document).encode("utf-8")
 
 
 def _capture(output, ok=True, msg=""):
@@ -135,6 +139,75 @@ class TestCheckBanditSarif(unittest.TestCase):
                 self.assertIn(field, msg)
                 self.assertIn("runtime", msg)
 
+    def test_missing_or_wrong_sarif_version_fails(self):
+        for value in (_MISSING, None, "2.0.0", 2.1, {}, []):
+            with self.subTest(value=value):
+                ok, msg = sa.check_bandit_sarif(
+                    entry_points=[_bandit_entry()],
+                    runtime_version="test-runtime",
+                    capture=_capture(_bandit_sarif(sarif_version=value)))
+                self.assertFalse(ok)
+                self.assertEqual(msg,
+                                 "bandit SARIF: scan output is not SARIF 2.1.0")
+
+    def test_missing_or_wrong_result_message_fails(self):
+        for value in (_MISSING, None, "finding", 7, [], ["finding"]):
+            with self.subTest(value=value):
+                result = {"ruleId": "B105"}
+                if value is not _MISSING:
+                    result["message"] = value
+                ok, msg = sa.check_bandit_sarif(
+                    entry_points=[_bandit_entry()],
+                    runtime_version="test-runtime",
+                    capture=_capture(_bandit_sarif(results=[result])))
+                self.assertFalse(ok)
+                self.assertEqual(msg,
+                                 "bandit SARIF: scan result has no message object")
+
+    def test_missing_wrong_or_empty_message_text_fails(self):
+        for value in (_MISSING, None, 7, [], {}, "", " \t\n"):
+            with self.subTest(value=value):
+                message = {}
+                if value is not _MISSING:
+                    message["text"] = value
+                ok, msg = sa.check_bandit_sarif(
+                    entry_points=[_bandit_entry()],
+                    runtime_version="test-runtime",
+                    capture=_capture(_bandit_sarif(
+                        results=[{"ruleId": "B105", "message": message}])))
+                self.assertFalse(ok)
+                self.assertEqual(
+                    msg,
+                    "bandit SARIF: scan result has no nonempty message text")
+
+    def test_every_emitted_result_needs_a_valid_message(self):
+        results = [
+            {"ruleId": "B105", "message": {"text": "finding"}},
+            {"ruleId": "B101", "message": "malformed"},
+        ]
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[_bandit_entry()], runtime_version="test-runtime",
+            capture=_capture(_bandit_sarif(results=results)))
+        self.assertFalse(ok)
+        self.assertEqual(msg, "bandit SARIF: scan result has no message object")
+
+    def test_wrong_result_or_rule_id_shape_fails(self):
+        cases = (
+            (["not-an-object"], "scan result is not an object"),
+            ([{}], "scan result has no string ruleId"),
+            ([{"ruleId": None}], "scan result has no string ruleId"),
+            ([{"ruleId": []}], "scan result has no string ruleId"),
+            ([{"ruleId": ""}], "scan result has no string ruleId"),
+        )
+        for results, diagnostic in cases:
+            with self.subTest(results=results):
+                ok, msg = sa.check_bandit_sarif(
+                    entry_points=[_bandit_entry()],
+                    runtime_version="test-runtime",
+                    capture=_capture(_bandit_sarif(results=results)))
+                self.assertFalse(ok)
+                self.assertEqual(msg, "bandit SARIF: " + diagnostic)
+
     def test_malformed_output_fails_without_echoing_it(self):
         payload = b"not-json-control-output"
         ok, msg = sa.check_bandit_sarif(
@@ -161,7 +234,9 @@ class TestCheckBanditSarif(unittest.TestCase):
     def test_missing_expected_finding_fails(self):
         ok, msg = sa.check_bandit_sarif(
             entry_points=[_bandit_entry()], runtime_version="test-runtime",
-            capture=_capture(_bandit_sarif(results=[{"ruleId": "B101"}])))
+            capture=_capture(_bandit_sarif(results=[{
+                "ruleId": "B101", "message": {"text": "finding"},
+            }])))
         self.assertFalse(ok)
         self.assertIn("B105", msg)
 

@@ -405,6 +405,8 @@ def check_bandit_sarif(entry_points=None, runtime_version=None, capture=None):
         return False, "bandit SARIF: scan output is not valid JSON"
     if not isinstance(document, dict):
         return False, "bandit SARIF: scan output is not a SARIF object"
+    if document.get("version") != "2.1.0":
+        return False, "bandit SARIF: scan output is not SARIF 2.1.0"
     runs = document.get("runs")
     if not isinstance(runs, list) or not runs or not isinstance(runs[0], dict):
         return False, "bandit SARIF: scan output has no valid run"
@@ -412,8 +414,21 @@ def check_bandit_sarif(entry_points=None, runtime_version=None, capture=None):
     results = run.get("results")
     if not isinstance(results, list) or not results:
         return False, "bandit SARIF: positive-control scan has no findings"
-    if not any(isinstance(result, dict) and result.get("ruleId") == "B105"
-               for result in results):
+    rule_ids = []
+    for result in results:
+        if not isinstance(result, dict):
+            return False, "bandit SARIF: scan result is not an object"
+        rule_id = result.get("ruleId")
+        if not isinstance(rule_id, str) or not rule_id:
+            return False, "bandit SARIF: scan result has no string ruleId"
+        rule_ids.append(rule_id)
+        message = result.get("message")
+        if not isinstance(message, dict):
+            return False, "bandit SARIF: scan result has no message object"
+        text = message.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return False, "bandit SARIF: scan result has no nonempty message text"
+    if "B105" not in rule_ids:
         return False, "bandit SARIF: positive-control B105 finding is missing"
     tool = run.get("tool")
     driver = tool.get("driver") if isinstance(tool, dict) else None
