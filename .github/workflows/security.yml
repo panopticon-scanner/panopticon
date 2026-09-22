@@ -154,7 +154,7 @@ jobs:
       # evidence gate the rest of the system uses. That gate promotes a finding
       # only on an advisor CONFIRMED verdict (evidence.status tool_confirmed /
       # advisor_confirmed; see skill/scripts/evidence.py GATE_ELIGIBLE_DEFAULT
-      # and DEVELOPMENT.md). CI runs NO advisor phase -- every tool finding here
+      # and DEVELOPMENT.md). CI runs NO advisor phase — every tool finding here
       # is unverified `tool_reported`, so confirmed-only gating would gate on
       # nothing and the CI security gate would never fire. So CI deliberately
       # adopts the strict `--gate-unverified` posture: unverified tool findings
