@@ -239,7 +239,7 @@ def parse_settings(doc):
         return Parsed(requested, typed,
                       [_refusal("settings", None, "settings must be a mapping")],
                       ["target config's `settings:` is not a mapping; "
-                       "the whole section is refused"])
+                       + "the whole section is refused"])
     keys = list(raw)
     ignored = len(keys) - MAX_SETTINGS_KEYS
     if ignored > 0:

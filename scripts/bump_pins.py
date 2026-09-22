@@ -356,8 +356,8 @@ def unreviewed_gem_requirements(name: str, runtime: dict[str, str | None]) -> li
     """
     reviewed = REVIEWED_GEM_RUNTIME.get(name)
     if reviewed is None:
-        return ["%s has no reviewed runtime closure; add one to "
-                "REVIEWED_GEM_RUNTIME" % name]
+        return [("%s has no reviewed runtime closure; add one to "
+                 + "REVIEWED_GEM_RUNTIME") % name]
     out = []
     for dep in sorted(runtime):
         if dep not in reviewed:

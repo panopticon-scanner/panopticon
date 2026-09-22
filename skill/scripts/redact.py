@@ -39,7 +39,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
     (re.compile(r"AIza[0-9A-Za-z_-]{35}"), "[REDACTED_GOOGLE_KEY]"),  # Google API
     (re.compile(r"xapp-[0-9]-[A-Za-z0-9-]{10,}"), "[REDACTED_SLACK_TOKEN]"),
     (re.compile(r"https://hooks\.slack\.com/services/"
-                r"[A-Za-z0-9]{8,}/[A-Za-z0-9]{8,}/[A-Za-z0-9]{20,}"),
+                + r"[A-Za-z0-9]{8,}/[A-Za-z0-9]{8,}/[A-Za-z0-9]{20,}"),
      "[REDACTED_SLACK_WEBHOOK]"),
     (re.compile(r"glpat-[A-Za-z0-9_-]{20,}"), "[REDACTED_TOKEN]"),   # GitLab PAT
     (re.compile(r"npm_[A-Za-z0-9]{36}"), "[REDACTED_TOKEN]"),        # npm token
@@ -124,7 +124,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
     # walk below -- never from this character class.
     (re.compile(
         r"-----BEGIN[A-Z ]*PRIVATE KEY-----(?:(?!-----BEGIN)[\s\S]){1,16384}?"
-        r"-----END[A-Z ]*PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
+        + r"-----END[A-Z ]*PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
     # Shape-only, and last: every rule above needs a prefix or an assignment to
     # anchor on, but a secret SCANNER reports the secret with that context
     # stripped (gitleaks emitted a leaked API key as a bare snippet, matching
@@ -133,9 +133,9 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
     # Runs last so Bearer/sk- keep their more specific markers, and defers to
     # _mask_uuid for the one shape that is ambiguous. See #run12 SEC.
     (re.compile(r"(?<![0-9A-Za-z])"
-                r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
-                r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-                r"(?![0-9A-Za-z])"), lambda m: _mask_uuid(m)),
+                + r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                + r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                + r"(?![0-9A-Za-z])"), lambda m: _mask_uuid(m)),
 ]
 
 # A UUID is the only shape here that is genuinely ambiguous: it is as often an

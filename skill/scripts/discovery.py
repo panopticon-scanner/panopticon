@@ -13,6 +13,7 @@ subprocesses.
 """
 from typing import TYPE_CHECKING, Any
 import argparse
+from collections import defaultdict
 import fnmatch
 import functools
 import json
@@ -591,9 +592,9 @@ def assign_scoped(files, catalog, aliases=None, prefixes=None):
         else:
             leftovers.append(f)
     warnings = [
-        "%s: tests glob %r matched %d file(s) but credited none (a wildcard "
-        "tests: glob is scoped to the group's match: prefixes and name/aliases; "
-        "move it to match: to claim unconditionally)" % (name, glob, hit)
+        ("%s: tests glob %r matched %d file(s) but credited none (a wildcard "
+         + "tests: glob is scoped to the group's match: prefixes and name/aliases; "
+         + "move it to match: to claim unconditionally)") % (name, glob, hit)
         for (name, glob), (hit, credited) in sorted(seen.items())
         if hit and not credited]
     return ({n: sorted(fs) for n, fs in assigned.items() if fs},
@@ -1231,14 +1232,14 @@ def sweep_tests(leftovers, homes, catalog=None):
         return swept, {}, remaining
     attached, unattached = tests_axis.attach_by_affinity(swept, homes)
     if catalog:
-        kept: dict[str, list[str]] = {}
+        kept: defaultdict[str, list[str]] = defaultdict(list)
         for name, fs in attached.items():
             for f in fs:
                 if negated_by_own_match(f, catalog.get(name) or {}):
                     unattached.append(f)
                 else:
-                    kept.setdefault(name, []).append(f)
-        attached = kept
+                    kept[name].append(f)
+        attached = dict(kept)
     return sorted(unattached), attached, remaining
 
 
