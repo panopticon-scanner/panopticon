@@ -183,6 +183,7 @@ def prove(host, runner, entry, env):
     started, launcher = [], getattr(runner, "runner", None)
 
     def watched(*args, **kwargs):
+        assert launcher is not None  # installed only when the runner exposes a launcher
         started.append(True)
         return launcher(*args, **kwargs)
 

@@ -152,7 +152,7 @@ class HostRunner:
     # no flags missing from `--help`, which is why the probe decides on the
     # VALUE rather than merely on the attribute existing.
     CLI = ""
-    ENVELOPE_FLAGS = ()
+    ENVELOPE_FLAGS: tuple[str, ...] = ()
     # The argv flag that makes ONE launch constrain its final message to a
     # JSON Schema, as a tuple of tokens the schema follows. Two shapes: codex's
     # `("--output-schema",)` takes the schema's PATH, claude's
@@ -170,7 +170,7 @@ class HostRunner:
     # entry's `output_schema` key is stamped by the driver
     # (phases.persist.role_schema), because the runners package may not import
     # phases and should not have to know what a role is.
-    OUTPUT_SCHEMA_FLAG = ()
+    OUTPUT_SCHEMA_FLAG: tuple[str, ...] = ()
     # The argv that makes this CLI print the help text listing the flags above
     # -- everything before the family's own `--help`, i.e. the SUBCOMMAND the
     # runner actually drives. `("--help",)` (claude, kimi) asks the binary
@@ -185,7 +185,7 @@ class HostRunner:
     # probe follows. It is a HELP read and nothing else -- no prompt, no
     # sandbox, no side effect -- and it goes through `Runner.runner`, the one
     # launcher the suite refuses live launches at.
-    HELP_ARGV = ("--help",)
+    HELP_ARGV: tuple[str, ...] = ("--help",)
     # A scratch directory OUTSIDE the reviewed tree that this runner's children
     # write into, once `prepare` has made one; None for a host that needs none
     # (claude arms a settings file in the run folder and keeps nothing else).
@@ -474,7 +474,7 @@ class HostRunner:
         runner overrides this to print the batch and return None; every other
         caller that wants progress uses iter_batch instead."""
         entries = list(entries)
-        slots = {}
+        slots: dict[int, list[int]] = {}
         for i, entry in enumerate(entries):
             slots.setdefault(id(entry), []).append(i)   # by identity: entries are dicts
         results = [None] * len(entries)

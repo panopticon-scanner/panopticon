@@ -103,7 +103,7 @@ def present_cells(paths):
     words and domain codes are upper-case 2-3 letter codes -- disjoint
     alphabets by construction (groups_schema.DOMAINS vs. PANEL_ORDER).
     """
-    out = {}
+    out: dict[str, set[str]] = {}
     for p in paths or []:
         base = os.path.basename(str(p))
         if not (base.startswith("findings-") and base.endswith(".json")):

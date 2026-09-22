@@ -28,6 +28,7 @@ Confusing the two is the failure this whole spec exists to prevent.
 No probe may touch live state. Anything that needs to arm, install or write
 does it inside a `tempfile.TemporaryDirectory()`.
 """
+from typing import Any
 import os
 
 from scripts import hosts, run_manifest
@@ -75,7 +76,7 @@ SCHEMA_VERSION = 1
 # read-guard-armed; kept so a future capability that genuinely has no probe
 # yet is written down here rather than inferred from an absent key (5.1). A
 # host that does not CLAIM a capability goes through `_no_probe_reason`.
-_NO_PROBE = {}
+_NO_PROBE: dict[str, str] = {}
 
 
 def _row(state, by, detail):
@@ -151,7 +152,7 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     had. It is passed in process, never re-derived from a path recorded inside
     the target (N2). `None` until the loop's `prepare` has run.
     """
-    findings = {}          # capability -> list of (state, by, detail)
+    findings: dict[str, list[tuple[str, str, str]]] = {}          # capability -> list of (state, by, detail)
     # D10 F1/N1: operational CLI facts, measured by `probes.common` and
     # written BESIDE `capabilities` (see hosts.CLI_FLAGS): inside it, a CLI
     # upgraded between two turns of a resumable loop would read as posture
@@ -169,7 +170,7 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     # A row that maps a probe to a different capability must record it there;
     # otherwise `HostSpec.probes` is decorative and a mis-mapped row fails
     # silently -- the defect this epic exists to remove.
-    codex_measurement = []
+    codex_measurement: list[dict[str, Any]] = []
 
     def codex_measure():
         if not codex_measurement:

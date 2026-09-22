@@ -29,6 +29,9 @@ import shutil
 import signal
 import subprocess
 import sys
+from collections.abc import Callable
+from types import FrameType
+from typing import Any, Protocol, cast
 
 import scripts.dispatch as dispatch
 import scripts.hosts as hosts
@@ -38,6 +41,14 @@ import scripts.runners.base as base
 # `kimi_home_mod`, not `kimi_home`: `wire_path`'s first parameter and
 # `Runner.kimi_home` already own that name in this file.
 import scripts.runners.kimi_home as kimi_home_mod
+
+
+class _SignalStripper(Protocol):
+    """A signal callback whose predecessor can be relinked during teardown."""
+
+    previous: Callable[[int, FrameType | None], Any] | int | None
+
+    def __call__(self, signum: int, frame: FrameType | None) -> None: ...
 
 # I3 (gate review): the launcher is a MODULE ATTRIBUTE, never a default argument, and every spawn
 # resolves it inside the body. A default argument binds `subprocess.run` at import time, where
@@ -64,7 +75,7 @@ def _tier_aliases():
     {primary: kimi-for-coding, secondary: k3} today. Derived, never hand-kept:
     model-profiles.yml is the source of truth and a profile change must not
     strand this runner on a stale table."""
-    out = {}
+    out: dict[str, str] = {}
     for role in dispatch.ROLE_FILES:
         cfg = model_resolver.resolve_model("kimi", role)
         tier, alias = cfg.get("model"), cfg.get("alias")
@@ -173,7 +184,7 @@ class Runner(base.HostRunner):
         self.skills_dir = None         # the empty run-owned dir `--skills-dir` names
         self.home_pointer = None
         self._crash_strip = None       # the atexit callback, while one is armed
-        self._signal_handlers = {}     # {signum: our wrapper}; it carries what was there
+        self._signal_handlers: dict[int, _SignalStripper] = {}
         self.review_root = None
         self.configured = None
         self.max_turns = 60
@@ -259,7 +270,7 @@ class Runner(base.HostRunner):
             self._signal_handlers[signum] = handler
 
     def _signal_stripper(self, previous):
-        def handler(signum, frame):
+        def callback(signum, frame):
             self._strip_on_exit()
             previous = handler.previous       # R3-3: read live, a disarm may have relinked it
             if callable(previous):
@@ -267,6 +278,9 @@ class Runner(base.HostRunner):
             elif previous == signal.SIG_DFL or previous is None:   # R3-4: None = C-installed
                 signal.signal(signum, signal.SIG_DFL)
                 os.kill(os.getpid(), signum)  # die as we would have
+        # Functions carry attributes at runtime; describe that callable contract
+        # once, at the point where this wrapper gains its relinkable predecessor.
+        handler = cast(_SignalStripper, callback)
         handler.previous = previous
         return handler
 
@@ -280,12 +294,13 @@ class Runner(base.HostRunner):
             self._crash_strip = None
         for signum, ours in list(self._signal_handlers.items()):
             try:
+                previous = ours.previous
                 node = signal.getsignal(signum)
                 if node is ours:      # NEW-6: None (C-installed) means the default
-                    signal.signal(signum, signal.SIG_DFL if ours.previous is None else ours.previous)
+                    signal.signal(signum, signal.SIG_DFL if previous is None else previous)
                 while callable(node) and hasattr(node, "previous") and node is not ours:
                     if node.previous is ours:
-                        node.previous = ours.previous
+                        node.previous = previous
                     node = node.previous
             except (ValueError, OSError, RuntimeError):
                 pass

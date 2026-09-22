@@ -107,7 +107,7 @@ PROXY_MAX_CLIENTS = 16
 
 def allowed_hosts(tools):
     """The sorted union of the allowlists of `tools` that have one."""
-    hosts = set()
+    hosts: set[str] = set()
     for tool in tools:
         hosts.update(ALLOWLIST.get(tool, ()))
     return sorted(hosts)

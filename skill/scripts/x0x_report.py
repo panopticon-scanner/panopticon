@@ -11,13 +11,18 @@ not emitter output, so this emitter omits them (the schema leaves both optional 
 ``additionalProperties`` open). Capturing a reviewer-supplied ``would_file_as`` on
 X0X findings is a separate, reviewer-side follow-on.
 """
+from typing import TYPE_CHECKING
+from typing import Any
 import re
 import sys
 
-try:
+if TYPE_CHECKING:
     import scripts.ocrdb as ocrdb
-except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-    import ocrdb
+else:
+    try:
+        import scripts.ocrdb as ocrdb
+    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+        import ocrdb
 
 SCHEMA_VERSION = 1
 
@@ -93,7 +98,7 @@ def build_candidates(findings):
     ``(domain, normalized-title)``: the same anti-pattern titled the same way
     merges into one candidate with many occurrences; distinct titles stay
     separate. (Semantic clustering is a future refinement.)"""
-    clusters = {}  # (domain, key) -> [findings], insertion-ordered
+    clusters: dict[tuple[str, str], list[dict[str, Any]]] = {}  # (domain, key) -> [findings], insertion-ordered
     for f in findings:
         if not is_fallback(f.get("code")):
             continue

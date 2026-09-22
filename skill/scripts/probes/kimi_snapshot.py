@@ -131,6 +131,7 @@ def _kimi_generated_disabled():
     except (OSError, ValueError, TypeError) as exc:
         return None, common.failure_detail(
             exc, "the per-run config could not be generated")
-    tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    raw_tools = config.get("tools")
+    tools = raw_tools if isinstance(raw_tools, dict) else {}
     names = {t for t in (tools.get("disabled") or []) if isinstance(t, str)}
     return names, "the config.toml the runner generates"

@@ -17,9 +17,11 @@ import os
 import subprocess
 import sys
 import time
+from types import ModuleType
 
 try:
-    import fcntl               # POSIX only; the ledger lock degrades without it
+    import fcntl as _fcntl     # POSIX only; the ledger lock degrades without it
+    fcntl: ModuleType | None = _fcntl
 except ImportError:            # pragma: no cover - not reachable on posix CI
     fcntl = None
 

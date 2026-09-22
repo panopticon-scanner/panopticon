@@ -26,7 +26,7 @@ def validate_finding_codes(findings, bundle):
     if bundle is None:
         return None
     invalid = 0
-    fallbacks = {}
+    fallbacks: dict[str, int] = {}
     domainless = 0
     mismatch = 0
     for f in findings:

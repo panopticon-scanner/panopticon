@@ -7,6 +7,7 @@ host-native enforcement shells (`emit_host_agents`). The 4.x DispatchPlan
 builder this module was named for was retired in #1441; the resumable driver
 builds its own matrix-cell plan and calls `render_prompt` directly.
 """
+from typing import Any
 import argparse
 import functools
 import json
@@ -50,7 +51,7 @@ def parse_template_frontmatter(text, source="<template>"):
         raise ValueError("%s: unterminated frontmatter block" % source)
     header = text[3:end].strip("\n")
     body = text[end + len("\n---"):].lstrip("\n")
-    meta = {"tool_policy": {}}
+    meta: dict[str, Any] = {"tool_policy": {}}
     in_policy = False
     for line in header.splitlines():
         if not line.strip():
@@ -313,7 +314,7 @@ def _prune_retired_shells(host, out_dir, written):
     """
     suffix = _shell_suffix(host)
     keep = {os.path.basename(p) for p in written}
-    removed = []
+    removed: list[str] = []
     try:
         present = sorted(os.listdir(out_dir))
     except OSError:

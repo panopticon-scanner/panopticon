@@ -367,7 +367,7 @@ def repair_finding(finding, warn=None):
     schema = finding_item_schema()
     if not schema or not isinstance(finding, dict):
         return finding
-    changes = []
+    changes: list[tuple[str, str]] = []
     for key, sub in (schema.get("properties") or {}).items():
         if key not in finding or key in _OWNED_DOWNSTREAM:
             continue

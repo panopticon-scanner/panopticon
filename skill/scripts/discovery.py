@@ -11,6 +11,7 @@ diff-hunks.json emission). Extracted from the now-retired orchestrator.py
 in P6.5 -- discovery.py is the sole discovery entry point the 5.0 driver
 subprocesses.
 """
+from typing import TYPE_CHECKING, Any
 import argparse
 import fnmatch
 import functools
@@ -31,21 +32,29 @@ import yaml
 # requires changes to off-limits ``driver.py``; accepted as tech debt (#1201).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import diff_map  # noqa: E402
-try:                                       # #1740 fix round 2: ONE module
-    from scripts import groups_schema      # object, so the glob compiler this
-except ModuleNotFoundError:                # module and the TOOL side share is
-    import groups_schema                   # noqa: E402  one cache and one
-                                           # disclosure ledger, not two. Same
-                                           # fallback shape as safe_write
-                                           # below: the standalone CLI has only
-                                           # skill/scripts on sys.path.
+# #1740 fix round 2: ONE module object, so the glob compiler this module and
+# the TOOL side share is one cache and one disclosure ledger, not two. Same
+# fallback shape as safe_write below: the standalone CLI has only
+# skill/scripts on sys.path.
+if TYPE_CHECKING:
+    from scripts import groups_schema
+else:
+    try:
+        from scripts import groups_schema
+    except ModuleNotFoundError:
+        import groups_schema               # noqa: E402
 import plan_contract  # noqa: E402
 import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
-try:                                       # #1735: the no-follow artifact open
-    from scripts import safe_write         # noqa: E402
-except ModuleNotFoundError:                # fallback: imported with only
-    import safe_write                      # noqa: E402  skill/scripts on sys.path
+# #1735: the no-follow artifact open. Fallback arm: imported with only
+# skill/scripts on sys.path.
+if TYPE_CHECKING:
+    from scripts import safe_write
+else:
+    try:
+        from scripts import safe_write     # noqa: E402
+    except ModuleNotFoundError:
+        import safe_write                  # noqa: E402
 
 # Files per review group before it splits into `<name>_<i>` chunks.
 #
@@ -404,7 +413,7 @@ def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
         return []
     n_chunks = max(1, math.ceil(len(files) / max_per))
     sizes = _even_sizes(len(files), n_chunks)
-    by_dir = {}
+    by_dir: dict[str, list[str]] = {}
     for f in files:
         by_dir.setdefault(os.path.dirname(f), []).append(f)
     # One block per directory, split into even parts only when the directory
@@ -423,7 +432,7 @@ def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
     # earlier chunk). A block bigger than any remaining room spills into the
     # next-roomiest -- unavoidable when the directories cannot tile the sizes,
     # and bounded, because total room equals the file count exactly.
-    chunks = [[] for _ in sizes]
+    chunks: list[list[str]] = [[] for _ in sizes]
     for block in sorted(blocks, key=lambda b: (-len(b), b[0])):
         rest = block
         while rest:
@@ -561,8 +570,8 @@ def assign_scoped(files, catalog, aliases=None, prefixes=None):
                    for sib, parent in parent_of.items()
                    if sib != name and parent == parent_of[name])
 
-    assigned = {name: [] for name, *_ in matchable}
-    seen = {}                       # (group, glob) -> [matched, credited]
+    assigned: dict[str, list[str]] = {name: [] for name, *_ in matchable}
+    seen: dict[tuple[str, str], list[int]] = {}                       # (group, glob) -> [matched, credited]
     leftovers = []
     for f in files:
         for name, tagged, keys, pfx in matchable:
@@ -1173,7 +1182,7 @@ def sweep_tests(leftovers, homes, catalog=None):
         return swept, {}, remaining
     attached, unattached = tests_axis.attach_by_affinity(swept, homes)
     if catalog:
-        kept = {}
+        kept: dict[str, list[str]] = {}
         for name, fs in attached.items():
             for f in fs:
                 if negated_by_own_match(f, catalog.get(name) or {}):
@@ -1483,8 +1492,8 @@ def main(argv=None):
             print("panopticon: %s" % exc, file=sys.stderr)
             return 2
 
-    pruned_fixtures = []
-    info = {}
+    pruned_fixtures: list[str] = []
+    info: dict[str, Any] = {}
     allf = discover_repo_files(repo,
                                include_fixtures=(args.security == "redteam"),
                                pruned_fixtures=pruned_fixtures,
@@ -1503,7 +1512,8 @@ def main(argv=None):
         globs; identity (no exclusions) when none are committed."""
         if not _exclude_re:
             return fs, []
-        kept, dropped = [], []
+        kept: list[str] = []
+        dropped: list[str] = []
         for f in fs:
             (dropped if any(rx.match(f) for rx in _exclude_re) else kept).append(f)
         return kept, dropped
@@ -1638,7 +1648,7 @@ def main(argv=None):
         if os.path.isfile(_stale_hunks):
             os.remove(_stale_hunks)
     if any(g.get("match") for g in catalog.values()):
-        scoped_warnings = []
+        scoped_warnings: list[str] = []
         groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
                                            args.security, warnings=scoped_warnings)
         if scoped_warnings:

@@ -48,6 +48,7 @@ Its own module rather than more of `phases/verify.py`: verify.py is 603 of the
 700-line package ceiling and this is a self-contained, I/O-light concern (a path
 scanner and a small import resolver) with one caller.
 """
+from typing import Any
 import ast
 import hashlib
 import os
@@ -190,7 +191,7 @@ def _repo_files(review_root, cache):
     if "files" not in cache:
         doc = runio._load_json(runio._pano(review_root, "groups.json")) or {}
         run_id = (run_manifest.load_manifest(review_root) or {}).get("run_id")
-        out = set()
+        out: set[str] = set()
         if run_id and doc.get("run_id") == run_id:
             for group in doc.get("groups") or []:
                 if isinstance(group, dict):
@@ -371,7 +372,7 @@ def named_paths(review_root, claim, group_files=None, unresolved=None,
     cost of a claim repeating a name, or fifty claims sharing one, is a dict
     lookup.
     """
-    out = []
+    out: list[str] = []
     cache = {} if cache is None else cache
     seen = cache.setdefault("names", {})
     for text in _claim_text(claim):
@@ -662,7 +663,7 @@ def grant(review_root, files, scope, cap=CAP, entry_cap=ENTRY_CAP,
     budget = max(0, entry_cap - len(floor))
     # R1-1: ONE resolver cache for the whole entry -- one read per candidate
     # path and one resolution per distinct name, however many claims name it.
-    cache = {}
+    cache: dict[str, Any] = {}
     for claim in scope:
         paths = _closure_paths(review_root, claim, files, ambiguous, cache, cap)
         if len(paths) > cap:

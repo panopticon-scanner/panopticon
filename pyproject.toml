@@ -34,11 +34,11 @@ keywords = ["code-review", "security", "static-analysis", "ai-agent", "skill"]
 
 [project.optional-dependencies]
 test = ["pytest>=9.1.1", "pytest-xdist>=3.8.0", "pytest-cov>=7.1.0", "jsonschema>=4.0"]
-dev = ["panopticon[test]", "ruff>=0.16.7"]
+dev = ["panopticon[test]", "ruff>=0.16.7", "mypy>=2.3.0"]
 
 [dependency-groups]
 test = ["pytest>=9.1.1", "pytest-xdist>=3.8.0", "pytest-cov>=7.1.0", "jsonschema>=4.0"]
-dev = [{include-group = "test"}, "ruff>=0.16.7"]
+dev = [{include-group = "test"}, "ruff>=0.16.7", "mypy>=2.3.0"]
 
 [project.urls]
 Homepage = "https://github.com/panopticon-scanner/panopticon"
@@ -59,6 +59,19 @@ markers = [
     # of collecting one more failed entry.
     "claude_runner: test drives the claude family's own run_entry (with an injected runner=<fake>)",
 ]
+
+[tool.mypy]
+files = ["skill/scripts", "scripts"]
+python_version = "3.11"
+# Runtime imports use `scripts.*` from skill/, even when entry scripts are
+# invoked by path. Check that same namespace instead of skill.scripts.*.
+mypy_path = "$MYPY_CONFIG_FILE_DIR/skill"
+namespace_packages = true
+explicit_package_bases = true
+check_untyped_defs = true
+warn_unused_ignores = true
+# Temporary until #1516 consolidates flat imports and declares third-party stubs.
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py311"

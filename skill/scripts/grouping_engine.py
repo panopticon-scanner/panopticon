@@ -26,6 +26,7 @@ Every function is deterministic given its arguments (sorted iteration, ties
 broken by name) -- run-to-run variance must come only from the proposal.
 """
 import math
+from typing import Any
 import re
 
 import coverage_model
@@ -378,7 +379,8 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
     # (#1506); see `ceiling_for`. Whatever the ceiling's source, it budgets
     # the same population, so `--max-groups` keeps one meaning.
     engine_leaves = (1 if tests else 0) + len(commons_named)
-    layered, layer_report = {}, {}
+    layered = {}
+    layer_report: dict[str, dict[str, Any]] = {}
     new_unlayered = 0
     for name, body in active.items():
         mine = sorted(set(a_assigned.get(name, [])) | set(attached.get(name, [])))
@@ -436,14 +438,14 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
                 leaves.append(_leaf("%s:%s" % (name, ly["layer"]), "layer", ly["files"],
                                     body.get("panels"), cap))
         else:
-            mine = set(a_assigned.get(name, [])) | set(attached.get(name, []))
-            leaves.append(_leaf(name, "vertical", mine, body.get("panels"), cap))
+            vertical_files = set(a_assigned.get(name, [])) | set(attached.get(name, []))
+            leaves.append(_leaf(name, "vertical", vertical_files, body.get("panels"), cap))
     if tests:
         leaves.append(_leaf(discovery.TESTS_GROUP, "tests", tests, [], cap))
     for cat, fs in sorted(commons_named.items()):
         leaves.append(_leaf(cat, "commons", fs, [], cap))
     sizes = [lf["files"] for lf in leaves if lf["files"]]
-    by_dir = {}
+    by_dir: dict[str, int] = {}
     for f in residual:
         by_dir[_dir_key(f)] = by_dir.get(_dir_key(f), 0) + 1
     report = {

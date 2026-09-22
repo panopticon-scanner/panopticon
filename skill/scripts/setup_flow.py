@@ -340,7 +340,7 @@ def _check_host_shells(host, runner, repo_root=None):
     import dispatch  # noqa: E402
     resolved_host = host or dispatch._detect_host()
     row = hosts.spec(resolved_host)
-    checks = []
+    checks: list[tuple[str, bool | None, str]] = []
 
     if row is None:
         checks.append(("enforced-shells", False,
@@ -609,7 +609,8 @@ def _depth2_rows(files):
     `crates/searcher`), a file one level deep to its top directory, a root
     file to `.`. Dominant ext = the most common extension under the node
     (ties -> alphabetical); `-` when the files have none."""
-    counts, exts = {}, {}
+    counts: dict[str, int] = {}
+    exts: dict[str, dict[str, int]] = {}
     for f in files:
         parts = f.split("/")
         node = "/".join(parts[:-1][:2]) or "."
@@ -685,7 +686,7 @@ def build_spine(repo, max_per_group=None, max_groups=None, files=None):
     ordered = sorted(rows, key=lambda n: (-rows[n][0], n))
     tree = [{"path": san(n), "files": rows[n][0], "ext": san(rows[n][1])}
             for n in ordered[:_MAX_TREE_ROWS]]
-    langs = {}
+    langs: dict[str, int] = {}
     for f, kind in kinds.items():
         if kind == "code":
             lang = _EXT_LANG.get(os.path.splitext(f)[1].lower())
@@ -702,7 +703,8 @@ def build_spine(repo, max_per_group=None, max_groups=None, files=None):
                           "tests": list(b.get("tests") or [])}
                       for n, b in sp.flatten_groups(committed).items()}
     assigned, leftovers = discovery.assign_by_catalog(files, committed_view)
-    commons_counts, test_dirs = {}, {}
+    commons_counts: dict[str, int] = {}
+    test_dirs: dict[str, int] = {}
     for f in leftovers:
         kind = kinds[f]
         if kind.startswith("commons:"):

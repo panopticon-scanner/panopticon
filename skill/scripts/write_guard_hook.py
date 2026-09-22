@@ -206,7 +206,7 @@ def allowlist_from_plan(plan):
             "plan must be a sequence of dispatch entries, not %s -- pass the "
             "dispatch request's `entries` list, not the request object itself"
             % type(plan).__name__)
-    out = {}
+    out: dict[str, set[str]] = {}
     for entry in plan:
         path = entry.get("out_file") if isinstance(entry, dict) else None
         if not isinstance(path, str) or not path:
@@ -227,7 +227,7 @@ def union_paths(allowlist):
     What the ORCHESTRATOR is adjudicated against (it is bound to no entry and
     writes the run's own artifacts), what `is_armed` counts, and what the
     `.panopticon`-confinement arithmetic anchors on."""
-    out = set()
+    out: set[str] = set()
     for paths in (allowlist or {}).values():
         out.update(p for p in paths if isinstance(p, str))
     return out
@@ -725,7 +725,7 @@ def _confined_to_artifact_roots(existing, added):
 
 def _merge_grants(*mappings):
     """One {entry id: [path]} mapping from several, unioning per entry id."""
-    out = {}
+    out: dict[str, list[str]] = {}
     for mapping in mappings:
         for eid, paths in mapping.items():
             out[eid] = sorted(set(out.get(eid, ())) | set(paths))

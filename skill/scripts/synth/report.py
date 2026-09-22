@@ -1,11 +1,15 @@
 """build_report: assemble and validate the CodeReviewReport."""
+from typing import TYPE_CHECKING
 import sys
 from dataclasses import dataclass, field
 
-try:
+if TYPE_CHECKING:
     from scripts._version import __version__
-except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-    from _version import __version__
+else:
+    try:
+        from scripts._version import __version__
+    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+        from _version import __version__
 import scripts.evidence as evidence_mod
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
@@ -61,7 +65,7 @@ def _collect_models_used(findings):
     provenance model/version plus a role derived from discovered_by. Advisor
     confirmations contribute the confirming model with role 'advisor'.
     """
-    seen = set()
+    seen: set[tuple[str | None, ...]] = set()
     out = []
     for f in findings:
         prov = f.get("provenance") or {}
@@ -415,7 +419,7 @@ def validate_report(report, schema_path=None):
                 errors.append("finding[%d] %s %s missing cvss" % (i, f["panel"], f["severity"]))
             if not f.get("exploit_scenario"):
                 errors.append("finding[%d] %s %s missing exploit_scenario" % (i, f["panel"], f["severity"]))
-    id_counts = {}
+    id_counts: dict[str, int] = {}
     for f in report.get("findings") or []:
         fid = f.get("id")
         if fid:

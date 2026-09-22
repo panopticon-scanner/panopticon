@@ -172,6 +172,6 @@ def _emit_table(lines, table, path):
 
 def dump_toml(config):
     """Serialize a tomllib-produced dict back to TOML text."""
-    lines = []
+    lines: list[str] = []
     _emit_table(lines, config, "")
     return "\n".join(lines) + "\n"

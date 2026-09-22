@@ -45,6 +45,8 @@ def _rank_to_severity(rank: str | None) -> str:
     """Map a SpotBugs bug rank (1=scariest .. 20=of concern) to our severity
     scale. An absent or unparseable rank falls to the neutral middle bucket
     rather than borrowing the (unrelated) confidence signal."""
+    if rank is None:
+        return "MEDIUM"
     try:
         r = int(rank)
     except (TypeError, ValueError):

@@ -91,7 +91,7 @@ def partial_audit_note(review_root, finding):
                  or {}).get("sanitized")
     row = sanitized.get(tool) if isinstance(sanitized, dict) else None
     dropped = row.get("dropped") if isinstance(row, dict) else None
-    if not isinstance(dropped, list) or not dropped:
+    if not isinstance(row, dict) or not isinstance(dropped, list) or not dropped:
         return ""
     # The published `dropped` list is capped at 200 rows with the remainder
     # counted, so the LISTED rows understate a large partial audit. State the

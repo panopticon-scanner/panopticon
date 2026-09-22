@@ -152,10 +152,13 @@ class Runner(base.HostRunner):
         if not isinstance(data, dict):
             return base.RunResult.failed(entry_id, "claude -p envelope is not an object",
                                          stderr=diagnosis)
-        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-        model_usage = data.get("modelUsage") if isinstance(data.get("modelUsage"), dict) else {}
+        raw_usage = data.get("usage")
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
+        raw_model_usage = data.get("modelUsage")
+        model_usage = raw_model_usage if isinstance(raw_model_usage, dict) else {}
         model = next(iter(model_usage), None)
-        denials = data.get("permission_denials") if isinstance(data.get("permission_denials"), list) else []
+        raw_denials = data.get("permission_denials")
+        denials = raw_denials if isinstance(raw_denials, list) else []
         # D10 ruling 3: under `--json-schema` the CLI may return the object in
         # `structured_output` ALONGSIDE or INSTEAD OF the `result` text, and
         # the loop has to persist the object either way. Serialised, because
@@ -165,8 +168,9 @@ class Runner(base.HostRunner):
         # entry with no schema, or a CLI build that ignores the flag, is
         # exactly what it was.
         structured = data.get("structured_output")
+        result_text = data.get("result")
         text = (json.dumps(structured) if structured
-                else (data.get("result") if isinstance(data.get("result"), str) else ""))
+                else (result_text if isinstance(result_text, str) else ""))
         error = None
         if returncode != 0:
             error = "claude -p exited %s: %s" % (returncode, text[:200])

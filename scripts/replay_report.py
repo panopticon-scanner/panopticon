@@ -234,7 +234,7 @@ def diff(args):
             for dotted in MASK.get(suf, ()):
                 _mask(da, dotted)
                 _mask(db, dotted)
-            found = []
+            found: list[str] = []
             _walk_diff(da, db, name, found, args.limit)
             if not found and json.dumps(da) != json.dumps(db):
                 # equal as objects, different on disk: key order is part of
