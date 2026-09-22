@@ -977,6 +977,9 @@ class TestCodexHostDocs(unittest.TestCase):
         self.assertIn("walks the granted directory ONCE", doc)
         self.assertIn("past 256 recorded files", doc)
         self.assertIn("planted AFTER the grant is issued is not in the list", doc)
+        # Fix round 1 (A): and the operator's remedy, in the same words the
+        # stderr line uses -- `phases/setup._HARD_LINK_REMEDY`.
+        self.assertIn("git clone --no-hardlinks", doc)
         # Fix round 3 (N6): and what the skip line actually promises -- at most
         # eight named, inside a bounded block, the rest counted.
         self.assertIn("at most eight are named", doc)

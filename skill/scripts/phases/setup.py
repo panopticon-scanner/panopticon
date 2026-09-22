@@ -57,6 +57,16 @@ def _read_text(path):
     with open(path, encoding="utf-8") as fh:
         return fh.read()
 
+# #1683 fix round 1: the operator's fix when a target's hard links cost the
+# setup scan its directory Grep/Glob. ONE wording, named in the stderr line
+# and in PANOPTICON.md's paragraph, because a disclosure nobody can act on is
+# noise -- and the guard cannot tell a benign `git clone --local` store from a
+# planted link, so re-cloning is the answer to both.
+_HARD_LINK_REMEDY = ("re-clone the target without hard links (git clone "
+                     "--no-hardlinks, or a fresh clone) to restore directory "
+                     "Grep/Glob for the setup scan")
+
+
 def _setup_scan_entry(review_root, prompt, host):
     """One return-persist dispatch entry for the read-only setup-scan agent
     (mirrors _scout_entry): the host dispatches it, gets proposal JSON back, and
@@ -93,13 +103,20 @@ def _setup_scan_entry(review_root, prompt, host):
     # discover it one refusal at a time.
     linked, overflowed = hard_links.hard_links_under(root)
     if overflowed:
-        print("driver setup: %d or more hard-linked files under %s -- past the "
-              "read guard's cap, so the setup scan's Grep and Glob are denied "
-              "over every directory beneath it and it must Read files by name. "
-              "A `git clone --local` store or a `cp -al` tree is the usual "
-              "cause; a link there can name an inode outside the tree."
-              % (len(linked), root), file=sys.stderr, flush=True)
+        print("driver setup: %d or more hard-linked files under %s (first: %s) -- "
+              "past the read guard's cap, so the setup scan's Grep and Glob are "
+              "denied over EVERY directory beneath it and it must Read files by "
+              "name. A `git clone --local` store or a `cp -al` tree is the usual "
+              "cause; a link there can name an inode outside the tree. Remedy: %s."
+              % (len(linked), root, linked[0], _HARD_LINK_REMEDY),
+              file=sys.stderr, flush=True)
         linked = [root]
+    elif linked:
+        print("driver setup: %d hard-linked file(s) under %s (first: %s) -- the "
+              "setup scan's Grep and Glob are denied over any directory holding "
+              "one, because a link there can name an inode outside the tree. "
+              "Remedy: %s." % (len(linked), root, linked[0], _HARD_LINK_REMEDY),
+              file=sys.stderr, flush=True)
     enforced = loop_batch.expected_enforced(review_root, host,
                                             namespace=loop_batch.SETUP_NAMESPACE)
     # The all-unknown posture `{}` is deliberate and unrelated to `enforced`

@@ -298,7 +298,8 @@ class TestDriverSetup(unittest.TestCase):
         d = self._repo()
         entry = setup._setup_scan_entry(d, "PROMPT", "claude")
         self.assertEqual("panopticon-entry: setup-scan", entry["marker"])
-        self.assertEqual(requests.scope(dirs=[os.path.abspath(d)]), entry["scope"])
+        self.assertEqual(requests.scope(dirs=[os.path.abspath(d)], hard_linked=[]),
+                         entry["scope"])
         # A clean tree records nothing, so the scan keeps its Grep and Glob.
         self.assertEqual([], entry["scope"]["hard_linked"])
 
@@ -312,9 +313,24 @@ class TestDriverSetup(unittest.TestCase):
             fh.write("s")
         self.addCleanup(shutil.rmtree, os.path.dirname(outside), ignore_errors=True)
         planted = hard_link_or_skip(outside, os.path.join(d, "src", "innocent.py"))
-        entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            entry = setup._setup_scan_entry(d, "PROMPT", "claude")
         self.assertEqual([os.path.realpath(planted)], entry["scope"]["hard_linked"])
         self.assertEqual([os.path.abspath(d)], entry["scope"]["dirs"])
+        # Fix round 1 (A): disclosed with the count, the first offending path
+        # and the operator's REMEDY -- a disclosure nobody can act on is noise.
+        self.assertIn("1 hard-linked", err.getvalue())
+        self.assertIn(os.path.realpath(planted), err.getvalue())
+        self.assertIn(setup._HARD_LINK_REMEDY, err.getvalue())
+        self.assertIn("git clone --no-hardlinks", err.getvalue())
+
+    def test_a_clean_tree_says_nothing_about_hard_links(self):
+        d = self._repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            setup._setup_scan_entry(d, "PROMPT", "claude")
+        self.assertNotIn("hard-linked", err.getvalue())
 
     def test_an_overflowing_walk_records_the_granted_directory_and_says_so(self):
         # Fail CLOSED past the cap: the granted directory itself goes in the
@@ -332,6 +348,8 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual([os.path.abspath(d)], entry["scope"]["hard_linked"])
         self.assertIn(str(setup.hard_links.CAP), err.getvalue())
         self.assertIn(os.path.abspath(d), err.getvalue())
+        self.assertIn(many[0], err.getvalue())
+        self.assertIn(setup._HARD_LINK_REMEDY, err.getvalue())
 
     def test_scan_leaves_a_blanket_gitignore_untouched(self):
         # #1135: a repo already blanket-ignoring .panopticon/ keeps its
