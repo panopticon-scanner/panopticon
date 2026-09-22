@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _test_helpers import fake_pem
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review
@@ -183,8 +184,7 @@ class TestRedactOutput(unittest.TestCase):
             out = runio._redact_output("boom: " + secret + " tail")
             self.assertNotIn(secret, out)
             self.assertIn(marker, out)
-        pem = ("-----BEGIN RSA PRIVATE KEY-----\nMIIBsomekey\n"
-               "-----END RSA PRIVATE KEY-----")
+        pem = fake_pem()
         red = runio._redact_output("failed: " + pem)
         self.assertIn("[REDACTED_PRIVATE_KEY]", red)
         self.assertNotIn("MIIBsomekey", red)

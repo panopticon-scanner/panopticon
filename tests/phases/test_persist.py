@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 
+from _test_helpers import fake_pem, pem_begin
 import scripts.phases.persist as persist
 import scripts.phases.review as review
 import scripts.phases.runio as runio
@@ -463,8 +464,7 @@ class TestTheRecordIsSafeToKeepAndToQuote(unittest.TestCase):
         # the terminator and left the key material in plaintext. Redacting
         # first masks the whole block; the cap then only ever cuts redacted
         # text.
-        key = "-----BEGIN RSA PRIVATE KEY-----\n" + "MIIEowIBAAKCAQEA" * 200 + \
-              "\n-----END RSA PRIVATE KEY-----"
+        key = fake_pem("MIIEowIBAAKCAQEA" * 200)
         body = "x" * (persist.REJECTED_CAP - 64) + key
         persist.retain_rejected(self.run_dir, self.entry, body, "no", kind=persist.REFUSAL)
         reply = self._record()["reply"]
@@ -475,7 +475,7 @@ class TestTheRecordIsSafeToKeepAndToQuote(unittest.TestCase):
         # The residual case: a PEM whose END lies beyond the 4 MiB the
         # redactor is allowed to scan cannot be masked, so the final cut must
         # not leave its header -- and everything after it -- lying there.
-        body = "y" * persist.REDACT_CAP + "\n-----BEGIN PRIVATE KEY-----\nAAAA"
+        body = "y" * persist.REDACT_CAP + "\n" + pem_begin("") + "\nAAAA"
         persist.retain_rejected(self.run_dir, self.entry, body, "no", kind=persist.REFUSAL)
         record = self._record()
         self.assertNotIn("BEGIN PRIVATE KEY", record["reply"])

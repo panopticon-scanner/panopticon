@@ -10,6 +10,7 @@ chokepoint itself, so coverage no longer depends on which artifact a filer reads
 """
 import unittest
 
+from _test_helpers import fake_aws_key
 import sanitize
 import scripts.redact as redact
 
@@ -32,7 +33,7 @@ class TestScrubRedactsSecrets(unittest.TestCase):
         """Every format redact() knows must also be masked by scrub(). Guards
         against someone growing a second, drifting pattern list here."""
         for secret in ("ghp_" + "A" * 36, "github_pat_" + "b" * 40,
-                       "sk-" + "c" * 32, "AKIA1234567890ABCDEF",
+                       "sk-" + "c" * 32, fake_aws_key("1234567890ABCDEF"),
                        "xoxb-1234567890-abcdefghij", "AIza" + "D" * 35, UUID):
             text = "value: %s" % secret
             self.assertEqual(sanitize.scrub(text), redact.redact(text), secret)
