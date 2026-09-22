@@ -265,5 +265,66 @@ class TestTheImagePullIsBounded(unittest.TestCase):
         self.assertIn("docker build -t panopticon-tools controller", run)
 
 
+class TestBothScanStepsCarryBothExclusions(unittest.TestCase):
+    """#1578 fix round 2: the scan axis and the gate must scope alike.
+
+    `--exclude` is `action="append"` on both CLIs, and an exclusion present on
+    one step and missing from the other makes the two halves disagree about
+    what was reviewed -- the gate blocking on a path the report already scoped
+    out, or the reverse. `FIXTURE_GLOB` was already mirrored across both steps
+    and both workflows for exactly that reason; `GOLDEN_GLOB` joins it.
+
+    `tests/goldens/tool-raw/**` is the one class that cannot be composed away:
+    those `*.raw` files are authentic, trimmed SCANNER OUTPUT -- one payload per
+    adapter -- so a secret a scanner once reported is quoted there verbatim and
+    gitleaks finds it again on every run. That is captured data, not code this
+    repository authors, which is the fixture corpus's own argument. Every other
+    in-tree literal was removed at source (tests/_test_helpers.py) rather than
+    excluded. The glob is the captures, not the whole `tests/goldens/`
+    directory (`scout.rendered.txt` there is rendered panopticon output, not a
+    scanner capture): a blind spot is exactly as wide as the argument for it.
+    """
+
+    STEPS = ("Run static-analysis tools",
+             "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)")
+    WORKFLOWS = (WORKFLOW, FORK_WORKFLOW)
+
+    def _steps(self, path):
+        with open(path, encoding="utf-8") as fh:
+            workflow = yaml.safe_load(fh)
+        return {step.get("name"): _without_comments(step.get("run") or "")
+                for job in workflow.get("jobs", {}).values()
+                for step in job.get("steps", [])}
+
+    def _env(self, path):
+        with open(path, encoding="utf-8") as fh:
+            return yaml.safe_load(fh)["env"]
+
+    def test_both_globs_are_declared_by_both_workflows(self):
+        for path in self.WORKFLOWS:
+            env = self._env(path)
+            self.assertEqual(env["FIXTURE_GLOB"], "tests/fixtures/**", path)
+            self.assertEqual(env["GOLDEN_GLOB"], "tests/goldens/tool-raw/**", path)
+
+    def test_both_globs_are_on_the_scanner_and_the_gate_step(self):
+        for path in self.WORKFLOWS:
+            steps = self._steps(path)
+            for name in self.STEPS:
+                self.assertIn(name, steps, (path, name))
+                run = steps[name]
+                for glob in ("FIXTURE_GLOB", "GOLDEN_GLOB"):
+                    self.assertIn("--exclude '${{ env.%s }}'" % glob, run,
+                                  (path, name, glob))
+
+    def test_nothing_else_is_excluded(self):
+        # The exclusions are the gate's blind spots, so the COUNT is pinned,
+        # not merely the membership: a third one has to come through this line.
+        for path in self.WORKFLOWS:
+            steps = self._steps(path)
+            for name in self.STEPS:
+                self.assertEqual(steps[name].count("--exclude"), 2,
+                                 (path, name, steps[name]))
+
+
 if __name__ == "__main__":
     unittest.main()

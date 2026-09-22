@@ -277,3 +277,59 @@ def hard_link_or_skip(target, link):
         raise unittest.SkipTest("this filesystem refuses hard links: %s: %s"
                                 % (type(exc).__name__, exc))
     return str(link)
+
+
+# --- #1578 fix round 2: composed secret literals -----------------------------
+# gitleaks scans this repository's OWN tracked tree in CI, and its `private-key`
+# / `aws-access-token` / `jwt` rules are STRUCTURAL: a complete PEM envelope, or
+# `AKIA` followed by sixteen upper-alphanumerics, is a hit wherever it sits --
+# there is no entropy test that can tell a redaction test's filler from a
+# credential someone committed. Since #1578 graded a secret adapter's findings
+# HIGH, every one of those hits blocks the merge gate.
+#
+# So the fake keys these tests need are COMPOSED here: no source line carries a
+# whole PEM marker, a whole AWS key id or a whole JWT header, so the structural
+# grep the #1578 round-2 ruling names comes back empty outside `tests/goldens`
+# (captured scanner output, which cannot be composed, and is excluded on both
+# workflow steps instead) and `tests/fixtures` (the deliberately-vulnerable
+# corpus, already excluded). The patterns themselves are deliberately NOT
+# quoted in this comment -- spelling one out here would be the defect.
+#
+# Composed rather than allowlisted, deliberately. A `.gitleaksignore` or a path
+# exclusion over `tests/` would hide the whole CLASS -- including a credential
+# somebody really commits. This removes the false positives and leaves the rule
+# armed. The RUNTIME values are unchanged: every assertion that compares against
+# one of these calls the same helper.
+
+
+def pem_begin(kind="RSA "):
+    """A PEM BEGIN marker. `kind` is the algorithm WITH its trailing space."""
+    return "-----BEGIN " + "%sPRIVATE KEY-----" % kind
+
+
+def pem_end(kind="RSA "):
+    """The matching PEM END marker."""
+    return "-----END " + "%sPRIVATE KEY-----" % kind
+
+
+def fake_pem(body="MIIBsomekey", kind="RSA "):
+    """A complete, well-formed, entirely fake PEM private-key block."""
+    return "%s\n%s\n%s" % (pem_begin(kind), body, pem_end(kind))
+
+
+def fake_aws_key(body="IOSFODNN7EXAMPLE"):
+    """A well-formed but fake AWS access-key id: the `AKIA` prefix plus 16."""
+    return "AKIA" + body
+
+
+def fake_jwt():
+    """A well-formed but fake three-segment JWT (the HS256 spec specimen)."""
+    return ("eyJ" + "hbGciOiJIUzI1NiJ9."
+            + "eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0."
+            + "dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+
+
+def fake_uuid():
+    """A fixed, fake UUID, split so gitleaks' `generic-api-key` rule cannot
+    reach the ten-character run it needs after a `SECRET =` keyword."""
+    return "3f2504e0" + "-4f89-11d3-9a0c-0305e82c3301"

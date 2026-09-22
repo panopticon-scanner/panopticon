@@ -99,10 +99,12 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
      r"\1[REDACTED]\2"),
     # PEM private key. The body is BOUNDED two ways (#1639 P11), because it was
     # `.*?` under DOTALL -- the one rule here with nothing to stop it -- and a
-    # raw scanner capture is where that bit: gitleaks quotes a truncated
-    # `-----BEGIN RSA PRIVATE KEY-----` snippet with no END of its own (the
-    # committed golden has one), so a flat pass over a document ran from that
-    # snippet into a LATER result's END and collapsed every result, rule id and
+    # raw scanner capture is where that bit: gitleaks quotes a truncated PEM
+    # header line -- an RSA BEGIN marker with no END of its own (the committed
+    # golden has one; the marker is not spelled out here because this file is
+    # itself scanned, see #1578 fix round 2) -- so a flat pass over a document
+    # ran from that snippet into a LATER result's END and collapsed every
+    # result, rule id and
     # location in between into one token -- still valid JSON, so nothing
     # downstream noticed.
     #   `(?!-----BEGIN)` -- a match can never span two blocks, which is what

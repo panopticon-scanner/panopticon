@@ -9,6 +9,7 @@ import sys
 import scripts.citations as citations
 from scripts.citations import load_cwe_catalog
 import scripts.evidence as evidence_mod
+import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
 from . import codes as codes_mod
 from . import corroborate as corroborate_mod
@@ -83,6 +84,13 @@ class Resolved:
     # holds them -- so they are carried separately rather than partitioned out
     # of one of those lists. `[]` outside `--security redteam`.
     gated_suppressed: list = field(default_factory=list)
+    # #1578 (owner ruling 2026-09-22, policy C): the other half of the same
+    # partition -- the drops that cleared this run's `--severity` floor and its
+    # delta / `gate_scope` filter and were still NOT counted, because they are
+    # neither CRITICAL nor secret-class. Carried so the report can publish the
+    # number: a narrowed gate that discloses nothing is the silence #1578 is
+    # about, with a smaller blast radius.
+    suppressed_not_gated: list = field(default_factory=list)
 
 
 def resolve_findings(fs, delta, run, gated_suppressed=()):
@@ -274,16 +282,30 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     # never reach `tool_confirmed`; under the default `confirmed_only` policy
     # filtering on evidence would drop every one of them and leave #1701 open.
     # `security_gate.py` has no evidence axis at all, so it is not a precedent
-    # either way. OWNER POLICY QUESTION, raised on #1578: either tool findings
-    # under vendored paths get sent through tool-verify like any other (and this
-    # filter then applies), or the asymmetry stands and is disclosed -- which is
-    # what `meta.coverage.tools_suppressed_gated` is for.
+    # either way. OWNER RULING, #1578, 2026-09-22: the asymmetry STANDS (option
+    # A -- sending the suppressed set through tool-verify -- was rejected on
+    # dispatch cost) but it is NARROWED to the findings worth blocking a merge
+    # for. `ingest_tools.gates_when_suppressed` is that rule and the one
+    # definition of it: a CRITICAL, or a secret-class finding. Bundled-library
+    # lint noise must not drive a gate -- calibration-5/solidus: 592 of
+    # eslint-security's 623 messages were one rule firing on jQuery under
+    # `vendor/`, and gating all of them (option B) hard-FAILed such a tree on
+    # unverified scanner output. A planted payload or a committed secret under
+    # `vendor/` still gates. Both halves stay disclosed:
+    # `meta.coverage.tools_suppressed_gated` counts what gated,
+    # `tools_suppressed_not_gated` what this rule declined to count.
+    #
+    # Applied AFTER the delta filter, so the two published tallies partition
+    # exactly the set that survived the run's own scoping.
     gated = list(gated_suppressed or [])
     if delta_mode:
         delta_mod.classify_findings(gated, delta.diff_hunks.get("hunks") or {},
                                     delta.diff_context)
         if run.gate_scope == "on-diff":
             gated = [f for f in gated if (f.get("delta") or {}).get("on_diff")]
+    suppressed_not_gated = [f for f in gated
+                            if not ingest_tools.gates_when_suppressed(f)]
+    gated = [f for f in gated if ingest_tools.gates_when_suppressed(f)]
 
     tool_names = {evidence_mod.tool_name(f) for f in findings
                   if evidence_mod.is_tool_sourced(f)}
@@ -310,4 +332,5 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
                     # Gate-aware unanswered count: measured only when
                     # --verdicts-dir was passed at all (see verdict_stats).
                     unanswered_gate=unanswered if fs.verdicts_supplied else 0,
-                    gated_suppressed=gated)
+                    gated_suppressed=gated,
+                    suppressed_not_gated=suppressed_not_gated)

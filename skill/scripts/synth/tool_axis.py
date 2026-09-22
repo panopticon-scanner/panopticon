@@ -335,6 +335,15 @@ def reconcile(plan, tools, resolved):
     gated = list(resolved.gated_suppressed or [])
     gated_counts = repair_mod.repair_tools_suppressed(
         ingest_tools.suppressed_counts(gated))
+    # #1578 (owner ruling 2026-09-22, policy C): the drops this run's gate
+    # SAW and declined -- neither CRITICAL nor secret-class. A subset of
+    # `tools_suppressed` below, not a third number beside it: that key still
+    # counts everything the gate did not take, and this one says how much of it
+    # the narrowed rule is responsible for (the rest was the severity floor or
+    # the delta filter). Repaired like its two siblings, and for the same
+    # reason -- the tally is keyed by a segment of a scanner-reported path.
+    not_gated_counts = repair_mod.repair_tools_suppressed(
+        ingest_tools.suppressed_counts(resolved.suppressed_not_gated or []))
     suppressed_total = repair_mod.repair_tools_suppressed(tools.suppressed)
     integrity = plan.integrity if isinstance(plan.integrity, dict) else None
     integrity = integrity or {"unexpected_findings_files": [],
@@ -414,6 +423,11 @@ def reconcile(plan, tools, resolved):
         # the mode that changed the gate was the mode that stopped disclosing,
         # and the report contradicted its own run's stderr and CI gate line.
         "tools_suppressed_gated": gated_counts,
+        # #1578 policy C: the half the narrowed rule kept OFF the gate. The
+        # ruling trades a FAIL for silence unless this number is published --
+        # an operator reading a PASS over a vendor-heavy tree has to see how
+        # many drops the rule declined to count, and under which segment.
+        "tools_suppressed_not_gated": not_gated_counts,
         # #1740 fix round 2: the exclusion POLICY, repaired at the read like
         # its two siblings -- `exclude_paths:` is target-authored, so a glob
         # reaching a published artifact is a target-carried input.

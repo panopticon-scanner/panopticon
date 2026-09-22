@@ -752,14 +752,24 @@ def _render_suppressed_tools(meta):
     the value is repaired at its boundary, and a renderer is not the place to
     discover that it was not.
     """
-    rows = _suppressed_rows((meta.get("coverage") or {}).get("tools_suppressed"))
+    coverage = meta.get("coverage") or {}
+    rows = _suppressed_rows(coverage.get("tools_suppressed"))
     if not rows:
         return ""
+    # #1578 policy C: how many of them a redteam gate saw and declined. Said
+    # here because this is already the block for what stayed off the gate, and
+    # because the tail of this sentence used to promise redteam gates all of
+    # them -- which the ruling made untrue.
+    withheld = sum(n for _seg, n in
+                   _suppressed_rows(coverage.get("tools_suppressed_not_gated")))
     return ("<div class='coverage'>Tool findings suppressed by directory name: %s "
             "&mdash; dropped from the tool axis on that name alone; "
             "the agentic panel still reviewed those files, and "
-            "<code>security_gate --security redteam</code> gates them</div>"
-            % " &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows))
+            "<code>--security redteam</code> gates the CRITICAL and "
+            "secret-class ones%s</div>"
+            % (" &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows),
+               (" (%d withheld from this run's gate by that rule, #1578 "
+                "policy C)" % withheld) if withheld else ""))
 
 
 def _suppressed_rows(value):
@@ -792,7 +802,8 @@ def _render_suppressed_gated_tools(meta):
             "but GATED: %s &mdash; withheld from the findings below on that "
             "name alone, and counted toward <strong>this run's</strong> gate, "
             "risk level and health grade anyway "
-            "(<code>--security redteam</code>). A gate verdict here may rest on "
+            "(<code>--security redteam</code>, and CRITICAL or secret-class "
+            "per #1578 policy C). A gate verdict here may rest on "
             "findings this report does not list</div>"
             % " &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows))
 
