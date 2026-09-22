@@ -298,7 +298,7 @@ def _check_nvd_key(repo, env):
             "NVD_API_KEY or add it to .env (never commit it)")
 
 
-def _check_host_shells(host, runner, repo_root=None):
+def _check_host_shells(host, runner, repo_root=None, envelope=None):
     """Report what this host's registration actually looks like, and -- for a
     host with a real shell format -- what its capability posture proves right
     now.
@@ -334,8 +334,30 @@ def _check_host_shells(host, runner, repo_root=None):
     The parameter is kept optional rather than made required because the
     checks ABOVE this point -- the registry row, the codex CLI, the registered
     shells -- need no tree at all, and a caller with no repo to offer is still
-    entitled to those. The one production caller, `setup_readiness`, always
-    has a real repo and passes it.
+    entitled to those.
+
+    `envelope` (#1603 fix round 1) is the posture the driver ESTABLISHED for
+    this invocation, handed in by a caller that has it. Both production
+    callers do: `driver setup` and `driver loop --setup` run
+    `driver._establish_host_posture` before either setup phase, and it writes
+    the artifact `loop_batch.envelope_for` reads back. When it is given, no
+    probe runs here at all.
+
+    That is a correction, not an optimisation. Probing again measured a
+    DIFFERENT posture from the one the same invocation had just disclosed:
+    this call site names no `settings_path`, so a headless `driver loop
+    --setup` printed "all measured and PROVEN" on stderr and then wrote five
+    `unknown` remedies into the completion message and the setup report, for
+    capabilities it had itself proved a moment earlier -- the
+    self-contradicting disclosure §5.1 forbids and #1597 already refuses on
+    surface 1. It also re-ran `probe_shadow_shells` and
+    `probe_discovery_surface` over the whole reviewed tree, undoing the "run
+    ONCE per invocation" guarantee `run_probes` documents and reopening the
+    TOCTOU window between two scans of one tree.
+
+    `None` keeps the probing behaviour for a caller that has no posture to
+    offer -- the tests, and any future caller that runs outside a driver
+    invocation.
     """
     import dispatch  # noqa: E402
     resolved_host = host or dispatch._detect_host()
@@ -386,38 +408,42 @@ def _check_host_shells(host, runner, repo_root=None):
                        "a fresh session"
                        % (", ".join(missing_shells), resolved_host)))
 
-    # 5.1 surface 4. `driver setup` has no run directory, so there is no
-    # artifact to read -- readiness PROBES. That is the point: this is where
-    # an operator looks before a run to find out what to fix, and the remedy
-    # is the reason the line exists at all.
-    #
-    # ...but only with a tree to probe (#1598). Named explicitly, BEFORE the
-    # probes, so the row carries something a caller can act on and no probe
-    # reaches the filesystem on a call that was never going to produce a
-    # posture. `ok=None`, because a caller's omission is not a fault of the
-    # host's.
-    if repo_root is None:
-        checks.append(("host-capabilities", None,
-                       "posture not probed: _check_host_shells was called "
-                       "without repo_root, the tree whose posture is being "
-                       "measured. Pass the reviewed repository root (as "
-                       "setup_readiness does); there is no default, because "
-                       "guessing one would measure a tree nobody asked about"))
-        return checks
-    try:
-        fresh = host_probes.run_probes(resolved_host, repo_root)
-    except codex_host.LaunchRefused:
-        # N-M3: the suite's no-live-launch guard, re-raised exactly as
-        # probes.codex._codex_measure re-raises it. Readiness DOES reach a live
-        # Codex probe (it is why tests/test_setup_flow.py has to isolate
-        # them), and swallowing the refusal into a benign row would put back
-        # the hole I-5 exists to close: a test that reached a real `codex` and
-        # failed would read as "posture could not be probed" and stay green.
-        raise
-    except Exception as exc:            # noqa: BLE001 -- readiness never crashes
-        checks.append(("host-capabilities", None,
-                       "posture could not be probed: %s" % exc))
-        return checks
+    # 5.1 surface 4: this is where an operator looks BEFORE a run to find out
+    # what to fix, and the remedy is the reason the line exists at all. What
+    # it renders is this invocation's OWN posture, handed in by the caller
+    # that established it (#1603 fix round 1) -- the only way surface 4 can
+    # agree with surfaces 1-3 about the same invocation.
+    fresh = envelope
+    if fresh is None:
+        # No posture on offer, so measure one -- but only with a tree to
+        # measure it against (#1598). Named explicitly, BEFORE the probes, so
+        # the row carries something a caller can act on and no probe reaches
+        # the filesystem on a call that was never going to produce a posture.
+        # `ok=None`, because a caller's omission is not a fault of the host's.
+        if repo_root is None:
+            checks.append(("host-capabilities", None,
+                           "posture not probed: _check_host_shells was called "
+                           "with neither an established posture nor repo_root, "
+                           "the tree whose posture is being measured. Pass one "
+                           "(as setup_readiness's callers do); there is no "
+                           "default, because guessing one would measure a tree "
+                           "nobody asked about"))
+            return checks
+        try:
+            fresh = host_probes.run_probes(resolved_host, repo_root)
+        except codex_host.LaunchRefused:
+            # N-M3: the suite's no-live-launch guard, re-raised exactly as
+            # probes.codex._codex_measure re-raises it. This path DOES reach a
+            # live Codex probe (it is why tests/test_setup_flow.py has to
+            # isolate them), and swallowing the refusal into a benign row
+            # would put back the hole I-5 exists to close: a test that reached
+            # a real `codex` and failed would read as "posture could not be
+            # probed" and stay green.
+            raise
+        except Exception as exc:        # noqa: BLE001 -- readiness never crashes
+            checks.append(("host-capabilities", None,
+                           "posture could not be probed: %s" % exc))
+            return checks
     # THREE outcomes, read off host_disclosure's own contract rather than
     # re-derived from `lines()`. `lines()` returns [] for two different
     # reasons -- everything is proven, and the envelope is unreadable -- and
@@ -502,7 +528,7 @@ def _check_groups_manifest(repo):
             "group(s) with no match patterns: %s" % ", ".join(map(str, empty)))
 
 
-def setup_readiness(repo, host=None, runner=None, environ=None):
+def setup_readiness(repo, host=None, runner=None, environ=None, envelope=None):
     """#485(3): the preflight. Returns a list of (name, ok, detail) checks.
 
     ok is True/False/None -- None means informational (not gating READY).
@@ -511,6 +537,10 @@ def setup_readiness(repo, host=None, runner=None, environ=None):
     `runner` defaults to the module's DEFAULT_RUNNER, read HERE rather than in
     the signature, because one of the probes below starts a host CLI and the
     suite's guard has to be able to refuse it.
+
+    `envelope` is this invocation's established capability posture, passed
+    straight through to `_check_host_shells`, which explains why (#1603 fix
+    round 1). Both production callers have one; `None` measures, as before.
     """
     runner = DEFAULT_RUNNER if runner is None else runner
     env = environ if environ is not None else os.environ
@@ -518,7 +548,7 @@ def setup_readiness(repo, host=None, runner=None, environ=None):
     checks.extend(_check_docker(runner))
     checks.append(_check_git_root(repo))
     checks.append(_check_nvd_key(repo, env))
-    checks.extend(_check_host_shells(host, runner, repo))
+    checks.extend(_check_host_shells(host, runner, repo, envelope=envelope))
     checks.append(_check_groups_manifest(repo))
     return checks
 
@@ -1136,6 +1166,83 @@ def _draft_settings(repo, max_per_group, max_groups):
     return {k: v for k, v in settings.items() if v is not None}
 
 
+def record_readiness(repo, readiness, section=None):
+    """Add a readiness record to the setup report `ingest_proposal` has
+    ALREADY written (#1603 fix round 1, I2).
+
+    ORDER, not merely the call. The vocab-absent fallback seeds its flat
+    config and THEN measures, so a readiness that cannot be taken costs the
+    operator a disclosure and never the bootstrap; the normal path mirrors
+    that -- the draft, the rendered report and its JSON are on disk before
+    this runs, and this only ever adds to them. A crash in between leaves a
+    report with no readiness rows, which every reader of this record already
+    treats as "nobody looked" rather than as a pass.
+
+    The three keys go BESIDE the four `ingest_proposal` owns; `section` is
+    appended to the rendered report. A report that is absent or is not a JSON
+    object -- a file planted at the name between the two writes -- is left
+    exactly as it is rather than rewritten from scratch. Returns the paths
+    updated.
+
+    Writes go through the confining no-follow opener like every other setup
+    artifact (#1577), so a symlink planted at either name refuses rather than
+    writing through.
+    """
+    root = plan_contract.artifact_root(repo)
+    json_path = os.path.join(root, "setup-report.json")
+    document = runio._load_json(json_path)
+    if not isinstance(document, dict):
+        return []
+    _replace(json_path,
+             json.dumps({**document, **readiness}, indent=1, sort_keys=True) + "\n")
+    written = [json_path]
+    md_path = os.path.join(root, "setup-report.md")
+    if section:
+        try:
+            with open(md_path, encoding="utf-8") as fh:
+                rendered = fh.read()
+        except OSError:
+            return written
+        _replace(md_path, rendered.rstrip("\n") + "\n\n" + section)
+        written.append(md_path)
+    return written
+
+
+def _replace(path, text):
+    """Write `text` over an artifact that is ALREADY complete, atomically
+    (fix round 2, R1-3).
+
+    `ingest_proposal` writes these two files straight through the confining
+    opener, and there that is right: the file is being created, so a torn
+    write loses nothing that existed. `record_readiness` is the other case --
+    a crash mid-write would take `report`, `disclosure` and `diff` with it and
+    leave the operator a setup report that is neither the old one nor the new.
+    Tmp-then-`os.replace`, the shape `run_manifest._rewrite` and
+    `phases/setup.record_dispatch_request` already use, through the same
+    no-follow opener (#1577).
+
+    The LIVE path is confined explicitly, first (fix round 3, R2-1). Writing
+    straight through `_open_w_nofollow(path)` confined it as a side effect --
+    `confine_artifact_path` is that opener's first act -- but staging confines
+    the STAGING name, and `os.replace` renames over whatever is at the
+    destination without looking. Nothing was ever written through a plant
+    either way (the link is replaced, not followed, and the tmp shares every
+    intermediate component), but the REFUSAL is the point: a symlink at
+    `setup-report.json` stops the verb with an `error` status instead of
+    vanishing silently. `runio._write_json` orders it the same way, and for
+    the same reason (SEC-X0X).
+
+    That ready-made writer is NOT reused here: it renders at `indent=2`,
+    which would reformat a report written at `indent=1`, and the markdown is
+    not JSON at all.
+    """
+    runio._confine_artifact_path(path)
+    tmp = path + ".tmp"
+    with runio._open_w_nofollow(tmp) as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
 def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None):
     """Ingest a setup-scan proposal -> assemble (aliases, layers, floors) ->
     stage 3 (grouping_engine.plan_groups: scoped assignment, Tests sweep,
@@ -1145,7 +1252,10 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     committed config; nothing is written on any failure. No printing.
 
     The cap and the ceiling resolve CLI argument > `settings:` > default
-    (`discovery.DEFAULT_MAX_PER_GROUP`; `grouping_engine.ceiling_for`)."""
+    (`discovery.DEFAULT_MAX_PER_GROUP`; `grouping_engine.ceiling_for`).
+
+    Readiness is NOT taken here and not written here: `record_readiness`
+    below adds it once this has written the draft (#1603 fix round 1)."""
     import setup_proposal as sp
     refusal = config_refusal(repo)          # I2: before anything is written
     if refusal:
