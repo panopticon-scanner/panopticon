@@ -38,17 +38,42 @@ KILL_GRACE = 2.0
 
 
 def _pgid(proc):
-    """`proc`'s process group id, or None when there is no group to signal.
+    """`proc`'s process group id, or None when there is no group to signal
+    -- in which case the caller signals the HANDLE instead.
 
-    None covers three cases that the caller must treat identically: a handle
-    with no `pid` at all (what `HostRunner.register_child` accepts, and what
-    the suite's fakes are), a child already reaped, and a platform without
-    process groups.
+    None covers four cases that the caller must treat identically:
+
+    * a handle with no `pid` at all (what `HostRunner.register_child` accepts,
+      and what the suite's fakes are), or a platform without process groups;
+    * a child this process has already REAPED. Its pid went back to the OS,
+      and pids are handed out in order, so that number may already name
+      somebody else's session leader -- `killpg` on it would end their whole
+      tree. `Popen.send_signal` has always been immune (it returns early once
+      `returncode` is set) and the group kill has to make the same check
+      BEFORE it asks the OS what group that pid is in. The window is real:
+      `launch` reaps in `communicate` and unregisters a moment later, and an
+      interrupt can arrive in between;
+    * a child in OUR OWN process group -- anything registered by a caller
+      that did not pass `start_new_session=True`. `killpg` there is a signal
+      to the driver itself and to every sibling sharing its group; measured
+      while writing this guard, it SIGTERMed the test runner.
+
+    `returncode` is read with `getattr`: a registered handle need not be a
+    `Popen`, and one that does not carry the attribute has no pid of ours to
+    protect.
     """
+    if getattr(proc, "returncode", None) is not None:
+        return None                        # reaped: the pid may be somebody else's
     try:
-        return os.getpgid(proc.pid)
+        pgid = os.getpgid(proc.pid)
     except (AttributeError, OSError):
         return None
+    try:
+        if pgid == os.getpgid(0):
+            return None                    # our own group: signal the handle
+    except (AttributeError, OSError):      # pragma: no cover - no process groups
+        return None
+    return pgid
 
 
 def end_group(proc, sig):
@@ -59,19 +84,31 @@ def end_group(proc, sig):
     the scanner's workers, the host CLI's helpers -- rather than the one pid
     at the root of the tree.
 
-    With no group to reach, it falls back to the HANDLE: `terminate()` for a
-    SIGTERM, `kill()` for a SIGKILL. That fallback is what a non-POSIX
-    platform gets, and it is also the pre-#1575 behaviour of
-    `HostRunner.terminate_children` -- a bare handle keeps exactly the
-    treatment it had, rather than being skipped for want of a pid.
+    With no group to reach -- see `_pgid` for the four ways that happens --
+    it falls back to the HANDLE: `terminate()` for a SIGTERM, `kill()` for a
+    SIGKILL. That fallback is what a non-POSIX platform gets, and it is also
+    the pre-#1575 behaviour of `HostRunner.terminate_children` -- a bare
+    handle keeps exactly the treatment it had, rather than being skipped for
+    want of a pid -- and it is recycle-safe, because `Popen.send_signal`
+    refuses a handle whose `returncode` is set.
     """
     pgid = _pgid(proc)
     if pgid is not None:
         try:
             os.killpg(pgid, sig)
             return
-        except (AttributeError, OSError):    # gone between getpgid and killpg
+        except ProcessLookupError:
+            # The group went away between `getpgid` and `killpg`. Nothing to
+            # signal and nothing left to do: the handle path below would only
+            # re-discover the same emptiness.
             return
+        except (AttributeError, OSError):
+            # Anything ELSE -- EPERM on a group we may no longer own, a
+            # platform with no `killpg` -- is a signal that was NOT delivered,
+            # so it falls through to the handle rather than being counted as
+            # "acted on". Swallowing EPERM here is how a child survives a
+            # kill that reported success.
+            pass
     handler = proc.kill if sig == signal.SIGKILL else proc.terminate
     try:
         handler()

@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import scripts.procgroup as procgroup
 
@@ -104,8 +105,23 @@ class _GroupCase(unittest.TestCase):
         return proc
 
     def _reap(self, proc):
+        """Cleanup for a child that LEADS its own session. Never use it on a
+        plain `Popen`: its group id is this process's, and the killpg below
+        would then take the test runner down with it (measured, while writing
+        `test_a_child_that_shares_our_own_group_is_signalled_by_handle` --
+        pytest died with no output at all, which is exactly how invisible the
+        defect I3 pins is). `_reap_handle` is the one for those."""
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except OSError:
+            pass
+        self._reap_handle(proc)
+
+    @staticmethod
+    def _reap_handle(proc):
+        """Cleanup by HANDLE only -- one pid, whatever group it is in."""
+        try:
+            proc.kill()
         except OSError:
             pass
         try:
@@ -194,6 +210,63 @@ class TestTheHandleFallback(unittest.TestCase):
                 raise ValueError("no such handle")
 
         self.assertFalse(procgroup.reaped(Deaf(), 0))
+
+
+class TestAGroupIsSignalledOnlyWhenItIsSafeTo(_GroupCase):
+    """Two ways `killpg` reaches the wrong processes, and the guards for both.
+
+    Neither is reachable through the old handle-only path -- `Popen.terminate`
+    short-circuits on a set `returncode`, and it signals one pid rather than a
+    group -- so both arrived WITH the group kill and are pinned here.
+
+    Both are asserted on the CALL (`os.killpg` spied) rather than on a
+    survivor, deliberately and for two different reasons. I3 fired for real
+    would end this test runner, which proves the point by destroying the
+    evidence. And a direct child that dies becomes a ZOMBIE until it is
+    waited on, so `os.kill(pid, 0)` still succeeds for it: an
+    it-is-still-alive assertion on a direct child passes whether or not the
+    signal landed, which is a test that cannot fail. (The grandchild cases
+    elsewhere in this file are safe from that -- a grandchild is reparented
+    and reaped by init, never left a zombie of ours.)
+    """
+
+    def test_a_reaped_handle_is_never_signalled_at_its_old_pid(self):
+        """B1. The pid of a reaped child belongs to the OS again, and pids are
+        handed out in order: by the time an interrupt reaches a handle that
+        `communicate` already reaped, that number may name somebody else's
+        session leader -- and `killpg` on it would end their whole tree.
+
+        `Popen.send_signal` was immune (it returns early once `returncode` is
+        set); the group kill has to check the same thing before it asks the OS
+        what group that pid is in.
+        """
+        reaped = subprocess.Popen([sys.executable, "-c", "pass"],  # noqa: S603
+                                  start_new_session=True)
+        reaped.wait()
+        victim = self._spawn("import time; time.sleep(60)")
+        reaped.pid = victim.pid              # what a recycled pid looks like
+        with mock.patch.object(procgroup.os, "killpg") as killpg:
+            procgroup.kill_group(reaped, grace=0.1)
+        self.assertEqual([], killpg.call_args_list,
+                         "a reaped handle's stale pid was signalled as a group")
+        self.assertIsNone(victim.poll(), "the innocent process was ended")
+
+    def test_a_child_that_shares_our_own_group_is_signalled_by_handle(self):
+        """I3. A handle registered by something that did NOT start a new
+        session has OUR process group id, so `killpg` on it is a SIGTERM to
+        the driver itself -- and to every sibling in that group.
+        """
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],  # noqa: S603
+                                stdout=subprocess.DEVNULL)
+        self.addCleanup(self._reap_handle, proc)   # NOT _reap: our own group
+        self.assertEqual(os.getpgid(proc.pid), os.getpgid(0),
+                         "the fixture is wrong: this child made its own group")
+        with mock.patch.object(procgroup.os, "killpg") as killpg:
+            ended = procgroup.kill_group(proc, grace=1.0)
+        self.assertEqual([], killpg.call_args_list,
+                         "end_group signalled the driver's own process group")
+        self.assertTrue(ended, "the handle fallback never reached the child")
+        self.assertIsNotNone(proc.returncode)
 
 
 class TestEndGroupReachesTheWholeGroup(_GroupCase):
