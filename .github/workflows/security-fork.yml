@@ -164,12 +164,14 @@ jobs:
           # that act was applying THIS label -- the strict closure described in
           # the header, which is what makes a stale `safe-to-scan` (a failed
           # revoke, or the seconds before one finishes) unable to green an
-          # unreviewed head. LABELLED: the label is on the payload's head, so a
-          # removal racing the run still refuses. `$LABEL` is echoed only as
-          # data and never interpolated into an `::error::` line; note that
-          # GitHub compares strings case-insensitively, so a label created by
-          # hand as `Safe-To-Scan` would satisfy this gate while `unlabel`'s
-          # literal DELETE path may not match it -- create the label exactly as
+          # unreviewed head. LABELLED: the payload is a snapshot from event
+          # time, so once the first two tests pass it necessarily carries the
+          # label -- this third test is belt-and-braces, not a race guard.
+          # `$LABEL` is echoed only as data and never interpolated into an
+          # `::error::` line. The LABEL comparison is a case-sensitive shell
+          # string test: a label created by hand as `Safe-To-Scan` can never
+          # open this gate (fail-closed) and `unlabel`'s literal DELETE path
+          # would not match it either -- create the label exactly as
           # `safe-to-scan`. None of the three reads an event expression in this
           # shell:
           # GitHub substitutes an expression into a run script before the shell
