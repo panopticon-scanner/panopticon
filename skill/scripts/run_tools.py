@@ -517,12 +517,22 @@ def filter_online(chosen, online):
 # empty by construction and needs nothing in the image, and no argv changes --
 # every tool already names its scan root by absolute path.
 #
-# gosec is the one exception, and it says so EXPLICITLY (`-w /src`) rather
-# than leaning on the image's WORKDIR: its argv is the CWD-RELATIVE go package
-# pattern `./...`, which go/packages resolves through `go list` from the module
-# root, so a container started anywhere else would scan an empty directory.
-# `LegacySarifAdapter.invoke` makes the same call at the Popen level, for the
-# same reason and with the same reasoning recorded against it.
+# TWO scanners are the exception, and both say so EXPLICITLY (`-w /src`)
+# rather than leaning on the image's WORKDIR. For each, the cwd is a SCAN
+# INPUT rather than a config-lookup surface, so moving it does not harden the
+# scan, it deletes it:
+#   gosec -- its argv is the CWD-RELATIVE go package pattern `./...`, which
+#     go/packages resolves through `go list` from the module root, so a
+#     container started anywhere else scans an empty directory.
+#   eslint-security -- under flat config the `files`/`ignores` base path is
+#     the process cwd whenever the config is named with `--config`, and
+#     anything outside that base is classified "external". Measured on the
+#     pinned eslint 10.9.0: from a scratch cwd the adapter produced NO output
+#     and exit 2, "located outside of the base path". A config-object
+#     `basePath` was tried first and does not widen the root base.
+# Each adapter makes the same call at the Popen level, for the same reason and
+# with the argument recorded against it there and in
+# tests/tools/test_adapter_cwd_confinement.py's allowlist.
 #
 # Belt and braces: the adapters ALSO pass their own scratch cwd to `run_tool`
 # (`tools.base.scratch_cwd`), so an `invoke()` that runs outside this
@@ -534,7 +544,7 @@ ADAPTER_EMPTY_CWD = "/panopticon-empty-cwd"
 # path gosec is being pointed at. (`_with_venv_excludes` and bandit's `--ini`
 # pin still spell it literally; both are outside #1877's scope.)
 TARGET_MOUNT = "/src"
-DISPATCH_KEEPS_TARGET_CWD = ("gosec",)
+DISPATCH_KEEPS_TARGET_CWD = ("gosec", "eslint-security")
 
 
 def _working_dir_flags(tool):

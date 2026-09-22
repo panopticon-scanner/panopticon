@@ -43,17 +43,22 @@ class TestContainment(unittest.TestCase):
             self.assertLess(i + 1, len(cmd), "-w has no value argument")
             self.assertEqual(cmd[i + 1], rt.ADAPTER_EMPTY_CWD)
 
-    def test_gosec_is_the_one_dispatch_that_starts_in_the_mount(self):
-        # gosec's argv is the CWD-RELATIVE go package pattern `./...`, so its
-        # container has to start at the module root. It is the one documented
-        # exception, and it says so EXPLICITLY (`-w /src`) rather than leaning
-        # on the image's WORKDIR, so the decision is greppable here rather
-        # than implied by a Dockerfile line.
-        for cmd in self._calls(["gosec"]):
-            self.assertIn("-w", cmd)                # clear failure, not ValueError
-            i = cmd.index("-w")
-            self.assertLess(i + 1, len(cmd), "-w has no value argument")
-            self.assertEqual(cmd[i + 1], "/src")
+    def test_the_two_mount_cwd_dispatches_say_so_explicitly(self):
+        # Two scanners take the mount as their working directory because for
+        # them the cwd is a SCAN INPUT, not a config surface: gosec's argv is
+        # the CWD-RELATIVE go package pattern `./...`, and eslint's cwd is
+        # its flat config's base path (a scratch cwd scoped the whole target
+        # out -- exit 2, no output, measured on eslint 10.9.0). Both say so
+        # EXPLICITLY (`-w /src`) rather than leaning on the image's WORKDIR,
+        # so the decision is greppable here rather than implied by a
+        # Dockerfile line. Named literally, not read off the tuple, so this
+        # cannot rubber-stamp a third entry.
+        for tool in ("gosec", "eslint-security"):
+            for cmd in self._calls([tool]):
+                self.assertIn("-w", cmd)            # clear failure, not ValueError
+                i = cmd.index("-w")
+                self.assertLess(i + 1, len(cmd), "-w has no value argument")
+                self.assertEqual(cmd[i + 1], "/src", "%s: wrong cwd" % tool)
 
     def test_gosec_is_the_only_tool_that_keeps_the_target_as_its_cwd(self):
         # #1877 I3: the dispatcher's exception and the adapter-side one in
@@ -64,7 +69,8 @@ class TestContainment(unittest.TestCase):
         # inside the mount with a green suite, because the two tests above
         # iterate fixed tool lists. A new entry must be argued for in BOTH
         # places, with its own reason.
-        self.assertEqual(tuple(rt.DISPATCH_KEEPS_TARGET_CWD), ("gosec",))
+        self.assertEqual(tuple(rt.DISPATCH_KEEPS_TARGET_CWD),
+                         ("gosec", "eslint-security"))
 
     def test_nvd_api_key_never_forwarded(self):
         for cmd in self._calls(["dependency-check"],

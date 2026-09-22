@@ -86,15 +86,39 @@ ALLOWED_TARGET_CWD = {
         "`go` invocation inside a module (CVE-2023-39320, the go.mod "
         "`toolchain` directive) was fixed well before the pinned Go 1.25.14"
     ),
+    # eslint's cwd is not a config-lookup surface, it is a SCOPING input:
+    # under flat config the `files`/`ignores` base path is the process cwd
+    # whenever the config is named with `--config`, and @eslint/config-array
+    # classifies anything outside that base as "external" -- a config-OBJECT
+    # `basePath` narrows it but cannot widen it back out. Measured on the
+    # pinned eslint 10.9.0 (tools-image/node/package-lock.json) with a real
+    # container round: from a scratch cwd the adapter produced NO output and
+    # exit 2, "File ignored because it is located outside of the base path",
+    # where the same scan with cwd=target produced a finding. What the cwd
+    # would otherwise buy an attacker is already closed by other means and
+    # does not depend on it: `--config` pins OUR generated config and
+    # `--no-config-lookup` stops eslint discovering + EXECUTING the target's
+    # own eslint.config.js (the RCE vector, #83/#715); the plugin is imported
+    # by ABSOLUTE path, so no cwd- or NODE_PATH-relative resolution can be
+    # hijacked by a hostile node_modules; and flat config does not read
+    # `.eslintignore` at all. So the cwd carries no remaining target-authored
+    # resolution surface, and moving it costs the entire JS/TS axis -- the
+    # #1452 "selected but unproduced" class.
+    "eslint-security": (
+        "the cwd IS the flat config's base path when `--config` is used, so a "
+        "cwd outside the target puts the whole target outside the scan (real "
+        "round on eslint 10.9.0: no output, exit 2, \"located outside of the "
+        "base path\"); the config-execution vector is already closed by "
+        "`--config` + `--no-config-lookup` + the absolute plugin import, and "
+        "flat config does not read `.eslintignore`, so no target-authored "
+        "resolution surface is left for the cwd to carry"
+    ),
 }
 
 # Files an adapter GENERATES into its own scratch cwd before launching, named
 # exactly, so "the scratch was empty" stays a real assertion rather than a
 # blanket tolerance for whatever happens to be there.
 _GENERATED_IN_CWD = {
-    # The generated eslint flat config; the cwd IS the config dir (see
-    # eslint_security.invoke), and nothing the target controls reaches it.
-    "eslint-security": ["eslint.config.mjs"],
     # The empty `--config` bundle-audit is pinned to, which must live inside
     # the scratch so the target's own .bundler-audit.yml is never the default
     # (#1742 finding 3).
@@ -263,11 +287,16 @@ class TestAdapterCwdConfinement(unittest.TestCase):
                     "%s is allowlisted for cwd=target but no recorded call "
                     "actually used it -- the allowlist entry is stale" % name)
 
-    def test_gosec_is_the_only_allowlisted_adapter(self):
+    def test_the_allowlist_is_exactly_the_two_argued_exceptions(self):
         # #1877 closed the eleven inherited-WORKDIR entries this allowlist
-        # used to carry. It is back to exactly one documented exception, and
-        # a new entry must be argued for, not appended to a crowd.
-        self.assertEqual(sorted(ALLOWED_TARGET_CWD), ["gosec"])
+        # used to carry. Two documented exceptions are left, each for a
+        # scanner whose cwd is a SCAN INPUT rather than a config surface --
+        # gosec's cwd-relative `./...` package pattern, eslint's flat-config
+        # base path. A third must be argued for, not appended to a crowd, and
+        # must be added to `run_tools.DISPATCH_KEEPS_TARGET_CWD` with it (see
+        # tests/test_run_tools_containment.py).
+        self.assertEqual(sorted(ALLOWED_TARGET_CWD),
+                         ["eslint-security", "gosec"])
 
     def test_cargo_audit_and_bundler_audit_are_not_allowlisted(self):
         # The two adapters #1742 fixed must stay off the allowlist: they are
