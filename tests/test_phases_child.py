@@ -224,11 +224,10 @@ class TestATimeoutReachesTheWholeProcessTree(_ChildCase):
             self._child("import time\ntime.sleep(30)\n", timeout=1)
         self.assertIn("timed out", str(ctx.exception))
 
-    def test_kill_group_tolerates_a_process_that_is_already_gone(self):
-        proc = child.subprocess.Popen([sys.executable, "-c", "pass"],
-                                      start_new_session=True)
-        proc.wait()
-        child._kill_group(proc, grace=0.1)     # must not raise
+    # The group kill's own unit tests (an already-gone group, the handle
+    # fallback, the grace constant) moved to tests/test_procgroup.py with the
+    # function itself (#1575). What stays here is what this module promises:
+    # a phase TIMEOUT leaves no descendant running.
 
 
 class TestTheHeadSurvivesAReaderThatIsCutOff(_ChildCase):

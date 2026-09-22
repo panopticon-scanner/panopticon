@@ -142,6 +142,7 @@ groups:
       - skill/scripts/ledger.py
       - skill/scripts/loop_batch.py
       - skill/scripts/phases/child.py
+      - skill/scripts/procgroup.py
       - skill/scripts/phases/verify_tools.py
       - skill/scripts/phases/readiness_checks.py
       - skill/scripts/group_runner.py
@@ -161,6 +162,7 @@ groups:
       - tests/test_group_runner.py
       - tests/test_group_runner_integration.py
       - tests/test_phases_child.py
+      - tests/test_procgroup.py
       - tests/test_model_resolver.py
       - tests/test_run_manifest.py
       - tests/test_safe_write.py
