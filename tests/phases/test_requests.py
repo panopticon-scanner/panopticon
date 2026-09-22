@@ -236,10 +236,18 @@ class TestEntryMarkerAndScope(unittest.TestCase):
         self.assertEqual("review-app-SEC",
                          read_guard_hook.marker_of(requests.entry_marker("review-app-SEC") + "body"))
 
-    def test_scope_has_exactly_the_three_keys(self):
+    def test_scope_has_exactly_the_guards_keys(self):
         from scripts import read_guard_hook
-        self.assertEqual({"files": ["/a"], "dirs": [], "reads": []}, requests.scope(files=["/a"]))
+        self.assertEqual({"files": ["/a"], "dirs": [], "reads": [], "hard_linked": []},
+                         requests.scope(files=["/a"]))
         self.assertEqual(set(read_guard_hook.SCOPE_KEYS), set(requests.scope()))
+
+    def test_scope_carries_the_directory_grants_hard_links(self):
+        # #1683: the walk is the DRIVER's, taken once when the grant is built,
+        # and this is how its result reaches the hooks.
+        self.assertEqual(["/root/a/b.txt"],
+                         requests.scope(dirs=["/root"],
+                                        hard_linked=["/root/a/b.txt"])["hard_linked"])
 
 
 class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):

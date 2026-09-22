@@ -29,6 +29,7 @@ import scripts.probes.codex as codex_probes
 import scripts.repo_config as repo_config
 import scripts.runners.batch as batch_mod
 
+from _test_helpers import hard_link_or_skip
 from conftest import write_host_evidence
 from test_orchestrate import _all_proven_artifact, _refuted_artifact
 from tools.git_repo import make_git_repo
@@ -298,6 +299,39 @@ class TestDriverSetup(unittest.TestCase):
         entry = setup._setup_scan_entry(d, "PROMPT", "claude")
         self.assertEqual("panopticon-entry: setup-scan", entry["marker"])
         self.assertEqual(requests.scope(dirs=[os.path.abspath(d)]), entry["scope"])
+        # A clean tree records nothing, so the scan keeps its Grep and Glob.
+        self.assertEqual([], entry["scope"]["hard_linked"])
+
+    def test_the_directory_grant_records_the_hard_links_beneath_it(self):
+        # #1683: this is the only directory grant the driver issues, so this
+        # is the only place the walk happens -- once, here, when the grant is
+        # built. The hooks then refuse a directory Grep/Glob above one.
+        d = self._repo()
+        outside = os.path.join(tempfile.mkdtemp(), "secret.txt")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("s")
+        self.addCleanup(shutil.rmtree, os.path.dirname(outside), ignore_errors=True)
+        planted = hard_link_or_skip(outside, os.path.join(d, "src", "innocent.py"))
+        entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+        self.assertEqual([os.path.realpath(planted)], entry["scope"]["hard_linked"])
+        self.assertEqual([os.path.abspath(d)], entry["scope"]["dirs"])
+
+    def test_an_overflowing_walk_records_the_granted_directory_and_says_so(self):
+        # Fail CLOSED past the cap: the granted directory itself goes in the
+        # list, which denies every directory Grep/Glob beneath it until the
+        # tree is fixed -- and the operator is told, with the count, rather
+        # than watching the scan lose its tools for no stated reason.
+        d = self._repo()
+        many = [os.path.join(d, "l%d.txt" % i) for i in range(setup.hard_links.CAP)]
+        with mock.patch.object(setup.hard_links, "hard_links_under",
+                               return_value=(many, True)) as walk:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                entry = setup._setup_scan_entry(d, "PROMPT", "claude")
+        walk.assert_called_once_with(os.path.abspath(d))
+        self.assertEqual([os.path.abspath(d)], entry["scope"]["hard_linked"])
+        self.assertIn(str(setup.hard_links.CAP), err.getvalue())
+        self.assertIn(os.path.abspath(d), err.getvalue())
 
     def test_scan_leaves_a_blanket_gitignore_untouched(self):
         # #1135: a repo already blanket-ignoring .panopticon/ keeps its

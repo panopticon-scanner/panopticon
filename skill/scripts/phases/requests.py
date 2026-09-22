@@ -57,7 +57,7 @@ def entry_marker(entry_id):
     return read_guard_hook.marker_line(entry_id) + "\n"
 
 
-def scope(files=(), dirs=(), reads=()):
+def scope(files=(), dirs=(), reads=(), hard_linked=()):
     """An entry's read scope: absolute, byte-exact paths the read guard
     matches after realpath. `files` duplicates entry["files"] on purpose (the
     guard reads one key of one shape); `dirs` is a directory scope (setup-
@@ -66,8 +66,16 @@ def scope(files=(), dirs=(), reads=()):
     `review._cell_reads`), plus the entry's own `prompt_file` once
     `_materialize_prompts` stamps one, so a host that dispatches from the
     file (marker line first, pointer second) is not denied its own prompt by
-    the read guard."""
-    return {"files": list(files), "dirs": list(dirs), "reads": list(reads)}
+    the read guard.
+
+    `hard_linked` belongs to `dirs` and is empty without it (#1683): the
+    multiply-linked files the builder found beneath the granted directory,
+    walked ONCE here because a PreToolUse hook may not walk the tree on every
+    Grep. The hooks refuse a directory-argument Grep/Glob that would traverse
+    one -- `phases/hard_links` takes the walk, `phases/setup` is the one
+    builder that issues a directory grant."""
+    return {"files": list(files), "dirs": list(dirs), "reads": list(reads),
+            "hard_linked": list(hard_linked)}
 
 
 # #1344 F4 (a). The ONE wording for the return-persist instruction. Two builders
