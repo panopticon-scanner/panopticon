@@ -302,7 +302,7 @@ def partition_venv_dirs(venv_dirs, security_mode="standard"):
     `.venv` -- so on a target carrying such a `.bandit`, bandit still does not
     enter the directory under redteam, while a target with no `.bandit` is
     scanned (bandit's own parser defaults name no virtualenv). Narrowing a
-    target-authored config by security mode is the same question #1877 tracks
+    target-authored config by security mode is the same question #1924 tracks
     for the rest of the target's discoverable configuration, and it is decided
     there, not here.
 
