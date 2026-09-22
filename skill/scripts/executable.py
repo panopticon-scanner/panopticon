@@ -18,15 +18,26 @@ class ResolvedExecutable:
 
 _STARTUP_ENV = (
     "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT", "PYTHONUSERBASE",
-    "PYTHONPLATLIBDIR", "PYTHONEXECUTABLE", "NODE_OPTIONS", "NODE_PATH",
+    "PYTHONPLATLIBDIR", "PYTHONEXECUTABLE", "NODE_OPTIONS", "NODE_PATH", "BASH_ENV", "ENV",
 )
+_STARTUP_ENV_PREFIXES = ("LD_", "DYLD_")
 
 
 def sanitize_startup_environment(env):
-    """Copy an environment without interpreter-controlled startup imports."""
+    """Copy an environment without process-startup injection controls.
+
+    Shell and interpreter controls are removed by exact name. The LD_ and
+    DYLD_ namespaces are reserved here as a policy: native loaders expose
+    several library, search and audit hooks, so trusted CLI launches must not
+    depend on which loader hook a reviewed tree selects. Unrelated variables,
+    including names that merely contain those strings, remain intact.
+    """
     clean = dict(env)
     for name in _STARTUP_ENV:
         clean.pop(name, None)
+    for name in tuple(clean):
+        if isinstance(name, str) and name.startswith(_STARTUP_ENV_PREFIXES):
+            clean.pop(name)
     clean["PYTHONNOUSERSITE"] = "1"
     clean["PYTHONSAFEPATH"] = "1"
     return clean

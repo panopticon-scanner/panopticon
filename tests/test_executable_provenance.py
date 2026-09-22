@@ -27,7 +27,80 @@ def _program(path, body):
     return path
 
 
+def _native_programs(compiler, trusted, target):
+    """Build a native CLI and constructor library for this platform."""
+    cli_source = os.path.join(trusted, "hostcli.c")
+    library_source = os.path.join(target, "startup.c")
+    cli = os.path.join(trusted, "hostcli")
+    if sys.platform == "darwin":
+        loader_var = "DYLD_INSERT_LIBRARIES"
+        library = os.path.join(target, "startup.dylib")
+        library_flags = ["-dynamiclib"]
+    elif sys.platform.startswith("linux"):
+        loader_var = "LD_PRELOAD"
+        library = os.path.join(target, "startup.so")
+        library_flags = ["-shared", "-fPIC"]
+    else:
+        raise unittest.SkipTest("native loader regression supports macOS and Linux")
+
+    with open(cli_source, "w", encoding="utf-8") as fh:
+        fh.write(
+            "#include <stdio.h>\n"
+            "#include <stdlib.h>\n"
+            "int main(void) {\n"
+            "  const char *auth = getenv(\"HOST_TOKEN\");\n"
+            "  const char *config = getenv(\"HOST_CONFIG\");\n"
+            "  const char *loader = getenv(\"%s\");\n"
+            "  printf(\"NATIVE auth=%%s config=%%s loader=%%s\\n\",\n"
+            "         auth ? auth : \"<unset>\", config ? config : \"<unset>\",\n"
+            "         loader ? loader : \"<unset>\");\n"
+            "  return 0;\n"
+            "}\n" % loader_var)
+    with open(library_source, "w", encoding="utf-8") as fh:
+        fh.write(
+            "#include <stdio.h>\n"
+            "__attribute__((constructor)) static void startup(void) {\n"
+            "  fputs(\"LOADER_STARTUP\\n\", stdout);\n"
+            "  fflush(stdout);\n"
+            "}\n")
+    subprocess.run([compiler, "-o", cli, cli_source], check=True,
+                   capture_output=True, text=True)
+    subprocess.run([compiler, *library_flags, "-o", library, library_source],
+                   check=True, capture_output=True, text=True)
+    return cli, loader_var, library
+
+
 class TestTrustedResolver(unittest.TestCase):
+    def test_startup_environment_policy_removes_reserved_namespaces_only(self):
+        supplied = {
+            "PATH": "/trusted/bin",
+            "BASH_ENV": "startup.sh",
+            "ENV": "shell-startup.sh",
+            "LD_PRELOAD": "startup.so",
+            "LD_LIBRARY_PATH": "/reviewed/lib",
+            "LD_AUDIT": "audit.so",
+            "DYLD_INSERT_LIBRARIES": "startup.dylib",
+            "DYLD_LIBRARY_PATH": "/reviewed/lib",
+            "DYLD_FRAMEWORK_PATH": "/reviewed/frameworks",
+            "HOST_LD_LIBRARY_PATH": "kept",
+            "MY_DYLD_FRAMEWORK_PATH": "kept-too",
+            "HOST_TOKEN": "auth-kept",
+            "HOST_CONFIG": "config-kept",
+        }
+        original = dict(supplied)
+
+        clean = executable.sanitize_startup_environment(supplied)
+
+        self.assertEqual(supplied, original)
+        for name in ("BASH_ENV", "ENV", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
+                     "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+                     "DYLD_FRAMEWORK_PATH"):
+            self.assertNotIn(name, clean)
+        self.assertEqual(clean["HOST_LD_LIBRARY_PATH"], "kept")
+        self.assertEqual(clean["MY_DYLD_FRAMEWORK_PATH"], "kept-too")
+        self.assertEqual(clean["HOST_TOKEN"], "auth-kept")
+        self.assertEqual(clean["HOST_CONFIG"], "config-kept")
+
     def test_symlinked_directory_and_candidate_into_target_are_rejected(self):
         with tempfile.TemporaryDirectory() as parent:
             target = os.path.join(parent, "target")
@@ -133,6 +206,73 @@ class TestHostCliBoundary(unittest.TestCase):
                     self.assertEqual(got.returncode, 0, got.stderr)
                     self.assertEqual(got.stdout, "trusted:kept\n")
                     self.assertFalse(os.path.exists(marker))
+
+    def test_bash_startup_injection_is_removed_without_mutating_environment(self):
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("bash is unavailable")
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as trusted:
+            startup = os.path.join(target, "startup.sh")
+            with open(startup, "w", encoding="utf-8") as fh:
+                fh.write("printf 'SHELL_STARTUP\\n'\n")
+            cli = os.path.join(trusted, "hostcli")
+            with open(cli, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "#!%s\n"
+                    "printf 'WRAPPER auth=%%s config=%%s bash_env=%%s env=%%s\\n' "
+                    "\"$HOST_TOKEN\" \"$HOST_CONFIG\" "
+                    "\"${BASH_ENV-<unset>}\" \"${ENV-<unset>}\"\n"
+                    % os.path.realpath(bash))
+            os.chmod(cli, 0o700)
+            runner = runner_base.HostRunner()
+            runner.review_root = target
+            cases = (
+                ("control", {}),
+                ("relative-bash-env", {"BASH_ENV": "startup.sh"}),
+                ("absolute-bash-env", {"BASH_ENV": startup}),
+                ("env-only", {"ENV": "startup.sh"}),
+            )
+            with mock.patch.dict(os.environ, {"BASH_ENV": "caller-startup",
+                                               "CALLER_STATE": "kept"}, clear=False):
+                caller_before = dict(os.environ)
+                for name, startup_env in cases:
+                    with self.subTest(name=name):
+                        env = {"PATH": trusted, "HOST_TOKEN": "auth-kept",
+                               "HOST_CONFIG": "config-kept", **startup_env}
+                        supplied_before = dict(env)
+                        got = runner.launch(["hostcli"], cwd=target, env=env)
+                        self.assertEqual(got.returncode, 0, got.stderr)
+                        self.assertEqual(
+                            got.stdout,
+                            "WRAPPER auth=auth-kept config=config-kept "
+                            "bash_env=<unset> env=<unset>\n")
+                        self.assertNotIn("SHELL_STARTUP", got.stdout)
+                        self.assertEqual(env, supplied_before)
+                        self.assertEqual(dict(os.environ), caller_before)
+
+    def test_native_loader_injection_is_removed_without_mutating_environment(self):
+        compiler = shutil.which("cc") or shutil.which("clang") or shutil.which("gcc")
+        if not compiler:
+            self.skipTest("no C compiler is available")
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as trusted, \
+                tempfile.TemporaryDirectory() as scratch:
+            _cli, loader_var, library = _native_programs(compiler, trusted, target)
+            runner = runner_base.HostRunner()
+            runner.review_root = target
+            env = {"PATH": trusted, loader_var: library, "HOST_TOKEN": "auth-kept",
+                   "HOST_CONFIG": "config-kept"}
+            supplied_before = dict(env)
+            with mock.patch.dict(os.environ, {loader_var: "caller-library",
+                                               "CALLER_STATE": "kept"}, clear=False):
+                caller_before = dict(os.environ)
+                got = runner.launch(["hostcli"], cwd=scratch, env=env)
+                self.assertEqual(got.returncode, 0, got.stderr)
+                self.assertEqual(
+                    got.stdout,
+                    "NATIVE auth=auth-kept config=config-kept loader=<unset>\n")
+                self.assertNotIn("LOADER_STARTUP", got.stdout)
+                self.assertEqual(env, supplied_before)
+                self.assertEqual(dict(os.environ), caller_before)
 
 
 class TestManifestGitBoundary(unittest.TestCase):
