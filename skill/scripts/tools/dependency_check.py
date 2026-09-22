@@ -6,7 +6,7 @@ import sys
 import tempfile
 from .base import (OutputCapExceeded, has_any_file, make_finding,
                    normalize_severity, omit_none, parse_json_bytes,
-                   read_capped_report, run_tool)
+                   read_capped_report, run_tool, scratch_cwd)
 
 
 # #1576 (run-13 OPS-3272189615): rc returned when the scanner was killed for
@@ -118,8 +118,15 @@ class DependencyCheckAdapter:
                 # for every concurrent scan on the worker, not just this one.
                 # start_new_session so the kill reaches the JVM and not just
                 # the dependency-check.sh wrapper.
-                _stdout, rc = run_tool(cmd, timeout=900, watch_path=out_dir,
-                                       start_new_session=True)
+                #
+                # #1877: a FRESH scratch as the cwd -- not `out_dir`, which is
+                # the report tree dependency-check writes into, and not the
+                # target, whose cwd-relative suppression/config files it would
+                # otherwise honour. `--scan` and `--out` are absolute, so argv
+                # is byte-unchanged.
+                with scratch_cwd("dependency-check-cwd-") as cwd:
+                    _stdout, rc = run_tool(cmd, timeout=900, watch_path=out_dir,
+                                           start_new_session=True, cwd=cwd)
             except OutputCapExceeded as exc:
                 print("dependency-check: %s; recording as failed" % exc,
                       file=sys.stderr)

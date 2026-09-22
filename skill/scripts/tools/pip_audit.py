@@ -4,14 +4,13 @@ import contextvars
 import glob
 import os
 import re
-import shutil
 import sys
 import tempfile
 import tomllib
 
 import scripts.redact as redact
 from .base import (cve_ids, make_finding, normalize_severity, omit_none,
-                   parse_json_bytes, run_tool, target_root_cv)
+                   parse_json_bytes, run_tool, scratch_cwd, target_root_cv)
 
 _manifest_path_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "pip_audit_manifest_path", default=None)
@@ -492,22 +491,17 @@ class PipAuditAdapter:
         # it unreachable through the filesystem, so a future grammar gap costs a
         # missed audit rather than a build-backend execution. `--requirement` is
         # an absolute path, so nothing else here depends on the working dir.
-        scratch = tempfile.mkdtemp(prefix="pip-audit-cwd-")
+        # (#1877 moved the scratch itself into `base.scratch_cwd`, F3's
+        # rmtree-not-rmdir reasoning with it -- it is the helper's reason now,
+        # for all eleven adapters rather than this one.)
         try:
-            tmp.write("".join(line + "\n" for line in kept))
-            tmp.close()
-            cmd.extend(["--requirement", tmp.name])
-            return run_tool(cmd, timeout=300, cwd=scratch)
+            with scratch_cwd("pip-audit-cwd-") as scratch:
+                tmp.write("".join(line + "\n" for line in kept))
+                tmp.close()
+                cmd.extend(["--requirement", tmp.name])
+                return run_tool(cmd, timeout=300, cwd=scratch)
         finally:
             os.unlink(tmp.name)
-            # `rmtree(ignore_errors=True)`, never `rmdir` (F3): the scratch
-            # directory exists PRECISELY to be where stray writes land -- a
-            # build backend's temp file, pip's legacy in-cwd artifacts -- so
-            # "something wrote there" is the expected case. `os.rmdir` raised
-            # `Directory not empty`, `_run_adapter` caught it and returned
-            # FAIL_RC, and pip-audit landed in the manifest's `missing`: the
-            # coverage gate degraded on a run whose audit had succeeded.
-            shutil.rmtree(scratch, ignore_errors=True)
 
     def sanitization_report(self, target: str) -> dict | None:
         """What `invoke` will NOT audit, for the coverage manifest (#1646).

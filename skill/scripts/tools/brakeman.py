@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import re
 import sys
-from .base import as_list, make_finding, omit_none, parse_json_bytes, run_tool
+from .base import (as_list, make_finding, omit_none, parse_json_bytes,
+                   run_tool, scratch_cwd)
 
 
 _CONFIDENCE_MAP = {
@@ -190,7 +191,11 @@ class BrakemanAdapter:
         # default, stricter behaviour.
         if not self._is_canonical_rails_root(target):
             cmd.insert(1, "--force")
-        stdout, rc = run_tool(cmd, timeout=300, ok_codes=(0, 1, 2, 3))
+        # #1877: brakeman consults cwd-relative configuration, so it runs
+        # from an empty scratch. The app path is the argv positional above,
+        # so argv is byte-unchanged.
+        with scratch_cwd("brakeman-cwd-") as cwd:
+            stdout, rc = run_tool(cmd, timeout=300, ok_codes=(0, 1, 2, 3), cwd=cwd)
         # Brakeman exits 2 when warnings are found and 3 when warnings plus minor
         # parsing errors occur. Treat both as successful scans so the output is
         # preserved for ingestion.

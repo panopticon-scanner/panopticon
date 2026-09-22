@@ -6,7 +6,7 @@ import shutil
 import sys
 import tempfile
 from .base import (OutputCapExceeded, as_list, make_finding, omit_none,
-                   parse_json_bytes, read_capped_report, run_tool)
+                   parse_json_bytes, read_capped_report, run_tool, scratch_cwd)
 from .sarif_utils import LEVEL_TO_SEV
 
 
@@ -275,8 +275,15 @@ class RoslynSecGuardAdapter:
                 # scanner writes it. read_capped_report below is the read-time
                 # half of the same 50 MiB ceiling; without this one the temp
                 # volume is already full by the time it refuses the file.
-                _stdout, rc = run_tool(cmd, timeout=600, watch_path=sarif,
-                                       start_new_session=True)
+                #
+                # #1877: a FRESH scratch as the cwd, deliberately NOT `tmp`.
+                # `tmp` is a COPY of the target (_safe_copytree above), so it
+                # carries any config the target planted just as the mount
+                # does. The project path and `--export` are absolute, so argv
+                # is byte-unchanged.
+                with scratch_cwd("roslyn-secguard-cwd-") as cwd:
+                    _stdout, rc = run_tool(cmd, timeout=600, watch_path=sarif,
+                                           start_new_session=True, cwd=cwd)
             except OutputCapExceeded as exc:
                 print("roslyn-secguard: %s; recording as failed" % exc,
                       file=sys.stderr)

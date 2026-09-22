@@ -9,7 +9,8 @@ from unittest import mock
 
 from _test_helpers import FakePopen, first, only, skip_or_fail
 import scripts.tools.brakeman as br
-from tests.tools.conftest import FIXTURE_ROOT
+from tests.tools.conftest import (FIXTURE_ROOT, assert_scratch_cwd,
+                                  scratch_cwd_recorder)
 
 # Hand-built sample used for unit-level parse-shape assertions. It is NOT a
 # real Brakeman scan; for integration coverage see test_railsgoat_fixture_shape.
@@ -226,20 +227,21 @@ class TestBrakemanAdapter(unittest.TestCase):
 
     def test_invoke_runs_brakeman_json(self):
         adapter = br.BrakemanAdapter()
-        fake_run = FakePopen(stdout=b"{}", stderr=b"", returncode=0)
+        calls = []
         with mock.patch("scripts.tools.base.subprocess.Popen",
-                        return_value=fake_run) as popen_mock:
+                        side_effect=scratch_cwd_recorder(calls)):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(rc, 0)
         # /tmp/fake carries no config/routes.rb, so it is not a canonical Rails
         # root and picks up --force -- see
         # test_force_is_added_only_for_a_non_canonical_rails_root.
-        popen_mock.assert_called_once_with(
+        self.assertEqual(
+            only(calls, "brakeman launch")["argv"],
             ["brakeman", "--force", "--format", "json", "--quiet",
-             "--run-all-checks", "/tmp/fake"],
-            stdout=mock.ANY,
-            stderr=mock.ANY,
-        )
+             "--run-all-checks", "/tmp/fake"])
+        # #1877: brakeman reads cwd-relative config, so the app path on argv
+        # is the ONLY thing that may point at the target.
+        assert_scratch_cwd(self, only(calls, "brakeman launch"), "/tmp/fake")
 
     def test_invoke_remaps_rc_2_and_3_to_success(self):
         adapter = br.BrakemanAdapter()

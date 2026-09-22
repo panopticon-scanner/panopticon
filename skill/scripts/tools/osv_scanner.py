@@ -1,7 +1,7 @@
 """OSV scanner adapter for cross-ecosystem dependency advisories."""
 from __future__ import annotations
 from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
-                   omit_none, parse_json_bytes, run_tool,
+                   omit_none, parse_json_bytes, run_tool, scratch_cwd,
                    _cvss_v3_score)
 from .sarif_utils import _norm_uri
 
@@ -23,7 +23,10 @@ class OsvScannerAdapter:
     def invoke(self, target: str) -> tuple[bytes, int]:
         # v1.8.2 spells it --experimental-offline; re-check when OSV_SCANNER_VERSION bumps
         cmd = ["osv-scanner", "--format", "json", "--experimental-offline", "--recursive", target]
-        return run_tool(cmd, timeout=300)
+        # #1877: never the target as cwd. The scan root is named on argv, so
+        # argv is byte-unchanged.
+        with scratch_cwd("osv-scanner-cwd-") as cwd:
+            return run_tool(cmd, timeout=300, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         """Parse real osv-scanner --format json output.

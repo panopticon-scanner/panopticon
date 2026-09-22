@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first
+from _test_helpers import FakePopen, first, only
 import scripts.tools.osv_scanner as osv
 import scripts.tools.base as base
+from .conftest import assert_scratch_cwd, scratch_cwd_recorder
 
 # Golden trimmed from a REAL `osv-scanner --format json --recursive` run
 # (2026-08-03, osv-scanner in the panopticon-tools image). The real shape nests
@@ -146,17 +147,19 @@ class TestOsvScannerAdapter(unittest.TestCase):
 
     def test_invoke_runs_osv_scanner_json(self):
         adapter = osv.OsvScannerAdapter()
-        fake_run = FakePopen(stdout=b"{}", stderr=b"", returncode=0)
+        calls = []
         with mock.patch("scripts.tools.base.subprocess.Popen",
-                        return_value=fake_run) as popen_mock:
+                        side_effect=scratch_cwd_recorder(calls)):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"{}")
         self.assertEqual(rc, 0)
-        popen_mock.assert_called_once_with(
-            ["osv-scanner", "--format", "json", "--experimental-offline", "--recursive", "/tmp/fake"],
-            stdout=mock.ANY,
-            stderr=mock.ANY,
-        )
+        launch = only(calls, "osv-scanner launch")
+        self.assertEqual(
+            launch["argv"],
+            ["osv-scanner", "--format", "json", "--experimental-offline",
+             "--recursive", "/tmp/fake"])
+        # #1877: the scan root is named on argv, so the cwd is a scratch.
+        assert_scratch_cwd(self, launch, "/tmp/fake")
 
     def test_invoke_reports_nonzero_exit(self):
         import contextlib, io

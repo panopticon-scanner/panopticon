@@ -1,10 +1,9 @@
 """cargo-audit adapter for Rust dependency CVEs."""
 from __future__ import annotations
 import os
-import shutil
-import tempfile
 from .base import (as_list, cve_ids, cvss_bucket, make_finding, normalize_severity,
-                   omit_none, parse_json_bytes, run_tool, _cvss_v3_score)
+                   omit_none, parse_json_bytes, run_tool, scratch_cwd,
+                   _cvss_v3_score)
 
 
 class CargoAuditAdapter:
@@ -53,11 +52,8 @@ class CargoAuditAdapter:
         lockfile = os.path.abspath(os.path.join(target, "Cargo.lock"))
         cmd = ["cargo-audit", "audit", "--no-fetch", "--format", "json",
                "--file", lockfile]
-        scratch = tempfile.mkdtemp(prefix="cargo-audit-cwd-")
-        try:
+        with scratch_cwd("cargo-audit-cwd-") as scratch:
             return run_tool(cmd, timeout=300, cwd=scratch)
-        finally:
-            shutil.rmtree(scratch, ignore_errors=True)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)

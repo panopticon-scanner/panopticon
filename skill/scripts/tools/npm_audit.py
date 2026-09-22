@@ -4,7 +4,8 @@ import contextvars
 import os
 
 from .base import (as_list, cve_ids, has_any_file, make_finding, normalize_severity,
-                   omit_none, parse_json_bytes, run_tool, target_root_cv)
+                   omit_none, parse_json_bytes, run_tool, scratch_cwd,
+                   target_root_cv)
 
 # The manifest THIS invocation audited, target-relative (#1649). A ContextVar
 # for the reason pip_audit carries one: ADAPTERS holds a single shared adapter
@@ -50,7 +51,12 @@ class NpmAuditAdapter:
         # file from the one audited (#1649).
         _manifest_path_cv.set(self._manifest(target))
         cmd = ["npm", "audit", "--json", "--prefix", target]
-        return run_tool(cmd, timeout=300)
+        # #1877: npm reads an `.npmrc` from the WORKING DIRECTORY as well as
+        # from `--prefix`, and that file can set `registry`, `script-shell`
+        # and `ignore-scripts` -- so the cwd is never the target. `--prefix`
+        # already names the project by path, so argv is byte-unchanged.
+        with scratch_cwd("npm-audit-cwd-") as cwd:
+            return run_tool(cmd, timeout=300, cwd=cwd)
 
     def _located_at(self) -> str:
         """The manifest this parse's findings are located at.

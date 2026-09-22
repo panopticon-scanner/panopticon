@@ -2,9 +2,10 @@ import json
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen, first
+from _test_helpers import FakePopen, first, only
 import scripts.tools.legacy_sarif as legacy
 from scripts.tools import ADAPTERS
+from .conftest import assert_scratch_cwd, scratch_cwd_recorder
 
 
 SARIF = {
@@ -46,16 +47,19 @@ class TestLegacySarifAdapter(unittest.TestCase):
     def test_invoke_runs_tool_command(self):
         adapter = legacy.LegacySarifAdapter("bandit")
         mock_stdout = json.dumps(SARIF).encode("utf-8")
-        with mock.patch("scripts.tools.base.subprocess.Popen") as popen_mock:
-            popen_mock.return_value = FakePopen(
-                stdout=mock_stdout, stderr=b"", returncode=1)
+        calls = []
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        side_effect=scratch_cwd_recorder(
+                            calls, stdout=mock_stdout, returncode=1)):
             stdout, rc = adapter.invoke("/some/target")
         self.assertEqual(rc, 1)
         self.assertEqual(stdout, mock_stdout)
-        popen_mock.assert_called_once()
-        called_args, called_kwargs = popen_mock.call_args
-        self.assertEqual(called_kwargs.get("cwd"), None)
-        self.assertIn("/some/target", first(called_args))
+        launch = only(calls, "bandit launch")
+        self.assertIn("/some/target", launch["argv"])
+        # #1877: every legacy tool but gosec names its scan root on argv and
+        # runs from an empty scratch, so the target's own `.bandit` /
+        # `.semgrepignore` / `.gitleaksignore` is no longer read from the cwd.
+        assert_scratch_cwd(self, launch, "/some/target")
 
     def test_invoke_runs_gosec_in_target_directory(self):
         adapter = legacy.LegacySarifAdapter("gosec")
@@ -64,6 +68,9 @@ class TestLegacySarifAdapter(unittest.TestCase):
                 stdout=b"{}", stderr=b"", returncode=0)
             adapter.invoke("/go/project")
         called_args, called_kwargs = popen_mock.call_args
+        # The ONE documented exception (#1877): gosec's argv is the
+        # cwd-relative go package pattern `./...`, so the module root has to
+        # be the working directory.
         self.assertEqual(called_kwargs.get("cwd"), "/go/project")
         self.assertNotIn("/src", first(called_args))
 

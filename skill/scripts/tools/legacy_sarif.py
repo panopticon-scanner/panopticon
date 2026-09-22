@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from . import sarif_utils as su
-from .base import run_tool
+from .base import run_tool, scratch_cwd
 
 
 # Tools that produce SARIF output and are dispatched through this adapter.
@@ -70,11 +70,21 @@ class LegacySarifAdapter:
         if self.name not in TOOL_CMD:
             raise NotImplementedError(f"no command defined for tool {self.name}")
         cmd = [target if arg == "/src" else arg for arg in TOOL_CMD[self.name]]
-        # gosec scans relative to the working directory.
-        cwd = target if self.name == "gosec" else None
         # Most security scanners exit 1 when findings are present; run_tool
         # treats (0, 1) as clean and logs a stderr excerpt on anything else.
-        return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=cwd)
+        if self.name == "gosec":
+            # gosec scans relative to the working directory: its argv is the
+            # CWD-RELATIVE go package pattern `./...`, so the module root is
+            # the cwd by necessity. The one documented exception (#1877);
+            # see tests/tools/test_adapter_cwd_confinement.py for why that is
+            # acceptable for this tool and no other.
+            return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=target)
+        # #1877: every other tool here names its scan root on argv (semgrep,
+        # trivy, bandit positionally; gitleaks via `--source`), so the cwd is
+        # a scratch and `.semgrepignore` / `.gitleaksignore` / `.bandit`
+        # sitting in the target's root are no longer read from it.
+        with scratch_cwd("%s-cwd-" % self.name) as cwd:
+            return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         sarif = json.loads(raw)

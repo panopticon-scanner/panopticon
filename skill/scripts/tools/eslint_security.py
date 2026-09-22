@@ -1,9 +1,7 @@
 """eslint-plugin-security adapter for JS/TS security anti-patterns."""
 from __future__ import annotations
 import os
-import shutil
-import tempfile
-from .base import make_finding, omit_none, parse_json_bytes, run_tool
+from .base import make_finding, omit_none, parse_json_bytes, run_tool, scratch_cwd
 from .sarif_utils import norm_uri
 
 # node_modules locations in the tools image, in priority order. The first is
@@ -140,21 +138,24 @@ class EslintSecurityAdapter:
         # #run7: generate an eslint 9/10 flat config that imports the plugin by
         # explicit path (see _plugin_entry) and run it. The config lives in a
         # container-writable temp dir because the /src mount is read-only.
-        cfg_dir = tempfile.mkdtemp(prefix="eslint-cfg-")
-        cfg_path = os.path.join(cfg_dir, "eslint.config.mjs")
-        with open(cfg_path, "w", encoding="utf-8") as fh:
-            fh.write(_flat_config())
-        # --config pins OUR generated config and --no-config-lookup stops eslint
-        # from also discovering + EXECUTING the scanned target's own
-        # eslint.config.js (arbitrary JS -> RCE). The plugin is imported by
-        # ABSOLUTE path in that config, so no cwd- or NODE_PATH-relative
-        # resolution can be hijacked by a hostile target node_modules (#83/#715).
-        cmd = ["eslint", "--config", cfg_path, "--no-config-lookup",
-               "--format", "json", os.path.abspath(target)]
-        try:
-            return run_tool(cmd, timeout=300, ok_codes=(0, 1))
-        finally:
-            shutil.rmtree(cfg_dir, ignore_errors=True)
+        # #1877: the config dir doubles as the WORKING DIRECTORY -- it holds
+        # only our generated config and nothing the target controls, so a
+        # second scratch would buy nothing. What matters is that it is not
+        # the target (the container's `WORKDIR /src`), which is where eslint
+        # would otherwise resolve anything cwd-relative from.
+        with scratch_cwd("eslint-cfg-") as cfg_dir:
+            cfg_path = os.path.join(cfg_dir, "eslint.config.mjs")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                fh.write(_flat_config())
+            # --config pins OUR generated config and --no-config-lookup stops
+            # eslint from also discovering + EXECUTING the scanned target's own
+            # eslint.config.js (arbitrary JS -> RCE). The plugin is imported by
+            # ABSOLUTE path in that config, so no cwd- or NODE_PATH-relative
+            # resolution can be hijacked by a hostile target node_modules
+            # (#83/#715).
+            cmd = ["eslint", "--config", cfg_path, "--no-config-lookup",
+                   "--format", "json", os.path.abspath(target)]
+            return run_tool(cmd, timeout=300, ok_codes=(0, 1), cwd=cfg_dir)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)

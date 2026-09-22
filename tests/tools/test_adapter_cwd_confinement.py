@@ -1,15 +1,29 @@
-"""Pin against the #1742 (SEC-E3A) class: no scanner adapter may be invoked
-with cwd equal to, or inside, the scanned TARGET.
+"""Pin against the #1742 (SEC-E3A) / #1877 class: no scanner adapter may be
+invoked with cwd equal to, or inside, the scanned TARGET -- and every adapter
+must NAME the directory it runs from.
 
 Why this matters, generalized past cargo-audit's own bug: a scanner's cwd is
 the directory ITS OWN config/dispatch resolution walks from. cargo is a
 dispatcher that reads `.cargo/config.toml` upward from cwd and honours
 `[alias]`; bundle-audit resolves its default `.bundler-audit.yml` against the
-directory it scans. Either lets a HOSTILE target plant a file that redirects
-what the scanner does or reads, purely by virtue of `cwd=target`. The fix for
-both (see cargo_audit.py / bundler_audit.py) is the same shape pip-audit
-already used (#1646): invoke from an empty scratch directory and name the
-target explicitly, by path, in argv.
+directory it scans; npm reads `.npmrc`, semgrep `.semgrepignore`, gitleaks
+`.gitleaksignore`. Either lets a HOSTILE target plant a file that redirects
+what the scanner does or reads, purely by virtue of `cwd=target`. The fix is
+the shape pip-audit already used (#1646) and `base.scratch_cwd` now carries:
+invoke from an empty scratch directory and name the target explicitly, by
+path, in argv.
+
+Three things are asserted, because a cwd can be wrong in three ways:
+1. it is not the target, or inside it (#1742);
+2. it is NAMED -- `cwd=None` is not "somewhere neutral" but "whatever the
+   caller's cwd happens to be", and in the real deployment the caller is
+   `_run_adapter.py` inside a container whose image ends `WORKDIR /src`, the
+   target mount itself (#1877). A missing cwd is therefore counted as
+   unproven, never as safe;
+3. it is EMPTY at launch and gone afterwards -- a scratch that already holds
+   files is a smaller version of the same problem, and one that outlives the
+   run is a leak. The only entries permitted are the files the ADAPTER ITSELF
+   generates there, named one by one in `_GENERATED_IN_CWD`.
 
 This test iterates every registered adapter (`scripts.tools.ADAPTERS` --
 per-instance, so the five LegacySarifAdapter tools, e.g. gosec vs. semgrep,
@@ -20,7 +34,8 @@ each adapter's own `is_applicable` marker -- `invoke()` does not re-check
 applicability, but several adapters branch or early-return without invoking
 the scanner at all when their target has nothing to work with, which would
 make the pin vacuously pass for them), and records every `cwd` the adapter's
-scanner subprocess was launched with.
+scanner subprocess was launched with, plus what that directory held at the
+moment of launch.
 
 No adapter here bypasses `run_tool` for its scanner subprocess (verified by
 inspection: the only other `subprocess.*` use under skill/scripts/tools/ is
@@ -34,7 +49,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-import scripts.run_tools as rt
 from _test_helpers import FakePopen
 from scripts.tools import ADAPTERS
 
@@ -74,23 +88,18 @@ ALLOWED_TARGET_CWD = {
     ),
 }
 
-# #1742 fix round 1 (opus review, #1877): every adapter below passes NO cwd
-# to run_tool at all, which in the real deployment means the tools
-# container's default `WORKDIR /src` -- the target mount -- since none of
-# them is in `run_tools.ADAPTERS_NEEDING_EMPTY_CWD`. That is a real,
-# already-existing exposure this issue did not create and does not close
-# (tracked separately as #1877); it is listed here, one line each, so the
-# pin stays honest about what is and is not actually confined rather than
-# reading `cwd=None` as safe.
-_INHERITS_CONTAINER_WORKDIR = (
-    "inherits the container WORKDIR (the target mount); tracked in #1877"
-)
-ALLOWED_TARGET_CWD.update(dict.fromkeys(
-    ("npm-audit", "osv-scanner", "eslint-security", "brakeman",
-     "spotbugs", "dependency-check", "roslyn-secguard",
-     "semgrep", "bandit", "trivy", "gitleaks"),
-    _INHERITS_CONTAINER_WORKDIR,
-))
+# Files an adapter GENERATES into its own scratch cwd before launching, named
+# exactly, so "the scratch was empty" stays a real assertion rather than a
+# blanket tolerance for whatever happens to be there.
+_GENERATED_IN_CWD = {
+    # The generated eslint flat config; the cwd IS the config dir (see
+    # eslint_security.invoke), and nothing the target controls reaches it.
+    "eslint-security": ["eslint.config.mjs"],
+    # The empty `--config` bundle-audit is pinned to, which must live inside
+    # the scratch so the target's own .bundler-audit.yml is never the default
+    # (#1742 finding 3).
+    "bundler-audit": ["empty-bundler-audit.yml"],
+}
 
 
 def _seed_fixture(name, root):
@@ -134,11 +143,25 @@ def _seed_fixture(name, root):
 
 def _record_popen_calls(adapter, target):
     """Run *adapter*.invoke(target) with its scanner subprocess faked, and
-    return every (argv, cwd) the fake Popen was launched with."""
+    return one record per launch.
+
+    Each record is `{argv, cwd, existed, entries}`: `existed` and `entries`
+    are read INSIDE the fake Popen -- i.e. at the instant the scanner would
+    have started -- because that, not what the directory looks like after the
+    adapter's `finally` has run, is what the scanner would have resolved its
+    config against.
+    """
     calls = []
 
     def _record(cmd, **kwargs):
-        calls.append((list(cmd), kwargs.get("cwd")))
+        cwd = kwargs.get("cwd")
+        existed = cwd is not None and os.path.isdir(cwd)
+        calls.append({
+            "argv": list(cmd),
+            "cwd": cwd,
+            "existed": existed,
+            "entries": sorted(os.listdir(cwd)) if existed else None,
+        })
         return FakePopen(stdout=b"", stderr=b"", returncode=0)
 
     with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=_record):
@@ -148,23 +171,21 @@ def _record_popen_calls(adapter, target):
 
 def _is_inside(name, cwd, root):
     """True when *cwd* -- the argument an adapter passed `run_tool`, for the
-    adapter named *name* -- is the target or inside it.
+    adapter named *name* -- is the target, inside it, or UNPROVEN.
 
-    #1742 fix round 1 (opus review): `cwd=None` is NOT "somewhere neutral".
-    `run_tool` -> `subprocess.Popen` with no `cwd` kwarg inherits the CALLING
-    PROCESS's cwd, and in the real deployment that calling process is
-    `_run_adapter.py` running inside the tools container, whose default
-    working directory is the image's `WORKDIR /src` (Dockerfile) -- and
-    `/src` IS the target mount (`run_tools.py`'s `docker run ... -v
-    target:/src:ro`). `run_tools.ADAPTERS_NEEDING_EMPTY_CWD` is the one
-    documented exception: only those adapters get an explicit `docker run -w
-    <empty dir>` that moves the container's cwd off `/src` before the
-    adapter ever runs. So `cwd=None` means "the target" for every adapter
-    NOT in that tuple -- imported here (not re-declared) so the two can never
-    silently drift apart.
+    #1877: `cwd=None` counts as the target for EVERY adapter, with no
+    exception. `run_tool` -> `subprocess.Popen` with no `cwd` kwarg inherits
+    the CALLING PROCESS's cwd, and in the real deployment that calling
+    process is `_run_adapter.py` running inside the tools container, whose
+    image ends `WORKDIR /src` (Dockerfile) -- and `/src` IS the target mount
+    (`run_tools.py`'s `docker run ... -v target:/src:ro`). run_tools now
+    passes `-w` on every dispatch, but that is the container-level BELT: an
+    `invoke()` run anywhere else (a host-side test, a future runner) has no
+    such dispatcher in front of it, so the adapter itself must still name its
+    own cwd. A missing cwd is unproven, never neutral.
     """
     if cwd is None:
-        return name not in rt.ADAPTERS_NEEDING_EMPTY_CWD
+        return True
     cwd_real = os.path.realpath(cwd)
     root_real = os.path.realpath(root)
     return cwd_real == root_real or cwd_real.startswith(root_real + os.sep)
@@ -189,17 +210,49 @@ class TestAdapterCwdConfinement(unittest.TestCase):
                     "%s: invoke() launched nothing -- the pin cannot verify "
                     "this adapter's cwd; give it a fixture in _seed_fixture "
                     "or confirm it never scans" % name)
-                for cmd, cwd in calls:
-                    if _is_inside(name, cwd, root) and name not in ALLOWED_TARGET_CWD:
+                for call in calls:
+                    if (_is_inside(name, call["cwd"], root)
+                            and name not in ALLOWED_TARGET_CWD):
                         offenders.append(
-                            "%s: cwd=%r is the target (or inside it); argv=%r"
-                            % (name, cwd, cmd))
+                            "%s: cwd=%r is the target (or inside it, or "
+                            "unnamed); argv=%r"
+                            % (name, call["cwd"], call["argv"]))
         self.assertEqual(
             offenders, [],
             "adapter(s) invoked their scanner with cwd inside the scanned "
-            "target -- a target can plant scanner-native dispatch/config "
-            "there (#1742 class). Add to ALLOWED_TARGET_CWD with a reason if "
-            "this is legitimate, or fix the adapter:\n" + "\n".join(offenders))
+            "target, or with no cwd at all (which is the container's "
+            "`WORKDIR /src`, i.e. the target) -- a target can plant "
+            "scanner-native dispatch/config there (#1742/#1877 class). Use "
+            "`base.scratch_cwd`, or add to ALLOWED_TARGET_CWD with a "
+            "reason:\n" + "\n".join(offenders))
+
+    def test_every_scratch_cwd_is_empty_at_launch_and_gone_afterwards(self):
+        # The cwd being "not the target" is not enough: a scratch that
+        # already holds files is the same exposure at a smaller scale, and a
+        # scratch that outlives invoke() is a leak that accumulates one
+        # directory per tool per scan.
+        for name, adapter in sorted(ADAPTERS.items()):
+            if name in ALLOWED_TARGET_CWD:
+                continue          # documented target cwd; not a scratch
+            with self.subTest(adapter=name):
+                _root, calls = self._invoke_in_fresh_target(name, adapter)
+                permitted = _GENERATED_IN_CWD.get(name, [])
+                for call in calls:
+                    cwd = call["cwd"]
+                    self.assertTrue(
+                        call["existed"],
+                        "%s: cwd %r did not exist when the scanner launched"
+                        % (name, cwd))
+                    self.assertEqual(
+                        call["entries"], permitted,
+                        "%s: the scratch cwd held %r at launch; only the "
+                        "adapter's own generated files may be there, and "
+                        "each must be named in _GENERATED_IN_CWD"
+                        % (name, call["entries"]))
+                    self.assertFalse(
+                        os.path.exists(cwd),
+                        "%s: the scratch cwd %r outlived invoke()"
+                        % (name, cwd))
 
     def test_allowlisted_adapters_actually_need_target_cwd(self):
         # A stale allowlist entry -- one whose adapter no longer uses
@@ -210,9 +263,15 @@ class TestAdapterCwdConfinement(unittest.TestCase):
                 self.assertTrue(reason.strip(), "empty allowlist reason")
                 root, calls = self._invoke_in_fresh_target(name, ADAPTERS[name])
                 self.assertTrue(
-                    any(_is_inside(name, cwd, root) for _cmd, cwd in calls),
+                    any(_is_inside(name, c["cwd"], root) for c in calls),
                     "%s is allowlisted for cwd=target but no recorded call "
                     "actually used it -- the allowlist entry is stale" % name)
+
+    def test_gosec_is_the_only_allowlisted_adapter(self):
+        # #1877 closed the eleven inherited-WORKDIR entries this allowlist
+        # used to carry. It is back to exactly one documented exception, and
+        # a new entry must be argued for, not appended to a crowd.
+        self.assertEqual(sorted(ALLOWED_TARGET_CWD), ["gosec"])
 
     def test_cargo_audit_and_bundler_audit_are_not_allowlisted(self):
         # The two adapters #1742 fixed must stay off the allowlist: they are
