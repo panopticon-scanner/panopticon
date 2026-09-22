@@ -29,6 +29,9 @@ from shell_reader import without_comments as _without_comments
 # rather than being hand-rolled a second time in this file.
 from shell_reader import join_continuations
 from shell_reader import statements as _statements
+# #1655: the same parse, asked what a `docker run` line's FLAGS are --
+# `_shell_command` is what makes `sudo docker run` read as `docker run`.
+from shell_reader import command as _shell_command
 
 WORKFLOW_DIR = os.path.join(REPO_ROOT, ".github", "workflows")
 
@@ -1044,3 +1047,143 @@ class TestTheFleetsContainmentLanesArePinned(unittest.TestCase):
                 for _wf, _job, _step, env in rows),
             "the workflow env reader found no integration lane at all; it is "
             "broken, not the fleet")
+
+
+# --- #1655 ruling: the opt-in and `--network none`, together -----------------
+# The owner ruling (2026-09-22) is that a scheduled lane DOES run the hostile
+# build. Two controls make that safe and neither is sufficient alone:
+# `PANOPTICON_CONTAINMENT_PROBE=1` is the opt-in, and `--network none` on the
+# same `docker run` is what makes the opt-in true -- evil.csproj's hostile
+# MSBuild target attempts a live `curl`, and the probe beside the test
+# (`_UNCONTAINED_MSG`) refuses an opted-in run whose egress is reachable. A
+# lane that set only the env var would be opted in on a network-enabled
+# runner, which is the one outcome the opt-in exists to prevent.
+#
+# So the pin above ("which lanes opt in") is only half an answer. This half
+# reads the `docker run` those lanes actually execute and requires the network
+# to be off on the same invocation that carries the flag.
+
+
+def docker_run_argvs(script):
+    """Every `docker run` invocation in a step's script, as argv lists.
+
+    Through `shell_reader`, not a regex: the flags are written across six
+    continued lines, and the container's own command is a quoted argument of
+    the same invocation. `_shell_command` strips `sudo`/`env`-style wrappers,
+    so `sudo docker run ...` reads as the same act.
+    """
+    found = []
+    for statement in _statements(script):
+        for stage in statement.stages:
+            argv = _shell_command(stage.argv)
+            rest = [t for t in argv[1:] if not t.startswith("-")]
+            if argv and os.path.basename(argv[0]) == "docker" and rest[:1] == ["run"]:
+                found.append(argv)
+    return found
+
+
+# `--net` is docker's older spelling of `--network` and still works, so a lane
+# written with it is contained and must not read as a defect.
+_NETWORK_FLAGS = ("--network", "--net")
+
+
+def _flag_value(argv, names):
+    """The value of `--name value` / `--name=value`, or None if absent."""
+    for index, token in enumerate(argv):
+        for name in names:
+            if token == name:
+                return argv[index + 1] if index + 1 < len(argv) else ""
+            if token.startswith(name + "="):
+                return token.split("=", 1)[1]
+    return None
+
+
+def _carries_opt_in(argv):
+    """True if this `docker run` hands the container the opt-in itself."""
+    return dict(_DOCKER_ENV.findall(" ".join(argv))).get(
+        CONTAINMENT_PROBE_ENV) == "1"
+
+
+def containment_defect(script):
+    """Why an opted-in step would execute the hostile build uncontained, or None.
+
+    The rule is about the ONE invocation that carries the opt-in: a sibling
+    `docker run --network none` elsewhere in the step contains nothing, and a
+    step that opts in with no container at all runs evil.csproj's `curl` on the
+    runner. Both are the same defect as the missing flag.
+    """
+    opted = [argv for argv in docker_run_argvs(script) if _carries_opt_in(argv)]
+    if not opted:
+        return ("no `docker run` in this step carries %s=1, so whatever opted "
+                "this lane in executes the hostile MSBuild target outside the "
+                "no-egress container -- on the runner itself (#1655)"
+                % CONTAINMENT_PROBE_ENV)
+    for argv in opted:
+        network = _flag_value(argv, _NETWORK_FLAGS)
+        if network is None:
+            return ("the `docker run` that sets %s=1 carries no `--network "
+                    "none`, so the hostile build's live curl reaches the "
+                    "network from a CI runner (#1655)" % CONTAINMENT_PROBE_ENV)
+        if network != "none":
+            return ("the `docker run` that sets %s=1 runs on network %r, not "
+                    "`none` (#1655)" % (CONTAINMENT_PROBE_ENV, network))
+    return None
+
+
+class TestTheOfflineRule(unittest.TestCase):
+    """The reader and the rule, on scratch scripts -- both answers."""
+
+    CONTAINED = ('docker run --rm \\\n  -v "$PWD:/work:ro" -w /work \\\n'
+                 '  --network none \\\n'
+                 '  -e PANOPTICON_CONTAINMENT_PROBE=1 \\\n'
+                 '  --entrypoint sh panopticon-fixtures:latest \\\n'
+                 '  -c "python3 -m pytest tests/tools/test_hostile_csproj.py -q"\n')
+
+    def test_the_shipped_shape_reads_as_one_docker_run(self):
+        argvs = docker_run_argvs(self.CONTAINED)
+        self.assertEqual(1, len(argvs), argvs)
+        self.assertEqual(["docker", "run"], argvs[0][:2])
+
+    def test_a_contained_lane_is_not_a_defect(self):
+        self.assertIsNone(containment_defect(self.CONTAINED))
+
+    def test_dropping_the_flag_is_a_defect(self):
+        why = containment_defect(self.CONTAINED.replace(
+            "  --network none \\\n", ""))
+        self.assertIsNotNone(why, "an opted-in lane with no --network passed")
+        self.assertIn("--network none", why)
+
+    def test_another_network_is_a_defect(self):
+        why = containment_defect(self.CONTAINED.replace("--network none",
+                                                        "--network host"))
+        self.assertIsNotNone(why)
+        self.assertIn("host", why)
+
+    def test_both_spellings_of_the_flag_are_read(self):
+        for spelling in ("--network none", "--network=none", "--net none",
+                         "--net=none"):
+            with self.subTest(spelling=spelling):
+                self.assertIsNone(containment_defect(
+                    self.CONTAINED.replace("--network none", spelling)))
+
+    def test_opting_in_with_no_container_at_all_is_a_defect(self):
+        why = containment_defect('PANOPTICON_CONTAINMENT_PROBE=1 pytest x\n')
+        self.assertIsNotNone(why)
+        self.assertIn("on the runner itself", why)
+
+    def test_a_contained_sibling_does_not_vouch_for_the_opted_in_run(self):
+        # The flag has to be on the invocation that carries the opt-in; a
+        # second, offline `docker run` in the same step contains nothing.
+        script = ('docker run --rm --network none alpine true\n'
+                  'docker run --rm -e PANOPTICON_CONTAINMENT_PROBE=1 image sh\n')
+        why = containment_defect(script)
+        self.assertIsNotNone(why, "a sibling --network none vouched for it")
+        self.assertIn("--network none", why)
+
+    def test_a_step_that_never_opts_in_is_never_asked(self):
+        # The rule is only applied to lanes `containment_lanes()` found, but
+        # the reader must still be able to tell them apart.
+        self.assertFalse(_carries_opt_in(
+            ["docker", "run", "-e", "PANOPTICON_REQUIRE_INTEGRATION=1", "i"]))
+        self.assertTrue(_carries_opt_in(
+            ["docker", "run", "-e", "PANOPTICON_CONTAINMENT_PROBE=1", "i"]))
