@@ -108,12 +108,14 @@ summary + JSON artifact) with standards citations and CI gating.
   candidate in the run in Security; this conservative tradeoff avoids a
   partial SARIF reference resolver. Unsupported external, taxonomy,
   configuration-override, or indexed candidate references also remain in
-  Security, while the conventional unbacked `%SRCROOT%` base used by current
-  Semgrep captures remains eligible. Malformed captures and dangling message
-  IDs fail preparation before anything is published. The raw captures are
-  retained as their own artifact, and the helper publishes the Security and
-  inventory directories atomically so a preparation failure cannot appear as
-  an empty successful analysis.
+  Security. ID-bearing nested `message`, `description`, and `label` objects
+  remain there as unsupported references; only the root result message uses
+  the rule/global message resolver. The conventional unbacked `%SRCROOT%` base
+  used by current Semgrep captures remains eligible. Malformed captures and
+  dangling root message IDs fail preparation before anything is published.
+  The raw captures are retained as their own artifact, and the helper publishes
+  the Security and inventory directories atomically so a preparation failure
+  cannot appear as an empty successful analysis.
 - **`meta.coverage` is the single home for what a run actually observed**:
   `adapters` (per-file disposition — `ok`/`empty`/`failed`, a findings count,
   and a `reason` when failed), `tools_ran`, `build_executing_tools`,

@@ -31,6 +31,7 @@ PROPERTY_BAG_FIELDS = frozenset({
     "parameters",
     "properties",
 })
+MESSAGE_FIELDS = frozenset({"description", "label", "message"})
 REFERENCE_INDEX_FIELDS = frozenset({
     "graphIndex",
     "index",
@@ -214,11 +215,11 @@ def _metadata_is_verified_harmless(result: dict[str, Any],
              not _contains_unreviewed_metadata(referenced_message)))
 
 
-def _shared_context_is_verified_harmless(
-        document: dict[str, Any], run: dict[str, Any]) -> bool:
+def _shared_contexts(document: dict[str, Any], run: dict[str, Any]) -> tuple[
+        dict[str, Any], ...]:
     tool = run["tool"]
     driver = tool["driver"]
-    contexts = (
+    return (
         {key: value for key, value in document.items() if key != "runs"},
         {key: value for key, value in run.items()
          if key not in {"results", "tool"}},
@@ -226,12 +227,35 @@ def _shared_context_is_verified_harmless(
         {key: value for key, value in driver.items()
          if key not in {"globalMessageStrings", "rules"}},
     )
+
+
+def _shared_context_is_verified_harmless(
+        document: dict[str, Any], run: dict[str, Any]) -> bool:
     # Shared caches are deliberately scanned wholesale. Metadata on an
     # unreferenced cache entry can retain every candidate in the run; this
     # sacrifices inventory routing for unfamiliar valid SARIF instead of
     # introducing a partial graph/reference resolver that might lose context.
     return not any(_contains_unreviewed_metadata(context)
-                   for context in contexts)
+                   for context in _shared_contexts(document, run))
+
+
+def _has_unsupported_message_reference(
+        value: Any, *, root_result: bool = False) -> bool:
+    def visit(item: Any, at_root: bool = False) -> bool:
+        if isinstance(item, list):
+            return any(visit(child) for child in item)
+        if not isinstance(item, dict):
+            return False
+        for key, child in item.items():
+            if (key in MESSAGE_FIELDS and isinstance(child, dict) and
+                    "id" in child):
+                if not (root_result and at_root and key == "message"):
+                    return True
+            if visit(child):
+                return True
+        return False
+
+    return visit(value, at_root=True)
 
 
 def _has_unsupported_shared_context(
@@ -245,6 +269,9 @@ def _has_unsupported_shared_context(
     tool = run["tool"]
     if tool.get("extensions"):
         return True
+    if any(_has_unsupported_message_reference(context)
+           for context in _shared_contexts(document, run)):
+        return True
     return any(
         invocation.get("notificationConfigurationOverrides") or
         invocation.get("ruleConfigurationOverrides")
@@ -253,7 +280,8 @@ def _has_unsupported_shared_context(
 
 def _has_unsupported_candidate_reference(
         result: dict[str, Any], run: dict[str, Any]) -> bool:
-    if result.get("rule"):
+    if (result.get("rule") or
+            _has_unsupported_message_reference(result, root_result=True)):
         return True
     uri_bases = run.get("originalUriBaseIds", {})
 

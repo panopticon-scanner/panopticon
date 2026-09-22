@@ -291,6 +291,80 @@ def test_policy_carriers_match_every_property_bag_reference_in_schema():
     assert reports.PROPERTY_BAG_FIELDS == expected
 
 
+def test_message_carriers_match_every_message_reference_in_schema():
+    schema = json.loads(reports.SARIF_SCHEMA_PATH.read_bytes())
+    discovered = set()
+
+    def visit(value, field_name=None):
+        if isinstance(value, list):
+            for item in value:
+                visit(item, field_name)
+        elif isinstance(value, dict):
+            if value.get("$ref") == "#/definitions/message":
+                discovered.add(field_name)
+            for key, item in value.items():
+                visit(item, key)
+
+    visit(schema)
+    expected = {"message", "description", "label"}
+    assert discovered == expected
+    assert reports.MESSAGE_FIELDS == expected
+
+
+def _add_nested_message(result, carrier, message):
+    if carrier == "message":
+        result["locations"][0]["message"] = message
+    elif carrier == "description":
+        result["locations"][0]["physicalLocation"]["artifactLocation"][
+            "description"] = message
+    else:
+        result["graphs"] = [{
+            "nodes": [{"id": "node-1", "label": message}],
+        }]
+
+
+@pytest.mark.parametrize("carrier", ["message", "description", "label"])
+def test_nested_message_ids_stay_actionable(tmp_path, carrier):
+    result = _result(ANTHROPIC)
+    _add_nested_message(result, carrier, {"id": "security-context"})
+    document = _sarif(
+        [_rule(ANTHROPIC)], [result],
+        global_messages={"security-context": {
+            "text": "Security context",
+            "properties": {"cve": "CVE-2026-1234"},
+        }})
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
+
+
+def test_shared_context_message_id_stays_actionable(tmp_path):
+    document = _sarif(
+        [_rule(ANTHROPIC)], [_result(ANTHROPIC)],
+        global_messages={"security-context": {
+            "text": "Security context",
+            "properties": {"cve": "CVE-2026-1234"},
+        }})
+    document["runs"][0]["automationDetails"] = {
+        "description": {"id": "security-context"},
+    }
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
+
+
+@pytest.mark.parametrize("carrier", ["message", "description", "label"])
+def test_text_only_nested_messages_remain_inventory_eligible(tmp_path, carrier):
+    result = _result(ANTHROPIC)
+    _add_nested_message(result, carrier, {"text": "Local context"})
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": _sarif([_rule(ANTHROPIC)], [result])})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text())[
+        "runs"][0]["results"] == []
+
+
 @pytest.mark.parametrize("owner", ["document", "run", "tool", "driver"])
 def test_shared_ancestor_property_bags_keep_candidates_actionable(tmp_path, owner):
     document = _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)])
