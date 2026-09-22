@@ -192,7 +192,7 @@ def _tree_delta(review_root, runner):
         # #run9 OPS-E1A: the run-start baseline probe failed, so no clean-tree
         # reference exists -- the tree CANNOT be certified clean. Fail closed.
         return ["clean-tree baseline was never captured (git-status probe failed "
-                "at run start); tree integrity cannot be certified"]
+                + "at run start); tree integrity cannot be certified"]
     # #1514: a v1 baseline is raw porcelain text with no digests. Resuming across
     # the upgrade must say so rather than silently certify on a check it cannot
     # perform -- the same fail-closed rule the probe-failure sentinel follows.
@@ -202,15 +202,15 @@ def _tree_delta(review_root, runner):
             raise ValueError("not an object")
     except ValueError:
         return ["clean-tree baseline predates content digests (schema v1); "
-                "content equality not established, so tree integrity cannot "
-                "be certified"]
+                + "content equality not established, so tree integrity cannot "
+                + "be certified"]
     if snapshot.get("schema_version") != _BASELINE_SCHEMA:
-        return ["clean-tree baseline schema_version %r is not %d; content "
-                "equality not established, so tree integrity cannot be certified"
+        return [("clean-tree baseline schema_version %r is not %d; content "
+                 + "equality not established, so tree integrity cannot be certified")
                 % (snapshot.get("schema_version"), _BASELINE_SCHEMA)]
     if snapshot.get("truncated"):
-        return ["clean-tree baseline was truncated at %d files; content equality "
-                "not established, so tree integrity cannot be certified"
+        return [("clean-tree baseline was truncated at %d files; content equality "
+                 + "not established, so tree integrity cannot be certified")
                 % _MAX_BASELINE_FILES]
     baseline = _porcelain_z_records(snapshot.get("status") or "")
     try:
@@ -219,11 +219,11 @@ def _tree_delta(review_root, runner):
         if proc.returncode != 0:
             # #run9 OPS-E1A: a baseline exists but the verification probe failed --
             # we can't confirm the tree is unchanged, so fail closed, never []-clean.
-            return ["clean-tree verification git-status exited %s; tree integrity "
-                    "cannot be certified" % proc.returncode]
+            return [("clean-tree verification git-status exited %s; tree integrity "
+                     + "cannot be certified") % proc.returncode]
     except (subprocess.SubprocessError, OSError) as exc:
-        return ["clean-tree verification git-status failed (%s); tree integrity "
-                "cannot be certified" % exc]
+        return [("clean-tree verification git-status failed (%s); tree integrity "
+                 + "cannot be certified") % exc]
     new = _porcelain_z_records(proc.stdout) - baseline
     delta = sorted("%s %s" % (xy, " -> ".join(paths)) for xy, paths in new
                    if any(_outside_panopticon(p) for p in paths))

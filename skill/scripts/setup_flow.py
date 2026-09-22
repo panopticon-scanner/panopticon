@@ -766,8 +766,8 @@ def format_spine(spine):
     manifests, what is already claimed, and the test trees with the sweep
     instruction (spec §5.1). Deterministic; no timestamps."""
     out = ["Depth-2 directory tree (a row counts the files that roll up to that node: "
-           "a file directly under a top-level directory counts there, deeper files "
-           "under their depth-2 directory; then the dominant extension):", ""]
+           + "a file directly under a top-level directory counts there, deeper files "
+           + "under their depth-2 directory; then the dominant extension):", ""]
     for row in spine["tree"]:
         out.append("    %-40s %5d  %s" % (row["path"], row["files"], row["ext"]))
     if spine.get("tree_more"):
@@ -793,7 +793,7 @@ def format_spine(spine):
         out.append("Claimed by the Commons classifier: nothing.")
     if spine["test_trees"]:
         out += ["", "Test trees (the Tests sweep will catch these; claim only unit tests "
-                    "scoped to your verticals via each group's `tests`):"]
+                    + "scoped to your verticals via each group's `tests`):"]
         out += ["    %-40s %5d" % (t["path"], t["files"]) for t in spine["test_trees"]]
     else:
         out += ["", "Test trees: none detected (colocated tests belong to the vertical beside them)."]
@@ -816,14 +816,14 @@ def format_budget(spine):
         # budget for EVERY leaf and proposes fewer verticals than the repo
         # affords. `Tests` and the Commons categories are the engine's, formed
         # after the proposal, and are not charged to this number.
-        "- ceiling (CODE review groups this repo affords): %d %s -- `Tests` and "
-        "the Commons categories are formed by the engine and are not counted "
-        "against it" % (spine["ceiling"], how),
-        "- propose `layers` ONLY for a vertical you estimate OVER the cap (%d files); "
-        "a layer under %d files merges back into its parent"
+        ("- ceiling (CODE review groups this repo affords): %d %s -- `Tests` and "
+         + "the Commons categories are formed by the engine and are not counted "
+         + "against it") % (spine["ceiling"], how),
+        ("- propose `layers` ONLY for a vertical you estimate OVER the cap (%d files); "
+         + "a layer under %d files merges back into its parent")
         % (spine["cap"], grouping_engine.FLOOR),
         "- aim for verticals of roughly cap/2 files or more; over the ceiling, the "
-        "smallest layers are collapsed first and verticals are never merged",
+        + "smallest layers are collapsed first and verticals are never merged",
     ])
 
 

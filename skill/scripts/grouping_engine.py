@@ -516,8 +516,8 @@ def format_report(report, disclosure=None):
             for lf in r["leaves"]]
     empty = [lf["name"] for lf in r["leaves"] if lf["kind"] == "committed" and not lf["files"]]
     if empty:
-        out += [""] + ["- %s: committed leaf claims 0 files (not dispatched, not counted "
-                       "against the ceiling) -- its globs match nothing" % n for n in empty]
+        out += [""] + [("- %s: committed leaf claims 0 files (not dispatched, not counted "
+                        + "against the ceiling) -- its globs match nothing") % n for n in empty]
     if r["layers"]:
         out += ["", "## Layers", ""]
         for name, info in r["layers"].items():
