@@ -32,7 +32,7 @@ import scripts.runners.base as runners_base
 import scripts.runners.batch as batch_mod
 
 from _test_helpers import hard_link_or_skip
-from conftest import SKILL_ROOT, write_host_evidence
+from conftest import REPO_ROOT, SKILL_ROOT, write_host_evidence
 from test_orchestrate import _all_proven_artifact, _refuted_artifact
 from tools.git_repo import make_git_repo
 
@@ -1470,9 +1470,14 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         self.assertEqual(["docker"], doc["gaps"])
         self.assertEqual([], doc["limitations"])
         # ...beside, never instead of, what setup-report.json already carried.
+        # The KEY SET, so a key added beside these is a conscious act: the
+        # only other pin (tests/test_setup_flow.py, over `ingest_proposal`)
+        # describes the readiness-absent shape, which is still exactly what
+        # that function writes (fix round 1, M2).
+        self.assertEqual(["diff", "disclosure", "gaps", "limitations", "readiness",
+                          setup_readiness.PROBED_AT, "report", "schema_version"],
+                         sorted(doc))
         self.assertEqual(1, doc["schema_version"])
-        for key in ("report", "disclosure", "diff"):
-            self.assertIn(key, doc)
 
     def test_a_gap_is_disclosed_and_does_not_fail_setup(self):
         status, _ready, doc, md = self._setup(self.GAP)
@@ -1600,17 +1605,24 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         # and two copies of a disclosure drift while each path's own test
         # keeps passing -- the failure §5.1's four-surface rule exists to
         # prevent.
-        owners = []
-        for d, dirs, files in os.walk(os.path.join(SKILL_ROOT, "scripts")):
-            dirs[:] = sorted(x for x in dirs if x != "__pycache__")
-            for f in sorted(files):
-                if not f.endswith(".py"):
-                    continue
-                path = os.path.join(d, f)
-                with open(path, encoding="utf-8") as fh:
-                    if "(fix before running a review)" in fh.read():
-                        owners.append(os.path.relpath(path, SKILL_ROOT))
-        self.assertEqual(["scripts/phases/setup_readiness.py"], owners)
+        # BOTH halves (M4): a second copy of the clean verdict drifts from
+        # the gap one just as silently, and `scripts/` at the repo root is
+        # production code too.
+        for fingerprint in ("(fix before running a review)", "readiness OK"):
+            owners = []
+            for root in (os.path.join(SKILL_ROOT, "scripts"),
+                         os.path.join(REPO_ROOT, "scripts")):
+                for d, dirs, files in os.walk(root):
+                    dirs[:] = sorted(x for x in dirs if x != "__pycache__")
+                    for f in sorted(files):
+                        if not f.endswith(".py"):
+                            continue
+                        path = os.path.join(d, f)
+                        with open(path, encoding="utf-8") as fh:
+                            if fingerprint in fh.read():
+                                owners.append(os.path.relpath(path, REPO_ROOT))
+            with self.subTest(fingerprint=fingerprint):
+                self.assertEqual(["skill/scripts/phases/setup_readiness.py"], owners)
 
 
 class TestTheLimitationsClauseStaysReadable(unittest.TestCase):

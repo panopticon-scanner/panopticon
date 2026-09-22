@@ -48,6 +48,11 @@ _TRUNCATED = "..."
 # two: a check nobody could measure must not read as one that passed (§5.1).
 _VERDICT = {True: "ok", False: "gap", None: "not applicable"}
 
+# When the measurement was taken. Its own key rather than a row, so it cannot
+# be mistaken for a check: `gaps` and `limitations` are answers about the
+# host, and this is an answer about the record.
+PROBED_AT = "readiness_probed_at"
+
 
 def _limitation_line(name, detail):
     """One limitation on one line, no longer than `_LIMITATION_LINE` -- unless
@@ -130,8 +135,8 @@ def _readiness_suffix(record):
     return "readiness OK"
 
 
-def _readiness_record(checks):
-    """The three keys a setup artifact carries, off one `readiness()` answer.
+def _readiness_record(checks, probed_at=None):
+    """The keys a setup artifact carries, off one `readiness()` answer.
 
     ONE shape for both artifacts (#1603): the fallback's
     `setup-complete.json` and the normal path's `setup-report.json` describe
@@ -142,10 +147,21 @@ def _readiness_record(checks):
     collapse into "fine". It is kept under its own key so a consumer can tell
     "not applicable" from "measured and passed" (§5.1), and out of `gaps`,
     which gate READY and carry a remedy.
+
+    `probed_at` (fix round 1, M3) stamps WHEN, because the completion line is
+    read back off the artifact rather than passed down: a re-invocation that
+    finds the work already done runs no phase, so without the stamp it could
+    print a verdict measured days ago with nothing saying so. The caller
+    supplies it -- this module renders and shapes, it does not read a clock --
+    and a record without one simply carries no stamp, which is what every
+    artifact written before this key existed looks like.
     """
-    return {"readiness": [[c[0], c[1], c[2]] for c in checks],
-            "gaps": [c[0] for c in checks if c[1] is False],
-            "limitations": [[c[0], c[2]] for c in checks if c[1] is None]}
+    record = {"readiness": [[c[0], c[1], c[2]] for c in checks],
+              "gaps": [c[0] for c in checks if c[1] is False],
+              "limitations": [[c[0], c[2]] for c in checks if c[1] is None]}
+    if probed_at:
+        record[PROBED_AT] = probed_at
+    return record
 
 
 def _readiness_section(record):
@@ -197,7 +213,9 @@ def _stored_record(document):
             if isinstance(rows, list) else [],
             "gaps": [gap for gap in gaps if isinstance(gap, str)]
             if isinstance(gaps, list) else [],
-            "limitations": _stored_limitations(document)}
+            "limitations": _stored_limitations(document),
+            PROBED_AT: document.get(PROBED_AT)
+            if isinstance(document.get(PROBED_AT), str) else None}
 
 
 def _readiness_tail(document, artifact=REPORT_ARTIFACT):
@@ -225,6 +243,11 @@ def _readiness_tail(document, artifact=REPORT_ARTIFACT):
     if not record["readiness"]:
         return ""
     tail = " — " + _readiness_suffix(record)
+    if record[PROBED_AT]:
+        # This line is read back, not just written (M3): say when, or a
+        # resumed setup prints a verdict from another day as though it were
+        # this invocation's.
+        tail += " (measured %s)" % record[PROBED_AT]
     if record["limitations"]:
         tail += "\n" + _limitations_clause(record["limitations"], artifact=artifact)
     return tail

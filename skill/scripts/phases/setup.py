@@ -381,6 +381,10 @@ def ingest_execute(review_root, manifest):
     record = _take_readiness(review_root, manifest.get("host", "claude"))
     setup_flow.record_readiness(review_root, record,
                                 section=setup_readiness._readiness_section(record))
+    # The suffix rides on this message for symmetry with `_scan_fallback`'s,
+    # and like that one it is DISCARDED: `run_engine` collects phase names,
+    # never their messages. The operator's copy is composed in
+    # `run_setup_flow` (and superseded again by `orchestrate._finish`).
     return engine.PhaseResult(kind="advanced",
                        message="setup: draft written %s; report %s; %s"
                        % (res["draft"], res["report_path"],
@@ -417,14 +421,16 @@ def _take_readiness(review_root, host):
     answer than the stderr line printed moments earlier -- and re-scanned the
     whole tree to get it.
     """
+    at = run_manifest._now_iso()
     try:
         return setup_readiness._readiness_record(setup_flow.readiness(
             review_root, host=host,
-            envelope=loop_batch.envelope_for(review_root, loop_batch.SETUP_NAMESPACE)))
+            envelope=loop_batch.envelope_for(review_root, loop_batch.SETUP_NAMESPACE)),
+            probed_at=at)
     except Exception as exc:        # noqa: BLE001 -- see the docstring
         return setup_readiness._readiness_record(
             [("readiness", None,
-              "could not be taken: %s: %s" % (type(exc).__name__, exc))])
+              "could not be taken: %s: %s" % (type(exc).__name__, exc))], probed_at=at)
 
 SETUP_PHASES = (
     engine.Phase("scan", "checkpoint", scan_done, scan_execute),
@@ -663,7 +669,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
             # back off the report rather than passed down, because a
             # re-invocation that finds the work already done runs no phase at
             # all -- and an artifact with no readiness rows gets no clause,
-            # never a `readiness OK` nobody measured.
+            # never a clean verdict nobody measured.
             result["message"] += setup_readiness._readiness_tail(
                 runio._load_json(runio._pano(review_root, "setup-report.json")))
         else:
