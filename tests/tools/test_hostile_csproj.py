@@ -30,12 +30,18 @@ import socket
 import tempfile
 import unittest
 
-from _test_helpers import skip_or_fail
+from _test_helpers import REPO_FIXTURES, fixture_path, skip_or_fail
 
 from scripts.tools import ADAPTERS
 
-FIXTURE = os.path.join(os.path.dirname(__file__), os.pardir,
-                       "fixtures", "hostile-csproj")
+# Two roots (#1528), image first. They are NOT the same tree: Dockerfile.fixtures
+# copies this fixture in and `dotnet restore`s it, and roslyn-secguard refuses a
+# C# target with no restore output -- so the bare checkout is inapplicable and
+# the image's copy is the one that can be scanned (#1655). Falls back to the
+# repo path so an absent fixture still has a name to report.
+_FIXTURE_NAME = "hostile-csproj"
+FIXTURE = (fixture_path(_FIXTURE_NAME)
+           or os.path.join(REPO_FIXTURES, _FIXTURE_NAME))
 
 # Outbound endpoints probed to confirm the environment is contained. The
 # intended home is `docker run --network none`, where every connect() fails

@@ -84,6 +84,27 @@ COPY tests/fixtures/vulnerable-rust /opt/panopticon-fixtures/vulnerable-rust
 # hadolint ignore=DL3003
 RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
 
+# The hostile C# fixture (#1655). roslyn-secguard refuses a target with no NuGet
+# restore output (`project.assets.json`): a C# project that has not been restored
+# compiles to nothing and the scan reports an empty result, which is
+# indistinguishable from a clean one. The containment lane scans a read-only
+# mount with `--network none`, so the restore cannot happen at scan time -- it
+# happens here, with a network, exactly as it does for AspGoat above.
+#
+# RESTORE ONLY, never `dotnet build`. evil.csproj's `Hostile` target is hooked
+# `BeforeTargets="Build"`, so it fires when the project is BUILT -- which is the
+# act the containment probe performs, inside the no-egress container, on the
+# adapter's throwaway copy. Building it here would run its live `curl` on the
+# image builder, which has a network. Restore runs no Build target, and
+# tests/test_dockerfile.py pins that this line stays a restore.
+#
+# Deliberately NOT tolerated with `|| echo ... skipped` the way AspGoat's build
+# is: a skipped restore produces an image whose containment lane then fails on
+# applicability, reporting a decorative probe instead of a broken image -- the
+# exact defect this line exists to remove. A failed restore fails the build.
+COPY tests/fixtures/hostile-csproj /opt/panopticon-fixtures/hostile-csproj
+RUN dotnet restore /opt/panopticon-fixtures/hostile-csproj/evil.csproj
+
 # Note: skill/scripts/ and tests/ are mounted read-only at runtime so the harness
 # always uses the current repo's code; do not COPY them into the image.
 

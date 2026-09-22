@@ -71,11 +71,13 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     them under an absolute /opt/panopticon-fixtures/... path); those are
     checked by asking the built image whether the path exists inside it.
 
-    Fixtures marked "baked": false (e.g. hostile-csproj) are committed to the
-    repo instead and never copied into the image, by design (see the manifest
-    entry's "note") — checking them inside the image would always report
-    MISSING regardless of whether the fixture is actually present. Those are
-    checked directly against the host checkout (REPO_ROOT / path) instead.
+    Fixtures marked "baked": false are committed to the repo instead and never
+    copied into the image, by design (see the manifest entry's "note") —
+    checking them inside the image would always report MISSING regardless of
+    whether the fixture is actually present. Those are checked directly against
+    the host checkout (REPO_ROOT / path) instead. Nothing is marked that way
+    today: hostile-csproj was, until #1655 needed its NuGet restore output,
+    which only an image build can produce.
     """
     baked = [f for f in fixtures if f.get("baked", True) and f.get("path")]
     local = [f for f in fixtures if not f.get("baked", True) and f.get("path")]
