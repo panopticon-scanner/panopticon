@@ -461,11 +461,12 @@ class TestTheCliFlagsProbe(unittest.TestCase):
         return path
 
     def _probe(self, host, runner_module, text, name, returncode=0):
-        with tempfile.TemporaryDirectory() as bin_dir:
+        with tempfile.TemporaryDirectory() as bin_dir, \
+                tempfile.TemporaryDirectory() as target:
             found = self._on_path(bin_dir, name)
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
                     self._launcher(runner_module, text, returncode):
-                return probes_common.probe_cli_flags(host), found
+                return probes_common.probe_cli_flags(host, target), os.path.realpath(found)
 
     def test_codex_is_interrogated_at_the_subcommand_that_owns_the_flag(self):
         # `--output-schema` is a flag of `codex exec`, not of `codex`; the
@@ -509,17 +510,19 @@ class TestTheCliFlagsProbe(unittest.TestCase):
 
         def hangs(cmd, **kwargs):
             raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
-        with tempfile.TemporaryDirectory() as bin_dir:
+        with tempfile.TemporaryDirectory() as bin_dir, \
+                tempfile.TemporaryDirectory() as target:
             self._on_path(bin_dir, "codex")
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
                     mock.patch.object(codex_runner, "DEFAULT_RUNNER", hangs):
-                facts = probes_common.probe_cli_flags("codex")
+                facts = probes_common.probe_cli_flags("codex", target)
         self.assertIsNone(facts[hosts.OUTPUT_SCHEMA]["advertised"])
 
     def test_a_cli_that_is_not_on_path_is_recorded_as_unmeasured(self):
-        with tempfile.TemporaryDirectory() as empty:
+        with tempfile.TemporaryDirectory() as empty, \
+                tempfile.TemporaryDirectory() as target:
             with mock.patch.dict(os.environ, {"PATH": empty}):
-                facts = probes_common.probe_cli_flags("codex")
+                facts = probes_common.probe_cli_flags("codex", target)
         self.assertIsNone(facts[hosts.OUTPUT_SCHEMA]["advertised"])
         self.assertIn("PATH", facts[hosts.OUTPUT_SCHEMA]["detail"])
 
@@ -583,14 +586,15 @@ class TestAProbeThatCouldNotMeasureNamesTheOperation(unittest.TestCase):
 
         def refuse(cmd, **_kwargs):
             raise denied
-        with tempfile.TemporaryDirectory() as bin_dir:
+        with tempfile.TemporaryDirectory() as bin_dir, \
+                tempfile.TemporaryDirectory() as target:
             path = os.path.join(bin_dir, "codex")
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("#!/bin/sh\nexit 0\n")
             os.chmod(path, 0o755)
             with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
                     mock.patch.object(codex_runner, "DEFAULT_RUNNER", refuse):
-                facts = probes_common.probe_cli_flags("codex")
+                facts = probes_common.probe_cli_flags("codex", target)
         detail = facts[hosts.OUTPUT_SCHEMA]["detail"]
         self.assertIsNone(facts[hosts.OUTPUT_SCHEMA]["advertised"])
         for token in ("EPERM", "Operation not permitted", "exec --help"):

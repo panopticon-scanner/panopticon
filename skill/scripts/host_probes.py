@@ -185,7 +185,8 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
                 host, session_root=session_root, settings_path=settings_path),
         claude_probes.USAGE_SOURCE:
             lambda: claude_probes.probe_usage_source(
-                host, session_root, home=home, settings_path=settings_path),
+                host, session_root, home=home, settings_path=settings_path,
+                review_root=review_root),
         claude_probes.ENTRY_MODEL_BOUND:
             lambda: claude_probes.probe_entry_model_bound(host, registration_dir),
         claude_probes.READ_GUARD_ARMED:
@@ -251,7 +252,7 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     # launches none of our CLIs, so there is nothing to interrogate and
     # nothing to disclose (D10 N1).
     if settings_path is not None:
-        cli_flags.update(probes_common.probe_cli_flags(host))
+        cli_flags.update(probes_common.probe_cli_flags(host, review_root))
 
     capabilities = {}
     for capability in hosts.CAPABILITIES:

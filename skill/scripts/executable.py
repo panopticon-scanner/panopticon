@@ -33,10 +33,25 @@ def sanitize_startup_environment(env):
 
 
 def _inside(root, candidate):
+    """Whether candidate is rooted at root, including filesystem aliases."""
     try:
-        return os.path.commonpath([root, candidate]) == root
+        if os.path.commonpath([root, candidate]) == root:
+            return True
     except ValueError:
         return False
+    current = candidate
+    while True:
+        if os.path.exists(current):
+            try:
+                if os.path.samefile(root, current):
+                    return True
+            except OSError:
+                # An unverifiable boundary is untrusted: fail closed.
+                return True
+        parent = os.path.dirname(current)
+        if parent == current:
+            return False
+        current = parent
 
 
 def resolve(command, review_root, path=None):

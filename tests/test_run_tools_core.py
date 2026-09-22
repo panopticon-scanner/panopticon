@@ -460,7 +460,7 @@ class TestStreamingRunnerAndDeadline(unittest.TestCase):
         # and always took the drop path -- the #1111 guard was unreachable).
         seen = {}
 
-        def fake_capture(label, tool, docker, out_path, runner):
+        def fake_capture(label, tool, docker, out_path, runner, **_kwargs):
             seen["runner"] = runner
             return None
 

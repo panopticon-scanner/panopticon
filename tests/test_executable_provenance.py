@@ -47,6 +47,24 @@ class TestTrustedResolver(unittest.TestCase):
             self.assertNotIn(os.path.realpath(target), got.path_env.split(os.pathsep))
             self.assertNotIn(os.path.realpath(poison), got.path_env.split(os.pathsep))
 
+    def test_case_alias_of_target_is_rejected_when_filesystem_aliases_case(self):
+        with tempfile.TemporaryDirectory() as parent:
+            target = os.path.join(parent, "target")
+            alias = os.path.join(parent, "TARGET")
+            trusted = os.path.join(parent, "trusted")
+            os.makedirs(target)
+            target_cli = _program(os.path.join(target, "probe-cli"), "exit 99\n")
+            trusted_cli = _program(os.path.join(trusted, "probe-cli"), "exit 0\n")
+            if not os.path.exists(alias) or not os.path.samefile(alias, target):
+                self.skipTest("filesystem distinguishes path case")
+
+            got = executable.resolve(
+                "probe-cli", target, os.pathsep.join([alias, trusted]))
+            self.assertEqual(got.path, os.path.realpath(trusted_cli))
+            with self.assertRaises(executable.ExecutableResolutionError):
+                executable.resolve(os.path.join(alias, "probe-cli"), target, trusted)
+            self.assertTrue(os.path.isfile(target_cli))
+
 
 class TestHostCliBoundary(unittest.TestCase):
     def test_review_root_path_entries_and_relative_entries_cannot_supply_cli(self):
@@ -233,6 +251,77 @@ class TestDockerBoundary(unittest.TestCase):
             self.assertNotIn(os.path.realpath(target), child_path)
             self.assertNotIn("PYTHONPATH", kwargs["env"])
             self.assertNotIn("NODE_OPTIONS", kwargs["env"])
+
+    def test_symlinked_docker_with_different_target_name_keeps_cid_watchdog_identity(self):
+        calls = []
+        killed = []
+
+        class Proc:
+            def __init__(self):
+                self.stdout = io.BytesIO(b'{"runs":[]}')
+                self.stderr = io.BytesIO(b'')
+
+            def wait(self):
+                return 0
+
+            def poll(self):
+                return None
+
+            def kill(self):
+                killed.append("client")
+
+        def runner(cmd, **kwargs):
+            calls.append((list(cmd), dict(kwargs)))
+            cid_index = cmd.index("--cidfile") + 1
+            with open(cmd[cid_index], "w", encoding="utf-8") as fh:
+                fh.write("container-id\n")
+            return Proc()
+
+        def docker_control(cmd, **kwargs):
+            killed.append((list(cmd), dict(kwargs)))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        with tempfile.TemporaryDirectory() as parent:
+            target = os.path.join(parent, "target")
+            trusted = os.path.join(parent, "trusted")
+            os.makedirs(target)
+            real = _program(os.path.join(trusted, "docker.real"), "exit 99\n")
+            os.symlink("docker.real", os.path.join(trusted, "docker"))
+            with mock.patch.dict(os.environ, {"PATH": trusted}, clear=False), \
+                    mock.patch.object(run_tools.subprocess, "run",
+                                      side_effect=docker_control):
+                written = run_tools.run_tools(
+                    target, ["semgrep"], os.path.join(parent, "out"),
+                    runner=runner, venv_dirs=[])
+
+        self.assertEqual(1, len(written))
+        self.assertEqual(os.path.realpath(real), calls[0][0][0])
+        self.assertEqual("--cidfile", calls[0][0][2])
+        kill_calls = [item for item in killed if isinstance(item, tuple)]
+        self.assertEqual([os.path.realpath(real), "kill", "container-id"],
+                         kill_calls[0][0])
+        self.assertEqual(calls[0][1]["env"], kill_calls[0][1]["env"])
+
+    def test_docker_context_does_not_classify_an_unrelated_run_argv(self):
+        calls = []
+
+        class Result:
+            returncode, stdout, stderr = 0, b'{"runs":[]}', b""
+
+        with tempfile.TemporaryDirectory() as parent:
+            docker = _program(os.path.join(parent, "docker.real"), "exit 0\n")
+            other = _program(os.path.join(parent, "other"), "exit 0\n")
+            context = run_tools._DockerContext(docker, {"PATH": parent})
+
+            def runner(cmd, **kwargs):
+                calls.append(list(cmd))
+                return Result()
+
+            run_tools._capture_run(
+                "tool", "semgrep", [other, "run", "--rm"],
+                os.path.join(parent, "out.sarif"), runner,
+                docker_context=context)
+        self.assertNotIn("--cidfile", calls[0])
 
     def test_main_probe_cannot_execute_target_docker(self):
         with tempfile.TemporaryDirectory() as target:

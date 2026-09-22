@@ -588,7 +588,15 @@ class _DockerRunner:
         return self._panopticon_runner(cmd, **kwargs)
 
 
-def _capture_run(label, tool, docker, out_path, runner):
+class _DockerContext:
+    """The resolved Docker identity and the exact environment bound to it."""
+
+    def __init__(self, executable_path, env):
+        self.executable = executable_path
+        self.env = env
+
+
+def _capture_run(label, tool, docker, out_path, runner, docker_context=None):
     """Run one docker tool/adapter invocation and land its stdout at out_path.
 
     Streams stdout into a bounded sink so adversarial/large target output does
@@ -606,9 +614,9 @@ def _capture_run(label, tool, docker, out_path, runner):
     # only the CLI client. The cidfile must NOT pre-exist (docker refuses to start),
     # so it lives in a fresh temp dir cleaned up here. Inserted right after `run`.
     docker_bin = cidfile = cid_dir = None
-    if (len(docker) >= 2 and os.path.basename(str(docker[0])) == "docker"
-            and docker[1] == "run"):
-        docker_bin = docker[0]
+    if (docker_context is not None and len(docker) >= 2
+            and docker[0] == docker_context.executable and docker[1] == "run"):
+        docker_bin = docker_context.executable
         cid_dir = tempfile.mkdtemp(prefix="pano-cid-")
         cidfile = os.path.join(cid_dir, "cid")
         docker = docker[:2] + ["--cidfile", cidfile] + docker[2:]
@@ -620,7 +628,8 @@ def _capture_run(label, tool, docker, out_path, runner):
             return _write_completed(label, tool, proc, out_path)
         return _stream_and_write(label, tool, proc, out_path,
                                  docker_bin=docker_bin, cidfile=cidfile,
-                                 docker_env=getattr(runner, "_panopticon_env", None))
+                                 docker_env=(docker_context.env
+                                             if docker_context is not None else None))
     except subprocess.TimeoutExpired:
         print("%s %s timed out after %ss; skipping" % (label, tool, TOOL_TIMEOUT),
               file=sys.stderr)
@@ -1082,6 +1091,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     docker_bin = resolved.path
     docker_env = executable.sanitize_startup_environment(os.environ)
     docker_env["PATH"] = resolved.path_env
+    docker_context = _DockerContext(docker_bin, docker_env)
 
     # One environment for scanner launches and every egress control-plane
     # command. The wrapper preserves the injected runner seam while making an
@@ -1102,14 +1112,14 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
                         max_seconds=TOOL_TIMEOUT * total
                         + egress.SIDECAR_SLACK) as online_egress:
         written = _run_selected(target, tools, out_dir, image, docker_runner,
-                                progress, total, venv_dirs, docker_bin,
+                                progress, total, venv_dirs, docker_context,
                                 online_egress)
     progress.footer(len(written), total)
     return written
 
 
 def _run_selected(target, tools, out_dir, image, runner, progress, total,
-                  venv_dirs, docker_bin, online_egress):
+                  venv_dirs, docker_context, online_egress):
     """The dispatch loop, one docker invocation per selected tool.
 
     Split out of `run_tools` only so the `egress.session` context (#1645) does
@@ -1117,6 +1127,7 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
     wrote, exactly as the loop did inline.
     """
     written = []
+    docker_bin = docker_context.executable
     for index, tool in enumerate(tools, 1):
         # #1645 ruling 2: an online adapter whose egress could not be
         # established does NOT fall back to Docker's default bridge. It is
@@ -1154,7 +1165,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             _NETWORK_POSTURE[tool] = egress.NO_NETWORK
             with progress.tool(tool, index, total) as step:
                 done = step.finish(
-                    _capture_run("tool", tool, docker, out_path, runner))
+                    _capture_run("tool", tool, docker, out_path, runner,
+                                 docker_context=docker_context))
             if done:
                 written.append(done)
             continue
@@ -1184,7 +1196,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                 "python3", "/opt/panopticon/scripts/_run_adapter.py", tool])
             with progress.tool(tool, index, total) as step:
                 done = step.finish(
-                    _capture_run("adapter", tool, docker, out_path, runner))
+                    _capture_run("adapter", tool, docker, out_path, runner,
+                                 docker_context=docker_context))
             if done:
                 written.append(done)
             continue
