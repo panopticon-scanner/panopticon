@@ -92,6 +92,30 @@ summary + JSON artifact) with standards citations and CI gating.
   severity as a conservative pre-merge floor (fixture noise excluded via
   F-CAL-2) — a documented strict policy (#513), NOT the authority for the
   reported grade, which still comes from the evidence/advisor pipeline.
+  After that gate reads the unchanged raw captures and manifest, the workflow
+  runs `scripts/code_scanning_reports.py` in runner temporary storage. It
+  keeps only the two named, note-level AI-usage rules from the exact supported
+  `Semgrep OSS` driver in a separate JSON/Markdown inventory. A similar tool
+  name, elevated severity, taxonomy relationship, or any metadata beyond the
+  reviewed low-confidence inventory shape keeps the result in Security. The
+  helper strictly decodes JSON, validates each complete capture offline against
+  the fixed official SARIF 2.1.0 Draft 7 schema in `scripts/reference/`, and
+  resolves localized result-message IDs through the rule or driver message
+  strings before routing. All schema-defined property-bag carriers, taxa, and
+  relationships are checked recursively. Shared document, run, tool, driver,
+  and run-cache context is checked without traversing sibling results or
+  rules. Metadata on an unreferenced shared cache can therefore keep every
+  candidate in the run in Security; this conservative tradeoff avoids a
+  partial SARIF reference resolver. Unsupported external, taxonomy,
+  configuration-override, or indexed candidate references also remain in
+  Security. ID-bearing nested `message`, `description`, and `label` objects
+  remain there as unsupported references; only the root result message uses
+  the rule/global message resolver. The conventional unbacked `%SRCROOT%` base
+  used by current Semgrep captures remains eligible. Malformed captures and
+  dangling root message IDs fail preparation before anything is published.
+  The raw captures are retained as their own artifact, and the helper publishes
+  the Security and inventory directories atomically so a preparation failure
+  cannot appear as an empty successful analysis.
 - **`meta.coverage` is the single home for what a run actually observed**:
   `adapters` (per-file disposition — `ok`/`empty`/`failed`, a findings count,
   and a `reason` when failed), `tools_ran`, `build_executing_tools`,
