@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,37 @@ DEFAULT_IMAGE = "panopticon-fixtures:latest"
 PROBE_TIMEOUT = 30     # docker version / image inspect probes
 BUILD_TIMEOUT = 1800   # docker build (image build can be slow)
 TEST_TIMEOUT = 1800    # dockerized pytest suite
+
+# The image operand is still in Docker's option-parsing region for some
+# commands, so list argv alone does not make a leading-dash value safe. Keep
+# this grammar aligned with github.com/distribution/reference: repository path
+# components are lowercase, registry hosts may carry a port or bracketed IPv6,
+# tags may contain uppercase characters, and digests are not limited to sha256.
+_PATH_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*"
+_DOMAIN_COMPONENT = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+_HOST = rf"(?:{_DOMAIN_COMPONENT}(?:\.{_DOMAIN_COMPONENT})*|\[[A-Fa-f0-9:]+\])"
+_NAME = rf"(?P<name>(?:{_HOST}(?::[0-9]+)?/)?{_PATH_COMPONENT}(?:/{_PATH_COMPONENT})*)"
+_TAG = r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"
+_DIGEST_ALGORITHM = r"[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*"
+_DIGEST = rf"{_DIGEST_ALGORITHM}:[A-Fa-f0-9]{{32,}}"
+_IMAGE_REFERENCE = re.compile(rf"{_NAME}(?::{_TAG})?(?:@{_DIGEST})?", re.ASCII)
+_MAX_REPOSITORY_NAME_LENGTH = 255
+
+
+def validate_image_reference(reference: str) -> str:
+    """Return a valid Docker image reference, or raise ``ValueError``.
+
+    Docker-facing public helpers call this before resolving or invoking Docker,
+    so direct callers receive the same pre-subprocess safety boundary as the
+    CLI. The accepted syntax follows the Distribution reference grammar rather
+    than treating a reference as an arbitrary command-line string.
+    """
+    if not isinstance(reference, str):
+        raise ValueError("invalid Docker image reference")
+    match = _IMAGE_REFERENCE.fullmatch(reference)
+    if match is None or len(match.group("name")) > _MAX_REPOSITORY_NAME_LENGTH:
+        raise ValueError("invalid Docker image reference")
+    return reference
 
 
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -44,6 +76,7 @@ def docker_available() -> bool:
 
 
 def image_exists(tag: str) -> bool:
+    validate_image_reference(tag)
     try:
         result = subprocess.run(  # nosec B603
             [_docker_bin(), "image", "inspect", tag],
@@ -56,6 +89,7 @@ def image_exists(tag: str) -> bool:
 
 
 def build_image(tag: str) -> None:
+    validate_image_reference(tag)
     run([
         _docker_bin(), "build",
         "-f", str(DOCKERFILE),
@@ -79,6 +113,7 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     today: hostile-csproj was, until #1655 needed its NuGet restore output,
     which only an image build can produce.
     """
+    validate_image_reference(tag)
     baked = [f for f in fixtures if f.get("baked", True) and f.get("path")]
     local = [f for f in fixtures if not f.get("baked", True) and f.get("path")]
 
@@ -137,6 +172,7 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
 
 
 def run_tests(tag: str, test: str | None = None) -> int:
+    validate_image_reference(tag)
     repo = str(REPO_ROOT)
     test_paths = ["/opt/panopticon/tests/tools"]
     pytest_args = ["python", "-m", "pytest", "-v"]
@@ -194,6 +230,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rebuild", action="store_true", help="Force a fresh image build.")
     parser.add_argument("--test", default=None, help="Run only one language/test target (e.g., rust).")
     args = parser.parse_args(argv)
+
+    try:
+        validate_image_reference(args.tag)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     if not docker_available():
         print("error: docker is not available or not running", file=sys.stderr)
