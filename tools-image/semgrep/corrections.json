@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "corrections": [
+    {
+      "path": "python/lang/security/audit/insecure-file-permissions.yaml",
+      "source_sha256": "33ce6040a85aa8a61e2bd005da9f9623c666eafd8afe31e4ada44d74d57b9bc2",
+      "replacement": "patches/insecure-file-permissions.yaml",
+      "corrected_sha256": "277117c47384f3d983aaac0ef7d654ebf5db67de24140bf0caf05a3bc8bd0c35"
+    },
+    {
+      "path": "python/lang/security/audit/dangerous-subprocess-use-audit.yaml",
+      "source_sha256": "50f69dc35f47e405633559f54fc2b3bd344707221742400e74b1c902c1f76faa",
+      "replacement": "patches/dangerous-subprocess-use-audit.yaml",
+      "corrected_sha256": "1dcab593d955a4a9177daa9dc56a31adbd35be18fc5c28e662bd7f0bd89e7a26"
+    },
+    {
+      "path": "yaml/github-actions/security/pull-request-target-code-checkout.yaml",
+      "source_sha256": "64c8c419726b8ed1854c75de04b7e8fb944e86d54990b65a98bca9c216b65ceb",
+      "replacement": "patches/pull-request-target-code-checkout.yaml",
+      "corrected_sha256": "08fdca91a5351917f36e6c2c0e1dd029e566063f41f272d14ec86176505d2e16"
+    },
+    {
+      "path": "python/lang/maintainability/return.yaml",
+      "source_sha256": "d1b7a05811649bbeb6c570899ce46d5cdf46ed834441be4ab2a49a8fef16b5d3",
+      "replacement": "patches/return.yaml",
+      "corrected_sha256": "443934383c4f6543684350c98ac8a217eacb5a750f35249d9d211a7cff1e0793"
+    },
+    {
+      "path": "ai/ai-best-practices/hooks-path-traversal/hooks-path-traversal-python.yaml",
+      "source_sha256": "41deee92decca0061b60bff9e4b1e65f6481581cdeac354004d43105e83e6474",
+      "replacement": "patches/hooks-path-traversal-python.yaml",
+      "corrected_sha256": "90492472215d2e59d7c391067b1bb152212a47dc7cd24dd2e11fe45e3fe0d5ef"
+    }
+  ]
+}

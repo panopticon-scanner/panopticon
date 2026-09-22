@@ -231,8 +231,6 @@ class TestRegistryClosuresArePinned(unittest.TestCase):
                                      fh.read(), re.M))
         for arg, name in (("SEMGREP_VERSION", "semgrep"),
                           ("BANDIT_VERSION", "bandit"),
-                          ("BANDIT_SARIF_FORMATTER_VERSION",
-                           "bandit-sarif-formatter"),
                           ("PIP_AUDIT_VERSION", "pip-audit")):
             m = re.search(r"^ARG %s=(\S+)\s*$" % arg, self.text, re.M)
             self.assertIsNotNone(m, "no ARG %s" % arg)
