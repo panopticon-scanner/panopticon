@@ -215,12 +215,57 @@ requires a new gem would carry a perfectly good digest and still be wrong to pin
 ### Regenerating the pinned dependency hashes
 
 The three requirements files are what the repo's **privileged** builds install (#1641, #1734): the
-`pull_request_target` security gate, which holds `security-events: write` and is reachable from a
-fork PR; the fixture image, which installs as root at image build; and the tools image, which does
-the same and is then published publicly as the trust root of every scan. All three use
-`--require-hashes`, so pip refuses any artifact whose sha256 is not written in the file — which
-also means a version bump with stale digests fails the build rather than installing something
-unpinned.
+`security-fork.yml` gate, which runs under `pull_request_target` and is reachable from a fork PR a
+maintainer has opted in (below); the fixture image, which installs as root at image build; and the
+tools image, which does the same and is then published publicly as the trust root of every scan.
+All three use `--require-hashes`, so pip refuses any artifact whose sha256 is not written in the
+file — which also means a version bump with stale digests fails the build rather than installing
+something unpinned.
+
+**Scanning a fork PR (#1900).** Two workflows, and which one speaks for a fork PR is the whole
+design. `security.yml` (check name `scan`) runs on pushes to main and on same-repo PRs only; on a
+fork PR its job skips and says nothing. `security-fork.yml` (check name `fork-scan`) runs under
+`pull_request_target` and is the fork PR's required check — the one to register in branch
+protection.
+
+Nothing scans a fork PR until you say so. From the moment it opens, `fork-scan` runs and **fails**:
+a fork PR carries a real red check, never a skipped one, because a skipped check is what branch
+protection counts as satisfied. Read the diff, then apply the `safe-to-scan` label — applying
+*that label* is what starts the real scan, over the head you were looking at. Every new push to
+the PR (and every reopen) revokes the label, so a force-push after your approval waits for you a
+second time. `fork-scan` reports on the PR head because a `pull_request_target` run attaches its
+checks to the PR head SHA.
+
+Two consequences of "that label", which is a deliberately strict rule. **Applying any other label
+to an already-scanned fork PR posts a fresh red `fork-scan`** over the earlier green; to clear it,
+*remove* `safe-to-scan` and *add* it again, because GitHub does not fire a `labeled` event for a
+label that is already present. The strictness buys the case it looks pedantic about: a looser rule
+("any label, while `safe-to-scan` is standing") could green a head nobody reviewed, because the
+gate reads the event payload — in the seconds between a push and the revoke finishing, the payload
+still carries the label. And if the revoke ever *fails* rather than races, that window is not
+seconds but indefinite: `unlabel` fails loudly on anything except a 404 (label already gone), but
+it is **not a required check**, so a failed revoke shows up only in the Actions tab. Check there if
+a fork PR is behaving oddly.
+
+One caveat about the name. Branch protection matches a required check by name, and on the
+`pull_request` route a fork PR runs its own workflow files — so a PR that *adds* a workflow with a
+job named `fork-scan` can post a green check under that name. That is inherent to check names
+rather than to this design, and it is why the outside-collaborator setting below is load-bearing:
+the required `fork-scan` means what it says only while "require approval for all outside
+collaborators" is on and the approving maintainer reads any workflow files the PR adds before
+clicking *Approve and run*.
+
+The fork path deliberately scans less than a main-branch run: no registry login, no `--deps` (so no
+dependency scanner reading the PR's own lockfiles) and no SARIF upload, because under
+`pull_request_target` the upload would be filed against `main`'s Security tab. The full set runs on
+the push to main after the merge.
+
+One thing `security.yml` does **not** give you: a fork PR also raises `pull_request`, and on that
+route GitHub runs the PR's *own* copy of the workflow file, with a read-only token and no secrets.
+Nothing that file says binds a fork PR. What binds one is a required approving review, the required
+`fork-scan` check above, and the repository setting "require approval for all outside
+collaborators" — which, unlike `pull_request_target`, does cover the `pull_request` route and
+holds the run as `action_required`.
 
 The versions are the input and yours to choose; the digests are not. After changing a
 `name==version` line (or adding a package), run:
