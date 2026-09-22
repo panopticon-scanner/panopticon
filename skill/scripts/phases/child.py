@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 
+import scripts.executable as executable
 import scripts.phases.runio as runio
 import scripts.procgroup as procgroup
 
@@ -30,10 +31,13 @@ def _child_env():
     skill_dir = os.path.dirname(scripts_dir)           # .../skill
     repo_root = os.path.dirname(skill_dir)             # .../panopticon
     repo_scripts = os.path.join(repo_root, "scripts")  # .../panopticon/scripts
-    env = dict(os.environ)
+    env = executable.sanitize_startup_environment(os.environ)
     parts = [skill_dir, scripts_dir, repo_scripts]
-    env["PYTHONPATH"] = os.pathsep.join(
-        parts + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    env["PYTHONPATH"] = os.pathsep.join(os.path.realpath(part) for part in parts)
+    # These children execute installed panopticon code with a reviewed tree as
+    # cwd. Ambient Python startup controls must not make that tree import code
+    # before the trusted entry script. Keep the rest of the operator's env and
+    # the driver's bindings intact.
     return env
 
 # Hard bound per phase so a wedged discovery/synthesize or a hung tool runner

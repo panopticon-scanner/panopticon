@@ -25,10 +25,12 @@ directly. That is a blocking call which hands back no handle at all, so:
   own workers, so the workers went on running -- and charging -- after the
   entry had been ledgered as timed out.
 """
+import os
 import signal
 import subprocess
 import time
 
+import scripts.executable as executable
 import scripts.procgroup as procgroup
 
 # How long a timed-out launch's group is given to drain its pipes once it has
@@ -113,8 +115,19 @@ class ChildProcesses:
         """
         if not capture_output:
             raise ValueError("HostRunner.launch always captures both streams")
+        requested_argv = list(argv)
+        child_env = executable.sanitize_startup_environment(
+            os.environ if env is None else env)
+        # `review_root` is bound by every family in prepare(). Probes can run
+        # before prepare, so their explicit cwd (or this process's cwd) is the
+        # conservative root rather than silently dropping provenance checks.
+        review_root = (getattr(self, "review_root", None) or cwd or os.getcwd())
+        resolved = executable.resolve(requested_argv[0], review_root,
+                                      child_env.get("PATH", ""))
+        child_env["PATH"] = resolved.path_env
+        launch_argv = [resolved.path] + requested_argv[1:]
         proc = subprocess.Popen(                       # noqa: S603 - argv, never a shell
-            argv, cwd=cwd, env=env,
+            launch_argv, cwd=cwd, env=child_env,
             stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=text, start_new_session=True)
@@ -126,7 +139,7 @@ class ChildProcesses:
                 procgroup.kill_group(proc)
                 out, err = self._drain(proc, exc)
                 raise subprocess.TimeoutExpired(
-                    argv, timeout, output=out, stderr=err) from exc
+                    requested_argv, timeout, output=out, stderr=err) from exc
             except BaseException:
                 # The timeout is not the only way out. A Ctrl-C on one of
                 # the MAIN-THREAD launches (`prove_output_schema_shape`,
@@ -159,7 +172,7 @@ class ChildProcesses:
                         pipe.close()
                     except OSError:         # already closed by communicate
                         pass
-        return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+        return subprocess.CompletedProcess(requested_argv, proc.returncode, out, err)
 
     @staticmethod
     def _drain(proc, timed_out):

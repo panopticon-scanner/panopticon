@@ -209,10 +209,16 @@ class TestRunTools(unittest.TestCase):
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
         def runner(cmd, **kw):
             calls.append(cmd); return fake
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as trusted:
+            docker = os.path.join(trusted, "docker")
+            with open(docker, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 99\n")
+            os.chmod(docker, 0o700)
             out_dir = os.path.join(d, "out")
-            rt.run_tools(d, ["semgrep"], out_dir, image="panopticon-tools", runner=runner)
-            docker_bin = shutil.which("docker") or "docker"
+            with mock.patch.dict(os.environ, {"PATH": trusted}, clear=False):
+                rt.run_tools(d, ["semgrep"], out_dir, image="panopticon-tools",
+                             runner=runner)
+            docker_bin = os.path.realpath(docker)
             self.assertEqual(len(calls), 1)        # #run7 COD-A2C: clear fail if runner never fired
             cmd0 = calls[0]
             # #run9 OPS-D1A: a --cidfile is injected right after `run` (dynamic temp
@@ -260,15 +266,24 @@ class TestRunTools(unittest.TestCase):
                 fh.write("deadbeefcafe\n")
 
             def fake_docker(cmd, **kw):
-                killed.append(cmd)
+                killed.append((cmd, kw))
                 return _FakeResult(returncode=0, stdout=b"", stderr=b"")
 
+            trusted = os.path.join(d, "trusted")
+            os.makedirs(trusted)
+            docker = os.path.join(trusted, "docker")
+            with open(docker, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 99\n")
+            os.chmod(docker, 0o700)
+            docker_env = {"PATH": os.path.dirname(docker)}
             with mock.patch.object(rt.subprocess, "run", side_effect=fake_docker):
                 rt._stream_and_write("tool", "semgrep", _Proc(),
                                      os.path.join(d, "out.sarif"),
-                                     timeout=60, docker_bin="docker", cidfile=cidfile)
+                                     timeout=60, docker_bin=docker, cidfile=cidfile,
+                                     docker_env=docker_env)
         self.assertTrue(
-            any(c[:2] == ["docker", "kill"] and "deadbeefcafe" in c for c in killed),
+            any(c[:2] == [docker, "kill"] and "deadbeefcafe" in c
+                and kw["env"] == docker_env for c, kw in killed),
             "container was not `docker kill`ed on cleanup: %r" % killed)
 
     def test_container_kill_noops_without_a_cidfile(self):
@@ -452,8 +467,10 @@ class TestStreamingRunnerAndDeadline(unittest.TestCase):
         with mock.patch.object(rt, "_capture_run", side_effect=fake_capture):
             with tempfile.TemporaryDirectory() as d:
                 rt.run_tools(d, ["semgrep"], os.path.join(d, "out"))
-        self.assertIs(seen["runner"], rt._popen_runner)
-        self.assertIsNot(seen["runner"], sp.run)
+        self.assertIs(seen["runner"]._panopticon_runner, rt._popen_runner)
+        self.assertIsNot(seen["runner"]._panopticon_runner, sp.run)
+        self.assertTrue(os.path.isabs(seen["runner"]._panopticon_env["PATH"].split(
+            os.pathsep)[0]))
 
     def test_popen_runner_streams_real_subprocess_to_disk(self):
         # The default runner returns a real Popen whose stdout _capture_run

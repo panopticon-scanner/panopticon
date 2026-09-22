@@ -1,0 +1,298 @@
+"""Executable provenance at the reviewed-tree process boundaries."""
+import contextlib
+import io
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+import scripts.diff_map as diff_map
+import scripts.executable as executable
+import scripts.phases.runio as runio
+import scripts.run_tools as run_tools
+import scripts.runners.base as runner_base
+from conftest import REAL_DOCKER_AVAILABLE
+
+
+def _program(path, body):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\n" + body)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+    return path
+
+
+class TestTrustedResolver(unittest.TestCase):
+    def test_symlinked_directory_and_candidate_into_target_are_rejected(self):
+        with tempfile.TemporaryDirectory() as parent:
+            target = os.path.join(parent, "target")
+            external = os.path.join(parent, "external")
+            poison = os.path.join(parent, "poison")
+            os.makedirs(target)
+            marker = _program(os.path.join(target, "git"), "exit 99\n")
+            os.makedirs(external)
+            os.makedirs(poison)
+            os.symlink(target, os.path.join(parent, "target-link"))
+            os.symlink(marker, os.path.join(poison, "git"))
+            trusted = _program(os.path.join(external, "git"), "exit 0\n")
+            path = os.pathsep.join([os.path.join(parent, "target-link"), poison,
+                                    external])
+            got = executable.resolve("git", target, path)
+            self.assertEqual(got.path, os.path.realpath(trusted))
+            self.assertNotIn(os.path.realpath(target), got.path_env.split(os.pathsep))
+            self.assertNotIn(os.path.realpath(poison), got.path_env.split(os.pathsep))
+
+
+class TestHostCliBoundary(unittest.TestCase):
+    def test_review_root_path_entries_and_relative_entries_cannot_supply_cli(self):
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as trusted, \
+                tempfile.TemporaryDirectory() as scratch:
+            marker = os.path.join(target, "host-ran")
+            _program(os.path.join(target, "hostcli"), "printf bad > %s\n" % marker)
+            _program(os.path.join(target, "bin", "hostcli"), "printf bad > %s\n" % marker)
+            good = _program(os.path.join(trusted, "hostcli"),
+                            "printf '%s' \"$PATH\"\n" % "%s")
+            runner = runner_base.HostRunner()
+            runner.review_root = target
+            env = {"PATH": os.pathsep.join(["", ".", os.path.join(target, "bin"),
+                                             trusted])}
+            got = runner.launch(["hostcli"], cwd=scratch, env=env)
+            self.assertEqual(got.returncode, 0)
+            self.assertFalse(os.path.exists(marker))
+            self.assertTrue(os.path.isfile(good))
+            self.assertEqual(got.args[0], "hostcli")
+            self.assertNotIn(os.path.realpath(target), got.stdout.split(os.pathsep))
+            self.assertTrue(all(os.path.isabs(p) for p in got.stdout.split(os.pathsep)))
+
+    def test_missing_trusted_cli_fails_closed_before_a_target_cli_runs(self):
+        with tempfile.TemporaryDirectory() as target:
+            marker = os.path.join(target, "host-ran")
+            _program(os.path.join(target, "hostcli"), "printf bad > %s\n" % marker)
+            runner = runner_base.HostRunner()
+            runner.review_root = target
+            with self.assertRaisesRegex(OSError, "trusted PATH"):
+                runner.launch(["hostcli"], cwd=target, env={"PATH": "."})
+            self.assertFalse(os.path.exists(marker))
+
+    def test_probe_before_prepare_uses_its_cwd_as_the_review_boundary(self):
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as trusted:
+            marker = os.path.join(target, "host-ran")
+            _program(os.path.join(target, "hostcli"), "printf bad > %s\n" % marker)
+            _program(os.path.join(trusted, "hostcli"), "printf trusted\n")
+            runner = runner_base.HostRunner()  # no prepare(), no review_root binding
+            got = runner.launch(["hostcli"], cwd=target,
+                                env={"PATH": os.pathsep.join([".", trusted])})
+            self.assertEqual(got.stdout, "trusted")
+            self.assertFalse(os.path.exists(marker))
+
+    def test_python_and_node_startup_injection_is_removed_but_auth_is_kept(self):
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as trusted, \
+                tempfile.TemporaryDirectory() as scratch:
+            marker = os.path.join(target, "startup-ran")
+            with open(os.path.join(target, "sitecustomize.py"), "w", encoding="utf-8") as fh:
+                fh.write("open(%r, 'w').write('python')\n" % marker)
+            with open(os.path.join(target, "startup.cjs"), "w", encoding="utf-8") as fh:
+                fh.write("require('fs').writeFileSync(%r, 'node')\n" % marker)
+            cli = os.path.join(trusted, "hostcli")
+            with open(cli, "w", encoding="utf-8") as fh:
+                fh.write("#!%s\nimport os\nprint('trusted:' + os.environ['HOST_TOKEN'])\n"
+                         % os.path.realpath(sys.executable))
+            os.chmod(cli, 0o700)
+            runner = runner_base.HostRunner()
+            runner.review_root = target
+            for pythonpath, cwd in ((".", target), (target, scratch)):
+                with self.subTest(pythonpath=pythonpath):
+                    env = {"PATH": trusted, "PYTHONPATH": pythonpath,
+                           "PYTHONHOME": target, "PYTHONINSPECT": "1",
+                           "NODE_OPTIONS": "--require ./startup.cjs",
+                           "NODE_PATH": target, "HOST_TOKEN": "kept"}
+                    got = runner.launch(["hostcli"], cwd=cwd, env=env)
+                    self.assertEqual(got.returncode, 0, got.stderr)
+                    self.assertEqual(got.stdout, "trusted:kept\n")
+                    self.assertFalse(os.path.exists(marker))
+
+
+class TestManifestGitBoundary(unittest.TestCase):
+    @staticmethod
+    def _git(root, *args):
+        subprocess.run([shutil.which("git"), "-C", root, *args], check=True,
+                       capture_output=True)
+
+    def test_target_git_cannot_forge_the_manifest_trust_decision(self):
+        git = shutil.which("git")
+        self.assertTrue(git)
+        with tempfile.TemporaryDirectory() as target:
+            self._git(target, "init", "-q")
+            manifest = os.path.join(target, "run-manifest.json")
+            with open(manifest, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            self._git(target, "add", "run-manifest.json")
+            marker = os.path.join(target, "git-ran")
+            _program(os.path.join(target, "git"),
+                     "printf forged > %s\nexit 0\n" % marker)
+            hostile = os.pathsep.join(["", ".", target, os.path.dirname(git)])
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(target)
+                with mock.patch.dict(os.environ, {"PATH": hostile}, clear=False):
+                    self.assertTrue(runio._manifest_committed(target, manifest))
+            finally:
+                os.chdir(old_cwd)
+            self.assertFalse(os.path.exists(marker))
+
+    def test_manifest_check_refuses_when_only_target_git_exists(self):
+        with tempfile.TemporaryDirectory() as target:
+            manifest = os.path.join(target, "run-manifest.json")
+            with open(manifest, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            marker = os.path.join(target, "git-ran")
+            _program(os.path.join(target, "git"),
+                     "printf forged > %s\nexit 1\n" % marker)
+            with mock.patch.dict(os.environ, {"PATH": target}, clear=False):
+                with self.assertRaisesRegex(runio.DriverError, "trusted git"):
+                    runio._manifest_committed(target, manifest)
+            self.assertFalse(os.path.exists(marker))
+
+
+class TestDiffGitBoundary(unittest.TestCase):
+    @staticmethod
+    def _git(root, *args):
+        subprocess.run([shutil.which("git"), "-C", root, *args], check=True,
+                       capture_output=True)
+
+    def test_hunk_map_ignores_target_git_and_uses_external_git(self):
+        git = shutil.which("git")
+        self.assertTrue(git)
+        with tempfile.TemporaryDirectory() as target:
+            self._git(target, "init", "-q")
+            self._git(target, "config", "user.email", "t@example.com")
+            self._git(target, "config", "user.name", "T")
+            with open(os.path.join(target, "a.py"), "w", encoding="utf-8") as fh:
+                fh.write("old\n")
+            self._git(target, "add", "a.py")
+            self._git(target, "commit", "-qm", "base")
+            self._git(target, "branch", "base")
+            with open(os.path.join(target, "a.py"), "w", encoding="utf-8") as fh:
+                fh.write("new\n")
+            marker = os.path.join(target, "git-ran")
+            _program(os.path.join(target, "git"),
+                     "printf forged > %s\nexit 0\n" % marker)
+            path = os.pathsep.join([target, os.path.dirname(git)])
+            with mock.patch.dict(os.environ, {"PATH": path}, clear=False):
+                mapped = diff_map.hunk_map(target, "base")
+            self.assertIn("a.py", mapped)
+            self.assertFalse(os.path.exists(marker))
+
+    def test_hunk_map_fails_loud_when_only_target_git_exists(self):
+        with tempfile.TemporaryDirectory() as target:
+            marker = os.path.join(target, "git-ran")
+            _program(os.path.join(target, "git"),
+                     "printf forged > %s\nexit 0\n" % marker)
+            with mock.patch.dict(os.environ, {"PATH": target}, clear=False):
+                with self.assertRaisesRegex(diff_map.DiffMapError, "trusted PATH"):
+                    diff_map.hunk_map(target, "main")
+            self.assertFalse(os.path.exists(marker))
+
+
+class TestDockerBoundary(unittest.TestCase):
+    def test_target_docker_is_skipped_and_child_path_is_sanitized(self):
+        calls = []
+
+        class Result:
+            returncode, stdout, stderr = 0, b'{"runs":[]}', b""
+
+        def runner(cmd, **kwargs):
+            calls.append((list(cmd), dict(kwargs)))
+            return Result()
+
+        with tempfile.TemporaryDirectory() as parent:
+            target = os.path.join(parent, "target")
+            trusted = os.path.join(parent, "trusted")
+            os.makedirs(target)
+            marker = os.path.join(target, "docker-ran")
+            _program(os.path.join(target, "docker"), "printf bad > %s\n" % marker)
+            good = _program(os.path.join(trusted, "docker"), "exit 99\n")
+            out = os.path.join(parent, "out")
+            hostile = os.pathsep.join(["", ".", target, trusted])
+            with mock.patch.dict(os.environ, {
+                    "PATH": hostile, "PYTHONPATH": target,
+                    "NODE_OPTIONS": "--require ./startup.cjs"}, clear=False):
+                written = run_tools.run_tools(target, ["semgrep"], out, runner=runner,
+                                              venv_dirs=[])
+            self.assertEqual(len(written), 1)
+            self.assertFalse(os.path.exists(marker))
+            cmd, kwargs = calls[0]
+            self.assertEqual(os.path.realpath(cmd[0]), os.path.realpath(good))
+            child_path = kwargs["env"]["PATH"].split(os.pathsep)
+            self.assertTrue(all(os.path.isabs(p) for p in child_path))
+            self.assertNotIn(os.path.realpath(target), child_path)
+            self.assertNotIn("PYTHONPATH", kwargs["env"])
+            self.assertNotIn("NODE_OPTIONS", kwargs["env"])
+
+    def test_main_probe_cannot_execute_target_docker(self):
+        with tempfile.TemporaryDirectory() as target:
+            marker = os.path.join(target, "docker-ran")
+            _program(os.path.join(target, "docker"),
+                     "printf forged > %s\nexit 0\n" % marker)
+            with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(["", ".", target])},
+                                 clear=False), \
+                    mock.patch.object(run_tools, "docker_available",
+                                      new=REAL_DOCKER_AVAILABLE), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(run_tools.main(["--target", target, "--tools", "semgrep",
+                                                 "--out", os.path.join(target, "out")]), 0)
+            self.assertFalse(os.path.exists(marker))
+
+    def test_missing_external_docker_fails_before_the_injected_runner(self):
+        called = []
+        with tempfile.TemporaryDirectory() as target:
+            _program(os.path.join(target, "docker"), "exit 0\n")
+            with mock.patch.dict(os.environ, {"PATH": target}, clear=False):
+                with self.assertRaisesRegex(executable.ExecutableResolutionError,
+                                            "trusted PATH"):
+                    run_tools.run_tools(
+                        target, ["semgrep"], os.path.join(target, "out"),
+                        runner=lambda *args, **kwargs: called.append((args, kwargs)),
+                        venv_dirs=[])
+        self.assertEqual(called, [])
+
+    def test_egress_and_teardown_reuse_absolute_docker_and_sanitized_path(self):
+        calls = []
+
+        class Result:
+            def __init__(self, stdout=b""):
+                self.returncode, self.stdout, self.stderr = 0, stdout, b""
+
+        def runner(cmd, **kwargs):
+            calls.append((list(cmd), dict(kwargs)))
+            if list(cmd[1:3]) == ["network", "inspect"]:
+                body = [{"IPAM": {"Config": [
+                    {"Subnet": "172.30.0.0/16", "Gateway": "172.30.0.1"}]}}]
+                return Result(json.dumps(body).encode())
+            if cmd[1] == "inspect":
+                return Result(b"true\n")
+            return Result(b'{"dependencies":[]}')
+
+        with tempfile.TemporaryDirectory() as parent:
+            target = os.path.join(parent, "target")
+            trusted = os.path.join(parent, "trusted")
+            os.makedirs(target)
+            good = _program(os.path.join(trusted, "docker"), "exit 99\n")
+            with mock.patch.dict(os.environ, {
+                    "PATH": os.pathsep.join([".", target, trusted])}, clear=False):
+                run_tools.run_tools(target, ["pip-audit"], os.path.join(parent, "out"),
+                                    runner=runner, online=True, venv_dirs=[], run_id="r")
+        self.assertGreater(len(calls), 4)
+        for cmd, kwargs in calls:
+            self.assertEqual(cmd[0], os.path.realpath(good))
+            self.assertEqual(kwargs["env"]["PATH"], os.path.realpath(trusted))
+        self.assertTrue(any(cmd[1:3] == ["rm", "-f"] for cmd, _kwargs in calls))
+
+
+if __name__ == "__main__":
+    unittest.main()

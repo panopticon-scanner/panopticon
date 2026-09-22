@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+
 import uuid
 
 # This repo has two directories named `scripts` with no __init__.py (repo-root
@@ -23,11 +24,14 @@ import uuid
 # SAME module object every other caller sees -- see host_disclosure.py for the
 # same fallback on the same seam.
 if TYPE_CHECKING:
+    import scripts.executable as executable
     import scripts.repo_config as repo_config
 else:
     try:
+        import scripts.executable as executable
         import scripts.repo_config as repo_config
     except ImportError:
+        import executable
         import repo_config
 
 class DiffMapError(Exception):
@@ -290,10 +294,10 @@ def _run_git(repo, args, timeout=60, text=True):
     decoded by its caller; every other call here reads a ref or a file list,
     where the translation is harmless.
     """
-    git_bin = shutil.which("git") or "git"
-    return subprocess.run([git_bin, "-C", repo, *args],  # nosec B603
+    resolved = executable.resolve("git", repo, os.environ.get("PATH", ""))
+    return subprocess.run([resolved.path, "-C", repo, *args],  # nosec B603
                           capture_output=True, text=text, timeout=timeout,
-                          env={"PATH": os.environ.get("PATH", "")})
+                          env={"PATH": resolved.path_env})
 
 
 def _decode_git(raw, lossy=False):

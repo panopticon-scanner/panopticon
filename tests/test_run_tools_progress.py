@@ -57,7 +57,7 @@ class _Sink:
 def _runner(payload=b'{"runs": []}'):
     """A runner returning a CompletedProcess-alike, which _capture_run accepts
     without ever reaching Docker."""
-    def run(cmd, stdout=None, stderr=None, timeout=None):
+    def run(cmd, stdout=None, stderr=None, timeout=None, env=None):
         return _FakeResult(0, payload)
     return run
 
