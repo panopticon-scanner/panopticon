@@ -480,6 +480,83 @@ class TestTheCliFlagsProbeRunsOffTheRegistryRow(unittest.TestCase):
                           if k != "detail"})
         self.assertNotIn(hosts.OUTPUT_SCHEMA, art["capabilities"])
 
+    def test_real_probe_rejects_target_cli_before_prepare_and_uses_trusted_cli(self):
+        import scripts.probes.codex as codex_probes
+        import scripts.runners.codex as codex_runner
+
+        with tempfile.TemporaryDirectory() as parent:
+            target = os.path.join(parent, "target")
+            trusted = os.path.join(parent, "trusted")
+            controller = os.path.join(parent, "controller")
+            os.makedirs(target)
+            os.makedirs(trusted)
+            os.makedirs(controller)
+            marker = os.path.join(target, "target-cli-ran")
+            target_cli = os.path.join(target, "codex")
+            with open(target_cli, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nprintf target > %s\n" % marker)
+            os.chmod(target_cli, 0o755)
+            trusted_cli = os.path.join(trusted, "codex")
+            with open(trusted_cli, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nprintf '%s\\n' '--output-schema'\n")
+            os.chmod(trusted_cli, 0o755)
+
+            previous = os.getcwd()
+            try:
+                os.chdir(controller)
+                with mock.patch.dict(os.environ, {
+                        "PATH": os.pathsep.join([target, trusted])}, clear=False), \
+                        mock.patch.object(codex_runner, "DEFAULT_RUNNER", None), \
+                        mock.patch.object(codex_probes, "_codex_surfaces",
+                                          return_value=[]):
+                    art = host_probes.run_probes(
+                        "codex", target, registration_dir=controller,
+                        settings_path=os.path.join(controller, "settings.json"))
+            finally:
+                os.chdir(previous)
+            target_ran = os.path.exists(marker)
+        self.assertFalse(target_ran)
+        self.assertIs(True,
+                      art[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA]["advertised"])
+
+    def test_real_claude_usage_probe_uses_the_same_review_boundary(self):
+        import scripts.runners.claude as claude_runner
+
+        with tempfile.TemporaryDirectory() as parent:
+            target = os.path.join(parent, "target")
+            trusted = os.path.join(parent, "trusted")
+            controller = os.path.join(parent, "controller")
+            for directory in (target, trusted, controller):
+                os.makedirs(directory)
+            marker = os.path.join(target, "target-claude-ran")
+            target_cli = os.path.join(target, "claude")
+            with open(target_cli, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nprintf target > %s\n" % marker)
+            os.chmod(target_cli, 0o755)
+            trusted_cli = os.path.join(trusted, "claude")
+            with open(trusted_cli, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nprintf '%s\\n' '-p --output-format --json-schema'\n")
+            os.chmod(trusted_cli, 0o755)
+
+            previous = os.getcwd()
+            try:
+                os.chdir(controller)
+                with mock.patch.dict(os.environ, {
+                        "PATH": os.pathsep.join([target, trusted])}, clear=False), \
+                        mock.patch.object(claude_runner, "DEFAULT_RUNNER", None):
+                    art = host_probes.run_probes(
+                        "claude", target, session_root=controller,
+                        registration_dir=controller,
+                        settings_path=os.path.join(controller, "settings.json"))
+            finally:
+                os.chdir(previous)
+            target_ran = os.path.exists(marker)
+        self.assertFalse(target_ran)
+        self.assertEqual(hosts.PROVEN,
+                         art["capabilities"][hosts.USAGE_LEDGER]["state"])
+        self.assertIs(True,
+                      art[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA]["advertised"])
+
     def test_a_codex_cli_without_the_flag_is_recorded_so_the_operator_is_told(self):
         import scripts.host_disclosure as host_disclosure
         art = self._codex_artifact("Usage: codex exec [OPTIONS]\n  --json\n")

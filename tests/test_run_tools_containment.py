@@ -18,8 +18,15 @@ class TestContainment(unittest.TestCase):
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
         def runner(cmd, **kw):
             calls.append(cmd); return fake
-        with mock.patch.dict(os.environ, env or {}, clear=True):
-            with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as trusted:
+            docker = os.path.join(trusted, "docker")
+            with open(docker, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 99\n")
+            os.chmod(docker, 0o700)
+            child_env = dict(env or {})
+            child_env["PATH"] = trusted
+            with mock.patch.dict(os.environ, child_env, clear=True), \
+                    tempfile.TemporaryDirectory() as d:
                 rt.run_tools(d, tools, os.path.join(d, "out"),
                              runner=runner, online=online)
         return calls

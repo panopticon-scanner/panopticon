@@ -15,11 +15,10 @@ probe ids to those functions stays in `host_probes.py`.
 import errno
 import os
 import re
-import shutil
 import stat
 from collections import namedtuple
 
-from scripts import dispatch, hosts
+from scripts import dispatch, executable, hosts
 
 from . import surface
 
@@ -260,7 +259,7 @@ def _cli_advertises(launch, found, flags, env=None, cwd=None):
 CLI_FLAGS_PROBE = "cli-flags"
 
 
-def probe_cli_flags(host):
+def probe_cli_flags(host, review_root):
     """What this host's headless CLI can be ASKED to do: `{fact: row}` for
     every operational fact its registry row declares (D10 N1).
 
@@ -291,6 +290,7 @@ def probe_cli_flags(host):
     import scripts.runners.base as runners_base
     try:
         runner = runners_base.runner_for(host, "headless")
+        runner.review_root = os.path.abspath(review_root)
         cli, flag = runner.CLI, tuple(runner.OUTPUT_SCHEMA_FLAG or ())
         launch, help_argv = runner.runner, tuple(runner.HELP_ARGV or ("--help",))
         launch_env = runner.launch_env()
@@ -306,15 +306,20 @@ def probe_cli_flags(host):
             "flag": flag[0] if flag else None, "advertised": None,
             "detail": "host %r declares the fact but its runner names no CLI or no flag"
                       % host}}
-    found = shutil.which(cli)
-    if not found:
+    try:
+        resolved = executable.resolve(cli, runner.review_root,
+                                      launch_env.get("PATH", ""))
+    except executable.ExecutableResolutionError:
         return {hosts.OUTPUT_SCHEMA: {
             "flag": flag[0], "advertised": None,
-            "detail": "no `%s` on PATH: nothing to interrogate, so no reply will be "
-                      "schema-constrained" % cli}}
+            "detail": "no trusted `%s` on PATH outside review root %s: nothing to "
+                      "interrogate, so no reply will be schema-constrained"
+                      % (cli, runner.review_root)}}
+    found = resolved.path
+    launch_env["PATH"] = resolved.path_env
     text, _verdict, why = _cli_help(
         launch, found, env=launch_env,
-        cwd=getattr(runner, "review_root", None), help_argv=help_argv)
+        cwd=runner.review_root, help_argv=help_argv)
     if text is None:
         return {hosts.OUTPUT_SCHEMA: {"flag": flag[0], "advertised": None, "detail": why}}
     advertised = _flag_advertised(flag[0], text)

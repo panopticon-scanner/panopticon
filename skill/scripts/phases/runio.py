@@ -3,13 +3,13 @@ import copy
 import functools
 import json
 import os
-import shutil
 import subprocess
 import sys
 
 import scripts.config_schema as config_schema
 import scripts.diff_map as diff_map
 import scripts.evidence as evidence
+import scripts.executable as executable
 import scripts.groups_schema as groups_schema
 import scripts.hosts as hosts
 import scripts.ocrdb as ocrdb
@@ -590,21 +590,31 @@ def _manifest_committed(review_root, manifest_file):
     old review_root-stamp check treated the operator's local checkout path as
     unguessable, but CI checkout paths ($GITHUB_WORKSPACE, /home/runner/work/...)
     are public, so an attacker could forge a matching stamp. A committed file
-    cannot be forged into looking untracked. A non-git target, a missing file,
-    or any git error yields False (nothing was committed, so nothing to distrust
-    on this basis; the stamp check still applies)."""
+    cannot be forged into looking untracked. A non-git target or a missing file
+    yields False so the stamp check decides; inability to launch trusted Git or
+    any ambiguous Git failure raises DriverError rather than trusting a
+    possibly forged matching stamp."""
     if not manifest_file or not os.path.isfile(manifest_file):
         return False
-    git_bin = shutil.which("git") or "git"
     try:
+        resolved = executable.resolve("git", review_root, os.environ.get("PATH", ""))
         rel = os.path.relpath(manifest_file, review_root)
         r = subprocess.run(  # nosec B603
-            [git_bin, "-C", review_root, "ls-files", "--error-unmatch", "--", rel],
+            [resolved.path, "-C", review_root, "ls-files", "--error-unmatch", "--", rel],
             capture_output=True, text=True, timeout=30,
-            env={"PATH": os.environ.get("PATH", "")})
-    except Exception:
+            env={"PATH": resolved.path_env, "LC_ALL": "C"})
+    except executable.ExecutableResolutionError as exc:
+        raise DriverError("manifest provenance cannot be checked: no trusted git: %s" % exc)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DriverError("manifest provenance git check failed: %s" % exc)
+    if r.returncode == 0:
+        return True
+    if r.returncode == 1:
         return False
-    return r.returncode == 0
+    if r.returncode == 128 and "not a git repository" in (r.stderr or ""):
+        return False
+    raise DriverError("manifest provenance git check failed (exit %s): %s"
+                      % (r.returncode, (r.stderr or "").strip()[:300]))
 
 def _foreign_manifest(manifest, review_root, manifest_file=None):
     """#1093 / #run8 AGT-C1A: True if a loaded manifest was NOT written by a
