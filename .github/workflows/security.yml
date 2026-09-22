@@ -140,6 +140,12 @@ jobs:
             -r controller/.github/requirements-gate.txt
 
       - name: Log in to GitHub Container Registry
+        # #1900: never on the fork path. The tools image is public and pulls
+        # anonymously, and the step below falls back to a local build if the
+        # pull fails at all -- so a login here would write GITHUB_TOKEN into
+        # the runner's docker config, where a scanner turned against the
+        # runner could read it, in exchange for nothing.
+        if: github.event_name != 'pull_request_target'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -175,7 +181,22 @@ jobs:
       # reads this process's stderr as a diagnostic, whereas phases/tools.py
       # builds its failure note from the first 300 characters of it.
       - name: Run static-analysis tools
+        env:
+          # #1900: the dependency flag, off the fork path only. The `&&`/`||`
+          # ternary yields '--deps' when the left side is true and '' (an
+          # empty string, which the unquoted expansion below drops entirely)
+          # when it is not.
+          DEPS_FLAG: ${{ github.event_name != 'pull_request_target' && '--deps' || '' }}
         run: |
+          # A fork PR is scanned with FEWER tools, by design. The flag adds the
+          # dependency scanner (`select_tools`, run_tools.py:406-415), which is
+          # the one that reads the target's own lockfiles and manifests -- the
+          # surface #1742/#1877 live on. Nothing online is selected on either
+          # path (`--online` is never passed, so `filter_online` drops the
+          # online-only adapters, run_tools.py:495-505/1269), so
+          # `egress.session` yields an inactive session (tools/egress.py:323-326)
+          # and every container runs `--network none`. The full tool set runs
+          # on the push to main after the merge.
           tools_out="$RUNNER_TEMP/${{ env.TOOLS_OUT }}"
           manifest="$RUNNER_TEMP/panopticon-tools-manifest.json"
           mkdir -p "$tools_out"
@@ -185,7 +206,7 @@ jobs:
             --manifest "$manifest" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
             --progress \
-            --deps
+            $DEPS_FLAG
 
       # INTENTIONAL POLICY, not an oversight (#513): this CI gate fails on any
       # HIGH/CRITICAL *tool* finding on raw severity, WITHOUT the two-axis
@@ -208,7 +229,13 @@ jobs:
             --exclude '${{ env.FIXTURE_GLOB }}'
 
       - name: Upload SARIF to GitHub Security tab
-        if: always()
+        # #1900: never on the fork path. Under pull_request_target the run's
+        # `github.ref` is the BASE branch, so a fork-controlled SARIF would be
+        # filed against main's Security tab. ACCEPTED RESIDUAL: the job's
+        # `security-events: write` cannot be narrowed per path within one job,
+        # so the grant is still present on the fork path -- the label gate is
+        # what bounds who can reach it, and no step on that path uses it.
+        if: always() && github.event_name != 'pull_request_target'
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: ${{ runner.temp }}/${{ env.TOOLS_OUT }}

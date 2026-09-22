@@ -294,6 +294,59 @@ class TestTheLabelDiesOnEveryNewHead(unittest.TestCase):
         self.assertIn("404", run)
 
 
+class TestTheForkPathHasNothingToReach(unittest.TestCase):
+    """#1900, second half: the label gate bounds WHO can start a fork scan;
+    this bounds what a started one can touch.
+
+    The scanners read target-controlled configuration by design (#1742, #1877),
+    so the fork path is built to be worth little if one of them is turned
+    against the runner: no registry credential written to the runner's docker
+    config, no dependency scanner reaching a package index, and no SARIF filed
+    against the base branch's Security tab.
+    """
+
+    OFF_THE_FORK_PATH = "github.event_name != 'pull_request_target'"
+
+    def setUp(self):
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            self.wf = yaml.safe_load(fh)
+
+    def _step(self, name):
+        for job in self.wf.get("jobs", {}).values():
+            for step in job.get("steps", []):
+                if step.get("name") == name:
+                    return step
+        self.fail("no step named %r in the workflow" % name)
+
+    def test_the_fork_path_never_logs_into_the_registry(self):
+        # The tools image is public and pulls anonymously, and the local-build
+        # fallback covers a pull that fails; a login on this path would write
+        # GITHUB_TOKEN into the runner's docker config for no gain at all.
+        step = self._step("Log in to GitHub Container Registry")
+        self.assertEqual(" ".join(step.get("if", "").split()),
+                         self.OFF_THE_FORK_PATH)
+
+    def test_deps_is_passed_only_off_the_fork_path(self):
+        step = self._step("Run static-analysis tools")
+        self.assertEqual(
+            (step.get("env") or {}).get("DEPS_FLAG"),
+            "${{ github.event_name != 'pull_request_target' && '--deps' || '' }}")
+        # `_without_comments`, because the step EXPLAINS the flag it no longer
+        # spells: a test satisfiable by its own documentation is the #1641
+        # mistake, and this assertion is the one most exposed to it.
+        run = _without_comments(step.get("run", ""))
+        self.assertNotIn("--deps", run)
+        self.assertIn("$DEPS_FLAG", run)
+
+    def test_no_fork_controlled_sarif_reaches_the_security_tab(self):
+        # Under pull_request_target the run's `github.ref` is the BASE branch,
+        # so an uploaded SARIF is filed against main's Security tab -- fork
+        # content writing the base repo's security record.
+        step = self._step("Upload SARIF to GitHub Security tab")
+        self.assertEqual(" ".join(step.get("if", "").split()),
+                         "always() && " + self.OFF_THE_FORK_PATH)
+
+
 class TestTheImagePullIsBounded(unittest.TestCase):
     """#1575 (OPS-A1A): the `scan` job is a required check on every push, every
     same-repo PR and every fork PR, and its image step was
