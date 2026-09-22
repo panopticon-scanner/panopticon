@@ -131,9 +131,15 @@ jobs:
           fi
           docker tag "$IMAGE" panopticon-tools:latest
 
-      # The hostile-csproj fixture is in the checkout (mounted at /work), but
-      # the SDK that builds it is in the image, and pytest arrives with the
-      # fixtures layer.
+      # The hostile-csproj fixture is baked into THIS image and restored there
+      # (#1655): roslyn-secguard refuses a C# target with no restore output,
+      # and this job scans a read-only mount with no network. pytest arrives
+      # with the same layer.
+      #
+      # Built again rather than shared with `integration`: that independence is
+      # the point of the separate job -- a fixtures build that fails for one
+      # (a goat clone, a maven compile) must not decide the other's answer --
+      # and the cost is one extra fixtures build a day.
       - name: Build the fixtures image
         run: docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 

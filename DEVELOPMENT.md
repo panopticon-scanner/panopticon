@@ -209,15 +209,35 @@ on it by `tests/test_workflow_pins.py` (`EXPECTED_CONTAINMENT_LANES`, `uncontain
 its own job rather than a step in `integration` so that an adapter regression cannot hide a
 containment one.
 
-To run it by hand, reproduce the lane rather than setting the flag on your shell:
+The fixture it scans is baked into the fixtures image and `dotnet restore`d there (#1655):
+`roslyn-secguard` refuses a C# target with no restore output, and a read-only mount with no network
+cannot produce one at scan time. It is restored, never built — the hostile target is hooked
+`BeforeTargets="Build"`, so it may only fire inside the no-egress container.
+
+To run it by hand, reproduce the lane rather than setting the flag on your shell — the command
+below is the job's `run:` line verbatim. `Dockerfile.fixtures` is `FROM panopticon-tools:latest`,
+so build or pull the tools image first (`docker build -t panopticon-tools:latest .`, or pull
+`ghcr.io/<owner>/panopticon-tools:latest` and `docker tag` it).
 
 ```
 docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
-docker run --rm --network none -v "$PWD:/work:ro" -w /work \
-  -e FIXTURE_ROOT=/opt/panopticon-fixtures -e PANOPTICON_CONTAINMENT_PROBE=1 \
+docker run --rm \
+  --network none \
+  -v "$PWD:/work:ro" -w /work \
+  -e FIXTURE_ROOT=/opt/panopticon-fixtures \
+  -e PANOPTICON_REQUIRE_INTEGRATION=1 \
+  -e PANOPTICON_CONTAINMENT_PROBE=1 \
+  -e PYTHONDONTWRITEBYTECODE=1 \
   --entrypoint sh panopticon-fixtures:latest \
-  -c "python3 -m pytest tests/tools/test_hostile_csproj.py -q -rs"
+  -c "python3 -m pytest tests/tools/test_hostile_csproj.py -q -rs -p no:cacheprovider"
 ```
+
+Drop nothing from it: without `PANOPTICON_REQUIRE_INTEGRATION=1` an unmet precondition *skips* where
+the lane *fails*, and a hand run that disagrees with the lane is worse than no hand run. Reading a
+red one: only `PANOPTICON_CONTAINMENT_PROBE is set but outbound egress is reachable` means the
+containment control itself broke — every other failure means the probe never got to run (a missing
+precondition, a fixture, the toolchain), so diagnose it as infrastructure before calling it a
+containment regression.
 
 ## Pinned dependencies
 
