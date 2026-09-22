@@ -1,4 +1,6 @@
 from unittest import mock
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -241,6 +243,75 @@ class TestEpss(unittest.TestCase):
 
         self.assertEqual(holder["req"].get_header("User-agent"), "panopticon/%s" % __version__)
         self.assertEqual(holder["resp"].last_read_size, 1000000)
+
+
+class TestEpssLookupBudget(unittest.TestCase):
+    """#1576 (run-13 OPS-746377351): EPSS enrichment was request-unbounded.
+
+    Every distinct syntactically valid CVE in the findings became one sequential
+    HTTP request with an 8-second timeout and one permanent cache entry. The
+    per-request timeout and response-byte cap bound a single call; nothing
+    bounded how many calls a crafted report could ask for.
+    """
+
+    def _cves(self, n):
+        return ["CVE-2023-%04d" % (1000 + i) for i in range(n)]
+
+    def _opener(self, calls):
+        def opener(req, timeout=0):
+            calls.append(req.full_url if hasattr(req, "full_url") else req)
+            return _FakeResp({"data": [{"cve": "CVE-2023-1000", "epss": "0.1",
+                                        "percentile": "0.5",
+                                        "date": "2026-07-20"}]})
+        return opener
+
+    def test_lookups_stop_at_the_budget(self):
+        calls = []
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(cit, "EPSS_LOOKUPS_MAX", 4), \
+                    contextlib.redirect_stderr(err):
+                out = cit.epss_lookup(self._cves(20), os.path.join(d, "c.json"),
+                                      opener=self._opener(calls))
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(out), 4)
+        self.assertIn("EPSS_LOOKUPS_MAX", err.getvalue())
+        self.assertIn("16", err.getvalue())
+
+    def test_cached_entries_do_not_spend_the_budget(self):
+        # The budget bounds NETWORK calls. A run whose CVEs are all cached must
+        # still enrich every one of them.
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            cache = os.path.join(d, "c.json")
+            with open(cache, "w", encoding="utf-8") as fh:
+                json.dump({c: {"cve": c, "score": 0.1, "percentile": 0.5,
+                               "as_of": "2026-07-20", "source": "FIRST.org"}
+                           for c in self._cves(20)}, fh)
+            with mock.patch.object(cit, "EPSS_LOOKUPS_MAX", 4):
+                out = cit.epss_lookup(self._cves(20), cache,
+                                      opener=self._opener(calls))
+        self.assertEqual(calls, [])
+        self.assertEqual(len(out), 20)
+
+    def test_enrichment_discloses_the_scores_it_did_not_fetch(self):
+        calls = []
+        findings = [{"citations": {"cve": [c]}} for c in self._cves(20)]
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(cit, "EPSS_LOOKUPS_MAX", 4), \
+                    contextlib.redirect_stderr(err):
+                cit.enrich_citations(findings, cit.load_cwe_catalog(),
+                                     epss_enabled=True,
+                                     cache_path=os.path.join(d, "c.json"),
+                                     opener=self._opener(calls))
+        self.assertEqual(len(calls), 4)
+        self.assertIn("EPSS_LOOKUPS_MAX", err.getvalue())
+
+    def test_the_budget_clears_any_report_seen(self):
+        # Real reports carry tens of distinct CVEs. The budget exists for the
+        # crafted case, so it must not bite a legitimate dependency scan.
+        self.assertGreaterEqual(cit.EPSS_LOOKUPS_MAX, 500)
 
 
 class TestCitationQuality(unittest.TestCase):
