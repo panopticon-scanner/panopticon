@@ -1,7 +1,11 @@
+import ast
+import contextlib
+import io
 import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.collect_usage as cu
 
@@ -413,6 +417,87 @@ class TestSourcesIsASummary(unittest.TestCase):
             self.skipTest("collect() found no usage records in the fixture")
         self.assertEqual(u["sources"]["subagent_transcripts"], 5)
         self.assertEqual(u["subagent_transcripts"], 5)
+
+
+class TestTranscriptEnumerationIsBounded(unittest.TestCase):
+    """#1576 (run-13 OPS-2642264462): transcript collection must be bounded.
+
+    Two halves of one finding. `find_task_transcripts` materialised every
+    matching path with no cap, and `collect` then appended one metadata dict
+    per transcript to a `sources` list the returned document never emitted --
+    an O(fan-out) allocation kept live for the whole collection run and read by
+    nothing.
+    """
+
+    def _tasks(self, d, n):
+        tasks = os.path.join(d, "tasks")
+        os.makedirs(tasks)
+        rec = json.dumps({"message": {"usage": {"input_tokens": 1,
+                                                "output_tokens": 1},
+                                      "model": "m"}}) + "\n"
+        for i in range(n):
+            with open(os.path.join(tasks, "review-g%03d-SEC.jsonl" % i), "w",
+                      encoding="utf-8") as fh:
+                fh.write(rec)
+        return tasks
+
+    def test_find_task_transcripts_stops_at_the_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            tasks = self._tasks(d, 12)
+            err = io.StringIO()
+            with mock.patch.object(cu, "TASK_TRANSCRIPTS_MAX", 5), \
+                    contextlib.redirect_stderr(err):
+                found = cu.find_task_transcripts(None, tasks_dir=tasks)
+        self.assertEqual(len(found), 5)
+        # Deterministic prefix, not an arbitrary five.
+        self.assertEqual(found, sorted(found))
+        self.assertIn("TASK_TRANSCRIPTS_MAX", err.getvalue())
+        self.assertIn("12", err.getvalue())
+
+    def test_collect_discloses_the_transcripts_it_did_not_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            tasks = self._tasks(d, 12)
+            ctl = os.path.join(d, "controller.jsonl")
+            with open(ctl, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"message": {"usage": {"input_tokens": 1},
+                                                 "model": "m"}}) + "\n")
+            err = io.StringIO()
+            with mock.patch.object(cu, "TASK_TRANSCRIPTS_MAX", 5), \
+                    contextlib.redirect_stderr(err):
+                doc = cu.collect(d, d, transcript=ctl, tasks_dir=tasks)
+        # The number is next to the data it qualifies: a reader of usage.json
+        # can see the total is a floor, not the whole run.
+        self.assertEqual(doc["sources"]["subagent_transcripts_truncated"], 7)
+        self.assertEqual(doc["sources"]["subagent_transcripts"], 5)
+
+    def test_no_truncation_key_when_the_cap_does_not_bind(self):
+        with tempfile.TemporaryDirectory() as d:
+            tasks = self._tasks(d, 3)
+            ctl = os.path.join(d, "controller.jsonl")
+            with open(ctl, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"message": {"usage": {"input_tokens": 1},
+                                                 "model": "m"}}) + "\n")
+            doc = cu.collect(d, d, transcript=ctl, tasks_dir=tasks)
+        self.assertEqual(doc["sources"]["subagent_transcripts_truncated"], 0)
+
+    def test_collect_builds_no_per_transcript_list(self):
+        """AST, not grep: `collect` must not append to a `sources` list.
+
+        The list was dead weight -- appended to once per transcript, never
+        returned, never read. A bound on it would have been the wrong fix; the
+        fix is that it does not exist. Read the tree rather than the text so a
+        renamed local or a reflowed line cannot fake a pass.
+        """
+        tree = ast.parse(open(cu.__file__, encoding="utf-8").read(), cu.__file__)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "collect")
+        offenders = [ast.unparse(n) for n in ast.walk(fn)
+                     if isinstance(n, ast.Call)
+                     and isinstance(n.func, ast.Attribute)
+                     and n.func.attr == "append"
+                     and isinstance(n.func.value, ast.Name)
+                     and n.func.value.id == "sources"]
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

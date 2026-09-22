@@ -53,6 +53,14 @@ USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
 PHASES = ("scout", "review", "verify", "unattributed")
 
+# #1576 (run-13 OPS-2642264462): the most subagent transcripts one run's usage
+# is collected from. Past it the sorted remainder is NOT read -- the reported
+# total becomes a floor -- and the drop is disclosed on stderr and as
+# `sources.subagent_transcripts_truncated` in usage.json, never silently. The
+# largest fan-out measured is solidus at ~1,300 agents, so this is roughly 15x
+# any real run and only an adversarial or runaway tasks directory reaches it.
+TASK_TRANSCRIPTS_MAX = 20_000
+
 # #run10 B2 hands agents a `prompt_file` PATH instead of an inline prompt, so a
 # real dispatch prompt names `_prompts/<entry-id>.txt` and never mentions the
 # findings file at all. The entry id already encodes the phase, and it is the
@@ -110,7 +118,28 @@ def _agent_id(path):
     return re.sub(r"\.(jsonl|output)$", "", base)
 
 
-def find_task_transcripts(controller_transcript, tasks_dir=None):
+def _cap_transcripts(paths, info):
+    """The first TASK_TRANSCRIPTS_MAX of `paths`, disclosing what it dropped.
+
+    Sorted input, so the kept prefix is deterministic rather than whichever
+    entries the filesystem happened to hand back first. `info`, when a dict,
+    records `transcripts_seen` / `transcripts_truncated` for the caller to
+    publish (#1576).
+    """
+    seen = len(paths)
+    dropped = max(0, seen - TASK_TRANSCRIPTS_MAX)
+    if info is not None:
+        info["transcripts_seen"] = seen
+        info["transcripts_truncated"] = dropped
+    if not dropped:
+        return paths
+    print("collect_usage: %d subagent transcripts found, reading the first %d "
+          "(TASK_TRANSCRIPTS_MAX); the reported total is a FLOOR, %d transcript(s) "
+          "were not read" % (seen, TASK_TRANSCRIPTS_MAX, dropped), file=sys.stderr)
+    return paths[:TASK_TRANSCRIPTS_MAX]
+
+
+def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
     """Every subagent transcript for the controller's session.
 
     Claude Code writes them in more than one place, and they OVERLAP:
@@ -127,13 +156,15 @@ def find_task_transcripts(controller_transcript, tasks_dir=None):
     those are the same agents as `tasks/`, so the run would have been
     double-counted instead. Collect from all three and dedup by agent id.
 
-    `--tasks-dir` overrides discovery entirely.
+    `--tasks-dir` overrides discovery entirely. Either way the result is
+    bounded by TASK_TRANSCRIPTS_MAX and the truncation is disclosed (#1576).
     """
     if tasks_dir:
-        return sorted(p for p in glob.glob(os.path.join(tasks_dir, "*"))
-                      if os.path.isfile(p))
+        return _cap_transcripts(
+            sorted(p for p in glob.glob(os.path.join(tasks_dir, "*"))
+                   if os.path.isfile(p)), info)
     if not controller_transcript:
-        return []
+        return _cap_transcripts([], info)
     session = os.path.splitext(os.path.basename(controller_transcript))[0]
     proj = os.path.dirname(controller_transcript)
     slug = os.path.basename(proj)
@@ -152,7 +183,7 @@ def find_task_transcripts(controller_transcript, tasks_dir=None):
             continue
         seen.add(aid)
         out.append(cand)
-    return sorted(out)
+    return _cap_transcripts(sorted(out), info)
 
 
 def _iter_records(path):
@@ -264,14 +295,14 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
             until=None):
     """Assemble the usage document, or None when no transcript is available."""
     controller = transcript or find_controller_transcript(project_dir, since=since)
-    tasks = find_task_transcripts(controller, tasks_dir)
+    found: dict[str, int] = {}
+    tasks = find_task_transcripts(controller, tasks_dir, info=found)
     if not controller and not tasks:
         return None
 
     by_phase = {p: _zero() for p in PHASES}
     by_source = {"controller": _zero(), "subagents": _zero()}
     models: dict[str, int] = {}
-    sources = []
     agents = 0
     controller_records, subagent_records = 0, 0
     by_phase_transcripts: dict[str, int] = {}
@@ -281,8 +312,6 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
         _add(by_source["controller"], t)
         for k, v in m.items():
             models[k] = models.get(k, 0) + v
-        sources.append({"path": controller, "kind": "controller",
-                        "usage_records": n})
         controller_records = n
 
     for p in tasks:
@@ -297,8 +326,6 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
         agents += 1
         subagent_records += n
         by_phase_transcripts[phase] = by_phase_transcripts.get(phase, 0) + 1
-        sources.append({"path": p, "kind": "subagent", "phase": phase,
-                        "usage_records": n})
 
     combined = _zero()
     _add(combined, by_source["controller"])
@@ -323,7 +350,10 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
         "window_end": until,
         # A SUMMARY, not the list. `sources` was one entry per transcript, each
         # carrying an absolute path: 700 entries / 190 KB on gotify, which is
-        # 99% of meta.cost and ~99% of the whole report base.
+        # 99% of meta.cost and ~99% of the whole report base. #1576 removed the
+        # list itself as well: it survived the summary as a local that every
+        # scanned transcript appended to and nothing ever read, so a large
+        # fan-out paid for it in live memory for the whole collection run.
         #
         # That is not inert weight. synthesize splits a report once its base --
         # everything BUT the findings -- exceeds max_bytes, so a fat meta.cost
@@ -343,6 +373,10 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
             "subagent_transcripts": agents,
             "subagent_usage_records": subagent_records,
             "subagent_transcripts_by_phase": by_phase_transcripts,
+            # #1576: 0 on every normal run. Non-zero says TASK_TRANSCRIPTS_MAX
+            # bound and `total` is a floor -- the one number that makes the
+            # rest of this document honest when it does.
+            "subagent_transcripts_truncated": found.get("transcripts_truncated", 0),
         },
     }
 
