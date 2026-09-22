@@ -2,10 +2,9 @@
 from __future__ import annotations
 import os
 import re
-import shutil
 import sys
-import tempfile
-from .base import cve_ids, make_finding, normalize_severity, omit_none, parse_json_bytes, run_tool
+from .base import (cve_ids, make_finding, normalize_severity, omit_none,
+                   parse_json_bytes, run_tool, scratch_cwd)
 
 _BLOCK_RE = re.compile(
     r"Name:\s*(?P<name>[^\n]+)\n"
@@ -55,8 +54,7 @@ class BundlerAuditAdapter:
         # it is never rejoined onto the target.
         # ---------------------------------------------------------------
         abs_target = os.path.abspath(target)
-        scratch = tempfile.mkdtemp(prefix="bundler-audit-cwd-")
-        try:
+        with scratch_cwd("bundler-audit-cwd-") as scratch:
             config_path = os.path.join(scratch, "empty-bundler-audit.yml")
             # An empty MAPPING, not an empty file: bundler-audit's config
             # loader requires the parsed YAML root to be a Hash, and rejects
@@ -84,8 +82,6 @@ class BundlerAuditAdapter:
                 return run_tool(["bundle-audit", "check", abs_target, "--no-update"],
                                 timeout=300, cwd=scratch)
             return raw, rc
-        finally:
-            shutil.rmtree(scratch, ignore_errors=True)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         try:

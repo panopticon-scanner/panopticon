@@ -302,7 +302,7 @@ def partition_venv_dirs(venv_dirs, security_mode="standard"):
     `.venv` -- so on a target carrying such a `.bandit`, bandit still does not
     enter the directory under redteam, while a target with no `.bandit` is
     scanned (bandit's own parser defaults name no virtualenv). Narrowing a
-    target-authored config by security mode is the same question #1877 tracks
+    target-authored config by security mode is the same question #1924 tracks
     for the rest of the target's discoverable configuration, and it is decided
     there, not here.
 
@@ -505,18 +505,54 @@ def filter_online(chosen, online):
     return kept
 
 
-# #1646 C1(b): the container working directory for adapters that must NOT
-# resolve a relative name against the reviewed repository. The image ends
-# `WORKDIR /src` and `/src` is the target mount, so pip -- which decides a
-# requirement is a local archive on a bare SUFFIX match, before it considers
-# whether the string looks like a path -- would find a committed `evil.tar.gz`
-# and run its build backend. Docker CREATES a `-w` directory that does not
-# exist, so this one is empty by construction and needs nothing in the image.
-# Scoped to the adapters that need it, not applied globally: every other
-# adapter's argv stays byte-identical, and a tool that legitimately reads the
-# tree relative to `/src` must not be moved out from under itself.
+# #1646 C1(b) / #1877: the container working directory for EVERY scanner
+# dispatch. The image ends `WORKDIR /src` and `/src` is the target mount, so a
+# container that starts there hands its scanner the reviewed repository as the
+# directory its OWN config resolution walks from -- pip deciding a requirement
+# is a local archive on a bare SUFFIX match and running a committed
+# `evil.tar.gz`'s build backend, npm reading `.npmrc`, semgrep
+# `.semgrepignore`, gitleaks `.gitleaksignore`. The rule is now uniform rather
+# than one adapter's exemption: every scanner container starts OUTSIDE the
+# mount. Docker CREATES a `-w` directory that does not exist, so this one is
+# empty by construction and needs nothing in the image, and no argv changes --
+# every tool already names its scan root by absolute path.
+#
+# TWO scanners are the exception, and both say so EXPLICITLY (`-w /src`)
+# rather than leaning on the image's WORKDIR. For each, the cwd is a SCAN
+# INPUT rather than a config-lookup surface, so moving it does not harden the
+# scan, it deletes it:
+#   gosec -- its argv is the CWD-RELATIVE go package pattern `./...`, which
+#     go/packages resolves through `go list` from the module root, so a
+#     container started anywhere else scans an empty directory.
+#   eslint-security -- under flat config the `files`/`ignores` base path is
+#     the process cwd whenever the config is named with `--config`, and
+#     anything outside that base is classified "external". Measured on the
+#     pinned eslint 10.9.0: from a scratch cwd the adapter produced NO output
+#     and exit 2, "located outside of the base path". A config-object
+#     `basePath` was tried first and does not widen the root base.
+# Each adapter makes the same call at the Popen level, for the same reason and
+# with the argument recorded against it there and in
+# tests/tools/test_adapter_cwd_confinement.py's allowlist.
+#
+# Belt and braces: the adapters ALSO pass their own scratch cwd to `run_tool`
+# (`tools.base.scratch_cwd`), so an `invoke()` that runs outside this
+# dispatcher -- a host-side test, a future runner -- is confined too, with no
+# docker flag in front of it.
 ADAPTER_EMPTY_CWD = "/panopticon-empty-cwd"
-ADAPTERS_NEEDING_EMPTY_CWD = ("pip-audit",)
+# Where the target is mounted inside every scanner container. One name, so the
+# `-v` mount and the `-w` working directory cannot come to disagree about which
+# path the two mount-cwd scanners are pointed at. (`_with_venv_excludes` and bandit's `--ini`
+# pin still spell it literally; both are outside #1877's scope.)
+TARGET_MOUNT = "/src"
+DISPATCH_KEEPS_TARGET_CWD = ("gosec", "eslint-security")
+
+
+def _working_dir_flags(tool):
+    """`-w` for *tool*'s container: outside the mount for every scanner but
+    the two in DISPATCH_KEEPS_TARGET_CWD, for which the cwd is a scan input
+    (see above)."""
+    inside = tool in DISPATCH_KEEPS_TARGET_CWD
+    return ["-w", TARGET_MOUNT if inside else ADAPTER_EMPTY_CWD]
 
 MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 
@@ -1084,9 +1120,10 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             cmd = _with_venv_excludes(tool, cmd, venv_dirs, target)   # #1638 P09
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
             docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
-                      + _privilege_drop_flags()
+                      + _privilege_drop_flags() + _working_dir_flags(tool)
                       + ["--network", "none",
-                         "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd)
+                         "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
+                         image] + cmd)
             _NETWORK_POSTURE[tool] = egress.NO_NETWORK
             with progress.tool(tool, index, total) as step:
                 done = step.finish(
@@ -1108,15 +1145,14 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             else:
                 docker.extend(["--network", "none"])
                 _NETWORK_POSTURE[tool] = egress.NO_NETWORK
-            if tool in ADAPTERS_NEEDING_EMPTY_CWD:
-                docker.extend(["-w", ADAPTER_EMPTY_CWD])
+            docker.extend(_working_dir_flags(tool))
             # Mount the checkout's adapter code over the image's baked-in copy
             # so local adapter fixes take effect without an image rebuild
             # (calibration 2026-08-03: fixed adapters silently kept failing
             # because the image carried the stale code).
             scripts_dir = os.path.dirname(os.path.abspath(__file__))
             docker.extend([
-                "-v", "%s:/src:ro" % os.path.abspath(target),
+                "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
                 "-v", "%s:/opt/panopticon/scripts:ro" % scripts_dir, image,
                 "python3", "/opt/panopticon/scripts/_run_adapter.py", tool])
             with progress.tool(tool, index, total) as step:

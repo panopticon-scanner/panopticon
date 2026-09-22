@@ -1,9 +1,7 @@
 """eslint-plugin-security adapter for JS/TS security anti-patterns."""
 from __future__ import annotations
 import os
-import shutil
-import tempfile
-from .base import make_finding, omit_none, parse_json_bytes, run_tool
+from .base import make_finding, omit_none, parse_json_bytes, run_tool, scratch_cwd
 from .sarif_utils import norm_uri
 
 # node_modules locations in the tools image, in priority order. The first is
@@ -34,7 +32,15 @@ def _plugin_entry() -> str:
 def _flat_config() -> str:
     """A minimal eslint flat config (ESM) that loads eslint-plugin-security and
     turns every mapped rule ON at error level. The eslint level is used only to
-    ENABLE the rule; severity is derived in parse() from RULE_SEVERITY."""
+    ENABLE the rule; severity is derived in parse() from RULE_SEVERITY.
+
+    No `basePath` (#1877, round 2): a config-OBJECT `basePath` narrows the
+    `files`/`ignores` base but cannot widen it past the ConfigArray's ROOT
+    base, which ESLint builds from the process cwd when the config is named
+    with `--config`. Emitting one made no difference to a real round -- still
+    exit 2, still no output -- so it is not carried here implying otherwise.
+    The cwd is what decides eslint's scope, and `invoke` sets it.
+    """
     rules = ",\n      ".join('"%s": "error"' % r for r in RULE_CWE)
     return (
         'import security from "%s";\n'
@@ -139,22 +145,42 @@ class EslintSecurityAdapter:
             return b"[]", 0
         # #run7: generate an eslint 9/10 flat config that imports the plugin by
         # explicit path (see _plugin_entry) and run it. The config lives in a
-        # container-writable temp dir because the /src mount is read-only.
-        cfg_dir = tempfile.mkdtemp(prefix="eslint-cfg-")
-        cfg_path = os.path.join(cfg_dir, "eslint.config.mjs")
-        with open(cfg_path, "w", encoding="utf-8") as fh:
-            fh.write(_flat_config())
-        # --config pins OUR generated config and --no-config-lookup stops eslint
-        # from also discovering + EXECUTING the scanned target's own
-        # eslint.config.js (arbitrary JS -> RCE). The plugin is imported by
-        # ABSOLUTE path in that config, so no cwd- or NODE_PATH-relative
-        # resolution can be hijacked by a hostile target node_modules (#83/#715).
-        cmd = ["eslint", "--config", cfg_path, "--no-config-lookup",
-               "--format", "json", os.path.abspath(target)]
-        try:
-            return run_tool(cmd, timeout=300, ok_codes=(0, 1))
-        finally:
-            shutil.rmtree(cfg_dir, ignore_errors=True)
+        # container-writable temp dir -- the /src mount is read-only, and a
+        # config inside the tree is one the target could collide with. Only
+        # the WORKING DIRECTORY is the target, for the reason below.
+        with scratch_cwd("eslint-cfg-") as cfg_dir:
+            cfg_path = os.path.join(cfg_dir, "eslint.config.mjs")
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                fh.write(_flat_config())
+            # --config pins OUR generated config and --no-config-lookup stops
+            # eslint from also discovering + EXECUTING the scanned target's own
+            # eslint.config.js (arbitrary JS -> RCE). The plugin is imported by
+            # ABSOLUTE path in that config, so no cwd- or NODE_PATH-relative
+            # resolution can be hijacked by a hostile target node_modules
+            # (#83/#715).
+            abs_target = os.path.abspath(target)
+            cmd = ["eslint", "--config", cfg_path, "--no-config-lookup",
+                   "--format", "json", abs_target]
+            # #1877 round 2: cwd IS the target, the second documented
+            # exception after gosec and for the same KIND of reason -- the cwd
+            # is a SCAN INPUT here, not a config-lookup surface. Under flat
+            # config the `files`/`ignores` base path is the process cwd
+            # whenever the config is named with `--config`, and
+            # @eslint/config-array treats anything outside that base as
+            # "external"; a config-object `basePath` narrows it but cannot
+            # widen it back. Measured on the pinned eslint 10.9.0 with a real
+            # container round: from a scratch cwd, NO output and exit 2
+            # ("located outside of the base path") -- the whole JS/TS axis
+            # lost, the #1452 "selected but unproduced" class. What the cwd
+            # would otherwise buy an attacker is already closed above and does
+            # not depend on it: --config + --no-config-lookup close the
+            # config-execution vector, the plugin import is absolute, and flat
+            # config takes no ignore RULES from `.eslintignore` (ESLint >= 9 is
+            # documented to reject a present one, which is the same on main --
+            # cwd or not, the file sits at the scan root). Recorded again, with
+            # the argument, in tests/tools/test_adapter_cwd_confinement.py and
+            # run_tools.DISPATCH_KEEPS_TARGET_CWD.
+            return run_tool(cmd, timeout=300, ok_codes=(0, 1), cwd=abs_target)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)

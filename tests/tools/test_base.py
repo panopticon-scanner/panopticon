@@ -522,5 +522,39 @@ class TestTimeoutKillReachesTheWholeGroup(unittest.TestCase):
         self.fail("grandchild %d survived the timeout kill" % pid)
 
 
+class TestScratchCwd(unittest.TestCase):
+    """#1877: the one helper every adapter uses to name its own working
+    directory, so "no cwd" can never mean "the target mount" again."""
+
+    def test_yields_an_existing_empty_directory(self):
+        with base.scratch_cwd("unit-test-cwd-") as scratch:
+            self.assertTrue(os.path.isdir(scratch))
+            self.assertEqual(os.listdir(scratch), [])
+            self.assertTrue(os.path.basename(scratch).startswith("unit-test-cwd-"))
+
+    def test_the_directory_is_removed_on_the_way_out(self):
+        with base.scratch_cwd("unit-test-cwd-") as scratch:
+            pass
+        self.assertFalse(os.path.exists(scratch))
+
+    def test_the_directory_is_removed_when_the_body_raises(self):
+        seen = {}
+        with self.assertRaises(ValueError):
+            with base.scratch_cwd("unit-test-cwd-") as scratch:
+                seen["path"] = scratch
+                raise ValueError("boom")
+        self.assertFalse(os.path.exists(seen["path"]))
+
+    def test_a_scanner_that_writes_into_the_scratch_does_not_break_cleanup(self):
+        # The #1646 F3 lesson, now the helper's: the scratch exists PRECISELY
+        # to be where a scanner's stray writes land, so `rmdir` would raise
+        # `Directory not empty` and turn a successful scan into a failed one.
+        with base.scratch_cwd("unit-test-cwd-") as scratch:
+            os.mkdir(os.path.join(scratch, "junk-dir"))
+            with open(os.path.join(scratch, "junk-dir", "spill"), "w") as fh:
+                fh.write("x")
+        self.assertFalse(os.path.exists(scratch))
+
+
 if __name__ == "__main__":
     unittest.main()

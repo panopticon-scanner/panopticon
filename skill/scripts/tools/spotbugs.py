@@ -8,7 +8,7 @@ try:
 except ImportError:
     import xml.etree.ElementTree as ET  # nosec B405
 
-from .base import as_list, make_finding, omit_none, run_tool
+from .base import as_list, make_finding, omit_none, run_tool, scratch_cwd
 
 _SPOTBUGS_CWE = {
     "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE": "CWE-89",
@@ -94,7 +94,11 @@ class SpotBugsAdapter:
             "-textui", "-xml", "-pluginList", plugin_jar,
             classes,
         ]
-        return run_tool(cmd, timeout=600)
+        # #1877: spotbugs reads cwd-relative configuration (exclude/include
+        # filter files), so it runs from an empty scratch; the classes dir is
+        # named on argv, so argv is byte-unchanged.
+        with scratch_cwd("spotbugs-cwd-") as cwd:
+            return run_tool(cmd, timeout=600, cwd=cwd)
 
     @staticmethod
     def _trim_to_xml(text: str) -> str:

@@ -12,6 +12,7 @@ from _test_helpers import FakePopen, first, only
 import scripts.ingest_tools as ingest_tools
 import scripts.tools.npm_audit as na
 import scripts.tools.base as base
+from .conftest import assert_scratch_cwd, scratch_cwd_recorder
 
 
 @pytest.fixture(autouse=True)
@@ -114,17 +115,18 @@ class TestNpmAuditAdapter(unittest.TestCase):
 
     def test_invoke_runs_npm_audit_json(self):
         adapter = na.NpmAuditAdapter()
-        fake_run = FakePopen(stdout=b"{}", stderr=b"", returncode=0)
+        calls = []
         with mock.patch("scripts.tools.base.subprocess.Popen",
-                        return_value=fake_run) as popen_mock:
+                        side_effect=scratch_cwd_recorder(calls)):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"{}")
         self.assertEqual(rc, 0)
-        popen_mock.assert_called_once_with(
-            ["npm", "audit", "--json", "--prefix", "/tmp/fake"],
-            stdout=mock.ANY,
-            stderr=mock.ANY,
-        )
+        launch = only(calls, "npm audit launch")
+        self.assertEqual(launch["argv"],
+                         ["npm", "audit", "--json", "--prefix", "/tmp/fake"])
+        # #1877: npm reads an `.npmrc` from the working directory too, so the
+        # cwd is a scratch and `--prefix` stays the only path into the target.
+        assert_scratch_cwd(self, launch, "/tmp/fake")
 
     def test_invoke_reports_nonzero_exit(self):
         import contextlib, io

@@ -207,6 +207,39 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         for rule in es.RULE_CWE:
             self.assertIn('"%s": "error"' % rule, cfg)   # every mapped rule ON
 
+    def test_invoke_runs_from_the_target_and_keeps_the_config_outside_it(self):
+        # #1877 round 2: eslint is the second documented cwd=target exception
+        # (see tests/tools/test_adapter_cwd_confinement.py for the argument).
+        # Its cwd is not a config-lookup surface, it is the flat config's BASE
+        # PATH -- measured on the pinned eslint 10.9.0, a scratch cwd gave no
+        # output and exit 2, "File ignored because it is located outside of
+        # the base path". Two halves, pinned together: the PROCESS runs in the
+        # target, and the generated CONFIG still does not live there (the
+        # /src mount is read-only, and a config inside the tree is a config
+        # the target could collide with).
+        adapter = es.EslintSecurityAdapter()
+        seen = {}
+
+        def _record(cmd, **kwargs):
+            seen["cwd"] = kwargs.get("cwd")
+            seen["cfg"] = cmd[cmd.index("--config") + 1]
+            return FakePopen(stdout=b"[]", stderr=b"", returncode=0)
+
+        with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=_record), \
+             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
+                               return_value=["x.js"]):
+            adapter.invoke("relative/target")
+        target = os.path.abspath("relative/target")
+        self.assertEqual(seen["cwd"], target)
+        self.assertFalse(seen["cfg"].startswith(target + os.sep),
+                         "the generated config lives inside the target")
+        # #1877 re-review R3: the config scratch used to be the cwd and rode on
+        # the class pin's cleanup assertion; now that eslint is allowlisted
+        # there, this is the one place that pins the scratch does not outlive
+        # invoke().
+        self.assertFalse(os.path.exists(os.path.dirname(seen["cfg"])),
+                         "the config scratch directory outlived invoke()")
+
     def test_plugin_entry_is_absolute_trusted_path(self):
         # #83/#715: the plugin must be the TRUSTED global one, never a hostile
         # copy in the scanned target's node_modules. Importing by ABSOLUTE path
@@ -251,9 +284,9 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertIn('ENV PATH="%s/.bin:${PATH}"' % prefix, dockerfile)
 
     def test_invoke_passes_absolute_target_path(self):
-        # Once cwd is pinned away from the target, the linted path on argv
-        # must be absolute so linting still resolves the right directory
-        # regardless of the pinned cwd.
+        # The linted path on argv is absolute so it names the same directory
+        # whatever the cwd is -- which also keeps it honest now that the cwd
+        # is the target itself (#1877 round 2).
         adapter = es.EslintSecurityAdapter()
         fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
         with mock.patch("scripts.tools.base.subprocess.Popen",

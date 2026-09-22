@@ -22,7 +22,14 @@ FAIL_RC = 2
 
 def main(argv):
     name = argv[1]
-    target = argv[2] if len(argv) > 2 else "/src"
+    # ABSOLUTE, once, here (#1877 M4). Every adapter now runs its scanner from
+    # an empty scratch cwd, and several pass `target` through to argv verbatim
+    # (npm-audit's `--prefix`, osv-scanner, brakeman, spotbugs,
+    # dependency-check, legacy_sarif), so a RELATIVE target would resolve
+    # against a directory that by construction contains nothing. In the
+    # container the default is already absolute; this is for every other
+    # caller. `tools.base.scratch_cwd` names this as its precondition.
+    target = os.path.abspath(argv[2] if len(argv) > 2 else "/src")
     try:
         adapter = ADAPTERS[name]
     except KeyError:
