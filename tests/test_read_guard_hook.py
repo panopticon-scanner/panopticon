@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import tempfile
+import unicodedata
 import unittest
 from unittest import mock
 
@@ -276,6 +277,66 @@ class TestDecide(unittest.TestCase):
         for path in (self.root, deep):
             with self.subTest(path=path):
                 self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": path}, scope)[0])
+
+    def test_a_recorded_link_denies_a_case_folded_directory_argument(self):
+        # B1 (fix round 2). APFS/HFS+/NTFS resolve names case-insensitively,
+        # so a byte-exact list test let `Grep <root>/src` through with
+        # `<root>/Src/x.txt` recorded -- and the host then opened the very
+        # directory the fence had refused. A DENIAL may be folded: the worst a
+        # fold can do here is over-deny.
+        src = os.path.join(self.root, "src")
+        clean = os.path.join(self.root, "clean")
+        for d in (src, clean):
+            os.makedirs(d, exist_ok=True)
+        scope = _scope(dirs=[self.root],
+                       hard_linked=[os.path.join(self.root, "Src", "x.txt")])
+        ok, reason = rg.decide("Grep", {"pattern": "x", "path": src}, scope)
+        self.assertFalse(ok, reason)
+        self.assertIn("x.txt", reason)
+        self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": clean}, scope))
+
+    def test_a_recorded_link_denies_a_differently_normalised_argument(self):
+        # The same bypass through Unicode: NFC and NFD "café" are two byte
+        # strings and one directory on macOS. Built both ways explicitly, so
+        # this measures the fold and not the filesystem's normalisation.
+        nfd = os.path.join(self.root, unicodedata.normalize("NFD", "café"))
+        os.makedirs(nfd, exist_ok=True)
+        nfc = os.path.join(self.root, unicodedata.normalize("NFC", "café"))
+        scope = _scope(dirs=[self.root], hard_linked=[os.path.join(nfc, "x.txt")])
+        self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": nfd}, scope)[0])
+
+    def test_the_dirs_grant_itself_is_never_folded(self):
+        # The asymmetry, pinned. Folding a DENIAL can only over-deny; folding
+        # the GRANT would ADMIT /REPO/x under a /repo grant on a case-sensitive
+        # volume. Strings only, no filesystem: `isdir` is False, so this is the
+        # scope test rather than the directory branch.
+        scope = {"files": [], "dirs": ["/repo"], "reads": [], "hard_linked": []}
+        ok, reason = rg.decide("Grep", {"pattern": "x", "path": "/REPO/x.py"}, scope)
+        self.assertFalse(ok, reason)
+        self.assertIn("outside your cell's scope", reason)
+        self.assertFalse(rg.decide("Read", {"file_path": "/REPO/x.py"}, scope)[0])
+
+    def test_the_overflow_encoding_says_the_grant_is_closed_not_to_narrow(self):
+        # I2 (fix round 2): with the review ROOT recorded, the old wording
+        # called it "a hard-linked file beneath" the argument -- it is neither
+        # -- and told the agent to grep a narrower directory, which is denied
+        # at every depth. A grant closed whole says so, and says what to do.
+        deep = os.path.join(self.root, "pkg", "sub")
+        os.makedirs(deep, exist_ok=True)
+        scope = _scope(dirs=[self.root], hard_linked=[self.root])
+        for path in (self.root, deep):
+            with self.subTest(path=path):
+                ok, reason = rg.decide("Grep", {"pattern": "x", "path": path}, scope)
+                self.assertFalse(ok, reason)
+                self.assertIn("the whole directory grant is closed", reason)
+                self.assertNotIn("narrower", reason)
+                self.assertIn("Read files by name", reason)
+        # A link genuinely BENEATH the argument keeps the other wording.
+        _ok, reason = rg.decide(
+            "Grep", {"pattern": "x", "path": self.root},
+            _scope(dirs=[self.root], hard_linked=[os.path.join(deep, "b.txt")]))
+        self.assertIn("narrower", reason)
+        self.assertNotIn("closed", reason)
 
     def test_a_recorded_path_is_separator_bounded_like_every_other(self):
         # /root/ab recorded must not deny a Grep of /root/a.

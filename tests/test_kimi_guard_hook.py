@@ -2,6 +2,7 @@ import io
 import json
 import os
 import tempfile
+import unicodedata
 import unittest
 from unittest import mock
 
@@ -127,6 +128,67 @@ class TestHardLinksInDirectoryGrants(GuardCase):
         for path in (self.cell, deep):
             with self.subTest(path=path):
                 self.assertFalse(self.scan("Grep", pattern="x", path=path)[0])
+
+    def _dir_scope(self, *recorded):
+        _write(self.scope_path,
+               {"entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
+                              "hard_linked": list(recorded)}})
+
+    def test_a_recorded_link_denies_a_case_folded_directory_argument(self):
+        # B1 (fix round 2), the Kimi copy: APFS/HFS+/NTFS resolve names
+        # case-insensitively, so a byte-exact list test let `Grep <cell>/src`
+        # past a recorded `<cell>/Src/x.txt` and Kimi opened it.
+        src = os.path.join(self.cell, "src")
+        clean = os.path.join(self.cell, "clean")
+        for d in (src, clean):
+            os.makedirs(d, exist_ok=True)
+        self._dir_scope(os.path.join(self.cell, "Src", "x.txt"))
+        allow, reason = self.scan("Grep", pattern="x", path=src)
+        self.assertFalse(allow, reason)
+        self.assertIn("x.txt", reason)
+        self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=clean))
+
+    def test_a_recorded_link_denies_a_differently_normalised_argument(self):
+        nfd = os.path.join(self.cell, unicodedata.normalize("NFD", "café"))
+        os.makedirs(nfd, exist_ok=True)
+        nfc = os.path.join(self.cell, unicodedata.normalize("NFC", "café"))
+        self._dir_scope(os.path.join(nfc, "x.txt"))
+        self.assertFalse(self.scan("Grep", pattern="x", path=nfd)[0])
+
+    def test_the_dirs_grant_itself_is_never_folded(self):
+        # Folding a DENIAL can only over-deny; folding the GRANT would ADMIT
+        # /REPO/x under a /repo grant on a case-sensitive volume. Strings
+        # only, so `isdir` is False and this is the scope test.
+        _write(self.scope_path,
+               {"entry-dir": {"files": [], "dirs": ["/repo"], "reads": [],
+                              "hard_linked": []}})
+        allow, reason = self.scan("Grep", pattern="x", path="/REPO/x.py")
+        self.assertFalse(allow, reason)
+        self.assertIn("outside your cell's scope", reason)
+
+    def test_the_overflow_encoding_says_the_grant_is_closed_not_to_narrow(self):
+        # I2 (fix round 2): with the grant's own root recorded, "a hard-linked
+        # file beneath it (<root>)" was false and "grep a narrower directory"
+        # was advice denied at every depth.
+        deep = os.path.join(self.cell, "pkg", "sub")
+        os.makedirs(deep, exist_ok=True)
+        self._dir_scope(self.cell)
+        for path in (self.cell, deep):
+            with self.subTest(path=path):
+                allow, reason = self.scan("Grep", pattern="x", path=path)
+                self.assertFalse(allow, reason)
+                self.assertIn("the whole directory grant is closed", reason)
+                self.assertNotIn("narrower", reason)
+
+    def test_a_directory_read_keeps_its_previous_answer(self):
+        # I3 (fix round 2): the new rule is about a tool that TRAVERSES, and
+        # the Kimi hook shares one `isdir` branch across Read/ReadMediaFile/
+        # Grep/Glob -- so it was telling a directory `Read` that "this tool
+        # traverses the directory itself". Read's answer is unchanged.
+        self._dir_scope(self.planted)
+        for tool in ("Read", "ReadMediaFile"):
+            with self.subTest(tool=tool):
+                self.assertEqual((True, ""), self.scan(tool, path=self.cell))
 
     def test_a_recorded_link_leaves_file_arguments_to_the_st_nlink_rule(self):
         # `hard_linked` gates DIRECTORY arguments only; a read whose argument

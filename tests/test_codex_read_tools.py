@@ -304,7 +304,17 @@ def test_the_directory_link_denial_is_one_wording(tree):
 
     assert (read_guard_hook.DIRECTORY_LINK_DENIAL
             == kimi_guard_hook.DIRECTORY_LINK_DENIAL)
+    # ...and its sibling (fix round 2, I2): the grant closed AT or ABOVE the
+    # argument, where naming a file "beneath it" is false and "grep something
+    # narrower" is advice denied at every depth.
+    assert (read_guard_hook.DIRECTORY_GRANT_CLOSED
+            == kimi_guard_hook.DIRECTORY_GRANT_CLOSED)
+    assert read_guard_hook.DIRECTORY_GRANT_CLOSED % ("Glob", "/repo") == (
+        "Glob of directory /repo is denied: the whole directory grant is closed "
+        "(too many hard-linked files beneath it, or a subtree nothing could read "
+        "-- see the setup-scan stderr line). Read files by name.")
     assert not hasattr(read_tools, "DIRECTORY_LINK_DENIAL")
+    assert not hasattr(read_tools, "DIRECTORY_GRANT_CLOSED")
     assert read_guard_hook.DIRECTORY_LINK_DENIAL % ("Grep", "/repo", "/repo/a/b.txt") == (
         "Grep of directory /repo is denied: this tool traverses the directory "
         "itself, and the read scope recorded a hard-linked file beneath it "

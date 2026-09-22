@@ -980,6 +980,10 @@ class TestCodexHostDocs(unittest.TestCase):
         # Fix round 1 (A): and the operator's remedy, in the same words the
         # stderr line uses -- `phases/setup._HARD_LINK_REMEDY`.
         self.assertIn("git clone --no-hardlinks", doc)
+        # Fix round 2 (B1): the fold is a security property an operator relies
+        # on -- and so is its asymmetry, which is why both are stated.
+        self.assertIn("case- and normalization-folded", doc)
+        self.assertIn("the grant itself is never folded", doc)
         # Fix round 3 (N6): and what the skip line actually promises -- at most
         # eight named, inside a bounded block, the rest counted.
         self.assertIn("at most eight are named", doc)

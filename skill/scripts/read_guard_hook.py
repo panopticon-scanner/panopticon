@@ -6,37 +6,33 @@ THE CRUX (design 1): a hook registered in `.claude/settings.local.json` is
 session-wide, so the payload identifies the AGENT (`agent_id`), never the
 dispatch ENTRY. The write guard sidesteps this with one union allowlist; a
 union of read scopes would approximate the whole repository. So this hook
-BINDS `agent_id` to an entry through the subagent's own transcript: Claude
-Code writes it beside the parent transcript the payload names
+BINDS `agent_id` to an entry through the subagent's own transcript, which
+Claude Code writes beside the parent transcript the payload names
 (`<stem>/subagents/agent-<id>.jsonl`, or `<stem>/subagents/workflows/<wf>/`
-for a Workflow-dispatched agent), and its FIRST user record is the dispatch
+for a Workflow-dispatched agent) and whose FIRST user record is the dispatch
 prompt verbatim -- measured in the spike, both layouts, present at the first
-tool call. Every entry prompt therefore begins with one line,
-``panopticon-entry: <entry id>``, rendered by the driver (phases/requests.py)
-and never by a template. Only the orchestrator writes that first record, so
-hostile target content -- which reaches an agent only through tool results --
-cannot re-bind it.
+tool call. Every entry prompt therefore begins with ``panopticon-entry: <entry
+id>``, rendered by the driver (phases/requests.py) and never by a template.
+Only the orchestrator writes that first record, so hostile target content --
+which reaches an agent only through tool results -- cannot re-bind it.
 
 SCOPE, STATED PLAINLY: this covers `_READ_TOOLS` only. No fan-out shell grants
-Bash (`registered-shell-tools` proves that), so Bash needs no adjudication
-here and gets none. The orchestrator -- a payload with no `agent_id` and no
-`agent_type` -- is never confined, exactly as the write guard trusts it: it
-runs the driver. Plan 6 adds a second identity, `agent_type` with no
-`agent_id`: the headless runner's `claude -p` process IS the reviewer, so
-this payload shape is a session nothing bound, not the orchestrator, and
-ENV_ENTRY_ID (below) is how the runner binds it (spec 5.3).
+Bash (`registered-shell-tools` proves that), so Bash needs no adjudication here
+and gets none. The orchestrator -- no `agent_id` and no `agent_type` -- is
+never confined, exactly as the write guard trusts it: it runs the driver. Plan
+6 adds a second identity, `agent_type` with no `agent_id`: the headless
+runner's `claude -p` process IS the reviewer, so that payload shape is a
+session nothing bound, and ENV_ENTRY_ID binds it (spec 5.3).
 
-FAIL-CLOSED WHILE ARMED: a subagent that cannot be bound, an entry id the
-armed scope does not name, an unresolvable path, or a missing/malformed scope
-file all DENY, with a reason the agent can read. Never a crash, never a
-silent allow.
+FAIL-CLOSED WHILE ARMED: a subagent that cannot be bound, an entry id the armed
+scope does not name, an unresolvable path, or a missing/malformed scope file all
+DENY, with a reason the agent can read. Never a crash, never a silent allow.
 
-CLAUDE-ONLY BY CONSTRUCTION, like the write guard. Other families confine
+CLAUDE-ONLY BY CONSTRUCTION, like the write guard; other families confine
 reads their own way (spec 7.2). Stdlib-only and self-locating: Claude Code
-runs this as ``python3 <abs path> <abs scope path>`` -- one SHELL STRING, every
-element shell-quoted (#1633) -- with no package on sys.path, which is why the
-settings plumbing below is a copy of write_guard_hook's rather than an import
-(plan 5, R-P5-5).
+runs this as ``python3 <abs path> <abs scope path>``, one SHELL STRING with
+every element shell-quoted (#1633), and with no package on sys.path -- which
+is why the settings plumbing below copies write_guard_hook's (plan 5, R-P5-5).
 """
 import glob
 import json
@@ -44,6 +40,7 @@ import os
 import shlex
 import stat
 import sys
+import unicodedata
 
 _READ_TOOLS_LIST = ["Read", "Grep", "Glob"]
 _READ_TOOLS = set(_READ_TOOLS_LIST)
@@ -56,23 +53,20 @@ MARKER_PREFIX = "panopticon-entry: "
 # such key and loads as an empty list.
 SCOPE_KEYS = ("files", "dirs", "reads", "hard_linked")
 
-# Spec 5.3 (plan 6): the headless runner exports this per subprocess. It is
-# the FIRST binding source -- a headless `claude -p` session is the reviewer
-# itself (agent_type, no agent_id), so a transcript-only rule would fail
-# OPEN for every headless entry.
+# Spec 5.3 (plan 6): the headless runner exports this per subprocess, and it
+# is the FIRST binding source -- a headless `claude -p` session is the
+# reviewer itself, so a transcript-only rule would fail OPEN for every entry.
 ENV_ENTRY_ID = "PANOPTICON_ENTRY_ID"
 
 
 def marker_line(entry_id):
     """Line 1 of an entry's prompt, WITHOUT its newline (the builder adds it).
 
-    Entry ids are DRIVER-GENERATED, never user input, and already constrained
-    to `^[A-Za-z0-9._:-]+$` in practice (design spec 4.4; groups_schema's
-    `_GROUP_NAME_RE` forbids both spaces and colons in a group name, so no
-    real id ever carries either) -- but this function does not enforce that
-    grammar. It is permissive BY DESIGN: any single-line id round-trips, and
-    the only thing refused is an id that cannot be one line, so a future id
-    shape needs no change here to keep working."""
+    Permissive BY DESIGN, enforcing no grammar: driver-generated ids already
+    match `^[A-Za-z0-9._:-]+$` in practice (design spec 4.4; groups_schema's
+    `_GROUP_NAME_RE` forbids spaces and colons in a group name), but any
+    single-line id round-trips here and only an id that cannot be one line is
+    refused -- so a future id shape needs no change."""
     entry_id = "" if entry_id is None else str(entry_id)
     if not entry_id or "\n" in entry_id or "\r" in entry_id:
         raise ValueError("entry id must be a non-empty single line: %r" % entry_id)
@@ -107,9 +101,9 @@ def scope_from_plan(plan):
     """{entry id: {key: [paths] for key in SCOPE_KEYS}}, realpath-normalised,
     for every entry that carries an id and a `scope` dict.
 
-    `plan` is a SEQUENCE OF ENTRIES, never the dispatch-request wrapper --
-    the #1482 shape the write guard rejects for the same reason: a mapping's
-    keys are strings, match nothing, and would arm an empty scope silently."""
+    `plan` is a SEQUENCE OF ENTRIES, never the dispatch-request wrapper -- the
+    #1482 shape the write guard rejects for the same reason: a mapping's keys
+    are strings, match nothing, and would arm an empty scope silently."""
     if isinstance(plan, (dict, str, bytes)):
         raise TypeError(
             "plan must be a sequence of dispatch entries, not %s -- pass the "
@@ -132,6 +126,17 @@ def _under(path, directory):
     return path == directory or path.startswith(directory + os.sep)
 
 
+def _fold(path):
+    """Case- and Unicode-folded, for DENIALS ONLY (#1683 fix round 2).
+
+    APFS/HFS+/NTFS resolve names case- and normalization-insensitively, so a
+    byte-exact list test let `Grep <root>/src` past a recorded
+    `<root>/Src/x.txt`. Folding a DENIAL can only over-deny; folding the
+    `dirs` GRANT would ADMIT /REPO/x under /repo on a case-sensitive volume,
+    which is why `_readable` and the grant test stay byte-exact."""
+    return unicodedata.normalize("NFC", path).casefold()
+
+
 def _resolve_path(raw):
     """realpath of a payload path, or None when it cannot be resolved -- a
     non-string, empty or NUL-bearing path is malformed and fails closed."""
@@ -144,25 +149,31 @@ def _resolve_path(raw):
 
 
 def _readable(target, scope):
+    # Byte-exact by design; see _fold. Folding HERE would widen the grant.
     return (target in scope["files"] or target in scope["reads"]
             or any(_under(target, d) for d in scope["dirs"]))
 
 
 # #1642: one wording for one rule, across three read brokers.
-# `codex_read_tools.HARD_LINK_DENIAL` is the original, and
-# tests/test_codex_read_tools.py::test_the_hard_link_denial_is_one_wording pins
-# the copies equal. Copied rather than imported for the reason everything in
-# this module is: the hook runs standing alone, with no package on sys.path.
+# `codex_read_tools.HARD_LINK_DENIAL` is the original and
+# tests/test_codex_read_tools.py pins the copies equal. Copied rather than
+# imported for the reason everything here is: the hook stands alone.
 HARD_LINK_DENIAL = "read scope denies a hard-linked file inside a directory grant (st_nlink=%d)"
 
 # #1683: the same rule, for the read whose argument is the DIRECTORY -- one
-# wording across both hooks, pinned in tests/test_codex_read_tools.py beside
-# the one above. Takes (tool, raw argument, the recorded path that fired).
+# wording EACH, identical across the two hooks and pinned in
+# tests/test_codex_read_tools.py. LINK_DENIAL takes (tool, raw, the recorded
+# path that fired); GRANT_CLOSED takes (tool, raw), for a recorded path AT or
+# ABOVE the argument, where "grep something narrower" cannot work (I2).
 DIRECTORY_LINK_DENIAL = (
     "%s of directory %s is denied: this tool traverses the directory itself, "
     "and the read scope recorded a hard-linked file beneath it (%s) -- a link "
     "can name an inode outside the granted tree. Grep a narrower directory, "
     "or a file by its path.")
+DIRECTORY_GRANT_CLOSED = (
+    "%s of directory %s is denied: the whole directory grant is closed (too "
+    "many hard-linked files beneath it, or a subtree nothing could read -- see "
+    "the setup-scan stderr line). Read files by name.")
 
 
 def _hard_link_reason(tool_name, raw, target, scope):
@@ -174,21 +185,18 @@ def _hard_link_reason(tool_name, raw, target, scope):
     plants one inside the granted subtree, naming a file outside it, read as
     in-scope. An EXACT grant (`files`/`reads`) is the file the orchestrator
     chose and is unaffected whatever its link count, including when a directory
-    grant covers it too (the normal cell shape).
+    grant covers it too (the normal cell shape). Directories are not the
+    subject: a directory's st_nlink is its subdirectory count, and the rule is
+    about reading content. A path that cannot be stat'ed DENIES and a path
+    with NO INODE passes through, for the reasons the two `except` clauses
+    below give (fix rounds 1 and 2, F4 and N2).
 
-    Directories are not the subject: a directory's st_nlink is its subdirectory
-    count, and the rule is about reading content. A path that cannot be stat'ed
-    DENIES and a path with NO INODE passes through, for the reasons the two
-    `except` clauses below give (fix rounds 1 and 2, F4 and N2).
-
-    THE OTHER HALF (#1683). This rule reaches reads whose argument is a FILE.
-    A `Grep`/`Glob` argued with a granted DIRECTORY is adjudicated by path and
-    then traversed by the host's own tool; `decide` refuses those from
-    `scope["hard_linked"]` -- a hook may not walk the tree on every call.
-
-    Unlike the Codex broker, which reads the count off the descriptor it then
-    reads FROM, a PreToolUse hook adjudicates a NAME the host reopens: as
-    path-based as the realpath check beside it, and carrying the same race.
+    THE OTHER HALF (#1683): a `Grep`/`Glob` argued with a granted DIRECTORY is
+    adjudicated by path and then traversed by the host's own tool, so `decide`
+    refuses those from `scope["hard_linked"]` -- a hook may not walk the tree
+    on every call. And unlike the Codex broker, which reads the count off the
+    descriptor it then reads FROM, a PreToolUse hook adjudicates a NAME the
+    host reopens: as path-based as the realpath check beside it, same race.
     """
     if target in scope["files"] or target in scope["reads"]:
         return ""
@@ -197,16 +205,13 @@ def _hard_link_reason(tool_name, raw, target, scope):
     except (FileNotFoundError, NotADirectoryError):
         # Fix round 2 (N2): ENOENT/ENOTDIR -- a dangling symlink included --
         # are not "could not measure". They measure that there is NO INODE at
-        # that name: nothing for a read fence to confine, nothing an attacker
-        # gains by inducing one, and the tool's own not-found is the honest
-        # answer (a denial reads as a fence to the scout probing for absent
-        # marker files).
+        # that name: nothing to confine, nothing an attacker gains by inducing
+        # one, and the tool's own not-found is the honest answer.
         return ""
     except OSError as exc:
         # Fix round 1 (F4): a guard that cannot measure DENIES -- every other
-        # errno (EACCES, ELOOP, ENAMETOOLONG, EIO). This used to answer "" --
-        # allow -- guessing that the host's own read of an unstattable name
-        # fails the same way, from the one component whose job is to be sure.
+        # errno (EACCES, ELOOP, ENAMETOOLONG, EIO). It used to allow, guessing
+        # that the host's own read of an unstattable name fails the same way.
         return ("%s of %s is denied: the read guard could not stat it to apply "
                 "the hard-link rule: %s" % (tool_name, raw, exc))
     if not stat.S_ISREG(info.st_mode) or info.st_nlink <= 1:
@@ -220,10 +225,10 @@ def decide(tool_name, tool_input, scope):
     if tool_name not in _READ_TOOLS:
         return True, ""
     if scope is None:
-        return False, (
-            "%s is denied: this subagent is not bound to a dispatch entry (its "
-            "dispatch prompt did not begin with '%s<entry id>'), and reads are "
-            "confined while the read guard is armed" % (tool_name, MARKER_PREFIX))
+        return False, ("%s is denied: this subagent is not bound to a dispatch "
+                       "entry (its dispatch prompt did not begin with '%s<entry "
+                       "id>'), and reads are confined while the guard is armed"
+                       % (tool_name, MARKER_PREFIX))
     if not isinstance(tool_input, dict):
         return False, "%s is denied: malformed tool input" % tool_name
     if tool_name == "Read":
@@ -243,12 +248,16 @@ def decide(tool_name, tool_input, scope):
                        "in your prompt" % tool_name)
     if os.path.isdir(target):
         if any(_under(target, d) for d in scope["dirs"]):
-            # #1683. Both directions: a link recorded BENEATH the argument is
-            # what the traversal would reach, and the argument beneath a
-            # recorded path is the walker's overflow encoding (the granted
-            # directory itself) or an unreadable subtree.
+            # #1683. Both directions, exact and folded (fix round 2): a link
+            # recorded BENEATH the argument is what the traversal would reach;
+            # the argument AT or BENEATH a recorded path is the overflow
+            # encoding or an unreadable subtree -- a grant closed whole, which
+            # gets its own sentence because narrowing cannot work there.
+            ft = _fold(target)
             for p in scope.get("hard_linked") or ():
-                if _under(p, target) or _under(target, p):
+                if _under(target, p) or _under(ft, _fold(p)):
+                    return False, DIRECTORY_GRANT_CLOSED % (tool_name, raw)
+                if _under(p, target) or _under(_fold(p), ft):
                     return False, DIRECTORY_LINK_DENIAL % (tool_name, raw, p)
             return True, ""
         if tool_name == "Grep":
@@ -354,7 +363,7 @@ def adjudicate(payload, scope_path, env=None):
     """(allow, reason) for one hook payload against the scope file at
     `scope_path`. Binding order (spec 5.3): the environment's ENV_ENTRY_ID,
     else the subagent transcript marker, else an `agent_type` with no binding
-    is DENIED, else the orchestrator is never confined. `env` defaults to
+    DENIES, else the orchestrator is never confined. `env` defaults to
     os.environ; the probe and the tests pass their own."""
     if not isinstance(payload, dict):
         return True, ""
@@ -414,11 +423,10 @@ def hook_command(*argv):
 
     A registered PreToolUse command is SHELL SOURCE: Claude Code runs it
     through `sh -c`, so an element interpolated into it is not an argument. The
-    `"%s"` this replaces stopped a space and nothing else, which left a `"`, a
-    backtick or a `$(...)` in the scope path -- or in the checkout this script
-    sits in -- executing on every tool call. Copied into each guard hook rather
-    than imported, for the same reason the settings plumbing is (R-P5-5).
-    """
+    `"%s"` this replaces stopped a space and nothing else, leaving a `"`, a
+    backtick or a `$(...)` in the scope path -- or in this script's own
+    checkout path -- executing on every tool call. Copied into each guard hook
+    rather than imported, like the settings plumbing (R-P5-5)."""
     return " ".join(shlex.quote(a) for a in argv)
 
 
@@ -434,8 +442,8 @@ DEFAULT_SCOPE_PATH = ".panopticon/read-scope.json"
 
 
 def _hook_entry(scope_path=None):
-    """The PreToolUse entry to register; with `scope_path` the absolute scope
-    file is baked into the command so the hook never infers it from CWD."""
+    """The PreToolUse entry to register; `scope_path` bakes the absolute scope
+    file into the command, so the hook never infers it from CWD."""
     if not scope_path:
         return _HOOK_ENTRY
     cmd = hook_command(*_HOOK_ARGV, os.path.abspath(scope_path))
@@ -450,9 +458,8 @@ def _runs_this_script(command):
     quoted: a checkout path that needed escaping no longer appears verbatim in
     the command, and an entry uninstall cannot recognise is one it orphans,
     leaving the guard armed. Both legacy spellings tokenize cleanly, so the
-    substring test is the fallback for a command no shell can parse: one that
-    still names this script is ours (and removable), one that does not
-    answers False rather than raising."""
+    substring test is the fallback for a command no shell can parse -- one
+    that still names this script is ours, one that does not answers False."""
     mine = os.path.abspath(__file__)
     try:
         tokens = shlex.split(command)
@@ -489,21 +496,16 @@ def _atomic_write_json(path, data, indent=None):
     """Stage at `<path>.tmp`, then rename -- never writing THROUGH a symlink
     planted at that temp name (I7).
 
-    A plain `open(tmp, "w")` follows a link. The settings, allowlist and scope
-    files this writes all live where an untrusted target can reach: the run
-    folder sits inside the scanned tree, and a redteam target can commit
-    `<name>.tmp` as a link to any file the invoking user can write (a dotfile,
-    authorized_keys), whose contents this would then replace with the guard's
-    own JSON. Same class as #run9 SEC-X0X, which `runio._open_w_nofollow`
-    closed for `.panopticon` artifacts.
-
-    Spelled with os flags rather than by calling that helper: a guard hook is
-    executed as its own subprocess by the host's PreToolUse command and has to
-    import standing alone, so it may not reach into the driver's packages.
-    O_EXCL|O_NOFOLLOW refuses both a symlink and a stale regular leftover, so
-    the leftover is removed first and the open then creates a fresh file or
-    fails loudly -- it never silently writes somewhere else.
-    """
+    A plain `open(tmp, "w")` follows a link, and the files this writes live
+    where an untrusted target can reach: the run folder sits inside the scanned
+    tree, and a redteam target can commit `<name>.tmp` as a link to any file
+    the invoking user can write (a dotfile, authorized_keys), whose contents
+    this would then replace with the guard's own JSON -- the #run9 SEC-X0X
+    class, which `runio._open_w_nofollow` closed for `.panopticon` artifacts.
+    Spelled with os flags rather than by calling that helper because a guard
+    hook imports standing alone. O_EXCL|O_NOFOLLOW refuses both a symlink and
+    a stale regular leftover, so the leftover is removed first and the open
+    creates a fresh file or fails loudly -- never silently somewhere else."""
     parent = os.path.dirname(path) or "."
     os.makedirs(parent, exist_ok=True)
     tmp = path + ".tmp"
@@ -574,17 +576,16 @@ def install(plan, settings_path=None, scope_path=None, *, session_root=None):
     """Arm the read guard for `plan`'s entries. UNIONS by entry id with any
     scope already on disk (#11: a concurrent fan-out's grants survive), ours
     winning on a shared id (R-P5-4: an id we dispatch is never left to a
-    planted entry) -- INCLUDING an entry whose scope is empty: a dispatched
-    id with an empty scope (e.g. a verify-tool-<fingerprint> advisor for a
-    redacted/absent finding location) must overwrite any planted row for
-    that id too, since decide() denies everything for an empty scope and
-    that IS what "confines to nothing" (R-P5-2) intends -- never a hole that
-    lets a planted grant survive under an id we are dispatching. Returns the
-    {id: scope} map this call added (now including empty ones). Refuses
-    only when `scope_from_plan(plan)` is itself empty -- no entry in `plan`
-    carried a `scope` dict at all (e.g. a driver-plan checkpoint) -- since
-    arming zero ids is a caller mistake, not a plan that legitimately
-    confines some ids to nothing."""
+    planted entry) -- INCLUDING an entry whose scope is empty: a dispatched id
+    with an empty scope (e.g. a verify-tool-<fingerprint> advisor for a
+    redacted/absent finding location) must overwrite any planted row for that
+    id too, since decide() denies everything for an empty scope and that IS
+    what "confines to nothing" (R-P5-2) intends. Returns the {id: scope} map
+    this call added (now including empty ones). Refuses only when
+    `scope_from_plan(plan)` is itself empty -- no entry in `plan` carried a
+    `scope` dict at all (e.g. a driver-plan checkpoint) -- since arming zero
+    ids is a caller mistake, not a plan that legitimately confines some ids
+    to nothing."""
     settings_path, scope_path, used_defaults = _resolve(settings_path, scope_path, session_root)
     if used_defaults and not os.path.exists(settings_path):
         raise ValueError(
@@ -631,9 +632,8 @@ def is_armed(settings_path=None, scope_path=None, *, session_root=None):
 
 
 def uninstall(settings_path=None, scope_path=None, *, plan=None, session_root=None):
-    """With `plan`, drop only that fan-out's entry ids and keep the guard
-    armed while any other fan-out's remain (#11); without it, tear the whole
-    guard down."""
+    """With `plan`, drop only that fan-out's entry ids and keep the guard armed
+    while any other fan-out's remain (#11); without it, tear the guard down."""
     settings_path, scope_path, _ = _resolve(settings_path, scope_path, session_root)
     if plan is not None:
         remaining = _read_scope_file(scope_path)
@@ -650,9 +650,9 @@ def uninstall(settings_path=None, scope_path=None, *, plan=None, session_root=No
 
 
 def _resolve_scope_path(argv_path=None):
-    """Env override, then the absolute path install() baked into the hook
-    command (returned even when absent: fail-closed), then a CWD walk --
-    the same order and reasons as write_guard_hook._resolve_allowlist_path."""
+    """Env override, then the absolute path install() baked into the hook command
+    (returned even when absent: fail-closed), then a CWD walk -- the order and
+    reasons of write_guard_hook._resolve_allowlist_path."""
     env_path = os.environ.get("PANOPTICON_READ_SCOPE")
     if env_path and os.path.isfile(env_path):
         return env_path
