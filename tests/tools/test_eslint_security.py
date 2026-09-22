@@ -200,12 +200,51 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertIn("eslint config error", buf.getvalue())
 
     def test_flat_config_imports_plugin_and_enables_all_rules(self):
-        cfg = es._flat_config()
+        cfg = es._flat_config("/tmp/fake")
         self.assertIn("import security from", cfg)
         # explicit .js entry -- ESM cannot import a bare directory (#run7)
         self.assertRegex(cfg, r'import security from "[^"]+\.js"')
         for rule in es.RULE_CWE:
             self.assertIn('"%s": "error"' % rule, cfg)   # every mapped rule ON
+
+    def test_flat_config_pins_the_base_path_to_the_absolute_target(self):
+        # #1877 C1: a flat config resolves its `files`/`ignores` against a
+        # BASE PATH, and with `--config` that base defaults to the CWD. Once
+        # the cwd moved off the target mount, everything we lint sat OUTSIDE
+        # that base -- eslint reported nothing, or exited 2 with "...of a
+        # matching ignore pattern, check global ignores in your config file".
+        # `basePath` puts the base back on the target without putting the
+        # PROCESS back there (eslint >= 9.30; the image pins 10.9.0).
+        cfg = es._flat_config("relative/target")
+        self.assertIn("basePath: %s" % json.dumps(os.path.abspath("relative/target")),
+                      cfg)
+
+    def test_flat_config_base_path_is_a_json_escaped_string_literal(self):
+        # The target path is controller data, not the target's own, but it is
+        # interpolated into a JS string literal either way: escape it rather
+        # than rely on where it came from.
+        weird = '/tmp/we"ird\\path'
+        cfg = es._flat_config(weird)
+        self.assertIn("basePath: %s" % json.dumps(os.path.abspath(weird)), cfg)
+        self.assertNotIn('basePath: "%s"' % weird, cfg)   # raw, unescaped
+
+    def test_the_written_config_carries_the_base_path(self):
+        # The unit above pins the generator; this pins that `invoke` actually
+        # writes THAT config, read at the instant eslint would have started
+        # (the adapter deletes the config dir on its way out).
+        adapter = es.EslintSecurityAdapter()
+        seen = {}
+
+        def _record(cmd, **kwargs):
+            with open(cmd[cmd.index("--config") + 1], encoding="utf-8") as fh:
+                seen["config"] = fh.read()
+            return FakePopen(stdout=b"[]", stderr=b"", returncode=0)
+
+        with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=_record), \
+             mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
+                               return_value=["x.js"]):
+            adapter.invoke("/tmp/fake")
+        self.assertIn("basePath: %s" % json.dumps("/tmp/fake"), seen["config"])
 
     def test_plugin_entry_is_absolute_trusted_path(self):
         # #83/#715: the plugin must be the TRUSTED global one, never a hostile

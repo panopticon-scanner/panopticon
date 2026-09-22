@@ -1,5 +1,6 @@
 """eslint-plugin-security adapter for JS/TS security anti-patterns."""
 from __future__ import annotations
+import json
 import os
 from .base import make_finding, omit_none, parse_json_bytes, run_tool, scratch_cwd
 from .sarif_utils import norm_uri
@@ -29,20 +30,38 @@ def _plugin_entry() -> str:
     return "eslint-plugin-security/index.js"   # last resort; still explicit .js for ESM
 
 
-def _flat_config() -> str:
+def _flat_config(target: str) -> str:
     """A minimal eslint flat config (ESM) that loads eslint-plugin-security and
     turns every mapped rule ON at error level. The eslint level is used only to
-    ENABLE the rule; severity is derived in parse() from RULE_SEVERITY."""
+    ENABLE the rule; severity is derived in parse() from RULE_SEVERITY.
+
+    `basePath` is the ABSOLUTE *target* (#1877 C1). A flat config resolves its
+    `files`/`ignores` patterns against a BASE PATH, and when the config is
+    named with `--config` that base is the process CWD -- which #1877 moved
+    off the target mount. Everything we lint then sits outside the base:
+    measured on this image (eslint 10.9.0), the adapter produced NO output and
+    exit 2, "...of a matching ignore pattern, check global ignores in your
+    config file", where the same scan on the old cwd produced a finding.
+    Pinning the base here puts the SCOPE back on the target while the process
+    still runs from a scratch directory, so the cwd carries no target-authored
+    resolution surface and the scan still covers the tree. (eslint >= 9.30;
+    the image pins 10.9.0 -- `tools-image/node/package-lock.json`.)
+
+    The path is interpolated into a JS string literal, so it is written with
+    `json.dumps` rather than bare quotes. It is controller data, not the
+    target's, but the escaping does not depend on knowing that.
+    """
     rules = ",\n      ".join('"%s": "error"' % r for r in RULE_CWE)
     return (
         'import security from "%s";\n'
         'export default [\n'
         '  {\n'
+        '    basePath: %s,\n'
         '    plugins: { security },\n'
         '    languageOptions: { ecmaVersion: "latest" },\n'
         '    rules: {\n      %s\n    }\n'
         '  }\n'
-        '];\n' % (_plugin_entry(), rules)
+        '];\n' % (_plugin_entry(), json.dumps(os.path.abspath(target)), rules)
     )
 
 
@@ -146,7 +165,7 @@ class EslintSecurityAdapter:
         with scratch_cwd("eslint-cfg-") as cfg_dir:
             cfg_path = os.path.join(cfg_dir, "eslint.config.mjs")
             with open(cfg_path, "w", encoding="utf-8") as fh:
-                fh.write(_flat_config())
+                fh.write(_flat_config(target))
             # --config pins OUR generated config and --no-config-lookup stops
             # eslint from also discovering + EXECUTING the scanned target's own
             # eslint.config.js (arbitrary JS -> RCE). The plugin is imported by
