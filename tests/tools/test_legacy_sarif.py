@@ -1,9 +1,11 @@
 import json
+import os
 import unittest
 from unittest import mock
 
 from _test_helpers import FakePopen, first, only
 import scripts.tools.legacy_sarif as legacy
+import scripts.tools.sarif_utils as su
 from scripts.tools import ADAPTERS
 from .conftest import assert_scratch_cwd, scratch_cwd_recorder
 
@@ -183,6 +185,106 @@ class TestLegacySarifAdapter(unittest.TestCase):
         findings = adapter.parse(json.dumps(sarif).encode(), "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["severity"], "INFO")
+
+
+GOLDEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "goldens", "tool-raw")
+
+
+def _golden(name):
+    """The committed capture of real `name` output (tests/goldens/tool-raw)."""
+    with open(os.path.join(GOLDEN_DIR, "%s.raw" % name), "rb") as fh:
+        return fh.read()
+
+
+class TestSecretAdapterSeverityIsNormalized(unittest.TestCase):
+    """#1578 fix round 1 (review C1): a leaked secret has no lesser grade.
+
+    Real gitleaks SARIF carries NO `level` on its results and no
+    `defaultConfiguration` on its rules, so `LEVEL_TO_SEV`'s "warning" default
+    graded every committed credential MEDIUM -- below
+    `security_gate.GATE_SEVERITIES`, which meant the CI gate could not fail on
+    ANY gitleaks finding, suppressed or not. `sarif_utils.SECRET_ADAPTERS` now
+    normalises the adapters whose output is credentials by construction.
+
+    Driven by the committed capture, never a hand-built SARIF with an invented
+    `level`: per tests/goldens/tool-raw/README.md, the contract is that the
+    parser handles what the tool genuinely emits, and a fixture that supplies
+    the missing field is a fixture that cannot see this defect.
+    """
+
+    def test_the_capture_really_omits_the_level_this_test_is_about(self):
+        # Non-vacuity, first: if a refreshed golden ever starts carrying
+        # `level`, the assertion below stops proving the normalization.
+        sarif = json.loads(_golden("gitleaks"))
+        run = sarif["runs"][0]
+        self.assertTrue(run["results"], "the gitleaks golden holds no results")
+        for res in run["results"]:
+            self.assertNotIn("level", res)
+        for rule in run["tool"]["driver"]["rules"]:
+            self.assertNotIn("defaultConfiguration", rule)
+
+    def test_every_real_gitleaks_finding_is_high(self):
+        findings = ADAPTERS["gitleaks"].parse(_golden("gitleaks"), "g1")
+        self.assertEqual(len(findings), 3)
+        self.assertEqual([f["severity"] for f in findings], ["HIGH"] * 3)
+
+    def test_the_normalization_is_scoped_to_the_secret_adapters(self):
+        # bandit's capture grades itself, and must keep doing so -- the rule is
+        # "this adapter's findings are secrets", not "raise everything".
+        findings = ADAPTERS["bandit"].parse(_golden("bandit"), "g1")
+        self.assertTrue(findings)
+        self.assertTrue({f["severity"] for f in findings} - {"HIGH"},
+                        "bandit's own grades were flattened too")
+
+
+class TestCweFromSarifRelationships(unittest.TestCase):
+    """#1578 fix round 1 (review I1): gosec files its CWE where nothing looked.
+
+    `sarif_to_findings` scrapes CWEs out of the rule id, the rule's
+    `properties.tags` and the result's `properties` -- which covers bandit
+    (`external/cwe/cwe-259`) and semgrep (`CWE-798: ...`) and missed gosec
+    entirely: its tags are `["security", "HIGH"]` and the CWE sits at
+    `relationships[].target.id` as a bare number under the `CWE` toolComponent.
+    So every gosec finding reached the report with no citation, and G101
+    ("Potential hardcoded credentials", CWE-798) was invisible to the
+    secret-class gate rule -- on the ecosystem whose `vendor/` is THE canonical
+    vendoring directory.
+    """
+
+    def _by_rule(self):
+        return {(f.get("tool_evidence") or {}).get("rule_id"): f
+                for f in ADAPTERS["gosec"].parse(_golden("gosec"), "g1")}
+
+    def test_the_capture_hides_its_cwe_from_the_tag_scrape(self):
+        # Non-vacuity: the tags really do carry no CWE, so the assertions below
+        # pin the relationships channel and not a second path to the same tag.
+        sarif = json.loads(_golden("gosec"))
+        rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+        for rule in rules:
+            tags = " ".join(str(t) for t in (rule.get("properties") or {}).get("tags") or [])
+            self.assertNotIn("CWE", tags.upper(), rule.get("id"))
+
+    def test_gosecs_hardcoded_credential_rule_cites_cwe_798(self):
+        self.assertIn("CWE-798",
+                      self._by_rule()["G101"]["citations"]["cwe"])
+
+    def test_the_other_rules_citations_come_through_too(self):
+        self.assertIn("CWE-190", self._by_rule()["G115"]["citations"]["cwe"])
+
+    def test_a_relationship_to_another_taxonomy_is_ignored(self):
+        rule = {"relationships": [
+            {"target": {"id": "798", "toolComponent": {"name": "OWASP"}}},
+            {"target": {"id": "259", "toolComponent": {"name": "CWE"}}},
+            {"target": {"id": "not-a-number", "toolComponent": {"name": "CWE"}}},
+            {"target": "junk"},
+            "junk"]}
+        self.assertEqual(su.relationship_cwes(rule), ["CWE-259"])
+
+    def test_a_rule_with_no_relationships_contributes_nothing(self):
+        for rule in ({}, {"relationships": None}, {"relationships": "junk"}, "junk"):
+            with self.subTest(rule=rule):
+                self.assertEqual(su.relationship_cwes(rule), [])
 
 
 class TestLegacySarifIsApplicable(unittest.TestCase):

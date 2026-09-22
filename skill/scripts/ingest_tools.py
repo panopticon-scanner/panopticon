@@ -20,6 +20,7 @@ from scripts.tools.sarif_utils import (
     LEVEL_TO_SEV,
     NOISE_RULES,
     PREFIX,
+    SECRET_ADAPTERS,
     is_fixture_path,
     is_test_path,
     norm_uri,
@@ -362,12 +363,14 @@ def suppression_class(segment):
     return "vendored"
 
 
-# #1578 (SEC-G2B), owner ruling 2026-09-22 -- policy C. Adapters whose findings
-# are secrets BY CONSTRUCTION: a hit is a credential someone committed, not an
-# opinion about code, so one of theirs under a suppressed directory gates at
-# whatever severity it carries.
-SECRET_ADAPTERS = frozenset({"gitleaks"})
-# #1578 policy C: the CWEs that make ANY adapter's finding secret-class --
+# #1578 (SEC-G2B), owner ruling 2026-09-22 -- policy C. The other half of
+# "secret-class" lives in `sarif_utils.SECRET_ADAPTERS` (imported above): the
+# adapters whose output is credentials by construction, which that module also
+# grades HIGH at the parse. It is defined there because this module imports it
+# and not the other way round, and one list beats two that drift.
+#
+# This half is provenance-free: the CWEs that make ANY adapter's finding
+# secret-class --
 # CWE-798 hardcoded credentials, CWE-259 hardcoded password, CWE-321 hardcoded
 # cryptographic key, CWE-522 insufficiently protected credentials.
 SECRET_CWES = frozenset({"CWE-798", "CWE-259", "CWE-321", "CWE-522"})
