@@ -282,7 +282,11 @@ class TestCweFromSarifRelationships(unittest.TestCase):
         self.assertEqual(su.relationship_cwes(rule), ["CWE-259"])
 
     def test_a_rule_with_no_relationships_contributes_nothing(self):
-        for rule in ({}, {"relationships": None}, {"relationships": "junk"}, "junk"):
+        for rule in ({}, {"relationships": None}, {"relationships": "junk"},
+                     # A SCALAR raised `TypeError` through `or []` until fix
+                     # round 2, and `sarif_to_findings` swallowed it by
+                     # dropping every result that cited the rule.
+                     {"relationships": 5}, {"relationships": True}, "junk"):
             with self.subTest(rule=rule):
                 self.assertEqual(su.relationship_cwes(rule), [])
 

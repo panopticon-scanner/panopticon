@@ -140,12 +140,16 @@ def relationship_cwes(rule):
 
     Tolerant by construction, like the rest of this parser: anything that is
     not a `{target: {id, toolComponent: {name: "CWE"}}}` with a numeric id
-    contributes nothing, and no shape raises.
+    contributes nothing, and no shape raises -- including a SCALAR
+    `relationships` (fix round 2), which `or []` let through to a `TypeError`
+    that `sarif_to_findings`'s per-result `except` then swallowed by dropping
+    every result citing that rule with one `skipping result` line.
     """
     out: list[str] = []
     if not isinstance(rule, dict):
         return out
-    for rel in (rule.get("relationships") or []):
+    relationships = rule.get("relationships")
+    for rel in (relationships if isinstance(relationships, list) else []):
         target = rel.get("target") if isinstance(rel, dict) else None
         if not isinstance(target, dict):
             continue

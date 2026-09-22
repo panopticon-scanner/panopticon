@@ -130,6 +130,22 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     #
     # The floor stays on everything the gate KEEPS: policy C narrows the
     # suppressed set and touches nothing else.
+    #
+    # THE TWO GATES COMPOSE THE SHARED PREDICATE DIFFERENTLY, and the line is
+    # deliberate (fix round 2, review I4). `GATE_SEVERITIES` is a floor this
+    # module hard-codes -- no operator chose it -- so a mode that says "do not
+    # lose a finding to a directory name" may bypass it. `--fail-on` on the
+    # driver side is the opposite: it is operator POLICY, in the same class as
+    # `--exclude` and as the `--severity` floor `plan.ingest_tool_findings`
+    # already applies to these very candidates (#1701 F1), and this codebase
+    # does not override an operator flag. So a secret-class MEDIUM under
+    # `vendor/` FAILS here and PASSES a `driver run --security redteam
+    # --fail-on high`. That is not the two gates disagreeing about the RULE --
+    # `gates_when_suppressed` answers identically on both sides -- it is one of
+    # them being told, by its operator, which severities may block. Pinned on
+    # both sides: `TestThePolicyIsTheFloorForTheSuppressedSet` here and
+    # `test_the_driver_gate_keeps_the_operators_fail_on` in
+    # tests/synth/test_plan.py.
     high = kept + (gate_counted(suppressed) if security_mode == REDTEAM else [])
     return findings, dispositions, failures, high, suppressed
 

@@ -684,13 +684,15 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                                         "region": {"startLine": 1,
                                                    "endLine": 4}}}]}]}]}
 
-    def _sarif(self, rel, tool="bandit", cwe="CWE-259", twin=False):
+    def _sarif(self, rel, tool="bandit", cwe="CWE-259", twin=False,
+               level="error"):
         hit = json.loads(json.dumps(self.SARIF))
         driver = hit["runs"][0]["tool"]["driver"]
         driver["name"] = tool
         driver["rules"] = ([{"id": "B105", "properties": {"tags": [cwe]}}]
                            if cwe else [])
         result = hit["runs"][0]["results"][0]
+        result["level"] = level
         (result["locations"][0]["physicalLocation"]
          ["artifactLocation"]["uri"]) = rel
         if tool in ingest_tools.SECRET_ADAPTERS:
@@ -728,7 +730,8 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
 
     def _run(self, security, rel="app/vendor/patched_auth.py", severity="all",
              delta=False, groups_json=None, tools_exclude=None,
-             tool="bandit", cwe="CWE-259", critical=False, twin=False):
+             tool="bandit", cwe="CWE-259", critical=False, twin=False,
+             level="error"):
         """One synthesis over a single tool finding at `rel`.
 
         `rel` is the only thing that moves between the suppressed and the
@@ -754,7 +757,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
             name = "%s.%s" % (adapter, "json" if critical else "sarif")
             with open(os.path.join(tools, name), "w", encoding="utf-8") as fh:
                 json.dump(self._osv(rel) if critical
-                          else self._sarif(rel, tool, cwe, twin), fh)
+                          else self._sarif(rel, tool, cwe, twin, level), fh)
             with open(os.path.join(d, "tools-manifest.json"), "w",
                       encoding="utf-8") as fh:
                 json.dump({"schema_version": 1, "selected": [adapter],
@@ -1108,6 +1111,33 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(report["summary"]["gate"], "PASS")
         self.assertEqual(cov["tools_suppressed_gated"], {})
         self.assertEqual(cov["tools_suppressed_not_gated"], {"vendor": 2})
+
+    def test_the_driver_gate_keeps_the_operators_fail_on(self):
+        """The one place the two gates compose the predicate differently.
+
+        `security_gate` lets a policy-admitted suppressed finding bypass
+        `GATE_SEVERITIES`, because that floor is hard-coded and no operator
+        chose it. `--fail-on` is the opposite -- operator POLICY, the same
+        class as `--exclude` and as the `--severity` floor this run already
+        applied to these candidates (#1701 F1) -- and this codebase does not
+        override an operator flag. So a secret-class MEDIUM under `vendor/`
+        FAILS the CI gate and PASSES this one at `--fail-on high`.
+
+        The rule itself does not diverge: the finding is policy-ADMITTED on
+        both sides, which is why it is counted in `tools_suppressed_gated`
+        here rather than in the withheld tally. What differs is which
+        severities the operator told this gate to block on.
+        """
+        _body, report = self._run("redteam", level="warning")
+        cov = report["meta"]["coverage"]
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        # Admitted by the policy, and disclosed as such ...
+        self.assertEqual(cov["tools_suppressed_gated"], {"vendor": 1})
+        self.assertEqual(cov["tools_suppressed_not_gated"], {})
+        # Non-vacuity: the identical fixture one severity higher DOES fail,
+        # so the PASS above is `--fail-on high` scoping a MEDIUM out and not
+        # the policy quietly declining the finding.
+        self.assertEqual(self._gate(), "FAIL")
 
     def test_standard_mode_withholds_nothing_by_the_policy(self):
         # In standard mode the suppression stands for the gate outright, so
