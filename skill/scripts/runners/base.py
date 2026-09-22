@@ -39,6 +39,19 @@ SCOPE_FILE = "read-scope.json"
 # must not spell it differently.
 LEDGER_FILE = "dispatch-ledger.jsonl"
 MODES = ("headless", "session")
+# #1576 (OPS-2112448973): the ONE ceiling on how many host CLIs a batch runs
+# at once. `driver loop --concurrency` is a `_positive_int` with no upper
+# bound and `default_concurrency` is whatever a family declares, so nothing
+# stopped a 500-wide pool of real process trees, each one charged.
+#
+# A flat number, and the largest measured family default (claude's 8; kimi
+# bursted into exit-1s at 8 and ships 4). NOT cpu-derived: these children are
+# network-bound CLIs whose cost is tokens and rate limit, not local cores, and
+# a 2-core CI runner running 8 of them is the shape this suite already
+# assumes. Applied in exactly one place -- `HostRunner.batch_width` -- because
+# a second clamp in `driver.py`'s argument parser is a second ceiling, and two
+# ceilings can disagree.
+MAX_CONCURRENCY = 8
 
 
 def _utc(epoch):
@@ -277,6 +290,29 @@ class HostRunner(children.ChildProcesses):
     def run_entry(self, entry, env):
         raise NotImplementedError("a host runner must implement run_entry")
 
+    def batch_width(self, concurrency=None):
+        """How many entries this runner may have in flight at once (#1576).
+
+        `concurrency` is what the operator asked for (`driver loop
+        --concurrency`), or None/0 for "whatever this family declares".
+        The answer is bounded below by 1 -- a `ThreadPoolExecutor` refuses
+        `max_workers <= 0`, so a bad number must degrade rather than crash --
+        and above by `MAX_CONCURRENCY`.
+
+        The clamp announces itself ONCE per requested value rather than once
+        per call: `iter_batch` asks for the width of every batch and
+        `orchestrate.loop` asks for the same number to bound its outage tally,
+        so a per-call line would print twice a checkpoint and say nothing new.
+        Remembered on the instance dict, lazily, for the same reason the child
+        registry is: a family may not chain `super().__init__`.
+        """
+        requested = int(concurrency or self.default_concurrency)
+        if requested > MAX_CONCURRENCY and self.__dict__.get("_clamped") != requested:
+            self.__dict__["_clamped"] = requested
+            print("concurrency %d clamped to the ceiling %d"
+                  % (requested, MAX_CONCURRENCY), file=sys.stderr)
+        return max(1, min(requested, MAX_CONCURRENCY))
+
     def iter_batch(self, entries, concurrency, env_for, stop=None):
         """Run every entry through run_entry on a thread pool, yielding
         `(entry, result, timing)` in COMPLETION order; an exception becomes
@@ -345,7 +381,7 @@ class HostRunner(children.ChildProcesses):
         entries = list(entries)
         if not entries:
             return
-        width = max(1, int(concurrency or self.default_concurrency))
+        width = self.batch_width(concurrency)
 
         def one(entry):
             started, clock = time.time(), time.monotonic()
