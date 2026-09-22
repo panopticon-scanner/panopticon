@@ -283,9 +283,11 @@ MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 # READ-time bound on a write that has already happened -- by the time it
 # refuses an oversize report the temp volume is full and every concurrent scan
 # on that worker is already affected. `run_tool(watch_path=...)` polls the path
-# the scanner writes to and kills the child the moment it crosses `watch_cap`,
-# which defaults to the SAME 50 MiB: a report the reader would refuse is not
-# worth letting the scanner finish.
+# the scanner writes to and kills the child at the first poll that finds it over
+# `watch_cap`, which defaults to the SAME 50 MiB: a report the reader would
+# refuse is not worth letting the scanner finish. A poll is not an instant, so
+# the effective ceiling is `watch_cap` plus whatever the scanner can write in
+# one interval -- state it rather than imply a precision this cannot have.
 #
 # A poll rather than RLIMIT_FSIZE in a preexec_fn: RLIMIT_FSIZE caps the
 # largest single FILE, not a multi-file report tree, and CPython documents
@@ -423,7 +425,9 @@ class _OutputSizeWatcher(threading.Thread):
     """Poll a scanner's output path while it runs; kill it past `cap` (#1576).
 
     The bound the adapters needed and did not have: a write-time ceiling on a
-    report the scanner writes for itself. It announces the kill on stderr as it
+    report the scanner writes for itself. Polled, so the real ceiling is `cap`
+    plus one OUTPUT_WATCH_INTERVAL of the scanner's write throughput -- the
+    guarantee is that it STOPS, not that it stops on the exact byte. It announces the kill on stderr as it
     happens -- the operator's only witness that a scan ended for this reason
     rather than any other -- and `run_tool` turns it into OutputCapExceeded.
     """
@@ -452,6 +456,17 @@ class _OutputSizeWatcher(threading.Thread):
         self._done.set()
 
 
+def _raise_if_output_capped(watcher, path, cap):
+    """Turn a watcher that fired into OutputCapExceeded (#1576).
+
+    One helper because run_tool leaves by two doors -- the stdout-truncation
+    early return and the normal one -- and both have to answer for the
+    write-time cap the same way.
+    """
+    if watcher is not None and watcher.exceeded:
+        raise OutputCapExceeded(path, cap, watcher.size)
+
+
 def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
              watch_path=None, watch_cap=MAX_TOOL_OUTPUT_BYTES, **kwargs):
     """Run a scanner subprocess, preserving failure diagnostics (F-CAL-1).
@@ -472,8 +487,11 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
     still writing stdout cannot deadlock the parent (#K2-1).
 
     `watch_path` (#1576) is for the adapters whose scanner writes its OWN
-    report: the path is polled while the child runs and the child is killed the
-    moment what it has written exceeds `watch_cap`, raising OutputCapExceeded.
+    report: the path is polled while the child runs and the child is killed at
+    the first poll that finds it over `watch_cap`, raising OutputCapExceeded.
+    Polling means the effective ceiling is `watch_cap` plus one
+    OUTPUT_WATCH_INTERVAL of the scanner's write throughput, not `watch_cap`
+    exactly.
     Pass `start_new_session=True` alongside it when the scanner is launched
     through a shell wrapper, so the kill reaches the worker and not just the
     wrapper.
@@ -485,11 +503,14 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
     timed_out = {"hit": False}
 
     def _watchdog():
+        # #1576 fix round 1: the GROUP, not just the child. A scanner behind a
+        # shell wrapper leaves the real worker as a grandchild holding the
+        # inherited stdout pipe; killing the wrapper alone leaves the parent's
+        # read blocked on a pipe the orphan still owns, and `timeout=` stops
+        # being a bound -- measured at 15 s for a 1-second timeout. Without
+        # start_new_session this is exactly proc.kill(), as before.
         timed_out["hit"] = True
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        _kill_process_tree(proc)
 
     proc = subprocess.Popen(cmd, **popen_kwargs)  # nosec B603
     timer = threading.Timer(timeout, _watchdog)
@@ -533,10 +554,7 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
             collected += len(chunk)
 
         if truncated:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            _kill_process_tree(proc)      # the group, for the reason above
             stdout = b"".join(chunks)
             marker = (
                 "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
@@ -553,6 +571,13 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
         stderr = join_stderr()
 
         if truncated:
+            # #1576 fix round 1: this early return sits inside the try, so it
+            # used to leave the function BEFORE the write-time check below. An
+            # adapter whose scanner blew BOTH caps got (partial output, -9) --
+            # a partial result from a scan that was killed -- and its
+            # `except OutputCapExceeded` never fired. The write-time cap
+            # outranks the truncation: there is no usable report either way.
+            _raise_if_output_capped(watcher, watch_path, watch_cap)
             if capture_stderr:
                 return stdout + marker, stderr, rc
             return stdout + marker, rc
@@ -573,15 +598,11 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
         except Exception:
             pass
         if proc.poll() is None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            _kill_process_tree(proc)      # the group, for the reason above
 
     # Checked BEFORE the timeout: when the watchdog and the size watcher both
     # fire, the cap is the specific truth and "timed out" is the consequence.
-    if watcher is not None and watcher.exceeded:
-        raise OutputCapExceeded(watch_path, watch_cap, watcher.size)
+    _raise_if_output_capped(watcher, watch_path, watch_cap)
 
     if timed_out["hit"] and rc not in (0, 1):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)

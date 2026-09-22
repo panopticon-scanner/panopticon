@@ -1,9 +1,11 @@
 import contextlib
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest import mock
 
@@ -408,6 +410,116 @@ class TestWriteTimeOutputCap(unittest.TestCase):
         sig = inspect.signature(base.run_tool)
         self.assertEqual(sig.parameters["watch_cap"].default,
                          base.MAX_TOOL_OUTPUT_BYTES)
+
+
+class _AlreadyExceeded:
+    """_OutputSizeWatcher stand-in that has already seen the cap blow.
+
+    Lets the "both caps bound" control path be exercised without racing a real
+    0.5 s poll against a stdout flood that takes microseconds.
+    """
+
+    def __init__(self, proc, path, cap, label):
+        self.exceeded = True
+        self.size = cap + 1
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
+class TestBothCapsBinding(unittest.TestCase):
+    """#1576 fix round 1: the stdout-truncation early return skipped the
+    write-time raise.
+
+    `if truncated: return stdout + marker, rc` sits inside the try, so it ran
+    the finally and left the function BEFORE the OutputCapExceeded check. A
+    scanner that blew the stdout cap and the report cap therefore handed its
+    adapter `(partial output, -9)` -- a partial result from a scan that was
+    killed -- and the adapter's `except OutputCapExceeded` never fired.
+    """
+
+    def test_the_write_cap_still_raises_when_stdout_also_truncated(self):
+        flood = [sys.executable, "-c",
+                 "import sys; sys.stdout.buffer.write(b'x' * 200000)"]
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(base, "_OutputSizeWatcher", _AlreadyExceeded), \
+                    mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(base.OutputCapExceeded):
+                    base.run_tool(flood, timeout=30, watch_path=d,
+                                  watch_cap=64)
+
+    def test_truncation_alone_still_returns_its_partial_output(self):
+        # The raise must not swallow the plain truncation path: no watch_path,
+        # no watcher, same marker contract as before.
+        flood = [sys.executable, "-c",
+                 "import sys; sys.stdout.buffer.write(b'x' * 200000)"]
+        with mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024), \
+                contextlib.redirect_stderr(io.StringIO()):
+            stdout, _rc = base.run_tool(flood, timeout=30)
+        self.assertIn(b"[TRUNCATED by panopticon", stdout)
+
+
+@unittest.skipIf(os.name != "posix", "process groups are POSIX-only")
+class TestTimeoutKillReachesTheWholeGroup(unittest.TestCase):
+    """#1576 fix round 1: the timeout watchdog killed only the direct child.
+
+    A scanner launched through a shell wrapper leaves the real worker as a
+    grandchild holding the inherited stdout pipe. proc.kill() reaps the
+    wrapper and nothing else, so the parent's read blocks on a pipe the orphan
+    still owns and `timeout=` is not a bound at all -- measured at 60.5 s for a
+    2-second timeout. The size watcher already killed the process GROUP; the
+    timeout path has to as well.
+    """
+
+    # The wrapper waits on its own child, so both are alive when the deadline
+    # lands and both must die for the pipe to reach EOF.
+    _WRAPPER = textwrap.dedent("""
+        import subprocess, sys
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(15)"])
+        with open(sys.argv[1], "w") as fh:
+            fh.write(str(child.pid))
+        child.wait()
+    """)
+
+    def _grandchild_pid(self, pidfile, deadline=5.0):
+        end = time.time() + deadline
+        while time.time() < end:
+            try:
+                with open(pidfile, encoding="utf-8") as fh:
+                    text = fh.read().strip()
+            except OSError:
+                text = ""
+            if text:
+                return int(text)
+            time.sleep(0.05)
+        self.fail("wrapper never reported its grandchild pid")
+
+    def test_a_grandchild_does_not_outlive_the_deadline(self):
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "pid")
+            cmd = [sys.executable, "-c", self._WRAPPER, pidfile]
+            started = time.time()
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    base.run_tool(cmd, timeout=1, start_new_session=True)
+            elapsed = time.time() - started
+            pid = self._grandchild_pid(pidfile, deadline=0.5)
+        # Without the group kill the orphan holds the pipe for its full 15s.
+        self.assertLess(elapsed, 8, "the read blocked on the orphan's pipe")
+        end = time.time() + 3
+        while time.time() < end:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:       # reaped and the pid was recycled
+                return
+            time.sleep(0.05)
+        self.fail("grandchild %d survived the timeout kill" % pid)
 
 
 if __name__ == "__main__":
