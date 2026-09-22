@@ -48,6 +48,67 @@ class TestLoadManifest(unittest.TestCase):
                 self.assertEqual(rft.load_manifest(), {"fixtures": [{"name": "x"}]})
 
 
+class TestImageReferenceValidation(unittest.TestCase):
+    def test_documented_reference_shapes_are_accepted(self):
+        references = [
+            rft.DEFAULT_IMAGE,
+            "busybox",
+            "docker.io/library/busybox:latest",
+            "localhost:5000/team/image:RC_1.2-3",
+            "[2001:db8::1]:5000/team/image:latest",
+            "registry.example.com/team/image@sha256:" + "a" * 64,
+            "registry.example.com/team/image:v1@sha512:" + "A5" * 64,
+        ]
+        for reference in references:
+            with self.subTest(reference=reference):
+                self.assertEqual(rft.validate_image_reference(reference), reference)
+
+    def test_unsafe_or_malformed_references_are_rejected(self):
+        references = [
+            "",
+            "--privileged",
+            "-v/tmp:/host",
+            " image:tag",
+            "image:tag ",
+            "image name:tag",
+            "image\nname:tag",
+            "docker.io/Team/image:tag",
+            "team//image:tag",
+            ".hidden:tag",
+            "image:",
+            "registry.example.com:not-a-port/team/image",
+            "image@sha256:" + "a" * 31,
+            "image@sha256:not-hex",
+        ]
+        for reference in references:
+            with self.subTest(reference=reference):
+                with self.assertRaises(ValueError):
+                    rft.validate_image_reference(reference)
+
+    def test_main_rejects_unsafe_tag_before_docker_availability_probe(self):
+        stderr = io.StringIO()
+        with mock.patch.object(rft, "docker_available") as available, \
+                contextlib.redirect_stderr(stderr):
+            rc = rft.main(["--tag=--privileged"])
+        self.assertEqual(rc, 2)
+        available.assert_not_called()
+        self.assertIn("invalid Docker image reference", stderr.getvalue())
+
+    def test_docker_facing_helpers_reject_before_subprocess(self):
+        fixtures = [{"name": "rust", "path": "/opt/f/rust", "baked": True}]
+        calls = [
+            lambda: rft.image_exists("--privileged"),
+            lambda: rft.build_image("--privileged"),
+            lambda: rft.check_fixtures("--privileged", fixtures),
+            lambda: rft.run_tests("--privileged"),
+        ]
+        with mock.patch.object(rft.subprocess, "run") as docker:
+            for call in calls:
+                with self.subTest(call=call), self.assertRaises(ValueError):
+                    call()
+        docker.assert_not_called()
+
+
 class TestCheckFixtures(unittest.TestCase):
     def test_local_unbaked_fixture_checked_on_host(self):
         # baked:false fixtures are validated against the host checkout, never
