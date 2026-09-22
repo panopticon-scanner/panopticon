@@ -216,11 +216,20 @@ requires a new gem would carry a perfectly good digest and still be wrong to pin
 
 The three requirements files are what the repo's **privileged** builds install (#1641, #1734): the
 `pull_request_target` security gate, which holds `security-events: write` and is reachable from a
-fork PR; the fixture image, which installs as root at image build; and the tools image, which does
-the same and is then published publicly as the trust root of every scan. All three use
-`--require-hashes`, so pip refuses any artifact whose sha256 is not written in the file — which
-also means a version bump with stale digests fails the build rather than installing something
-unpinned.
+fork PR a maintainer has opted in (below); the fixture image, which installs as root at image
+build; and the tools image, which does the same and is then published publicly as the trust root of
+every scan. All three use `--require-hashes`, so pip refuses any artifact whose sha256 is not
+written in the file — which also means a version bump with stale digests fails the build rather
+than installing something unpinned.
+
+**Scanning a fork PR (#1900).** Nothing scans a fork PR until you say so: `security.yml` runs its
+fork arm only on the `labeled` event with the `safe-to-scan` label, so read the diff first and then
+apply that label. The scan then runs over the head you were looking at — and every new push to the
+PR (and every reopen) removes the label again, so a force-push after your approval waits for you a
+second time. The fork path deliberately scans less than a main-branch run: no registry login, no
+`--deps` (so no dependency scanner reading the PR's own lockfiles) and no SARIF upload, because
+under `pull_request_target` the upload would be filed against `main`'s Security tab. The full set
+runs on the push to main after the merge.
 
 The versions are the input and yours to choose; the digests are not. After changing a
 `name==version` line (or adding a package), run:

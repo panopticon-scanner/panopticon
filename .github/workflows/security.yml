@@ -5,6 +5,22 @@ on:
     branches: [main]
   # Fork PRs (untrusted) run under pull_request_target so the BASE workflow
   # judges them and the PR patch can never rewrite the gate that judges it.
+  # #1900 -- and a fork PR is scanned ONLY after a maintainer opts it in, by
+  # applying the `safe-to-scan` label. GitHub's "require approval for outside
+  # collaborators" setting does not cover pull_request_target, so without this
+  # anyone who could open a PR could run the scanners over a tree of their own
+  # choosing, in a job holding this repository's token. The whole fork posture,
+  # in one place:
+  #   * scanned only on the `labeled` event with `safe-to-scan` -- so the scan
+  #     runs over the head the maintainer was looking at, not a later one;
+  #   * the label is REVOKED by the `unlabel` job on every new push and every
+  #     reopen, so the next head waits for a maintainer again;
+  #   * no GHCR login, so no credential is written to the runner;
+  #   * no `--deps`, so the dependency scanner that reads the target's own
+  #     lockfiles never runs there (fewer tools, by design);
+  #   * no SARIF upload, because under pull_request_target `github.ref` is the
+  #     BASE branch and the findings would be filed against main.
+  # The full tool set, with the upload, runs on the push to main after merge.
   pull_request_target:
     branches: [main]
     # `opened` is deliberately NOT here. The default type set starts a scan the
@@ -77,7 +93,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Route each PR to exactly one trigger: forks via pull_request_target,
-    # same-repo branches via pull_request; push always runs.
+    # same-repo branches via pull_request; push always runs. The fork arm
+    # carries the #1900 gate: the event must be the `labeled` one AND the label
+    # must be `safe-to-scan`, so a fork PR that nobody has opted in produces no
+    # run of this job at all (its required check stays "expected" until a
+    # maintainer applies the label). Same-repo PRs and push are unchanged.
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request_target' &&
