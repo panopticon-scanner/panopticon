@@ -758,6 +758,16 @@ class TestEveryPinnedRequirementsFileIsHashed(unittest.TestCase):
 # workflow conventions are written down as tests, beside the `uses:` pin and
 # the install pin, sharing one workflow reader.
 ADAPTER_WORKFLOW = "adapter-integration.yml"
+ADAPTER_JOB = "integration"
+# #1655's lane, in the same workflow. Its selector is ONE file on purpose:
+# it is the job that executes attacker-shaped build logic, and it runs only
+# the test written to be run that way. Pinned for the same reason as its
+# sibling -- a selector that drifted would leave a scheduled green tick over
+# a probe that no longer runs.
+CONTAINMENT_JOB = "containment"
+CONTAINMENT_SELECTOR = ("python3", "-m", "pytest",
+                        "tests/tools/test_hostile_csproj.py", "-q", "-rs",
+                        "-p", "no:cacheprovider")
 
 # The exact argv, in order. `tests/tools/` and not a `*_integration.py` glob:
 # the railsgoat probe that caught the stale brakeman CWE map lives in
@@ -830,11 +840,16 @@ def selector_defect(argvs, expected=ADAPTER_SELECTOR):
     return None
 
 
-def _adapter_run_steps():
+def _adapter_run_steps(job=ADAPTER_JOB):
+    """One JOB's `run:` steps. #1655 added a second job to this workflow with
+    a selector of its own (one file, deliberately), so a reader that pooled
+    every step in the file would see two pytest commands where the pin
+    describes one -- and would stop being able to say which job narrowed."""
     path = os.path.join(WORKFLOW_DIR, ADAPTER_WORKFLOW)
     with open(path, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh.read()) or {}
-    return [step for _job, steps in run_jobs(doc) for step in steps]
+    return [step for name, steps in run_jobs(doc) if name == job
+            for step in steps]
 
 
 class TestAdapterSelectorRule(unittest.TestCase):
@@ -881,11 +896,20 @@ class TestTheAdapterJobsSelectorIsPinned(unittest.TestCase):
         self.assertIsNone(selector_defect(argvs),
                           selector_defect(argvs) or "")
 
+    def test_the_containment_job_runs_the_hostile_build_test(self):
+        steps = _adapter_run_steps(CONTAINMENT_JOB)
+        argvs = [a for step in steps for a in pytest_argvs(step.script)]
+        why = selector_defect(argvs, expected=CONTAINMENT_SELECTOR)
+        self.assertIsNone(why, why or "")
+
     def test_the_reader_actually_found_the_workflow(self):
         # Guards the guard: an unreadable workflow would produce no argvs and
         # the assertion above would report a defect rather than a silent pass,
         # but a reader that found no STEPS at all is broken, not the fleet.
         self.assertTrue(_adapter_run_steps(), "no run: steps in " + ADAPTER_WORKFLOW)
+        self.assertTrue(_adapter_run_steps(CONTAINMENT_JOB),
+                        "no run: steps in %s / %s" % (ADAPTER_WORKFLOW,
+                                                      CONTAINMENT_JOB))
 
 
 # --- #1655: which CI lane, if any, opts the hostile build in -----------------
@@ -902,14 +926,16 @@ class TestTheAdapterJobsSelectorIsPinned(unittest.TestCase):
 # reason over there cannot quietly stop being true.
 CONTAINMENT_PROBE_ENV = "PANOPTICON_CONTAINMENT_PROBE"
 
-# (workflow, job, step name) that set it to "1". EMPTY, and deliberately so:
-# no scheduled lane executes the hostile build -- adapter-integration.yml sets
-# PANOPTICON_REQUIRE_INTEGRATION=1 and not this, so the containment test is
-# opt-in for a human inside the container. Changing that is a decision about
-# where hostile build logic may execute, not a test edit: fill this in AND
-# update the skip reason in tests/tools/test_hostile_csproj.py, which names
-# the same fact.
-EXPECTED_CONTAINMENT_LANES = ()
+# (workflow, job, step name) that set it to "1". ONE lane, per the owner
+# ruling of 2026-09-22: `adapter-integration.yml`'s `containment` job, on the
+# same daily schedule as its `integration` sibling, running the hostile build
+# inside the fixtures image with the network switched off. Adding or removing
+# a lane is a decision about where hostile MSBuild logic may execute, not a
+# test edit: change this AND the skip reason in
+# tests/tools/test_hostile_csproj.py, which names the same lane.
+EXPECTED_CONTAINMENT_LANES = (
+    ("adapter-integration.yml", "containment",
+     "Run the hostile-build containment probe offline"),)
 
 # `docker run` env flags, in every spelling docker accepts: `-e VAR=VALUE`,
 # `-eVAR=VALUE`, `--env VAR=VALUE`, `--env=VAR=VALUE`. A step's env is not only
@@ -944,8 +970,13 @@ def step_env(doc, job, step_name, script):
     return env
 
 
-def _run_step_envs():
-    """[(workflow, job, step name, {VAR: value})] for the whole fleet."""
+def _run_steps_with_env():
+    """[(workflow, job, step name, {VAR: value}, script)] for the whole fleet.
+
+    The script travels with the env because #1655's second half asks a
+    question ABOUT the command line the first half read the env out of: is the
+    `docker run` that carries the opt-in offline.
+    """
     rows = []
     for path in _workflow_files():
         with open(path, encoding="utf-8") as fh:
@@ -953,8 +984,14 @@ def _run_step_envs():
         for job, steps in run_jobs(doc):
             for step in steps:
                 rows.append((os.path.basename(path), job, step.name,
-                             step_env(doc, job, step.name, step.script)))
+                             step_env(doc, job, step.name, step.script),
+                             step.script))
     return rows
+
+
+def _run_step_envs():
+    """[(workflow, job, step name, {VAR: value})] for the whole fleet."""
+    return [row[:4] for row in _run_steps_with_env()]
 
 
 def containment_lanes(rows=None):
@@ -1187,3 +1224,136 @@ class TestTheOfflineRule(unittest.TestCase):
             ["docker", "run", "-e", "PANOPTICON_REQUIRE_INTEGRATION=1", "i"]))
         self.assertTrue(_carries_opt_in(
             ["docker", "run", "-e", "PANOPTICON_CONTAINMENT_PROBE=1", "i"]))
+
+
+def uncontained_lanes(rows=None):
+    """(workflow, job, step, why) for every opted-in lane that is not offline.
+
+    The two controls are read together on purpose: a lane is only found by
+    `containment_lanes()` because something hands it the opt-in, and this asks
+    that same step whether the container it hands it to has a network.
+    """
+    rows = _run_steps_with_env() if rows is None else rows
+    found = []
+    for wf, job, name, env, script in rows:
+        if env.get(CONTAINMENT_PROBE_ENV) != "1":
+            continue
+        why = containment_defect(script)
+        if why is not None:
+            found.append((wf, job, name, why))
+    return tuple(found)
+
+
+# The containment job pulls the nightly image from GHCR, so it needs `packages:
+# read` on top of the workflow's `contents: read` -- and nothing else. It is
+# the job in this repo that deliberately executes attacker-shaped build logic,
+# so any write grant on it is a grant to that build.
+CONTAINMENT_PERMISSIONS = {"contents": "read", "packages": "read"}
+
+
+def permissions_defect(doc, job, expected=CONTAINMENT_PERMISSIONS):
+    """Why this job's `permissions:` are not the pinned read-only pair, or None.
+
+    A job with no block of its own INHERITS the workflow's, which is the drift
+    this pin exists to catch: `contents: read` at the top would silently stop
+    being the whole story the day the workflow needs a write scope for
+    something else.
+    """
+    block = ((doc.get("jobs") or {}).get(job) or {}).get("permissions")
+    if block is None:
+        return ("job %r declares no `permissions:` of its own, so it inherits "
+                "the workflow's -- the job that executes hostile build logic "
+                "must state its own least privilege (#1655)" % job)
+    if not isinstance(block, dict):
+        return "job %r sets `permissions: %r`, not a scope map" % (job, block)
+    got = {k: str(v) for k, v in block.items()}
+    if got != expected:
+        return ("job %r has permissions %r; the pin is %r (#1655)"
+                % (job, got, expected))
+    return None
+
+
+def _containment_docs():
+    """{(workflow, job)} -> parsed workflow, for every recorded lane."""
+    docs = {}
+    for workflow, job, _step in EXPECTED_CONTAINMENT_LANES:
+        path = os.path.join(WORKFLOW_DIR, workflow)
+        with open(path, encoding="utf-8") as fh:
+            docs[(workflow, job)] = yaml.safe_load(fh.read()) or {}
+    return docs
+
+
+class TestTheLanePermissionsRule(unittest.TestCase):
+    """The permissions rule, on scratch documents -- both answers."""
+
+    def _doc(self, permissions):
+        return {"permissions": {"contents": "read"},
+                "jobs": {"containment": dict(
+                    {"steps": []},
+                    **({} if permissions is None
+                       else {"permissions": permissions}))}}
+
+    def test_the_pinned_pair_is_not_a_defect(self):
+        self.assertIsNone(permissions_defect(
+            self._doc({"contents": "read", "packages": "read"}), "containment"))
+
+    def test_inheriting_the_workflows_block_is_a_defect(self):
+        why = permissions_defect(self._doc(None), "containment")
+        self.assertIsNotNone(why)
+        self.assertIn("inherits", why)
+
+    def test_a_write_grant_is_a_defect(self):
+        why = permissions_defect(self._doc({"contents": "read",
+                                            "packages": "write"}), "containment")
+        self.assertIsNotNone(why)
+        self.assertIn("write", why)
+
+    def test_an_extra_scope_is_a_defect(self):
+        why = permissions_defect(self._doc({"contents": "read",
+                                            "packages": "read",
+                                            "id-token": "write"}), "containment")
+        self.assertIsNotNone(why)
+        self.assertIn("id-token", why)
+
+    def test_write_all_is_a_defect(self):
+        why = permissions_defect(self._doc("write-all"), "containment")
+        self.assertIsNotNone(why)
+        self.assertIn("scope map", why)
+
+
+class TestTheFleetsContainmentLaneIsOffline(unittest.TestCase):
+    def test_no_lane_runs_the_hostile_build_with_a_network(self):
+        offenders = uncontained_lanes()
+        self.assertEqual(
+            (), offenders,
+            "a lane opts the hostile build in without containing it. The "
+            "opt-in and `--network none` are one control, not two (#1655):\n"
+            + "\n".join("%s %s / %s: %s" % row for row in offenders))
+
+    def test_there_is_a_lane_to_ask(self):
+        # Guards the guard: an empty answer above is only meaningful while a
+        # lane exists. `EXPECTED_CONTAINMENT_LANES` pins which one.
+        self.assertTrue(EXPECTED_CONTAINMENT_LANES)
+        self.assertEqual(EXPECTED_CONTAINMENT_LANES, containment_lanes())
+
+    def test_the_rule_is_applied_to_the_recorded_lane(self):
+        # ...and that the rule would speak if that lane lost the flag: the
+        # same step, read with `--network none` deleted, is a defect.
+        rows = [row for row in _run_steps_with_env()
+                if (row[0], row[1], row[2]) in EXPECTED_CONTAINMENT_LANES]
+        self.assertEqual(len(EXPECTED_CONTAINMENT_LANES), len(rows), rows)
+        for wf, job, name, env, script in rows:
+            with self.subTest(step=name):
+                stripped = script.replace("--network none", "")
+                self.assertIsNotNone(
+                    containment_defect(stripped),
+                    "deleting `--network none` from %s / %s left the lane "
+                    "passing; the pin reads something else" % (wf, job))
+
+
+class TestTheContainmentLaneIsLeastPrivilege(unittest.TestCase):
+    def test_the_lane_grants_itself_read_and_nothing_more(self):
+        for (workflow, job), doc in _containment_docs().items():
+            with self.subTest(job=job):
+                self.assertIsNone(permissions_defect(doc, job),
+                                  permissions_defect(doc, job) or workflow)
