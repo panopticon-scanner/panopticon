@@ -22,7 +22,6 @@ ARG GITLEAKS_VERSION=8.18.4
 ARG GOSEC_VERSION=2.29.0
 ARG SEMGREP_VERSION=1.177.0
 ARG BANDIT_VERSION=1.9.4
-ARG BANDIT_SARIF_FORMATTER_VERSION=1.1.1
 ARG BRAKEMAN_VERSION=8.0.6
 ARG BUNDLER_AUDIT_VERSION=0.9.3
 ARG ESLINT_VERSION=10.9.0
@@ -47,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # unpinned transitive release is install-time code execution here and a
 # substituted scanner everywhere downstream.
 #
-#   pip  `--require-hashes --no-deps -r requirements-tools.txt`: 92 packages,
+#   pip  `--require-hashes --no-deps -r requirements-tools.txt`: 91 packages,
 #        each with the sha256 of every wheel either published architecture may
 #        be served. --no-deps makes that file the complete list.
 #   gem  each .gem fetched to a file, gated on `sha256sum -c`, then installed
@@ -63,12 +62,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # the reason given above. Direct binary downloads keep their own checksum
 # gates, above and below.
 
-# Python tools: semgrep, bandit, bandit-sarif-formatter, pip-audit. The header
+# Python tools: semgrep, bandit, pip-audit. Bandit's native SARIF support
+# dependencies remain explicit because pip installs this closure with --no-deps.
+# The header
 # of requirements-tools.txt says how the closure was resolved and
 # `scripts/bump_pins.py requirements` writes its digests, reading each from
 # PyPI AND recomputing it from the downloaded wheel.
 #
-# semgrep's version (#outage 2026-08-18) is why the four tools keep their own
+# semgrep's version (#outage 2026-08-18) is why the three tools keep their own
 # ARGs above: the rules-corpus pin below is a commit SHA on a live branch, and
 # that pin is only meaningful paired with a known-compatible semgrep build --
 # an unconstrained upgrade would keep re-validating tomorrow's semgrep release

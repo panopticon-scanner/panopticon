@@ -8,7 +8,7 @@
 # `pip install --require-hashes --no-deps -r` this file: --require-hashes makes
 # pip refuse any artifact whose digest is not written down here, and --no-deps
 # makes THIS FILE the complete list rather than a starting point for a
-# resolver. That is why the whole closure is spelled out and not just the four
+# resolver. That is why the whole closure is spelled out and not just the three
 # tools: with --no-deps pip installs exactly these lines, so a closure missing
 # one fails loudly at the first import instead of silently resolving something
 # unpinned.
@@ -16,7 +16,7 @@
 # The closure was resolved with `uv pip compile --generate-hashes
 # --python-version 3.12` for BOTH linux targets docker-publish.yml builds
 # (x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu); the two resolve to
-# an identical 92-pin set. `uv pip compile --universal` adds exactly one more,
+# an identical 91-pin set. `uv pip compile --universal` adds exactly one more,
 # pywin32, behind `sys_platform == 'win32'` -- a marker `bump_pins.py` does not
 # carry through a rewrite, so the linux resolution is what is committed. See
 # DEVELOPMENT.md, "Regenerating the pinned dependency hashes".
@@ -28,14 +28,12 @@
 # of the publish fetches a different artifact than pip on the amd64 leg and
 # needs its digest present.
 
-# The four tools the image exists to ship. Each is ALSO pinned by an `ARG
+# The three tools the image exists to ship. Each is ALSO pinned by an `ARG
 # <NAME>_VERSION` in the Dockerfile, where the version is visible beside the
 # tool it belongs to; `tests/test_dockerfile.py` fails if the two disagree, so
 # neither can be bumped alone.
 bandit==1.9.4 \
     --hash=sha256:f89ffa663767f5a0585ea075f01020207e966a9c0f2b9ef56a57c7963a3f6f8e
-bandit-sarif-formatter==1.1.1 \
-    --hash=sha256:2a8351cecc03b265ec7546794b9c54a988d0b7282db544de913dc6c5a46a50fb
 pip-audit==2.10.1 \
     --hash=sha256:99ef3f600a317c1945f1e89e227ef26e1c2d618429b8bd3fa6f4f7c440c4611a
 semgrep==1.177.0 \
@@ -44,9 +42,11 @@ semgrep==1.177.0 \
     --hash=sha256:32d92d0cd2e18a1495b32abfef926be0ed3c972d8cd169bffe6cbb8418e3bb5e \
     --hash=sha256:f27725632d468fb1a0d740ce5a98e406376a88de91fc6f902fb9fb3b1d6ed4d9
 
-# Everything those four pull in, resolved once and written down. Nothing here
-# was chosen: it is what the four above require, and it moves only when one of
-# them does.
+# Everything those three pull in, resolved once and written down. Bandit's
+# native SARIF formatter requires jschema-to-python and sarif-om, so both remain
+# explicit in this --no-deps closure. A fresh graph resolution must request
+# Bandit's `sarif` extra to retain them. Nothing here was chosen: it is what the
+# three above require, and it moves only when one of them does.
 annotated-types==0.8.0 \
     --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
 anyio==4.15.1 \
