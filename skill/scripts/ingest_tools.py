@@ -327,7 +327,7 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
     counting the same finding twice or not at all.
     """
     kept, gl_count, ra_count = [], 0, 0
-    suppressed = {}
+    suppressed: dict[str, int] = {}
     for f in parsed:
         # #run7 QAL-D1A: normalize os.sep -> "/" before matching, mirroring
         # run_tools._is_excluded, so an exclude_glob behaves identically on both
@@ -532,10 +532,10 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     out = []
     dispositions = {}
     root = target_root or _target_root_for(tools_dir)
-    venv_cache = {}   # per-run memo of the pyvenv.cfg lookups
+    venv_cache: dict[str, bool] = {}   # per-run memo of the pyvenv.cfg lookups
     gl_excluded = 0   # dropped by an explicit exclude_glob (operator policy)
     ra_excluded = 0   # dropped as not-project-source (run-9 E3 / run-10 D1)
-    suppressed = {}   # {segment: count} dropped on a directory NAME (#1578, #1740)
+    suppressed: dict[str, int] = {}   # {segment: count} dropped on a directory NAME (#1578, #1740)
     for path in sorted(glob.glob(os.path.join(tools_dir, "*.sarif"))
                        + glob.glob(os.path.join(tools_dir, "*.json"))):
         tool = os.path.splitext(os.path.basename(path))[0]
@@ -671,7 +671,7 @@ _SUPPRESSION_REASON = {
 def _suppression_reasons(counts):
     """The stderr reason strings for a `{segment: count}` tally, one per class
     that actually fired, in `SUPPRESSION_CLASSES` order (#1740)."""
-    by_class = {}
+    by_class: dict[str, list[str]] = {}
     for segment in sorted(counts):
         by_class.setdefault(suppression_class(segment), []).append(
             "%s: %d" % (segment, counts[segment]))
@@ -687,7 +687,7 @@ def suppressed_counts(suppressed):
     gate's own line beside its verdict. #1740: the segments now span three
     classes -- `suppression_class` is what groups them for a reader.
     """
-    counts = {}
+    counts: dict[str | None, int] = {}
     for finding in suppressed or []:
         seg = (finding or {}).get("suppressed")
         counts[seg] = counts.get(seg, 0) + 1

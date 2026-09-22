@@ -468,6 +468,7 @@ class FailureTally:
         batch failing identically in a tenth of a second is the launch being
         refused, and the same batch failing identically after five minutes
         each is not."""
+        failure: tuple[str, str | None, str | None]
         if refusal is not None:
             failure = (entry_id, refusal, ENTRY_FAILURE)
         elif getattr(result, "ok", False):

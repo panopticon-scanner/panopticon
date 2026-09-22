@@ -5,6 +5,8 @@ triage, and advisor verdict ingestion. Stdlib-only.
 Two-axis model: severity means "impact if true" and is never mutated here;
 evidence.status records how hard the claim has been verified.
 """
+from typing import TYPE_CHECKING
+from typing import Any
 
 import hashlib
 import json
@@ -12,13 +14,18 @@ import os
 import re
 import sys
 import uuid
+from types import ModuleType
 
-try:
+if TYPE_CHECKING:
     from scripts import safe_write
     from scripts._version import __version__
-except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-    import safe_write
-    from _version import __version__
+else:
+    try:
+        from scripts import safe_write
+        from scripts._version import __version__
+    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+        import safe_write
+        from _version import __version__
 
 # #1639 P15 F3: the pinned types live in ONE module (it both enforces them on
 # the way out and normalizes to them on the way in), and the verdict boundary
@@ -37,7 +44,8 @@ except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.p
 # verdicts: every verdict reader (`phases/verify`, `synthesize`) is
 # package-imported, which `tests/test_agent_verdict_guard.py` enumerates.
 try:
-    import scripts.synth.validate_schema as validate_schema_mod
+    import scripts.synth.validate_schema as _validate_schema_mod
+    validate_schema_mod: ModuleType | None = _validate_schema_mod
 except ModuleNotFoundError:            # imported flat: see above
     validate_schema_mod = None
 
@@ -429,7 +437,7 @@ def build_verify_queue(findings, max_verify=None):
         cut = len(ordered) - max_verify
         ordered = ordered[:max_verify]
     entries = []
-    seen = {}
+    seen: dict[str, int] = {}
     for f in ordered:
         fp = finding_fingerprint(f)
         n = seen.get(fp, 0)
@@ -708,7 +716,7 @@ def load_verdict_bundles(verdicts_dir):
     (e.g. backup-wins on stage alone) let a stale cross-run backup evict a
     valid same-run primary before run_id was ever consulted.
     """
-    by_fid = {}
+    by_fid: dict[str, list[dict[str, Any]]] = {}
     unloadable = []
     for name, path in _iter_verdict_files(verdicts_dir):
         try:
@@ -847,7 +855,7 @@ def by_finding_id(verdicts, stage="primary"):
     """`finding_id -> the one verdict that counts`, duplicates resolved by
     `resolve_duplicates`. The driver's shape; synthesis keeps the candidate
     LISTS because it also filters them by run_id first."""
-    pools = {}
+    pools: dict[str, list[dict[str, Any]]] = {}
     for v in verdicts:
         if not isinstance(v, dict):
             continue

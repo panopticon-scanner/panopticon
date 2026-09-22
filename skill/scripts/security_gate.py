@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fail-closed CI gate for trusted Panopticon scanner output."""
+from typing import Any
 import argparse
 import json
 import os
@@ -40,8 +41,8 @@ def load_manifest(path):
     # never required. Optional for backward compatibility with older manifests.
     excluded_scope = data.get("excluded_scope", [])
     data["excluded_scope"] = excluded_scope
-    if not all(isinstance(value, list)
-               for value in (selected, produced, missing, excluded_scope)):
+    if (not isinstance(selected, list) or not isinstance(produced, list)
+            or not isinstance(missing, list) or not isinstance(excluded_scope, list)):
         raise ValueError("scanner manifest lists are malformed")
     if not selected or not all(isinstance(name, str) and name for name in selected):
         raise ValueError("scanner manifest selected no tools")
@@ -86,7 +87,7 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     legitimate operator act, and it may not be an invisible one.
     """
     manifest = load_manifest(manifest_path)
-    suppressed = []
+    suppressed: list[dict[str, Any]] = []
     findings, dispositions = ingest_tools.ingest_dir_detailed(
         tools_dir, "ci", exclude_globs=exclude_globs or [],
         suppressed_out=suppressed, excluded_out=excluded_out)
@@ -118,7 +119,7 @@ def _by_class(suppressed):
     line cannot drift from either.
     """
     counts = ingest_tools.suppressed_counts(suppressed)
-    by_class = {}
+    by_class: dict[str, list[str]] = {}
     for segment in sorted(counts):
         by_class.setdefault(ingest_tools.suppression_class(segment), []).append(
             "%s: %d" % (segment, counts[segment]))
@@ -136,7 +137,7 @@ def main(argv=None):
     parser.add_argument("--security", dest="security_mode", default="standard",
                         choices=list(SECURITY_MODES))
     args = parser.parse_args(argv)
-    excluded = []
+    excluded: list[dict[str, Any]] = []
     try:
         findings, _dispositions, failures, high, suppressed = evaluate(
             args.tools_dir, args.manifest, args.exclude, args.security_mode,

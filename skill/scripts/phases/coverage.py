@@ -42,7 +42,8 @@ def _discovered_units(review_root):
     and merging them would hide a real split between sibling subgroups.
     """
     data = runio._load_json(runio._pano(review_root, "groups.json")) or {}
-    units, unit_of = {}, {}
+    units: dict[str, list[str]] = {}
+    unit_of = {}
     for g in (data.get("groups") or []):
         if not (isinstance(g, dict) and g.get("name")):
             continue

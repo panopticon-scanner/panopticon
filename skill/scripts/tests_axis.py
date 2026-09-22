@@ -140,7 +140,7 @@ def distinguishing_prefixes(catalog):
     alone}. Subgroup ids (`API:Handlers`) roll up to their top-level owner;
     negated globs contribute nothing; a prefix two owners share belongs to
     neither. Every top-level group gets a key (possibly [])."""
-    owners = {}
+    owners: dict[str, set[str]] = {}
     tops = []
     for gid, body in catalog.items():
         top = group_labels(gid)[0] if group_labels(gid) else str(gid)
@@ -177,7 +177,8 @@ def attach_by_affinity(files, homes):
     directory prefix with it (depth >= 2 -- a single shared top-level directory
     such as `src` says nothing). Ties go to the alphabetically first group.
     Returns ({group: sorted files}, sorted unattached)."""
-    attached, unattached = {}, []
+    attached: dict[str, list[str]] = {}
+    unattached = []
     for f in sorted(files):
         best, best_depth = None, 1
         for name in sorted(homes):

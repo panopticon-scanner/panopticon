@@ -179,7 +179,7 @@ def build_diff(run2_records, run3_records, run2_path, run3_path):
     # same as a live finding does (safe direction), but the reason string must
     # not call a rejected claim a "finding".
     active3 = {(ck[0], ck[1]) for ck in ck3}
-    active3_counts = {}
+    active3_counts: dict[tuple[str, str], dict[str, int]] = {}
     for r in run3_records:
         file_panel = (r["coarse_key"][0], r["coarse_key"][1])
         counts = active3_counts.setdefault(file_panel, {})
@@ -306,7 +306,7 @@ def render_summary(diff):
             "- ambiguous: %d" % ambiguous_n,
             "- new: %d" % new_n, ""]
 
-    sev_counts = defaultdict(int)
+    sev_counts: defaultdict[str, int] = defaultdict(int)
     for entry in diff["closed"]:
         for rec in entry["run2"]:
             sev_counts[rec.get("severity") or "UNKNOWN"] += 1

@@ -48,6 +48,7 @@ import os
 import re
 import socket
 import time
+from typing import TypedDict
 
 import scripts.write_guard_hook as write_guard_hook
 
@@ -70,6 +71,11 @@ OWNER_UNSTAMPED = "unstamped"
 
 def manifest_path(run_dir, number):
     return os.path.join(run_dir, "%s%s.json" % (MANIFEST_PREFIX, int(number)))
+
+
+class BatchEntry(TypedDict):
+    id: str | None
+    artifacts: list[str]
 
 
 def host_id():
@@ -139,7 +145,7 @@ class Batch:
         self.checkpoint = checkpoint
         self.opened_at = None
         self.recovering = False
-        self.entries = [
+        self.entries: list[BatchEntry] = [
             {"id": e.get("id"),
              "artifacts": [os.path.abspath(e["out_file"])] if e.get("out_file") else []}
             for e in entries or [] if isinstance(e, dict)]

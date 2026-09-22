@@ -13,6 +13,7 @@ Usage:  python3 scripts/file_fixmes.py [--dry-run] [--limit N] [--throttle S]
 """
 import argparse
 import re
+from typing import Any
 
 import file_issues
 import triage
@@ -41,7 +42,8 @@ def parse(path):
     """
     with open(path, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
-    out, cur = [], None
+    out: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
     for i, line in enumerate(lines):
         m = HEAD_RE.match(line)
         if m:

@@ -11,6 +11,7 @@ What every family shares is reached by module attribute (`common.<name>`), so
 each of those names still has exactly one definition and one patch target.
 The probe-id -> function registry stays in `host_probes.py`.
 """
+from typing import Any
 import json
 import os
 import shutil
@@ -422,7 +423,7 @@ def _round_trip_confines_reads():
                     return False, "the guard %s: %s" % ("ALLOWED" if got else "DENIED", name)
 
             # Spec 5.3 (plan 6): the env binding the headless runner relies on.
-            env_rows = (
+            env_rows: tuple[tuple[str, dict[str, Any], dict[str, str], bool], ...] = (
                 ("env-bound read inside its entry",
                  {"tool_name": "Read", "tool_input": {"file_path": inside}},
                  {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, True),

@@ -133,7 +133,7 @@ def _load_scope(scope_path):
     for eid, scope in loaded.items():
         if not isinstance(eid, str) or not isinstance(scope, dict):
             return None, "read guard scope is malformed"
-        entry = {}
+        entry: dict[str, list[str]] = {}
         for key in ("files", "dirs", "reads"):
             val = scope.get(key)
             if val is None:

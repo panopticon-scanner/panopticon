@@ -362,7 +362,10 @@ def _stale_batch_records(run_dir):
             continue
         path = os.path.join(run_dir, name)
         doc = None if os.path.islink(path) else runio._load_json(path)
-        if batch.owner_state(doc) == batch.OWNER_LIVE:
+        # `owner_state` answers LIVE only for a dict carrying a pid; the
+        # isinstance restates that so reading `pid` back off `doc` is visibly
+        # safe rather than safe-by-reference-to-another-module.
+        if isinstance(doc, dict) and batch.owner_state(doc) == batch.OWNER_LIVE:
             print("driver setup: keeping %s -- a `driver loop --setup` is still "
                   "running here (pid %r)" % (name, doc.get("pid")),
                   file=sys.stderr, flush=True)

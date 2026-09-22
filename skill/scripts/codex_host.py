@@ -5,6 +5,7 @@ runtime to enumerate its actual callable tools, including deferred Code Mode
 tools, and optionally exercises the same read broker used by real entries.
 This is transport/configuration only: review workflow stays in the driver.
 """
+from typing import Any
 import copy
 import http.server
 import json
@@ -42,7 +43,7 @@ PROBE_TIMEOUT = 45
 # Everything one launch allocated, keyed by the scratch cwd -- the one path
 # cleanup can recover from argv. The value is (per-entry runtime dir, run
 # path): BOTH are removed, and only ever when this module recorded them.
-_COMMAND_DIRS = {}
+_COMMAND_DIRS: dict[str, tuple[str, str]] = {}
 _COMMAND_LOCK = threading.Lock()
 
 
@@ -207,7 +208,8 @@ def catalog_loader(runner=None, env=None):
     shell) never pays for it either.
     """
     runner = DEFAULT_RUNNER if runner is None else runner
-    cache, lock = [], threading.Lock()
+    cache: list[list[dict[str, Any]]] = []
+    lock = threading.Lock()
 
     def load():
         with lock:
@@ -466,7 +468,7 @@ def _launch_error(proc):
 
 
 def _capture_requests(argv, env, runner, script):
-    requests = []
+    requests: list[dict[str, Any]] = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_):

@@ -4,6 +4,7 @@ Pure functions over the discrete severity / confidence / evidence.status values
 a finding already carries. No I/O, no dispatch. See
 docs/superpowers/specs/2026-08-14-panopticon-5.0-domain-panel-matrix-design.md §7.
 """
+from typing import TYPE_CHECKING
 
 import os
 import sys
@@ -16,10 +17,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # state, and every real run (the driver puts both directories on PYTHONPATH)
 # held both at once. Nothing in `evidence` is stateful today; the split would
 # be silent when something is (#1679).
-try:
+if TYPE_CHECKING:
     from scripts import evidence
-except ImportError:
-    import evidence
+else:
+    try:
+        from scripts import evidence
+    except ImportError:
+        import evidence
 
 SEVERITY_WEIGHT = {"CRITICAL": 20, "HIGH": 5, "MEDIUM": 2, "LOW": 0, "INFO": 0}
 CONFIDENCE_MULT = {"CERTAIN": 1.0, "LIKELY": 0.9, "POSSIBLE": 0.8, "NOTE": 0.4}

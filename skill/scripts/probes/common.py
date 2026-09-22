@@ -567,7 +567,9 @@ def probe_discovery_surface(host, review_root, disclose=None):
     if not row or not row.discovery_surface:
         return (hosts.UNKNOWN, DISCOVERY_SURFACE,
                 "host %r discovers no target-authored configuration" % host)
-    open_hits, controlled, problems = [], [], []
+    open_hits: list[str] = []
+    controlled: list[str] = []
+    problems = []
     patterns = 0
     for entry in row.discovery_surface:
         # PER ROW, not per host. A file two ROWS both name is reported twice,

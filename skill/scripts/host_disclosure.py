@@ -11,6 +11,7 @@ the fix for it.
 5.1's wording rule, verbatim: "name the capability, the host, the probe, and
 the remedy. 'unenforced' alone is not a disclosure; it is a mood."
 """
+from typing import TYPE_CHECKING
 import hashlib
 
 # This repo has two directories named `scripts` with no __init__.py (repo-root
@@ -22,10 +23,13 @@ import hashlib
 # still resolve (skill/scripts is on sys.path either way) but as a SECOND,
 # non-identical module with its own HOSTS dict -- see model_resolver.py for
 # the same fallback on the same seam.
-try:
+if TYPE_CHECKING:
     from scripts import hosts
-except ImportError:
-    import hosts
+else:
+    try:
+        from scripts import hosts
+    except ImportError:
+        import hosts
 
 # The probe that records the operational CLI facts (D10 F1/N1); named here
 # because `_output_schema_line` must say WHICH measurement it is reporting and

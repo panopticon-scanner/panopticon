@@ -313,7 +313,8 @@ def _unshared(conditions, check, use):
 
 def _checks(stmts, soft=()):
     """[(statement index, checked text, why it clears nothing or None)]."""
-    found, written = [], {}
+    found = []
+    written: dict[str, str] = {}
     for index, statement in enumerate(stmts):
         for position, stage in enumerate(statement.stages):
             argv = command(stage.argv)
@@ -570,7 +571,11 @@ def job_defects(steps):
     not reach into the next step's parse. Each defect is attributed to the step
     that performed the fetch.
     """
-    stmts, owner, conditions, soft, found = [], [], {}, set(), []
+    stmts: list[shell_reader.Statement] = []
+    owner = []
+    conditions = {}
+    soft = set()
+    found = []
     for item in steps:
         step = item if isinstance(item, Step) else Step(*item)
         why = unparseable(step.shell)

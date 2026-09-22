@@ -77,7 +77,9 @@ class Runner(base.HostRunner):
         identity from the model requested on argv.
         """
         text, session_id, model, error = "", None, None, None
-        usage, denials, completed = {}, [], False
+        usage: dict[str, int] = {}
+        denials = []
+        completed = False
         host_error = None          # #1623: only the host's own failure event fills this
         # N-I3: WHEN each was last set, so a recovery can be told from
         # commentary. Every agent_message overwrites `text`, and commentary

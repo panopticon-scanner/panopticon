@@ -9,13 +9,17 @@ corrupt entry can't kill a whole review (see #run7 ARC-F2D). Mirrors
 citations.load_cwe_catalog.
 See docs/superpowers/specs/2026-08-15-panopticon-5.0-review-matrix-design.md §4.
 """
+from typing import TYPE_CHECKING
 import json
 import os
 
-try:
+if TYPE_CHECKING:
     from scripts import _version
-except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-    import _version
+else:
+    try:
+        from scripts import _version
+    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+        import _version
 
 BUNDLE_VERSION = "0.5.0"
 _BUNDLE_NAME = "ocrdb-%s.json" % BUNDLE_VERSION

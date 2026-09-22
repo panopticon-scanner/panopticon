@@ -152,7 +152,7 @@ def main():
     out_dir = sys.argv[1]
     os.makedirs(out_dir, exist_ok=True)
     only = sys.argv[2:] or sorted(ADAPTERS)
-    report = {}
+    report: dict[str, dict[str, str | int | None]] = {}
     for name in only:
         adapter = ADAPTERS.get(name)
         target = TARGETS.get(name)

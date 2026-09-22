@@ -822,7 +822,7 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
 # Module-level because the pass runs three call frames below the run loop --
 # threading a ledger through _capture_run/_write_completed/_stream_and_write
 # would put plumbing in five signatures to carry one bit.
-_REDACTED_CAPTURES = set()
+_REDACTED_CAPTURES: set[str] = set()
 
 # What egress each tool was granted this run, keyed by tool name (#1645). Same
 # construction and the same reason as the ledger above: `run_tools()` clears it
@@ -831,7 +831,7 @@ _REDACTED_CAPTURES = set()
 # rather than a `proxied:` string surviving as an intention nothing enforces.
 # Values are `"none"`, `"proxied:<allowlist>"` or the fail-closed
 # `"excluded:online egress unavailable"` (scripts.tools.egress).
-_NETWORK_POSTURE = {}
+_NETWORK_POSTURE: dict[str, str] = {}
 
 # Above this size a capture is re-serialized in json.dumps' default layout
 # instead of the producer's own: matching the layout costs one extra

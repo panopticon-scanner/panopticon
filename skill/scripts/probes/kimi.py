@@ -255,7 +255,8 @@ def _kimi_hooks_are_armed(sandbox, mode):
                        "unregistered" % exc)
     guard = os.path.abspath(kimi_guard_hook.__file__)
     hooks = [h for h in (config.get("hooks") or []) if isinstance(h, dict)]
-    tools = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    raw_tools = config.get("tools")
+    tools = raw_tools if isinstance(raw_tools, dict) else {}
     disabled = set(tools.get("disabled") or [])
     faults, notes, mine, mine_file = [], [], None, ""
     for matcher, this_mode, data_path in ((kimi_home.READ_MATCHER, "read", scope_path),

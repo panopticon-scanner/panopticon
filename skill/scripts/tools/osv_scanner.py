@@ -55,24 +55,24 @@ class OsvScannerAdapter:
                 for vuln in pkg_entry.get("vulnerabilities", []) or []:
                     if not isinstance(vuln, dict):
                         continue
-                    score = sev_by_id.get(vuln.get("id"))
-                    if score is not None:
-                        severity = cvss_bucket(score)
+                    vuln_score = sev_by_id.get(vuln.get("id"))
+                    if vuln_score is not None:
+                        severity = cvss_bucket(vuln_score)
                     else:
                         raw_sev = vuln.get("severity") or []
                         severity = None
                         if isinstance(raw_sev, list):
                             for entry in raw_sev:
                                 if isinstance(entry, dict) and entry.get("type") == "CVSS_V3":
-                                    entry_score = _cvss_v3_score(entry.get("score") or entry.get("score_vector"))
+                                    entry_score = _cvss_v3_score(entry.get("score") or entry.get("score_vector") or "")
                                     if entry_score is not None:
                                         severity = cvss_bucket(entry_score)
                                         break
-                        if severity is None:
-                            # #run7 review: floor an unscored advisory at LOW, not
-                            # INFO -- a real vuln with no CVSS stays a visible
-                            # finding the agent can downgrade, not dismissed noise.
-                            severity = "LOW"
+                    if severity is None:
+                        # #run7 review: floor an unscored advisory at LOW, not
+                        # INFO -- a real vuln with no CVSS stays a visible
+                        # finding the agent can downgrade, not dismissed noise.
+                        severity = "LOW"
                     out.append(make_finding(
                         self, n, group,
                         title=f"{pkg.get('name')} {pkg.get('version')}: {vuln.get('id', 'vulnerability')}",
@@ -90,7 +90,7 @@ class OsvScannerAdapter:
                             "package_name": pkg.get("name"),
                             "vulnerable_versions": pkg.get("version"),
                             "ecosystem": pkg.get("ecosystem"),
-                            "cvss_max_severity": score,
+                            "cvss_max_severity": vuln_score,
                         }),
                     ))
                     n += 1

@@ -38,6 +38,7 @@ evidence as-is. It does NOT adjudicate. The disposition (`boundary` /
 exists precisely because X0X could only ever argue `new_code` while OCRDb's
 vocabulary already had the other three.
 """
+from typing import Any
 import os
 
 SCHEMA_VERSION = 1
@@ -102,7 +103,7 @@ def advisor_recode_signals(findings, run_id=None):
     unit of adjudication: one occurrence is an anecdote, the same pair recurring
     across independent sites is a boundary that does not hold.
     """
-    clusters = {}
+    clusters: dict[tuple[str, str], list[tuple[dict[str, Any], dict[str, Any]]]] = {}
     for f in findings:
         preferred = (f.get("provenance") or {}).get("advisor_code")
         filed = f.get("code")
@@ -166,7 +167,7 @@ def cross_run_signals(runs, window=20):
     """
     per_run = []
     for run_id, findings in runs:
-        buckets = {}
+        buckets: dict[tuple[str, int], list[dict[str, Any]]] = {}
         for f in findings:
             key = _window(f, window)
             if key is None:
@@ -174,7 +175,7 @@ def cross_run_signals(runs, window=20):
             buckets.setdefault(key, []).append(f)
         per_run.append((run_id, buckets))
 
-    clusters = {}
+    clusters: dict[tuple[str, str], list[tuple[dict[str, Any], list[dict[str, Any]]]]] = {}
     for i in range(len(per_run)):
         for j in range(i + 1, len(per_run)):
             run_a, a = per_run[i]

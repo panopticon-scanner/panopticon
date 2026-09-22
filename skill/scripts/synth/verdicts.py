@@ -1,5 +1,6 @@
 """The verify round: emit its queue, then resolve findings against the advisor
 verdicts and the delta context."""
+from typing import Any
 from dataclasses import dataclass, field
 import copy
 import os
@@ -126,7 +127,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     # finding_id echo names a different finding, or none at all). Collected
     # separately because they are the opposite failure from `unanswered`: an
     # advisor ran and answered, and the answer was mislabelled.
-    verdict_misrouted = []
+    verdict_misrouted: list[dict[str, Any]] = []
     for entry in queue:
         v = evidence_mod.match_verdict(entry, verdicts, run_id=fs.verdict_run_id,
                                        misrouted=verdict_misrouted)

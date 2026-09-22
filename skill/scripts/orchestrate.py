@@ -6,6 +6,7 @@ host's runner -- persisting and ledgering each entry the moment it completes -- 
 guards down, and call driver.run again. The engine's done predicates are the only way
 forward (O2); a runner's claim advances nothing.
 """
+from typing import Any
 import contextlib
 import os
 import sys
@@ -270,7 +271,10 @@ def loop(args):
     done, total = 0, 0        # this batch's progress, read by the handlers below
     # #1662: what a Ctrl-C has to take back. Bound BEFORE the try, because the
     # interrupt can land before the first batch ever opens one.
-    batch, pending, handled, req = None, [], [], {}
+    batch = None
+    pending = []
+    handled: list[dict[str, Any]] = []
+    req = {}
     try:
         # M8: the pre-loop setup lives INSIDE the try. `loop` never raises (review round 1, item
         # 3), but every line of it touches the filesystem -- resolving the run folder, writing
@@ -306,7 +310,7 @@ def loop(args):
         for attr in ("max_turns", "entry_timeout"):
             if getattr(args, attr, None):
                 setattr(runner, attr, getattr(args, attr))
-        if mode != "session":
+        if guards is None:
             guards = Guards(mode, run_dir=run_dir, session_root=session_root)
         ledger = ledger_mod.Ledger(run_dir)
         while status.get("status") == "checkpoint":

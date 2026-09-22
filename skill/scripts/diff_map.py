@@ -2,6 +2,7 @@
 changed-line-range map, and classify findings against it. Stdlib only; pure
 functions plus thin git/gh subprocess wrappers.
 """
+from typing import TYPE_CHECKING
 import hashlib
 import json as _json
 import os
@@ -21,10 +22,13 @@ import uuid
 # importing this module as `scripts.diff_map`), it succeeds and binds the
 # SAME module object every other caller sees -- see host_disclosure.py for the
 # same fallback on the same seam.
-try:
+if TYPE_CHECKING:
     import scripts.repo_config as repo_config
-except ImportError:
-    import repo_config
+else:
+    try:
+        import scripts.repo_config as repo_config
+    except ImportError:
+        import repo_config
 
 class DiffMapError(Exception):
     """A delta-map computation failed in a way that must NOT silently degrade to
@@ -195,7 +199,7 @@ def parse_unified_diff(text):
     gate to half the change and passes vacuously for the rest, so it is never
     returned.
     """
-    result = {}
+    result: dict[str, list[tuple[int, int]]] = {}
     path = None        # key of the open block, None = no new side (deletion)
     pending = None     # fallback key, live until this block's `+++` header
     opened = False     # a file block has been framed at all
