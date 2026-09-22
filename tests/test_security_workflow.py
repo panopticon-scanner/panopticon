@@ -212,6 +212,66 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertIn("GITHUB_STEP_SUMMARY", summary["run"])
         self.assertIn("steps.prepare-reports.outcome == 'success'", summary["if"])
 
+    def test_zero_alert_audit_is_bound_to_the_processed_main_upload(self):
+        workflow = self._workflow()
+        steps = workflow["jobs"]["scan"]["steps"]
+        by_name = {step.get("name"): step for step in steps}
+        upload = by_name["Upload actionable SARIF to GitHub Security tab"]
+        audit = by_name["Audit current main for open code-scanning alerts"]
+
+        self.assertEqual(upload.get("id"), "upload-sarif")
+        self.assertEqual(
+            upload["uses"],
+            "github/codeql-action/upload-sarif@"
+            "b96794f015dfd88f77b49b1c93e0fa7110f94c63",
+        )
+        self.assertNotIn("wait-for-processing", upload.get("with", {}))
+        self.assertLess(steps.index(upload), steps.index(audit))
+        self.assertEqual(audit.get("timeout-minutes"), 5)
+
+        condition = " ".join(audit["if"].split())
+        self.assertEqual(
+            condition,
+            "always() && github.event_name == 'push' && "
+            "github.ref == 'refs/heads/main' && "
+            "steps.upload-sarif.outcome == 'success'",
+        )
+        self.assertEqual(audit["env"], {
+            "GH_TOKEN": "${{ github.token }}",
+            "SECURITY_SARIF_ID":
+                "${{ steps.upload-sarif.outputs.sarif-id }}",
+        })
+        run = _without_comments(audit["run"])
+        self.assertIn("python controller/scripts/code_scanning_audit.py", run)
+        self.assertIn('--repository "$GITHUB_REPOSITORY"', run)
+        self.assertIn('--server-url "$GITHUB_SERVER_URL"', run)
+        self.assertIn('--ref "$GITHUB_REF"', run)
+        self.assertIn('--sha "$GITHUB_SHA"', run)
+        self.assertIn('--sarif-id "$SECURITY_SARIF_ID"', run)
+        self.assertNotIn("sarif-ids", run)
+
+    def test_zero_alert_audit_does_not_widen_permissions_or_replace_raw_gate(self):
+        workflow = self._workflow()
+        job = workflow["jobs"]["scan"]
+        self.assertEqual(job["permissions"], {
+            "contents": "read", "packages": "read",
+            "security-events": "write",
+        })
+        names = [step.get("name") for step in job["steps"]]
+        self.assertIn(
+            "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)",
+            names,
+        )
+        with open(FORK_WORKFLOW, encoding="utf-8") as fh:
+            fork = yaml.safe_load(fh)
+        fork_text = "\n".join(
+            str(step.get("uses", "")) + "\n" + str(step.get("run", ""))
+            for fork_job in fork.get("jobs", {}).values()
+            for step in fork_job.get("steps", [])
+        )
+        self.assertNotIn("upload-sarif", fork_text)
+        self.assertNotIn("code_scanning_audit.py", fork_text)
+
     def test_no_untrusted_github_context_in_run_scripts(self):
         runs = self._every_run_text()
         untrusted_contexts = [
