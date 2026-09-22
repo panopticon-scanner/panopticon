@@ -60,7 +60,7 @@ class TestContainment(unittest.TestCase):
                 self.assertLess(i + 1, len(cmd), "-w has no value argument")
                 self.assertEqual(cmd[i + 1], "/src", "%s: wrong cwd" % tool)
 
-    def test_gosec_is_the_only_tool_that_keeps_the_target_as_its_cwd(self):
+    def test_exactly_two_tools_keep_the_target_as_their_cwd(self):
         # #1877 I3: the dispatcher's exception and the adapter-side one in
         # tests/tools/test_adapter_cwd_confinement.py::ALLOWED_TARGET_CWD now
         # name gosec INDEPENDENTLY -- the old `_is_inside` imported

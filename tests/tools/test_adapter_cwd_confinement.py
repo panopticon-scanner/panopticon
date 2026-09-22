@@ -100,8 +100,10 @@ ALLOWED_TARGET_CWD = {
     # `--no-config-lookup` stops eslint discovering + EXECUTING the target's
     # own eslint.config.js (the RCE vector, #83/#715); the plugin is imported
     # by ABSOLUTE path, so no cwd- or NODE_PATH-relative resolution can be
-    # hijacked by a hostile node_modules; and flat config does not read
-    # `.eslintignore` at all. So the cwd carries no remaining target-authored
+    # hijacked by a hostile node_modules; and flat config takes no ignore
+    # rules from `.eslintignore` (ESLint >= 9 rejects a present one -- the
+    # same on main, since the file sits at the scan root, not the cwd). So
+    # the cwd carries no remaining target-authored
     # resolution surface, and moving it costs the entire JS/TS axis -- the
     # #1452 "selected but unproduced" class.
     "eslint-security": (
@@ -110,7 +112,7 @@ ALLOWED_TARGET_CWD = {
         "round on eslint 10.9.0: no output, exit 2, \"located outside of the "
         "base path\"); the config-execution vector is already closed by "
         "`--config` + `--no-config-lookup` + the absolute plugin import, and "
-        "flat config does not read `.eslintignore`, so no target-authored "
+        "flat config takes no ignore rules from `.eslintignore`, so no target-authored "
         "resolution surface is left for the cwd to carry"
     ),
 }

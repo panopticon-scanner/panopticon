@@ -175,7 +175,9 @@ class EslintSecurityAdapter:
             # would otherwise buy an attacker is already closed above and does
             # not depend on it: --config + --no-config-lookup close the
             # config-execution vector, the plugin import is absolute, and flat
-            # config does not read `.eslintignore` at all. Recorded again, with
+            # config takes no ignore RULES from `.eslintignore` (ESLint >= 9 is
+            # documented to reject a present one, which is the same on main --
+            # cwd or not, the file sits at the scan root). Recorded again, with
             # the argument, in tests/tools/test_adapter_cwd_confinement.py and
             # run_tools.DISPATCH_KEEPS_TARGET_CWD.
             return run_tool(cmd, timeout=300, ok_codes=(0, 1), cwd=abs_target)

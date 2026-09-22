@@ -233,6 +233,12 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertEqual(seen["cwd"], target)
         self.assertFalse(seen["cfg"].startswith(target + os.sep),
                          "the generated config lives inside the target")
+        # #1877 re-review R3: the config scratch used to be the cwd and rode on
+        # the class pin's cleanup assertion; now that eslint is allowlisted
+        # there, this is the one place that pins the scratch does not outlive
+        # invoke().
+        self.assertFalse(os.path.exists(os.path.dirname(seen["cfg"])),
+                         "the config scratch directory outlived invoke()")
 
     def test_plugin_entry_is_absolute_trusted_path(self):
         # #83/#715: the plugin must be the TRUSTED global one, never a hostile

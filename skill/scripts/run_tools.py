@@ -541,7 +541,7 @@ def filter_online(chosen, online):
 ADAPTER_EMPTY_CWD = "/panopticon-empty-cwd"
 # Where the target is mounted inside every scanner container. One name, so the
 # `-v` mount and the `-w` working directory cannot come to disagree about which
-# path gosec is being pointed at. (`_with_venv_excludes` and bandit's `--ini`
+# path the two mount-cwd scanners are pointed at. (`_with_venv_excludes` and bandit's `--ini`
 # pin still spell it literally; both are outside #1877's scope.)
 TARGET_MOUNT = "/src"
 DISPATCH_KEEPS_TARGET_CWD = ("gosec", "eslint-security")
@@ -549,7 +549,8 @@ DISPATCH_KEEPS_TARGET_CWD = ("gosec", "eslint-security")
 
 def _working_dir_flags(tool):
     """`-w` for *tool*'s container: outside the mount for every scanner but
-    gosec, which needs the module root as its cwd (see above)."""
+    the two in DISPATCH_KEEPS_TARGET_CWD, for which the cwd is a scan input
+    (see above)."""
     inside = tool in DISPATCH_KEEPS_TARGET_CWD
     return ["-w", TARGET_MOUNT if inside else ADAPTER_EMPTY_CWD]
 
