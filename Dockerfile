@@ -22,7 +22,6 @@ ARG GITLEAKS_VERSION=8.18.4
 ARG GOSEC_VERSION=2.29.0
 ARG SEMGREP_VERSION=1.177.0
 ARG BANDIT_VERSION=1.9.4
-ARG BANDIT_SARIF_FORMATTER_VERSION=1.1.1
 ARG BRAKEMAN_VERSION=8.0.6
 ARG BUNDLER_AUDIT_VERSION=0.9.3
 ARG ESLINT_VERSION=10.9.0
@@ -47,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # unpinned transitive release is install-time code execution here and a
 # substituted scanner everywhere downstream.
 #
-#   pip  `--require-hashes --no-deps -r requirements-tools.txt`: 92 packages,
+#   pip  `--require-hashes --no-deps -r requirements-tools.txt`: 91 packages,
 #        each with the sha256 of every wheel either published architecture may
 #        be served. --no-deps makes that file the complete list.
 #   gem  each .gem fetched to a file, gated on `sha256sum -c`, then installed
@@ -63,12 +62,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # the reason given above. Direct binary downloads keep their own checksum
 # gates, above and below.
 
-# Python tools: semgrep, bandit, bandit-sarif-formatter, pip-audit. The header
+# Python tools: semgrep, bandit, pip-audit. Bandit's native SARIF support
+# dependencies remain explicit because pip installs this closure with --no-deps.
+# The header
 # of requirements-tools.txt says how the closure was resolved and
 # `scripts/bump_pins.py requirements` writes its digests, reading each from
 # PyPI AND recomputing it from the downloaded wheel.
 #
-# semgrep's version (#outage 2026-08-18) is why the four tools keep their own
+# semgrep's version (#outage 2026-08-18) is why the three tools keep their own
 # ARGs above: the rules-corpus pin below is a commit SHA on a live branch, and
 # that pin is only meaningful paired with a known-compatible semgrep build --
 # an unconstrained upgrade would keep re-validating tomorrow's semgrep release
@@ -372,6 +373,7 @@ ENV TRIVY_CACHE_DIR=/opt/trivy-cache
 # DO NOT replace this with a placeholder SHA: #1272 did exactly that
 # (1234567890abcdef…), which does not exist and fails the checkout.
 ARG SEMGREP_RULES_REF=40b8c63f75dc7c22c8a77482d73bfb864b146f7e
+COPY tools-image/semgrep /opt/panopticon/semgrep-corrections
 RUN : "asset-refresh ${ASSET_REFRESH}" \
     && git init -q /opt/semgrep-rules \
     && git -C /opt/semgrep-rules remote add origin https://github.com/semgrep/semgrep-rules \
@@ -380,6 +382,8 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
     && rm -rf /opt/semgrep-rules/.git \
     && grep -rLE '^rules:' --include='*.yml' --include='*.yaml' /opt/semgrep-rules \
        | xargs -r rm -f \
+    && python3 /opt/panopticon/semgrep-corrections/apply_corrections.py \
+       --rules-root /opt/semgrep-rules \
     && chmod -R a+rX /opt/semgrep-rules
 
 # RustSec advisory DB for cargo-audit --no-fetch. Path matches the
@@ -492,6 +496,24 @@ WORKDIR /src
 # green because nothing ever executed the image. ~3s, and it runs in CI for
 # free since CI builds this same Dockerfile.
 RUN python3 /opt/panopticon/scripts/smoke_adapters.py
+
+# Exercise the corrected vendored files with Semgrep itself. The controls live
+# as inert JSON in the source tree and become .py/.yml only under /tmp in this
+# build layer, so raw repository scans never upload their deliberate findings.
+RUN set -euo pipefail \
+    && control_tmp="$(mktemp -d)" \
+    && trap 'rm -rf "${control_tmp}"' EXIT \
+    && python3 /opt/panopticon/semgrep-corrections/verify_controls.py \
+       materialize "${control_tmp}/source" \
+    && semgrep scan --quiet --metrics=off --disable-version-check --json \
+       --config /opt/semgrep-rules/python/lang/security/audit/insecure-file-permissions.yaml \
+       --config /opt/semgrep-rules/python/lang/security/audit/dangerous-subprocess-use-audit.yaml \
+       --config /opt/semgrep-rules/yaml/github-actions/security/pull-request-target-code-checkout.yaml \
+       --config /opt/semgrep-rules/python/lang/maintainability/return.yaml \
+       --config /opt/semgrep-rules/ai/ai-best-practices/hooks-path-traversal/hooks-path-traversal-python.yaml \
+       "${control_tmp}/source" > "${control_tmp}/results.json" \
+    && python3 /opt/panopticon/semgrep-corrections/verify_controls.py \
+       check "${control_tmp}/source" "${control_tmp}/results.json"
 
 ENTRYPOINT []
 CMD ["semgrep", "--version"]

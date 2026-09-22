@@ -135,6 +135,7 @@ kimi /panopticon --pr 217              # review PR 217 in an isolated worktree
 | `requirements-fixtures.txt` | Hash-pinned dependencies the fixture image installs (see DEVELOPMENT.md) |
 | `requirements-tools.txt` | Hash-pinned closure the scanner image installs, `--require-hashes --no-deps` |
 | `tools-image/node/` | `package.json` + `package-lock.json` the scanner image installs with `npm ci` |
+| `tools-image/semgrep/` | Five checked local corrections and engine controls for the pinned Semgrep rules bundle, including exact JSON parser source boundaries |
 
 ## Development
 

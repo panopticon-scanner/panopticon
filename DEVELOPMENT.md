@@ -360,8 +360,11 @@ The differences between the files are deliberate:
 
 - `.github/requirements-gate.txt` is installed with `--no-deps`, so it must list the COMPLETE
   closure (hence jsonschema's four runtime dependencies). A missing one fails loudly at import.
-- `requirements-tools.txt` is also installed with `--no-deps`, and its closure is 92 packages, so
-  it is not written by hand. Resolve it with
+- `requirements-tools.txt` is also installed with `--no-deps`, and its closure is 91 packages, so
+  it is not written by hand. Bandit's native SARIF formatter depends on `jschema-to-python` and
+  `sarif-om`; both remain explicit in the closure because `--no-deps` will not install them. A normal
+  `bump_pins.py requirements` refresh preserves every explicit pin. For a fresh dependency resolution,
+  include Bandit's `sarif` extra so the resolver retains both packages. Resolve the closure with
   `uv pip compile --generate-hashes --python-version 3.12 --python-platform x86_64-unknown-linux-gnu`
   (and again for `aarch64-unknown-linux-gnu`; the two resolve to the same set today), then re-run
   `bump_pins.py requirements --file requirements-tools.txt --write` so the digests are ones this

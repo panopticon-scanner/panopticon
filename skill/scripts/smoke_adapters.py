@@ -168,6 +168,12 @@ _validate_probe_registry(PROBES)
 SEMGREP_SCAN = ["semgrep", "scan", "--config", "/opt/semgrep-rules",
                 "--metrics=off", "--disable-version-check", "--sarif", "--quiet"]
 
+# Bandit ships its own SARIF formatter. The image used to install a second
+# distribution under the same entry-point name, making formatter selection
+# depend on metadata enumeration order. Exercise the real adapter format here,
+# after checking that its single registered provider is Bandit itself.
+BANDIT_SARIF_SCAN = ["bandit", "-q", "-f", "sarif"]
+
 # A tiny file with an obvious shell-injection sink, so the scan has real code to
 # load rules against. We do NOT assert on the finding COUNT (that would couple
 # the gate to the vendored ruleset's contents); we assert only that scan emits
@@ -175,6 +181,11 @@ SEMGREP_SCAN = ["semgrep", "scan", "--config", "/opt/semgrep-rules",
 _SEMGREP_FIXTURE = ("import subprocess\n"
                     "def run(cmd):\n"
                     "    subprocess.call(cmd, shell=True)\n")
+
+# Kept as data and written only below into a TemporaryDirectory: no vulnerable
+# Python fixture belongs in the source tree. B105 is stable and requires no
+# execution, imports, network, or environment access from the control source.
+_BANDIT_FIXTURE = 'password = "bandit-positive-control"\n'
 
 
 def check_writable(path, why):
@@ -221,8 +232,9 @@ def _read_capped(stream, cap=PROBE_OUTPUT_MAX_BYTES):
         kept += len(chunk)
 
 
-def run_probe(name, argv, popen=subprocess.Popen):
-    """Run one liveness probe under a byte cap and a wall-clock deadline.
+def _run_probe_captured(name, argv, popen=subprocess.Popen,
+                        accepted_returncodes=(0,), include_output_hint=True):
+    """Run one probe under a byte cap and deadline; return its captured head.
 
     Popen rather than subprocess.run because run() buffers the ENTIRE output
     before it returns -- there is no point at which a cap could be applied
@@ -233,10 +245,10 @@ def run_probe(name, argv, popen=subprocess.Popen):
         proc = popen(argv, stdout=subprocess.PIPE,  # nosec B603
                      stderr=subprocess.STDOUT)
     except FileNotFoundError:
-        return False, "%s: binary not found (%s)" % (name, argv[0])
+        return False, "%s: binary not found (%s)" % (name, argv[0]), b""
     except OSError as e:
-        return False, "%s: failed to exec %s (%s)" % (
-            name, argv[0], e.strerror or repr(e))
+        return (False, "%s: failed to exec %s (%s)" % (
+            name, argv[0], e.strerror or repr(e)), b"")
 
     timed_out = {"hit": False}
 
@@ -268,20 +280,28 @@ def run_probe(name, argv, popen=subprocess.Popen):
     # not finish cleanly first, so a probe that exits a hair before the deadline
     # is not misreported.
     if timed_out["hit"] and rc != 0:
-        return False, "%s: no response in %ds — a blocked call home or a lock wait" % (
-            name, PROBE_TIMEOUT)
+        return (False,
+                "%s: no response in %ds — a blocked call home or a lock wait" % (
+                    name, PROBE_TIMEOUT), b"")
     if truncated:
         print("smoke-adapters: %s emitted more than PROBE_OUTPUT_MAX_BYTES (%d) "
-              "on a version probe; kept the first %d bytes and discarded the rest"
+              "on a probe; kept the first %d bytes and discarded the rest"
               % (name, PROBE_OUTPUT_MAX_BYTES, PROBE_OUTPUT_MAX_BYTES),
               file=sys.stderr)
-    if rc != 0:
-        tail = out.decode("utf-8", "replace").strip().splitlines()
+    if rc not in accepted_returncodes:
+        tail = (out.decode("utf-8", "replace").strip().splitlines()
+                if include_output_hint else [])
         note = (" (output truncated at %d bytes)" % PROBE_OUTPUT_MAX_BYTES
                 if truncated else "")
-        return False, "%s: exited %d%s%s" % (
-            name, rc, (" — " + tail[-1][:160]) if tail else "", note)
-    return True, ""
+        return (False, "%s: exited %d%s%s" % (
+            name, rc, (" — " + tail[-1][:160]) if tail else "", note), out)
+    return True, "", out
+
+
+def run_probe(name, argv, popen=subprocess.Popen):
+    """Run one liveness probe under a byte cap and a wall-clock deadline."""
+    ok, msg, _out = _run_probe_captured(name, argv, popen=popen)
+    return ok, msg
 
 
 def check_semgrep_scan(runner=subprocess.run):
@@ -324,6 +344,104 @@ def check_semgrep_scan(runner=subprocess.run):
     return True, ""
 
 
+def _entry_point_distribution_name(entry_point):
+    """Return the normalized distribution name owning an entry point."""
+    distribution = getattr(entry_point, "dist", None)
+    name = getattr(distribution, "name", None)
+    if not name and distribution is not None:
+        try:
+            name = distribution.metadata["Name"]
+        except (KeyError, TypeError):
+            name = None
+    return str(name or "").lower().replace("_", "-")
+
+
+def check_bandit_sarif(entry_points=None, runtime_version=None, capture=None):
+    """Require Bandit's sole native SARIF formatter and real runtime metadata."""
+    import json
+    import tempfile
+
+    if entry_points is None:
+        from importlib import metadata
+        entry_points = metadata.entry_points(group="bandit.formatters")
+    sarif_entries = [entry for entry in entry_points
+                     if getattr(entry, "name", None) == "sarif"]
+    if len(sarif_entries) != 1:
+        return (False,
+                "bandit SARIF: expected exactly one 'bandit.formatters' "
+                "entry named 'sarif'; found %d" % len(sarif_entries))
+
+    entry = sarif_entries[0]
+    provider = _entry_point_distribution_name(entry)
+    target = getattr(entry, "value", None)
+    if provider != "bandit" or target != "bandit.formatters.sarif:report":
+        return (False,
+                "bandit SARIF: formatter must be Bandit's native "
+                "bandit.formatters.sarif:report; found provider=%r target=%r"
+                % (provider or None, target))
+
+    if runtime_version is None:
+        import bandit
+        runtime_version = bandit.__version__
+    if not isinstance(runtime_version, str) or not runtime_version:
+        return False, "bandit SARIF: installed Bandit runtime has no version"
+
+    if capture is None:
+        capture = _run_probe_captured
+    with tempfile.TemporaryDirectory() as d:
+        fixture = os.path.join(d, "probe.py")
+        with open(fixture, "w", encoding="utf-8") as fh:
+            fh.write(_BANDIT_FIXTURE)
+        ok, msg, output = capture(
+            "bandit SARIF scan", BANDIT_SARIF_SCAN + [fixture],
+            accepted_returncodes=(0, 1), include_output_hint=False)
+    if not ok:
+        return False, msg
+    if not output.strip():
+        return False, "bandit SARIF: scan produced empty output"
+    try:
+        document = json.loads(output)
+    except (TypeError, ValueError):
+        return False, "bandit SARIF: scan output is not valid JSON"
+    if not isinstance(document, dict):
+        return False, "bandit SARIF: scan output is not a SARIF object"
+    if document.get("version") != "2.1.0":
+        return False, "bandit SARIF: scan output is not SARIF 2.1.0"
+    runs = document.get("runs")
+    if not isinstance(runs, list) or not runs or not isinstance(runs[0], dict):
+        return False, "bandit SARIF: scan output has no valid run"
+    run = runs[0]
+    results = run.get("results")
+    if not isinstance(results, list) or not results:
+        return False, "bandit SARIF: positive-control scan has no findings"
+    rule_ids = []
+    for result in results:
+        if not isinstance(result, dict):
+            return False, "bandit SARIF: scan result is not an object"
+        rule_id = result.get("ruleId")
+        if not isinstance(rule_id, str) or not rule_id:
+            return False, "bandit SARIF: scan result has no string ruleId"
+        rule_ids.append(rule_id)
+        message = result.get("message")
+        if not isinstance(message, dict):
+            return False, "bandit SARIF: scan result has no message object"
+        text = message.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return False, "bandit SARIF: scan result has no nonempty message text"
+    if "B105" not in rule_ids:
+        return False, "bandit SARIF: positive-control B105 finding is missing"
+    tool = run.get("tool")
+    driver = tool.get("driver") if isinstance(tool, dict) else None
+    if not isinstance(driver, dict) or driver.get("name") != "Bandit":
+        return False, "bandit SARIF: run has no Bandit tool driver"
+    for field in ("version", "semanticVersion"):
+        if driver.get(field) != runtime_version:
+            return (False,
+                    "bandit SARIF: driver.%s=%r does not match runtime %r"
+                    % (field, driver.get(field), runtime_version))
+    return True, ""
+
+
 def main():
     failures = []
 
@@ -350,6 +468,13 @@ def main():
     if not ok:
         failures.append(msg)
 
+    # Formatter ownership and real emission are separate contracts: the first
+    # rejects duplicate providers, while the scan proves the selected native
+    # formatter reports the installed runtime version in raw SARIF.
+    ok, msg = check_bandit_sarif()
+    if not ok:
+        failures.append(msg)
+
     if failures:
         print("smoke-adapters: %d check(s) FAILED as uid %d\n"
               % (len(failures), os.getuid()), file=sys.stderr)
@@ -359,7 +484,7 @@ def main():
               "would ship adapters that silently produce nothing.", file=sys.stderr)
         return 1
 
-    print("smoke-adapters: %d tools + %d writable paths + semgrep scan OK as uid %d"
+    print("smoke-adapters: %d tools + %d writable paths + semgrep/Bandit SARIF scans OK as uid %d"
           % (len(PROBES), len(REQUIRED_WRITABLE), os.getuid()))
     return 0
 
