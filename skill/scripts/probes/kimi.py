@@ -362,9 +362,25 @@ def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
                 os.makedirs(os.path.dirname(p), exist_ok=True)
                 with open(p, "w", encoding="utf-8") as fh:
                     fh.write("")
+            # #1683: a directory grant also carries the hard links the driver
+            # found beneath it when it was issued, and a Grep/Glob that would
+            # traverse one is refused. That rule is LIST-based -- the hook
+            # never stats -- so the plant below is realism rather than the
+            # measurement, and a filesystem that refuses hard links leaves
+            # the two rows measuring exactly what they measure here.
+            scan_dir = os.path.realpath(os.path.join(sandbox, "scan"))
+            clean = os.path.join(scan_dir, "clean")
+            planted = os.path.join(scan_dir, "planted.py")
+            os.makedirs(clean, exist_ok=True)
+            try:
+                os.link(outside, planted)
+            except OSError:
+                pass
             scope_path = os.path.join(sandbox, "read-scope.json")
             with open(scope_path, "w", encoding="utf-8") as fh:
-                json.dump({"probe-cell": {"files": [inside], "dirs": [], "reads": []}}, fh)
+                json.dump({"probe-cell": {"files": [inside], "dirs": [], "reads": []},
+                           "probe-scan": {"files": [], "dirs": [scan_dir], "reads": [],
+                                          "hard_linked": [planted]}}, fh)
             rows = (
                 ("bound Read inside scope",
                  {"tool_name": "Read", "tool_input": {"path": inside}}, "probe-cell", True),
@@ -380,6 +396,10 @@ def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
                  {"tool_name": "Read", "tool_input": {"path": inside}}, None, False),
                 ("unknown entry Read",
                  {"tool_name": "Read", "tool_input": {"path": inside}}, "not-armed", False),
+                ("directory-scoped Grep of a clean subdirectory",
+                 {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": clean}}, "probe-scan", True),
+                ("directory-scoped Grep over a recorded hard link",
+                 {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": scan_dir}}, "probe-scan", False),
             )
             ok, detail = _guard_round_trip("read", scope_path, rows, runner=runner)
             if not ok:
