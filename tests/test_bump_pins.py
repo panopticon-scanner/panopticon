@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import traceback
 import unittest
 import urllib.request
 import urllib.response
@@ -88,6 +89,24 @@ class TestDownloadPolicy(unittest.TestCase):
                 old_transport.assert_not_called()
                 opener.open.assert_not_called()
                 self.assertNotIn("do-not-print", str(raised.exception))
+
+    def test_malformed_initial_url_traceback_does_not_disclose_userinfo(self):
+        secret = "FAKE_INITIAL_SECRET"
+        url = "https://operator:%s@pypi.org\uff0f.example/artifact" % secret
+        opener = mock.Mock()
+        with mock.patch.object(bp.urllib.request, "build_opener",
+                               return_value=opener):
+            try:
+                bp._get(url)
+            except Exception as exc:
+                caught = exc
+                rendered = "".join(traceback.format_exception(exc))
+            else:
+                self.fail("malformed credential-bearing URL was accepted")
+        self.assertNotIn(secret, rendered)
+        self.assertIsInstance(caught, RuntimeError)
+        self.assertIn("download URL is malformed", rendered)
+        opener.assert_not_called()
 
     def test_each_canonical_upstream_host_is_allowed(self):
         hosts = ("static.rust-lang.org", "pypi.org", "files.pythonhosted.org",
@@ -175,6 +194,24 @@ class TestDownloadPolicy(unittest.TestCase):
             self._get_through_canned_redirects(
                 first, transport.responses, transport=transport)
         self.assertNotIn("do-not-print", str(raised.exception))
+        self.assertEqual([first], [request.full_url for request in transport.requests])
+
+    def test_malformed_redirect_traceback_does_not_disclose_userinfo(self):
+        first = "https://pypi.org/packages/example"
+        secret = "FAKE_REDIRECT_SECRET"
+        target = "//operator:%s@pypi.org\uff0f.example/artifact" % secret
+        transport = _CannedTransport({first: (302, target, b"")})
+        try:
+            self._get_through_canned_redirects(
+                first, transport.responses, transport=transport)
+        except Exception as exc:
+            caught = exc
+            rendered = "".join(traceback.format_exception(exc))
+        else:
+            self.fail("malformed credential-bearing redirect was accepted")
+        self.assertNotIn(secret, rendered)
+        self.assertIsInstance(caught, RuntimeError)
+        self.assertIn("download URL is malformed", rendered)
         self.assertEqual([first], [request.full_url for request in transport.requests])
 
     def test_authenticated_cross_origin_redirect_is_refused_before_target_io(self):

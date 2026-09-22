@@ -82,8 +82,8 @@ def _download_origin(url: str) -> tuple[str, str, int]:
     """Validate a download URL and return its normalized HTTPS origin."""
     try:
         parsed = urllib.parse.urlsplit(url)
-    except ValueError as exc:
-        raise RuntimeError("download URL is malformed") from exc
+    except ValueError:
+        raise RuntimeError("download URL is malformed") from None
     if parsed.scheme.lower() != "https":
         raise RuntimeError("download URL must use HTTPS")
     if parsed.username is not None or parsed.password is not None:
@@ -92,8 +92,8 @@ def _download_origin(url: str) -> tuple[str, str, int]:
         raise RuntimeError("download URL has an invalid port")
     try:
         port = parsed.port
-    except ValueError as exc:
-        raise RuntimeError("download URL has an invalid port") from exc
+    except ValueError:
+        raise RuntimeError("download URL has an invalid port") from None
     host = parsed.hostname.lower() if parsed.hostname else None
     if host not in DOWNLOAD_HOSTS:
         raise RuntimeError("download host is not approved: %r" % host)
@@ -116,7 +116,11 @@ class _DownloadRedirectHandler(urllib.request.HTTPRedirectHandler):
             # urllib's default handler reports unsupported redirect URLs in an
             # HTTPError, including their userinfo. Validate first so even a
             # rejected Location cannot disclose embedded credentials.
-            _download_origin(urllib.parse.urljoin(req.full_url, location))
+            try:
+                redirect_url = urllib.parse.urljoin(req.full_url, location)
+            except (TypeError, ValueError):
+                raise RuntimeError("download URL is malformed") from None
+            _download_origin(redirect_url)
         return super().http_error_302(req, fp, code, msg, headers)
 
     http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
