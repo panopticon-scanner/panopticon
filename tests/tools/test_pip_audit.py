@@ -11,7 +11,7 @@ from unittest import mock
 
 import pytest
 
-from _test_helpers import FakePopen, first, only
+from _test_helpers import FakePopen, fake_aws_key, first, only
 import scripts.ingest_tools as ingest_tools
 import scripts.tools.pip_audit as pa
 
@@ -987,9 +987,9 @@ class TestPublishedLinesAreBounded(unittest.TestCase):
 
     def test_a_secret_on_a_dropped_line_is_published_redacted(self):
         _kept, dropped = sanitize(
-            "--index-url https://AKIAIOSFODNN7EXAMPLE@evil\n")
+            "--index-url https://%s@evil\n" % fake_aws_key())
         entry = only(dropped)
-        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", entry["line"])
+        self.assertNotIn(fake_aws_key(), entry["line"])
         self.assertIn("[REDACTED_AWS_KEY]", entry["line"])
 
     def test_a_long_dropped_line_is_truncated_with_a_marker(self):

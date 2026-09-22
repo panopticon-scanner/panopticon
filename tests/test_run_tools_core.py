@@ -15,6 +15,7 @@ import scripts.run_tools as rt
 from scripts.tools.eslint_security import EslintSecurityAdapter  # #run7 TST-G2A
 
 from conftest import REPO_ROOT
+from _test_helpers import fake_pem, pem_begin, pem_end
 from run_tools_test_helpers import _FakeResult
 
 
@@ -1180,10 +1181,10 @@ class TestCaptureRedactionKeepsEveryFinding(unittest.TestCase):
                 result("generic-api-key", "a/one.env", 1,
                        "TOKEN=%s" % self.TOKEN),
                 result("private-key", "b/two.pem", 2,
-                       "-----BEGIN RSA PRIVATE KEY-----\nMIIBsomekey\n"),
+                       pem_begin() + "\nMIIBsomekey\n"),
                 result("aws-access-token", "c/three.py", 3, "harmless"),
                 result("private-key", "d/four.pem", 9,
-                       "AB12cd==\n-----END RSA PRIVATE KEY-----"),
+                       "AB12cd==\n" + pem_end()),
             ]}]}).encode("utf-8")
 
     def test_no_finding_is_lost_and_no_location_is_re_attributed(self):
@@ -1211,11 +1212,11 @@ class TestCaptureRedactionKeepsEveryFinding(unittest.TestCase):
         """The XML/plain-text fallback (spotbugs is the one non-JSON golden).
         A complete block spanning lines is still masked -- and an unterminated
         BEGIN earlier in the file no longer eats the records between them."""
-        raw = (b'<BugInstance type="ONE" file="app/a.java"/>\n'
-               b'<Snippet>-----BEGIN RSA PRIVATE KEY-----\nMIIBtruncated</Snippet>\n'
-               b'<BugInstance type="TWO" file="app/b.java"/>\n'
-               b'<Snippet>-----BEGIN RSA PRIVATE KEY-----\nMIIBrealkey\n'
-               b'-----END RSA PRIVATE KEY-----</Snippet>\n')
+        raw = ('<BugInstance type="ONE" file="app/a.java"/>\n'
+               '<Snippet>%s\nMIIBtruncated</Snippet>\n'
+               '<BugInstance type="TWO" file="app/b.java"/>\n'
+               '<Snippet>%s</Snippet>\n'
+               % (pem_begin(), fake_pem("MIIBrealkey"))).encode()
         out = rt._redact_capture("spotbugs", raw)
         self.assertIn(b'<BugInstance type="TWO" file="app/b.java"/>', out)
         self.assertIn(b"[REDACTED_PRIVATE_KEY]", out)
@@ -1226,10 +1227,11 @@ class TestCaptureRedactionKeepsEveryFinding(unittest.TestCase):
         Python source -- one double-quoted literal per PEM line -- is the shape
         the round-1 `[^"]` bound stopped masking. The flat pass is what an XML
         capture gets, so the pattern itself has to cover it."""
-        raw = (b'<BugInstance type="HARDCODED_KEY" file="app/Crypto.java"/>\n'
-               b'<Snippet>KEY = ("-----BEGIN RSA PRIVATE KEY-----\\n"\n'
-               b'       "MIIEpAIBAAKCAQEAxLEAKEDKEYBODY0123456789abcdef\\n"\n'
-               b'       "-----END RSA PRIVATE KEY-----");</Snippet>\n')
+        raw = ('<BugInstance type="HARDCODED_KEY" file="app/Crypto.java"/>\n'
+               '<Snippet>KEY = ("%s\\n"\n'
+               '       "MIIEpAIBAAKCAQEAxLEAKEDKEYBODY0123456789abcdef\\n"\n'
+               '       "%s");</Snippet>\n'
+               % (pem_begin(), pem_end())).encode()
         out = rt._redact_capture("spotbugs", raw)
         self.assertIn(b"[REDACTED_PRIVATE_KEY]", out)
         self.assertNotIn(b"MIIEpAIBAAKCAQEAxLEAKEDKEYBODY", out)

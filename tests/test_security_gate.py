@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 
+import scripts.ingest_tools as ingest_tools
 import scripts.security_gate as gate
 
 
@@ -197,8 +198,21 @@ class TestSecurityGate(unittest.TestCase):
 
 
 def _vendored_sarif(level="error", uri="app/vendor/patched_auth.rb"):
+    """One suppressible finding: a HIGH hardcoded credential under *uri*.
+
+    #1578 owner ruling 2026-09-22 (policy C): the redteam gate re-admits a
+    suppressed finding only when it is CRITICAL or SECRET-CLASS, so the rule
+    now carries the CWE its message has always described. Every test below is
+    about WHICH DROP CLASS reaches the gate, not about the severity rule --
+    they need a finding that is gate-eligible once it gets there, and a
+    credential is what a "planted payload under `vendor/`" has always meant
+    here. The severity rule itself is pinned by
+    `TestPolicyCNarrowsTheRedteamGate`.
+    """
     return {"version": "2.1.0", "runs": [{
-        "tool": {"driver": {"name": "semgrep", "rules": []}},
+        "tool": {"driver": {"name": "semgrep",
+                            "rules": [{"id": "test.rule",
+                                       "properties": {"tags": ["CWE-798"]}}]}},
         "results": [{"ruleId": "test.rule", "level": level,
                      "message": {"text": "hardcoded credential"},
                      "locations": [{"physicalLocation": {
@@ -278,6 +292,364 @@ class TestVendoredSuppressionAndTheGate(unittest.TestCase):
                     tools, manifest, security_mode=mode)
                 self.assertEqual(len(high), 1, mode)
                 self.assertEqual(suppressed, [], mode)
+
+
+def _secret_sarif(tool="semgrep", uri="app/vendor/patched_auth.rb", cwe=None):
+    """One hardcoded-credential result under *uri*, optionally CWE-tagged.
+
+    `sarif_to_findings` scrapes the CWE out of the rule's `tags`, which is
+    exactly the channel `gates_when_suppressed` reads.
+
+    A SECRET adapter's result carries no `level`, because real gitleaks output
+    carries none (fix round 1, review C1: setting `"level": "error"` here was a
+    field the tool never emits, and it hid the fact that every real gitleaks
+    finding arrived MEDIUM). `sarif_utils.SECRET_ADAPTERS` is what grades it,
+    not the fixture -- and the end-to-end proof of that runs off the committed
+    capture in `TestRealGitleaksOutputReachesTheGate` below.
+    """
+    rules = ([{"id": "test.rule", "properties": {"tags": [cwe]}}] if cwe else [])
+    result = {"ruleId": "test.rule",
+              "message": {"text": "hardcoded credential"},
+              "locations": [{"physicalLocation": {
+                  "artifactLocation": {"uri": uri},
+                  "region": {"startLine": 1}}}]}
+    if tool not in ingest_tools.SECRET_ADAPTERS:
+        result["level"] = "error"
+    return {"version": "2.1.0", "runs": [{
+        "tool": {"driver": {"name": tool, "rules": rules}},
+        "results": [result]}]}
+
+
+def _critical_osv(uri="app/vendor/package-lock.json"):
+    """One CRITICAL (CVSS 9.8) dependency finding whose location is *uri*.
+
+    The SARIF path cannot express CRITICAL at all (`LEVEL_TO_SEV` tops out at
+    HIGH for `level: error`), so the CRITICAL arm of policy C needs a
+    CVSS-scored adapter.
+    """
+    return {"results": [{"source": {"path": uri}, "packages": [{
+        "package": {"name": "left-pad", "version": "1.0.0", "ecosystem": "npm"},
+        "groups": [{"ids": ["GHSA-rce"], "max_severity": "9.8"}],
+        "vulnerabilities": [{"id": "GHSA-rce", "summary": "remote code execution"}]}]}]}
+
+
+def _lint_sarif(uri="app/vendor/util.js"):
+    """A HIGH with no secret evidence: a scanner OPINION about bundled code.
+
+    Its own helper because the payload has to match the claim (review M3):
+    `_secret_sarif`'s message is "hardcoded credential", so a test named "a
+    lint finding no longer gates" reading THAT pinned the opposite of what it
+    meant. CWE-1321 (prototype pollution) is a real CWE and deliberately not a
+    credential one, so this also exercises the non-secret-CWE path end to end.
+    """
+    return {"version": "2.1.0", "runs": [{
+        "tool": {"driver": {"name": "semgrep", "rules": [
+            {"id": "detect-object-injection",
+             "properties": {"tags": ["security", "CWE-1321"]}}]}},
+        "results": [{"ruleId": "detect-object-injection", "level": "error",
+                     "message": {"text": "variable assigned to an object injection sink"},
+                     "locations": [{"physicalLocation": {
+                         "artifactLocation": {"uri": uri},
+                         "region": {"startLine": 1}}}]}]}]}
+
+
+def _below_high_secret_sarif(uri="app/vendor/legacy.py"):
+    """A secret-class finding its adapter graded BELOW the gate floor.
+
+    bandit's B105 at `level: warning` is MEDIUM and carries CWE-259 -- the
+    exact shape the schema-parity fixture uses, and the one that proves the
+    #1578 rule is a floor of its own: a secret-class finding gates regardless
+    of the grade the tool put on it (fix round 1, ruling 2). Before that
+    ruling `evaluate` re-applied `GATE_SEVERITIES` to the policy-admitted set
+    and threw this one away after admitting it.
+    """
+    return {"version": "2.1.0", "runs": [{
+        "tool": {"driver": {"name": "bandit", "rules": [
+            {"id": "B105", "properties": {"tags": ["security", "CWE-259"]}}]}},
+        "results": [{"ruleId": "B105", "level": "warning",
+                     "message": {"text": "possible hardcoded password"},
+                     "locations": [{"physicalLocation": {
+                         "artifactLocation": {"uri": uri},
+                         "region": {"startLine": 1}}}]}]}]}
+
+
+class TestPolicyCNarrowsTheRedteamGate(unittest.TestCase):
+    """#1578 owner ruling 2026-09-22 (policy C): what redteam re-admits.
+
+    The first cut of the redteam gate counted the WHOLE suppressed set on
+    severity alone (option B), so a vendor-heavy tree hard-FAILed a merge on
+    bundled-library lint noise -- the noise the suppression exists to keep out
+    (calibration-5/solidus: 592 of eslint-security's 623 messages were one
+    rule firing on jQuery under `vendor/`). C re-admits only what an operator
+    would want a merge blocked for: a CRITICAL, or a secret-class finding.
+
+    This gate and the driver's own report gate ask the one predicate
+    (`ingest_tools.gates_when_suppressed`), so the two verdicts cannot diverge.
+    """
+
+    def _repo(self, root, payloads):
+        """A tools dir holding `{tool: parsed-output}`, plus its manifest."""
+        tools = os.path.join(root, "tools")
+        os.makedirs(tools)
+        for tool, doc in payloads.items():
+            suffix = "json" if tool == "osv-scanner" else "sarif"
+            with open(os.path.join(tools, "%s.%s" % (tool, suffix)), "w",
+                      encoding="utf-8") as fh:
+                json.dump(doc, fh)
+        manifest_path = os.path.join(root, "manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump({"selected": sorted(payloads), "produced": sorted(payloads),
+                       "missing": []}, fh)
+        return tools, manifest_path
+
+    def _gate(self, payloads, mode="redteam"):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, payloads)
+            _f, _d, failures, high, suppressed = gate.evaluate(
+                tools, manifest, security_mode=mode)
+        self.assertEqual(failures, [])
+        return high, suppressed
+
+    def test_a_suppressed_high_lint_finding_no_longer_gates(self):
+        # The B behaviour this ruling reverses: a HIGH with no secret evidence
+        # is a scanner opinion about bundled code, and it may not block a merge.
+        high, suppressed = self._gate({"semgrep": _lint_sarif()})
+        self.assertEqual(high, [])
+        self.assertEqual([f["suppressed"] for f in suppressed], ["vendor"])
+
+    def test_a_suppressed_critical_gates(self):
+        high, suppressed = self._gate({"osv-scanner": _critical_osv()})
+        self.assertEqual([f["severity"] for f in high], ["CRITICAL"])
+        self.assertEqual([f["suppressed"] for f in suppressed], ["vendor"])
+
+    def test_a_suppressed_gitleaks_high_gates(self):
+        high, _s = self._gate({"gitleaks": _secret_sarif(tool="gitleaks")})
+        self.assertEqual(len(high), 1)
+
+    def test_a_suppressed_secret_cwe_gates_whichever_adapter_found_it(self):
+        high, _s = self._gate({"semgrep": _secret_sarif(cwe="CWE-798")})
+        self.assertEqual(len(high), 1)
+
+    def test_standard_mode_gates_none_of_them(self):
+        # Byte-identical to before the ruling: standard keeps every name-based
+        # suppression, and the count is disclosed beside the gate line.
+        for name, payload in (("lint", {"semgrep": _lint_sarif()}),
+                              ("critical", {"osv-scanner": _critical_osv()}),
+                              ("gitleaks", {"gitleaks": _secret_sarif(tool="gitleaks")})):
+            with self.subTest(payload=name):
+                high, suppressed = self._gate(payload, mode="standard")
+                self.assertEqual(high, [])
+                self.assertEqual(len(suppressed), 1)
+
+    def test_an_unsuppressed_lint_high_still_gates_in_both_modes(self):
+        # The oracle: policy C narrows the SUPPRESSED set and nothing else.
+        for mode in ("standard", "redteam"):
+            with self.subTest(mode=mode):
+                high, suppressed = self._gate(
+                    {"semgrep": _lint_sarif(uri="app/lib/util.js")},
+                    mode=mode)
+                self.assertEqual(len(high), 1)
+                self.assertEqual(suppressed, [])
+
+    def test_the_gate_line_says_how_many_it_counted_and_how_many_it_withheld(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, {
+                "semgrep": _secret_sarif(),
+                "gitleaks": _secret_sarif(tool="gitleaks")})
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest,
+                                "--security", "redteam"])
+        line = buf.getvalue()
+        self.assertEqual(rc, 1)
+        self.assertIn("2 suppressed by directory name", line)
+        self.assertIn("1 GATED", line)
+        self.assertIn("1 disclosed only", line)
+
+
+GOLDEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "goldens", "tool-raw")
+
+
+def _relocated_gitleaks_golden(prefix):
+    """The committed gitleaks capture with its hit paths moved under *prefix*.
+
+    REAL output, per tests/goldens/tool-raw/README.md: the rules, the absent
+    `level`, the message shapes and the envelope are all the scanner's own.
+    Only `artifactLocation.uri` moves, and it has to: the capture's own hits sit
+    in `.env` and under `.panopticon/`, and the run-artifact exclusion drops
+    those before the name-based suppression this test is about can see them.
+    """
+    with open(os.path.join(GOLDEN_DIR, "gitleaks.raw"), encoding="utf-8") as fh:
+        sarif = json.load(fh)
+    for n, res in enumerate(sarif["runs"][0]["results"]):
+        (res["locations"][0]["physicalLocation"]["artifactLocation"]
+         ["uri"]) = "%s/leaked%d.py" % (prefix, n)
+    return sarif
+
+
+class TestRealGitleaksOutputReachesTheGate(unittest.TestCase):
+    """#1578 fix round 1 (review C1), end to end on the committed capture.
+
+    The review reproduced two committed API keys and a private key under
+    `app/vendor/`, under `--security redteam`, with the gate printing "3 GATED"
+    and exiting 0 -- because real gitleaks SARIF states no `level`, so every
+    one of them arrived MEDIUM and `GATE_SEVERITIES` threw them away directly
+    after the policy admitted them. The same capture at a NON-vendored path
+    exposed the larger, pre-existing hole behind it: this gate could not fail
+    on any gitleaks finding at all.
+
+    Both halves are now closed -- `sarif_utils.SECRET_ADAPTERS` grades them at
+    the parse, and `evaluate` no longer re-applies the floor to the
+    policy-admitted set -- and both are pinned here rather than on a fixture
+    that supplies the field the tool omits.
+    """
+
+    def _repo(self, root, sarif):
+        tools = os.path.join(root, "tools")
+        os.makedirs(tools)
+        with open(os.path.join(tools, "gitleaks.sarif"), "w", encoding="utf-8") as fh:
+            json.dump(sarif, fh)
+        manifest_path = os.path.join(root, "manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump({"selected": ["gitleaks"], "produced": ["gitleaks"],
+                       "missing": []}, fh)
+        return tools, manifest_path
+
+    def test_standard_mode_fails_on_committed_secrets_at_a_project_path(self):
+        # The pre-existing hole, closed: not a suppression question at all --
+        # these are ordinary kept findings, and before the severity
+        # normalization the gate reported 0 HIGH/CRITICAL and exited 0.
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(
+                root, _relocated_gitleaks_golden("app/config"))
+            findings, _d, failures, high, suppressed = gate.evaluate(tools, manifest)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
+        self.assertEqual(failures, [])
+        self.assertEqual(len(findings), 3)
+        self.assertEqual(suppressed, [])
+        self.assertEqual(len(high), 3, "the gate cannot fail on a leaked secret")
+        self.assertEqual(rc, 1)
+        self.assertIn("3 HIGH/CRITICAL", buf.getvalue())
+
+    def test_redteam_gates_them_under_vendor_and_the_count_is_what_gated(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(
+                root, _relocated_gitleaks_golden("app/vendor"))
+            findings, _d, failures, high, suppressed = gate.evaluate(
+                tools, manifest, security_mode="redteam")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest,
+                                "--security", "redteam"])
+        line = buf.getvalue()
+        self.assertEqual(failures, [])
+        self.assertEqual(findings, [])                       # none kept
+        self.assertEqual([f["suppressed"] for f in suppressed], ["vendor"] * 3)
+        self.assertEqual(len(high), 3)
+        self.assertEqual(rc, 1, "3 GATED beside rc=0 is the defect")
+        # The printed count is what REACHED the gate, not what the policy
+        # admitted -- the two differed by construction before this fix.
+        self.assertIn("3 GATED", line)
+        self.assertIn("0 disclosed only", line)
+
+    def test_standard_mode_still_suppresses_the_same_capture(self):
+        # The mode is still the only thing that re-admits them: the severity
+        # normalization must not turn a suppressed secret into a standard-mode
+        # gate failure.
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(
+                root, _relocated_gitleaks_golden("app/vendor"))
+            findings, _d, _f, high, suppressed = gate.evaluate(tools, manifest)
+        self.assertEqual(findings, [])
+        self.assertEqual(high, [])
+        self.assertEqual(len(suppressed), 3)
+
+
+class TestThePolicyIsTheFloorForTheSuppressedSet(unittest.TestCase):
+    """#1578 fix round 1, ruling 2: what the predicate admits, the gate counts.
+
+    `evaluate` used to build one list and then re-apply `GATE_SEVERITIES` to
+    all of it, so a secret-class finding whose adapter graded it below HIGH was
+    admitted by the policy and dropped by the next line -- and `main` printed
+    it as GATED anyway. Passing `gates_when_suppressed` IS the floor for the
+    suppressed set: a CRITICAL clears the severity test regardless, and a
+    secret-class finding gates whatever grade its tool put on it.
+    """
+
+    def _repo(self, root, payloads):
+        tools = os.path.join(root, "tools")
+        os.makedirs(tools)
+        for tool, doc in payloads.items():
+            with open(os.path.join(tools, "%s.sarif" % tool), "w",
+                      encoding="utf-8") as fh:
+                json.dump(doc, fh)
+        manifest_path = os.path.join(root, "manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump({"selected": sorted(payloads), "produced": sorted(payloads),
+                       "missing": []}, fh)
+        return tools, manifest_path
+
+    def test_a_secret_class_medium_gates_under_redteam(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, {"bandit": _below_high_secret_sarif()})
+            _f, _d, failures, high, suppressed = gate.evaluate(
+                tools, manifest, security_mode="redteam")
+        self.assertEqual(failures, [])
+        self.assertEqual([f["severity"] for f in suppressed], ["MEDIUM"])
+        self.assertEqual(len(high), 1,
+                         "the policy admitted it and the floor threw it away")
+
+    def test_the_same_medium_is_not_gated_in_standard_mode(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, {"bandit": _below_high_secret_sarif()})
+            findings, _d, _f, high, suppressed = gate.evaluate(tools, manifest)
+        self.assertEqual(findings, [])
+        self.assertEqual(high, [])
+        self.assertEqual(len(suppressed), 1)
+
+    def test_an_unsuppressed_medium_still_does_not_gate_in_either_mode(self):
+        # The floor still applies to everything the gate KEEPS: policy C is
+        # about the suppressed set, and only about it.
+        for mode in ("standard", "redteam"):
+            with self.subTest(mode=mode):
+                with tempfile.TemporaryDirectory() as root:
+                    tools, manifest = self._repo(
+                        root, {"bandit": _below_high_secret_sarif(
+                            uri="app/lib/legacy.py")})
+                    findings, _d, _f, high, suppressed = gate.evaluate(
+                        tools, manifest, security_mode=mode)
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(suppressed, [])
+                self.assertEqual(high, [], mode)
+
+    def test_the_printed_count_equals_what_reached_the_gate(self):
+        # A mixed tree: one secret-class MEDIUM and one lint HIGH, both under
+        # `vendor/`. The line must say 1 GATED / 1 disclosed only, and the
+        # verdict must rest on exactly that one.
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, {
+                "bandit": _below_high_secret_sarif(),
+                "semgrep": _lint_sarif()})
+            _f, _d, _fail, high, suppressed = gate.evaluate(
+                tools, manifest, security_mode="redteam")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest,
+                                "--security", "redteam"])
+        line = buf.getvalue()
+        self.assertEqual(len(suppressed), 2)
+        self.assertEqual([f["severity"] for f in high], ["MEDIUM"])
+        self.assertEqual(rc, 1)
+        self.assertIn("2 suppressed by directory name", line)
+        self.assertIn("1 GATED", line)
+        self.assertIn("1 disclosed only", line)
 
 
 class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):

@@ -17,6 +17,26 @@ PREFIX = {"semgrep": "SG", "trivy": "TR", "gitleaks": "GL", "bandit": "BN", "gos
 CWE_TAG = re.compile(r"(CWE-\d+)", re.IGNORECASE)
 CVE_TAG = re.compile(r"(CVE-\d{4}-\d{4,})", re.IGNORECASE)
 
+# #1578 (SEC-G2B), owner ruling 2026-09-22 -- policy C, fix round 1. Adapters
+# whose findings are secrets BY CONSTRUCTION: a hit is a credential someone
+# committed, not an opinion about code. TWO rules read this one set, which is
+# why it is a named constant and not a literal in either of them.
+#   1. `sarif_to_findings` below grades them HIGH. Real gitleaks SARIF carries
+#      NO `level` on its results and no `defaultConfiguration` on its rules
+#      (tests/goldens/tool-raw/gitleaks.raw), so `LEVEL_TO_SEV`'s "warning"
+#      default graded every committed credential MEDIUM -- below
+#      `security_gate.GATE_SEVERITIES`, which meant the CI gate could not fail
+#      on ANY gitleaks finding, suppressed or not. A leaked secret has no
+#      lesser grade, and a grade the scanner never stated is not one.
+#   2. `ingest_tools.gates_when_suppressed` re-admits one of theirs to the
+#      redteam gate even when it sits under a suppressed directory name.
+# Defined here, not beside that predicate, because this module exists to break
+# the cycle back to `ingest_tools` -- and two copies of the list would drift.
+SECRET_ADAPTERS = frozenset({"gitleaks"})
+# The SARIF toolComponent name a CWE taxonomy uses. gosec names its taxonomy
+# "CWE" and puts a BARE number under it, which is why `CWE_TAG` cannot see it.
+CWE_TAXONOMY = "CWE"
+
 # Bandit rules that are noise floor, not signal, on any codebase:
 #   B101 assert-used         - fires on every pytest/unittest assertion
 #   B404 import-subprocess    - flags the mere import of the subprocess module
@@ -104,6 +124,49 @@ def rules_index(run):
 _rules_index = rules_index
 
 
+def relationship_cwes(rule):
+    """CWE ids a SARIF rule carries in `relationships[]` instead of in its tags.
+
+    #1578 fix round 1 (review I1). `sarif_to_findings` scrapes CWEs out of the
+    rule id, the rule's `properties.tags` and the result's `properties`, which
+    covers bandit (`external/cwe/cwe-259`) and semgrep (`CWE-798: ...`) and
+    missed gosec entirely: gosec's tags are `["security", "HIGH"]` and the CWE
+    sits at `relationships[].target.id` as a bare `"798"` under the `CWE`
+    toolComponent. Every gosec finding therefore reached the report with no
+    citation at all, and G101 ("Potential hardcoded credentials", CWE-798) was
+    invisible to the secret-class gate rule -- on the one ecosystem whose
+    `vendor/` is THE canonical vendoring directory, which is #1578's own
+    scenario.
+
+    Tolerant by construction, like the rest of this parser: anything that is
+    not a `{target: {id, toolComponent: {name: "CWE"}}}` with a numeric id
+    contributes nothing, and no shape raises -- including a SCALAR
+    `relationships` (fix round 2), which `or []` let through to a `TypeError`
+    that `sarif_to_findings`'s per-result `except` then swallowed by dropping
+    every result citing that rule with one `skipping result` line.
+    """
+    out: list[str] = []
+    if not isinstance(rule, dict):
+        return out
+    relationships = rule.get("relationships")
+    for rel in (relationships if isinstance(relationships, list) else []):
+        target = rel.get("target") if isinstance(rel, dict) else None
+        if not isinstance(target, dict):
+            continue
+        component = target.get("toolComponent")
+        if not isinstance(component, dict) or component.get("name") != CWE_TAXONOMY:
+            continue
+        ident = target.get("id")
+        if isinstance(ident, bool) or not isinstance(ident, (str, int)):
+            continue
+        text = str(ident).strip()
+        if text.upper().startswith("CWE-"):
+            text = text[len("CWE-"):]
+        if text.isdigit():
+            out.append("CWE-%s" % text)
+    return out
+
+
 def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
     # SARIF in, NARF out. This is the second of the two envelope builders (see
     # make_finding); it emits a deliberately leaner envelope because a SARIF
@@ -121,6 +184,14 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
             try:
                 level = str(res.get("level", "warning")).lower()
                 sev = LEVEL_TO_SEV.get(level, "INFO")
+                if tool_name in SECRET_ADAPTERS:
+                    # See SECRET_ADAPTERS: gitleaks states no `level` at all,
+                    # so the map's default was grading a committed credential
+                    # MEDIUM and the merge gate could not fail on one. This can
+                    # only ever RAISE a grade -- `LEVEL_TO_SEV` tops out at
+                    # HIGH -- so an adapter that does say `level: error` is
+                    # unaffected, and nothing here can lower a scanner's word.
+                    sev = "HIGH"
                 # #run10 COD-C3A: a location-less SARIF result is VALID (a
                 # config-wide or project-level finding from semgrep/bandit/trivy/
                 # gitleaks/gosec -- all of which route through this one shared
@@ -142,7 +213,10 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
                 rule = rules.get(res.get("ruleId"), {})
                 tags = " ".join(str(t) for t in (rule.get("properties", {}).get("tags") or []))
                 blob = " ".join([res.get("ruleId", ""), tags, json.dumps(res.get("properties", {}))])
-                cwes = sorted(set(m.group(1).upper() for m in CWE_TAG.finditer(blob)))
+                # #1578 I1: the tag scrape, UNION the rule's CWE taxonomy
+                # relationships -- gosec files its CWE only in the second.
+                cwes = sorted(set(m.group(1).upper() for m in CWE_TAG.finditer(blob))
+                              | set(relationship_cwes(rule)))
                 cves = sorted(set(m.group(1).upper() for m in CVE_TAG.finditer(blob)))
                 cites = {}
                 if cwes:

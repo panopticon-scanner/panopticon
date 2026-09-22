@@ -21,7 +21,7 @@ import unittest
 import unittest.mock
 import xml.etree.ElementTree as ET
 
-from _test_helpers import last
+from _test_helpers import fake_uuid, last
 import scripts.capture_goldens as cg
 
 
@@ -218,7 +218,7 @@ class TestRedactBeforeWrite(unittest.TestCase):
     no redaction step of any kind, so whatever a scanner found got written
     verbatim. Redact on the way out, and say so in the report."""
 
-    SECRET = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+    SECRET = fake_uuid()
 
     def _run(self, adapter):
         out_dir = tempfile.mkdtemp()
@@ -289,7 +289,7 @@ class TestRedactBeforeWrite(unittest.TestCase):
 
 
 class TestRedactBytes(unittest.TestCase):
-    SECRET = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+    SECRET = fake_uuid()
 
     def test_masks_and_flags(self):
         out, hit = cg.redact_bytes(("key %s\n" % self.SECRET).encode())

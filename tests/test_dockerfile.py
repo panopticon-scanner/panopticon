@@ -1,9 +1,12 @@
 import json
 import os
 import re
+import shlex
 import unittest
 
 import yaml
+
+from _test_helpers import fake_aws_key
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 
@@ -541,3 +544,49 @@ class TestNoFetchIsPipedIntoAShell(unittest.TestCase):
                 "%s pipes a network fetch straight into an interpreter; "
                 "download to a file and `sha256sum -c` it first:\n%s"
                 % (name, "\n".join("  line %d: %s" % h for h in hits)))
+
+
+class TestTheGosecProbeWritesAHardcodedCredential(unittest.TestCase):
+    """#1578 fix round 2: the probe's AWS key is split, and must stay exact.
+
+    gitleaks scans this repository's own tree in CI, and since #1578 a secret
+    adapter's findings are HIGH -- so the `AKIA`+16 literal in the gosec verify
+    probe was reporting panopticon's own image recipe as a committed
+    credential. The literal is now two adjacent single-quoted shell words,
+    which the shell concatenates with nothing between them.
+
+    That is only safe if the Go file comes out byte-identical: the probe exists
+    to prove gosec can READ Go source, and it proves it by requiring a G101
+    hit. A split that inserted so much as a quote would leave the build green
+    on a file gosec no longer flags -- or red for the wrong reason. So this
+    parses the RUN line the way a shell would and pins the produced source.
+    """
+
+    PROBE_GO = 'package verify\\n\\nvar token = "%s_hardcoded_secret_value"\\n'
+
+    def setUp(self):
+        self.text = _read_dockerfile()
+
+    def _printf_argv(self):
+        """The probe's `printf` line, split the way `/bin/sh` would."""
+        lines = [ln for ln in self.text.splitlines()
+                 if "printf 'package verify" in ln]
+        self.assertEqual(len(lines), 1,
+                         "expected exactly one gosec-probe printf: %s" % lines)
+        command = lines[0].strip().removeprefix("&& ").removesuffix(" \\").strip()
+        return shlex.split(command)
+
+    def test_the_produced_go_source_is_byte_identical(self):
+        self.assertEqual(self._printf_argv(),
+                         ["printf", self.PROBE_GO % fake_aws_key()])
+
+    def test_the_key_literal_is_not_spelled_out_anywhere_in_the_file(self):
+        # The half that would have failed before the split. Whole-file, not
+        # just that line: the same literal must not creep back into a comment.
+        self.assertNotIn(fake_aws_key(), self.text)
+
+    def test_the_probe_still_asserts_gosec_found_something(self):
+        # Non-vacuity for the two above: a byte-identical Go file proves
+        # nothing if the build stopped checking that gosec reported an issue.
+        self.assertIn("issues = len(d.get('Issues') or [])", self.text)
+        self.assertIn("files > 0 and issues > 0", self.text)

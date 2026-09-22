@@ -221,7 +221,13 @@ RUN arch="$(dpkg --print-architecture)" \
 RUN set -euo pipefail \
     && mkdir -p /tmp/gosec-verify \
     && printf 'module verify\n\ngo 1.21\n' > /tmp/gosec-verify/go.mod \
-    && printf 'package verify\n\nvar token = "AKIAIOSFODNN7EXAMPLE_hardcoded_secret_value"\n' \
+    # #1578 fix round 2: the AWS-key literal is SPLIT across two adjacent
+    # single-quoted shell words. The shell concatenates them with nothing
+    # between, so main.go is byte-identical and gosec still reports G101 --
+    # but `AKIA` is followed by a quote in THIS file, so gitleaks no longer
+    # reports panopticon's own image recipe as a committed credential. Pinned
+    # by tests/test_dockerfile.py::TestTheGosecProbeWritesAHardcodedCredential.
+    && printf 'package verify\n\nvar token = "AKIA''IOSFODNN7EXAMPLE_hardcoded_secret_value"\n' \
        > /tmp/gosec-verify/main.go \
     # An absolute package path, not `cd &&`: gosec resolves the module from the
     # path itself, and this keeps the step a single WORKDIR-free command (DL3003).

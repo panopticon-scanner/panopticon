@@ -10,6 +10,7 @@ import json
 import os
 import sys
 
+from scripts import evidence as evidence_mod
 from scripts import groups_schema
 from scripts.tools import ADAPTERS
 from scripts.tools.base import strip_ansi, target_root_cv
@@ -19,6 +20,7 @@ from scripts.tools.sarif_utils import (
     LEVEL_TO_SEV,
     NOISE_RULES,
     PREFIX,
+    SECRET_ADAPTERS,
     is_fixture_path,
     is_test_path,
     norm_uri,
@@ -50,6 +52,9 @@ __all__ = [
     "ingest_dir_detailed",
     "suppressed_counts",
     "suppression_class",
+    "gates_when_suppressed",
+    "SECRET_ADAPTERS",
+    "SECRET_CWES",
     "sarif_to_findings",
 ]
 
@@ -356,6 +361,111 @@ def suppression_class(segment):
     if segment in _VENV_NAME_SEGMENTS:
         return "virtualenv-by-name"
     return "vendored"
+
+
+# #1578 (SEC-G2B), owner ruling 2026-09-22 -- policy C. The other half of
+# "secret-class" lives in `sarif_utils.SECRET_ADAPTERS` (imported above): the
+# adapters whose output is credentials by construction, which that module also
+# grades HIGH at the parse. It is defined there because this module imports it
+# and not the other way round, and one list beats two that drift.
+#
+# This half is provenance-free: the CWEs that make ANY adapter's finding
+# secret-class --
+# CWE-798 hardcoded credentials, CWE-259 hardcoded password, CWE-321 hardcoded
+# cryptographic key, CWE-522 insufficiently protected credentials.
+SECRET_CWES = frozenset({"CWE-798", "CWE-259", "CWE-321", "CWE-522"})
+
+
+# The two fields `evidence.tool_rule_id` reads, each with `(x or {}).get(...)`.
+_RULE_ID_FIELDS = ("tool_evidence", "provenance")
+
+
+def _rule_id(finding):
+    """`evidence.tool_rule_id`, made TOTAL (#1578 fix round 1, review M1).
+
+    That helper reads `(finding.get("tool_evidence") or {}).get("rule_id")` and
+    the same for `provenance`, so a finding whose either field is a STRING
+    raises `AttributeError` instead of answering. No caller can reach this
+    module with such a finding today -- both gates take findings straight from
+    `make_finding` / `sarif_to_findings`, and the driver path additionally runs
+    `repair_finding` -- but `gates_when_suppressed` promises totality, and a
+    merge gate is not the place to discover the promise was narrower than it
+    read. Unreadable fields are dropped, never coerced: the shared helper still
+    answers, using whichever of the two is a mapping.
+    """
+    readable = {k: v for k, v in finding.items()
+                if k not in _RULE_ID_FIELDS or isinstance(v, dict)}
+    return evidence_mod.tool_rule_id(readable) or ""
+
+
+def _cwe_tags(finding):
+    """Every CWE this finding carries, from both places an adapter puts one.
+
+    `citations.cwe` is where `sarif_utils.sarif_to_findings` files the tags it
+    scraped off the rule -- including, since fix round 1, gosec's
+    `relationships` channel; the dependency adapters cite nothing and carry the
+    rule in `tool_evidence.rule_id` (`evidence.tool_rule_id`), where a rule
+    named for its CWE is the only tag there is.
+
+    BOTH shapes of `citations.cwe` are read (review I2). `report-schema.json`
+    pins the item as `anyOf: [string, object]`, `citations.enrich_citations`
+    rewrites the list into `{"id", "name", "verified"}` objects on the way to
+    the report, and both renderers already handle either. The gated-suppressed
+    set bypasses enrichment today, so only the string shape is reachable -- and
+    that is exactly the hazard: reading one shape is a security rule that turns
+    itself off, silently, the day someone routes that set through enrichment.
+    """
+    cites = finding.get("citations")
+    raw = cites.get("cwe") if isinstance(cites, dict) else None
+    tags = []
+    for entry in (raw if isinstance(raw, list) else []):
+        ident = entry.get("id") if isinstance(entry, dict) else entry
+        if isinstance(ident, str):
+            tags.append(ident.upper())
+    tags.extend(m.group(1).upper() for m in CWE_TAG.finditer(_rule_id(finding)))
+    return tags
+
+
+def gates_when_suppressed(finding):
+    """Does this NAME-suppressed finding still gate under `--security redteam`?
+
+    #1578 owner ruling 2026-09-22, policy C, and the ONE definition of it: the
+    driver's own report gate (`synth/verdicts`) and the CI gate
+    (`security_gate.evaluate`) both ask this question, and two answers to it is
+    a merge that blocks in CI and passes in the report, or the reverse.
+
+    WHY C. Bundled-library lint noise must not drive a merge gate -- the
+    exclusion exists because of it (calibration-5/solidus: 592 of
+    eslint-security's 623 messages were one rule firing on jQuery under
+    `vendor/`), and gating the whole suppressed set on severity alone (option
+    B) hard-FAILed a vendor-heavy tree on unverified scanner output. A planted
+    payload or a committed secret under `vendor/` still must gate, which is the
+    defect #1578 is about. So: a CRITICAL of any provenance, or a secret-class
+    finding -- from a secret adapter (`SECRET_ADAPTERS`) or carrying a
+    credential CWE (`SECRET_CWES`) -- and nothing else. Option A (send the
+    suppressed set through tool-verify) was rejected on dispatch cost.
+
+    Severity is compared EXACTLY, not case-folded (fix round 1, review M5).
+    `security_gate` tests `severity in GATE_SEVERITIES` case-sensitively, and a
+    predicate looser than the gate it feeds is answering a different question
+    -- a lower-case `"critical"` admitted here and dropped there is precisely
+    the divergence one predicate exists to prevent. Both ingest paths emit
+    upper case (`LEVEL_TO_SEV`, `tools.base.normalize_severity`, and
+    `findings.normalize_finding` on the driver side).
+
+    Total on a malformed row rather than raising: the finding was built from
+    scanner output about the reviewed tree, and a gate is not the place to
+    discover that. `_rule_id` is what makes the claim true for the two fields
+    the shared rule-id helper reads. A row this cannot read does not gate --
+    the report still discloses it in `meta.coverage.tools_suppressed`.
+    """
+    if not isinstance(finding, dict):
+        return False
+    if finding.get("severity") == "CRITICAL":
+        return True
+    if evidence_mod.tool_name(finding) in SECRET_ADAPTERS:
+        return True
+    return any(tag in SECRET_CWES for tag in _cwe_tags(finding))
 
 
 def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
