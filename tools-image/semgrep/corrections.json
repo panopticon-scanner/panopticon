@@ -5,7 +5,7 @@
       "path": "python/lang/security/audit/insecure-file-permissions.yaml",
       "source_sha256": "33ce6040a85aa8a61e2bd005da9f9623c666eafd8afe31e4ada44d74d57b9bc2",
       "replacement": "patches/insecure-file-permissions.yaml",
-      "corrected_sha256": "f5cb9aa0509688e458160e41e8843d71dcc5f87c2759b3f0c5fe99ee6820182e"
+      "corrected_sha256": "277117c47384f3d983aaac0ef7d654ebf5db67de24140bf0caf05a3bc8bd0c35"
     },
     {
       "path": "python/lang/security/audit/dangerous-subprocess-use-audit.yaml",

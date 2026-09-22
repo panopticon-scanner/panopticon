@@ -504,7 +504,7 @@ RUN set -euo pipefail \
     && trap 'rm -rf "${control_tmp}"' EXIT \
     && python3 /opt/panopticon/semgrep-corrections/verify_controls.py \
        materialize "${control_tmp}/source" \
-    && semgrep scan --quiet --metrics=off --json \
+    && semgrep scan --quiet --metrics=off --disable-version-check --json \
        --config /opt/semgrep-rules/python/lang/security/audit/insecure-file-permissions.yaml \
        --config /opt/semgrep-rules/python/lang/security/audit/dangerous-subprocess-use-audit.yaml \
        --config /opt/semgrep-rules/yaml/github-actions/security/pull-request-target-code-checkout.yaml \

@@ -28,8 +28,7 @@ rules:
   - pattern-inside: os.$METHOD(...)
   - metavariable-pattern:
       metavariable: $METHOD
-      patterns:
-      - pattern-either:
+      pattern-either:
         - pattern: chmod
         - pattern: lchmod
         - pattern: fchmod
@@ -43,8 +42,7 @@ rules:
       - pattern: os.$METHOD($FILE, $BITS, ...)
       - metavariable-pattern:
           metavariable: $BITS
-          patterns:
-          - pattern-either:
+          pattern-either:
             - pattern: <... stat.S_IWGRP ...>
             - pattern: <... stat.S_IXGRP ...>
             - pattern: <... stat.S_IWOTH ...>

@@ -32,7 +32,7 @@ def test_manifest_pins_the_four_proven_rule_files_and_bytes():
     expected = {
         "python/lang/security/audit/insecure-file-permissions.yaml": (
             "33ce6040a85aa8a61e2bd005da9f9623c666eafd8afe31e4ada44d74d57b9bc2",
-            "f5cb9aa0509688e458160e41e8843d71dcc5f87c2759b3f0c5fe99ee6820182e",
+            "277117c47384f3d983aaac0ef7d654ebf5db67de24140bf0caf05a3bc8bd0c35",
         ),
         "python/lang/security/audit/dangerous-subprocess-use-audit.yaml": (
             "50f69dc35f47e405633559f54fc2b3bd344707221742400e74b1c902c1f76faa",
@@ -101,6 +101,20 @@ def test_replacements_keep_rule_ids_and_unrelated_return_rule():
         "severity": "WARNING",
         "metadata": {"category": "maintainability", "technology": ["python"]},
     }
+
+
+def test_permission_metavariable_patterns_have_no_single_child_wrapper():
+    rule = yaml.safe_load(
+        (CORRECTIONS / "patches" / "insecure-file-permissions.yaml").read_text()
+    )["rules"][0]
+    method = rule["patterns"][1]["metavariable-pattern"]
+    bits = rule["patterns"][2]["pattern-either"][1]["patterns"][1][
+        "metavariable-pattern"
+    ]
+    assert "patterns" not in method
+    assert "pattern-either" in method
+    assert "patterns" not in bits
+    assert "pattern-either" in bits
 
 
 def test_applicator_publishes_only_after_all_sources_validate(tmp_path):
@@ -216,6 +230,7 @@ def test_docker_build_applies_and_exercises_the_checked_corrections():
     for item in json.loads((CORRECTIONS / "corrections.json").read_text())["corrections"]:
         assert "--config /opt/semgrep-rules/%s" % item["path"] in dockerfile
     assert "semgrep-corrections/verify_controls.py" in dockerfile
+    assert "semgrep scan --quiet --metrics=off --disable-version-check --json" in dockerfile
     assert "materialize \"${control_tmp}/source\"" in dockerfile
     assert "check \"${control_tmp}/source\"" in dockerfile
     assert dockerfile.index("USER scanner") < dockerfile.index(
