@@ -9,7 +9,9 @@ import argparse
 import json
 import os
 import sys
-import xml.etree.ElementTree as ET
+
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.run_tools import _redact_capture  # noqa: E402
@@ -78,8 +80,8 @@ KEEP = 3
 def _trim_xml(raw: bytes) -> bytes:
     """Keep the first KEEP finding elements of an XML report, still well-formed."""
     try:
-        root = ET.fromstring(raw.decode("utf-8", "replace"))  # nosec B314
-    except ET.ParseError:
+        root = ET.fromstring(raw.decode("utf-8", "replace"), forbid_dtd=True)
+    except (ET.ParseError, DefusedXmlException):
         return raw
     kept = 0
     for child in list(root):
