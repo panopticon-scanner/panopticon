@@ -74,32 +74,49 @@ class TestTrustedResolver(unittest.TestCase):
     def test_startup_environment_policy_removes_reserved_namespaces_only(self):
         supplied = {
             "PATH": "/trusted/bin",
-            "BASH_ENV": "startup.sh",
+            b"BASH_ENV": b"startup.sh",
             "ENV": "shell-startup.sh",
+            b"PYTHONPATH": b"/reviewed/python",
+            b"NODE_OPTIONS": b"--require /reviewed/startup.cjs",
             "LD_PRELOAD": "startup.so",
-            "LD_LIBRARY_PATH": "/reviewed/lib",
+            b"LD_LIBRARY_PATH": b"/reviewed/lib",
             "LD_AUDIT": "audit.so",
-            "DYLD_INSERT_LIBRARIES": "startup.dylib",
+            b"DYLD_INSERT_LIBRARIES": b"startup.dylib",
             "DYLD_LIBRARY_PATH": "/reviewed/lib",
-            "DYLD_FRAMEWORK_PATH": "/reviewed/frameworks",
-            "HOST_LD_LIBRARY_PATH": "kept",
+            b"DYLD_FRAMEWORK_PATH": b"/reviewed/frameworks",
+            b"HOST_LD_LIBRARY_PATH": b"kept-\xff",
             "MY_DYLD_FRAMEWORK_PATH": "kept-too",
-            "HOST_TOKEN": "auth-kept",
-            "HOST_CONFIG": "config-kept",
+            b"HOST_TOKEN": b"auth-kept-\xfe",
+            "HOST_CONFIG": b"config-kept-\xfd",
         }
         original = dict(supplied)
 
         clean = executable.sanitize_startup_environment(supplied)
 
         self.assertEqual(supplied, original)
-        for name in ("BASH_ENV", "ENV", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
-                     "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
-                     "DYLD_FRAMEWORK_PATH"):
+        self.assertTrue(all(isinstance(item, str) for item in clean))
+        self.assertTrue(all(isinstance(item, str) for item in clean.values()))
+        for name in ("BASH_ENV", "ENV", "PYTHONPATH", "NODE_OPTIONS", "LD_PRELOAD",
+                     "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES",
+                     "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"):
             self.assertNotIn(name, clean)
-        self.assertEqual(clean["HOST_LD_LIBRARY_PATH"], "kept")
+        self.assertEqual(os.fsencode(clean["HOST_LD_LIBRARY_PATH"]), b"kept-\xff")
         self.assertEqual(clean["MY_DYLD_FRAMEWORK_PATH"], "kept-too")
-        self.assertEqual(clean["HOST_TOKEN"], "auth-kept")
-        self.assertEqual(clean["HOST_CONFIG"], "config-kept")
+        self.assertEqual(os.fsencode(clean["HOST_TOKEN"]), b"auth-kept-\xfe")
+        self.assertEqual(os.fsencode(clean["HOST_CONFIG"]), b"config-kept-\xfd")
+
+    def test_duplicate_canonical_environment_names_are_rejected(self):
+        cases = (
+            {"PATH": "/trusted", b"PATH": b"/reviewed"},
+            {b"HOST_TOKEN": b"one", "HOST_TOKEN": "two"},
+        )
+        for supplied in cases:
+            with self.subTest(supplied=supplied):
+                original = dict(supplied)
+                with self.assertRaisesRegex(
+                        ValueError, "^duplicate canonical environment names$"):
+                    executable.sanitize_startup_environment(supplied)
+                self.assertEqual(supplied, original)
 
     def test_symlinked_directory_and_candidate_into_target_are_rejected(self):
         with tempfile.TemporaryDirectory() as parent:
@@ -181,6 +198,58 @@ class TestHostCliBoundary(unittest.TestCase):
             self.assertEqual(got.stdout, "trusted")
             self.assertFalse(os.path.exists(marker))
 
+    def test_byte_path_is_canonicalized_and_filtered_before_launch(self):
+        if not getattr(os, "supports_bytes_environ", False):
+            self.skipTest("platform does not support bytes environments")
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as trusted, \
+                tempfile.TemporaryDirectory() as scratch:
+            marker = os.path.join(target, "host-ran")
+            _program(os.path.join(target, "hostcli"), "printf bad > %s\n" % marker)
+            cli = os.path.join(trusted, "hostcli")
+            with open(cli, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "#!%s\n"
+                    "import os\n"
+                    "for name in (b'PATH', b'HOST_TOKEN', b'HOST_CONFIG'):\n"
+                    "    print(name.decode() + '=' + os.environb[name].hex())\n"
+                    % os.path.realpath(sys.executable))
+            os.chmod(cli, 0o700)
+            path = os.pathsep.join([target, trusted])
+            env = {b"PATH": os.fsencode(path), b"HOST_TOKEN": b"auth-\xff",
+                   "HOST_CONFIG": b"config-\xfe"}
+            supplied_before = dict(env)
+            runner = runner_base.HostRunner()
+            runner.review_root = target
+            with mock.patch.dict(os.environ, {"CALLER_STATE": "kept"}, clear=False):
+                caller_before = dict(os.environ)
+                got = runner.launch(["hostcli"], cwd=scratch, env=env)
+                self.assertEqual(got.returncode, 0, got.stderr)
+                self.assertEqual(
+                    got.stdout.splitlines(),
+                    ["PATH=" + os.fsencode(os.path.realpath(trusted)).hex(),
+                     "HOST_TOKEN=" + b"auth-\xff".hex(),
+                     "HOST_CONFIG=" + b"config-\xfe".hex()])
+                self.assertFalse(os.path.exists(marker))
+                self.assertEqual(env, supplied_before)
+                self.assertEqual(dict(os.environ), caller_before)
+
+    def test_duplicate_text_and_byte_path_is_rejected_before_launch(self):
+        if not getattr(os, "supports_bytes_environ", False):
+            self.skipTest("platform does not support bytes environments")
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as trusted:
+            marker = os.path.join(target, "reviewed-helper-ran")
+            _program(os.path.join(target, "helper"), "printf bad > %s\n" % marker)
+            _program(os.path.join(trusted, "hostcli"), "helper\n")
+            runner = runner_base.HostRunner()
+            runner.review_root = target
+            env = {"PATH": trusted, b"PATH": os.fsencode(target)}
+            supplied_before = dict(env)
+            with self.assertRaisesRegex(
+                    ValueError, "^duplicate canonical environment names$"):
+                runner.launch(["hostcli"], cwd=target, env=env)
+            self.assertFalse(os.path.exists(marker))
+            self.assertEqual(env, supplied_before)
+
     def test_python_and_node_startup_injection_is_removed_but_auth_is_kept(self):
         with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as trusted, \
                 tempfile.TemporaryDirectory() as scratch:
@@ -230,6 +299,8 @@ class TestHostCliBoundary(unittest.TestCase):
                 ("control", {}),
                 ("relative-bash-env", {"BASH_ENV": "startup.sh"}),
                 ("absolute-bash-env", {"BASH_ENV": startup}),
+                ("bytes-absolute-bash-env",
+                 {b"BASH_ENV": os.fsencode(startup)}),
                 ("env-only", {"ENV": "startup.sh"}),
             )
             with mock.patch.dict(os.environ, {"BASH_ENV": "caller-startup",
@@ -259,20 +330,27 @@ class TestHostCliBoundary(unittest.TestCase):
             _cli, loader_var, library = _native_programs(compiler, trusted, target)
             runner = runner_base.HostRunner()
             runner.review_root = target
-            env = {"PATH": trusted, loader_var: library, "HOST_TOKEN": "auth-kept",
-                   "HOST_CONFIG": "config-kept"}
-            supplied_before = dict(env)
             with mock.patch.dict(os.environ, {loader_var: "caller-library",
                                                "CALLER_STATE": "kept"}, clear=False):
                 caller_before = dict(os.environ)
-                got = runner.launch(["hostcli"], cwd=scratch, env=env)
-                self.assertEqual(got.returncode, 0, got.stderr)
-                self.assertEqual(
-                    got.stdout,
-                    "NATIVE auth=auth-kept config=config-kept loader=<unset>\n")
-                self.assertNotIn("LOADER_STARTUP", got.stdout)
-                self.assertEqual(env, supplied_before)
-                self.assertEqual(dict(os.environ), caller_before)
+                cases = (
+                    ("text-loader", {loader_var: library}),
+                    ("bytes-loader", {os.fsencode(loader_var): os.fsencode(library)}),
+                )
+                for name, loader_env in cases:
+                    with self.subTest(name=name):
+                        env = {"PATH": trusted, "HOST_TOKEN": "auth-kept",
+                               "HOST_CONFIG": "config-kept"}
+                        env.update(loader_env)
+                        supplied_before = dict(env)
+                        got = runner.launch(["hostcli"], cwd=scratch, env=env)
+                        self.assertEqual(got.returncode, 0, got.stderr)
+                        self.assertEqual(
+                            got.stdout,
+                            "NATIVE auth=auth-kept config=config-kept loader=<unset>\n")
+                        self.assertNotIn("LOADER_STARTUP", got.stdout)
+                        self.assertEqual(env, supplied_before)
+                        self.assertEqual(dict(os.environ), caller_before)
 
 
 class TestManifestGitBoundary(unittest.TestCase):
