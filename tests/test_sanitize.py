@@ -14,6 +14,11 @@ from _test_helpers import fake_aws_key
 import sanitize
 import scripts.redact as redact
 
+# Spelled whole on purpose. gitleaks' `generic-api-key` rule fires on a
+# credential-shaped value ONLY when a keyword (`secret`, `token`, `key`, ...)
+# sits beside it; a constant named UUID is not one, which is exactly why
+# tests/test_capture_goldens.py composes the same value through fake_uuid()
+# for a constant named SECRET. Renaming this one re-breaks the merge gate.
 UUID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 
 

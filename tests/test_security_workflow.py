@@ -274,13 +274,15 @@ class TestBothScanStepsCarryBothExclusions(unittest.TestCase):
     out, or the reverse. `FIXTURE_GLOB` was already mirrored across both steps
     and both workflows for exactly that reason; `GOLDEN_GLOB` joins it.
 
-    `tests/goldens/**` is the one class that cannot be composed away:
-    `tool-raw/*.raw` is authentic, trimmed SCANNER OUTPUT -- one payload per
+    `tests/goldens/tool-raw/**` is the one class that cannot be composed away:
+    those `*.raw` files are authentic, trimmed SCANNER OUTPUT -- one payload per
     adapter -- so a secret a scanner once reported is quoted there verbatim and
     gitleaks finds it again on every run. That is captured data, not code this
     repository authors, which is the fixture corpus's own argument. Every other
     in-tree literal was removed at source (tests/_test_helpers.py) rather than
-    excluded.
+    excluded. The glob is the captures, not the whole `tests/goldens/`
+    directory (`scout.rendered.txt` there is rendered panopticon output, not a
+    scanner capture): a blind spot is exactly as wide as the argument for it.
     """
 
     STEPS = ("Run static-analysis tools",
@@ -302,7 +304,7 @@ class TestBothScanStepsCarryBothExclusions(unittest.TestCase):
         for path in self.WORKFLOWS:
             env = self._env(path)
             self.assertEqual(env["FIXTURE_GLOB"], "tests/fixtures/**", path)
-            self.assertEqual(env["GOLDEN_GLOB"], "tests/goldens/**", path)
+            self.assertEqual(env["GOLDEN_GLOB"], "tests/goldens/tool-raw/**", path)
 
     def test_both_globs_are_on_the_scanner_and_the_gate_step(self):
         for path in self.WORKFLOWS:

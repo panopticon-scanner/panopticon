@@ -46,8 +46,9 @@ env:
   # (tests/_test_helpers.py) rather than excluded, because an allowlist
   # hides the real ones too. Mirrored onto BOTH steps, like FIXTURE_GLOB:
   # an exclusion on one half makes the scan and the gate disagree about
-  # what was reviewed.
-  GOLDEN_GLOB: tests/goldens/**
+  # what was reviewed. Scoped to the captures themselves, not the whole
+  # directory: a blind spot should be exactly as wide as its argument.
+  GOLDEN_GLOB: tests/goldens/tool-raw/**
 jobs:
   scan:
     runs-on: ubuntu-latest
