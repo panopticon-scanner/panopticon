@@ -10,6 +10,7 @@ import json
 import os
 import sys
 
+from scripts import evidence as evidence_mod
 from scripts import groups_schema
 from scripts.tools import ADAPTERS
 from scripts.tools.base import strip_ansi, target_root_cv
@@ -50,6 +51,9 @@ __all__ = [
     "ingest_dir_detailed",
     "suppressed_counts",
     "suppression_class",
+    "gates_when_suppressed",
+    "SECRET_ADAPTERS",
+    "SECRET_CWES",
     "sarif_to_findings",
 ]
 
@@ -356,6 +360,66 @@ def suppression_class(segment):
     if segment in _VENV_NAME_SEGMENTS:
         return "virtualenv-by-name"
     return "vendored"
+
+
+# #1578 (SEC-G2B), owner ruling 2026-09-22 -- policy C. Adapters whose findings
+# are secrets BY CONSTRUCTION: a hit is a credential someone committed, not an
+# opinion about code, so one of theirs under a suppressed directory gates at
+# whatever severity it carries.
+SECRET_ADAPTERS = frozenset({"gitleaks"})
+# #1578 policy C: the CWEs that make ANY adapter's finding secret-class --
+# CWE-798 hardcoded credentials, CWE-259 hardcoded password, CWE-321 hardcoded
+# cryptographic key, CWE-522 insufficiently protected credentials.
+SECRET_CWES = frozenset({"CWE-798", "CWE-259", "CWE-321", "CWE-522"})
+
+
+def _cwe_tags(finding):
+    """Every CWE this finding carries, from both places an adapter puts one.
+
+    `citations.cwe` is where `sarif_utils.sarif_to_findings` files the tags it
+    scraped off the rule; the dependency adapters cite nothing and carry the
+    rule in `tool_evidence.rule_id` (`evidence.tool_rule_id`), where a rule
+    named for its CWE is the only tag there is.
+    """
+    cites = (finding.get("citations") or {}) if isinstance(finding, dict) else {}
+    raw = cites.get("cwe") if isinstance(cites, dict) else None
+    tags = [str(c).upper() for c in raw] if isinstance(raw, list) else []
+    rule = evidence_mod.tool_rule_id(finding) or ""
+    tags.extend(m.group(1).upper() for m in CWE_TAG.finditer(str(rule)))
+    return tags
+
+
+def gates_when_suppressed(finding):
+    """Does this NAME-suppressed finding still gate under `--security redteam`?
+
+    #1578 owner ruling 2026-09-22, policy C, and the ONE definition of it: the
+    driver's own report gate (`synth/verdicts`) and the CI gate
+    (`security_gate.evaluate`) both ask this question, and two answers to it is
+    a merge that blocks in CI and passes in the report, or the reverse.
+
+    WHY C. Bundled-library lint noise must not drive a merge gate -- the
+    exclusion exists because of it (calibration-5/solidus: 592 of
+    eslint-security's 623 messages were one rule firing on jQuery under
+    `vendor/`), and gating the whole suppressed set on severity alone (option
+    B) hard-FAILed a vendor-heavy tree on unverified scanner output. A planted
+    payload or a committed secret under `vendor/` still must gate, which is the
+    defect #1578 is about. So: a CRITICAL of any provenance, or a secret-class
+    finding -- from a secret adapter (`SECRET_ADAPTERS`) or carrying a
+    credential CWE (`SECRET_CWES`) -- and nothing else. Option A (send the
+    suppressed set through tool-verify) was rejected on dispatch cost.
+
+    Total on a malformed row rather than raising: the finding was built from
+    scanner output about the reviewed tree, and a gate is not the place to
+    discover that. A row this cannot read does not gate -- the report still
+    discloses it in `meta.coverage.tools_suppressed`.
+    """
+    if not isinstance(finding, dict):
+        return False
+    if str(finding.get("severity") or "").upper() == "CRITICAL":
+        return True
+    if evidence_mod.tool_name(finding) in SECRET_ADAPTERS:
+        return True
+    return any(tag in SECRET_CWES for tag in _cwe_tags(finding))
 
 
 def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
