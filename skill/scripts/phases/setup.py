@@ -369,27 +369,62 @@ def ingest_execute(review_root, manifest):
     line, the report's own section, and a non-empty `gaps` in
     setup-report.json.
     """
-    checks = setup_flow.readiness(
-        review_root, host=manifest.get("host", "claude"),
-        # #1603 fix round 1: the posture THIS invocation established, never a
-        # second one measured here. `driver setup` and `driver loop --setup`
-        # both run the posture step before either phase, and readiness that
-        # probed again disclosed a weaker answer than the stderr line printed
-        # moments earlier -- and re-scanned the whole tree to get it.
-        envelope=loop_batch.envelope_for(review_root, loop_batch.SETUP_NAMESPACE))
-    record = setup_readiness._readiness_record(checks)
-    res = setup_flow.ingest_proposal(
-        review_root,
-        max_per_group=manifest.get("max_per_group"),
-        max_groups=manifest.get("max_groups"),
-        readiness=record,
-        readiness_section=setup_readiness._readiness_section(record))
+    res = setup_flow.ingest_proposal(review_root,
+                                     max_per_group=manifest.get("max_per_group"),
+                                     max_groups=manifest.get("max_groups"))
     if not res["ok"]:
         raise runio.DriverError("ingest: " + "; ".join(res["errors"]))
+    # AFTER the draft, mirroring the fallback's order as well as its call
+    # (fix round 1, I2): readiness is a disclosure, and a disclosure that
+    # cannot be made must cost the operator the disclosure, never the
+    # bootstrap it describes.
+    record = _take_readiness(review_root, manifest.get("host", "claude"))
+    setup_flow.record_readiness(review_root, record,
+                                section=setup_readiness._readiness_section(record))
     return engine.PhaseResult(kind="advanced",
                        message="setup: draft written %s; report %s; %s"
                        % (res["draft"], res["report_path"],
-                          setup_readiness._readiness_suffix(record["gaps"])))
+                          setup_readiness._readiness_suffix(record)))
+
+
+def _take_readiness(review_root, host):
+    """This setup's readiness record -- or the one row that says it could not
+    be taken. NEVER raises (fix round 1, I2).
+
+    `setup_flow.readiness` is mostly non-raising, but not by construction:
+    `_check_host_shells` runs `import dispatch`, `hosts.spec` and the
+    registration lookups outside its own try, it re-raises the suite's
+    `LaunchRefused` by design, and a row of the wrong width raises in
+    `_readiness_record`. Every one of those escaped `run_setup_flow` -- which
+    catches only DriverError/EngineStalled/ValueError -- as a traceback with
+    no JSON status, taking the bootstrap with it. A failure to MEASURE is a
+    weaker reason to refuse a setup than a gap, and setup is already required
+    to survive gaps.
+
+    `Exception`, not `BaseException`: a KeyboardInterrupt or a SystemExit is
+    the operator or the process leaving, and turning either into a readiness
+    row would swallow it.
+
+    The row carries the exception's CLASS as well as its text -- a bare
+    `RuntimeError()` renders as "" and a disclosure that names nothing is the
+    mood §5.1 rejects. `ok=None`: nobody looked is not a fault with a remedy,
+    so it is a limitation, and `_readiness_suffix` refuses to call a record
+    with nothing measured in it OK.
+
+    The POSTURE is this invocation's own (I1), never a second one measured
+    here: `driver setup` and `driver loop --setup` both establish it before
+    either phase runs, and readiness that probed again disclosed a weaker
+    answer than the stderr line printed moments earlier -- and re-scanned the
+    whole tree to get it.
+    """
+    try:
+        return setup_readiness._readiness_record(setup_flow.readiness(
+            review_root, host=host,
+            envelope=loop_batch.envelope_for(review_root, loop_batch.SETUP_NAMESPACE)))
+    except Exception as exc:        # noqa: BLE001 -- see the docstring
+        return setup_readiness._readiness_record(
+            [("readiness", None,
+              "could not be taken: %s: %s" % (type(exc).__name__, exc))])
 
 SETUP_PHASES = (
     engine.Phase("scan", "checkpoint", scan_done, scan_execute),
@@ -477,19 +512,16 @@ def _scan_fallback(review_root, manifest, host):
     done-predicates are satisfied -> run_engine completes without a checkpoint
     and without entering ingest."""
     path, created, names = setup_flow.seed_flat_manifest(review_root)
-    checks = setup_flow.readiness(
-        review_root, host=host,
-        envelope=loop_batch.envelope_for(review_root, loop_batch.SETUP_NAMESPACE))
-    # The three keys, and the verdict, from the helpers the normal path uses
-    # too (#1603) -- the only thing this path changed. What it records and
-    # what it prints are what they were.
-    record = setup_readiness._readiness_record(checks)
+    # The seed first, then the measurement -- this path's own order, which
+    # `ingest_execute` now mirrors. Same helpers as the normal path (#1603):
+    # what this records and what it prints are what they were.
+    record = _take_readiness(review_root, host)
     runio._write_json(runio._pano(review_root, "setup-complete.json"), dict(
         record, schema_version=1,
         mode="fallback", seed=path, created=created, groups=names,
         run_id=manifest["run_id"]))
     msg = ("setup: vocab-absent fallback — flat seed %s; %s"
-           % (path, setup_readiness._readiness_suffix(record["gaps"])))
+           % (path, setup_readiness._readiness_suffix(record)))
     # LAST, and on its own lines (#1601): the clause is a list now, so
     # anything appended after it would land on the final remedy's line.
     if record["limitations"]:
@@ -637,19 +669,20 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
         else:
             msg = ("setup complete -- vocab-absent fallback seeded a flat %s; "
                    "review, edit, and commit it" % repo_config.CONFIG_NAMES[0])
-            marker = runio._load_json(
-                runio._pano(review_root, "setup-complete.json")) or {}
-            gaps = marker.get("gaps") or []
-            if gaps:
+            # Sanitized, like the normal path's (fix round 1, I3): this
+            # marker is a `.panopticon` file the reviewed tree can plant, and
+            # both branches sit outside the status protocol's try.
+            marker = setup_readiness._stored_record(runio._load_json(
+                runio._pano(review_root, "setup-complete.json")))
+            if marker["gaps"]:
                 # The same clause the normal path prints, from the same helper
                 # (#1603). This branch still says nothing when readiness is
                 # clean; the ruling widened the CALLER, not this line.
-                msg += " — " + setup_readiness._readiness_suffix(gaps)
+                msg += " — " + setup_readiness._readiness_suffix(marker)
             # This is the message the operator actually reads -- _scan_fallback's
             # is replaced here -- so the limitations clause has to be restated,
             # or declaring it there would be declaring it to nobody (§5.1).
-            limitations = setup_readiness._stored_limitations(marker)
-            if limitations:
-                msg += "\n" + setup_readiness._limitations_clause(limitations)
+            if marker["limitations"]:
+                msg += "\n" + setup_readiness._limitations_clause(marker["limitations"])
             result["message"] = msg
     return result

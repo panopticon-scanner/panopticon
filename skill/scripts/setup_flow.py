@@ -1166,8 +1166,50 @@ def _draft_settings(repo, max_per_group, max_groups):
     return {k: v for k, v in settings.items() if v is not None}
 
 
-def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None,
-                    readiness=None, readiness_section=None):
+def record_readiness(repo, readiness, section=None):
+    """Add a readiness record to the setup report `ingest_proposal` has
+    ALREADY written (#1603 fix round 1, I2).
+
+    ORDER, not merely the call. The vocab-absent fallback seeds its flat
+    config and THEN measures, so a readiness that cannot be taken costs the
+    operator a disclosure and never the bootstrap; the normal path mirrors
+    that -- the draft, the rendered report and its JSON are on disk before
+    this runs, and this only ever adds to them. A crash in between leaves a
+    report with no readiness rows, which every reader of this record already
+    treats as "nobody looked" rather than as a pass.
+
+    The three keys go BESIDE the four `ingest_proposal` owns; `section` is
+    appended to the rendered report. A report that is absent or is not a JSON
+    object -- a file planted at the name between the two writes -- is left
+    exactly as it is rather than rewritten from scratch. Returns the paths
+    updated.
+
+    Writes go through the confining no-follow opener like every other setup
+    artifact (#1577), so a symlink planted at either name refuses rather than
+    writing through.
+    """
+    root = plan_contract.artifact_root(repo)
+    json_path = os.path.join(root, "setup-report.json")
+    document = runio._load_json(json_path)
+    if not isinstance(document, dict):
+        return []
+    with runio._open_w_nofollow(json_path) as fh:
+        fh.write(json.dumps({**document, **readiness}, indent=1, sort_keys=True) + "\n")
+    written = [json_path]
+    md_path = os.path.join(root, "setup-report.md")
+    if section:
+        try:
+            with open(md_path, encoding="utf-8") as fh:
+                rendered = fh.read()
+        except OSError:
+            return written
+        with runio._open_w_nofollow(md_path) as fh:
+            fh.write(rendered.rstrip("\n") + "\n\n" + section)
+        written.append(md_path)
+    return written
+
+
+def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None):
     """Ingest a setup-scan proposal -> assemble (aliases, layers, floors) ->
     stage 3 (grouping_engine.plan_groups: scoped assignment, Tests sweep,
     Commons, layers, ceiling) -> additive-merge vs the committed root config ->
@@ -1178,20 +1220,8 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     The cap and the ceiling resolve CLI argument > `settings:` > default
     (`discovery.DEFAULT_MAX_PER_GROUP`; `grouping_engine.ceiling_for`).
 
-    `readiness` and `readiness_section` are #1603's half: the setup readiness
-    record (`{"readiness": rows, "gaps": [...], "limitations": [...]}`, the
-    same three keys the vocab-absent fallback writes into
-    `setup-complete.json`) and its already-rendered markdown. They ride in
-    here rather than being measured here because the report is written ONCE,
-    whole -- appending to a finished file would leave a window where the
-    artifact an operator is told to read carries a draft's worth of it.
-
-    The markdown arrives rendered because the renderer that shows a
-    gate-nothing check lives in `phases/setup_readiness.py`, whose package
-    imports this module: rendering it here would be the import cycle, or a
-    second copy of the clause. Both default to None -- the report is then
-    written exactly as before, which is what every non-setup caller (all of
-    them tests about the grouping) wants."""
+    Readiness is NOT taken here and not written here: `record_readiness`
+    below adds it once this has written the draft (#1603 fix round 1)."""
     import setup_proposal as sp
     refusal = config_refusal(repo)          # I2: before anything is written
     if refusal:
@@ -1251,12 +1281,7 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
         merged, exclude_paths=_committed_exclude_paths(repo),
         settings=_draft_settings(repo, max_per_group, max_groups))
     report_text = grouping_engine.format_report(report, disclosure)
-    if readiness_section:
-        report_text = report_text.rstrip("\n") + "\n\n" + readiness_section
-    # The readiness keys go BESIDE the report's own, never over them: spread
-    # first so the four keys this function owns win whatever a caller passes.
-    report_json = json.dumps({**(readiness or {}),
-                              "schema_version": 1, "report": report, "disclosure": disclosure,
+    report_json = json.dumps({"schema_version": 1, "report": report, "disclosure": disclosure,
                               "diff": diff}, indent=1, sort_keys=True) + "\n"
     root = plan_contract.artifact_root(repo)
     draft = repo_config.draft_path(repo)

@@ -28,6 +28,7 @@ import scripts.setup_flow as setup_flow
 import scripts.model_resolver as model_resolver
 import scripts.probes.codex as codex_probes
 import scripts.repo_config as repo_config
+import scripts.runners.base as runners_base
 import scripts.runners.batch as batch_mod
 
 from _test_helpers import hard_link_or_skip
@@ -1410,15 +1411,17 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
                 "generic registers no enforcement shells; reviewers run with "
                 "a prompt-advisory tool policy")]
 
-    def _setup(self, checks, host=None, allow_unenforced=False):
+    def _setup(self, checks=None, host=None, allow_unenforced=False, side_effect=None):
         """A vocab-PRESENT `driver setup` driven through scan and ingest to
-        `complete`, whose readiness answers `checks`.
+        `complete`, whose readiness answers `checks` -- or misbehaves, when
+        `side_effect` is given (an exception, for the I2 cases).
 
         Returns (status, the readiness mock, the setup-report.json document,
-        setup-report.md's text).
+        setup-report.md's text); the tree is on `self.repo`.
         """
-        d = make_git_repo(test_case=self, files={"src/checkout/pay.py": "x = 1\n"},
-                          branch="main", user_email="t@t", user_name="t")
+        d = self.repo = make_git_repo(
+            test_case=self, files={"src/checkout/pay.py": "x = 1\n"},
+            branch="main", user_email="t@t", user_name="t")
         # #1737: a registered machine, so the scan dispatches enforced instead
         # of being refused for want of the operator's acknowledgement.
         write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
@@ -1432,8 +1435,9 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
             # the host's return-persist half of the checkpoint
             with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
                 json.dump(self.PROPOSAL, fh)
-            with mock.patch("scripts.setup_flow.readiness",
-                            return_value=checks) as ready:
+            answer = ({"side_effect": side_effect} if side_effect is not None
+                      else {"return_value": checks})
+            with mock.patch("scripts.setup_flow.readiness", **answer) as ready:
                 status = setup.run_setup_flow(args)
         self.assertEqual("complete", status["status"], status)
         with open(runio._pano(d, "setup-report.md"), encoding="utf-8") as fh:
@@ -1503,6 +1507,92 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         status, _ready, _doc, _md = self._setup(self.OK)
         self.assertIn("setup-report.md", status["message"])
         self.assertIn(repo_config.DRAFT_NAME, status["message"])
+
+    # --- fix round 1, I2: a readiness that cannot be TAKEN ------------------
+    # A disclosure surface may not refuse the bootstrap whose own report says
+    # how to fix it, and a failure to measure is a weaker reason to refuse
+    # than a gap -- which setup is already required to survive. Before the
+    # fix each of these escaped `run_setup_flow` (it catches only
+    # DriverError/EngineStalled/ValueError) as a traceback with no JSON
+    # status, and the draft was never written.
+
+    def _degraded(self, doc):
+        """The single row a failed measurement leaves, off the artifact."""
+        self.assertEqual(1, len(doc["readiness"]), doc["readiness"])
+        name, ok, detail = doc["readiness"][0]
+        self.assertEqual(("readiness", None), (name, ok))
+        return detail
+
+    def test_a_readiness_that_raises_still_writes_the_draft_and_discloses(self):
+        for exc in (RuntimeError("probe exploded"),
+                    runners_base.LaunchRefused("no live CLI in the suite"),
+                    ValueError("a refused document")):
+            with self.subTest(exception=type(exc).__name__):
+                status, _ready, doc, md = self._setup(side_effect=exc)
+                self.assertEqual("complete", status["status"], status)
+                self.assertTrue(os.path.isfile(repo_config.draft_path(self.repo)))
+                detail = self._degraded(doc)
+                self.assertIn(type(exc).__name__, detail)
+                self.assertIn(str(exc), detail)
+                # ...and it is a LIMITATION, not a gap: nobody looked is not
+                # a fault with a remedy.
+                self.assertEqual([], doc["gaps"])
+                self.assertEqual([["readiness", detail]], doc["limitations"])
+                self.assertIn(detail, md)
+                self.assertIn(detail, status["message"])
+
+    def test_a_malformed_row_degrades_rather_than_raising(self):
+        # `_readiness_record` reads c[0], c[1], c[2]: a two-element row used
+        # to come out as an IndexError, from outside any handler.
+        status, _ready, doc, _md = self._setup([("docker", False)])
+        self.assertEqual("complete", status["status"], status)
+        self.assertTrue(os.path.isfile(repo_config.draft_path(self.repo)))
+        self.assertIn("IndexError", self._degraded(doc))
+
+    def test_a_readiness_that_was_not_taken_never_reads_as_OK(self):
+        # M1/§5.1: "absence of warnings must mean 'measured and proven',
+        # never 'nobody looked'". The degraded row gates nothing, so `gaps`
+        # is empty -- and a verdict computed from `gaps` alone said
+        # `readiness OK` over a measurement that never happened.
+        status, _ready, _doc, md = self._setup(side_effect=RuntimeError("boom"))
+        self.assertNotIn("readiness OK", status["message"])
+        self.assertIn("readiness NOT TAKEN", status["message"])
+        self.assertIn("readiness NOT TAKEN", md)
+
+    def test_the_draft_is_on_disk_before_readiness_is_taken(self):
+        # Mirror the fallback's ORDER, not just its call: it seeds the flat
+        # config and THEN measures, so a readiness that dies costs a
+        # disclosure and never the bootstrap.
+        seen = []
+        self._setup(side_effect=lambda *a, **k: seen.append(
+            os.path.isfile(repo_config.draft_path(self.repo))) or self.OK)
+        self.assertEqual([True], seen)
+
+    # --- fix round 1, I3: an artifact that is valid JSON but not ours -------
+
+    def test_a_non_object_report_leaves_the_completion_message_intact(self):
+        for planted in ([1, 2], "a string", 7, None, {"gaps": "oops"},
+                        {"readiness": "rows"}, {"readiness": []}):
+            with self.subTest(planted=planted):
+                status, _ready, _doc, _md = self._setup(self.OK)
+                with open(runio._pano(self.repo, "setup-report.json"), "w") as fh:
+                    json.dump(planted, fh)
+                again = setup.run_setup_flow(driver.build_parser().parse_args(
+                    ["setup", self.repo]))
+                self.assertEqual("complete", again["status"], again)
+                self.assertIn(repo_config.DRAFT_NAME, again["message"])
+                self.assertNotIn("readiness", again["message"])
+
+    def test_a_string_gaps_is_not_rendered_one_character_at_a_time(self):
+        status, _ready, _doc, _md = self._setup(self.OK)
+        doc = runio._load_json(runio._pano(self.repo, "setup-report.json"))
+        doc["gaps"] = "oops"
+        with open(runio._pano(self.repo, "setup-report.json"), "w") as fh:
+            json.dump(doc, fh)
+        again = setup.run_setup_flow(driver.build_parser().parse_args(
+            ["setup", self.repo]))
+        self.assertEqual("complete", again["status"], again)
+        self.assertNotIn("o, o, p, s", again["message"])
 
     def test_the_verdict_has_exactly_one_renderer(self):
         # ONE shared helper for the suffix, not two copies. The remedy clause

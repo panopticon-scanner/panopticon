@@ -103,7 +103,7 @@ def _stored_limitations(marker):
             if isinstance(row, (list, tuple)) and len(row) == 2]
 
 
-def _readiness_suffix(gaps):
+def _readiness_suffix(record):
     """readiness's verdict as ONE clause, for whichever setup line carries it.
 
     #1603: both setup paths print this now, so it is written once. The
@@ -112,14 +112,22 @@ def _readiness_suffix(gaps):
     two spellings of one verdict are two things to keep in step, and the one
     that falls behind is still green in its own test.
 
-    The clean case is a SENTENCE, not silence: §5.1's "absence of warnings
-    must mean 'measured and proven', never 'nobody looked'" only holds if the
-    passing case is stated out loud, the same rule surface 3 renders on every
-    all-proven report.
+    THREE outcomes, not two (fix round 1). The clean case is a SENTENCE, not
+    silence: §5.1's "absence of warnings must mean 'measured and proven',
+    never 'nobody looked'" only holds if the passing case is stated out loud,
+    the same rule surface 3 renders on every all-proven report. But that cuts
+    both ways, so "nobody looked" gets a sentence of its own: a verdict read
+    off `gaps` alone answered `readiness OK` for a record in which NOTHING
+    was measured against a pass/fail bar -- the single degraded row a failed
+    measurement leaves, or an empty list off a stale artifact -- which is the
+    inversion the rule exists to forbid, printed in the rule's own words.
     """
-    if not gaps:
-        return "readiness OK"
-    return "readiness gaps: %s (fix before running a review)" % ", ".join(gaps)
+    if record["gaps"]:
+        return ("readiness gaps: %s (fix before running a review)"
+                % ", ".join(record["gaps"]))
+    if not any(row[1] is not None for row in record["readiness"]):
+        return "readiness NOT TAKEN -- nothing was measured"
+    return "readiness OK"
 
 
 def _readiness_record(checks):
@@ -155,7 +163,7 @@ def _readiness_section(record):
     them quote the reviewed repository -- a refused config's errors name its
     groups -- and this text is written to a file rather than to a terminal.
     """
-    out = ["## Readiness", "", _readiness_suffix(record["gaps"]), ""]
+    out = ["## Readiness", "", _readiness_suffix(record), ""]
     out += ["- %s: %s -- %s" % (grouping_engine._clean(name, token=True),
                                 _VERDICT.get(ok, ok), grouping_engine._clean(detail))
             for name, ok, detail in record["readiness"]]
@@ -164,6 +172,32 @@ def _readiness_section(record):
             [(grouping_engine._clean(name, token=True), grouping_engine._clean(detail))
              for name, detail in record["limitations"]], artifact=REPORT_ARTIFACT)]
     return "\n".join(out) + "\n"
+
+
+def _stored_record(document):
+    """A readiness record read back off a setup artifact, SANITIZED.
+
+    `runio._load_json` returns whatever parses and `.panopticon` is the
+    reviewed tree's own directory, so a planted or hand-edited artifact
+    arrives here as a list, a string, a number, or an object whose `gaps` is
+    a string -- which `", ".join` would then render one character per "gap"
+    (fix round 1, I3). Every shape that is not what this module writes
+    degrades to "nothing recorded", because both call sites sit OUTSIDE
+    `run_setup_flow`'s status protocol: a traceback there is a setup that
+    succeeded, reported as a crash.
+
+    Row tolerance is `_stored_limitations`' own -- any row that is not a
+    triple is dropped rather than unpacked.
+    """
+    document = document if isinstance(document, dict) else {}
+    rows = document.get("readiness")
+    gaps = document.get("gaps")
+    return {"readiness": [list(row) for row in rows
+                          if isinstance(row, (list, tuple)) and len(row) == 3]
+            if isinstance(rows, list) else [],
+            "gaps": [gap for gap in gaps if isinstance(gap, str)]
+            if isinstance(gaps, list) else [],
+            "limitations": _stored_limitations(document)}
 
 
 def _readiness_tail(document, artifact=REPORT_ARTIFACT):
@@ -179,16 +213,18 @@ def _readiness_tail(document, artifact=REPORT_ARTIFACT):
     the work already done, no phase ran at all and the artifact is the only
     thing that remembers.
 
-    An artifact carrying no readiness rows gets NO tail: `readiness OK` over a
-    setup that never measured is the exact inversion §5.1 forbids, and a
-    version that predates this record, or a target-supplied file, is precisely
-    the case where nobody looked.
+    An artifact carrying no readiness rows gets NO tail -- absent, empty, or
+    rows of a shape this module never wrote. `readiness OK` over a setup that
+    never measured is the exact inversion §5.1 forbids, and a version that
+    predates this record, or a target-supplied file, is precisely the case
+    where nobody looked. (An empty LIST used to satisfy the old
+    `isinstance(..., list)` guard and render `readiness OK`, which is the
+    docstring promising what the code did not do -- fix round 1, M1.)
     """
-    document = document or {}
-    if not isinstance(document.get("readiness"), list):
+    record = _stored_record(document)
+    if not record["readiness"]:
         return ""
-    tail = " — " + _readiness_suffix(document.get("gaps") or [])
-    limitations = _stored_limitations(document)
-    if limitations:
-        tail += "\n" + _limitations_clause(limitations, artifact=artifact)
+    tail = " — " + _readiness_suffix(record)
+    if record["limitations"]:
+        tail += "\n" + _limitations_clause(record["limitations"], artifact=artifact)
     return tail
