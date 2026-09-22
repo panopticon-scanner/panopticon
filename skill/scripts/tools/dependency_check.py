@@ -2,9 +2,18 @@
 from __future__ import annotations
 import os
 import shutil
+import sys
 import tempfile
-from .base import (has_any_file, make_finding, normalize_severity, omit_none,
-                   parse_json_bytes, read_capped_report, run_tool)
+from .base import (OutputCapExceeded, has_any_file, make_finding,
+                   normalize_severity, omit_none, parse_json_bytes,
+                   read_capped_report, run_tool)
+
+
+# #1576 (run-13 OPS-3272189615): rc returned when the scanner was killed for
+# overrunning its write-time report cap. Deliberately outside run_tool's
+# ok_codes (0, 1), so the coverage manifest records the tool as missing
+# (-> INCONCLUSIVE) instead of reading the empty output as a clean scan.
+_OUTPUT_CAP_RC = 2
 
 
 class DependencyCheckAdapter:
@@ -101,7 +110,20 @@ class DependencyCheckAdapter:
                 # under --data, so nothing is lost by declining to ask Central.
                 "--disableCentral",
             ]
-            _stdout, rc = run_tool(cmd, timeout=900)
+            try:
+                # #1576 (OPS-3272189615): watch the report directory WHILE
+                # dependency-check writes it. read_capped_report below is the
+                # read-time half of the same 50 MiB ceiling, and by the time it
+                # refuses an oversize report the work volume is already full --
+                # for every concurrent scan on the worker, not just this one.
+                # start_new_session so the kill reaches the JVM and not just
+                # the dependency-check.sh wrapper.
+                _stdout, rc = run_tool(cmd, timeout=900, watch_path=out_dir,
+                                       start_new_session=True)
+            except OutputCapExceeded as exc:
+                print("dependency-check: %s; recording as failed" % exc,
+                      file=sys.stderr)
+                return b"", _OUTPUT_CAP_RC
             out_path = os.path.join(out_dir, "dependency-check-report.json")
             if os.path.exists(out_path):
                 # #run8 OPS-D1A: the tool writes the report to disk, so this read

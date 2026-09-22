@@ -6,6 +6,8 @@ import json
 import math
 import os
 import re
+import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -276,6 +278,22 @@ class ToolAdapter(Protocol):
         ...
 
 MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
+# #1576 (run-13 OPS-3272189615 / OPS-2007447947): how often a watched scanner's
+# own report is measured while it writes. read_capped_report's ceiling is a
+# READ-time bound on a write that has already happened -- by the time it
+# refuses an oversize report the temp volume is full and every concurrent scan
+# on that worker is already affected. `run_tool(watch_path=...)` polls the path
+# the scanner writes to and kills the child at the first poll that finds it over
+# `watch_cap`, which defaults to the SAME 50 MiB: a report the reader would
+# refuse is not worth letting the scanner finish. A poll is not an instant, so
+# the effective ceiling is `watch_cap` plus whatever the scanner can write in
+# one interval -- state it rather than imply a precision this cannot have.
+#
+# A poll rather than RLIMIT_FSIZE in a preexec_fn: RLIMIT_FSIZE caps the
+# largest single FILE, not a multi-file report tree, and CPython documents
+# preexec_fn as unsafe in the presence of threads -- run_tool already runs a
+# watchdog timer and a stderr drain thread.
+OUTPUT_WATCH_INTERVAL = 0.5
 # #run8 COD-A2A: stderr is only ever excerpted for diagnostics, so its drain
 # buffer is capped far below stdout. A tool flooding stderr while writing stdout
 # can't grow memory unbounded — the drain keeps reading past the cap (no pipe
@@ -337,7 +355,120 @@ def _drain(stream):
         pass
 
 
-def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
+class OutputCapExceeded(RuntimeError):
+    """A watched scanner blew past its write-time output cap and was killed.
+
+    Raised by `run_tool` instead of returning, because there is no partial
+    result to hand back: the report on disk is a fragment of one the reader
+    would have refused. The adapter turns it into its own bounded failure
+    disposition (recorded missing -> INCONCLUSIVE), never a clean empty scan.
+    """
+
+    def __init__(self, path, cap, size):
+        super().__init__(
+            "%s exceeded its write-time output cap (%d bytes written, cap %d)"
+            % (path, size, cap))
+        self.path, self.cap, self.size = path, cap, size
+
+
+def _output_size(path, stop=None):
+    """Bytes at `path`: a file's size, or the recursive sum of a directory's.
+
+    Never follows symlinks (a scanned tree may link anywhere, and /etc is not
+    the scanner's output) and never raises: the tree is changing underneath the
+    walk, so an entry that vanished mid-scan is simply not counted. Stops
+    adding once `stop` is passed, so one poll of a huge tree costs no more than
+    it must to answer "over the cap?".
+    """
+    total = 0
+    stack = [path]
+    while stack:
+        cur = stack.pop()
+        try:
+            st = os.lstat(cur)
+        except OSError:
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            try:
+                with os.scandir(cur) as entries:
+                    stack.extend(e.path for e in entries)
+            except OSError:
+                pass
+            continue
+        total += st.st_size
+        if stop is not None and total > stop:
+            return total
+    return total
+
+
+def _kill_process_tree(proc):
+    """SIGKILL `proc`, and its whole process group when it leads one.
+
+    A scanner launched through a shell wrapper (dependency-check.sh) leaves the
+    real worker as a grandchild that proc.kill() never reaches. Callers that
+    pass `start_new_session=True` make the child a group leader, and then the
+    group kill lands on the whole tree; without it this is exactly proc.kill().
+    """
+    try:
+        if os.getpgid(proc.pid) == proc.pid:
+            os.killpg(proc.pid, signal.SIGKILL)
+            return
+    except (OSError, AttributeError):
+        pass
+    try:
+        proc.kill()
+    except Exception:                      # noqa: BLE001 - already gone is fine
+        pass
+
+
+class _OutputSizeWatcher(threading.Thread):
+    """Poll a scanner's output path while it runs; kill it past `cap` (#1576).
+
+    The bound the adapters needed and did not have: a write-time ceiling on a
+    report the scanner writes for itself. Polled, so the real ceiling is `cap`
+    plus one OUTPUT_WATCH_INTERVAL of the scanner's write throughput -- the
+    guarantee is that it STOPS, not that it stops on the exact byte. It announces the kill on stderr as it
+    happens -- the operator's only witness that a scan ended for this reason
+    rather than any other -- and `run_tool` turns it into OutputCapExceeded.
+    """
+
+    def __init__(self, proc, path, cap, label):
+        super().__init__(daemon=True)
+        self._proc, self._path, self._cap, self._label = proc, path, cap, label
+        self._done = threading.Event()
+        self.exceeded = False
+        self.size = 0
+
+    def run(self):
+        while not self._done.wait(OUTPUT_WATCH_INTERVAL):
+            size = _output_size(self._path, stop=self._cap)
+            if size <= self._cap:
+                continue
+            self.exceeded, self.size = True, size
+            print("tool %s exceeded its write-time output cap: %d bytes at %s "
+                  "(cap %d); killing it -- a report this large would be refused "
+                  "at read time anyway" % (self._label, size, self._path, self._cap),
+                  file=sys.stderr)
+            _kill_process_tree(self._proc)
+            return
+
+    def stop(self):
+        self._done.set()
+
+
+def _raise_if_output_capped(watcher, path, cap):
+    """Turn a watcher that fired into OutputCapExceeded (#1576).
+
+    One helper because run_tool leaves by two doors -- the stdout-truncation
+    early return and the normal one -- and both have to answer for the
+    write-time cap the same way.
+    """
+    if watcher is not None and watcher.exceeded:
+        raise OutputCapExceeded(path, cap, watcher.size)
+
+
+def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
+             watch_path=None, watch_cap=MAX_TOOL_OUTPUT_BYTES, **kwargs):
     """Run a scanner subprocess, preserving failure diagnostics (F-CAL-1).
 
     Returns (stdout, returncode) by default, or (stdout, stderr, returncode)
@@ -354,6 +485,16 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
 
     Stderr is drained concurrently so a child that fills the stderr pipe while
     still writing stdout cannot deadlock the parent (#K2-1).
+
+    `watch_path` (#1576) is for the adapters whose scanner writes its OWN
+    report: the path is polled while the child runs and the child is killed at
+    the first poll that finds it over `watch_cap`, raising OutputCapExceeded.
+    Polling means the effective ceiling is `watch_cap` plus one
+    OUTPUT_WATCH_INTERVAL of the scanner's write throughput, not `watch_cap`
+    exactly.
+    Pass `start_new_session=True` alongside it when the scanner is launched
+    through a shell wrapper, so the kill reaches the worker and not just the
+    wrapper.
     """
     popen_kwargs = dict(kwargs)
     popen_kwargs.setdefault("stdout", subprocess.PIPE)
@@ -362,16 +503,24 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
     timed_out = {"hit": False}
 
     def _watchdog():
+        # #1576 fix round 1: the GROUP, not just the child. A scanner behind a
+        # shell wrapper leaves the real worker as a grandchild holding the
+        # inherited stdout pipe; killing the wrapper alone leaves the parent's
+        # read blocked on a pipe the orphan still owns, and `timeout=` stops
+        # being a bound -- measured at 15 s for a 1-second timeout. Without
+        # start_new_session this is exactly proc.kill(), as before.
         timed_out["hit"] = True
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        _kill_process_tree(proc)
 
     proc = subprocess.Popen(cmd, **popen_kwargs)  # nosec B603
     timer = threading.Timer(timeout, _watchdog)
     timer.daemon = True
     timer.start()
+
+    watcher = None
+    if watch_path is not None:
+        watcher = _OutputSizeWatcher(proc, watch_path, watch_cap, cmd[0])
+        watcher.start()
 
     join_stderr = drain_stderr_async(proc)
 
@@ -405,10 +554,7 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
             collected += len(chunk)
 
         if truncated:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            _kill_process_tree(proc)      # the group, for the reason above
             stdout = b"".join(chunks)
             marker = (
                 "\n\n[TRUNCATED by panopticon: output exceeded %d byte limit; "
@@ -425,11 +571,20 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
         stderr = join_stderr()
 
         if truncated:
+            # #1576 fix round 1: this early return sits inside the try, so it
+            # used to leave the function BEFORE the write-time check below. An
+            # adapter whose scanner blew BOTH caps got (partial output, -9) --
+            # a partial result from a scan that was killed -- and its
+            # `except OutputCapExceeded` never fired. The write-time cap
+            # outranks the truncation: there is no usable report either way.
+            _raise_if_output_capped(watcher, watch_path, watch_cap)
             if capture_stderr:
                 return stdout + marker, stderr, rc
             return stdout + marker, rc
     finally:
         timer.cancel()
+        if watcher is not None:
+            watcher.stop()
         try:
             if proc.stdout is not None:
                 proc.stdout.close()
@@ -443,10 +598,11 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False, **kwargs):
         except Exception:
             pass
         if proc.poll() is None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            _kill_process_tree(proc)      # the group, for the reason above
+
+    # Checked BEFORE the timeout: when the watchdog and the size watcher both
+    # fire, the cap is the specific truth and "timed out" is the consequence.
+    _raise_if_output_capped(watcher, watch_path, watch_cap)
 
     if timed_out["hit"] and rc not in (0, 1):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)

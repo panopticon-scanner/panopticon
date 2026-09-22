@@ -1,9 +1,11 @@
 import contextlib
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest import mock
 
@@ -332,6 +334,192 @@ class TestReadCappedReport(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertIsNone(base.read_capped_report("/no/such/report.json"))
         self.assertIn("cannot read report", err.getvalue())
+
+
+class TestWriteTimeOutputCap(unittest.TestCase):
+    """#1576 (run-13 OPS-3272189615 / OPS-2007447947): a scanner that writes
+    its OWN report bypassed every bound until it had finished writing.
+
+    read_capped_report's 50 MiB ceiling is a READ-time bound on a write that
+    already happened: by the time it refuses the report, the temp volume is
+    already full and every concurrent scan on that worker is already in
+    trouble. run_tool now takes a path to watch while the child runs and kills
+    it the moment its output crosses the cap.
+    """
+
+    def _writer(self, target, chunks=100, size=65536, pause=0.02):
+        """argv for a child that writes `chunks` x `size` bytes into `target`."""
+        code = textwrap.dedent("""
+            import os, sys, time
+            d = sys.argv[1]
+            for i in range(%d):
+                with open(os.path.join(d, "part%%04d" %% i), "wb") as fh:
+                    fh.write(b"x" * %d)
+                time.sleep(%r)
+        """ % (chunks, size, pause))
+        return [sys.executable, "-c", code, target]
+
+    def test_a_scanner_that_overruns_the_cap_is_killed(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "report")
+            os.makedirs(out)
+            err = io.StringIO()
+            with mock.patch.object(base, "OUTPUT_WATCH_INTERVAL", 0.05), \
+                    contextlib.redirect_stderr(err):
+                with self.assertRaises(base.OutputCapExceeded):
+                    base.run_tool(self._writer(out), timeout=60,
+                                  watch_path=out, watch_cap=256 * 1024,
+                                  start_new_session=True)
+            written = base._output_size(out)
+        # Killed while writing, not after: the tree never reached the 6.4 MB
+        # the child wanted to write.
+        self.assertLess(written, 3 * 1024 * 1024)
+        self.assertIn("write-time output cap", err.getvalue())
+
+    def test_a_scanner_under_the_cap_is_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "report")
+            os.makedirs(out)
+            with mock.patch.object(base, "OUTPUT_WATCH_INTERVAL", 0.05):
+                stdout, rc = base.run_tool(
+                    self._writer(out, chunks=2, size=1024, pause=0),
+                    timeout=60, watch_path=out, watch_cap=1024 * 1024)
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, b"")
+
+    def test_an_absent_watch_path_is_simply_zero(self):
+        # roslyn hands the SARIF path before the scanner has created it.
+        self.assertEqual(base._output_size("/no/such/path/at/all"), 0)
+
+    def test_output_size_sums_a_tree_without_following_links(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "a", "b"))
+            with open(os.path.join(d, "a", "b", "f"), "wb") as fh:
+                fh.write(b"x" * 1000)
+            with open(os.path.join(d, "top"), "wb") as fh:
+                fh.write(b"y" * 24)
+            outside = os.path.join(d, "a", "escape")
+            os.symlink("/etc", outside)      # never walked through
+            self.assertGreaterEqual(base._output_size(d), 1024)
+            self.assertLess(base._output_size(d), 10_000)
+
+    def test_the_write_cap_agrees_with_the_read_cap(self):
+        # Two bounds on the same report: a report the reader would refuse is
+        # not worth letting the scanner finish writing.
+        import inspect
+        sig = inspect.signature(base.run_tool)
+        self.assertEqual(sig.parameters["watch_cap"].default,
+                         base.MAX_TOOL_OUTPUT_BYTES)
+
+
+class _AlreadyExceeded:
+    """_OutputSizeWatcher stand-in that has already seen the cap blow.
+
+    Lets the "both caps bound" control path be exercised without racing a real
+    0.5 s poll against a stdout flood that takes microseconds.
+    """
+
+    def __init__(self, proc, path, cap, label):
+        self.exceeded = True
+        self.size = cap + 1
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
+class TestBothCapsBinding(unittest.TestCase):
+    """#1576 fix round 1: the stdout-truncation early return skipped the
+    write-time raise.
+
+    `if truncated: return stdout + marker, rc` sits inside the try, so it ran
+    the finally and left the function BEFORE the OutputCapExceeded check. A
+    scanner that blew the stdout cap and the report cap therefore handed its
+    adapter `(partial output, -9)` -- a partial result from a scan that was
+    killed -- and the adapter's `except OutputCapExceeded` never fired.
+    """
+
+    def test_the_write_cap_still_raises_when_stdout_also_truncated(self):
+        flood = [sys.executable, "-c",
+                 "import sys; sys.stdout.buffer.write(b'x' * 200000)"]
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(base, "_OutputSizeWatcher", _AlreadyExceeded), \
+                    mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(base.OutputCapExceeded):
+                    base.run_tool(flood, timeout=30, watch_path=d,
+                                  watch_cap=64)
+
+    def test_truncation_alone_still_returns_its_partial_output(self):
+        # The raise must not swallow the plain truncation path: no watch_path,
+        # no watcher, same marker contract as before.
+        flood = [sys.executable, "-c",
+                 "import sys; sys.stdout.buffer.write(b'x' * 200000)"]
+        with mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024), \
+                contextlib.redirect_stderr(io.StringIO()):
+            stdout, _rc = base.run_tool(flood, timeout=30)
+        self.assertIn(b"[TRUNCATED by panopticon", stdout)
+
+
+@unittest.skipIf(os.name != "posix", "process groups are POSIX-only")
+class TestTimeoutKillReachesTheWholeGroup(unittest.TestCase):
+    """#1576 fix round 1: the timeout watchdog killed only the direct child.
+
+    A scanner launched through a shell wrapper leaves the real worker as a
+    grandchild holding the inherited stdout pipe. proc.kill() reaps the
+    wrapper and nothing else, so the parent's read blocks on a pipe the orphan
+    still owns and `timeout=` is not a bound at all -- measured at 60.5 s for a
+    2-second timeout. The size watcher already killed the process GROUP; the
+    timeout path has to as well.
+    """
+
+    # The wrapper waits on its own child, so both are alive when the deadline
+    # lands and both must die for the pipe to reach EOF.
+    _WRAPPER = textwrap.dedent("""
+        import subprocess, sys
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(15)"])
+        with open(sys.argv[1], "w") as fh:
+            fh.write(str(child.pid))
+        child.wait()
+    """)
+
+    def _grandchild_pid(self, pidfile, deadline=5.0):
+        end = time.time() + deadline
+        while time.time() < end:
+            try:
+                with open(pidfile, encoding="utf-8") as fh:
+                    text = fh.read().strip()
+            except OSError:
+                text = ""
+            if text:
+                return int(text)
+            time.sleep(0.05)
+        self.fail("wrapper never reported its grandchild pid")
+
+    def test_a_grandchild_does_not_outlive_the_deadline(self):
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = os.path.join(d, "pid")
+            cmd = [sys.executable, "-c", self._WRAPPER, pidfile]
+            started = time.time()
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    base.run_tool(cmd, timeout=1, start_new_session=True)
+            elapsed = time.time() - started
+            pid = self._grandchild_pid(pidfile, deadline=0.5)
+        # Without the group kill the orphan holds the pipe for its full 15s.
+        self.assertLess(elapsed, 8, "the read blocked on the orphan's pipe")
+        end = time.time() + 3
+        while time.time() < end:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:       # reaped and the pid was recycled
+                return
+            time.sleep(0.05)
+        self.fail("grandchild %d survived the timeout kill" % pid)
 
 
 if __name__ == "__main__":

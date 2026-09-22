@@ -24,6 +24,7 @@ run before anything else is proven to work.
 import os
 import subprocess
 import sys
+import threading
 
 from scripts.run_tools import recommendable_tools
 
@@ -53,6 +54,15 @@ def _validate_probe_registry(probes):
 
 
 PROBE_TIMEOUT = 180
+
+# #1576 (run-13 OPS-2542050329): the most combined stdout/stderr one probe may
+# retain. A version probe emits a line; a malfunctioning or unexpectedly
+# verbose scanner can emit at line rate for the whole PROBE_TIMEOUT, and the
+# build worker used to hold every byte of it before even checking the exit
+# code. Past this the head is kept and the rest is read-and-discarded (the
+# child must never block on a full pipe), and the truncation is announced on
+# stderr and named in the probe's failure message.
+PROBE_OUTPUT_MAX_BYTES = 1 * 1024 * 1024
 
 _ROSLYN_PROBE_SOURCE = """using System;
 using System.Diagnostics;
@@ -182,26 +192,95 @@ def check_writable(path, why):
         return False, "%s not writable by uid %d (%s) — %s" % (
             path, os.getuid(), e.strerror, why)
 
-def run_probe(name, argv):
+def _read_capped(stream, cap=PROBE_OUTPUT_MAX_BYTES):
+    """Read `stream` to EOF keeping at most `cap` bytes; return (kept, truncated).
+
+    The same bounded-sink shape as `run_tools._stream_and_write` (#1111/#1510):
+    stop ACCUMULATING at the cap but keep READING, because a producer left with
+    a full pipe blocks on write and the probe then burns its whole timeout for
+    nothing. The head is what is kept -- a scanner that cannot start says so
+    immediately, and the alternative is buffering the flood to find its tail.
+    """
+    chunks: list[bytes] = []
+    kept = 0
+    truncated = False
+    while True:
+        chunk = stream.read(64 * 1024)
+        if not chunk:
+            return b"".join(chunks), truncated
+        room = cap - kept
+        if room <= 0:
+            truncated = True
+            continue                      # drain, unstored
+        if len(chunk) > room:
+            chunks.append(chunk[:room])
+            kept = cap
+            truncated = True
+            continue
+        chunks.append(chunk)
+        kept += len(chunk)
+
+
+def run_probe(name, argv, popen=subprocess.Popen):
+    """Run one liveness probe under a byte cap and a wall-clock deadline.
+
+    Popen rather than subprocess.run because run() buffers the ENTIRE output
+    before it returns -- there is no point at which a cap could be applied
+    (#1576). The deadline Popen lacks is restored by a watchdog, which also
+    unblocks the read at EOF by killing the child.
+    """
     try:
-        res = subprocess.run(  # nosec B603
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=PROBE_TIMEOUT,
-        )
+        proc = popen(argv, stdout=subprocess.PIPE,  # nosec B603
+                     stderr=subprocess.STDOUT)
     except FileNotFoundError:
         return False, "%s: binary not found (%s)" % (name, argv[0])
-    except subprocess.TimeoutExpired:
-        return False, "%s: no response in %ds — a blocked call home or a lock wait" % (
-            name, PROBE_TIMEOUT)
     except OSError as e:
         return False, "%s: failed to exec %s (%s)" % (
             name, argv[0], e.strerror or repr(e))
-    if res.returncode != 0:
-        tail = (res.stdout or b"").decode("utf-8", "replace").strip().splitlines()
-        return False, "%s: exited %d%s" % (
-            name, res.returncode, (" — " + tail[-1][:160]) if tail else "")
+
+    timed_out = {"hit": False}
+
+    def _watchdog():
+        timed_out["hit"] = True
+        try:
+            proc.kill()
+        except Exception:                 # noqa: BLE001 - already gone is fine
+            pass
+
+    timer = threading.Timer(PROBE_TIMEOUT, _watchdog)
+    timer.daemon = True
+    timer.start()
+    try:
+        out, truncated = _read_capped(proc.stdout, PROBE_OUTPUT_MAX_BYTES)
+        rc = proc.wait()                  # bounded: the watchdog guarantees exit
+    finally:
+        timer.cancel()
+        try:
+            proc.stdout.close()
+        except Exception:                 # noqa: BLE001
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:             # noqa: BLE001
+                pass
+    # A watchdog kill lands rc < 0. Only call it a timeout when the child did
+    # not finish cleanly first, so a probe that exits a hair before the deadline
+    # is not misreported.
+    if timed_out["hit"] and rc != 0:
+        return False, "%s: no response in %ds — a blocked call home or a lock wait" % (
+            name, PROBE_TIMEOUT)
+    if truncated:
+        print("smoke-adapters: %s emitted more than PROBE_OUTPUT_MAX_BYTES (%d) "
+              "on a version probe; kept the first %d bytes and discarded the rest"
+              % (name, PROBE_OUTPUT_MAX_BYTES, PROBE_OUTPUT_MAX_BYTES),
+              file=sys.stderr)
+    if rc != 0:
+        tail = out.decode("utf-8", "replace").strip().splitlines()
+        note = (" (output truncated at %d bytes)" % PROBE_OUTPUT_MAX_BYTES
+                if truncated else "")
+        return False, "%s: exited %d%s%s" % (
+            name, rc, (" — " + tail[-1][:160]) if tail else "", note)
     return True, ""
 
 

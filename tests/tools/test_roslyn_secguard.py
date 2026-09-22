@@ -565,7 +565,101 @@ class TestRequiresRestoredDependencies(unittest.TestCase):
                              "restore output without a project is not a C# target")
 
 
+class TestCopyDirectoryCap(unittest.TestCase):
+    """#1576 (run-13 OPS-3539258787): the copy capped files, not directories.
+
+    _safe_copytree creates a destination directory for every real directory
+    os.walk visits, but only regular files incremented the counters. An
+    arbitrarily broad or deep hierarchy of EMPTY directories therefore passed
+    both caps untouched and could exhaust the temp volume's inodes and the
+    traversal itself -- all of it before the scanner's timed run even starts.
+    """
+
+    def _fan_out(self, root, n):
+        for i in range(n):
+            os.makedirs(os.path.join(root, "d%03d" % i))
+
+    def test_a_fan_out_of_empty_directories_is_refused(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            self._fan_out(src, 8)
+            with mock.patch.object(rs, "_MAX_COPY_DIRS", 3):
+                with self.assertRaises(ValueError) as caught:
+                    rs._safe_copytree(src, os.path.join(dst, "out"))
+        self.assertIn("director", str(caught.exception))
+
+    def test_a_deep_chain_of_empty_directories_is_refused(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            os.makedirs(os.path.join(src, *["deep"] * 8))
+            with mock.patch.object(rs, "_MAX_COPY_DIRS", 3):
+                with self.assertRaises(ValueError):
+                    rs._safe_copytree(src, os.path.join(dst, "out"))
+
+    def test_preserved_symlinks_count_toward_the_entry_cap(self):
+        # An in-tree link is a destination inode too, and a million of them
+        # costs what a million files costs.
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            open(os.path.join(src, "real.txt"), "w").close()
+            for i in range(6):
+                os.symlink("real.txt", os.path.join(src, "l%d" % i))
+            with mock.patch.object(rs, "_MAX_COPY_FILES", 3):
+                with self.assertRaises(ValueError):
+                    rs._safe_copytree(src, os.path.join(dst, "out"))
+
+    def test_a_normal_tree_is_still_copied(self):
+        with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+            os.makedirs(os.path.join(src, "a", "b"))
+            with open(os.path.join(src, "a", "b", "x.cs"), "w") as fh:
+                fh.write("class X {}")
+            out = os.path.join(dst, "out")
+            rs._safe_copytree(src, out)
+            self.assertTrue(os.path.exists(os.path.join(out, "a", "b", "x.cs")))
+
+    def test_the_directory_cap_clears_any_real_project(self):
+        self.assertGreaterEqual(rs._MAX_COPY_DIRS, 100_000)
+
+
+class TestSarifWriteIsBounded(unittest.TestCase):
+    """#1576 (run-13 OPS-2007447947): the SARIF export had no write-time cap.
+
+    The adapter handed dotnetarium-scs an unrestricted --export path and read
+    it with read_capped_report only once the scanner had returned. The 50 MiB
+    ceiling protected the adapter's MEMORY; nothing protected the temp volume
+    the scanner was writing to for up to 600 seconds.
+    """
+
+    def _invoke(self, fake_run):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "x.csproj"), "w").close()
+            with mock.patch.object(rs, "_safe_copytree", return_value=0), \
+                    mock.patch.object(rs, "run_tool", side_effect=fake_run):
+                return rs.RoslynSecGuardAdapter().invoke(d)
+
+    def test_the_export_path_is_watched_while_the_scanner_writes(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen.update(kw)
+            seen["export"] = [a for a in cmd if a.startswith("--export=")][0][9:]
+            return b"", 0
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            self._invoke(fake_run)
+        self.assertEqual(seen["watch_path"], seen["export"])
+        # The cap itself is run_tool's default, which test_base pins to the
+        # same MAX_TOOL_OUTPUT_BYTES read_capped_report refuses at.
+        self.assertTrue(seen["start_new_session"])
+
+    def test_an_overrun_is_a_disclosed_tool_failure_not_a_clean_scan(self):
+        def fake_run(cmd, **kw):
+            raise tools_base.OutputCapExceeded(kw["watch_path"], 50, 100)
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            raw, rc = self._invoke(fake_run)
+        self.assertEqual(raw, b"")
+        self.assertNotIn(rc, (0, 1))       # recorded missing, never clean
+        self.assertIn("write-time output cap", err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -45,6 +45,12 @@
 #     were parked under `Core`. Fifth `Orchestration` layer `Runners` added
 #     over the launch seam (`runners/**`, `kimi_toml.py`, `tests/runners/**`);
 #     `Hosts` keeps the registry, posture, guards, probes and workflows.
+#   - 2026-09-21 (#1683): `phases/hard_links.py` and its test are claimed by
+#     `Orchestration:Hosts`, not `Phases`. Two reasons, and the second is the
+#     one that matters: `Phases` sat one file under the cap, and the module IS
+#     the driver-side half of the read guards' hard-link rule -- a reviewer
+#     asking whether a directory grant is sound needs it in the same cell as
+#     `read_guard_hook.py` and `kimi_guard_hook.py`, which live here.
 #   - 2026-09-21 (#1670): synthesis already has `Reporting:Synth` and the
 #     host launch seam has `Orchestration:Runners`. Split report rendering
 #     and issue export into `Reporting:Outputs` to leave room in `Core`;
@@ -118,6 +124,7 @@ groups:
       - '!skill/scripts/phases/child.py'
       - '!skill/scripts/phases/verify_tools.py'
       - '!skill/scripts/phases/readiness_checks.py'
+      - '!skill/scripts/phases/hard_links.py'
       - skill/scripts/orchestrate.py
       - skill/scripts/progress.py
       tests:
@@ -125,6 +132,7 @@ groups:
       - tests/test_driver_verify.py
       - tests/test_driver_tool_verify.py
       - tests/phases/**
+      - '!tests/phases/test_hard_links.py'
       - tests/test_orchestrate.py
       - tests/test_orchestrate_session.py
       - tests/test_agent_verdict_guard.py
@@ -187,6 +195,7 @@ groups:
       - skill/scripts/codex_read_tools.py
       - skill/scripts/kimi_guard_hook.py
       - skill/scripts/read_guard_hook.py
+      - skill/scripts/phases/hard_links.py
       - skill/scripts/probes/**
       - skill/reference/probe-output-schema.json
       - skill/workflows/**
@@ -209,6 +218,7 @@ groups:
       - tests/test_codex_read_tools.py
       - tests/test_kimi_guard_hook.py
       - tests/test_read_guard_hook.py
+      - tests/phases/test_hard_links.py
       - tests/test_hook_command_quoting.py
       - tests/test_generic_retirement_bar.py
       - tests/test_family_guardrails_doc.py
