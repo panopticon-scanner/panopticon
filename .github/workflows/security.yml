@@ -21,6 +21,15 @@ on:
   #   * no SARIF upload, because under pull_request_target `github.ref` is the
   #     BASE branch and the findings would be filed against main.
   # The full tool set, with the upload, runs on the push to main after merge.
+  # And the gate blocks the MERGE, not just the scan: on the `pull_request`
+  # event a fork head is REFUSED by the job's first step, so an unlabelled fork
+  # PR carries a FAILED required check named `scan` rather than a skipped one
+  # (a skipped check is what branch protection reads as satisfied). The
+  # labelled pull_request_target run then reports a NEWER `scan` check on the
+  # same head, and GitHub's "latest check run with that name wins" semantic is
+  # what turns it green -- the one claim here not provable from this repo, to
+  # be confirmed on the first real fork PR after this merges. Fail-closed
+  # either way: if it does not hold, the PR stays red.
   pull_request_target:
     branches: [main]
     # `opened` is deliberately NOT here. The default type set starts a scan the
@@ -29,8 +38,10 @@ on:
     types: [synchronize, reopened, labeled]
   # Same-repo branch PRs (trusted: write-access + required review) run under
   # pull_request. Both triggers are present so the required `scan` check always
-  # reports; the job-level `if` below routes each PR to exactly ONE of them
-  # (fork -> target, same-repo -> pull_request), so there is never a double run.
+  # reports. A same-repo PR is SCANNED on exactly one of them (pull_request);
+  # a fork PR reaches both, and they do different jobs of work rather than the
+  # same one twice: pull_request refuses (red check, no scan, no checkout), and
+  # pull_request_target scans once a maintainer has labelled it.
   # Regardless of trigger the gate LOGIC always executes from the base-SHA
   # `controller` checkout below and the PR head is only ever mounted as
   # read-only scan data, so the scanner code is tamper-proof on every path.

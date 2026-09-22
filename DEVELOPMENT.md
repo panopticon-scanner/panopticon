@@ -226,7 +226,11 @@ than installing something unpinned.
 fork arm only on the `labeled` event with the `safe-to-scan` label, so read the diff first and then
 apply that label. The scan then runs over the head you were looking at — and every new push to the
 PR (and every reopen) removes the label again, so a force-push after your approval waits for you a
-second time. The fork path deliberately scans less than a main-branch run: no registry login, no
+second time. Until you label it, the PR's `scan` check is **red, not pending**: the workflow also
+runs on the `pull_request` event for a fork head and refuses there on its first step, because a
+check that is merely *skipped* is one branch protection counts as satisfied. Applying the label
+starts the `pull_request_target` run, which reports a newer `scan` check on the same head; the
+latest check run with that name is the one branch protection reads. The fork path deliberately scans less than a main-branch run: no registry login, no
 `--deps` (so no dependency scanner reading the PR's own lockfiles) and no SARIF upload, because
 under `pull_request_target` the upload would be filed against `main`'s Security tab. The full set
 runs on the push to main after the merge.
