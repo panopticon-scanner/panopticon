@@ -10,6 +10,10 @@ class ExecutableResolutionError(FileNotFoundError):
     """No executable could be proven to live outside the reviewed tree."""
 
 
+class EnvironmentCanonicalizationError(ValueError):
+    """Environment names collide after lossless platform decoding."""
+
+
 @dataclass(frozen=True)
 class ResolvedExecutable:
     path: str
@@ -18,15 +22,35 @@ class ResolvedExecutable:
 
 _STARTUP_ENV = (
     "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT", "PYTHONUSERBASE",
-    "PYTHONPLATLIBDIR", "PYTHONEXECUTABLE", "NODE_OPTIONS", "NODE_PATH",
+    "PYTHONPLATLIBDIR", "PYTHONEXECUTABLE", "NODE_OPTIONS", "NODE_PATH", "BASH_ENV", "ENV",
 )
+_STARTUP_ENV_PREFIXES = ("LD_", "DYLD_")
 
 
 def sanitize_startup_environment(env):
-    """Copy an environment without interpreter-controlled startup imports."""
-    clean = dict(env)
+    """Copy an environment without process-startup injection controls.
+
+    Names and values are first decoded losslessly with the platform filesystem
+    codec, giving filtering and PATH rewriting one canonical representation.
+    Ambiguous duplicate names are rejected without reporting either value.
+    Shell and interpreter controls are removed by exact name. The LD_ and DYLD_
+    namespaces are reserved here as a policy: native loaders expose several
+    library, search and audit hooks, so trusted CLI launches must not depend on
+    which loader hook a reviewed tree selects. Unrelated variables, including
+    names that merely contain those strings, remain intact.
+    """
+    clean = {}
+    for raw_name, raw_value in env.items():
+        name = os.fsdecode(raw_name)
+        if name in clean:
+            raise EnvironmentCanonicalizationError(
+                "duplicate canonical environment names")
+        clean[name] = os.fsdecode(raw_value)
     for name in _STARTUP_ENV:
         clean.pop(name, None)
+    for name in tuple(clean):
+        if name.startswith(_STARTUP_ENV_PREFIXES):
+            clean.pop(name)
     clean["PYTHONNOUSERSITE"] = "1"
     clean["PYTHONSAFEPATH"] = "1"
     return clean
