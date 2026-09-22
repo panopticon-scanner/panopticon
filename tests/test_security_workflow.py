@@ -229,6 +229,71 @@ class TestTheForkScanIsLabelGated(unittest.TestCase):
              "security-events": "write"})
 
 
+class TestTheLabelDiesOnEveryNewHead(unittest.TestCase):
+    """#1900: the maintainer approved a HEAD, not a pull request.
+
+    A label that outlived a force-push would be exactly the hole the gate was
+    built to close: approve a benign diff, push the payload, and the next
+    `labeled`-free event would still be running under an approval nobody gave
+    it. So every `synchronize` and `reopened` on a fork PR revokes the label,
+    and the PR waits for a maintainer again.
+
+    This job is the one place in the workflow that holds a WRITE grant on a
+    fork-triggered event, so its shape is pinned hard: one scope, no checkout,
+    no interpolation of event data into shell.
+    """
+
+    def setUp(self):
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            self.wf = yaml.safe_load(fh)
+        self.job = self.wf.get("jobs", {}).get("unlabel")
+        self.assertIsNotNone(self.job, "no `unlabel` job in the workflow")
+
+    def _run_text(self):
+        return _without_comments("\n".join(
+            step.get("run", "") for step in self.job.get("steps", [])))
+
+    def test_it_fires_on_a_fork_prs_new_head_and_on_a_reopen(self):
+        compact = " ".join(self.job.get("if", "").split())
+        self.assertIn("github.event_name == 'pull_request_target'", compact)
+        self.assertIn(
+            "github.event.pull_request.head.repo.full_name != github.repository",
+            compact)
+        self.assertIn("github.event.action == 'synchronize'", compact)
+        self.assertIn("github.event.action == 'reopened'", compact)
+
+    def test_it_holds_exactly_one_write_scope_and_nothing_else(self):
+        # Not `contents`, not `packages`, not `security-events`: this job runs
+        # on an untrusted event without the label gate in front of it, so the
+        # token it carries must be able to do one thing.
+        self.assertEqual(self.job.get("permissions"), {"pull-requests": "write"})
+
+    def test_it_checks_nothing_out(self):
+        checkouts = [s for s in self.job.get("steps", [])
+                     if str(s.get("uses", "")).startswith("actions/checkout")]
+        self.assertEqual(checkouts, [], "the revoke job needs no working tree")
+
+    def test_it_reaches_event_data_only_through_env(self):
+        # `test_no_untrusted_github_context_in_run_scripts` names the contexts
+        # that are known-injectable; this states the rule positively for the
+        # new job -- NO `${{ github.event ... }}` reaches its shell at all.
+        self.assertNotIn("${{ github.event", self._run_text())
+        envs = {}
+        for step in self.job.get("steps", []):
+            envs.update(step.get("env") or {})
+        self.assertEqual(envs.get("PR_NUMBER"),
+                         "${{ github.event.pull_request.number }}")
+        self.assertEqual(envs.get("REPO"), "${{ github.repository }}")
+
+    def test_it_deletes_the_label_and_tolerates_its_absence(self):
+        run = self._run_text()
+        self.assertIn("--method DELETE", run)
+        self.assertIn("issues/$PR_NUMBER/labels/safe-to-scan", run)
+        # A push to an unlabelled fork PR is the COMMON case and answers 404;
+        # a job that failed on it would paint every such PR red.
+        self.assertIn("404", run)
+
+
 class TestTheImagePullIsBounded(unittest.TestCase):
     """#1575 (OPS-A1A): the `scan` job is a required check on every push, every
     same-repo PR and every fork PR, and its image step was

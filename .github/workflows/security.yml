@@ -31,6 +31,48 @@ env:
   # the deliberately-vulnerable corpus below it.
   FIXTURE_GLOB: tests/fixtures/**
 jobs:
+  # #1900: the maintainer approved a HEAD, not a pull request. A `safe-to-scan`
+  # label that outlived a force-push would be the hole the gate exists to close
+  # -- approve a benign diff, push the payload. So every new head
+  # (`synchronize`) and every reopen revokes the label and the PR waits for a
+  # maintainer again. This is the ONLY job here that holds a write grant on a
+  # fork-triggered event, so it holds exactly one scope, checks nothing out,
+  # and interpolates no event data into shell (everything through `env:`).
+  unlabel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      (github.event.action == 'synchronize' ||
+       github.event.action == 'reopened')
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Revoke safe-to-scan on the new head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Most pushes land on a fork PR that was never labelled, and GitHub
+          # answers a DELETE of an absent label with 404: that is "already
+          # revoked", not a failure, and failing on it would paint every such
+          # PR red. Any OTHER failure DOES fail the job -- a silently-failed
+          # revoke leaves a maintainer's approval standing on a head nobody
+          # reviewed, which is the one outcome this job exists to prevent.
+          err="$RUNNER_TEMP/unlabel.err"
+          if gh api --method DELETE \
+               "repos/$REPO/issues/$PR_NUMBER/labels/safe-to-scan" \
+               >/dev/null 2>"$err"; then
+            echo "safe-to-scan revoked; this head needs a maintainer again."
+          elif grep -q "HTTP 404" "$err"; then
+            echo "safe-to-scan was not set; nothing to revoke."
+          else
+            cat "$err" >&2
+            exit 1
+          fi
+
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 30
