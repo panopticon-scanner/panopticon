@@ -303,6 +303,64 @@ class TestTerminateChildrenEndsTheWholeGroup(GrandchildCase):
         self.assertEqual([proc], runner.terminate_children(grace=0.5))
         self.assertEqual([], runner.terminate_children(grace=0.5))
 
+    def test_a_reaped_handle_is_not_signalled_at_a_pid_somebody_else_now_owns(self):
+        """B1 through the interrupt surface itself. `launch` reaps inside
+        `communicate` and unregisters a moment later; an interrupt landing in
+        that window used to hand `terminate_children` a handle whose pid the
+        OS had already given away.
+
+        The victim is polled through its OWN HANDLE for a bounded window, not
+        read once with `os.kill(pid, 0)`: signals are delivered
+        asynchronously, so one immediate read reports it alive whether or not
+        it was hit, and a dead direct child stays a ZOMBIE that `os.kill`
+        still answers for until somebody waits on it. `Popen.poll` is the one
+        reading that cannot be fooled by either. (Mutation-checked: deleting
+        the `returncode` guard in `procgroup._pgid` turns this red.)
+        """
+        runner = base.HostRunner()
+        reaped = subprocess.Popen([sys.executable, "-c", "pass"],  # noqa: S603
+                                  start_new_session=True)
+        reaped.wait()
+        victim = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            start_new_session=True, stdout=subprocess.DEVNULL)
+        self.addCleanup(victim.wait)
+        self.addCleanup(victim.kill)
+        reaped.pid = victim.pid                 # what a recycled pid looks like
+        runner.register_child(reaped)
+        runner.terminate_children(grace=0.5)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            self.assertIsNone(
+                victim.poll(),
+                "a reaped handle's stale pid was signalled: the process that "
+                "owns that pid now was ended")
+            time.sleep(0.05)
+
+    def test_a_child_in_our_own_group_dies_without_taking_the_runner_with_it(self):
+        """I3 end to end: a plain `Popen` -- no new session -- registered and
+        terminated. The child dies; this process does not.
+
+        A SIGTERM handler is installed for the length of the test so that a
+        regression is RECORDED rather than fatal: `killpg` on this group would
+        otherwise end the test runner, which is a failure mode that deletes
+        its own evidence (measured while writing the guard)."""
+        runner, received = base.HostRunner(), []
+        before = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(signal.signal, signal.SIGTERM, before)
+        signal.signal(signal.SIGTERM, lambda *_a: received.append(True))
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],  # noqa: S603
+                                stdout=subprocess.DEVNULL)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        self.assertEqual(os.getpgid(proc.pid), os.getpgid(0),
+                         "the fixture is wrong: this child made its own group")
+        runner.register_child(proc)
+        runner.terminate_children(grace=1.0)
+        self.assertEqual([], received,
+                         "terminate_children SIGTERMed the driver's own group")
+        self.assertIsNotNone(proc.poll(), "the child outlived terminate_children")
+
     def test_unregistering_something_never_registered_is_not_an_error(self):
         runner = base.HostRunner()
         runner.unregister_child(object())            # must not raise
