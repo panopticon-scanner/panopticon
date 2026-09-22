@@ -1219,13 +1219,24 @@ def _replace(path, text):
     leave the operator a setup report that is neither the old one nor the new.
     Tmp-then-`os.replace`, the shape `run_manifest._rewrite` and
     `phases/setup.record_dispatch_request` already use, through the same
-    no-follow opener (#1577), so a symlink planted at either name still
-    refuses rather than writing through.
+    no-follow opener (#1577).
 
-    `runio._write_json` is the ready-made version of this and is NOT used: it
-    renders at `indent=2`, which would reformat a report written at
-    `indent=1`, and the markdown is not JSON at all.
+    The LIVE path is confined explicitly, first (fix round 3, R2-1). Writing
+    straight through `_open_w_nofollow(path)` confined it as a side effect --
+    `confine_artifact_path` is that opener's first act -- but staging confines
+    the STAGING name, and `os.replace` renames over whatever is at the
+    destination without looking. Nothing was ever written through a plant
+    either way (the link is replaced, not followed, and the tmp shares every
+    intermediate component), but the REFUSAL is the point: a symlink at
+    `setup-report.json` stops the verb with an `error` status instead of
+    vanishing silently. `runio._write_json` orders it the same way, and for
+    the same reason (SEC-X0X).
+
+    That ready-made writer is NOT reused here: it renders at `indent=2`,
+    which would reformat a report written at `indent=1`, and the markdown is
+    not JSON at all.
     """
+    runio._confine_artifact_path(path)
     tmp = path + ".tmp"
     with runio._open_w_nofollow(tmp) as fh:
         fh.write(text)

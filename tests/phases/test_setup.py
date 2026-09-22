@@ -1611,6 +1611,71 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
                 self.assertEqual(1, opened.count(live + ".tmp"), "replaced once")
                 self.assertFalse(os.path.exists(live + ".tmp"), "tmp left behind")
 
+    def _plant_link(self, name):
+        """Replace a written setup artifact with a symlink OUT of .panopticon,
+        and return the file it points at (with content to notice)."""
+        victim = os.path.join(self.repo, "victim.json")
+        with open(victim, "w") as fh:
+            json.dump({"secret": "untouched"}, fh)
+        live = runio._pano(self.repo, name)
+        os.remove(live)
+        os.symlink(victim, live)
+        return victim
+
+    def test_a_symlink_planted_at_the_report_still_refuses(self):
+        # Fix round 3, R2-1. The atomic write (R1-3) opens `<path>.tmp`, so
+        # `_open_w_nofollow` was confining the STAGING name only and
+        # `os.replace` renamed over the plant with no check at all -- while
+        # the comment added in the same commit said the refusal still fired.
+        # Nothing was ever written THROUGH the link; what was lost is the
+        # refusal, and a security behaviour asserted three times in a diff and
+        # absent from the code is worse than either.
+        self._setup(self.OK)                       # a complete report on disk
+        for name in ("setup-report.json", "setup-report.md"):
+            with self.subTest(artifact=name):
+                victim = self._plant_link(name)
+                with self.assertRaises(ValueError):
+                    setup_flow.record_readiness(
+                        self.repo, {"readiness": [["x", True, "ok"]], "gaps": [],
+                                    "limitations": []},
+                        section="## Readiness\n")
+                self.assertTrue(os.path.islink(runio._pano(self.repo, name)))
+                with open(victim) as fh:
+                    self.assertEqual({"secret": "untouched"}, json.load(fh))
+
+    def test_a_plant_between_the_two_writes_is_an_error_status(self):
+        # ...and the refusal reaches the operator the way the comment at the
+        # call site promises: `run_setup_flow` turns the confinement's
+        # ValueError into an `error` status (item 24 R1-1), never a traceback.
+        # Planted BETWEEN the two writes, which is the only window `_replace`
+        # owns -- before them, `ingest_proposal`'s own confined write refuses
+        # first.
+        d = self.repo = make_git_repo(
+            test_case=self, files={"src/checkout/pay.py": "x = 1\n"},
+            branch="main", user_email="t@t", user_name="t")
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        args = driver.build_parser().parse_args(["setup", d])
+        real = setup_flow.ingest_proposal
+        planted = []
+
+        def _plant(repo, *a, **kw):
+            res = real(repo, *a, **kw)         # draft, report, report JSON
+            planted.append(self._plant_link("setup-report.json"))
+            return res
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual("checkpoint", setup.run_setup_flow(args)["status"])
+            with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+                json.dump(self.PROPOSAL, fh)
+            with mock.patch("scripts.setup_flow.ingest_proposal", _plant):
+                status = setup.run_setup_flow(args)
+        self.assertEqual("error", status["status"], status)
+        self.assertTrue(os.path.islink(runio._pano(d, "setup-report.json")))
+        with open(planted[0]) as fh:
+            self.assertEqual({"secret": "untouched"}, json.load(fh))
+        # the draft survived: the refusal is about the disclosure's artifact
+        self.assertTrue(os.path.isfile(repo_config.draft_path(d)))
+
     def test_a_readiness_that_was_not_taken_never_reads_as_OK(self):
         # M1/§5.1: "absence of warnings must mean 'measured and proven',
         # never 'nobody looked'". The degraded row gates nothing, so `gaps`

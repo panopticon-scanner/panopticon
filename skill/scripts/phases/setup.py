@@ -273,13 +273,13 @@ def _remedy_clause(host, state):
     `headless_available` is the one owner of "does this family ship a runner",
     and it is asked rather than assumed -- a host that registers shells and
     ships no runner would otherwise be handed a `--mode headless` that
-    `runner_for` refuses, which is the same defect in a third place. Imported
-    locally, the way `probes.common.headless_settings_path` reaches the same
-    package: `phases` may import `runners` (only the reverse is banned), but
-    at call time, not at module import, so the cycle through
-    `runners.base -> dispatch` stays broken.
+    `runner_for` refuses, which is the same defect in a third place. Reached
+    through the module-level import, which #1603 fix round 2 needed anyway for
+    `LaunchRefused`: `phases` may import `runners` (only the reverse is
+    banned), and there is no cycle to route around -- `runners.base` reaches
+    `dispatch`, which imports only `model_resolver`, `codex_read_tools` and
+    `hosts`, none of which comes back here.
     """
-    import scripts.runners.base as runners_base
     row = hosts.spec(host)
     if row is None or not row.shell_format:
         return "Re"
