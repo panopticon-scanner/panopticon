@@ -15,6 +15,7 @@ import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
 import scripts.runners.batch as batch
 from . import engine
+from . import hard_links
 from . import runio
 from . import requests
 
@@ -56,6 +57,16 @@ def _read_text(path):
     with open(path, encoding="utf-8") as fh:
         return fh.read()
 
+# #1683 fix round 1: the operator's fix when a target's hard links cost the
+# setup scan its directory Grep/Glob. ONE wording, named in the stderr line
+# and in PANOPTICON.md's paragraph, because a disclosure nobody can act on is
+# noise -- and the guard cannot tell a benign `git clone --local` store from a
+# planted link, so re-cloning is the answer to both.
+_HARD_LINK_REMEDY = ("re-clone the target without hard links (git clone "
+                     "--no-hardlinks, or a fresh clone) to restore directory "
+                     "Grep/Glob for the setup scan")
+
+
 def _setup_scan_entry(review_root, prompt, host):
     """One return-persist dispatch entry for the read-only setup-scan agent
     (mirrors _scout_entry): the host dispatches it, gets proposal JSON back, and
@@ -82,6 +93,30 @@ def _setup_scan_entry(review_root, prompt, host):
     binds none either (model_resolver's `setup_scan` row).
     """
     out_file = os.path.abspath(runio._pano(review_root, "setup-proposal.json"))
+    root = os.path.abspath(review_root)
+    # #1683: the ONE walk. This grant is the only directory read scope the
+    # driver issues, and a PreToolUse hook may not os.walk the tree on every
+    # Grep -- so the multiply-linked files are found HERE, once, and ride in
+    # the scope. Past the cap the grant fails CLOSED on the directory itself:
+    # every directory Grep/Glob under the review root is denied until the tree
+    # is fixed, which is worth saying out loud rather than leaving the scan to
+    # discover it one refusal at a time.
+    linked, overflowed = hard_links.hard_links_under(root)
+    if overflowed:
+        print("driver setup: %d or more hard-linked files under %s (first: %s) -- "
+              "past the read guard's cap, so the setup scan's Grep and Glob are "
+              "denied over EVERY directory beneath it and it must Read files by "
+              "name. A `git clone --local` store or a `cp -al` tree is the usual "
+              "cause; a link there can name an inode outside the tree. Remedy: %s."
+              % (len(linked), root, linked[0], _HARD_LINK_REMEDY),
+              file=sys.stderr, flush=True)
+        linked = [root]
+    elif linked:
+        print("driver setup: %d hard-linked file(s) under %s (first: %s) -- the "
+              "setup scan's Grep and Glob are denied over any directory holding "
+              "one, because a link there can name an inode outside the tree. "
+              "Remedy: %s." % (len(linked), root, linked[0], _HARD_LINK_REMEDY),
+              file=sys.stderr, flush=True)
     enforced = loop_batch.expected_enforced(review_root, host,
                                             namespace=loop_batch.SETUP_NAMESPACE)
     # The all-unknown posture `{}` is deliberate and unrelated to `enforced`
@@ -103,8 +138,9 @@ def _setup_scan_entry(review_root, prompt, host):
              "marker": read_guard_hook.marker_line("setup-scan"),
              "out_file": out_file,
              # O2: the scan reads the repository by design -- a DIRECTORY scope
-             # over the review root, nothing outside it.
-             "scope": requests.scope(dirs=[os.path.abspath(review_root)])}
+             # over the review root, nothing outside it, and (#1683) the
+             # hard-linked files beneath it, which are in it by NAME only.
+             "scope": requests.scope(dirs=[root], hard_linked=linked)}
     if mode:
         entry["delivery"] = mode
     return entry

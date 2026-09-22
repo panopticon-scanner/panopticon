@@ -236,10 +236,33 @@ class TestEntryMarkerAndScope(unittest.TestCase):
         self.assertEqual("review-app-SEC",
                          read_guard_hook.marker_of(requests.entry_marker("review-app-SEC") + "body"))
 
-    def test_scope_has_exactly_the_three_keys(self):
+    def test_scope_has_exactly_the_guards_keys(self):
         from scripts import read_guard_hook
-        self.assertEqual({"files": ["/a"], "dirs": [], "reads": []}, requests.scope(files=["/a"]))
+        self.assertEqual({"files": ["/a"], "dirs": [], "reads": [], "hard_linked": []},
+                         requests.scope(files=["/a"]))
         self.assertEqual(set(read_guard_hook.SCOPE_KEYS), set(requests.scope()))
+
+    def test_a_directory_grant_must_record_its_walk(self):
+        # #1683 fix round 1: the walk is not optional paperwork -- a `dirs`
+        # grant whose hard links nobody looked for is the hole this issue is
+        # about, and "the only builder that issues one remembers to call the
+        # walker" is a fact about today's code, not a property of the shape.
+        # An EMPTY list is a valid explicit answer (a clean tree); omitting
+        # the keyword is not an answer at all.
+        with self.assertRaises(ValueError) as caught:
+            requests.scope(dirs=["/root"])
+        self.assertIn("hard_linked", str(caught.exception))
+        self.assertEqual([], requests.scope(dirs=["/root"], hard_linked=[])["hard_linked"])
+        # A file-only grant has no subtree to traverse and is untouched.
+        self.assertEqual([], requests.scope(files=["/a"])["hard_linked"])
+        self.assertEqual([], requests.scope()["hard_linked"])
+
+    def test_scope_carries_the_directory_grants_hard_links(self):
+        # #1683: the walk is the DRIVER's, taken once when the grant is built,
+        # and this is how its result reaches the hooks.
+        self.assertEqual(["/root/a/b.txt"],
+                         requests.scope(dirs=["/root"],
+                                        hard_linked=["/root/a/b.txt"])["hard_linked"])
 
 
 class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
