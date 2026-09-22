@@ -219,7 +219,30 @@ jobs:
           cat "$RUNNER_TEMP/code-scanning-reports/inventory/ai-inventory.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload actionable SARIF to GitHub Security tab
+        id: upload-sarif
         if: always() && steps.prepare-reports.outcome == 'success'
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: ${{ runner.temp }}/code-scanning-reports/security
+
+      # The pinned upload action can warn and continue while processing is
+      # still pending, so action success is not the completeness proof. This
+      # read-only audit binds that upload plus CodeQL's separate upload to the
+      # exact, still-current main SHA before asking GitHub for every open alert.
+      - name: Audit current main for open code-scanning alerts
+        if: >-
+          always() &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          steps.upload-sarif.outcome == 'success'
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SECURITY_SARIF_ID: ${{ steps.upload-sarif.outputs.sarif-id }}
+        run: |
+          python controller/scripts/code_scanning_audit.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --server-url "$GITHUB_SERVER_URL" \
+            --ref "$GITHUB_REF" \
+            --sha "$GITHUB_SHA" \
+            --sarif-id "$SECURITY_SARIF_ID"

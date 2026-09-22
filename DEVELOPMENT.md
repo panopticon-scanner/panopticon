@@ -328,6 +328,29 @@ dependency scanner reading the PR's own lockfiles) and no SARIF upload, because 
 `pull_request_target` the upload would be filed against `main`'s Security tab. The full set runs on
 the push to main after the merge.
 
+**Post-merge zero-alert audit.** On a push to `main`, `security.yml` follows its actionable SARIF
+upload with a read-only `scripts/code_scanning_audit.py` check. The check independently proves that
+the Security upload and CodeQL's separate Python upload both finished for the exact current main
+SHA, then reads every page of `state=open` code-scanning alerts without a severity or tool filter.
+Any open note, warning, or error fails. There is no alert-number baseline or allowlist: fixed and
+dismissed findings pass because GitHub omits them from `state=open`, while a reopened or newly
+fingerprinted alert is open again and fails.
+
+This is a post-merge detector, not universal pre-merge protection. The fork workflow intentionally
+uploads no SARIF, so a fork warning/note may first turn the main audit red after merge; the existing
+raw HIGH/CRITICAL gate remains the fork's pre-merge floor. For a read-only reproduction, take the
+singular `sarif-id` output from the main Security upload and run:
+
+```bash
+GH_TOKEN="$(gh auth token)" python3 scripts/code_scanning_audit.py \
+  --repository OWNER/REPOSITORY --server-url https://github.com \
+  --ref refs/heads/main --sha FULL_40_HEX_MAIN_SHA --sarif-id SECURITY_UPLOAD_UUID
+```
+
+Treat a clean result as current only after all five analyses are complete and the script confirms
+that main still points at the audited SHA. API failures, incomplete processing, malformed metadata,
+pagination failures, and a moving main head fail closed rather than report zero.
+
 One thing `security.yml` does **not** give you: a fork PR also raises `pull_request`, and on that
 route GitHub runs the PR's *own* copy of the workflow file, with a read-only token and no secrets.
 Nothing that file says binds a fork PR. What binds one is a required approving review, the required
