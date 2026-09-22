@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import unittest
 from unittest import mock
 
@@ -240,9 +241,9 @@ PURE = [("pytest-9.1.1-py3-none-any.whl", WHEEL, WHEEL_SHA)]
 
 
 class TestWheelSelection(unittest.TestCase):
-    """Which artifacts a linux x86_64 build could actually be served."""
+    """Which artifacts the linux builds this repo pins for could be served."""
 
-    def test_pure_python_and_linux_x86_64_wheels_are_selected(self):
+    def test_pure_python_and_linux_wheels_are_selected(self):
         for name in ("pytest-9.1.1-py3-none-any.whl",
                      "six-1.17.0-py2.py3-none-any.whl",
                      "pyyaml-6.0.3-cp312-cp312-manylinux2014_x86_64."
@@ -250,11 +251,26 @@ class TestWheelSelection(unittest.TestCase):
                      "pyyaml-6.0.3-cp312-cp312-musllinux_1_2_x86_64.whl"):
             self.assertTrue(bp.wheel_is_installable(name), name)
 
+    def test_linux_aarch64_wheels_are_selected_too(self):
+        # #1734: the tools image publishes linux/amd64 AND linux/arm64
+        # (docker-publish.yml), so a hash block holding only the x86_64 wheel
+        # makes `--require-hashes` fail the arm64 leg of the build -- the one
+        # architecture nobody develops on, on a matrix build where the other leg
+        # goes green. The gate and fixture files gain the extra digests
+        # harmlessly: pip needs ONE hash on the line to match what it fetched.
+        for name in ("pyyaml-6.0.3-cp312-cp312-manylinux2014_aarch64."
+                     "manylinux_2_17_aarch64.whl",
+                     "pyyaml-6.0.3-cp312-cp312-musllinux_1_2_aarch64.whl"):
+            self.assertTrue(bp.wheel_is_installable(name), name)
+
     def test_other_platforms_and_sdists_are_not(self):
+        # macosx_*_arm64 is the trap the aarch64 widening must not spring: it
+        # ends in `arm64`, and a substring rule that forgot to require `linux`
+        # would pin a wheel no build here can install.
         for name in ("pyyaml-6.0.3-cp312-cp312-macosx_11_0_arm64.whl",
                      "pyyaml-6.0.3-cp312-cp312-macosx_10_13_x86_64.whl",
                      "pyyaml-6.0.3-cp312-cp312-win_amd64.whl",
-                     "pyyaml-6.0.3-cp312-cp312-manylinux_2_17_aarch64.whl",
+                     "pywin32-311-cp312-cp312-win_arm64.whl",
                      "pytest-9.1.1.tar.gz"):
             self.assertFalse(bp.wheel_is_installable(name), name)
 
@@ -381,6 +397,255 @@ class TestRequirementsMain(unittest.TestCase):
         # how the wrong file gets rewritten.
         with self.assertRaises(SystemExit):
             bp.main([])
+
+    def test_every_privileged_requirements_file_is_on_the_default_list(self):
+        # The default list is what `bump_pins requirements` refreshes when no
+        # --file is named, which is how an operator refreshes them all beside a
+        # version bump. A hashed file missing from it is one nobody re-reads:
+        # its digests go stale silently and the next build fails on a pin
+        # nothing was watching. #1734 added the tools image's closure.
+        self.assertEqual(
+            (".github/requirements-gate.txt", "requirements-fixtures.txt",
+             "requirements-tools.txt"),
+            bp.REQUIREMENTS_FILES)
+
+
+# --- family: gems (#1734) ----------------------------------------------------
+# Canned rubygems, never the live index: what these hold is that a digest is
+# read from upstream AND recomputed from the .gem, and a test that fetched the
+# real gem would be testing rubygems' uptime instead.
+
+GEM_DOCKERFILE = """\
+ARG BRAKEMAN_VERSION=8.0.6
+ARG BUNDLER_AUDIT_VERSION=0.9.3
+ARG THOR_VERSION=1.5.0
+ARG THOR_GEM_SHA256=%s
+ARG BRAKEMAN_GEM_SHA256=%s
+ARG BUNDLER_AUDIT_GEM_SHA256=%s
+RUN curl -sfL "https://rubygems.org/downloads/thor-${THOR_VERSION}.gem" -o /tmp/thor.gem
+""" % ("a" * 64, "b" * 64, "c" * 64)
+
+GEM = b"gem bytes"
+GEM_SHA = hashlib.sha256(GEM).hexdigest()
+
+
+def _gem_of(url):
+    """The gem name in a rubygems API url, or None for a download url."""
+    for pattern in (r"/api/v1/versions/([^/]+)/latest\.json",
+                    r"/api/v2/rubygems/([^/]+)/versions/"):
+        m = re.search(pattern, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _canned_gems(runtime=None, sha=GEM_SHA, latest="1.5.0", artifact=GEM):
+    """A `_get` answering rubygems' three endpoints, per gem name.
+
+    `runtime` is {gem: {dependency: requirement}}; a gem it does not name
+    answers with the closure this repo has REVIEWED, so a test states only
+    what it changes and cannot accidentally assert the table's contents.
+    """
+    runtime = dict(runtime or {})
+
+    def get(url):
+        name = _gem_of(url)
+        if "/api/v1/versions/" in url:
+            return json.dumps({"version": latest}).encode()
+        if "/api/v2/rubygems/" in url:
+            deps = runtime.get(name, bp.REVIEWED_GEM_RUNTIME.get(name, {}))
+            return json.dumps({
+                "sha": sha, "platform": "ruby",
+                "dependencies": {
+                    "runtime": [{"name": n, "requirements": r}
+                                for n, r in sorted(deps.items())],
+                    "development": []}}).encode()
+        return artifact
+    return get
+
+
+class TestGemPins(unittest.TestCase):
+    def test_reads_every_current_pin(self):
+        self.assertEqual(
+            {"BRAKEMAN": ("8.0.6", "b" * 64),
+             "BUNDLER_AUDIT": ("0.9.3", "c" * 64),
+             "THOR": ("1.5.0", "a" * 64)},
+            bp.current_gem_pins(GEM_DOCKERFILE))
+
+    def test_a_half_written_pin_is_not_a_pin(self):
+        # A version with no digest beside it is the shape a careless bump
+        # leaves behind; reporting it as pinned would hide exactly that.
+        self.assertEqual({}, bp.current_gem_pins("ARG THOR_VERSION=1.5.0\n"))
+        self.assertEqual({}, bp.current_gem_pins("FROM scratch\n"))
+
+    def test_malformed_versions_are_refused_before_fetch_or_rewrite(self):
+        for version in ("1.5.0/evil", "1.5.0 extra", "1.5.0\n", "v1.5.0",
+                        "1.5.0.pre1"):
+            with self.subTest(version=version):
+                with mock.patch.object(bp, "_get") as fetch:
+                    with self.assertRaisesRegex(RuntimeError, "invalid gem version"):
+                        bp.verified_gem_sha("thor", version)
+                    fetch.assert_not_called()
+                with self.assertRaisesRegex(RuntimeError, "invalid gem version"):
+                    bp.rewrite_gem_pin(GEM_DOCKERFILE, "THOR", version, "d" * 64)
+
+
+class TestGemVerification(unittest.TestCase):
+    def test_sha_and_requirements_are_read_from_upstream(self):
+        with mock.patch.object(bp, "_get", _canned_gems()):
+            sha, runtime = bp.verified_gem_sha("bundler-audit", "0.9.3")
+        self.assertEqual(GEM_SHA, sha)
+        # the REQUIREMENT comes back with the name: a constraint this tool
+        # cannot evaluate is still a constraint it has to notice changing.
+        self.assertEqual({"bundler": ">= 1.2.0", "thor": "~> 1.0"}, runtime)
+
+    def test_a_published_sha_that_does_not_match_is_refused(self):
+        with mock.patch.object(bp, "_get", _canned_gems(sha="f" * 64)):
+            with self.assertRaises(RuntimeError) as cm:
+                bp.verified_gem_sha("thor", "1.5.0")
+        self.assertIn("refusing to pin", str(cm.exception))
+
+    def test_a_non_sha_response_is_refused(self):
+        for body in ("<html>404</html>", "", None):
+            with self.subTest(body=body), mock.patch.object(
+                    bp, "_get", _canned_gems(sha=body)):
+                with self.assertRaises(RuntimeError):
+                    bp.verified_gem_sha("thor", "1.5.0")
+
+
+class TestReviewedGemClosure(unittest.TestCase):
+    """The rule on both answers, on canned release documents."""
+
+    def test_the_reviewed_closure_itself_is_no_drift(self):
+        for gem, reviewed in bp.REVIEWED_GEM_RUNTIME.items():
+            with self.subTest(gem=gem):
+                self.assertEqual([], bp.unreviewed_gem_requirements(gem, dict(reviewed)))
+
+    def test_every_gem_the_image_installs_has_a_reviewed_closure(self):
+        # A gem added to GEMS with no entry here would be bumped against a
+        # table that does not describe it, which is the one state the rule
+        # cannot reason about.
+        self.assertEqual({name for _prefix, name in bp.GEMS},
+                         set(bp.REVIEWED_GEM_RUNTIME))
+
+    def test_a_new_dependency_is_drift(self):
+        drift = bp.unreviewed_gem_requirements("thor", {"rainbow": ">= 0"})
+        self.assertEqual(1, len(drift), drift)
+        self.assertIn("rainbow", drift[0])
+        self.assertIn("does not install", drift[0])
+
+    def test_a_tightened_constraint_on_a_base_ruby_gem_is_drift(self):
+        # The hole the name-only comparison left: racc comes from the base
+        # image's ruby, so `>= 0` -> `>= 1.8` is a question only the image
+        # build can answer -- and it used to be pinned green here first.
+        drift = bp.unreviewed_gem_requirements("brakeman", {"racc": ">= 1.8"})
+        self.assertEqual(1, len(drift), drift)
+        self.assertIn("racc", drift[0])
+        self.assertIn("'>= 0'", drift[0])
+        self.assertIn("'>= 1.8'", drift[0])
+
+    def test_a_dropped_dependency_is_drift(self):
+        drift = bp.unreviewed_gem_requirements("bundler-audit",
+                                               {"bundler": ">= 1.2.0"})
+        self.assertEqual(1, len(drift), drift)
+        self.assertIn("no longer requires thor", drift[0])
+
+    def test_an_unknown_gem_is_drift_rather_than_a_pass(self):
+        self.assertTrue(bp.unreviewed_gem_requirements("rainbow", {}))
+
+
+class TestGemRewrite(unittest.TestCase):
+    def test_rewrites_version_and_digest_together(self):
+        out = bp.rewrite_gem_pin(GEM_DOCKERFILE, "THOR", "1.6.0", "d" * 64)
+        self.assertEqual(("1.6.0", "d" * 64), bp.current_gem_pins(out)["THOR"])
+        # the fetch is templated on ${THOR_VERSION} and must not be edited, or
+        # a bump would have two places to keep in sync.
+        self.assertIn("thor-${THOR_VERSION}.gem", out)
+        # the other two gems are untouched
+        self.assertEqual(("8.0.6", "b" * 64), bp.current_gem_pins(out)["BRAKEMAN"])
+
+    def test_missing_line_raises_rather_than_silently_no_op(self):
+        for text in ("FROM scratch\n", "ARG THOR_VERSION=1.5.0\n"):
+            with self.assertRaises(RuntimeError):
+                bp.rewrite_gem_pin(text, "THOR", "1.6.0", "d" * 64)
+
+
+class TestGemsMain(unittest.TestCase):
+    """The gems family end to end through its subcommand."""
+
+    def _run(self, tmp, get, write=False, text=GEM_DOCKERFILE):
+        path = os.path.join(tmp, "Dockerfile")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        buf = io.StringIO()
+        with mock.patch.object(bp, "_get", get), mock.patch("sys.stdout", buf):
+            rc = bp.main(["gems", "--dockerfile", path]
+                         + (["--write"] if write else []))
+        with open(path, encoding="utf-8") as fh:
+            return rc, buf.getvalue(), fh.read()
+
+    def test_up_to_date_is_a_no_op(self):
+        import tempfile
+        # every gem already at the latest version rubygems reports
+        def get(url):
+            for name, version in (("thor", "1.5.0"), ("brakeman", "8.0.6"),
+                                  ("bundler-audit", "0.9.3")):
+                if "/%s/" % name in url or "/%s.json" % name in url:
+                    return json.dumps({"version": version}).encode()
+            raise AssertionError("unexpected url " + url)
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, text = self._run(d, get, write=True)
+        self.assertEqual(0, rc)
+        self.assertIn("up to date", out)
+        self.assertEqual(GEM_DOCKERFILE, text, "an up-to-date pin was rewritten")
+
+    def test_report_only_by_default(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            rc, out, text = self._run(d, _canned_gems(latest="9.9.9"))
+        self.assertEqual(0, rc)
+        self.assertIn("re-run with --write", out)
+        self.assertEqual(GEM_DOCKERFILE, text, "no --write must mean no edit")
+
+    def test_write_applies_the_bump(self):
+        # The reviewed closure, unchanged, is what a routine bump looks like.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            rc, _out, text = self._run(d, _canned_gems(latest="9.9.9"),
+                                       write=True)
+        self.assertEqual(0, rc)
+        for prefix in ("THOR", "BRAKEMAN", "BUNDLER_AUDIT"):
+            self.assertEqual(("9.9.9", GEM_SHA), bp.current_gem_pins(text)[prefix])
+
+    def _refuses(self, runtime):
+        """--write against a drifted closure: raises, and writes nothing."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "Dockerfile")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(GEM_DOCKERFILE)
+            with mock.patch.object(bp, "_get",
+                                   _canned_gems(runtime, latest="9.9.9")), \
+                    mock.patch("sys.stdout", io.StringIO()):
+                with self.assertRaises(RuntimeError) as cm:
+                    bp.main(["gems", "--dockerfile", path, "--write"])
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(GEM_DOCKERFILE, fh.read(),
+                                 "a refused bump still wrote to the Dockerfile")
+        return str(cm.exception)
+
+    def test_a_grown_runtime_closure_refuses_to_pin(self):
+        # The whole point of the Dockerfile's `--ignore-dependencies` install is
+        # that the closure is written down. A new release that requires
+        # something nobody installs would be pinned green here and then fail --
+        # or worse, half-work -- inside the image, so it must stop the bump and
+        # say the name.
+        self.assertIn("rainbow", self._refuses({"thor": {"rainbow": ">= 0"}}))
+
+    def test_a_tightened_constraint_refuses_to_pin(self):
+        message = self._refuses({"brakeman": {"racc": ">= 1.8"}})
+        self.assertIn("racc", message)
+        self.assertIn("--ignore-dependencies", message)
 
 
 if __name__ == "__main__":

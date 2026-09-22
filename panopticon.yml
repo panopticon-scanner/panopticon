@@ -79,6 +79,13 @@ groups:
       - skill/scripts/capture_goldens.py
       - skill/scripts/security_gate.py
       - scripts/bump_pins.py
+      # #1734: the tools image's committed closures, claimed beside the script
+      # that maintains their digests and the tests that guard them. The older
+      # Docker inputs (Dockerfile, Dockerfile.fixtures, requirements-fixtures.txt)
+      # are still unclaimed and reviewed as Ungrouped -- one decision, not this
+      # issue's, and `tests/test_matrix_coverage.py` does not cover this surface.
+      - requirements-tools.txt
+      - tools-image/**
       tests:
       - tests/run_tools_test_helpers.py
       - tests/test_run_tools_core.py
@@ -98,6 +105,7 @@ groups:
       - tests/test_schemas.py
       - tests/test_security_gate.py
       - tests/test_dockerfile.py
+      - tests/test_dockerfile_closures.py
       - tests/test_bump_pins.py
       panels:
       - ARC
