@@ -139,21 +139,23 @@ class TestIterBatch(unittest.TestCase):
         # enrolled by existing rather than by being listed here.
         #
         # `base.py` is the seam itself, `batch.py` (#1662) the loop's
-        # rollback manifest, `outage.py` (#1623) its host-outage verdict,
-        # `schema.py` (#1732) the output-schema argv rules split out of
-        # `base.py`, `resume.py` (#1732) the resume command split out of
-        # `outage.py`, and `kimi_home.py` the sandboxed `$KIMI_CODE_HOME` the
-        # kimi family's children run under: none is a family, none launches
-        # anything, and none has a Runner. A shared module added to this
-        # package costs one line here, which is the visible decision it should
-        # be -- the alternative, skipping any module that happens to have no
-        # `Runner`, would silently excuse the family that forgot one.
+        # rollback manifest, `children.py` (#1575) the seam's own launcher and
+        # child registry mixed into HostRunner, `outage.py` (#1623) its
+        # host-outage verdict, `schema.py` (#1732) the output-schema argv
+        # rules split out of `base.py`, `resume.py` (#1732) the resume command
+        # split out of `outage.py`, and `kimi_home.py` the sandboxed
+        # `$KIMI_CODE_HOME` the kimi family's children run under: none is a
+        # family, none launches a HOST, and none has a Runner. A shared module
+        # added to this package costs one line here, which is the visible
+        # decision it should be -- the alternative, skipping any module that
+        # happens to have no `Runner`, would silently excuse the family that
+        # forgot one.
         pkg_dir = os.path.dirname(os.path.abspath(base.__file__))
         names = sorted(f[:-3] for f in os.listdir(pkg_dir)
                        if f.endswith(".py")
                        and f not in ("__init__.py", "base.py", "batch.py",
-                                     "outage.py", "resume.py", "schema.py",
-                                     "kimi_home.py"))
+                                     "children.py", "outage.py", "resume.py",
+                                     "schema.py", "kimi_home.py"))
         self.assertIn("claude", names)                  # the directory really was read
         for name in names:
             mod = importlib.import_module("scripts.runners.%s" % name)
@@ -981,3 +983,100 @@ class TestTheAgentIsBoundToItsCheckpointsRole(unittest.TestCase):
 
     def test_a_runner_carries_no_roles_until_the_loop_says_so(self):
         self.assertIsNone(base.HostRunner("claude").roles)
+
+
+class TestTheOneConcurrencyCeiling(unittest.TestCase):
+    """#1576 (OPS-2112448973): the headless runner accepted unbounded process
+    concurrency. `--concurrency` is a `_positive_int` with no upper bound, and
+    `default_concurrency` is whatever a family declares, so `driver loop
+    --concurrency 500` opened a 500-wide pool of host CLIs -- each one a real
+    process tree, each one charged.
+
+    ONE ceiling, applied in ONE place: `batch_width`. The flag keeps accepting
+    any positive int (a clamp in the parser AND here would be two ceilings
+    that can disagree), and every caller that needs the number -- `iter_batch`
+    for its pool, `orchestrate.loop` for its outage tally -- asks this method
+    rather than re-deriving the expression.
+    """
+
+    def test_the_ceiling_is_the_largest_shipped_family_default(self):
+        # A flat number, not a cpu count: these children are network-bound
+        # CLIs, and a 2-core CI runner running 8 of them is the shape the
+        # suite already assumes.
+        self.assertEqual(8, base.MAX_CONCURRENCY)
+
+    def test_every_shipped_family_fits_under_it(self):
+        pkg_dir = os.path.dirname(os.path.abspath(base.__file__))
+        names = sorted(f[:-3] for f in os.listdir(pkg_dir)
+                       if f.endswith(".py")
+                       and f not in ("__init__.py", "base.py", "batch.py",
+                                     "children.py", "outage.py", "resume.py",
+                                     "schema.py", "kimi_home.py"))
+        for name in names:
+            mod = importlib.import_module("scripts.runners.%s" % name)
+            runner = getattr(mod, "Runner", None) or getattr(mod, "SessionRunner")
+            with self.subTest(family=name):
+                self.assertLessEqual(
+                    runner.default_concurrency, base.MAX_CONCURRENCY,
+                    "%s ships a default above the ceiling, so its ordinary run "
+                    "would print a clamp warning on every batch" % name)
+
+    def test_an_absent_or_zero_request_falls_back_to_the_family_default(self):
+        runner = FakeRunner()                       # default_concurrency = 3
+        for asked in (None, 0):
+            with self.subTest(asked=asked):
+                self.assertEqual(3, runner.batch_width(asked))
+
+    def test_a_request_under_the_ceiling_is_what_was_asked_for(self):
+        self.assertEqual(2, FakeRunner().batch_width(2))
+
+    def test_a_request_over_the_ceiling_is_clamped_and_says_so_once(self):
+        runner, err = FakeRunner(), io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(base.MAX_CONCURRENCY, runner.batch_width(500))
+            self.assertEqual(base.MAX_CONCURRENCY, runner.batch_width(500))
+        # ONE line, not one per caller: `iter_batch` and `orchestrate.loop`
+        # both ask for the same width on every batch.
+        self.assertEqual(["concurrency 500 clamped to the ceiling 8"],
+                         err.getvalue().splitlines())
+
+    def test_a_clamp_at_a_different_width_is_still_reported(self):
+        runner, err = FakeRunner(), io.StringIO()
+        with contextlib.redirect_stderr(err):
+            runner.batch_width(500)
+            runner.batch_width(64)
+        self.assertEqual(2, len(err.getvalue().splitlines()))
+
+    def test_a_width_under_the_ceiling_prints_nothing(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            FakeRunner().batch_width(base.MAX_CONCURRENCY)
+        self.assertEqual("", err.getvalue())
+
+    def test_a_negative_request_is_still_a_pool_of_one(self):
+        # `max(1, ...)` was already there and stays: a ThreadPoolExecutor
+        # refuses max_workers <= 0, so a bad number must degrade, not crash.
+        self.assertEqual(1, FakeRunner().batch_width(-5))
+
+    def test_the_pool_itself_is_bounded_by_the_ceiling(self):
+        # The guarantee, not the arithmetic: `iter_batch` asks for 500 and
+        # never has more than the ceiling in flight.
+        runner, peak, live, lock = FakeRunner(), [0], [0], threading.Lock()
+
+        def one(entry, env):
+            with lock:
+                live[0] += 1
+                peak[0] = max(peak[0], live[0])
+            time.sleep(0.02)
+            with lock:
+                live[0] -= 1
+            return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                  cost_usd=None, model=None, session_id=None,
+                                  denials=[], error=None)
+
+        entries = [{"id": "e%d" % i} for i in range(40)]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), mock.patch.object(runner, "run_entry", one):
+            list(runner.iter_batch(entries, 500, lambda e: {}))
+        self.assertLessEqual(peak[0], base.MAX_CONCURRENCY)
+        self.assertGreater(peak[0], 1, "the pool never ran anything in parallel")

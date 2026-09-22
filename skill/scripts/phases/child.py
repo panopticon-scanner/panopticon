@@ -12,12 +12,12 @@ expression for the whole package and the error type is the driver's, not this
 module's.
 """
 import os
-import signal
 import subprocess
 import threading
 import time
 
 import scripts.phases.runio as runio
+import scripts.procgroup as procgroup
 
 
 def _child_env():
@@ -147,43 +147,10 @@ def _capture(stream, head):
         except OSError:                    # pragma: no cover - already closed
             pass
 
-# #1575 (OPS-A1A): how long a timed-out group is given to exit on SIGTERM
-# before SIGKILL. Short on purpose -- the phase deadline has already passed.
-_KILL_GRACE = 2.0
-
-def _kill_group(proc, grace=_KILL_GRACE):
-    """End a timed-out child's whole PROCESS GROUP, not just its PID.
-
-    `proc.kill()` reaches the direct child only. A phase child that forked a
-    worker -- `run_tools.py` launching a scanner, a scanner launching its own
-    workers -- left that worker alive holding the stdout pipe it inherited, so
-    the reader never saw EOF and the descendant went on running after the driver
-    had already reported the phase timed out. That is not "no timeout"; it is a
-    nominal deadline that bounds one process out of a tree.
-
-    The child is spawned with `start_new_session=True`, so its pid IS the group
-    id and one `killpg` reaches everything it started. SIGTERM first, so a
-    scanner can flush and unlink its temp files, then SIGKILL once the grace
-    window passes. A group that is already gone is success, not an error, and a
-    platform without process groups falls back to the direct kill this replaces.
-    """
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (AttributeError, OSError):      # no process groups, or already reaped
-        proc.kill()
-        proc.wait()
-        return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(pgid, sig)
-        except (AttributeError, OSError):  # gone between getpgid and killpg
-            break
-        try:
-            proc.wait(timeout=grace)
-            return
-        except subprocess.TimeoutExpired:
-            continue
-    proc.wait()
+# #1575 (OPS-A1A): the group kill itself lives in `scripts.procgroup`, which
+# `runners/children.py` calls too -- ONE kill path for every child this repo
+# spawns, rather than a group kill here and a handle kill there. Its
+# `KILL_GRACE` is the constant this module used to hold, moved unchanged.
 
 def _run_child(cmd, review_root, phase, timeout=None):
     """Run a deterministic phase's child, converting a spawn-level OSError
@@ -195,7 +162,7 @@ def _run_child(cmd, review_root, phase, timeout=None):
 
     #1576: a Popen with reader threads rather than `subprocess.run`, because the
     capture has to be BOUNDED and `capture_output=True` cannot be. #1575: in its
-    own session, so the timeout can reach the whole tree (`_kill_group`).
+    own session, so the timeout can reach the whole tree (`procgroup`).
 
     A descendant that outlives the child (or escaped its process group) is
     deliberately LEFT once the readers' shared join grace expires: the child
@@ -220,11 +187,11 @@ def _run_child(cmd, review_root, phase, timeout=None):
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        _kill_group(proc)              # #1575: the whole tree, not the direct PID
+        procgroup.kill_group(proc)     # #1575: the whole tree, not the direct PID
         raise runio.DriverError("%s: %s timed out after %ss" % (phase, name, timeout))
     finally:
         # ONE deadline across both readers, and the readers are daemons.
-        # `_kill_group` ends everything that inherited the pipes, so EOF normally
+        # `kill_group` ends everything that inherited the pipes, so EOF normally
         # arrives at once -- but a descendant that escaped its group (or simply
         # outlived a child that exited on its own) must not be able to make the
         # driver wait `_READER_JOIN_GRACE` once per stream, which is the 10 s

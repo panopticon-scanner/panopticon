@@ -13,6 +13,7 @@ import time
 
 import scripts.dispatch as dispatch
 import scripts.read_guard_hook as read_guard_hook
+import scripts.runners.children as children
 import scripts.redact as redact
 import scripts.runners.outage as outage
 
@@ -38,6 +39,19 @@ SCOPE_FILE = "read-scope.json"
 # must not spell it differently.
 LEDGER_FILE = "dispatch-ledger.jsonl"
 MODES = ("headless", "session")
+# #1576 (OPS-2112448973): the ONE ceiling on how many host CLIs a batch runs
+# at once. `driver loop --concurrency` is a `_positive_int` with no upper
+# bound and `default_concurrency` is whatever a family declares, so nothing
+# stopped a 500-wide pool of real process trees, each one charged.
+#
+# A flat number, and the largest measured family default (claude's 8; kimi
+# bursted into exit-1s at 8 and ships 4). NOT cpu-derived: these children are
+# network-bound CLIs whose cost is tokens and rate limit, not local cores, and
+# a 2-core CI runner running 8 of them is the shape this suite already
+# assumes. Applied in exactly one place -- `HostRunner.batch_width` -- because
+# a second clamp in `driver.py`'s argument parser is a second ceiling, and two
+# ceilings can disagree.
+MAX_CONCURRENCY = 8
 
 
 def _utc(epoch):
@@ -128,7 +142,7 @@ class RunResult:
                     host_error=host_error, failure_class=failure_class, stderr=stderr)
 
 
-class HostRunner:
+class HostRunner(children.ChildProcesses):
     host = ""
     mode = "headless"
     default_concurrency = 1
@@ -220,11 +234,9 @@ class HostRunner:
     # the seam's reference implementation honours it -- and a family that
     # cannot says so here, once, instead of documenting it in prose.
     HONOURS_MAX_TURNS = True
-    # #1662: how long a terminated child is given to exit before it is killed,
-    # and the bound on how long an INTERRUPTED batch waits for the workers
-    # that were holding those children. Short on purpose -- a Ctrl-C means
-    # stop, and the operator is watching a terminal.
-    INTERRUPT_GRACE = 5.0
+    # `INTERRUPT_GRACE`, `launch`, `register_child`, `unregister_child` and
+    # `terminate_children` come from `runners/children.py` (#1575): one
+    # subject, one module, and this one was at the 700-line ratchet.
 
     def __init__(self, host=None):
         if host:
@@ -278,63 +290,28 @@ class HostRunner:
     def run_entry(self, entry, env):
         raise NotImplementedError("a host runner must implement run_entry")
 
-    def register_child(self, proc):
-        """Record a live child, so a Ctrl-C can end it (#1662).
+    def batch_width(self, concurrency=None):
+        """How many entries this runner may have in flight at once (#1576).
 
-        `proc` is anything `subprocess.Popen`-shaped -- `terminate()`,
-        `kill()`, `wait(timeout=)` are all this seam uses.
+        `concurrency` is what the operator asked for (`driver loop
+        --concurrency`), or None/0 for "whatever this family declares".
+        The answer is bounded below by 1 -- a `ThreadPoolExecutor` refuses
+        `max_workers <= 0`, so a bad number must degrade rather than crash --
+        and above by `MAX_CONCURRENCY`.
 
-        Stored on the INSTANCE dict lazily rather than in `__init__`: a family
-        (and several fakes in this suite) may define its own `__init__`
-        without chaining to this one, and a registry that only exists when
-        somebody remembered to call `super()` is a registry that silently
-        holds nothing on the one host that needed it. `setdefault` and
-        `append` are each atomic under the GIL, which is all the synchronising
-        a list appended to from the pool's workers and read from the main
-        thread needs.
-
-        The three families shipped today launch through a blocking
-        `subprocess.run`, which hands back no handle at all, so they register
-        nothing and `terminate_children` is a no-op for them: an operator's
-        terminal Ctrl-C already SIGINTs every child in the foreground process
-        group, and what this module adds for those hosts is refusing to LAUNCH
-        the rest of the batch and refusing to wait the running ones out. A
-        family that adopts `Popen` -- or any host whose children leave the
-        foreground group -- registers here and gets the path below.
+        The clamp announces itself ONCE per requested value rather than once
+        per call: `iter_batch` asks for the width of every batch and
+        `orchestrate.loop` asks for the same number to bound its outage tally,
+        so a per-call line would print twice a checkpoint and say nothing new.
+        Remembered on the instance dict, lazily, for the same reason the child
+        registry is: a family may not chain `super().__init__`.
         """
-        self.__dict__.setdefault("_children", []).append(proc)
-
-    def terminate_children(self, grace=None):
-        """End every child this runner still has in flight -- `terminate()`
-        (SIGTERM on POSIX), then `kill()` (SIGKILL) for whatever has not
-        exited within `grace` -- and return the children it acted on (#1662).
-
-        Called by `iter_batch` on the interrupt path, before the loop tears
-        the guard files down. It installs NO signal handler and replaces none:
-        `runners/kimi.py` chains a SIGTERM secret-stripper onto whatever was
-        already registered, and an interrupt path that installed its own would
-        unlink that chain. The registry is EMPTIED as it is read, so a second
-        call is a no-op rather than a second kill at a pid the OS may since
-        have reused.
-        """
-        grace = self.INTERRUPT_GRACE if grace is None else grace
-        children = list(self.__dict__.get("_children") or ())
-        self.__dict__["_children"] = []
-        for proc in children:
-            try:
-                proc.terminate()
-            except (OSError, ValueError):        # already gone
-                pass
-        deadline = time.monotonic() + max(0.0, float(grace))
-        for proc in children:
-            try:
-                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-            except Exception:    # noqa: BLE001 -- TimeoutExpired, or a handle that cannot wait
-                try:
-                    proc.kill()
-                except (OSError, ValueError):
-                    pass
-        return children
+        requested = int(concurrency or self.default_concurrency)
+        if requested > MAX_CONCURRENCY and self.__dict__.get("_clamped") != requested:
+            self.__dict__["_clamped"] = requested
+            print("concurrency %d clamped to the ceiling %d"
+                  % (requested, MAX_CONCURRENCY), file=sys.stderr)
+        return max(1, min(requested, MAX_CONCURRENCY))
 
     def iter_batch(self, entries, concurrency, env_for, stop=None):
         """Run every entry through run_entry on a thread pool, yielding
@@ -404,7 +381,7 @@ class HostRunner:
         entries = list(entries)
         if not entries:
             return
-        width = max(1, int(concurrency or self.default_concurrency))
+        width = self.batch_width(concurrency)
 
         def one(entry):
             started, clock = time.time(), time.monotonic()

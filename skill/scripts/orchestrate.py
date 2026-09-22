@@ -392,7 +392,11 @@ def loop(args):
             # LAUNCH order -- which is what tells the tally a success that
             # proves the host is back from one that was merely in flight when
             # it went down. `width` is the same number iter_batch resolves.
-            width = max(1, int(getattr(args, "concurrency", None) or runner.default_concurrency))
+            # #1576: the ONE ceiling, asked of the runner rather than
+            # re-derived here -- this number and `iter_batch`'s pool
+            # width have to be the same number, and they were two
+            # copies of one expression.
+            width = runner.batch_width(getattr(args, "concurrency", None))
             order = {e.get("id"): i for i, e in enumerate(pending)}
             # #1662: the list the rollback deletes, written BEFORE the first
             # submit -- taking a cancelled batch back must never be a glob
