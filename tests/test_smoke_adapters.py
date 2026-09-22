@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import scripts.smoke_adapters as sa
@@ -27,6 +28,150 @@ def _runner(returncode=0, stdout=b"", stderr=b""):
 
 _GOOD_SARIF = b'{"version":"2.1.0","runs":[{"results":[]}]}'
 _SARIF_WITH_FINDINGS = b'{"version":"2.1.0","runs":[{"results":[{"ruleId":"x"}]}]}'
+
+
+def _bandit_entry(provider="bandit",
+                  target="bandit.formatters.sarif:report"):
+    return SimpleNamespace(
+        name="sarif", value=target,
+        dist=SimpleNamespace(name=provider),
+    )
+
+
+def _bandit_sarif(version="test-runtime", semantic_version="test-runtime",
+                  results=None, driver_name="Bandit"):
+    if results is None:
+        results = [{"ruleId": "B105", "message": {"text": "finding"}}]
+    driver = {"name": driver_name}
+    if version is not None:
+        driver["version"] = version
+    if semantic_version is not None:
+        driver["semanticVersion"] = semantic_version
+    return json.dumps({
+        "version": "2.1.0",
+        "runs": [{"tool": {"driver": driver}, "results": results}],
+    }).encode("utf-8")
+
+
+def _capture(output, ok=True, msg=""):
+    def capture(name, argv, **kwargs):
+        return ok, msg, output
+    return capture
+
+
+class TestCheckBanditSarif(unittest.TestCase):
+    def test_real_output_shape_passes(self):
+        seen = {}
+
+        def capture(name, argv, **kwargs):
+            seen["name"] = name
+            seen["argv"] = argv
+            seen["kwargs"] = kwargs
+            with open(argv[-1], encoding="utf-8") as fh:
+                seen["fixture"] = fh.read()
+            return True, "", _bandit_sarif()
+
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[_bandit_entry()], runtime_version="test-runtime",
+            capture=capture)
+        self.assertTrue(ok, msg)
+        self.assertEqual(seen["argv"][:-1], sa.BANDIT_SARIF_SCAN)
+        self.assertEqual(seen["argv"][-3:-1], ["-f", "sarif"])
+        self.assertIn("password", seen["fixture"])
+        self.assertEqual(seen["kwargs"]["accepted_returncodes"], (0, 1))
+        self.assertFalse(seen["kwargs"]["include_output_hint"])
+
+    def test_duplicate_sarif_entry_points_fail_before_scan(self):
+        capture = mock.Mock(side_effect=AssertionError("must not scan"))
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[_bandit_entry(), _bandit_entry("other")],
+            runtime_version="test-runtime", capture=capture)
+        self.assertFalse(ok)
+        self.assertIn("exactly one", msg)
+        self.assertIn("found 2", msg)
+        capture.assert_not_called()
+
+    def test_missing_sarif_entry_point_fails_before_scan(self):
+        capture = mock.Mock(side_effect=AssertionError("must not scan"))
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[], runtime_version="test-runtime", capture=capture)
+        self.assertFalse(ok)
+        self.assertIn("found 0", msg)
+        capture.assert_not_called()
+
+    def test_wrong_provider_fails_before_scan(self):
+        capture = mock.Mock(side_effect=AssertionError("must not scan"))
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[_bandit_entry("bandit-sarif-formatter")],
+            runtime_version="test-runtime", capture=capture)
+        self.assertFalse(ok)
+        self.assertIn("Bandit's native", msg)
+        self.assertIn("bandit-sarif-formatter", msg)
+        capture.assert_not_called()
+
+    def test_wrong_native_target_fails_before_scan(self):
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[_bandit_entry(target="other.module:report")],
+            runtime_version="test-runtime", capture=mock.Mock())
+        self.assertFalse(ok)
+        self.assertIn("bandit.formatters.sarif:report", msg)
+
+    def test_missing_or_wrong_version_metadata_fails(self):
+        cases = (
+            (None, "test-runtime", "driver.version"),
+            ("wrong", "test-runtime", "driver.version"),
+            ("test-runtime", None, "driver.semanticVersion"),
+            ("test-runtime", "wrong", "driver.semanticVersion"),
+        )
+        for version, semantic_version, field in cases:
+            with self.subTest(version=version,
+                              semantic_version=semantic_version):
+                ok, msg = sa.check_bandit_sarif(
+                    entry_points=[_bandit_entry()],
+                    runtime_version="test-runtime",
+                    capture=_capture(_bandit_sarif(
+                        version=version, semantic_version=semantic_version)))
+                self.assertFalse(ok)
+                self.assertIn(field, msg)
+                self.assertIn("runtime", msg)
+
+    def test_malformed_output_fails_without_echoing_it(self):
+        payload = b"not-json-control-output"
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[_bandit_entry()], runtime_version="test-runtime",
+            capture=_capture(payload))
+        self.assertFalse(ok)
+        self.assertIn("not valid JSON", msg)
+        self.assertNotIn(payload.decode(), msg)
+
+    def test_empty_output_fails(self):
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[_bandit_entry()], runtime_version="test-runtime",
+            capture=_capture(b""))
+        self.assertFalse(ok)
+        self.assertIn("empty output", msg)
+
+    def test_unexpectedly_successful_empty_scan_fails(self):
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[_bandit_entry()], runtime_version="test-runtime",
+            capture=_capture(_bandit_sarif(results=[])))
+        self.assertFalse(ok)
+        self.assertIn("no findings", msg)
+
+    def test_missing_expected_finding_fails(self):
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[_bandit_entry()], runtime_version="test-runtime",
+            capture=_capture(_bandit_sarif(results=[{"ruleId": "B101"}])))
+        self.assertFalse(ok)
+        self.assertIn("B105", msg)
+
+    def test_capture_failure_is_returned_without_parsing(self):
+        ok, msg = sa.check_bandit_sarif(
+            entry_points=[_bandit_entry()], runtime_version="test-runtime",
+            capture=_capture(b"ignored", ok=False,
+                             msg="bandit SARIF scan: exited 2"))
+        self.assertFalse(ok)
+        self.assertEqual(msg, "bandit SARIF scan: exited 2")
 
 
 class TestCheckSemgrepScan(unittest.TestCase):
