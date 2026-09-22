@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 from _test_helpers import first
@@ -5,6 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.tools.base as base
 import scripts.tools.dependency_check as dc
 
 DC_SAMPLE = json.dumps({
@@ -228,6 +231,51 @@ class TestOfflineAnalyzers(unittest.TestCase):
         self.assertIn("--data", argv)
         self.assertIn("/opt/odc-data", argv)
 
+
+
+class TestReportWriteIsBounded(unittest.TestCase):
+    """#1576 (run-13 OPS-3272189615): dependency-check wrote its JSON report
+    into an unquota'd temp directory and the 50 MiB cap was applied only after
+    it had finished.
+
+    The 900-second timeout bounds how LONG the scanner runs, not how much it
+    writes, so a target crafted to emit a huge dependency/CVE report could
+    exhaust the work volume -- taking every concurrent scan with it -- before
+    read_capped_report so much as opened the file.
+    """
+
+    def _invoke(self, fake_run):
+        with mock.patch.object(dc, "run_tool", side_effect=fake_run), \
+                mock.patch("shutil.rmtree"):
+            return dc.DependencyCheckAdapter().invoke("/tmp/x")
+
+    def test_the_scanner_is_watched_while_it_writes(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen.update(kw)
+            seen["out"] = cmd[cmd.index("--out") + 1]
+            return b"{}", 0
+
+        with mock.patch.object(dc, "run_tool", side_effect=fake_run), \
+                mock.patch.object(dc.os.path, "exists", return_value=False), \
+                mock.patch("shutil.rmtree"):
+            dc.DependencyCheckAdapter().invoke("/tmp/x")
+        # The watched path is the report directory it told the scanner to use.
+        self.assertEqual(seen["watch_path"], seen["out"])
+        # dependency-check.sh is a wrapper; the kill has to reach the JVM.
+        self.assertTrue(seen["start_new_session"])
+
+    def test_an_overrun_is_a_disclosed_tool_failure_not_a_clean_scan(self):
+        def fake_run(cmd, **kw):
+            raise base.OutputCapExceeded(kw["watch_path"], 50, 100)
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            stdout, rc = self._invoke(fake_run)
+        self.assertEqual(stdout, b"")
+        self.assertNotIn(rc, (0, 1))       # outside ok_codes -> recorded missing
+        self.assertIn("write-time output cap", err.getvalue())
 
 
 if __name__ == "__main__":

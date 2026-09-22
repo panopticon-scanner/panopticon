@@ -5,8 +5,8 @@ import os
 import shutil
 import sys
 import tempfile
-from .base import (as_list, make_finding, omit_none, parse_json_bytes,
-                   read_capped_report, run_tool)
+from .base import (OutputCapExceeded, as_list, make_finding, omit_none,
+                   parse_json_bytes, read_capped_report, run_tool)
 from .sarif_utils import LEVEL_TO_SEV
 
 
@@ -18,6 +18,14 @@ from .sarif_utils import LEVEL_TO_SEV
 # and the report READ but not this host-side copy.)
 _MAX_COPY_BYTES = int(os.environ.get("PANOPTICON_ROSLYN_MAX_COPY_BYTES", 2 * 1024 ** 3))
 _MAX_COPY_FILES = int(os.environ.get("PANOPTICON_ROSLYN_MAX_COPY_FILES", 200_000))
+# #1576 (run-13 OPS-3539258787): the file cap counted only regular files, so an
+# arbitrarily broad or deep hierarchy of EMPTY directories passed both caps and
+# could exhaust the temp volume's inodes and the traversal itself before the
+# scanner's timed run ever started. Directories get their own ceiling; a
+# preserved in-tree symlink now counts toward _MAX_COPY_FILES too, because it
+# is a destination inode like any other. Same disposition as the file cap: a
+# breach raises before the copy that commits it.
+_MAX_COPY_DIRS = int(os.environ.get("PANOPTICON_ROSLYN_MAX_COPY_DIRS", 200_000))
 # #run9 OPS-E1A: rc returned when the scanner produced no usable SARIF -- NOT in
 # run_tool's ok_codes (0, 1), so _capture_run records the tool as missing
 # (-> INCONCLUSIVE) rather than a silent "zero findings" clean result.
@@ -36,15 +44,24 @@ def _safe_copytree(src, dst):
     #run9 OPS-D1A: bounded by _MAX_COPY_BYTES / _MAX_COPY_FILES -- an untrusted
     target that would blow past either raises BEFORE the copy that breaches it,
     so the adapter fails closed (recorded missing) rather than exhausting disk.
+    #1576: _MAX_COPY_DIRS bounds the directories, which used to be created
+    uncounted, and a preserved symlink counts as an entry.
     """
     root = os.path.realpath(src)
     skipped = 0
     total_bytes = 0
     total_files = 0
+    total_dirs = 0
     os.makedirs(dst, exist_ok=True)
     for cur, dirs, files in os.walk(src, followlinks=False):
         rel = os.path.relpath(cur, src)
         out_dir = dst if rel == "." else os.path.join(dst, rel)
+        total_dirs += 1
+        if total_dirs > _MAX_COPY_DIRS:
+            raise ValueError(
+                "roslyn-secguard: target copy exceeds the directory cap (%d > "
+                "%d) -- refusing to reproduce a hierarchy this large from an "
+                "untrusted tree" % (total_dirs, _MAX_COPY_DIRS))
         os.makedirs(out_dir, exist_ok=True)
         for name in list(dirs) + files:
             s = os.path.join(cur, name)
@@ -52,6 +69,12 @@ def _safe_copytree(src, dst):
             if os.path.islink(s):
                 real = os.path.realpath(s)
                 if real == root or real.startswith(root + os.sep):
+                    total_files += 1
+                    if total_files > _MAX_COPY_FILES:
+                        raise ValueError(
+                            "roslyn-secguard: target copy exceeds the entry cap "
+                            "(%d > %d) -- refusing to duplicate an untrusted tree "
+                            "this large" % (total_files, _MAX_COPY_FILES))
                     os.symlink(os.readlink(s), d)
                 else:
                     skipped += 1
@@ -247,7 +270,17 @@ class RoslynSecGuardAdapter:
                 "--ignore-msbuild-errors",
                 "--no-banner",
             ]
-            _stdout, rc = run_tool(cmd, timeout=600)
+            try:
+                # #1576 (OPS-2007447947): watch the export path WHILE the
+                # scanner writes it. read_capped_report below is the read-time
+                # half of the same 50 MiB ceiling; without this one the temp
+                # volume is already full by the time it refuses the file.
+                _stdout, rc = run_tool(cmd, timeout=600, watch_path=sarif,
+                                       start_new_session=True)
+            except OutputCapExceeded as exc:
+                print("roslyn-secguard: %s; recording as failed" % exc,
+                      file=sys.stderr)
+                return b"", _NO_OUTPUT_RC
             if os.path.exists(sarif):
                 # #run8 OPS-D1A: the scanner writes SARIF to disk, so this read
                 # bypasses run_tool's stdout cap; bound it and fail closed on an

@@ -849,6 +849,38 @@ def resolve_base_or_die(repo, explicit, pr_base, on_fail=None):
         return None
     return base, source
 
+# #1576 (run-13 OPS-4065418712): the most reviewable files one discovery hands
+# back. Repository-wide enumeration happens BEFORE exclusion, partitioning,
+# --scope narrowing and max_per_group chunking, so none of those bound it; past
+# this many files the sorted remainder is dropped, the drop is announced on
+# stderr, and `discovery.files_truncated` in groups.json says the tree was
+# larger than what was reviewed. Chosen well above any real target: the largest
+# repository in the calibration pool is ~35k files, so only a runaway or
+# hostile tree (the millions-of-tiny-files case) can reach it.
+DISCOVERED_FILES_MAX = 200_000
+
+
+def _cap_discovered(files, info):
+    """`files` bounded to DISCOVERED_FILES_MAX, disclosing what it dropped.
+
+    The input is sorted, so the kept prefix is deterministic rather than
+    whichever paths the filesystem or the index happened to yield first, and
+    both discovery methods get the same treatment. Records `files_seen` /
+    `files_truncated` on `info` when the caller supplied one.
+    """
+    seen = len(files)
+    if info is not None:
+        info["files_seen"] = seen
+        info["files_truncated"] = max(0, seen - DISCOVERED_FILES_MAX)
+    if seen <= DISCOVERED_FILES_MAX:
+        return files
+    print("panopticon: discovery found %d reviewable files and is reviewing the "
+          "first %d (DISCOVERED_FILES_MAX); %d file(s) are NOT in this run's "
+          "surface" % (seen, DISCOVERED_FILES_MAX, seen - DISCOVERED_FILES_MAX),
+          file=sys.stderr)
+    return files[:DISCOVERED_FILES_MAX]
+
+
 def _git_listed_files(repo):
     """Repo-relative paths git considers reviewable surface, or None.
 
@@ -933,14 +965,17 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
     (``_is_fixture_dir``) are pruned too; each pruned root is appended to
     ``pruned_fixtures`` when a list is supplied so the caller can disclose
     the exclusion rather than let it pass silently.
+
+    Both methods return at most ``DISCOVERED_FILES_MAX`` paths (#1576), with
+    the count and any truncation recorded on ``info`` for the artifact.
     """
     listed = _git_listed_files(repo)
     if listed is not None:
         if info is not None:
             info["method"] = "git-ls-files"
-        return _filter_reviewable(
+        return _cap_discovered(_filter_reviewable(
             listed, include_fixtures, pruned_fixtures,
-            isfile=lambda rel: _is_confined_regular(repo, rel))
+            isfile=lambda rel: _is_confined_regular(repo, rel)), info)
     if info is not None:
         info["method"] = "walk"
     out = []
@@ -968,7 +1003,7 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
                 continue
             if _is_confined_regular(repo, rel):
                 out.append(rel)
-    return sorted(out)
+    return _cap_discovered(sorted(out), info)
 
 # #run10: _looks_risky / _compute_depth lived here, stamping a shallow/standard/
 # deep `depth` onto every groups.json entry. Its readers were plan_contract's
@@ -977,6 +1012,20 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
 # Nothing reads `depth` now, and the 5.x review axis is the (domain, group) cell,
 # not a per-group depth. is_architecture_file / is_database_file survive: they
 # still feed compute_group_panels.
+
+def _discovery_block(info):
+    """The `discovery` block of groups.json: how the surface was found and how
+    much of it there was (#1576).
+
+    `files_truncated` is published on every scan, 0 included, for the same
+    reason `excluded_block` publishes an empty glob list: it scoped the run,
+    and a reader comparing two runs needs to see that this one reviewed the
+    whole tree rather than a prefix of it.
+    """
+    return {"method": info.get("method"),
+            "files_seen": info.get("files_seen", 0),
+            "files_truncated": info.get("files_truncated", 0)}
+
 
 def _group_obj(name, files, security_mode, parent=None, chunk_of=None):
     """Build one group entry: panels, parent and chunk_of for a file set.
@@ -1524,7 +1573,7 @@ def main(argv=None):
     # their __pycache__ artifacts used to reach a group); counts stay impl-only.
     result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
                           group_files=impl + tests, security_mode=args.security)
-    result["discovery"] = {"method": info.get("method")}
+    result["discovery"] = _discovery_block(info)
     try:
         catalog = _matrix_catalog(repo)   # SEC-3: parse_groups-validated matrix read
     except ValueError as exc:
@@ -1624,7 +1673,7 @@ def main(argv=None):
         result = build_result(repo, "repo", ".", None, impl, tests,
                               args.max_per_group, group_files=impl + tests,
                               security_mode=args.security)
-        result["discovery"] = {"method": info.get("method")}
+        result["discovery"] = _discovery_block(info)
     if _delta is not None:
         base, source = _delta
         # True for -c live tree; also true for a --pr worktree now that

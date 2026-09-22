@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 
 from discovery_test_helpers import (
     discovery, orchestrator, touch, run_scan, run_scan_with_err, grouped,
@@ -333,6 +334,65 @@ class TestGitAwareDiscovery(unittest.TestCase):
             out, _ = run_scan_with_err(d)
             self.assertIn("src/app.py", grouped(out))
             self.assertEqual(out["discovery"]["method"], "walk")
+
+
+class TestDiscoveryResultCap(unittest.TestCase):
+    """#1576 (run-13 OPS-4065418712): whole-repo enumeration had no result cap.
+
+    Every later control -- exclusion, partitioning, --scope narrowing,
+    max_per_group chunking -- runs on the list discovery already built, so none
+    of them bound it. The bound is on what discovery RETURNS, and the number
+    travels in the discovery block so a report can say the tree was larger than
+    what was reviewed.
+    """
+
+    def _tree(self, d, n):
+        for i in range(n):
+            touch(d, "src/m%03d.py" % i, "# %d\n" % i)
+
+    def test_walk_listing_is_capped_and_disclosed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d, 12)
+            info = {}
+            err = io.StringIO()
+            with unittest.mock.patch.object(discovery, "DISCOVERED_FILES_MAX", 5), \
+                    contextlib.redirect_stderr(err):
+                files = discovery.discover_repo_files(d, info=info)
+        self.assertEqual(len(files), 5)
+        self.assertEqual(files, sorted(files))          # a deterministic prefix
+        self.assertEqual(files[0], "src/m000.py")
+        self.assertEqual(info["files_seen"], 12)
+        self.assertEqual(info["files_truncated"], 7)
+        self.assertIn("DISCOVERED_FILES_MAX", err.getvalue())
+
+    def test_git_listing_is_capped_the_same_way(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d, 12)
+            init_repo(d)
+            git_cmd(d, "add", ".")
+            git_cmd(d, "commit", "-q", "-m", "init")
+            info = {}
+            err = io.StringIO()
+            with unittest.mock.patch.object(discovery, "DISCOVERED_FILES_MAX", 5), \
+                    contextlib.redirect_stderr(err):
+                files = discovery.discover_repo_files(d, info=info)
+        self.assertEqual(info["method"], "git-ls-files")
+        self.assertEqual(len(files), 5)
+        self.assertEqual(info["files_truncated"], 7)
+
+    def test_the_discovery_block_publishes_the_surface_counts(self):
+        # Published on every scan, 0 included: a reader comparing two runs has
+        # to be able to see that this one reviewed the whole tree.
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "src/app.py")
+            out, _ = run_scan_with_err(d)
+        self.assertEqual(out["discovery"]["files_truncated"], 0)
+        self.assertGreaterEqual(out["discovery"]["files_seen"], 1)
+
+    def test_the_cap_clears_every_tree_the_corpus_has(self):
+        # The largest repo in the calibration pool is ~35k files. A cap that a
+        # real target could reach would silently shrink a review surface.
+        self.assertGreaterEqual(discovery.DISCOVERED_FILES_MAX, 200_000)
 
 
 class TestWorktreeDirty(unittest.TestCase):

@@ -159,13 +159,31 @@ def _save_cache(cache_path, cache):
         pass
 
 
+# #1576 (run-13 OPS-746377351): the most FIRST.org requests one enrichment may
+# make. Every distinct CVE in the findings used to become its own sequential
+# HTTP call (8 s timeout each) and its own permanent cache entry, so a report
+# carrying a large crafted CVE set drove unbounded runtime, cache growth and
+# outbound traffic. Past this many UNCACHED lookups the rest are skipped, their
+# findings keep their other citations, and the skip is announced on stderr --
+# EPSS is an optional enrichment, never a run input. Real reports carry tens of
+# distinct CVEs, so only an adversarial one reaches 500.
+EPSS_LOOKUPS_MAX = 500
+
+
 def epss_lookup(cves, cache_path, opener=None):
-    """Look up EPSS scores for CVEs via FIRST.org API with local caching."""
+    """Look up EPSS scores for CVEs via FIRST.org API with local caching.
+
+    Bounded by EPSS_LOOKUPS_MAX network requests per call (#1576); cache hits
+    are free and never spend the budget, so a warm cache still enriches every
+    CVE it holds.
+    """
     if opener is None:
         opener = urllib.request.urlopen
     cache = _load_cache(cache_path)
     out = {}
     dirty = False
+    spent = 0
+    skipped = 0
     for cve in cves:
         if not isinstance(cve, str) or not CVE_RE.match(cve):
             continue
@@ -173,6 +191,10 @@ def epss_lookup(cves, cache_path, opener=None):
         if cve in cache:
             out[cve] = cache[cve]
             continue
+        if spent >= EPSS_LOOKUPS_MAX:
+            skipped += 1
+            continue
+        spent += 1
         try:
             url = "https://api.first.org/data/v1/epss?cve=" + urllib.parse.quote(cve)
             req = urllib.request.Request(url, headers={"User-Agent": "panopticon/%s" % __version__})
@@ -195,6 +217,11 @@ def epss_lookup(cves, cache_path, opener=None):
         except Exception as e:  # noqa: BLE001 - lookup is best-effort by design
             logging.warning("EPSS network failure or error for %s: %s", cve, e)
             continue
+    if skipped:
+        print("citations: EPSS budget spent after %d lookup(s) "
+              "(EPSS_LOOKUPS_MAX); %d CVE(s) went un-scored this run -- their "
+              "findings keep every other citation" % (spent, skipped),
+              file=sys.stderr)
     if dirty:
         _save_cache(cache_path, cache)
     return out
