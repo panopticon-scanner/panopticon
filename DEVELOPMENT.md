@@ -230,11 +230,30 @@ protection.
 
 Nothing scans a fork PR until you say so. From the moment it opens, `fork-scan` runs and **fails**:
 a fork PR carries a real red check, never a skipped one, because a skipped check is what branch
-protection counts as satisfied. Read the diff, then apply the `safe-to-scan` label — the `labeled`
-event is what starts the real scan, over the head you were looking at. Every new push to the PR
-(and every reopen) revokes the label, so a force-push after your approval waits for you a second
-time. `fork-scan` reports on the PR head because a `pull_request_target` run attaches its checks to
-the PR head SHA.
+protection counts as satisfied. Read the diff, then apply the `safe-to-scan` label — applying
+*that label* is what starts the real scan, over the head you were looking at. Every new push to
+the PR (and every reopen) revokes the label, so a force-push after your approval waits for you a
+second time. `fork-scan` reports on the PR head because a `pull_request_target` run attaches its
+checks to the PR head SHA.
+
+Two consequences of "that label", which is a deliberately strict rule. **Applying any other label
+to an already-scanned fork PR posts a fresh red `fork-scan`** over the earlier green; to clear it,
+*remove* `safe-to-scan` and *add* it again, because GitHub does not fire a `labeled` event for a
+label that is already present. The strictness buys the case it looks pedantic about: a looser rule
+("any label, while `safe-to-scan` is standing") could green a head nobody reviewed, because the
+gate reads the event payload — in the seconds between a push and the revoke finishing, the payload
+still carries the label. And if the revoke ever *fails* rather than races, that window is not
+seconds but indefinite: `unlabel` fails loudly on anything except a 404 (label already gone), but
+it is **not a required check**, so a failed revoke shows up only in the Actions tab. Check there if
+a fork PR is behaving oddly.
+
+One caveat about the name. Branch protection matches a required check by name, and on the
+`pull_request` route a fork PR runs its own workflow files — so a PR that *adds* a workflow with a
+job named `fork-scan` can post a green check under that name. That is inherent to check names
+rather than to this design, and it is why the outside-collaborator setting below is load-bearing:
+the required `fork-scan` means what it says only while "require approval for all outside
+collaborators" is on and the approving maintainer reads any workflow files the PR adds before
+clicking *Approve and run*.
 
 The fork path deliberately scans less than a main-branch run: no registry login, no `--deps` (so no
 dependency scanner reading the PR's own lockfiles) and no SARIF upload, because under

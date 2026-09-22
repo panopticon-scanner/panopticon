@@ -72,6 +72,13 @@ class TestTheForkWorkflowsTriggerSurface(unittest.TestCase):
         self.assertEqual(self.wf.get("permissions"),
                          {"contents": "read", "packages": "read"})
 
+    def test_the_job_set_is_exactly_the_two_this_file_is_for(self):
+        # m2: this is the privileged file -- every job in it runs on an event
+        # a fork author can raise. A third job added here would be reviewed by
+        # nothing except the continue-on-error sweep, so the SET is pinned and
+        # adding one is a visible decision with a test to change.
+        self.assertEqual(sorted(self.wf["jobs"]), ["fork-scan", "unlabel"])
+
 
 class TestForkScanNeverSkipsForAFork(unittest.TestCase):
     """The whole point of the second file: under this name a fork PR always
@@ -80,11 +87,19 @@ class TestForkScanNeverSkipsForAFork(unittest.TestCase):
     def setUp(self):
         self.job = _load(FORK)["jobs"]["fork-scan"]
 
-    def test_its_condition_is_the_foreign_head_test_alone(self):
-        # Nothing else. A label test here would make an unlabelled fork PR
-        # SKIP -- Success -- which is the defect this restructure removes.
-        self.assertEqual(" ".join(str(self.job.get("if", "")).split()),
-                         FOREIGN_HEAD)
+    def test_its_condition_is_the_fork_event_test_and_nothing_more(self):
+        # No LABEL test here: a label test in the job condition would make an
+        # unlabelled fork PR SKIP -- Success -- which is the defect this
+        # restructure removes. The label is checked by the first STEP, which
+        # fails, so the name always carries a deliberate verdict.
+        #
+        # m4: the event-name conjunct is redundant today (this file has one
+        # trigger, pinned above) and is here so the job's own text says what
+        # it is for; the foreign-head test alone is true for any event with no
+        # pull_request in its payload.
+        self.assertEqual(
+            " ".join(str(self.job.get("if", "")).split()),
+            "github.event_name == 'pull_request_target' && " + FOREIGN_HEAD)
 
     def test_it_holds_no_write_grant_at_all(self):
         # No security-events (it uploads nothing), no pull-requests (it writes
@@ -105,12 +120,23 @@ class TestTheLabelGateIsTheFirstThingThatRuns(unittest.TestCase):
             any(u.startswith("actions/") for u in uses[:1]),
             "the first step must be the gate, not an action")
 
-    def test_it_refuses_on_both_halves_and_exits_non_zero(self):
+    def test_it_refuses_on_all_three_tests_and_every_branch_exits(self):
         run = _script(self.gate)
-        self.assertIn("exit 1", run)
         self.assertIn("::error::", run)
+        # A scan starts only when a maintainer's deliberate act was applying
+        # THIS label. Three tests, and the middle one is the strict closure
+        # (#1900 fix round 3): without it, any label applied while a stale
+        # `safe-to-scan` stood -- left by a failed revoke, or by the seconds
+        # between a push and `unlabel` finishing -- would scan the new head
+        # and post a GREEN required check on a head nobody reviewed.
         self.assertIn('"$ACTION" != "labeled"', run)
+        self.assertIn('"$LABEL" != "safe-to-scan"', run)
         self.assertIn('"$LABELLED" != "true"', run)
+        # m1: each test must carry its OWN exit. Asserting `exit 1` appears
+        # somewhere left the first branch neuterable on its own -- and that is
+        # the branch that stops a `synchronize` from scanning on a stale
+        # label.
+        self.assertEqual(run.count("exit 1"), 3)
 
     def test_it_reads_the_event_only_through_env(self):
         self.assertNotIn("${{ github.event", _script(self.gate))
@@ -254,6 +280,14 @@ class TestTheTwoWorkflowsDoNotDrift(unittest.TestCase):
         self.assertEqual(_script(base).split(), _script(fork).split())
         self.assertEqual(base.get("timeout-minutes"),
                          fork.get("timeout-minutes"))
+
+    def test_the_python_version_is_identical(self):
+        # m3: the four command pins below would all pass with the two files on
+        # different interpreters, which is exactly the drift that makes "the
+        # fork path runs what main runs" stop being true.
+        name = "Set up Python"
+        self.assertEqual(_step(self.base, name)["with"]["python-version"],
+                         _step(self.fork, name)["with"]["python-version"])
 
     def test_the_gate_deps_install_is_identical(self):
         name = "Install Python deps"

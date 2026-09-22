@@ -32,12 +32,39 @@ on:
   # attaches its checks to the PR head SHA -- the same fact security.yml has
   # relied on since it was written.
   #
-  # KNOWN RACE, accepted: the label test reads the event payload. In the
-  # seconds between an author's push and `unlabel` finishing, the payload still
-  # carries `safe-to-scan`, so a maintainer applying ANY label in that window
-  # starts a scan of the NEW head from the stale payload. It costs a scan of an
-  # unreviewed tree in a job that holds no write grant and uploads nothing; the
-  # window is small and needs a maintainer action inside it.
+  # THE STRICT RULE, and why (#1900 fix round 3). A scan starts only when the
+  # label just applied IS `safe-to-scan` -- not merely when some label was
+  # applied while `safe-to-scan` happened to be standing. The looser rule had
+  # a race: the gate reads the event payload, so in the seconds between an
+  # author's push and `unlabel` finishing, the payload still carried the label,
+  # and a maintainer applying ANY label in that window scanned the NEW head and
+  # posted a GREEN `fork-scan` -- the required check -- on a head nobody had
+  # reviewed. Worse, `unlabel` can fail (an API outage, token trouble: it fails
+  # loudly on anything but a 404, but it is NOT a required check, so nothing
+  # forces anyone to look). A failed revoke leaves `safe-to-scan` standing
+  # indefinitely, which widened that window from seconds to forever. Requiring
+  # the triggering label closes both.
+  #
+  # What it costs: applying any OTHER label to an already-scanned fork PR posts
+  # a fresh red `fork-scan` over the earlier green. To clear it, REMOVE
+  # `safe-to-scan` and ADD it again -- GitHub does not fire `labeled` for a
+  # label that is already present, so re-applying is a two-step act. The
+  # refusal message says so.
+  #
+  # WHAT THE NAME IS WORTH. Branch protection matches a required check by NAME,
+  # and on the `pull_request` route a fork PR runs its own workflow files -- so
+  # a PR that ADDS a workflow with a job named `fork-scan` can post a green
+  # check under that name on its own head. That is inherent to check names, not
+  # to this design, and it is why "require approval for all outside
+  # collaborators" is load-bearing rather than belt-and-braces: the required
+  # `fork-scan` means what it says only while that setting is on and the
+  # approving maintainer reads any workflow files the PR adds before clicking
+  # "Approve and run".
+  #
+  # `pull_request_target` fires for SAME-REPO PRs too, so every same-repo PR
+  # event creates a run of this workflow in which both jobs skip. That is
+  # expected, not a bug: neither name carries a real verdict for a same-repo
+  # head, and `scan` in security.yml is what speaks for those.
   pull_request_target:
     branches: [main]
     # `opened` IS here: a fork PR must carry a real (red) `fork-scan` from the
@@ -109,7 +136,9 @@ jobs:
   fork-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: github.event.pull_request.head.repo.full_name != github.repository
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name != github.repository
     # NO security-events (this job uploads nothing -- under
     # pull_request_target the run's github.ref is the BASE branch, so a
     # fork-controlled SARIF would be filed against main's Security tab) and NO
@@ -130,24 +159,37 @@ jobs:
           LABEL: ${{ github.event.label.name }}
           LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'safe-to-scan') }}
         run: |
-          # Two halves, and both are needed. The ACTION test means a scan is
-          # started by a maintainer's deliberate act rather than by the
-          # author's push; the LABELLED test means the act was (or came after)
-          # `safe-to-scan`. Neither reads an event expression in this shell:
+          # Three tests, each with its own exit. ACTION: a scan is started by
+          # a maintainer's deliberate act, never by the author's push. LABEL:
+          # that act was applying THIS label -- the strict closure described in
+          # the header, which is what makes a stale `safe-to-scan` (a failed
+          # revoke, or the seconds before one finishes) unable to green an
+          # unreviewed head. LABELLED: the label is on the payload's head, so a
+          # removal racing the run still refuses. `$LABEL` is echoed only as
+          # data and never interpolated into an `::error::` line; note that
+          # GitHub compares strings case-insensitively, so a label created by
+          # hand as `Safe-To-Scan` would satisfy this gate while `unlabel`'s
+          # literal DELETE path may not match it -- create the label exactly as
+          # `safe-to-scan`. None of the three reads an event expression in this
+          # shell:
           # GitHub substitutes an expression into a run script before the shell
           # sees it -- inside a shell comment too -- so the event reaches this
           # step only as the three `env:` values above, which are data and
           # never script.
           echo "fork event: action=$ACTION label=${LABEL:-none} labelled=$LABELLED"
           if [ "$ACTION" != "labeled" ]; then
-            echo "::error::fork PR: this scan runs only when a maintainer applies a label. Review the diff, then apply the safe-to-scan label."
+            echo "::error::fork PR: this scan runs only when a maintainer applies the safe-to-scan label. Review the diff, then apply it."
+            exit 1
+          fi
+          if [ "$LABEL" != "safe-to-scan" ]; then
+            echo "::error::fork PR: that is not the label that starts a scan, so this check is red. To clear it, REMOVE the safe-to-scan label and ADD it again -- GitHub does not fire a labeled event for a label already present."
             exit 1
           fi
           if [ "$LABELLED" != "true" ]; then
-            echo "::error::fork PR: a maintainer must review the diff and apply the safe-to-scan label before this scan will run."
+            echo "::error::fork PR: safe-to-scan is not on this head. A maintainer must review the diff and apply it."
             exit 1
           fi
-          echo "safe-to-scan is present on this head; scanning."
+          echo "safe-to-scan applied to this head; scanning."
 
       # Controller = the scanner code that runs the gate. Under
       # pull_request_target it is ALWAYS the base SHA -- unconditionally, with
