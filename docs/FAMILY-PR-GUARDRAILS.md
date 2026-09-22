@@ -179,7 +179,10 @@ The seam's contract, in `skill/scripts/runners/base.py`:
 - `HONOURS_MAX_TURNS = False` says your CLI has no turn cap for `--max-turns` to
   reach. The loop sets `runner.max_turns` unconditionally, so declare it rather
   than accepting the flag and ignoring it in silence; Codex does.
-- `default_concurrency` is yours to set. `driver loop --concurrency` overrides it.
+- `default_concurrency` is yours to set, up to `base.MAX_CONCURRENCY` (8).
+  `driver loop --concurrency` overrides it and is clamped to the same
+  ceiling by `HostRunner.batch_width`, which is the ONE place the bound is
+  applied -- never re-derive the pool width yourself (#1576).
 - `runner_for(host, mode)` finds you by module name. `headless_available(host)`
   is true once `skill/scripts/runners/<host>.py` exposes `Runner`; until then
   `driver loop --host <host>` runs in session mode and says so.
@@ -257,7 +260,13 @@ in `skill/scripts/host_probes.py`, which is the registry and not the probes.
 Every module that starts a host CLI exposes a module-level `DEFAULT_RUNNER` and
 is listed in `tests/conftest.py`'s `LAUNCH_SEAMS` -- six seams across three
 families today -- and `tests/test_host_launch_guard.py` walks the AST so a
-seventh cannot be added silently.
+seventh cannot be added silently. A family's `DEFAULT_RUNNER` ships as `None`,
+the sentinel `HostRunner.launcher(runner, DEFAULT_RUNNER)` resolves to the
+seam's own `HostRunner.launch` (#1575): a `subprocess.run`-shaped call that
+puts the child in its own session, registers it while it runs, and ends the
+whole PROCESS GROUP on the entry timeout. Do not call `subprocess.run` in a
+family -- a host CLI spawns its own workers, and a timeout that kills the
+direct pid leaves them running and charging.
 
 ### What each landed host proves
 
@@ -397,8 +406,8 @@ Machine:
 Suite:
 
 - The test suite must never launch the real host binary. Your `Runner` takes
-  an injectable `runner=` callable (the Claude runner takes `subprocess.run`)
-  and every test passes a fake; loop-level tests patch
+  an injectable `runner=` callable (whose default resolves to the seam's own
+  `HostRunner.launch`) and every test passes a fake; loop-level tests patch
   `scripts.runners.base.runner_for`. A test that shells out to `codex`,
   `gemini`, or `kimi` is a defect, even when it passes on your machine.
 - Tests use temp dirs only: never this repo's `.panopticon/`, never a home

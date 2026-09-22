@@ -55,7 +55,12 @@ class _SignalStripper(Protocol):
 # `monkeypatch.setattr` cannot reach it -- so tests/conftest.py's autouse `_no_live_host_launches`
 # can only refuse a real `kimi` launch if the name is looked up per call, here. The sibling family
 # PRs bind their own module attribute the same way.
-DEFAULT_RUNNER = subprocess.run
+# #1575: None is the SENTINEL for "this runner's own `HostRunner.launch`" --
+# a process-group-aware Popen that registers its child, so a family-side
+# timeout reaches the workers `kimi -p` spawns and not just its own pid. The
+# attribute keeps its name, its place in LAUNCH_SEAMS and its LATE resolution
+# (below); only its value changed.
+DEFAULT_RUNNER = None
 # N1, done: the rebase step this class's docstring asked for. There is ONE
 # LaunchRefused, `base.LaunchRefused`, raised by the suite's guard through
 # every seam and re-raised by every launch path; no alias is bound here
@@ -490,7 +495,7 @@ class Runner(base.HostRunner):
                 return base.RunResult.failed(
                     entry_id, "entry model %r does not resolve to a model alias "
                     "the installed Kimi CLI has configured" % entry["model"])
-        launcher = DEFAULT_RUNNER if self.runner is None else self.runner
+        launcher = self.launcher(self.runner, DEFAULT_RUNNER)
         try:
             # Inside the try on purpose: `command()` refuses an unprepared
             # runner (no `--skills-dir`), and that refusal is a launch failure

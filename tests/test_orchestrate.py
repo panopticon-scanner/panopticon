@@ -3596,3 +3596,50 @@ class TestTheOutputSchemaShapeProof(LoopCase):
             self._run(d, floor, runner, "--mode", "session",
                       "--session-dir", self._session_root(d))
         self.assertEqual(0, probe.call_count)
+
+
+class TestTheLoopAsksTheRunnerForItsWidth(unittest.TestCase):
+    """#1576: the loop's outage tally and `iter_batch`'s pool have to be the
+    SAME number, and they were two copies of one expression --
+    `max(1, int(concurrency or runner.default_concurrency))`, written out in
+    both places. One of them then grew a ceiling and the other did not, which
+    is how a clamp becomes a clamp on one of two pools.
+
+    Read off the AST rather than the text: the comment above the call site
+    names `default_concurrency` in prose, and a grep-based guard would either
+    flag the prose or be defeated by a line break in the expression.
+    """
+
+    def _tree(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(orchestrate.__file__)),
+                            "orchestrate.py")
+        with open(path, encoding="utf-8") as fh:
+            return path, ast.parse(fh.read(), path)
+
+    def test_the_loop_calls_batch_width(self):
+        path, tree = self._tree()
+        calls = {ast.unparse(node.func) for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)}
+        self.assertIn("runner.batch_width", calls, path)
+
+    def test_the_loop_never_reads_default_concurrency_itself(self):
+        path, tree = self._tree()
+        offenders = ["%s:%d: %s" % (path, node.lineno, ast.unparse(node))
+                     for node in ast.walk(tree)
+                     if isinstance(node, ast.Attribute)
+                     and node.attr == "default_concurrency"]
+        self.assertEqual(
+            [], offenders,
+            "the loop re-derives the pool width instead of asking "
+            "`runner.batch_width(...)`, so the ceiling binds one pool and not "
+            "the other:\n  %s" % "\n  ".join(offenders))
+
+    def test_the_flag_itself_still_takes_any_positive_int(self):
+        # The clamp is ONE place. A second bound in the parser would be a
+        # second ceiling, and a `--concurrency 500` that argparse rejects can
+        # never be clamped-and-reported by the runner that owns the number.
+        parser = driver.build_parser()
+        args = parser.parse_args(["loop", ".", "--concurrency", "500"])
+        self.assertEqual(500, args.concurrency)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["loop", ".", "--concurrency", "0"])
