@@ -32,10 +32,10 @@
       "name": "hostile-csproj",
       "language": "csharp",
       "source": "local",
-      "path": "tests/fixtures/hostile-csproj",
+      "path": "/opt/panopticon-fixtures/hostile-csproj",
       "adapters": ["roslyn-secguard"],
-      "baked": false,
-      "note": "committed in-repo (tests/fixtures/hostile-csproj), not copied into the panopticon-fixtures image; 'path' is repo-relative, checked on the host checkout rather than inside the built image."
+      "baked": true,
+      "note": "copied in from tests/fixtures/hostile-csproj and 'dotnet restore'd at image-build time (#1655): roslyn-secguard refuses a C# target with no restore output, and the containment lane scans a read-only mount with --network none, so the restore cannot happen there. Restored, never built -- the hostile target is hooked BeforeTargets=Build and may only fire inside the no-egress container."
     }
   ]
 }

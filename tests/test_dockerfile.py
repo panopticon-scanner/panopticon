@@ -432,8 +432,36 @@ class TestDockerfileFixtures(unittest.TestCase):
             "ARG ASP_GOAT_SHA",
             "COPY tests/fixtures/vulnerable-rust",
             "cargo build",
+            # #1655: roslyn-secguard refuses a C# target with no restore
+            # output, and the containment lane scans read-only with
+            # `--network none`, so the restore can only have happened here.
+            "COPY tests/fixtures/hostile-csproj",
+            "dotnet restore /opt/panopticon-fixtures/hostile-csproj",
         ]:
             self.assertIn(marker, text, marker)
+
+    def test_the_hostile_fixture_is_restored_but_never_built(self):
+        # #1655. evil.csproj's `Hostile` target is hooked BeforeTargets="Build":
+        # it fires when the project is BUILT, which is the act the containment
+        # probe performs inside a no-egress container on a throwaway copy.
+        # `dotnet build` HERE would run its `curl` on the image builder, which
+        # has a network -- the one place the fixture must not execute.
+        lines = [line for _n, line in
+                 _logical_lines(_read_dockerfile_fixtures())
+                 if line.startswith("RUN") and "hostile-csproj" in line]
+        self.assertTrue(lines, "nothing in Dockerfile.fixtures prepares the "
+                               "hostile fixture; the containment lane's "
+                               "adapter would find it inapplicable")
+        for line in lines:
+            self.assertIn("dotnet restore", line)
+            self.assertNotIn("dotnet build", line)
+            # Re-review I2: the restore is INTOLERANT on purpose. AspGoat's
+            # `|| echo "... skipped"` three lines up is the in-file model for
+            # making a flaky step tolerant; copied here it ships an unrestored
+            # fixture, the lane fails on applicability, and the message blames
+            # the probe -- the exact defect the bake exists to prevent.
+            self.assertNotIn("||", line, "the hostile restore must fail the image build, not fall through")
+            self.assertNotRegex(line, r";\s*(true|echo)\b", "the hostile restore must not be made tolerant")
 
     def test_fixture_refs_are_pinned_shas_not_mutable_branches(self):
         # #1252 (SEC-E2C): the goat fixtures must be pinned to immutable commit
