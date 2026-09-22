@@ -1,6 +1,10 @@
+import contextlib
+import io
 import json
 import subprocess
+import sys
 import unittest
+from unittest import mock
 
 import scripts.smoke_adapters as sa
 from scripts.run_tools import recommendable_tools
@@ -169,6 +173,70 @@ class TestCheckRoslynSecGuardBuild(unittest.TestCase):
         self.assertTrue(any(a.startswith("--export=") for a in seen["argv"]))
         self.assertIn("--ignore-msbuild-errors", seen["argv"])
         self.assertIn("--no-banner", seen["argv"])
+
+
+class TestProbeOutputIsBounded(unittest.TestCase):
+    """#1576 (run-13 OPS-2542050329, tool-confirmed): run_probe buffered a
+    probe's combined stdout/stderr with no byte cap.
+
+    A version probe emits a line. A malfunctioning or unexpectedly verbose
+    scanner can emit at line rate for the whole 180-second timeout, and the
+    image build retained every byte of it before so much as checking the exit
+    code -- enough to take out a CI worker. The cap keeps the head and drains
+    the rest, so the child never blocks on a full pipe either.
+    """
+
+    # ~2 MB at once, then a non-zero exit: verbose AND failing, the case whose
+    # diagnostic tail the caller actually reads.
+    _NOISY = ("import sys\n"
+              "sys.stdout.buffer.write(b'x' * 2_000_000)\n"
+              "sys.stdout.buffer.write(b'\\nlast line here\\n')\n"
+              "sys.stdout.flush()\n"
+              "raise SystemExit(3)\n")
+
+    def test_a_flood_is_truncated_not_buffered(self):
+        err = io.StringIO()
+        with mock.patch.object(sa, "PROBE_OUTPUT_MAX_BYTES", 4096), \
+                contextlib.redirect_stderr(err):
+            ok, msg = sa.run_probe("noisy", [sys.executable, "-c", self._NOISY])
+        self.assertFalse(ok)
+        self.assertIn("exited 3", msg)
+        self.assertIn("truncated", msg)
+        self.assertIn("PROBE_OUTPUT_MAX_BYTES", err.getvalue())
+
+    def test_the_bounded_read_keeps_the_head_and_drains_the_rest(self):
+        import io as _io
+        stream = _io.BytesIO(b"head" + b"z" * 100_000)
+        kept, truncated = sa._read_capped(stream, 4)
+        self.assertEqual(kept, b"head")
+        self.assertTrue(truncated)
+        self.assertEqual(stream.read(), b"")      # drained to EOF, never left full
+
+    def test_a_quiet_probe_is_untouched(self):
+        ok, msg = sa.run_probe("quiet", [sys.executable, "-c", "print('v1.2.3')"])
+        self.assertTrue(ok, msg)
+        self.assertEqual(msg, "")
+
+    def test_a_failing_probe_still_reports_its_last_line(self):
+        ok, msg = sa.run_probe(
+            "bad", [sys.executable, "-c",
+                    "import sys; print('boom: no such config'); sys.exit(2)"])
+        self.assertFalse(ok)
+        self.assertIn("exited 2", msg)
+        self.assertIn("boom: no such config", msg)
+        self.assertNotIn("truncated", msg)
+
+    def test_a_missing_binary_still_reads_as_missing(self):
+        ok, msg = sa.run_probe("nope", ["panopticon-no-such-binary-1576"])
+        self.assertFalse(ok)
+        self.assertIn("binary not found", msg)
+
+    def test_a_hung_probe_is_killed_at_the_timeout(self):
+        with mock.patch.object(sa, "PROBE_TIMEOUT", 1):
+            ok, msg = sa.run_probe(
+                "hung", [sys.executable, "-c", "import time; time.sleep(30)"])
+        self.assertFalse(ok)
+        self.assertIn("no response in 1s", msg)
 
 
 if __name__ == "__main__":
