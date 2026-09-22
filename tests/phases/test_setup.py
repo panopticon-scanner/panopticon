@@ -15,6 +15,7 @@ import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.setup as setup
 import scripts.phases.setup as setup_phase
+import scripts.phases.setup_readiness as setup_readiness
 import scripts.phases.requests as requests
 
 import scripts.driver as driver
@@ -1367,9 +1368,9 @@ class TestTheLimitationsClauseStaysReadable(unittest.TestCase):
         return clause.splitlines()
 
     def test_twenty_remedies_render_as_twelve_lines_and_a_tail(self):
-        body = self._lines(setup_phase._limitations_clause(self._rows(20)))
+        body = self._lines(setup_readiness._limitations_clause(self._rows(20)))
         self.assertEqual("limitations:", body[0])
-        self.assertEqual(1 + setup_phase._LIMITATION_MAX + 1, len(body),
+        self.assertEqual(1 + setup_readiness._LIMITATION_MAX + 1, len(body),
                          "expected a header, 12 remedies and one tail:\n"
                          + "\n".join(body))
         self.assertIn("and 8 more", body[-1])
@@ -1377,14 +1378,14 @@ class TestTheLimitationsClauseStaysReadable(unittest.TestCase):
     def test_no_rendered_line_is_over_the_column_bar(self):
         for count in (1, 7, 12, 20):
             with self.subTest(limitations=count):
-                clause = setup_phase._limitations_clause(self._rows(count))
+                clause = setup_readiness._limitations_clause(self._rows(count))
                 over = [ln for ln in self._lines(clause) if len(ln) > 119]
                 self.assertEqual([], over, "line over 119 characters:\n"
                                  + "\n".join("%d: %s" % (len(ln), ln)
                                               for ln in over))
 
     def test_every_line_carries_exactly_one_remedy(self):
-        body = self._lines(setup_phase._limitations_clause(self._rows(3)))
+        body = self._lines(setup_readiness._limitations_clause(self._rows(3)))
         self.assertEqual(4, len(body))
         for name, line in zip(("capability_00", "capability_01", "capability_02"),
                               body[1:]):
@@ -1402,16 +1403,16 @@ class TestTheLimitationsClauseStaysReadable(unittest.TestCase):
         # try/except -- so it escaped as a traceback with no JSON status.
         for detail in (["a", "b"], {"k": 1}, 7, None):
             with self.subTest(detail=detail):
-                line = setup_phase._limitation_line("host-capability:x", detail)
+                line = setup_readiness._limitation_line("host-capability:x", detail)
                 self.assertIsInstance(line, str)
                 self.assertIn(str(detail), line)
         long = ["remedy-%02d" % i for i in range(40)]
-        line = setup_phase._limitation_line("host-capability:x", long)
-        self.assertLessEqual(len(line), setup_phase._LIMITATION_LINE)
-        self.assertTrue(line.endswith(setup_phase._TRUNCATED + ")"), line)
+        line = setup_readiness._limitation_line("host-capability:x", long)
+        self.assertLessEqual(len(line), setup_readiness._LIMITATION_LINE)
+        self.assertTrue(line.endswith(setup_readiness._TRUNCATED + ")"), line)
 
     def test_a_short_list_gets_no_tail(self):
-        clause = setup_phase._limitations_clause(self._rows(setup_phase._LIMITATION_MAX))
+        clause = setup_readiness._limitations_clause(self._rows(setup_readiness._LIMITATION_MAX))
         self.assertNotIn("more", clause)
 
     def test_a_name_longer_than_the_bar_survives_intact(self):
@@ -1424,27 +1425,27 @@ class TestTheLimitationsClauseStaysReadable(unittest.TestCase):
         # 36 characters) -- which is exactly why it was a comment claiming a
         # guarantee the code did not make.
         name = "host-capability:" + ("x" * 140)
-        line = self._lines(setup_phase._limitations_clause(
+        line = self._lines(setup_readiness._limitations_clause(
             [(name, self.REMEDY)]))[1]
         self.assertIn(name, line)
         self.assertNotIn(self.REMEDY, line, "the detail must still be cut")
 
     def test_the_detail_is_the_only_field_ever_cut(self):
         name = "host-capability:model_binding"
-        line = self._lines(setup_phase._limitations_clause(
+        line = self._lines(setup_readiness._limitations_clause(
             [(name, self.REMEDY)]))[1]
         self.assertIn(name, line)
-        self.assertTrue(line.endswith(setup_phase._TRUNCATED + ")"), line)
+        self.assertTrue(line.endswith(setup_readiness._TRUNCATED + ")"), line)
         # ...and what survives of the detail is a PREFIX of the real one, not
         # a slice of something else.
-        cut = line[len("  - %s (" % name):-len(setup_phase._TRUNCATED + ")")]
+        cut = line[len("  - %s (" % name):-len(setup_readiness._TRUNCATED + ")")]
         self.assertTrue(self.REMEDY.startswith(cut), line)
         self.assertTrue(cut, "the detail was cut away entirely")
 
     def test_the_name_survives_truncation(self):
         # The check's NAME is what an operator greps for and what
         # setup-complete.json keys on; only the detail may be cut.
-        line = self._lines(setup_phase._limitations_clause(
+        line = self._lines(setup_readiness._limitations_clause(
             [("host-capability:model_binding", self.REMEDY)]))[1]
         self.assertIn("host-capability:model_binding", line)
 
