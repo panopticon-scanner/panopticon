@@ -8,6 +8,7 @@ from test_workflow_pins import _without_comments
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "security.yml")
+FORK_WORKFLOW = os.path.join(ROOT, ".github", "workflows", "security-fork.yml")
 
 
 class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
@@ -41,13 +42,23 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
             if "run" in step
         ))
 
+    def _every_run_text(self):
+        """The same, over BOTH security workflows.
+
+        #1900 fix round 2 moved the fork scan into `security-fork.yml`, and
+        that file -- not this one -- now carries `pull_request_target`, the
+        privileged trigger. A rule about what may reach a shell that stopped
+        at this file's boundary would be weakest exactly where it matters
+        most.
+        """
+        texts = []
+        for path in (WORKFLOW, FORK_WORKFLOW):
+            with open(path, encoding="utf-8") as fh:
+                texts.append(self._run_text(yaml.safe_load(fh)))
+        return "\n".join(texts)
+
     def test_controller_and_target_are_separate_checkouts(self):
         wf = self._workflow()
-        # PyYAML 1.1 parses the unquoted `on:` key as the boolean True.
-        on = wf.get(True, {})
-        triggers = on if isinstance(on, list) else list(on.keys())
-        self.assertIn("pull_request_target", triggers)
-
         checkouts = self._checkout_steps(wf)
         paths = [step.get("with", {}).get("path") for step in checkouts]
         self.assertIn("controller", paths)
@@ -64,9 +75,16 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         target = next(
             s for s in checkouts if s.get("with", {}).get("path") == "target"
         )
-        self.assertIn(
-            "github.event.pull_request.base.sha",
+        # #1900 fix round 2: this file has no untrusted route left, so the
+        # controller ref no longer needs (or may have) a base-SHA branch --
+        # that expression, and the trust decision inside it, moved to
+        # `security-fork.yml`, where the base SHA is unconditional.
+        self.assertEqual(
             controller.get("with", {}).get("ref", ""),
+            "${{ github.event.pull_request.head.sha || github.sha }}",
+        )
+        self.assertNotIn(
+            "base.sha", controller.get("with", {}).get("ref", ""),
         )
         self.assertIn(
             "github.event.pull_request.head.repo.full_name",
@@ -82,32 +100,50 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         # PyYAML 1.1 parses the unquoted `on:` key as the boolean True.
         on = wf.get(True, {})
         triggers = on if isinstance(on, list) else list(on.keys())
-        self.assertIn("pull_request_target", triggers)
         self.assertIn("pull_request", triggers)
 
+        # #1900 fix round 2, and the load-bearing half of this test now: this
+        # file must NOT carry `pull_request_target`. A job skipped by an `if:`
+        # still posts a check run under its own name and a skipped job reports
+        # Success, so a second trigger that could skip `scan` is a second way
+        # to post a green `scan` over a real failure -- on same-repo PRs too,
+        # where a label applied after a failed gate would have cleared it. The
+        # fork scan reports under `fork-scan`, from `security-fork.yml`.
+        self.assertNotIn("pull_request_target", triggers)
+
         job_if = wf["jobs"]["scan"].get("if", "")
-        self.assertIn("github.event_name == 'pull_request_target' &&", job_if)
-        self.assertIn("head.repo.full_name != github.repository", job_if)
         self.assertIn("github.event_name == 'pull_request' &&", job_if)
         self.assertIn("head.repo.full_name == github.repository", job_if)
+        self.assertNotIn("pull_request_target", job_if)
 
-        # #run9 TST-B1B: the four fragments above can ALL be present in a guard
-        # that is still WRONG -- a mis-parenthesization or a swapped ==/!= would
-        # route a fork through the trusted pull_request arm. Validate the ASSEMBLED
-        # boolean: each route is a parenthesized AND group with the CORRECT
-        # operator, the two are OR-combined, and push is OR-joined at the front.
+        # #run9 TST-B1B: the fragments above can ALL be present in a guard that
+        # is still WRONG -- a mis-parenthesization or a swapped ==/!= would
+        # route a fork through the trusted arm. Validate the ASSEMBLED boolean.
         compact = " ".join(job_if.split())
-        self.assertIn(                                  # fork route: FOREIGN head repo
-            "(github.event_name == 'pull_request_target' && "
-            "github.event.pull_request.head.repo.full_name != github.repository)",
-            compact)
         self.assertIn(                                  # same-repo route: SAME head repo
             "(github.event_name == 'pull_request' && "
             "github.event.pull_request.head.repo.full_name == github.repository)",
             compact)
-        self.assertIn(") || (", compact)                # the two routes are OR-combined
         self.assertTrue(                                # push always runs, OR-joined first
             compact.startswith("github.event_name == 'push' || ("))
+        self.assertEqual(                               # and there is no third route
+            compact.count("github.event_name"), 2)
+
+    def test_the_pull_request_types_are_the_defaults(self):
+        # M3: the same-repo scan only fires on the actions `pull_request`
+        # defaults to (opened, synchronize, reopened). Someone narrowing this
+        # to `types: [opened]` would leave a new head carrying the previous
+        # head's verdict, silently.
+        on = self._workflow().get(True, {})
+        self.assertIsNone(on["pull_request"].get("types"))
+
+    def test_the_scan_jobs_permissions_are_the_recorded_ones(self):
+        # Pinned, not merely present: a later edit that widens them has to
+        # come through this line.
+        self.assertEqual(
+            self._workflow()["jobs"]["scan"]["permissions"],
+            {"contents": "read", "packages": "read",
+             "security-events": "write"})
 
     def test_only_trusted_controller_runs_gate_and_scanners(self):
         runs = self._run_text(self._workflow())
@@ -142,7 +178,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertIn('--tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}"', runs)
 
     def test_no_untrusted_github_context_in_run_scripts(self):
-        runs = self._run_text(self._workflow())
+        runs = self._every_run_text()
         untrusted_contexts = [
             "${{ github.event.pull_request.title }}",
             "${{ github.event.pull_request.body }}",
@@ -164,7 +200,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
     def test_expanded_untrusted_contexts_are_caught(self):
         # Positive regression: each newly-added context would be flagged if it
         # appeared anywhere in a run script.
-        runs = self._run_text(self._workflow())
+        runs = self._every_run_text()
         newly_untrusted = [
             "${{ github.head_ref }}",
             "${{ github.event.pull_request.head.label }}",
