@@ -105,6 +105,7 @@ groups:
       - tests/test_schemas.py
       - tests/test_security_gate.py
       - tests/test_dockerfile.py
+      - tests/test_dockerfile_closures.py
       - tests/test_bump_pins.py
       panels:
       - ARC
