@@ -38,11 +38,15 @@ bandit-sarif-formatter==1.1.1 \
     --hash=sha256:2a8351cecc03b265ec7546794b9c54a988d0b7282db544de913dc6c5a46a50fb
 pip-audit==2.10.1 \
     --hash=sha256:99ef3f600a317c1945f1e89e227ef26e1c2d618429b8bd3fa6f4f7c440c4611a
-semgrep==1.173.0 \
-    --hash=sha256:a4f690a9a3f0ad11a862844e9e7c1efd75ed72293eb488e7ea438111b138b5f9 \
-    --hash=sha256:cb21aa06246bdd79d3e9e7f9118ec7baecb1be39cf89c46e07af13b4128d7b79 \
-    --hash=sha256:e1a508dd8bccaff05482bb2968d4ae84a432f932e502d3caccdb3d525da51f22 \
-    --hash=sha256:f9a71d2e692ebf96fdf1640eed0291faa947642c8d5b98478b60ea815ca8bc67
+semgrep==1.177.0 \
+    --hash=sha256:00edda4175f71417bbfab93f060d468578eca73c81447c5ff1faa77df30628f7 \
+    --hash=sha256:25df034bae3570438a39a7cb57102659b329eed62e86b3beaa8c5c0dd23932d5 \
+    --hash=sha256:32d92d0cd2e18a1495b32abfef926be0ed3c972d8cd169bffe6cbb8418e3bb5e \
+    --hash=sha256:5e3bcc4053843272f1604b9dc022f9eef1b0e824fdec901d6b979b2806566283 \
+    --hash=sha256:7778456167ed8a46d6f8aeee1ef95ec6ca1666e3c07503cc45d49d00cd4e817c \
+    --hash=sha256:a79f212544da540b5e758da6d1979ef8eedd0b8e15a8c5019601d6da0d73538d \
+    --hash=sha256:f27725632d468fb1a0d740ce5a98e406376a88de91fc6f902fb9fb3b1d6ed4d9 \
+    --hash=sha256:fa6121384b4027925c2d03d7020908c4ebbb15de05d8555b2e67852a3568e67c
 
 # Everything those four pull in, resolved once and written down. Nothing here
 # was chosen: it is what the four above require, and it moves only when one of
