@@ -372,6 +372,7 @@ ENV TRIVY_CACHE_DIR=/opt/trivy-cache
 # DO NOT replace this with a placeholder SHA: #1272 did exactly that
 # (1234567890abcdef…), which does not exist and fails the checkout.
 ARG SEMGREP_RULES_REF=40b8c63f75dc7c22c8a77482d73bfb864b146f7e
+COPY tools-image/semgrep /opt/panopticon/semgrep-corrections
 RUN : "asset-refresh ${ASSET_REFRESH}" \
     && git init -q /opt/semgrep-rules \
     && git -C /opt/semgrep-rules remote add origin https://github.com/semgrep/semgrep-rules \
@@ -380,6 +381,8 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
     && rm -rf /opt/semgrep-rules/.git \
     && grep -rLE '^rules:' --include='*.yml' --include='*.yaml' /opt/semgrep-rules \
        | xargs -r rm -f \
+    && python3 /opt/panopticon/semgrep-corrections/apply_corrections.py \
+       --rules-root /opt/semgrep-rules \
     && chmod -R a+rX /opt/semgrep-rules
 
 # RustSec advisory DB for cargo-audit --no-fetch. Path matches the
@@ -492,6 +495,23 @@ WORKDIR /src
 # green because nothing ever executed the image. ~3s, and it runs in CI for
 # free since CI builds this same Dockerfile.
 RUN python3 /opt/panopticon/scripts/smoke_adapters.py
+
+# Exercise the corrected vendored files with Semgrep itself. The controls live
+# as inert JSON in the source tree and become .py/.yml only under /tmp in this
+# build layer, so raw repository scans never upload their deliberate findings.
+RUN set -euo pipefail \
+    && control_tmp="$(mktemp -d)" \
+    && trap 'rm -rf "${control_tmp}"' EXIT \
+    && python3 /opt/panopticon/semgrep-corrections/verify_controls.py \
+       materialize "${control_tmp}/source" \
+    && semgrep scan --quiet --metrics=off --json \
+       --config /opt/semgrep-rules/python/lang/security/audit/insecure-file-permissions.yaml \
+       --config /opt/semgrep-rules/python/lang/security/audit/dangerous-subprocess-use-audit.yaml \
+       --config /opt/semgrep-rules/yaml/github-actions/security/pull-request-target-code-checkout.yaml \
+       --config /opt/semgrep-rules/python/lang/maintainability/return.yaml \
+       "${control_tmp}/source" > "${control_tmp}/results.json" \
+    && python3 /opt/panopticon/semgrep-corrections/verify_controls.py \
+       check "${control_tmp}/source" "${control_tmp}/results.json"
 
 ENTRYPOINT []
 CMD ["semgrep", "--version"]
