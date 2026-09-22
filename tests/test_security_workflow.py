@@ -9,6 +9,15 @@ from test_workflow_pins import _without_comments
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "security.yml")
 
+# The two routes on which the `scan` job is doing trusted work: a push to main,
+# and a same-repo PR. Named POSITIVELY and asserted as an exact string, because
+# a step that runs `always()` has to be excluded from BOTH untrusted routes
+# (the labelled pull_request_target one and the pull_request fork refusal), and
+# "not pull_request_target" only ever excluded one of them.
+TRUSTED_ROUTES = (
+    "(github.event_name == 'push' || (github.event_name == 'pull_request' && "
+    "github.event.pull_request.head.repo.full_name == github.repository))")
+
 
 class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
     def _workflow(self):
@@ -341,10 +350,82 @@ class TestTheForkPathHasNothingToReach(unittest.TestCase):
     def test_no_fork_controlled_sarif_reaches_the_security_tab(self):
         # Under pull_request_target the run's `github.ref` is the BASE branch,
         # so an uploaded SARIF is filed against main's Security tab -- fork
-        # content writing the base repo's security record.
+        # content writing the base repo's security record. Spelled as the two
+        # TRUSTED routes rather than as "not pull_request_target", because the
+        # `pull_request` trigger now carries a fork route of its own (the
+        # refusal below) and `always()` would have run this step on it.
         step = self._step("Upload SARIF to GitHub Security tab")
         self.assertEqual(" ".join(step.get("if", "").split()),
-                         "always() && " + self.OFF_THE_FORK_PATH)
+                         "always() && " + TRUSTED_ROUTES)
+
+
+class TestAnUnlabelledForkHeadFailsTheCheck(unittest.TestCase):
+    """#1900 fix round 1: the label gate has to block the MERGE, not just the
+    scan.
+
+    A fork PR raises `pull_request` as well as `pull_request_target`, and a job
+    that is SKIPPED there still reports its check -- which branch protection
+    reads as satisfied. So the `scan` job now also runs on the `pull_request`
+    fork route and FAILS immediately: an unlabelled fork head produces a red
+    required check, not a green one. Once a maintainer labels, the
+    pull_request_target run reports a newer `scan` check on the same head and
+    the latest run with that name is the one branch protection reads.
+
+    The refusal is unconditional by construction. It cannot be a live label
+    check, because a passing refusal step would leave the REST of the job
+    running on the `pull_request` route, where the controller checkout is
+    pinned to the fork's head SHA -- untrusted code as the gate's own scanner.
+    """
+
+    def setUp(self):
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            self.wf = yaml.safe_load(fh)
+        self.job = self.wf["jobs"]["scan"]
+
+    def test_the_pull_request_fork_route_reaches_the_job(self):
+        compact = " ".join(self.job.get("if", "").split())
+        self.assertIn(
+            "(github.event_name == 'pull_request' && "
+            "github.event.pull_request.head.repo.full_name != github.repository)",
+            compact)
+
+    def test_the_refusal_is_the_jobs_first_step(self):
+        # FIRST, before either checkout and before setup-python: nothing the
+        # fork controls may be fetched or executed ahead of the refusal.
+        first = self.job["steps"][0]
+        self.assertEqual(first.get("name"), "Refuse an unlabelled fork head")
+        compact = " ".join(first.get("if", "").split())
+        self.assertIn("github.event_name == 'pull_request'", compact)
+        self.assertIn(
+            "github.event.pull_request.head.repo.full_name != github.repository",
+            compact)
+
+    def test_the_refusal_fails_closed_and_reads_no_label(self):
+        run = _without_comments(self.job["steps"][0].get("run", ""))
+        self.assertIn("exit 1", run)
+        self.assertIn("::error::", run)
+        # No live label check: this step is unconditional on its route.
+        self.assertNotIn("safe-to-scan'", run)
+        self.assertNotIn("${{ github.event", run)
+
+    def test_every_always_step_names_the_trusted_routes_positively(self):
+        # `always()` opts a step out of the implicit `success()`, so it would
+        # otherwise run AFTER the refusal failed, on the fork route.
+        offenders = []
+        for step in self.job["steps"]:
+            cond = " ".join(str(step.get("if", "")).split())
+            if "always()" in cond and TRUSTED_ROUTES not in cond:
+                offenders.append((step.get("name"), cond))
+        self.assertEqual(offenders, [],
+                         "an always() step that is not confined to the trusted "
+                         "routes: %s" % offenders)
+
+    def test_the_always_scan_actually_has_something_to_check(self):
+        # Guards the guard: the assertion above passes vacuously if no step
+        # uses always() at all.
+        always = [s.get("name") for s in self.job["steps"]
+                  if "always()" in str(s.get("if", ""))]
+        self.assertTrue(always, "no always() step left for the rule to bind")
 
 
 class TestTheImagePullIsBounded(unittest.TestCase):
