@@ -279,6 +279,20 @@ def test_the_hard_link_denial_is_one_wording(tree):
         "read scope denies a hard-linked file inside a directory grant (st_nlink=2)")
 
 
+def test_the_scope_key_the_hooks_added_is_ignored_here(tree):
+    # #1683 put `hard_linked` in every entry's scope, and this broker reads
+    # the same scope objects. It has no directory-argument traversal to
+    # refuse -- `search` opens each file itself and the st_nlink rule already
+    # governs that -- so the key is simply not its business: an extra key must
+    # neither refuse the scope nor narrow anything.
+    root, source, first, _, outside = tree
+    planted = hard_link_or_skip(outside, source / "innocent.txt")
+    reader = read_tools.Reader(
+        {"files": [str(first)], "dirs": [str(source)], "hard_linked": [planted]}, str(root))
+    assert reader.call("read_file", {"path": str(first)})["isError"] is False
+    assert reader.call("read_file", {"path": planted})["isError"] is True
+
+
 def test_the_directory_link_denial_is_one_wording(tree):
     # #1683's half of the rule lives in the two PreToolUse hooks only: the
     # Codex broker reads every file itself, so it has no directory-argument
