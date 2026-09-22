@@ -1193,8 +1193,8 @@ def record_readiness(repo, readiness, section=None):
     document = runio._load_json(json_path)
     if not isinstance(document, dict):
         return []
-    with runio._open_w_nofollow(json_path) as fh:
-        fh.write(json.dumps({**document, **readiness}, indent=1, sort_keys=True) + "\n")
+    _replace(json_path,
+             json.dumps({**document, **readiness}, indent=1, sort_keys=True) + "\n")
     written = [json_path]
     md_path = os.path.join(root, "setup-report.md")
     if section:
@@ -1203,10 +1203,33 @@ def record_readiness(repo, readiness, section=None):
                 rendered = fh.read()
         except OSError:
             return written
-        with runio._open_w_nofollow(md_path) as fh:
-            fh.write(rendered.rstrip("\n") + "\n\n" + section)
+        _replace(md_path, rendered.rstrip("\n") + "\n\n" + section)
         written.append(md_path)
     return written
+
+
+def _replace(path, text):
+    """Write `text` over an artifact that is ALREADY complete, atomically
+    (fix round 2, R1-3).
+
+    `ingest_proposal` writes these two files straight through the confining
+    opener, and there that is right: the file is being created, so a torn
+    write loses nothing that existed. `record_readiness` is the other case --
+    a crash mid-write would take `report`, `disclosure` and `diff` with it and
+    leave the operator a setup report that is neither the old one nor the new.
+    Tmp-then-`os.replace`, the shape `run_manifest._rewrite` and
+    `phases/setup.record_dispatch_request` already use, through the same
+    no-follow opener (#1577), so a symlink planted at either name still
+    refuses rather than writing through.
+
+    `runio._write_json` is the ready-made version of this and is NOT used: it
+    renders at `indent=2`, which would reformat a report written at
+    `indent=1`, and the markdown is not JSON at all.
+    """
+    tmp = path + ".tmp"
+    with runio._open_w_nofollow(tmp) as fh:
+        fh.write(text)
+    os.replace(tmp, path)
 
 
 def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None):

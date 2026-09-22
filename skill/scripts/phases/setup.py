@@ -13,6 +13,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
+import scripts.runners.base as runners_base
 import scripts.runners.batch as batch
 from . import engine
 from . import hard_links
@@ -355,17 +356,16 @@ def ingest_execute(review_root, manifest):
 
     Readiness used to run on the vocab-absent fallback alone, so an operator
     whose tree had a capability vocabulary -- the common case -- never met the
-    host-capability disclosure §5.1 makes mandatory, and 5.2 claimed four
-    surfaces while delivering three and a half. It runs HERE, the mirror of
-    where the fallback takes it: after the scan has come back and before the
-    report and the draft are written, on the host this setup was invoked for
-    (never a detected one -- the disclosure is about the host being
-    bootstrapped).
+    host-capability disclosure §5.1 makes mandatory. It runs here now, on the
+    host this setup was invoked for, and -- mirroring the fallback's ORDER as
+    well as its call (fix round 1) -- it is taken AFTER the draft and the
+    report are written, so a readiness that cannot be taken costs the
+    operator the disclosure and never the bootstrap.
 
-    It does NOT gate. `driver setup` is a disclosure surface, and the run-time
-    readiness phase is the one that fails closed; a setup refused for a
-    missing Docker would refuse the very bootstrap whose report says how to
-    fix it. So a gap is made visible three ways instead -- the completion
+    It does NOT gate either. `driver setup` is a disclosure surface and the
+    run-time readiness phase is the one that fails closed; a setup refused
+    for a missing Docker would refuse the very bootstrap whose report says
+    how to fix it. A gap is made visible three other ways -- the completion
     line, the report's own section, and a non-empty `gaps` in
     setup-report.json.
     """
@@ -374,17 +374,22 @@ def ingest_execute(review_root, manifest):
                                      max_groups=manifest.get("max_groups"))
     if not res["ok"]:
         raise runio.DriverError("ingest: " + "; ".join(res["errors"]))
-    # AFTER the draft, mirroring the fallback's order as well as its call
-    # (fix round 1, I2): readiness is a disclosure, and a disclosure that
-    # cannot be made must cost the operator the disclosure, never the
-    # bootstrap it describes.
+    # AFTER the draft (fix round 1, I2 -- see the docstring).
     record = _take_readiness(review_root, manifest.get("host", "claude"))
-    setup_flow.record_readiness(review_root, record,
-                                section=setup_readiness._readiness_section(record))
-    # The suffix rides on this message for symmetry with `_scan_fallback`'s,
-    # and like that one it is DISCARDED: `run_engine` collects phase names,
-    # never their messages. The operator's copy is composed in
-    # `run_setup_flow` (and superseded again by `orchestrate._finish`).
+    try:
+        setup_flow.record_readiness(review_root, record,
+                                    section=setup_readiness._readiness_section(record))
+    except OSError as exc:
+        # R1-2: the same rule one statement later -- draft and report are
+        # already on disk, so a full or read-only directory costs the rows and
+        # not the status, and the artifact then reads as "nobody looked".
+        # (`_open_w_nofollow`'s ValueError stays uncaught: a planted symlink
+        # is the guard working, and `run_setup_flow` makes it an `error`.)
+        print("driver setup: readiness not recorded in the setup report: %s"
+              % exc, file=sys.stderr, flush=True)
+    # The suffix rides here for symmetry with `_scan_fallback`'s and, like
+    # that one, is DISCARDED: `run_engine` collects phase names, never their
+    # messages. The operator's copy is composed in `run_setup_flow`.
     return engine.PhaseResult(kind="advanced",
                        message="setup: draft written %s; report %s; %s"
                        % (res["draft"], res["report_path"],
@@ -397,26 +402,22 @@ def _take_readiness(review_root, host):
 
     `setup_flow.readiness` is mostly non-raising, but not by construction:
     `_check_host_shells` runs `import dispatch`, `hosts.spec` and the
-    registration lookups outside its own try, it re-raises the suite's
-    `LaunchRefused` by design, and a row of the wrong width raises in
-    `_readiness_record`. Every one of those escaped `run_setup_flow` -- which
+    registration lookups outside its own try, and a row of the wrong width
+    raises in `_readiness_record`. Both escaped `run_setup_flow` -- which
     catches only DriverError/EngineStalled/ValueError -- as a traceback with
     no JSON status, taking the bootstrap with it. A failure to MEASURE is a
-    weaker reason to refuse a setup than a gap, and setup is already required
-    to survive gaps.
+    weaker reason to refuse a setup than a gap, which setup already survives.
 
-    `Exception`, not `BaseException`: a KeyboardInterrupt or a SystemExit is
-    the operator or the process leaving, and turning either into a readiness
-    row would swallow it.
+    OPERATIONAL failures only. `Exception`, not `BaseException`: a
+    KeyboardInterrupt or a SystemExit is the operator or the process leaving.
+    And not the suite's `LaunchRefused` either -- see the clause below.
 
-    The row carries the exception's CLASS as well as its text -- a bare
-    `RuntimeError()` renders as "" and a disclosure that names nothing is the
-    mood §5.1 rejects. `ok=None`: nobody looked is not a fault with a remedy,
-    so it is a limitation, and `_readiness_suffix` refuses to call a record
-    with nothing measured in it OK.
-
-    The posture handed down is this invocation's own, never a second one
-    measured here -- `_check_host_shells` explains why (I1).
+    The row carries the exception's CLASS as well as its text (a bare
+    `RuntimeError()` renders as "", and a disclosure naming nothing is the
+    mood §5.1 rejects), and `ok=None`, because nobody-looked is not a fault
+    with a remedy -- `_readiness_suffix` then refuses to call such a record
+    OK. The posture handed down is this invocation's own, never a second one
+    measured here; `_check_host_shells` explains why (I1).
     """
     at = run_manifest._now_iso()
     try:
@@ -424,6 +425,12 @@ def _take_readiness(review_root, host):
             review_root, host=host,
             envelope=loop_batch.envelope_for(review_root, loop_batch.SETUP_NAMESPACE)),
             probed_at=at)
+    except runners_base.LaunchRefused:
+        # NOT an operational failure: the suite's guard against starting a
+        # real host binary, whose whole value is that it FAILS a test (fix
+        # round 2, R1-1). `_check_host_shells` re-raises it by name for this
+        # reason and the degrade below moved the swallow one frame up.
+        raise
     except Exception as exc:        # noqa: BLE001 -- see the docstring
         return setup_readiness._readiness_record(
             [("readiness", None,

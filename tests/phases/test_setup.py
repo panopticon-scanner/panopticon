@@ -1530,7 +1530,6 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
 
     def test_a_readiness_that_raises_still_writes_the_draft_and_discloses(self):
         for exc in (RuntimeError("probe exploded"),
-                    runners_base.LaunchRefused("no live CLI in the suite"),
                     ValueError("a refused document")):
             with self.subTest(exception=type(exc).__name__):
                 status, _ready, doc, md = self._setup(side_effect=exc)
@@ -1546,6 +1545,27 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
                 self.assertIn(detail, md)
                 self.assertIn(detail, status["message"])
 
+    def test_the_suites_launch_guard_is_re_raised_not_recorded(self):
+        # Fix round 2, R1-1. The degrade is for OPERATIONAL failures.
+        # `LaunchRefused` is not one: it is the suite's guard against starting
+        # a real host binary, and its whole value is that it FAILS a test.
+        # Recording it as a row turned the guard into a pass -- the failure
+        # tests/conftest.py's `_refuse_claude_run_entry` was written to end
+        # ("a runner crash is a failed entry ... so the test goes green"), and
+        # the one `_check_host_shells` re-raises it by name to avoid.
+        #
+        # Reached for real: `--host codex` probes `codex --version` through
+        # `setup_flow.DEFAULT_RUNNER`, which the autouse guard has replaced
+        # with the refusal, and `_probe` catches only TimeoutExpired/OSError.
+        d = make_git_repo(test_case=self, files={"src/a.py": "x = 1\n"},
+                          branch="main", user_email="t@t", user_name="t")
+        self.assertIs(setup_flow.DEFAULT_RUNNER,
+                      getattr(setup_flow.DEFAULT_RUNNER, "__wrapped__",
+                              setup_flow.DEFAULT_RUNNER),
+                      "the guard's seam is what this test rides on")
+        with self.assertRaises(runners_base.LaunchRefused):
+            setup._take_readiness(d, "codex")
+
     def test_a_malformed_row_degrades_rather_than_raising(self):
         # `_readiness_record` reads c[0], c[1], c[2]: a two-element row used
         # to come out as an IndexError, from outside any handler.
@@ -1553,6 +1573,43 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         self.assertEqual("complete", status["status"], status)
         self.assertTrue(os.path.isfile(repo_config.draft_path(self.repo)))
         self.assertIn("IndexError", self._degraded(doc))
+
+    def test_a_report_that_cannot_be_updated_still_completes(self):
+        # Fix round 2, R1-2. `_take_readiness` never raises, but the WRITE
+        # that records it was called bare: an OSError (ENOSPC/EACCES/EROFS)
+        # escaped a setup whose draft, report and report JSON were all on
+        # disk, as a traceback with no JSON status. Same rule one statement
+        # later -- the disclosure is what a failure may cost.
+        with mock.patch("scripts.setup_flow.record_readiness",
+                        side_effect=OSError("disk full")):
+            status, _ready, _doc, _md = self._setup(self.OK)
+        self.assertEqual("complete", status["status"], status)
+        self.assertTrue(os.path.isfile(repo_config.draft_path(self.repo)))
+        # ...and the artifact carries no rows, which every reader of it takes
+        # as "nobody looked" rather than as a pass.
+        self.assertNotIn("readiness", status["message"])
+
+    def test_the_second_write_never_truncates_the_report_in_place(self):
+        # Fix round 2, R1-3. `setup-report.json` is already COMPLETE when the
+        # rows are added, so a torn write would take `report`, `disclosure`
+        # and `diff` with it and leave a report that is neither the old one
+        # nor the new. `ingest_proposal` may write straight through -- it is
+        # creating the file -- but this write replaces one.
+        opened = []
+        real = runio._open_w_nofollow
+
+        def _spy(path, *a, **kw):
+            opened.append(path)
+            return real(path, *a, **kw)
+
+        with mock.patch.object(runio, "_open_w_nofollow", _spy):
+            self._setup(self.OK)
+        for name in ("setup-report.json", "setup-report.md"):
+            with self.subTest(artifact=name):
+                live = runio._pano(self.repo, name)
+                self.assertEqual(1, opened.count(live), "created once")
+                self.assertEqual(1, opened.count(live + ".tmp"), "replaced once")
+                self.assertFalse(os.path.exists(live + ".tmp"), "tmp left behind")
 
     def test_a_readiness_that_was_not_taken_never_reads_as_OK(self):
         # M1/§5.1: "absence of warnings must mean 'measured and proven',
