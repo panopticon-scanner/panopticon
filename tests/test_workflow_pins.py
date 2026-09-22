@@ -1129,8 +1129,9 @@ def docker_run_argvs(script):
     for statement in _statements(script):
         for stage in statement.stages:
             argv = _shell_command(stage.argv)
-            rest = [t for t in argv[1:] if not t.startswith("-")]
-            if argv and os.path.basename(argv[0]) == "docker" and rest[:1] == ["run"]:
+            if not argv or os.path.basename(argv[0]) != "docker":
+                continue
+            if [t for t in argv[1:] if not t.startswith("-")][:1] == ["run"]:
                 found.append(argv)
     return found
 
@@ -1138,6 +1139,58 @@ def docker_run_argvs(script):
 # `--net` is docker's older spelling of `--network` and still works, so a lane
 # written with it is contained and must not read as a defect.
 _NETWORK_FLAGS = ("--network", "--net")
+
+# `docker run [FLAGS] IMAGE [COMMAND...]`. Only the tokens BEFORE the image are
+# docker's: `--network none` after it is an argument handed to the container's
+# entrypoint, and `-e VAR=1` after it never becomes an environment variable at
+# all. Both mis-writings break the step loudly at run time -- but a guard that
+# called either one contained would be asserting the opposite of what docker
+# does, so the reader stops at the image operand.
+#
+# Finding it means knowing which flags consume the next token. The table is
+# what this fleet writes plus its common neighbours; an UNKNOWN flag is not
+# assumed to be either kind, because guessing wrong moves the boundary and
+# silently changes every answer past it. Unknown means UNREAD, which is a
+# defect, not a pass.
+_DOCKER_VALUE_FLAGS = frozenset((
+    "-v", "--volume", "-e", "--env", "--env-file", "-w", "--workdir",
+    "--entrypoint", "--network", "--net", "--name", "-u", "--user",
+    "-p", "--publish", "--expose", "--mount", "--tmpfs", "-l", "--label",
+    "--add-host", "--device", "--cap-add", "--cap-drop", "--security-opt",
+    "--platform", "--pull", "--memory", "-m", "--cpus", "-h", "--hostname",
+    "--ulimit", "--log-driver", "--restart", "--shm-size", "--dns", "--gpus",
+    "--link", "--pid", "--ipc", "--userns", "--stop-signal", "--health-cmd",
+))
+_DOCKER_BOOL_FLAGS = frozenset((
+    "--rm", "-d", "--detach", "-i", "--interactive", "-t", "--tty", "-it",
+    "-ti", "-itd", "--init", "--privileged", "--read-only", "--sig-proxy",
+    "--no-healthcheck", "-q", "--quiet", "--disable-content-trust",
+))
+
+
+def docker_image_index(argv):
+    """(index of the image operand, None), or (None, why it cannot be found).
+
+    An `=`-attached flag (`--network=none`, `-eVAR=1`) consumes nothing
+    further, which is why the check is on the token rather than on the name.
+    """
+    index = argv.index("run") + 1
+    while index < len(argv):
+        token = argv[index]
+        if not token.startswith("-"):
+            return index, None
+        if "=" in token or token in _DOCKER_BOOL_FLAGS:
+            index += 1
+        elif token in _DOCKER_VALUE_FLAGS:
+            index += 2
+        else:
+            return None, (
+                "`docker run` carries %r, which this guard's flag table does "
+                "not know, so it cannot say where the image operand starts -- "
+                "and everything after the image belongs to the container, not "
+                "to docker. Add it to _DOCKER_VALUE_FLAGS or "
+                "_DOCKER_BOOL_FLAGS (#1655)" % token)
+    return None, "`docker run` names no image at all"
 
 
 def _flag_value(argv, names):
@@ -1160,26 +1213,42 @@ def _carries_opt_in(argv):
 def containment_defect(script):
     """Why an opted-in step would execute the hostile build uncontained, or None.
 
-    The rule is about the ONE invocation that carries the opt-in: a sibling
-    `docker run --network none` elsewhere in the step contains nothing, and a
-    step that opts in with no container at all runs evil.csproj's `curl` on the
-    runner. Both are the same defect as the missing flag.
+    The rule is about the ONE invocation that carries the opt-in, and about the
+    part of it docker reads: a sibling `docker run --network none` elsewhere in
+    the step contains nothing, a flag written past the image operand is the
+    container's argument rather than docker's, and a step that opts in with no
+    container at all runs evil.csproj's `curl` on the runner. All of them are
+    the same defect as the missing flag.
     """
-    opted = [argv for argv in docker_run_argvs(script) if _carries_opt_in(argv)]
-    if not opted:
-        return ("no `docker run` in this step carries %s=1, so whatever opted "
-                "this lane in executes the hostile MSBuild target outside the "
-                "no-egress container -- on the runner itself (#1655)"
-                % CONTAINMENT_PROBE_ENV)
-    for argv in opted:
-        network = _flag_value(argv, _NETWORK_FLAGS)
+    opted = 0
+    for argv in docker_run_argvs(script):
+        if not _carries_opt_in(argv):
+            continue            # not this invocation's business, either way
+        index, why = docker_image_index(argv)
+        if why is not None:
+            return why
+        flags = argv[:index]
+        if not _carries_opt_in(flags):
+            return ("%s=1 is written after the image operand, where docker "
+                    "hands it to the container's own command instead of "
+                    "setting it -- the probe would never be opted in (#1655)"
+                    % CONTAINMENT_PROBE_ENV)
+        opted += 1
+        network = _flag_value(flags, _NETWORK_FLAGS)
         if network is None:
             return ("the `docker run` that sets %s=1 carries no `--network "
-                    "none`, so the hostile build's live curl reaches the "
-                    "network from a CI runner (#1655)" % CONTAINMENT_PROBE_ENV)
+                    "none` among its flags, so the hostile build's live curl "
+                    "reaches the network from a CI runner (#1655)"
+                    % CONTAINMENT_PROBE_ENV)
         if network != "none":
             return ("the `docker run` that sets %s=1 runs on network %r, not "
                     "`none` (#1655)" % (CONTAINMENT_PROBE_ENV, network))
+    if not opted:
+        return ("no `docker run` in this step hands %s=1 to a container -- a "
+                "job- or step-level `env:` block does not reach one -- so "
+                "whatever is opted in either executes the hostile MSBuild "
+                "target on the runner itself or never runs the probe at all "
+                "(#1655)" % CONTAINMENT_PROBE_ENV)
     return None
 
 
@@ -1232,6 +1301,51 @@ class TestTheOfflineRule(unittest.TestCase):
         why = containment_defect(script)
         self.assertIsNotNone(why, "a sibling --network none vouched for it")
         self.assertIn("--network none", why)
+
+    # --- the image operand is the boundary, and it is not decoration --------
+
+    def test_the_image_operand_is_found_past_the_value_taking_flags(self):
+        argv = docker_run_argvs(self.CONTAINED)[0]
+        index, why = docker_image_index(argv)
+        self.assertIsNone(why, why or "")
+        self.assertEqual("panopticon-fixtures:latest", argv[index])
+
+    def test_the_network_flag_after_the_image_is_not_dockers(self):
+        # docker hands everything after the image to the container's command,
+        # so `--network none` there is an argument to `sh`, not containment.
+        script = ('docker run --rm -v "$PWD:/work:ro" -w /work \\\n'
+                  '  -e PANOPTICON_CONTAINMENT_PROBE=1 \\\n'
+                  '  --entrypoint sh panopticon-fixtures:latest \\\n'
+                  '  --network none -c "python3 -m pytest x"\n')
+        why = containment_defect(script)
+        self.assertIsNotNone(why, "a flag written after the image read as "
+                                  "containment")
+        self.assertIn("--network none", why)
+
+    def test_the_opt_in_after_the_image_never_reaches_the_container(self):
+        script = ('docker run --rm --network none \\\n'
+                  '  --entrypoint sh panopticon-fixtures:latest \\\n'
+                  '  -e PANOPTICON_CONTAINMENT_PROBE=1 -c "pytest x"\n')
+        why = containment_defect(script)
+        self.assertIsNotNone(why, "an opt-in written after the image read as "
+                                  "opted in")
+        self.assertIn("after the image", why)
+
+    def test_an_unknown_flag_is_refused_rather_than_guessed(self):
+        # Where the image starts depends on which flags take a value. Guessing
+        # moves the boundary and silently changes every answer after it, so an
+        # unknown flag is UNREAD, not clean.
+        script = ('docker run --rm --frobnicate 3 \\\n'
+                  '  --network none -e PANOPTICON_CONTAINMENT_PROBE=1 \\\n'
+                  '  --entrypoint sh image -c "pytest x"\n')
+        why = containment_defect(script)
+        self.assertIsNotNone(why)
+        self.assertIn("--frobnicate", why)
+
+    def test_an_unknown_flag_elsewhere_in_the_step_is_not_this_rules_business(self):
+        # Only the invocation carrying the opt-in needs its boundary resolved.
+        script = ('docker run --frobnicate 3 alpine true\n' + self.CONTAINED)
+        self.assertIsNone(containment_defect(script))
 
     def test_a_step_that_never_opts_in_is_never_asked(self):
         # The rule is only applied to lanes `containment_lanes()` found, but
