@@ -216,11 +216,14 @@ class TestAdapterSelection(unittest.TestCase):
             self.assertEqual(payload["produced"], [])
             self.assertEqual(payload["missing"], ["fake"])
 
-    def test_pip_audit_container_works_outside_the_target_mount(self):
-        # #1646 C1(b): the image ends `WORKDIR /src` and /src IS the target
-        # mount, so pip resolves a cwd-relative archive name inside the
-        # reviewed repo. pip-audit gets an explicit empty working directory;
-        # no other adapter's argv is touched.
+    def test_every_container_works_outside_the_target_mount(self):
+        # #1646 C1(b), generalized by #1877: the image ends `WORKDIR /src` and
+        # /src IS the target mount, so a container that starts there resolves
+        # whatever cwd-relative name its scanner tries -- pip's archive names,
+        # npm's `.npmrc`, semgrep's `.semgrepignore` -- inside the reviewed
+        # repo. EVERY dispatch now starts outside the mount, the legacy
+        # TOOL_CMD path (semgrep here) and the adapter path (pip-audit,
+        # osv-scanner) alike, so this is no longer one adapter's exemption.
         # #1645: the stub answers the egress control plane too, or pip-audit
         # would fail closed (no proxy -> no dispatch) and never reach the
         # assertion this test is about.
@@ -228,14 +231,18 @@ class TestAdapterSelection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out_dir = os.path.join(d, "out")
             with contextlib.redirect_stderr(io.StringIO()):
-                rt.run_tools(d, ["pip-audit", "osv-scanner"], out_dir,
+                rt.run_tools(d, ["pip-audit", "osv-scanner", "semgrep"], out_dir,
                              image="panopticon-tools", runner=stub, online=True)
         calls = stub.dispatches()
-        pip_argv = calls["pip-audit"]
-        self.assertIn("-w", pip_argv)
-        self.assertEqual(pip_argv[pip_argv.index("-w") + 1], rt.ADAPTER_EMPTY_CWD)
-        self.assertNotIn("/src", [pip_argv[pip_argv.index("-w") + 1]])
-        self.assertNotIn("-w", calls["osv-scanner"])
+        self.assertEqual(len(calls), 3, "expected all three tools dispatched, "
+                                        "got %r" % sorted(calls))
+        for key, argv in sorted(calls.items()):
+            self.assertIn("-w", argv, "%s dispatched with no -w" % key)
+            i = argv.index("-w")
+            self.assertLess(i + 1, len(argv), "%s: -w has no value" % key)
+            self.assertEqual(argv[i + 1], rt.ADAPTER_EMPTY_CWD,
+                             "%s started in %r" % (key, argv[i + 1]))
+            self.assertNotEqual(argv[i + 1], "/src")
 
     def test_run_tools_uses_readonly_src_mount_for_phase2_build_adapters(self):
         calls = []

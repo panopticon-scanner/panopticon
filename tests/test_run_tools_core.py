@@ -223,8 +223,12 @@ class TestRunTools(unittest.TestCase):
             # #run10 SEC-C1A: privilege-drop flags sit with the resource ceilings,
             # before the image, so an attacker-influenced build cannot use Linux
             # capabilities or gain new privileges inside the container.
+            # #1877: and the working directory sits with them, so the container
+            # starts OUTSIDE the `/src` mount rather than on the image's
+            # `WORKDIR /src` -- the target's own tree.
             self.assertEqual(cmd0[4:], (["--rm"] + rt._resource_limit_flags()
                         + rt._privilege_drop_flags()
+                        + ["-w", rt.ADAPTER_EMPTY_CWD]
                         + ["--network", "none",
                            "-v", "%s:/src:ro" % os.path.abspath(d),
                            "panopticon-tools"] + rt.TOOL_CMD["semgrep"]))

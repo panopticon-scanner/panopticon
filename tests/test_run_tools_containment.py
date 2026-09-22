@@ -31,6 +31,30 @@ class TestContainment(unittest.TestCase):
             self.assertLess(i + 1, len(cmd), "--network has no value argument")
             self.assertEqual(cmd[i + 1], "none")
 
+    def test_every_dispatch_has_an_empty_working_directory(self):
+        # #1877, the container half: the image ends `WORKDIR /src`, which is
+        # the target mount, so a dispatch with no `-w` starts its scanner
+        # inside the reviewed repo and reads whatever cwd-relative config the
+        # target planted. Same iteration and the same "clear failure, not
+        # ValueError" care as the network pin above.
+        for cmd in self._calls(["semgrep", "cargo-audit"]):
+            self.assertIn("-w", cmd)                # clear failure, not ValueError
+            i = cmd.index("-w")
+            self.assertLess(i + 1, len(cmd), "-w has no value argument")
+            self.assertEqual(cmd[i + 1], rt.ADAPTER_EMPTY_CWD)
+
+    def test_gosec_is_the_one_dispatch_that_starts_in_the_mount(self):
+        # gosec's argv is the CWD-RELATIVE go package pattern `./...`, so its
+        # container has to start at the module root. It is the one documented
+        # exception, and it says so EXPLICITLY (`-w /src`) rather than leaning
+        # on the image's WORKDIR, so the decision is greppable here rather
+        # than implied by a Dockerfile line.
+        for cmd in self._calls(["gosec"]):
+            self.assertIn("-w", cmd)                # clear failure, not ValueError
+            i = cmd.index("-w")
+            self.assertLess(i + 1, len(cmd), "-w has no value argument")
+            self.assertEqual(cmd[i + 1], "/src")
+
     def test_nvd_api_key_never_forwarded(self):
         for cmd in self._calls(["dependency-check"],
                                env={"NVD_API_KEY": "dummy"}):
