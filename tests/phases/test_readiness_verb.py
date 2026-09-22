@@ -653,6 +653,15 @@ class TestTheAssumedHost(_VerbCase):
                        "host": host, "review_root": d,
                        "created": "2026-09-15T00:00:00Z",
                        "security_mode": "standard", "flags": {}}, fh)
+        # Manifest provenance is fail-closed when trusted Git is unavailable.
+        # These targets are deliberately non-repositories, so provide an
+        # external Git fixture that answers `ls-files --error-unmatch` with 1.
+        bin_dir = self._tmpdir()
+        git = os.path.join(bin_dir, "git")
+        with open(git, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 1\n")
+        os.chmod(git, 0o755)
+        return git
 
     def test_a_bare_invocation_gates_on_the_host_the_loop_would_pick(self):
         d = self._repo(groups_yml=GROUPS_YML)
@@ -666,9 +675,10 @@ class TestTheAssumedHost(_VerbCase):
 
     def test_an_existing_runs_manifest_wins_over_the_static_default(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        self._manifest(d, "kimi")
+        git = self._manifest(d, "kimi")
         # claude deliberately absent
-        code, body = self._json(d, which={"kimi": "/opt/bin/kimi"})
+        code, body = self._json(d, which={"kimi": "/opt/bin/kimi", "git": git},
+                                path=os.path.dirname(git))
         self.assertEqual(0, code)
         self.assertEqual("kimi", body["host"])
         self.assertEqual("manifest", body["selected_from"])
@@ -676,8 +686,9 @@ class TestTheAssumedHost(_VerbCase):
 
     def test_a_retired_manifest_host_is_refused_with_the_loops_remedy(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        self._manifest(d, "gemini")
-        code, body = self._json(d, which=READY_CLI)
+        git = self._manifest(d, "gemini")
+        code, body = self._json(d, which=dict(READY_CLI, git=git),
+                                path=os.path.dirname(git))
         self.assertEqual(1, code)
         self.assertEqual(["cli"], body["failed"])
         self.assertEqual("manifest", body["selected_from"])
@@ -687,9 +698,10 @@ class TestTheAssumedHost(_VerbCase):
 
     def test_an_explicit_host_beats_the_manifest(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        self._manifest(d, "kimi")
+        git = self._manifest(d, "kimi")
         code, body = self._json(d, "--host", "codex",
-                                which={"codex": "/opt/bin/codex"})
+                                which={"codex": "/opt/bin/codex", "git": git},
+                                path=os.path.dirname(git))
         self.assertEqual(0, code)
         self.assertEqual("codex", body["host"])
         self.assertEqual("--host", body["selected_from"])

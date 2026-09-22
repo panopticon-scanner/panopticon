@@ -55,6 +55,50 @@ class _FakeProc:
         return 0
 
 
+class TestChildPythonStartupEnvironment(_ChildCase):
+    def test_target_sitecustomize_cannot_run_from_inherited_pythonpath(self):
+        for pythonpath in (".", self.root):
+            with self.subTest(pythonpath=pythonpath):
+                marker = os.path.join(self.root, "sitecustomize-ran")
+                try:
+                    os.remove(marker)
+                except FileNotFoundError:
+                    pass
+                with open(os.path.join(self.root, "sitecustomize.py"), "w",
+                          encoding="utf-8") as fh:
+                    fh.write("open(%r, 'w').write('bad')\n" % marker)
+                with mock.patch.dict(os.environ, {
+                        "PYTHONPATH": pythonpath,
+                        "PYTHONHOME": self.root,
+                        "PYTHONSTARTUP": os.path.join(self.root, "sitecustomize.py"),
+                        "PYTHONINSPECT": "1",
+                }, clear=False):
+                    proc = self._child("print('safe')")
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout, "safe\n")
+                self.assertFalse(os.path.exists(marker))
+
+    def test_child_env_keeps_only_trusted_import_roots_and_disables_user_site(self):
+        with mock.patch.dict(os.environ, {
+                "PYTHONPATH": ".:/target",
+                "PYTHONHOME": "/target",
+                "PYTHONSTARTUP": "/target/start.py",
+                "PYTHONINSPECT": "1",
+                "NODE_OPTIONS": "--require=./startup.cjs",
+                "NODE_PATH": "/target/node_modules",
+        }, clear=False):
+            env = child._child_env()
+        roots = env["PYTHONPATH"].split(os.pathsep)
+        self.assertTrue(all(os.path.isabs(root) for root in roots))
+        self.assertNotIn(".", roots)
+        self.assertNotIn("/target", roots)
+        self.assertEqual(env["PYTHONNOUSERSITE"], "1")
+        self.assertEqual(env["PYTHONSAFEPATH"], "1")
+        for name in ("PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT",
+                     "NODE_OPTIONS", "NODE_PATH"):
+            self.assertNotIn(name, env)
+
+
 class TestRunChildTimeout(_ChildCase):
     """#1094: the discovery/tools/synthesize spawn point is time-bounded, and a
     phase timeout is a clean DriverError (status:error), not an unbounded hang."""

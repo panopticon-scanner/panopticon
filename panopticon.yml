@@ -230,10 +230,12 @@ groups:
       - OPS
     Runners:
       match:
+      - skill/scripts/executable.py
       - skill/scripts/runners/**
       - skill/scripts/kimi_toml.py
       tests:
       - tests/runners/**
+      - tests/test_executable_provenance.py
       panels:
       - ARC
       - SEC

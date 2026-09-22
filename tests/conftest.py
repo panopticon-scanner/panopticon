@@ -60,6 +60,21 @@ if not _TEST_HOME:
 os.environ["HOME"] = _TEST_HOME
 os.environ["USERPROFILE"] = _TEST_HOME        # Windows' spelling of the same thing
 
+# The run_tools unit seams inject a runner and therefore need no Docker
+# installation, but executable-provenance resolution deliberately happens
+# before that seam. Give hosts without a Docker CLI one harmless external
+# candidate so those tests remain about their injected runner. Hostile-PATH
+# boundary tests replace PATH explicitly and therefore still exercise the real
+# resolver refusal.
+if shutil.which("docker") is None:
+    _TEST_BIN = tempfile.mkdtemp(prefix="panopticon-test-bin-")
+    atexit.register(shutil.rmtree, _TEST_BIN, ignore_errors=True)
+    _TEST_DOCKER = os.path.join(_TEST_BIN, "docker")
+    with open(_TEST_DOCKER, "w", encoding="utf-8") as _fh:
+        _fh.write("#!/bin/sh\nexit 99\n")
+    os.chmod(_TEST_DOCKER, 0o700)
+    os.environ["PATH"] = os.pathsep.join([_TEST_BIN, os.environ.get("PATH", "")])
+
 # Bind tests/tools as the bare `tools` package NOW, while tests/ is at
 # sys.path[0]. Entry scripts (skill/scripts/synthesize.py, driver.py,
 # score_gate.py) each `sys.path.insert(0, skill/scripts)` when imported, after
@@ -123,7 +138,7 @@ def write_host_evidence(review_root, states, host="claude", cli_flags=None):
 REAL_DOCKER_AVAILABLE = _run_tools.docker_available
 
 
-def _refuse_docker(image="panopticon-tools", runner=None):
+def _refuse_docker(image="panopticon-tools", runner=None, target=None):
     """Answer "no docker here" -- unless the caller injected its own runner.
 
     tests/test_run_tools_docker.py unit-tests this gate by handing it a fake
@@ -133,7 +148,7 @@ def _refuse_docker(image="panopticon-tools", runner=None):
     every production call site, which passes none -- is refused.
     """
     if runner is not None:
-        return REAL_DOCKER_AVAILABLE(image, runner=runner)
+        return REAL_DOCKER_AVAILABLE(image, runner=runner, target=target)
     return False
 
 

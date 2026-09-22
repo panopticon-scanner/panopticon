@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -93,6 +94,39 @@ class ReplayScrubTest(unittest.TestCase):
         _replay_into(self.review_root, self.run_folder, out_dir)
         self.assertEqual(self._read(out_dir, "synthesize.stderr"),
                          f"ingest: path mismatch under <scratch>/.panopticon/runs/{TAG}\n")
+
+    def test_replay_cannot_import_target_sitecustomize_before_trusted_script(self):
+        marker = os.path.join(self.review_root, "sitecustomize-ran")
+        with open(os.path.join(self.review_root, "sitecustomize.py"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("open(%r, 'w').write('bad')\n" % marker)
+        trusted = os.path.join(self.tmp.name, "trusted")
+        os.makedirs(trusted)
+        script = os.path.join(trusted, "synthesize.py")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write("import json, os, sys\n"
+                     "p = sys.argv[sys.argv.index('--out') + 1]\n"
+                     "os.makedirs(os.path.dirname(p), exist_ok=True)\n"
+                     "json.dump({'meta': {}, 'summary': {}}, open(p, 'w'))\n")
+
+        def build_command(root, _manifest):
+            child_mod._run_child([sys.executable, script, "--out",
+                                  os.path.join(root, ".panopticon", "orig-report.json")],
+                                 root, "synthesize")
+            raise runio.DriverError("recorded")
+
+        out = os.path.join(self.tmp.name, "out-startup")
+        for pythonpath in (".", self.review_root):
+            with self.subTest(pythonpath=pythonpath), \
+                    mock.patch("scripts.phases.synthesize.synthesize_execute",
+                               new=build_command), \
+                    mock.patch.dict(os.environ, {"PYTHONPATH": pythonpath}, clear=False), \
+                    mock.patch("sys.stdout"):
+                replay_report.replay(argparse.Namespace(
+                    repo=None, review_root=self.review_root, run_folder=self.run_folder,
+                    out_dir=out, manifest=os.path.join(self.review_root,
+                                                       "run-manifest.json")))
+            self.assertFalse(os.path.exists(marker))
 
 
     def test_usage_preflight_matches_the_archived_runs_measured_posture(self):
