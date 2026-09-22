@@ -183,8 +183,43 @@ jobs:
             --exclude '${{ env.FIXTURE_GLOB }}' \
             --exclude '${{ env.GOLDEN_GLOB }}'
 
-      - name: Upload SARIF to GitHub Security tab
+      # Reporting runs after the gate under `always()`: a red vulnerability
+      # gate must not hide either the raw evidence or the current Security
+      # analysis. The helper publishes its two output directories atomically,
+      # so a parse/validation failure cannot look like a successful empty scan.
+      - name: Prepare Security and AI inventory reports
+        id: prepare-reports
         if: always()
+        run: |
+          python controller/scripts/code_scanning_reports.py \
+            --input-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
+            --output-dir "$RUNNER_TEMP/code-scanning-reports"
+
+      - name: Upload raw scanner captures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: raw-scanner-captures
+          path: |
+            ${{ runner.temp }}/${{ env.TOOLS_OUT }}
+            ${{ runner.temp }}/panopticon-tools-manifest.json
+          if-no-files-found: error
+
+      - name: Upload AI inventory
+        if: always() && steps.prepare-reports.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-usage-inventory
+          path: ${{ runner.temp }}/code-scanning-reports/inventory
+          if-no-files-found: error
+
+      - name: Publish AI inventory summary
+        if: always() && steps.prepare-reports.outcome == 'success'
+        run: |
+          cat "$RUNNER_TEMP/code-scanning-reports/inventory/ai-inventory.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload actionable SARIF to GitHub Security tab
+        if: always() && steps.prepare-reports.outcome == 'success'
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
-          sarif_file: ${{ runner.temp }}/${{ env.TOOLS_OUT }}
+          sarif_file: ${{ runner.temp }}/code-scanning-reports/security

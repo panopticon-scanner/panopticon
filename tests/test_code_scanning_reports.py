@@ -1,0 +1,231 @@
+import copy
+import json
+import os
+import subprocess
+import sys
+
+import pytest
+
+from scripts import code_scanning_reports as reports
+
+
+ANTHROPIC = "opt.semgrep-rules.ai.generic.detect-generic-ai-anthprop"
+OPENAI = "opt.semgrep-rules.ai.generic.detect-generic-ai-oai"
+
+
+def _rule(rule_id, level="note", properties=None):
+    return {
+        "id": rule_id,
+        "name": rule_id,
+        "defaultConfiguration": {"level": level},
+        "properties": ({"precision": "very-high", "tags": ["LOW CONFIDENCE"]}
+                       if properties is None else properties),
+    }
+
+
+def _result(rule_id=None, rule_index=None, level=None, path="src/app.py"):
+    result = {
+        "message": {"text": "observed SDK usage"},
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": path},
+            "region": {"startLine": 7},
+        }}],
+        "fingerprints": {"matchBasedId/v1": "stable-fingerprint"},
+        "properties": {},
+    }
+    if rule_id is not None:
+        result["ruleId"] = rule_id
+    if rule_index is not None:
+        result["ruleIndex"] = rule_index
+    if level is not None:
+        result["level"] = level
+    return result
+
+
+def _sarif(rules, results, driver="Semgrep OSS", run_properties=None):
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {"name": driver, "version": "1.2.3",
+                                "rules": rules}},
+            "properties": run_properties or {"kept": ["byte", "for", "byte"]},
+            "results": results,
+        }],
+    }
+
+
+def _write(root, name, document):
+    root.mkdir(exist_ok=True)
+    path = root / name
+    path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+def _prepare(tmp_path, documents):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    before = {}
+    for name, document in documents.items():
+        path = _write(raw, name, document)
+        before[name] = path.read_bytes()
+    output = tmp_path / "reports"
+    reports.prepare_reports(raw, output)
+    return raw, output, before
+
+
+def test_split_preserves_non_inventory_data_and_raw_inputs(tmp_path):
+    rules = [_rule(ANTHROPIC), _rule("security.sql-injection", "error")]
+    inventory = _result(ANTHROPIC, 0)
+    actionable = _result("security.sql-injection", 1, "error", "src/db.py")
+    document = _sarif(rules, [inventory, actionable],
+                      run_properties={"automationDetails": "unchanged"})
+    raw, output, before = _prepare(tmp_path, {
+        "semgrep.sarif": document,
+        "bandit.sarif": _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC, 0)],
+                                driver="Bandit"),
+    })
+
+    security_semgrep = json.loads((output / "security" / "semgrep.sarif").read_text())
+    expected = copy.deepcopy(document)
+    expected["runs"][0]["results"] = [actionable]
+    assert security_semgrep == expected
+    assert json.loads((output / "security" / "bandit.sarif").read_text()) == json.loads(
+        (raw / "bandit.sarif").read_text())
+    assert {p.name: p.read_bytes() for p in raw.iterdir()} == before
+
+    inventory_report = json.loads(
+        (output / "inventory" / "ai-inventory.json").read_text())
+    assert inventory_report["count"] == 1
+    assert inventory_report["results"][0]["rule"] == rules[0]
+    assert inventory_report["results"][0]["result"] == inventory
+    markdown = (output / "inventory" / "ai-inventory.md").read_text()
+    assert ANTHROPIC in markdown
+    assert "src/app.py:7" in markdown
+
+
+def test_both_exact_note_rules_route_and_inventory_only_run_survives(tmp_path):
+    rules = [_rule(ANTHROPIC), _rule(OPENAI)]
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": _sarif(
+            rules, [_result(ANTHROPIC), _result(None, 1)])})
+
+    security = json.loads((output / "security" / "semgrep.sarif").read_text())
+    assert len(security["runs"]) == 1
+    assert security["runs"][0]["results"] == []
+    assert security["runs"][0]["tool"]["driver"]["rules"] == rules
+    inventory = json.loads((output / "inventory" / "ai-inventory.json").read_text())
+    assert [row["rule_id"] for row in inventory["results"]] == [ANTHROPIC, OPENAI]
+
+
+@pytest.mark.parametrize("result,rule,driver", [
+    (_result("opt.semgrep-rules.ai.generic.detect-generic-ai-openai"),
+     _rule("opt.semgrep-rules.ai.generic.detect-generic-ai-openai"), "Semgrep OSS"),
+    (_result(ANTHROPIC, level="warning"), _rule(ANTHROPIC), "Semgrep OSS"),
+    (_result(ANTHROPIC), _rule(ANTHROPIC, "error"), "Semgrep OSS"),
+    (_result(ANTHROPIC), _rule(ANTHROPIC), "another-scanner"),
+    (_result(ANTHROPIC),
+     _rule(ANTHROPIC, properties={"tags": ["LOW CONFIDENCE"],
+                                  "security-severity": "8.0"}),
+     "Semgrep OSS"),
+])
+def test_similar_elevated_other_scanner_and_security_metadata_stay_actionable(
+        tmp_path, result, rule, driver):
+    _raw, output, _before = _prepare(
+        tmp_path, {"capture.sarif": _sarif([rule], [result], driver=driver)})
+    security = json.loads((output / "security" / "capture.sarif").read_text())
+    assert security["runs"][0]["results"] == [result]
+    inventory = json.loads((output / "inventory" / "ai-inventory.json").read_text())
+    assert inventory["count"] == 0
+
+
+def test_rule_index_and_all_other_result_fields_are_preserved(tmp_path):
+    rules = [_rule("security.first", "warning"), _rule(OPENAI)]
+    inventory = _result(OPENAI, 1)
+    inventory["stacks"] = [{"message": {"text": "keep me"}}]
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": _sarif(rules, [inventory])})
+    row = json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "results"][0]
+    assert row["result"] == inventory
+    assert row["result"]["ruleIndex"] == 1
+
+
+def test_security_metadata_on_the_result_stays_actionable(tmp_path):
+    result = _result(ANTHROPIC)
+    result["properties"] = {"security-severity": "7.5"}
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": _sarif([_rule(ANTHROPIC)], [result])})
+    security = json.loads((output / "security" / "semgrep.sarif").read_text())
+    assert security["runs"][0]["results"] == [result]
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
+
+
+@pytest.mark.parametrize("document", [
+    {"version": "2.1.0", "runs": "not-a-list"},
+    _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC, 3)]),
+    _sarif([_rule(ANTHROPIC), _rule(OPENAI)], [_result(ANTHROPIC, 1)]),
+])
+def test_malformed_or_inconsistent_sarif_fails_without_publishing(tmp_path, document):
+    raw = tmp_path / "raw"
+    _write(raw, "semgrep.sarif", document)
+    output = tmp_path / "reports"
+    with pytest.raises(reports.ReportError):
+        reports.prepare_reports(raw, output)
+    assert not output.exists()
+
+
+def test_missing_and_invalid_inputs_fail_visibly_without_publishing(tmp_path):
+    output = tmp_path / "reports"
+    with pytest.raises(reports.ReportError, match="does not exist"):
+        reports.prepare_reports(tmp_path / "missing", output)
+    assert not output.exists()
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(reports.ReportError, match="no .sarif"):
+        reports.prepare_reports(empty, output)
+    assert not output.exists()
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "broken.sarif").write_text("{broken", encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, reports.__file__, "--input-dir", os.fspath(raw),
+         "--output-dir", os.fspath(output)],
+        capture_output=True, text=True, check=False)
+    assert proc.returncode != 0
+    assert "broken.sarif" in proc.stderr
+    assert not output.exists()
+
+
+def test_failure_after_a_valid_capture_does_not_publish_partial_output(tmp_path):
+    raw = tmp_path / "raw"
+    _write(raw, "a-valid.sarif", _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)]))
+    (raw / "z-broken.sarif").write_text("{broken", encoding="utf-8")
+    output = tmp_path / "reports"
+    with pytest.raises(reports.ReportError, match="z-broken.sarif"):
+        reports.prepare_reports(raw, output)
+    assert not output.exists()
+
+
+def test_unknown_exact_rule_id_stays_actionable_without_rule_metadata(tmp_path):
+    document = _sarif([], [_result(ANTHROPIC)])
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
+
+
+def test_multiple_runs_and_no_inventory_are_supported(tmp_path):
+    first = _sarif([_rule("security.one")], [_result("security.one")])
+    second_run = _sarif([_rule("security.two")], [_result("security.two")])["runs"][0]
+    first["runs"].append(second_run)
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": first})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == first
+    inventory = json.loads((output / "inventory" / "ai-inventory.json").read_text())
+    assert inventory["count"] == 0
+    assert "No authorized AI inventory results" in (
+        output / "inventory" / "ai-inventory.md").read_text()

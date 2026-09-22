@@ -177,6 +177,41 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertIn('--manifest "$manifest"', runs)
         self.assertIn('--tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}"', runs)
 
+    def test_gate_keeps_raw_inputs_and_reporting_uses_a_separate_directory(self):
+        workflow = self._workflow()
+        steps = workflow["jobs"]["scan"]["steps"]
+        by_name = {step.get("name"): step for step in steps}
+        gate = by_name["Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"]
+        prepare = by_name["Prepare Security and AI inventory reports"]
+        upload = by_name["Upload actionable SARIF to GitHub Security tab"]
+        self.assertIn('${{ env.TOOLS_OUT }}', gate["run"])
+        self.assertIn("scripts/code_scanning_reports.py", prepare["run"])
+        self.assertIn("code-scanning-reports/security",
+                      upload["with"]["sarif_file"])
+        self.assertLess(steps.index(gate), steps.index(prepare))
+        self.assertLess(steps.index(prepare), steps.index(upload))
+
+    def test_reports_and_raw_artifacts_are_attempted_after_a_gate_failure(self):
+        steps = {step.get("name"): step
+                 for step in self._workflow()["jobs"]["scan"]["steps"]}
+        self.assertEqual(steps["Prepare Security and AI inventory reports"]["if"],
+                         "always()")
+        self.assertEqual(steps["Upload raw scanner captures"]["if"], "always()")
+        self.assertIn("steps.prepare-reports.outcome == 'success'",
+                      steps["Upload AI inventory"]["if"])
+        self.assertIn("steps.prepare-reports.outcome == 'success'",
+                      steps["Upload actionable SARIF to GitHub Security tab"]["if"])
+        self.assertEqual(steps["Upload raw scanner captures"]["with"][
+            "if-no-files-found"], "error")
+
+    def test_inventory_is_visible_in_the_step_summary(self):
+        steps = {step.get("name"): step
+                 for step in self._workflow()["jobs"]["scan"]["steps"]}
+        summary = steps["Publish AI inventory summary"]
+        self.assertIn("ai-inventory.md", summary["run"])
+        self.assertIn("GITHUB_STEP_SUMMARY", summary["run"])
+        self.assertIn("steps.prepare-reports.outcome == 'success'", summary["if"])
+
     def test_no_untrusted_github_context_in_run_scripts(self):
         runs = self._every_run_text()
         untrusted_contexts = [
