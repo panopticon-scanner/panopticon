@@ -27,7 +27,7 @@ def _write_manifest(path, entries):
     path.write_text(json.dumps({"schema_version": 1, "corrections": entries}))
 
 
-def test_manifest_pins_the_four_proven_rule_files_and_bytes():
+def test_manifest_pins_the_five_proven_rule_files_and_bytes():
     manifest = json.loads((CORRECTIONS / "corrections.json").read_text())
     expected = {
         "python/lang/security/audit/insecure-file-permissions.yaml": (
@@ -45,6 +45,10 @@ def test_manifest_pins_the_four_proven_rule_files_and_bytes():
         "python/lang/maintainability/return.yaml": (
             "d1b7a05811649bbeb6c570899ce46d5cdf46ed834441be4ab2a49a8fef16b5d3",
             "443934383c4f6543684350c98ac8a217eacb5a750f35249d9d211a7cff1e0793",
+        ),
+        "ai/ai-best-practices/hooks-path-traversal/hooks-path-traversal-python.yaml": (
+            "41deee92decca0061b60bff9e4b1e65f6481581cdeac354004d43105e83e6474",
+            "90492472215d2e59d7c391067b1bb152212a47dc7cd24dd2e11fe45e3fe0d5ef",
         ),
     }
     actual = {
@@ -64,6 +68,7 @@ def test_replacements_keep_rule_ids_and_unrelated_return_rule():
         "dangerous-subprocess-use-audit.yaml": ["dangerous-subprocess-use-audit"],
         "pull-request-target-code-checkout.yaml": ["pull-request-target-code-checkout"],
         "return.yaml": ["code-after-unconditional-return", "return-not-in-function"],
+        "hooks-path-traversal-python.yaml": ["hooks-path-traversal-python"],
     }
     expected_envelope_hashes = {
         "insecure-file-permissions.yaml":
@@ -74,6 +79,8 @@ def test_replacements_keep_rule_ids_and_unrelated_return_rule():
             "fee45aba14805d5325673688f7b192d63cd96961dcd2e0aa1dd480260422f821",
         "return.yaml":
             "421815d3f18f5de10c44a50fa1969c35ecdc38aedb42587845293841a3d8d71a",
+        "hooks-path-traversal-python.yaml":
+            "eab40bfd38b4b61b15607195e020ff87fbe91474ac221f625d733bf7b6158e94",
     }
     for name, ids in expected_ids.items():
         parsed = yaml.safe_load((CORRECTIONS / "patches" / name).read_text())
@@ -101,6 +108,34 @@ def test_replacements_keep_rule_ids_and_unrelated_return_rule():
         "severity": "WARNING",
         "metadata": {"category": "maintainability", "technology": ["python"]},
     }
+
+
+def test_hooks_path_traversal_pins_exact_sources_sinks_and_sanitizers():
+    rule = yaml.safe_load(
+        (CORRECTIONS / "patches" / "hooks-path-traversal-python.yaml").read_text()
+    )["rules"][0]
+    assert rule["pattern-sources"] == [
+        {"pattern": "json.loads(...)", "exact": True},
+        {"pattern": "json.load(...)", "exact": True},
+    ]
+    assert rule["pattern-sinks"] == [
+        {"patterns": [
+            {"pattern": pattern},
+            {"focus-metavariable": "$SINK"},
+        ]}
+        for pattern in (
+            "open($SINK, ...)",
+            "os.remove($SINK)",
+            "os.unlink($SINK)",
+            "shutil.copy($SINK, ...)",
+            "shutil.move($SINK, ...)",
+            "pathlib.Path($SINK)",
+        )
+    ]
+    assert rule["pattern-sanitizers"] == [
+        {"pattern": "os.path.realpath(...)"},
+        {"pattern": "os.path.abspath(...)"},
+    ]
 
 
 def test_permission_metavariable_patterns_have_no_single_child_wrapper():
@@ -219,6 +254,8 @@ def test_engine_controls_pin_required_positive_sets():
         ("pull-request-target-code-checkout", "checkouts.yml"): 5,
         ("code-after-unconditional-return", "returns.py"): 1,
         ("return-not-in-function", "returns.py"): 2,
+        ("hooks-path-traversal-python", "hooks-path-traversal.py"): 8,
+        ("hooks-path-traversal-python", "upstream-hooks-path-traversal.py"): 4,
     }
 
 

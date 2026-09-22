@@ -509,6 +509,7 @@ RUN set -euo pipefail \
        --config /opt/semgrep-rules/python/lang/security/audit/dangerous-subprocess-use-audit.yaml \
        --config /opt/semgrep-rules/yaml/github-actions/security/pull-request-target-code-checkout.yaml \
        --config /opt/semgrep-rules/python/lang/maintainability/return.yaml \
+       --config /opt/semgrep-rules/ai/ai-best-practices/hooks-path-traversal/hooks-path-traversal-python.yaml \
        "${control_tmp}/source" > "${control_tmp}/results.json" \
     && python3 /opt/panopticon/semgrep-corrections/verify_controls.py \
        check "${control_tmp}/source" "${control_tmp}/results.json"

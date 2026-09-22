@@ -24,6 +24,12 @@
       "source_sha256": "d1b7a05811649bbeb6c570899ce46d5cdf46ed834441be4ab2a49a8fef16b5d3",
       "replacement": "patches/return.yaml",
       "corrected_sha256": "443934383c4f6543684350c98ac8a217eacb5a750f35249d9d211a7cff1e0793"
+    },
+    {
+      "path": "ai/ai-best-practices/hooks-path-traversal/hooks-path-traversal-python.yaml",
+      "source_sha256": "41deee92decca0061b60bff9e4b1e65f6481581cdeac354004d43105e83e6474",
+      "replacement": "patches/hooks-path-traversal-python.yaml",
+      "corrected_sha256": "90492472215d2e59d7c391067b1bb152212a47dc7cd24dd2e11fe45e3fe0d5ef"
     }
   ]
 }
