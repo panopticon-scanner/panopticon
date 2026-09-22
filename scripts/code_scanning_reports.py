@@ -17,7 +17,33 @@ INVENTORY_RULE_IDS = frozenset({
     "opt.semgrep-rules.ai.generic.detect-generic-ai-anthprop",
     "opt.semgrep-rules.ai.generic.detect-generic-ai-oai",
 })
+SUPPORTED_SEMGREP_DRIVERS = frozenset({"Semgrep OSS"})
 SARIF_LEVELS = frozenset({"none", "note", "warning", "error"})
+
+# These are the standard SARIF fields whose semantics are known here. Unknown
+# top-level extensions stay in Security: a future producer must not be able to
+# add security metadata in a new field and pass an inevitably incomplete word
+# blocklist. The two standard taxonomy carriers are handled separately below.
+KNOWN_RULE_FIELDS = frozenset({
+    "id", "deprecatedIds", "guid", "deprecatedGuids", "name",
+    "deprecatedNames", "shortDescription", "fullDescription",
+    "messageStrings", "defaultConfiguration", "helpUri", "help",
+    "relationships", "properties",
+})
+KNOWN_RESULT_FIELDS = frozenset({
+    "ruleId", "ruleIndex", "rule", "kind", "level", "message",
+    "analysisTarget", "locations", "guid", "correlationGuid",
+    "occurrenceCount", "partialFingerprints", "fingerprints", "stacks",
+    "codeFlows", "graphs", "relatedLocations", "suppressions",
+    "baselineState", "rank", "attachments", "hostedViewerUri",
+    "workItemUris", "provenance", "fixes", "taxa", "webRequest",
+    "webResponse", "properties",
+})
+KNOWN_MESSAGE_FIELDS = frozenset({"text", "markdown", "id", "arguments", "properties"})
+HARMLESS_RULE_PROPERTIES = {
+    "precision": "very-high",
+    "tags": ["LOW CONFIDENCE"],
+}
 
 
 class ReportError(ValueError):
@@ -110,40 +136,81 @@ def _effective_level(result: dict[str, Any], rule: dict[str, Any],
     return default.get("level", "warning")
 
 
-def _security_marker(value: Any, key: str = "") -> bool:
-    normalized_key = key.lower().replace("_", "-")
-    if ("security" in normalized_key or "severity" in normalized_key or
-            normalized_key in {"cwe", "owasp", "vulnerability", "vulnerabilities"}):
-        return True
-    if isinstance(value, dict):
-        return any(_security_marker(item, str(item_key))
-                   for item_key, item in value.items())
-    if isinstance(value, list):
-        return any(_security_marker(item, key) for item in value)
-    if isinstance(value, str):
-        lowered = value.lower()
-        return ("cwe-" in lowered or "owasp" in lowered or
-                "security" in lowered or "vulnerability" in lowered)
-    return False
+def _metadata_is_verified_harmless(result: dict[str, Any],
+                                   rule: dict[str, Any]) -> bool:
+    """Whether all candidate metadata has the exact reviewed inventory shape.
 
-
-def _has_security_metadata(result: dict[str, Any], rule: dict[str, Any]) -> bool:
-    return (_security_marker(rule.get("properties", {})) or
-            _security_marker(result.get("properties", {})) or
-            _security_marker(rule.get("relationships", [])))
+    Unknown metadata is valid input and remains actionable; it is not a report
+    preparation error. Only the current Semgrep shape is authorized to leave
+    Security. This covers CVE/CVSS/CWE/OWASP without relying on their spelling.
+    """
+    if not set(rule).issubset(KNOWN_RULE_FIELDS):
+        return False
+    if not set(result).issubset(KNOWN_RESULT_FIELDS):
+        return False
+    if rule.get("properties") != HARMLESS_RULE_PROPERTIES:
+        return False
+    if result.get("properties") != {}:
+        return False
+    message = result.get("message")
+    if not isinstance(message, dict):
+        return False
+    if "properties" in message and message["properties"] != {}:
+        return False
+    if "relationships" in rule and rule["relationships"] != []:
+        return False
+    if "taxa" in result and result["taxa"] != []:
+        return False
+    return True
 
 
 def _is_semgrep(driver_name: str) -> bool:
-    return driver_name.casefold().startswith("semgrep")
+    return driver_name in SUPPORTED_SEMGREP_DRIVERS
 
 
 def _inventory_candidate(driver_name: str, rule_id: str | None,
                          result: dict[str, Any], rule: dict[str, Any] | None,
                          where: str) -> bool:
+    if rule is None:
+        return False
+    return (_inventory_scope_candidate(driver_name, rule_id, result, rule, where) and
+            _metadata_is_verified_harmless(result, rule))
+
+
+def _inventory_scope_candidate(driver_name: str, rule_id: str | None,
+                               result: dict[str, Any],
+                               rule: dict[str, Any] | None,
+                               where: str) -> bool:
     if not _is_semgrep(driver_name) or rule_id not in INVENTORY_RULE_IDS or rule is None:
         return False
-    return (_effective_level(result, rule, where) == "note" and
-            not _has_security_metadata(result, rule))
+    return _effective_level(result, rule, where) == "note"
+
+
+def _validate_inventory_message(result: dict[str, Any], where: str) -> None:
+    message = _object(result.get("message"), f"{where}.message")
+    unknown = set(message) - KNOWN_MESSAGE_FIELDS
+    if unknown:
+        raise ReportError(
+            f"{where}.message has unknown fields: {', '.join(sorted(unknown))}")
+    if "properties" in message:
+        _object(message["properties"], f"{where}.message.properties")
+    forms = []
+    for name in ("text", "markdown", "id"):
+        if name not in message:
+            continue
+        value = message[name]
+        if not isinstance(value, str) or not value:
+            raise ReportError(f"{where}.message.{name} must be a non-empty string")
+        forms.append(name)
+    if not forms:
+        raise ReportError(
+            f"{where}.message must contain non-empty text, markdown, or id")
+    if "arguments" in message:
+        arguments = _list(message["arguments"], f"{where}.message.arguments")
+        if "id" not in message:
+            raise ReportError(f"{where}.message.arguments requires message.id")
+        if any(not isinstance(argument, str) for argument in arguments):
+            raise ReportError(f"{where}.message.arguments must contain only strings")
 
 
 def _split_document(document: Any, source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -165,6 +232,9 @@ def _split_document(document: Any, source: str) -> tuple[dict[str, Any], list[di
             if properties is not None:
                 _object(properties, f"{result_where}.properties")
             rule_id, rule = _resolve_rule(result, rules, result_where)
+            if _inventory_scope_candidate(
+                    driver_name, rule_id, result, rule, result_where):
+                _validate_inventory_message(result, result_where)
             if _inventory_candidate(driver_name, rule_id, result, rule, result_where):
                 inventory.append({
                     "source": source,
@@ -213,8 +283,9 @@ def _render_markdown(rows: list[dict[str, Any]]) -> str:
                   "| --- | --- | --- | --- |"])
     for row in rows:
         result = row["result"]
-        message = result.get("message")
-        text = message.get("text", "") if isinstance(message, dict) else ""
+        message = result["message"]
+        text = next(message[name] for name in ("text", "markdown", "id")
+                    if name in message)
         lines.append("| %s | `%s` | `%s` | %s |" % (
             _markdown_text(row["tool"]), _markdown_text(row["rule_id"]),
             _markdown_text(_location(result)), _markdown_text(text)))

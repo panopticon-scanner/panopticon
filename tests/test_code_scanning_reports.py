@@ -124,6 +124,9 @@ def test_both_exact_note_rules_route_and_inventory_only_run_survives(tmp_path):
     (_result(ANTHROPIC, level="warning"), _rule(ANTHROPIC), "Semgrep OSS"),
     (_result(ANTHROPIC), _rule(ANTHROPIC, "error"), "Semgrep OSS"),
     (_result(ANTHROPIC), _rule(ANTHROPIC), "another-scanner"),
+    (_result(ANTHROPIC), _rule(ANTHROPIC), "Semgrep Compatible"),
+    (_result(ANTHROPIC), _rule(ANTHROPIC), "semgrep-wrapper"),
+    (_result(ANTHROPIC), _rule(ANTHROPIC), "semgrep oss"),
     (_result(ANTHROPIC),
      _rule(ANTHROPIC, properties={"tags": ["LOW CONFIDENCE"],
                                   "security-severity": "8.0"}),
@@ -162,6 +165,48 @@ def test_security_metadata_on_the_result_stays_actionable(tmp_path):
         "count"] == 0
 
 
+@pytest.mark.parametrize("rule_update,result_update", [
+    ({"properties": {"precision": "very-high",
+                     "tags": ["LOW CONFIDENCE", "CVE-2026-1234"]}}, {}),
+    ({"properties": {"precision": "very-high", "tags": ["LOW CONFIDENCE"],
+                     "cvss": "3.1/AV:N/AC:L"}}, {}),
+    ({"properties": {"precision": "very-high",
+                     "tags": ["LOW CONFIDENCE", "OWASP-A03"]}}, {}),
+    ({"relationships": [{"target": {"id": "CWE-79"}}]}, {}),
+    ({"futureSecurityMetadata": {"score": 9.8}}, {}),
+    ({}, {"taxa": [{"id": "CWE-79", "index": 0}]}),
+    ({}, {"properties": {"cve": "CVE-2026-1234"}}),
+    ({}, {"message": {"text": "observed SDK usage",
+                       "properties": {"cvss": "9.8"}}}),
+    ({}, {"futureSecurityMetadata": {"score": 9.8}}),
+])
+def test_any_known_or_unknown_security_metadata_stays_actionable(
+        tmp_path, rule_update, result_update):
+    rule = _rule(ANTHROPIC)
+    rule.update(rule_update)
+    result = _result(ANTHROPIC)
+    result.update(result_update)
+    document = _sarif([rule], [result])
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
+
+
+def test_explicitly_empty_taxa_and_relationships_are_harmless(tmp_path):
+    rule = _rule(ANTHROPIC)
+    rule["relationships"] = []
+    result = _result(ANTHROPIC)
+    result["taxa"] = []
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": _sarif([rule], [result])})
+    security = json.loads((output / "security" / "semgrep.sarif").read_text())
+    assert security["runs"][0]["results"] == []
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 1
+
+
 @pytest.mark.parametrize("document", [
     {"version": "2.1.0", "runs": "not-a-list"},
     _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC, 3)]),
@@ -174,6 +219,50 @@ def test_malformed_or_inconsistent_sarif_fails_without_publishing(tmp_path, docu
     with pytest.raises(reports.ReportError):
         reports.prepare_reports(raw, output)
     assert not output.exists()
+
+
+@pytest.mark.parametrize("message", [
+    None,
+    {},
+    {"text": 17},
+    {"markdown": ""},
+    {"id": "message-id", "arguments": ["ok", 17]},
+    {"text": "valid text", "unknownMetadata": {}},
+])
+def test_malformed_inventory_candidate_message_fails_atomically(tmp_path, message):
+    result = _result(ANTHROPIC)
+    if message is None:
+        del result["message"]
+    else:
+        result["message"] = message
+    raw = tmp_path / "raw"
+    _write(raw, "semgrep.sarif", _sarif([_rule(ANTHROPIC)], [result]))
+    output = tmp_path / "reports"
+    with pytest.raises(reports.ReportError, match="message"):
+        reports.prepare_reports(raw, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("message,visible", [
+    ({"text": "plain text"}, "plain text"),
+    ({"markdown": "**markdown**"}, "markdown"),
+    ({"id": "localized-message", "arguments": ["one", "two"]},
+     "localized-message"),
+])
+def test_all_sarif_message_forms_route_and_render_consistently(
+        tmp_path, message, visible):
+    result = _result(ANTHROPIC)
+    result["message"] = message
+    rule = _rule(ANTHROPIC)
+    if "id" in message:
+        rule["messageStrings"] = {
+            message["id"]: {"text": "localized {0} {1}"},
+        }
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": _sarif([rule], [result])})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text())[
+        "runs"][0]["results"] == []
+    assert visible in (output / "inventory" / "ai-inventory.md").read_text()
 
 
 def test_missing_and_invalid_inputs_fail_visibly_without_publishing(tmp_path):

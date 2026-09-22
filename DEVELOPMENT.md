@@ -94,11 +94,14 @@ summary + JSON artifact) with standards citations and CI gating.
   reported grade, which still comes from the evidence/advisor pipeline.
   After that gate reads the unchanged raw captures and manifest, the workflow
   runs `scripts/code_scanning_reports.py` in runner temporary storage. It
-  keeps only the two named, note-level Semgrep AI-usage rules in a separate
-  JSON/Markdown inventory; elevated or security-tagged results remain in the
-  Security upload. The raw captures are retained as their own artifact, and
-  the helper publishes the Security and inventory directories atomically so a
-  preparation failure cannot appear as an empty successful analysis.
+  keeps only the two named, note-level AI-usage rules from the exact supported
+  `Semgrep OSS` driver in a separate JSON/Markdown inventory. A similar tool
+  name, elevated severity, taxonomy relationship, or any metadata beyond the
+  reviewed low-confidence inventory shape keeps the result in Security. A
+  malformed candidate fails preparation before anything is published. The raw
+  captures are retained as their own artifact, and the helper publishes the
+  Security and inventory directories atomically so a preparation failure
+  cannot appear as an empty successful analysis.
 - **`meta.coverage` is the single home for what a run actually observed**:
   `adapters` (per-file disposition — `ok`/`empty`/`failed`, a findings count,
   and a `reason` when failed), `tools_ran`, `build_executing_tools`,
