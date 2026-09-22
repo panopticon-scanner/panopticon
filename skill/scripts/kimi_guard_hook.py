@@ -134,7 +134,13 @@ def _load_scope(scope_path):
         if not isinstance(eid, str) or not isinstance(scope, dict):
             return None, "read guard scope is malformed"
         entry: dict[str, list[str]] = {}
-        for key in ("files", "dirs", "reads"):
+        # `hard_linked` (#1683) is the driver's one walk of a directory grant,
+        # written by phases/setup; absent from an older file, which loads as
+        # an empty list. The file's FORMAT is unchanged -- a new optional key
+        # in a schema-less object -- so there is no version to bump: the
+        # `read-scope.json` contract has no version field, and the one that
+        # does (the v2 write allowlist) is not this file.
+        for key in ("files", "dirs", "reads", "hard_linked"):
             val = scope.get(key)
             if val is None:
                 entry[key] = []
@@ -308,6 +314,15 @@ def _readable(target, scope):
 # this module is: the hook runs standing alone, with no package on sys.path.
 HARD_LINK_DENIAL = "read scope denies a hard-linked file inside a directory grant (st_nlink=%d)"
 
+# #1683: the same rule, for the read whose argument is the DIRECTORY -- one
+# wording across both hooks, pinned in tests/test_codex_read_tools.py beside
+# the one above. Takes (tool, raw argument, the recorded path that fired).
+DIRECTORY_LINK_DENIAL = (
+    "%s of directory %s is denied: this tool traverses the directory itself, "
+    "and the read scope recorded a hard-linked file beneath it (%s) -- a link "
+    "can name an inode outside the granted tree. Grep a narrower directory, "
+    "or a file by its path.")
+
 
 def _hard_link_reason(tool_name, raw, target, scope):
     """The denial for a multiply-linked REGULAR file that only a DIRECTORY grant
@@ -328,19 +343,15 @@ def _hard_link_reason(tool_name, raw, target, scope):
     that is a successful measurement of nothing to confine, not a failure to
     measure, and the tool's own not-found is what the caller should see.
 
-    WHAT THIS DOES NOT COVER (#1683). The rule reaches reads whose argument is a
-    FILE path. A `Grep` or `Glob` whose argument is a granted DIRECTORY is
-    adjudicated by path and then traversed by the HOST's own tool, which opens
-    the files itself -- so a hard link inside that subtree still reaches the
-    agent through Grep output. A PreToolUse hook can allow or deny a call, not
-    rewrite it, and walking the target repository on every Grep is not a thing
-    to do inside a synchronous hook; closing it means re-shaping the setup-scan
-    grant (the only directory grant the driver issues), which is #1683. The
-    Codex broker has no such gap: it reads the files itself.
+    THE OTHER HALF (#1683). This rule reaches reads whose argument is a FILE.
+    A `Grep`/`Glob` argued with a granted DIRECTORY is adjudicated by path and
+    then traversed by the host's own tool; `_decide_read` refuses those from
+    `scope["hard_linked"]` -- the walk the driver takes once when the grant is
+    built, because a hook may not walk the tree on every call.
 
-    Unlike that broker, which reads the count off the descriptor it then reads
-    FROM, a PreToolUse hook adjudicates a NAME the host reopens: this is exactly
-    as path-based as the realpath check beside it, and carries the same race.
+    Unlike the Codex broker, which reads the count off the descriptor it then
+    reads FROM, a PreToolUse hook adjudicates a NAME the host reopens: as
+    path-based as the realpath check beside it, and carrying the same race.
     """
     if target in scope["files"] or target in scope["reads"]:
         return ""
@@ -352,8 +363,7 @@ def _hard_link_reason(tool_name, raw, target, scope):
         # there is NO INODE at that name, so there is nothing for a read fence
         # to confine and nothing an attacker gains by inducing one. The tool's
         # own not-found is the honest answer; a denial here reads as a fence to
-        # the scout probing an unknown tree for absent marker files, and nudges
-        # it toward the directory Grep that is #1683.
+        # the scout probing an unknown tree for absent marker files.
         return ""
     except OSError as exc:
         # Fix round 1 (F4): a guard that cannot measure DENIES -- every other
@@ -384,6 +394,13 @@ def _decide_read(tool_name, tool_input, scope, cwd):
                        "list in your prompt" % tool_name)
     if os.path.isdir(target):
         if any(_under(target, d) for d in scope["dirs"]):
+            # #1683. Both directions: a link recorded BENEATH the argument is
+            # what the traversal would reach, and the argument beneath a
+            # recorded path is the walker's overflow encoding (the granted
+            # directory itself) or an unreadable subtree.
+            for p in scope.get("hard_linked") or ():
+                if _under(p, target) or _under(target, p):
+                    return False, DIRECTORY_LINK_DENIAL % (tool_name, raw, p)
             return True, ""
         if tool_name in ("Read", "ReadMediaFile"):
             return False, ("%s of directory %s is outside your cell's scope; the "

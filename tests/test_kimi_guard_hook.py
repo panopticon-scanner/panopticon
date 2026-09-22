@@ -76,19 +76,73 @@ class TestHardLinksInDirectoryGrants(GuardCase):
         self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.inside))
         self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.cell))
 
-    def test_a_directory_argument_grep_is_allowed_over_the_planted_link(self):
-        # KNOWN GAP #1683, the Kimi copy, pinned so it is visible rather than
-        # silent: the hook adjudicates the path argument, and a Grep/Glob whose
-        # argument is the granted directory -- including the pathless one that
-        # defaults to the working directory -- is traversed by Kimi itself,
-        # which can surface the hard-linked file this rule refuses by name.
+    def test_a_link_planted_after_the_grant_is_the_stated_residual(self):
+        # The honest limit, the Kimi copy: `hard_linked` is a snapshot of the
+        # tree taken when the grant was built, so a link the walk never saw is
+        # traversed. The tree is static for the length of a run.
         self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.cell))
         self.assertEqual((True, ""), self.scan("Glob", pattern="*.py", path=self.cell))
-        self.assertEqual((True, ""), guard.adjudicate(
-            {"tool_name": "Grep", "tool_input": {"pattern": "x"}, "cwd": self.cell},
-            "read", self.scope_path, env={guard.ENV_ENTRY_ID: "entry-dir"}))
-        # The half that IS closed: the same file, named directly.
+        # The half the st_nlink rule closes: the same file, named directly.
         self.assertFalse(self.scan("Read", path=self.planted)[0])
+
+    def test_a_directory_grep_above_a_recorded_link_is_denied_and_names_it(self):
+        # #1683, the Kimi copy. The hook adjudicates the path ARGUMENT and
+        # Kimi does the traversal, so a granted directory used to hand over
+        # the very file the st_nlink rule refuses by name. The walk is the
+        # driver's, once, when the grant is built.
+        _write(self.scope_path,
+               {"entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
+                              "hard_linked": [self.planted]}})
+        for tool, arguments in (("Grep", {"pattern": "x", "path": self.cell}),
+                                ("Glob", {"pattern": "*.py", "path": self.cell})):
+            with self.subTest(tool=tool):
+                allow, reason = self.scan(tool, **arguments)
+                self.assertFalse(allow, reason)
+                self.assertIn("innocent.py", reason)
+                self.assertIn("narrower", reason)
+                self.assertIn("entry-dir", reason)
+        # ...including the PATHLESS Grep that defaults to the working directory.
+        allow, reason = guard.adjudicate(
+            {"tool_name": "Grep", "tool_input": {"pattern": "x"}, "cwd": self.cell},
+            "read", self.scope_path, env={guard.ENV_ENTRY_ID: "entry-dir"})
+        self.assertFalse(allow, reason)
+
+    def test_a_clean_subdirectory_of_that_grant_is_still_greppable(self):
+        clean = os.path.join(self.cell, "clean")
+        os.makedirs(clean, exist_ok=True)
+        _write(self.scope_path,
+               {"entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
+                              "hard_linked": [self.planted]}})
+        self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=clean))
+        self.assertEqual((True, ""), self.scan("Glob", pattern="*.py", path=clean))
+
+    def test_the_overflow_encoding_denies_every_directory_under_the_grant(self):
+        # Past the walker's cap the driver records the granted directory
+        # itself, so the rule tests both containment directions.
+        deep = os.path.join(self.cell, "pkg", "sub")
+        os.makedirs(deep, exist_ok=True)
+        _write(self.scope_path,
+               {"entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
+                              "hard_linked": [self.cell]}})
+        for path in (self.cell, deep):
+            with self.subTest(path=path):
+                self.assertFalse(self.scan("Grep", pattern="x", path=path)[0])
+
+    def test_a_recorded_link_leaves_file_arguments_to_the_st_nlink_rule(self):
+        # `hard_linked` gates DIRECTORY arguments only; a read whose argument
+        # is the file is still answered by `_hard_link_reason`.
+        _write(self.scope_path,
+               {"entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
+                              "hard_linked": [self.planted]}})
+        allow, reason = self.scan("Read", path=self.planted)
+        self.assertFalse(allow, reason)
+        self.assertIn("st_nlink=2", reason)
+        self.assertNotIn("narrower", reason)
+
+    def test_a_scope_file_without_the_key_still_arms(self):
+        # The key is additive: a scope file written before #1683 loads with an
+        # empty list rather than denying every read in the run.
+        self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.cell))
 
     def test_a_path_with_no_inode_passes_through_to_the_tool(self):
         # Fix round 2 (N2), the Kimi copy: no inode at that name is nothing to

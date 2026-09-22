@@ -50,7 +50,11 @@ _READ_TOOLS = set(_READ_TOOLS_LIST)
 _MATCHER = "|".join(_READ_TOOLS_LIST)
 
 MARKER_PREFIX = "panopticon-entry: "
-SCOPE_KEYS = ("files", "dirs", "reads")
+# `hard_linked` (#1683) is the driver's ONE walk of a directory grant, taken
+# when it is built (phases/hard_links, via phases/setup): the paths beneath it
+# a directory-argument Grep/Glob must not traverse. An older scope file has no
+# such key and loads as an empty list.
+SCOPE_KEYS = ("files", "dirs", "reads", "hard_linked")
 
 # Spec 5.3 (plan 6): the headless runner exports this per subprocess. It is
 # the FIRST binding source -- a headless `claude -p` session is the reviewer
@@ -100,8 +104,8 @@ def _realpaths(paths):
 
 
 def scope_from_plan(plan):
-    """{entry id: {"files": [...], "dirs": [...], "reads": [...]}}, realpath-
-    normalised, for every entry that carries an id and a `scope` dict.
+    """{entry id: {key: [paths] for key in SCOPE_KEYS}}, realpath-normalised,
+    for every entry that carries an id and a `scope` dict.
 
     `plan` is a SEQUENCE OF ENTRIES, never the dispatch-request wrapper --
     the #1482 shape the write guard rejects for the same reason: a mapping's
@@ -151,6 +155,15 @@ def _readable(target, scope):
 # this module is: the hook runs standing alone, with no package on sys.path.
 HARD_LINK_DENIAL = "read scope denies a hard-linked file inside a directory grant (st_nlink=%d)"
 
+# #1683: the same rule, for the read whose argument is the DIRECTORY -- one
+# wording across both hooks, pinned in tests/test_codex_read_tools.py beside
+# the one above. Takes (tool, raw argument, the recorded path that fired).
+DIRECTORY_LINK_DENIAL = (
+    "%s of directory %s is denied: this tool traverses the directory itself, "
+    "and the read scope recorded a hard-linked file beneath it (%s) -- a link "
+    "can name an inode outside the granted tree. Grep a narrower directory, "
+    "or a file by its path.")
+
 
 def _hard_link_reason(tool_name, raw, target, scope):
     """The denial for a multiply-linked REGULAR file that only a DIRECTORY grant
@@ -165,45 +178,35 @@ def _hard_link_reason(tool_name, raw, target, scope):
 
     Directories are not the subject: a directory's st_nlink is its subdirectory
     count, and the rule is about reading content. A path that cannot be stat'ed
-    DENIES (fix round 1, F4): a guard may not answer "allowed" about something
-    it could not measure. A path with NO INODE (ENOENT/ENOTDIR, a dangling
-    symlink included) is the exception and passes through (fix round 2, N2):
-    that is a successful measurement of nothing to confine, not a failure to
-    measure, and the tool's own not-found is what the caller should see.
+    DENIES and a path with NO INODE passes through, for the reasons the two
+    `except` clauses below give (fix rounds 1 and 2, F4 and N2).
 
-    WHAT THIS DOES NOT COVER (#1683). The rule reaches reads whose argument is a
-    FILE path. A `Grep` or `Glob` whose argument is a granted DIRECTORY is
-    adjudicated by path and then traversed by the HOST's own tool, which opens
-    the files itself -- so a hard link inside that subtree still reaches the
-    agent through Grep output. A PreToolUse hook can allow or deny a call, not
-    rewrite it, and walking the target repository on every Grep is not a thing
-    to do inside a synchronous hook; closing it means re-shaping the setup-scan
-    grant (the only directory grant the driver issues), which is #1683. The
-    Codex broker has no such gap: it reads the files itself.
+    THE OTHER HALF (#1683). This rule reaches reads whose argument is a FILE.
+    A `Grep`/`Glob` argued with a granted DIRECTORY is adjudicated by path and
+    then traversed by the host's own tool; `decide` refuses those from
+    `scope["hard_linked"]` -- a hook may not walk the tree on every call.
 
-    Unlike that broker, which reads the count off the descriptor it then reads
-    FROM, a PreToolUse hook adjudicates a NAME the host reopens: this is exactly
-    as path-based as the realpath check beside it, and carries the same race.
+    Unlike the Codex broker, which reads the count off the descriptor it then
+    reads FROM, a PreToolUse hook adjudicates a NAME the host reopens: as
+    path-based as the realpath check beside it, and carrying the same race.
     """
     if target in scope["files"] or target in scope["reads"]:
         return ""
     try:
         info = os.stat(target)
     except (FileNotFoundError, NotADirectoryError):
-        # Fix round 2 (N2): ENOENT/ENOTDIR -- including a dangling symlink --
-        # are not "could not measure". They are a successful measurement that
-        # there is NO INODE at that name, so there is nothing for a read fence
-        # to confine and nothing an attacker gains by inducing one. The tool's
-        # own not-found is the honest answer; a denial here reads as a fence to
-        # the scout probing an unknown tree for absent marker files, and nudges
-        # it toward the directory Grep that is #1683.
+        # Fix round 2 (N2): ENOENT/ENOTDIR -- a dangling symlink included --
+        # are not "could not measure". They measure that there is NO INODE at
+        # that name: nothing for a read fence to confine, nothing an attacker
+        # gains by inducing one, and the tool's own not-found is the honest
+        # answer (a denial reads as a fence to the scout probing for absent
+        # marker files).
         return ""
     except OSError as exc:
         # Fix round 1 (F4): a guard that cannot measure DENIES -- every other
         # errno (EACCES, ELOOP, ENAMETOOLONG, EIO). This used to answer "" --
-        # allow -- reasoning that the host's own read of an unstattable name
-        # fails the same way; that is a guess about another process's syscall,
-        # made by the one component whose job is to be sure.
+        # allow -- guessing that the host's own read of an unstattable name
+        # fails the same way, from the one component whose job is to be sure.
         return ("%s of %s is denied: the read guard could not stat it to apply "
                 "the hard-link rule: %s" % (tool_name, raw, exc))
     if not stat.S_ISREG(info.st_mode) or info.st_nlink <= 1:
@@ -240,6 +243,13 @@ def decide(tool_name, tool_input, scope):
                        "in your prompt" % tool_name)
     if os.path.isdir(target):
         if any(_under(target, d) for d in scope["dirs"]):
+            # #1683. Both directions: a link recorded BENEATH the argument is
+            # what the traversal would reach, and the argument beneath a
+            # recorded path is the walker's overflow encoding (the granted
+            # directory itself) or an unreadable subtree.
+            for p in scope.get("hard_linked") or ():
+                if _under(p, target) or _under(target, p):
+                    return False, DIRECTORY_LINK_DENIAL % (tool_name, raw, p)
             return True, ""
         if tool_name == "Grep":
             return False, ("Grep over a directory is denied in a confined cell: grep a "

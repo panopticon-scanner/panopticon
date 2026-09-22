@@ -279,6 +279,25 @@ def test_the_hard_link_denial_is_one_wording(tree):
         "read scope denies a hard-linked file inside a directory grant (st_nlink=2)")
 
 
+def test_the_directory_link_denial_is_one_wording(tree):
+    # #1683's half of the rule lives in the two PreToolUse hooks only: the
+    # Codex broker reads every file itself, so it has no directory-argument
+    # traversal to refuse and no third copy to keep in step. Two copies still
+    # drift -- that is what the pin above is for -- so they are pinned here,
+    # beside it, rather than in one hook's own suite.
+    import scripts.kimi_guard_hook as kimi_guard_hook
+    import scripts.read_guard_hook as read_guard_hook
+
+    assert (read_guard_hook.DIRECTORY_LINK_DENIAL
+            == kimi_guard_hook.DIRECTORY_LINK_DENIAL)
+    assert not hasattr(read_tools, "DIRECTORY_LINK_DENIAL")
+    assert read_guard_hook.DIRECTORY_LINK_DENIAL % ("Grep", "/repo", "/repo/a/b.txt") == (
+        "Grep of directory /repo is denied: this tool traverses the directory "
+        "itself, and the read scope recorded a hard-linked file beneath it "
+        "(/repo/a/b.txt) -- a link can name an inode outside the granted tree. "
+        "Grep a narrower directory, or a file by its path.")
+
+
 def test_symlink_swap_between_scope_check_and_open_is_denied(tree, monkeypatch):
     _, _, first, _, outside = tree
     reader = reader_for(tree)
