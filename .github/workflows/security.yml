@@ -37,6 +37,17 @@ env:
   # exclusion to the direct children of tests/fixtures/ and started gating on
   # the deliberately-vulnerable corpus below it.
   FIXTURE_GLOB: tests/fixtures/**
+  # #1578 fix round 2: captured raw SCANNER OUTPUT, not code this
+  # repository authors -- `tests/goldens/tool-raw/*.raw` is one authentic,
+  # trimmed payload per adapter, so a secret a scanner once reported is
+  # quoted there verbatim and gitleaks finds it again on every run. Same
+  # class as the fixture corpus above, and the one class that cannot be
+  # composed away: every other in-tree literal was removed at its source
+  # (tests/_test_helpers.py) rather than excluded, because an allowlist
+  # hides the real ones too. Mirrored onto BOTH steps, like FIXTURE_GLOB:
+  # an exclusion on one half makes the scan and the gate disagree about
+  # what was reviewed.
+  GOLDEN_GLOB: tests/goldens/**
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -146,6 +157,7 @@ jobs:
             --out "$tools_out" \
             --manifest "$manifest" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
+            --exclude '${{ env.GOLDEN_GLOB }}' \
             --progress \
             --deps
 
@@ -167,7 +179,8 @@ jobs:
           python controller/skill/scripts/security_gate.py \
             --tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
             --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
-            --exclude '${{ env.FIXTURE_GLOB }}'
+            --exclude '${{ env.FIXTURE_GLOB }}' \
+            --exclude '${{ env.GOLDEN_GLOB }}'
 
       - name: Upload SARIF to GitHub Security tab
         if: always()
