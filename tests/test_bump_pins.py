@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import unittest
 from unittest import mock
 
@@ -428,16 +429,37 @@ GEM = b"gem bytes"
 GEM_SHA = hashlib.sha256(GEM).hexdigest()
 
 
-def _canned_gem(sha, runtime=(), latest="1.5.0", artifact=GEM):
-    """A `_get` answering rubygems' three endpoints for one gem."""
+def _gem_of(url):
+    """The gem name in a rubygems API url, or None for a download url."""
+    for pattern in (r"/api/v1/versions/([^/]+)/latest\.json",
+                    r"/api/v2/rubygems/([^/]+)/versions/"):
+        m = re.search(pattern, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _canned_gems(runtime=None, sha=GEM_SHA, latest="1.5.0", artifact=GEM):
+    """A `_get` answering rubygems' three endpoints, per gem name.
+
+    `runtime` is {gem: {dependency: requirement}}; a gem it does not name
+    answers with the closure this repo has REVIEWED, so a test states only
+    what it changes and cannot accidentally assert the table's contents.
+    """
+    runtime = dict(runtime or {})
+
     def get(url):
+        name = _gem_of(url)
         if "/api/v1/versions/" in url:
             return json.dumps({"version": latest}).encode()
         if "/api/v2/rubygems/" in url:
+            deps = runtime.get(name, bp.REVIEWED_GEM_RUNTIME.get(name, {}))
             return json.dumps({
                 "sha": sha, "platform": "ruby",
-                "dependencies": {"runtime": [{"name": n} for n in runtime],
-                                 "development": []}}).encode()
+                "dependencies": {
+                    "runtime": [{"name": n, "requirements": r}
+                                for n, r in sorted(deps.items())],
+                    "development": []}}).encode()
         return artifact
     return get
 
@@ -469,14 +491,16 @@ class TestGemPins(unittest.TestCase):
 
 
 class TestGemVerification(unittest.TestCase):
-    def test_sha_is_read_from_upstream_and_recomputed(self):
-        with mock.patch.object(bp, "_get", _canned_gem(GEM_SHA, ("bundler",))):
+    def test_sha_and_requirements_are_read_from_upstream(self):
+        with mock.patch.object(bp, "_get", _canned_gems()):
             sha, runtime = bp.verified_gem_sha("bundler-audit", "0.9.3")
         self.assertEqual(GEM_SHA, sha)
-        self.assertEqual(["bundler"], runtime)
+        # the REQUIREMENT comes back with the name: a constraint this tool
+        # cannot evaluate is still a constraint it has to notice changing.
+        self.assertEqual({"bundler": ">= 1.2.0", "thor": "~> 1.0"}, runtime)
 
     def test_a_published_sha_that_does_not_match_is_refused(self):
-        with mock.patch.object(bp, "_get", _canned_gem("f" * 64)):
+        with mock.patch.object(bp, "_get", _canned_gems(sha="f" * 64)):
             with self.assertRaises(RuntimeError) as cm:
                 bp.verified_gem_sha("thor", "1.5.0")
         self.assertIn("refusing to pin", str(cm.exception))
@@ -484,9 +508,50 @@ class TestGemVerification(unittest.TestCase):
     def test_a_non_sha_response_is_refused(self):
         for body in ("<html>404</html>", "", None):
             with self.subTest(body=body), mock.patch.object(
-                    bp, "_get", _canned_gem(body)):
+                    bp, "_get", _canned_gems(sha=body)):
                 with self.assertRaises(RuntimeError):
                     bp.verified_gem_sha("thor", "1.5.0")
+
+
+class TestReviewedGemClosure(unittest.TestCase):
+    """The rule on both answers, on canned release documents."""
+
+    def test_the_reviewed_closure_itself_is_no_drift(self):
+        for gem, reviewed in bp.REVIEWED_GEM_RUNTIME.items():
+            with self.subTest(gem=gem):
+                self.assertEqual([], bp.unreviewed_gem_requirements(gem, dict(reviewed)))
+
+    def test_every_gem_the_image_installs_has_a_reviewed_closure(self):
+        # A gem added to GEMS with no entry here would be bumped against a
+        # table that does not describe it, which is the one state the rule
+        # cannot reason about.
+        self.assertEqual({name for _prefix, name in bp.GEMS},
+                         set(bp.REVIEWED_GEM_RUNTIME))
+
+    def test_a_new_dependency_is_drift(self):
+        drift = bp.unreviewed_gem_requirements("thor", {"rainbow": ">= 0"})
+        self.assertEqual(1, len(drift), drift)
+        self.assertIn("rainbow", drift[0])
+        self.assertIn("does not install", drift[0])
+
+    def test_a_tightened_constraint_on_a_base_ruby_gem_is_drift(self):
+        # The hole the name-only comparison left: racc comes from the base
+        # image's ruby, so `>= 0` -> `>= 1.8` is a question only the image
+        # build can answer -- and it used to be pinned green here first.
+        drift = bp.unreviewed_gem_requirements("brakeman", {"racc": ">= 1.8"})
+        self.assertEqual(1, len(drift), drift)
+        self.assertIn("racc", drift[0])
+        self.assertIn("'>= 0'", drift[0])
+        self.assertIn("'>= 1.8'", drift[0])
+
+    def test_a_dropped_dependency_is_drift(self):
+        drift = bp.unreviewed_gem_requirements("bundler-audit",
+                                               {"bundler": ">= 1.2.0"})
+        self.assertEqual(1, len(drift), drift)
+        self.assertIn("no longer requires thor", drift[0])
+
+    def test_an_unknown_gem_is_drift_rather_than_a_pass(self):
+        self.assertTrue(bp.unreviewed_gem_requirements("rainbow", {}))
 
 
 class TestGemRewrite(unittest.TestCase):
@@ -537,19 +602,37 @@ class TestGemsMain(unittest.TestCase):
     def test_report_only_by_default(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
-            rc, out, text = self._run(d, _canned_gem(GEM_SHA, latest="9.9.9"))
+            rc, out, text = self._run(d, _canned_gems(latest="9.9.9"))
         self.assertEqual(0, rc)
         self.assertIn("re-run with --write", out)
         self.assertEqual(GEM_DOCKERFILE, text, "no --write must mean no edit")
 
     def test_write_applies_the_bump(self):
+        # The reviewed closure, unchanged, is what a routine bump looks like.
         import tempfile
         with tempfile.TemporaryDirectory() as d:
-            rc, _out, text = self._run(d, _canned_gem(GEM_SHA, latest="9.9.9"),
+            rc, _out, text = self._run(d, _canned_gems(latest="9.9.9"),
                                        write=True)
         self.assertEqual(0, rc)
         for prefix in ("THOR", "BRAKEMAN", "BUNDLER_AUDIT"):
             self.assertEqual(("9.9.9", GEM_SHA), bp.current_gem_pins(text)[prefix])
+
+    def _refuses(self, runtime):
+        """--write against a drifted closure: raises, and writes nothing."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "Dockerfile")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(GEM_DOCKERFILE)
+            with mock.patch.object(bp, "_get",
+                                   _canned_gems(runtime, latest="9.9.9")), \
+                    mock.patch("sys.stdout", io.StringIO()):
+                with self.assertRaises(RuntimeError) as cm:
+                    bp.main(["gems", "--dockerfile", path, "--write"])
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(GEM_DOCKERFILE, fh.read(),
+                                 "a refused bump still wrote to the Dockerfile")
+        return str(cm.exception)
 
     def test_a_grown_runtime_closure_refuses_to_pin(self):
         # The whole point of the Dockerfile's `--ignore-dependencies` install is
@@ -557,29 +640,12 @@ class TestGemsMain(unittest.TestCase):
         # something nobody installs would be pinned green here and then fail --
         # or worse, half-work -- inside the image, so it must stop the bump and
         # say the name.
-        import tempfile
-        get = _canned_gem(GEM_SHA, runtime=("rainbow",), latest="9.9.9")
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "Dockerfile")
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(GEM_DOCKERFILE)
-            with mock.patch.object(bp, "_get", get), \
-                    mock.patch("sys.stdout", io.StringIO()):
-                with self.assertRaises(RuntimeError) as cm:
-                    bp.main(["gems", "--dockerfile", path, "--write"])
-            with open(path, encoding="utf-8") as fh:
-                self.assertEqual(GEM_DOCKERFILE, fh.read())
-        self.assertIn("rainbow", str(cm.exception))
+        self.assertIn("rainbow", self._refuses({"thor": {"rainbow": ">= 0"}}))
 
-    def test_a_dependency_the_ruby_runtime_ships_is_not_a_grown_closure(self):
-        # bundler and racc are default gems of the base image's ruby, which is
-        # why brakeman and bundler-audit install without them.
-        import tempfile
-        get = _canned_gem(GEM_SHA, runtime=("bundler", "racc"), latest="9.9.9")
-        with tempfile.TemporaryDirectory() as d:
-            rc, _out, text = self._run(d, get, write=True)
-        self.assertEqual(0, rc)
-        self.assertEqual(("9.9.9", GEM_SHA), bp.current_gem_pins(text)["THOR"])
+    def test_a_tightened_constraint_refuses_to_pin(self):
+        message = self._refuses({"brakeman": {"racc": ">= 1.8"}})
+        self.assertIn("racc", message)
+        self.assertIn("--ignore-dependencies", message)
 
 
 if __name__ == "__main__":

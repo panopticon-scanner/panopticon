@@ -31,8 +31,10 @@ different upstreams and different verification steps:
                 pairs, read from rubygems' own API. The tools image installs
                 each .gem from a checksum-gated file with
                 --ignore-dependencies (#1734), so this also refuses to pin a
-                release whose runtime closure has GROWN past what the image
-                installs -- that is the one change the digest cannot catch.
+                release whose runtime closure has DRIFTED from the reviewed
+                one -- a new dependency, or a tightened constraint on one the
+                base image's ruby provides. Neither is a change a digest can
+                catch, and both break the image rather than the download.
   tinyproxy     read-only check of the egress sidecar's multi-platform digest;
                 a stale pin produces a workflow warning for manual review.
 
@@ -180,9 +182,28 @@ def run_rustup(args) -> int:
 GEMS = (("BRAKEMAN", "brakeman"),
         ("BUNDLER_AUDIT", "bundler-audit"),
         ("THOR", "thor"))
-# Gems the base image's ruby already ships, which is why the Dockerfile does
-# not install them and why seeing one required is not a grown closure.
-RUBY_DEFAULT_GEMS = frozenset({"bundler", "racc"})
+# The runtime closure this repo has REVIEWED, as {gem: {dependency:
+# requirement}}, read from rubygems' own API on the day each version was
+# pinned. Both halves are load-bearing, and for different reasons:
+#
+#   a new NAME is a gem nothing installs. The image installs with
+#   --ignore-dependencies, so it would simply be absent.
+#
+#   a changed REQUIREMENT is a constraint this tool cannot evaluate. `racc` and
+#   `bundler` come from the base image's ruby, whose version is not knowable
+#   from here, and `thor` is installed at whatever THOR_VERSION says -- so
+#   "does 1.5.0 satisfy `~> 2.0`?" is a question only the image build answers,
+#   at `bundle-audit update` and at smoke_adapters.py. Comparing names alone
+#   let a tightened constraint through --write and deferred the failure to
+#   that build, with a green pin in the diff to argue it was fine.
+#
+# Either way the answer is to stop and make a human look. Update this table in
+# the same commit as the version bump, once the image build is green.
+REVIEWED_GEM_RUNTIME = {
+    "brakeman": {"racc": ">= 0"},
+    "bundler-audit": {"bundler": ">= 1.2.0", "thor": "~> 1.0"},
+    "thor": {},
+}
 
 
 def _gem_version(version: str) -> str:
@@ -229,10 +250,12 @@ def verified_gem_sha(name: str, version: str) -> tuple[str, list[str]]:
     downloaded .gem, for the reason the rustup family states: the published
     value alone proves only that the index agrees with itself.
 
-    The runtime dependencies come back with it because the image installs with
-    --ignore-dependencies, which makes the closure something this repo asserts
-    rather than something RubyGems works out. A release that requires a new gem
-    would carry a perfectly good digest and still be wrong to pin.
+    The runtime dependencies come back with it, REQUIREMENTS INCLUDED, because
+    the image installs with --ignore-dependencies: the closure is something
+    this repo asserts rather than something RubyGems works out. A release that
+    requires a new gem -- or that tightens a constraint on one the base image's
+    ruby provides -- carries a perfectly good digest and is still wrong to pin.
+    See `unreviewed_gem_requirements`.
     """
     version = _gem_version(version)
     body = _get(RUBYGEMS_RELEASE.format(name=name, version=version))
@@ -252,9 +275,33 @@ def verified_gem_sha(name: str, version: str) -> tuple[str, list[str]]:
             "%s %s: published sha256 %s != actual %s -- refusing to pin"
             % (name, version, published, actual))
     runtime = (release.get("dependencies") or {}).get("runtime") or []
-    names = sorted(d["name"] for d in runtime
-                   if isinstance(d, dict) and isinstance(d.get("name"), str))
-    return actual, names
+    return actual, {d["name"]: d.get("requirements") for d in runtime
+                    if isinstance(d, dict) and isinstance(d.get("name"), str)}
+
+
+def unreviewed_gem_requirements(name: str, runtime: dict) -> list[str]:
+    """How this release's runtime closure differs from the reviewed one, or [].
+
+    Pure. `runtime` is `verified_gem_sha`'s second value: {dependency:
+    requirement string}. Every difference is reported, not just the first, so
+    one run tells an operator the whole story.
+    """
+    reviewed = REVIEWED_GEM_RUNTIME.get(name)
+    if reviewed is None:
+        return ["%s has no reviewed runtime closure; add one to "
+                "REVIEWED_GEM_RUNTIME" % name]
+    out = []
+    for dep in sorted(runtime):
+        if dep not in reviewed:
+            out.append("%s now requires %s (%s), which the image does not "
+                       "install" % (name, dep, runtime[dep]))
+        elif runtime[dep] != reviewed[dep]:
+            out.append("%s changed its requirement on %s from %r to %r"
+                       % (name, dep, reviewed[dep], runtime[dep]))
+    for dep in sorted(set(reviewed) - set(runtime)):
+        out.append("%s no longer requires %s; drop it from "
+                   "REVIEWED_GEM_RUNTIME" % (name, dep))
+    return out
 
 
 def rewrite_gem_pin(text: str, prefix: str, version: str, sha: str) -> str:
@@ -309,16 +356,15 @@ def run_gems(args) -> int:
     verified = []
     for prefix, name, want in stale:
         sha, runtime = verified_gem_sha(name, want)   # raises unless it verifies
-        grown = sorted(set(runtime)
-                       - RUBY_DEFAULT_GEMS
-                       - {gem for _p, gem in GEMS})
-        if grown:
+        drift = unreviewed_gem_requirements(name, runtime)
+        if drift:
             raise RuntimeError(
-                "%s %s requires %s, which the image does not install -- it "
-                "installs with --ignore-dependencies, so pinning this would "
-                "ship a gem with a missing dependency. Add the new gem to the "
-                "Dockerfile and to GEMS, then re-run."
-                % (name, want, ", ".join(grown)))
+                "%s %s does not have the runtime closure this repo reviewed, "
+                "and the image installs with --ignore-dependencies -- so a "
+                "digest says nothing about whether it would WORK:\n  %s\n"
+                "Check the Dockerfile still installs what this needs, build "
+                "the image, then update REVIEWED_GEM_RUNTIME and re-run."
+                % (name, want, "\n  ".join(drift)))
         verified.append((prefix, name, want, sha))
     for prefix, _name, want, sha in verified:
         text = rewrite_gem_pin(text, prefix, want, sha)
