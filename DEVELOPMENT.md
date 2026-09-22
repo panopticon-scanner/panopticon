@@ -197,22 +197,30 @@ Rebuild cadence: monthly, or whenever a new adapter is added. The same monthly c
 
 ## Pinned dependencies
 
-Dependabot covers this repo's `pip` and `github-actions` dependencies. Two families sit outside it
+Dependabot covers this repo's `pip` and `github-actions` dependencies. Three families sit outside it
 and are maintained by `scripts/bump_pins.py <family> [--write]`, which never writes a checksum it
 has not recomputed from the downloaded artifact:
 
 | Family | What it pins | Who bumps it |
 |---|---|---|
 | `rustup` | `Dockerfile`'s `ARG RUSTUP_VERSION` + its two init SHA256s | `pin-freshness.yml`, Mondays, opens a PR |
-| `requirements` | the `--hash=sha256:` lines in `.github/requirements-gate.txt` and `requirements-fixtures.txt` | you, beside the version bump |
+| `requirements` | the `--hash=sha256:` lines in `.github/requirements-gate.txt`, `requirements-fixtures.txt` and `requirements-tools.txt` | you, beside the version bump |
+| `gems` | `Dockerfile`'s `ARG <GEM>_VERSION` + `ARG <GEM>_GEM_SHA256` pairs | you; nothing schedules it yet |
+
+The `gems` family also refuses to pin a release whose RUNTIME closure has grown past what the image
+installs. The tools image installs each `.gem` with `--ignore-dependencies` (#1734), so the closure
+is something this repo asserts rather than something RubyGems works out — and a release that
+requires a new gem would carry a perfectly good digest and still be wrong to pin.
 
 ### Regenerating the pinned dependency hashes
 
-The two requirements files are what the repo's **privileged** builds install (#1641): the
+The three requirements files are what the repo's **privileged** builds install (#1641, #1734): the
 `pull_request_target` security gate, which holds `security-events: write` and is reachable from a
-fork PR, and the fixture image, which installs as root at image build. Both use `--require-hashes`,
-so pip refuses any artifact whose sha256 is not written in the file — which also means a version
-bump with stale digests fails the build rather than installing something unpinned.
+fork PR; the fixture image, which installs as root at image build; and the tools image, which does
+the same and is then published publicly as the trust root of every scan. All three use
+`--require-hashes`, so pip refuses any artifact whose sha256 is not written in the file — which
+also means a version bump with stale digests fails the build rather than installing something
+unpinned.
 
 The versions are the input and yours to choose; the digests are not. After changing a
 `name==version` line (or adding a package), run:
@@ -226,19 +234,34 @@ Dependabot proposes the version bumps themselves — `.github/dependabot.yml` ha
 `/` (the fixture file) and one for `/.github` (the gate file) — but the digests are this script's
 job, and `--require-hashes` fails the build until they match.
 
-It reads every artifact PyPI publishes for that release, keeps the ones a linux x86_64 build may
-install (the `any` wheels plus the linux x86_64 ones), verifies each published digest against the
-downloaded wheel, and rewrites the hash block. It refuses to write anything it could not verify, and
+It reads every artifact PyPI publishes for that release, keeps the ones a linux build may install
+(the `any` wheels plus the linux `x86_64` and `aarch64` ones — `docker-publish.yml` builds the
+images for both architectures, and an x86_64-only hash block fails `--require-hashes` on the arm64
+leg alone), verifies each published digest against the downloaded wheel, and rewrites the hash
+block. It refuses to write anything it could not verify, and
 refuses a release that offers no installable wheel rather than letting pip fall back to building an
 sdist. It needs the network, so it is an **operator** tool — the suite never runs it against the
 live index (`tests/test_bump_pins.py` drives it off a canned PyPI document).
 
-Two differences between the files are deliberate:
+The differences between the files are deliberate:
 
 - `.github/requirements-gate.txt` is installed with `--no-deps`, so it must list the COMPLETE
   closure (hence jsonschema's four runtime dependencies). A missing one fails loudly at import.
+- `requirements-tools.txt` is also installed with `--no-deps`, and its closure is 92 packages, so
+  it is not written by hand. Resolve it with
+  `uv pip compile --generate-hashes --python-version 3.12 --python-platform x86_64-unknown-linux-gnu`
+  (and again for `aarch64-unknown-linux-gnu`; the two resolve to the same set today), then re-run
+  `bump_pins.py requirements --file requirements-tools.txt --write` so the digests are ones this
+  repo re-verified. Do NOT commit `uv pip compile --universal` output directly: it adds packages
+  behind environment markers, and `rewrite_requirements` does not carry a marker through a rewrite,
+  so a win32-only package would arrive as an unconditional pin the linux build cannot satisfy.
 - `requirements-fixtures.txt` is installed without `--no-deps`, so pip resolves pytest's graph and
   `--require-hashes` turns a missing dependency into a loud install-time failure instead.
+
+The tools image's Node closure is pinned the same way but by npm: `tools-image/node/package.json`
+is the declared list and `tools-image/node/package-lock.json` the 140-package closure, regenerated
+with `npm install --package-lock-only --ignore-scripts`. The image installs it with
+`npm ci --ignore-scripts`, which fails rather than resolving anything if the two disagree.
 
 `tests/test_workflow_pins.py` holds the rule: every `pip install` in `.github/workflows/*.yml` and
 `Dockerfile*` either installs from a `--require-hashes` file or is on that module's

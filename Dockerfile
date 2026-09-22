@@ -39,15 +39,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git gnupg ruby nodejs npm \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Registry policy (#1534): requested tool versions are pinned below; their
-# transitive registry dependencies currently resolve at image-build time.
-# pip --require-hashes and npm ci need complete per-platform lock sets, which
-# these standalone/global installs do not yet maintain. gem, cargo and dotnet
-# installs likewise select package versions without a repository-owned lock
-# of the whole dependency graph. This is the current version-pin baseline,
-# not a claim of reproducible or hash-verified registry inputs; #1734 tracks
-# tightening the transitive dependency policy. Direct binary downloads retain
-# their separate checksum requirements above and below.
+# Registry policy (#1534, #1734). Every package-manager install below takes
+# its WHOLE dependency closure from a file this repo commits, not from
+# whatever the index resolves on the day of the build. This image is published
+# publicly, rebuilt daily, and is the trust root of every scan run against
+# somebody else's repository, and all of these installs run as root -- so an
+# unpinned transitive release is install-time code execution here and a
+# substituted scanner everywhere downstream.
+#
+#   pip  `--require-hashes --no-deps -r requirements-tools.txt`: 92 packages,
+#        each with the sha256 of every wheel either published architecture may
+#        be served. --no-deps makes that file the complete list.
+#   gem  each .gem fetched to a file, gated on `sha256sum -c`, then installed
+#        --local --ignore-dependencies. No resolver runs.
+#   npm  `npm ci --ignore-scripts` against the committed
+#        tools-image/node/package-lock.json: 140 packages by integrity digest,
+#        and no package's install scripts execute.
+#
+# Two installs are deliberately NOT covered, and this is therefore not a claim
+# that every registry input to this image is hash-verified: `cargo install
+# cargo-audit` and `dotnet tool install` still select a version without a
+# repository-owned lock of their graphs. Distro apt packages stay unpinned for
+# the reason given above. Direct binary downloads keep their own checksum
+# gates, above and below.
 #
 # Python tools, installed from the closure this repo commits rather than from
 # whatever PyPI resolves on the day: requirements-tools.txt holds all 92
