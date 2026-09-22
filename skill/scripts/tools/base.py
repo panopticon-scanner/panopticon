@@ -1,16 +1,20 @@
 """Shared base utilities for tool adapters."""
 from __future__ import annotations
 import collections
+import contextlib
 import contextvars
 import json
 import math
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
+from collections.abc import Iterator
 from typing import Any, Protocol
 
 from scripts.provenance import tool_provenance
@@ -465,6 +469,35 @@ def _raise_if_output_capped(watcher, path, cap):
     """
     if watcher is not None and watcher.exceeded:
         raise OutputCapExceeded(path, cap, watcher.size)
+
+
+@contextlib.contextmanager
+def scratch_cwd(prefix: str) -> Iterator[str]:
+    """Yield a fresh empty directory to run a scanner FROM, then remove it.
+
+    A scanner's working directory is where its own config and dispatch
+    resolution walk from -- `.npmrc`, `.semgrepignore`, `.gitleaksignore`,
+    `.cargo/config.toml`, a brakeman/spotbugs/dependency-check ignore file --
+    so a cwd inside the scanned tree lets a hostile target silence or redirect
+    the scan for free (#1742). Passing no cwd is not neutral either: the tools
+    image ends `WORKDIR /src` and `/src` IS the target mount, so "no cwd"
+    means "the target" (#1877). Every adapter therefore names its own scratch
+    directory here and names the target by absolute path in argv, which makes
+    the whole class unreachable through the filesystem rather than only
+    through each tool's grammar.
+
+    `rmtree(ignore_errors=True)`, never `rmdir` (#1646 F3): this directory
+    exists PRECISELY to be where stray writes land -- a build backend's temp
+    file, pip's legacy in-cwd artifacts -- so "something wrote there" is the
+    expected case. `os.rmdir` raised `Directory not empty`, `_run_adapter`
+    caught it and returned FAIL_RC, and pip-audit landed in the manifest's
+    `missing`: the coverage gate degraded on a run whose audit had succeeded.
+    """
+    scratch = tempfile.mkdtemp(prefix=prefix)
+    try:
+        yield scratch
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
