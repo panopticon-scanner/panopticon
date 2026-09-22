@@ -345,6 +345,7 @@ groups:
       - scripts/triage.py
       - scripts/reconcile_apply.py
       - scripts/sanitize.py
+      - scripts/code_scanning_reports.py
       tests:
       - tests/test_html_report.py
       - tests/test_x0x_report.py
@@ -354,6 +355,7 @@ groups:
       - tests/test_triage.py
       - tests/test_reconcile_apply.py
       - tests/test_sanitize.py
+      - tests/test_code_scanning_reports.py
   CI:
     match:
     - .github/**
