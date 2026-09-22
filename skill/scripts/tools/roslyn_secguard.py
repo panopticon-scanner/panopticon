@@ -5,8 +5,8 @@ import os
 import shutil
 import sys
 import tempfile
-from .base import (as_list, make_finding, omit_none, parse_json_bytes,
-                   read_capped_report, run_tool)
+from .base import (OutputCapExceeded, as_list, make_finding, omit_none,
+                   parse_json_bytes, read_capped_report, run_tool)
 from .sarif_utils import LEVEL_TO_SEV
 
 
@@ -270,7 +270,17 @@ class RoslynSecGuardAdapter:
                 "--ignore-msbuild-errors",
                 "--no-banner",
             ]
-            _stdout, rc = run_tool(cmd, timeout=600)
+            try:
+                # #1576 (OPS-2007447947): watch the export path WHILE the
+                # scanner writes it. read_capped_report below is the read-time
+                # half of the same 50 MiB ceiling; without this one the temp
+                # volume is already full by the time it refuses the file.
+                _stdout, rc = run_tool(cmd, timeout=600, watch_path=sarif,
+                                       start_new_session=True)
+            except OutputCapExceeded as exc:
+                print("roslyn-secguard: %s; recording as failed" % exc,
+                      file=sys.stderr)
+                return b"", _NO_OUTPUT_RC
             if os.path.exists(sarif):
                 # #run8 OPS-D1A: the scanner writes SARIF to disk, so this read
                 # bypasses run_tool's stdout cap; bound it and fail closed on an

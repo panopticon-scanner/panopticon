@@ -618,5 +618,48 @@ class TestCopyDirectoryCap(unittest.TestCase):
         self.assertGreaterEqual(rs._MAX_COPY_DIRS, 100_000)
 
 
+class TestSarifWriteIsBounded(unittest.TestCase):
+    """#1576 (run-13 OPS-2007447947): the SARIF export had no write-time cap.
+
+    The adapter handed dotnetarium-scs an unrestricted --export path and read
+    it with read_capped_report only once the scanner had returned. The 50 MiB
+    ceiling protected the adapter's MEMORY; nothing protected the temp volume
+    the scanner was writing to for up to 600 seconds.
+    """
+
+    def _invoke(self, fake_run):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "x.csproj"), "w").close()
+            with mock.patch.object(rs, "_safe_copytree", return_value=0), \
+                    mock.patch.object(rs, "run_tool", side_effect=fake_run):
+                return rs.RoslynSecGuardAdapter().invoke(d)
+
+    def test_the_export_path_is_watched_while_the_scanner_writes(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen.update(kw)
+            seen["export"] = [a for a in cmd if a.startswith("--export=")][0][9:]
+            return b"", 0
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            self._invoke(fake_run)
+        self.assertEqual(seen["watch_path"], seen["export"])
+        # The cap itself is run_tool's default, which test_base pins to the
+        # same MAX_TOOL_OUTPUT_BYTES read_capped_report refuses at.
+        self.assertTrue(seen["start_new_session"])
+
+    def test_an_overrun_is_a_disclosed_tool_failure_not_a_clean_scan(self):
+        def fake_run(cmd, **kw):
+            raise tools_base.OutputCapExceeded(kw["watch_path"], 50, 100)
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            raw, rc = self._invoke(fake_run)
+        self.assertEqual(raw, b"")
+        self.assertNotIn(rc, (0, 1))       # recorded missing, never clean
+        self.assertIn("write-time output cap", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
