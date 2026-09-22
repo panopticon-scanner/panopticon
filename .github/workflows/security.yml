@@ -7,6 +7,10 @@ on:
   # judges them and the PR patch can never rewrite the gate that judges it.
   pull_request_target:
     branches: [main]
+    # `opened` is deliberately NOT here. The default type set starts a scan the
+    # moment a fork PR appears; `labeled` is what admits one, and
+    # `synchronize`/`reopened` exist so the `unlabel` job can revoke it again.
+    types: [synchronize, reopened, labeled]
   # Same-repo branch PRs (trusted: write-access + required review) run under
   # pull_request. Both triggers are present so the required `scan` check always
   # reports; the job-level `if` below routes each PR to exactly ONE of them
@@ -35,7 +39,9 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request_target' &&
-       github.event.pull_request.head.repo.full_name != github.repository) ||
+       github.event.pull_request.head.repo.full_name != github.repository &&
+       github.event.action == 'labeled' &&
+       github.event.label.name == 'safe-to-scan') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository)
     permissions:

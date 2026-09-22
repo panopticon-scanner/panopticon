@@ -99,7 +99,9 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         compact = " ".join(job_if.split())
         self.assertIn(                                  # fork route: FOREIGN head repo
             "(github.event_name == 'pull_request_target' && "
-            "github.event.pull_request.head.repo.full_name != github.repository)",
+            "github.event.pull_request.head.repo.full_name != github.repository && "
+            "github.event.action == 'labeled' && "
+            "github.event.label.name == 'safe-to-scan')",
             compact)
         self.assertIn(                                  # same-repo route: SAME head repo
             "(github.event_name == 'pull_request' && "
@@ -182,6 +184,49 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         # and present in run scripts.
         runs = self._run_text(self._workflow())
         self.assertIn("${{ env.TOOLS_OUT }}", runs)
+
+
+class TestTheForkScanIsLabelGated(unittest.TestCase):
+    """#1900: a fork PR is scanned only after a maintainer says so.
+
+    `pull_request_target` is not covered by GitHub's "require approval for
+    outside collaborators" setting, so until this gate existed anyone who could
+    open a PR could run the scanners over a tree of their choosing, in a job
+    holding the base repository's token. The gate is the `safe-to-scan` label:
+    the scan fires on the `labeled` event, which means it scans the head the
+    maintainer was looking at when they applied it.
+    """
+
+    def setUp(self):
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            self.wf = yaml.safe_load(fh)
+
+    def _on(self):
+        # PyYAML 1.1 parses the unquoted `on:` key as the boolean True.
+        return self.wf.get(True, {})
+
+    def test_pull_request_target_fires_only_on_the_gated_actions(self):
+        # `opened` is deliberately absent: the default type set would start a
+        # scan the moment a fork PR appeared, before any maintainer saw it.
+        # `labeled` is what admits one; `synchronize`/`reopened` exist so the
+        # revoke job below can take the label away again.
+        self.assertEqual(
+            self._on()["pull_request_target"].get("types"),
+            ["synchronize", "reopened", "labeled"])
+
+    def test_the_fork_route_requires_the_maintainer_label(self):
+        compact = " ".join(self.wf["jobs"]["scan"]["if"].split())
+        self.assertIn("github.event.action == 'labeled'", compact)
+        self.assertIn("github.event.label.name == 'safe-to-scan'", compact)
+
+    def test_the_scan_jobs_permissions_are_the_recorded_ones(self):
+        # Pinned, not merely present: the fork path reaches this job, and the
+        # label gate is what bounds these grants. A later edit that widens them
+        # has to come through this line.
+        self.assertEqual(
+            self.wf["jobs"]["scan"]["permissions"],
+            {"contents": "read", "packages": "read",
+             "security-events": "write"})
 
 
 class TestTheImagePullIsBounded(unittest.TestCase):
