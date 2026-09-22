@@ -663,7 +663,18 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
     """
 
     TS = "2026-09-17T00:00:00Z"
-    SARIF = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
+    # B105 is bandit's hardcoded-password rule, and CWE-259 is the CWE it
+    # really carries. #1578 owner ruling 2026-09-22 (policy C): the redteam
+    # gate re-admits a suppressed finding only when it is CRITICAL or
+    # SECRET-CLASS, so the class's default finding has to be one of those for
+    # every test below to keep asking its own question (the delta filter, the
+    # severity floor, the tallies, the renderers, the mode's provenance). The
+    # severity rule itself is pinned by `test_the_evidence_axis_...` and its
+    # neighbours, which drive `tool`/`cwe`/`critical` explicitly.
+    SARIF = {"runs": [{"tool": {"driver": {
+                           "name": "bandit",
+                           "rules": [{"id": "B105",
+                                      "properties": {"tags": ["CWE-259"]}}]}},
                        "results": [{"ruleId": "B105", "level": "error",
                                     "message": {"text": "hardcoded password"},
                                     "locations": [{"physicalLocation": {
@@ -672,20 +683,42 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                                         "region": {"startLine": 1,
                                                    "endLine": 4}}}]}]}]}
 
-    def _sarif(self, rel):
+    def _sarif(self, rel, tool="bandit", cwe="CWE-259"):
         hit = json.loads(json.dumps(self.SARIF))
+        hit["runs"][0]["tool"]["driver"]["name"] = tool
+        hit["runs"][0]["tool"]["driver"]["rules"] = (
+            [{"id": "B105", "properties": {"tags": [cwe]}}] if cwe else [])
         (hit["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
          ["artifactLocation"]["uri"]) = rel
         return hit
 
+    def _osv(self, rel):
+        """A CRITICAL (CVSS 9.8) dependency finding at `rel`.
+
+        The SARIF path cannot express CRITICAL at all -- `LEVEL_TO_SEV` tops
+        out at HIGH for `level: error` -- so policy C's CRITICAL arm needs a
+        CVSS-scored adapter.
+        """
+        return {"results": [{"source": {"path": rel}, "packages": [{
+            "package": {"name": "left-pad", "version": "1.0.0",
+                        "ecosystem": "npm"},
+            "groups": [{"ids": ["GHSA-rce"], "max_severity": "9.8"}],
+            "vulnerabilities": [{"id": "GHSA-rce",
+                                 "summary": "remote code execution"}]}]}]}
+
     def _run(self, security, rel="app/vendor/patched_auth.py", severity="all",
-             delta=False, groups_json=None, tools_exclude=None):
-        """One synthesis over a single bandit HIGH at `rel`.
+             delta=False, groups_json=None, tools_exclude=None,
+             tool="bandit", cwe="CWE-259", critical=False):
+        """One synthesis over a single tool finding at `rel`.
 
         `rel` is the only thing that moves between the suppressed and the
         un-suppressed arm of the fix-round-1 F1 comparison: `app/vendor/...`
         is dropped by the vendored-path exclusion, `app/lib/...` is not, and
         everything else about the two runs is identical.
+
+        `tool`/`cwe`/`critical` move the finding across #1578 policy C's line
+        instead: which adapter reported it, which CWE it carries, and whether
+        it is a HIGH or a CVSS-9.8 CRITICAL.
         """
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, os.path.dirname(rel)))
@@ -693,13 +726,15 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                 fh.write("x = 1\n" * 50)     # real LoC, so health is measurable
             tools = os.path.join(d, "tools")
             os.makedirs(tools)
-            with open(os.path.join(tools, "bandit.sarif"), "w",
-                      encoding="utf-8") as fh:
-                json.dump(self._sarif(rel), fh)
+            adapter = "osv-scanner" if critical else tool
+            name = "%s.%s" % (adapter, "json" if critical else "sarif")
+            with open(os.path.join(tools, name), "w", encoding="utf-8") as fh:
+                json.dump(self._osv(rel) if critical
+                          else self._sarif(rel, tool, cwe), fh)
             with open(os.path.join(d, "tools-manifest.json"), "w",
                       encoding="utf-8") as fh:
-                json.dump({"schema_version": 1, "selected": ["bandit"],
-                           "produced": ["bandit"], "missing": []}, fh)
+                json.dump({"schema_version": 1, "selected": [adapter],
+                           "produced": [adapter], "missing": []}, fh)
             hunks = None
             if delta:
                 # A real diff that touches ANOTHER file: the finding below is
@@ -945,14 +980,76 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertIn("**Gate:** FAIL (redteam)", render_mod.render_summary(report))
 
     def test_the_evidence_axis_is_the_one_remaining_asymmetry(self):
-        """The documented, owner-owed difference (see #1578).
+        """#1578 owner ruling 2026-09-22: option C, and what it settles.
 
-        With no delta and no floor the un-suppressed HIGH does NOT gate -- it is
-        an unverified tool claim and `gate_policy` is `confirmed_only` -- while
-        the suppressed one does, because it is withheld from `findings[]` and
-        therefore from the verify round, so it can never earn `tool_confirmed`.
-        Pinned rather than left implicit: if the owner rules that vendored tool
-        findings go through tool-verify, THIS is the test that must change.
+        The asymmetry is real and STAYS: a suppressed finding is withheld from
+        `findings[]`, so it never reaches the verify round and can never earn
+        `tool_confirmed` -- filtering it on evidence under the default
+        `confirmed_only` policy would drop 100% of the set and leave #1701 as
+        open as before. Option A (send the suppressed set through tool-verify)
+        was rejected on dispatch cost.
+
+        What the ruling narrows is WHICH of them the asymmetry applies to.
+        Option B gated the whole set on severity alone, so a vendor-heavy tree
+        hard-FAILed on unverified scanner noise -- calibration-5/solidus: 592
+        of eslint-security's 623 messages were one rule firing on bundled
+        jQuery under `vendor/`. Under C only a CRITICAL or a secret-class
+        finding gates, so bundled-library lint noise cannot drive a merge gate
+        while a planted payload or a committed secret still can.
         """
-        self.assertEqual(self._gate(rel=self.LIB), "PASS")
-        self.assertEqual(self._gate(), "FAIL")
+        # The oracle, unchanged: an un-suppressed HIGH is an unverified tool
+        # claim, and `gate_policy: confirmed_only` does not gate it.
+        self.assertEqual(self._gate(rel=self.LIB, cwe=None), "PASS")
+        # Its suppressed twin now answers the same way. This line is the
+        # ruling: before it, the arm above PASSed and this one FAILed.
+        self.assertEqual(self._gate(cwe=None), "PASS")
+        # A suppressed CRITICAL still fails the gate ...
+        self.assertEqual(self._gate(critical=True), "FAIL")
+        # ... and so does a secret adapter's HIGH, at any severity the floor
+        # admits: gitleaks' findings are credentials by construction.
+        self.assertEqual(self._gate(tool="gitleaks", cwe=None), "FAIL")
+        # ... as does any adapter's finding carrying a credential CWE.
+        self.assertEqual(self._gate(cwe="CWE-798"), "FAIL")
+
+    def test_the_withheld_half_is_published_beside_the_gated_one(self):
+        """#1578 policy C: what the narrowed rule kept off the gate, counted.
+
+        The ruling trades a gate FAIL for silence unless the number is
+        published -- an operator reading a PASS over a vendor-heavy tree has to
+        be able to see how many drops the rule declined to count, and under
+        which segment.
+        """
+        _body, report = self._run("redteam", cwe=None)
+        cov = report["meta"]["coverage"]
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertEqual(cov["tools_suppressed_gated"], {})
+        self.assertEqual(cov["tools_suppressed_not_gated"], {"vendor": 1})
+        # It is a SUBSET of the withheld tally, not a third number beside it:
+        # `tools_suppressed` still counts everything the gate did not take.
+        self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
+        md = render_mod.render_summary(report)
+        self.assertIn("1 withheld", md)
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "r.html")
+            html_report.write_html(report, out)
+            with open(out, encoding="utf-8") as fh:
+                html = fh.read()
+        self.assertIn("1 withheld", html)
+
+    def test_the_gated_half_publishes_an_empty_withheld_tally(self):
+        # Stated on every report, `{}` included -- the rule its siblings
+        # follow: an absent key makes "nothing was withheld" and "nobody
+        # counted" the same document.
+        _body, report = self._run("redteam")
+        cov = report["meta"]["coverage"]
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(cov["tools_suppressed_gated"], {"vendor": 1})
+        self.assertEqual(cov["tools_suppressed_not_gated"], {})
+
+    def test_standard_mode_withholds_nothing_by_the_policy(self):
+        # In standard mode the suppression stands for the gate outright, so
+        # policy C never runs: the drop is in `tools_suppressed` and this key
+        # stays empty rather than double-counting it.
+        cov = self._run("standard", cwe=None)[1]["meta"]["coverage"]
+        self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
+        self.assertEqual(cov["tools_suppressed_not_gated"], {})

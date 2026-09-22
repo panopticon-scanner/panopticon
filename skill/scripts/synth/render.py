@@ -95,12 +95,19 @@ def _render_health(health):
             "each x lines spanned). Gate-eligible findings only; never affects "
             "the gate." % (score, "{:,}".format(loc), "{:,}".format(wd)))
 
-def _suppressed_line(suppressed):
+def _suppressed_line(suppressed, not_gated=None):
     """#1578: what a directory-NAME exclusion dropped, named per segment.
 
     #1740: three rules feed it -- a vendored directory, a virtualenv known only
     by its name, and the fixture corpus -- so the wording names the class of
     evidence they share rather than the oldest of the three.
+
+    #1578 owner ruling 2026-09-22 (policy C): `not_gated` is how many of these
+    a redteam run's gate SAW and declined, because they are neither CRITICAL
+    nor secret-class. Said here rather than on its own line because this is
+    already the line for what stayed off the gate -- and because the tail of
+    this sentence used to promise that redteam gates all of them, which the
+    ruling made untrue.
 
     Silent when nothing was dropped and on a report that never measured this
     (pre-#1578, or a foreign report on the --compare path) -- "nobody counted"
@@ -110,12 +117,15 @@ def _suppressed_line(suppressed):
     rows = _suppressed_rows(suppressed)
     if not rows:
         return ""
+    withheld = sum(n for _seg, n in _suppressed_rows(not_gated))
     return ("**Tool findings suppressed:** %s \u2014 dropped from the tool axis "
             "for the DIRECTORY NAME they sit under (a conventional vendored, "
             "virtualenv or fixture-corpus name, with no marker or provenance "
             "behind it); the agentic panel still reviewed those files, and "
-            "`security_gate --security redteam` gates them"
-            % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
+            "`--security redteam` gates the CRITICAL and secret-class ones%s"
+            % (", ".join("%s: %d" % (seg, n) for seg, n in rows),
+               (" (%d withheld from this run's gate by that rule, #1578 "
+                "policy C)" % withheld) if withheld else ""))
 
 
 def _suppressed_rows(value):
@@ -150,7 +160,8 @@ def _suppressed_gated_line(gated):
             "findings below for the DIRECTORY NAME they sit under (vendored, "
             "virtualenv-by-name or fixture corpus), and counted toward THIS "
             "RUN's gate, risk level and health "
-            "grade anyway (`--security redteam`). A gate verdict here may rest on "
+            "grade anyway (`--security redteam`, and CRITICAL or secret-class "
+            "per #1578 policy C). A gate verdict here may rest on "
             "findings this report does not list"
             % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
 
@@ -234,7 +245,8 @@ def render_summary(report):
         lines.insert(3, "**Coverage:** NOT CERTIFIED — %s"
                      % ("; ".join(parts) or s.get("coverage_note") or "incomplete"))
     _cov = report["meta"].get("coverage") or {}
-    sup = _suppressed_line(_cov.get("tools_suppressed"))
+    sup = _suppressed_line(_cov.get("tools_suppressed"),
+                           _cov.get("tools_suppressed_not_gated"))
     if sup:
         lines.insert(3, sup)
     # #1701: inserted AFTER the line above so it lands ABOVE it -- a count that
