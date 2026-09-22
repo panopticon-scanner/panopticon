@@ -1,50 +1,30 @@
 name: Security Scan
 
 on:
+  # TRUSTED routes only: a push to main, and a same-repo branch PR (write
+  # access + required review). This file deliberately carries NO
+  # `pull_request_target`; fork PRs are scanned by `security-fork.yml`, behind
+  # a maintainer's `safe-to-scan` label, and report under the name `fork-scan`.
+  #
+  # Why the split is load-bearing (#1900): a job skipped by an `if:` still
+  # posts a check run under its own name, and GitHub reports a skipped job as
+  # Success. Any second trigger that could reach this file and skip `scan`
+  # would therefore be a way to post a green `scan` NEWER than a real failure
+  # -- on same-repo PRs as much as on fork ones. One trigger set, one job, and
+  # no skip that can speak for a scan that did not happen.
+  #
+  # A fork PR does reach the `pull_request` route, where this job's same-repo
+  # test is false and it skips: nothing is scanned, and no scanner ever sees
+  # fork-controlled source from here. Note also that GitHub runs the PR's OWN
+  # copy of this file on that route (with a read-only token and no secrets),
+  # so nothing written here binds a fork PR at all. What binds one is required
+  # review, the repository's "require approval for all outside collaborators"
+  # setting -- which, unlike `pull_request_target`, DOES cover this route --
+  # and the required `fork-scan` check from `security-fork.yml`.
   push:
     branches: [main]
-  # Fork PRs (untrusted) run under pull_request_target so the BASE workflow
-  # judges them and the PR patch can never rewrite the gate that judges it.
-  # #1900 -- and a fork PR is scanned ONLY after a maintainer opts it in, by
-  # applying the `safe-to-scan` label. GitHub's "require approval for outside
-  # collaborators" setting does not cover pull_request_target, so without this
-  # anyone who could open a PR could run the scanners over a tree of their own
-  # choosing, in a job holding this repository's token. The whole fork posture,
-  # in one place:
-  #   * scanned only on the `labeled` event with `safe-to-scan` -- so the scan
-  #     runs over the head the maintainer was looking at, not a later one;
-  #   * the label is REVOKED by the `unlabel` job on every new push and every
-  #     reopen, so the next head waits for a maintainer again;
-  #   * no GHCR login, so no credential is written to the runner;
-  #   * no `--deps`, so the dependency scanner that reads the target's own
-  #     lockfiles never runs there (fewer tools, by design);
-  #   * no SARIF upload, because under pull_request_target `github.ref` is the
-  #     BASE branch and the findings would be filed against main.
-  # The full tool set, with the upload, runs on the push to main after merge.
-  # And the gate blocks the MERGE, not just the scan: on the `pull_request`
-  # event a fork head is REFUSED by the job's first step, so an unlabelled fork
-  # PR carries a FAILED required check named `scan` rather than a skipped one
-  # (a skipped check is what branch protection reads as satisfied). The
-  # labelled pull_request_target run then reports a NEWER `scan` check on the
-  # same head, and GitHub's "latest check run with that name wins" semantic is
-  # what turns it green -- the one claim here not provable from this repo, to
-  # be confirmed on the first real fork PR after this merges. Fail-closed
-  # either way: if it does not hold, the PR stays red.
-  pull_request_target:
-    branches: [main]
-    # `opened` is deliberately NOT here. The default type set starts a scan the
-    # moment a fork PR appears; `labeled` is what admits one, and
-    # `synchronize`/`reopened` exist so the `unlabel` job can revoke it again.
-    types: [synchronize, reopened, labeled]
-  # Same-repo branch PRs (trusted: write-access + required review) run under
-  # pull_request. Both triggers are present so the required `scan` check always
-  # reports. A same-repo PR is SCANNED on exactly one of them (pull_request);
-  # a fork PR reaches both, and they do different jobs of work rather than the
-  # same one twice: pull_request refuses (red check, no scan, no checkout), and
-  # pull_request_target scans once a maintainer has labelled it.
-  # Regardless of trigger the gate LOGIC always executes from the base-SHA
-  # `controller` checkout below and the PR head is only ever mounted as
-  # read-only scan data, so the scanner code is tamper-proof on every path.
+  # No `types:`: the defaults (opened, synchronize, reopened) are what keep a
+  # new head from inheriting the previous head's verdict.
   pull_request:
     branches: [main]
 
@@ -58,116 +38,31 @@ env:
   # the deliberately-vulnerable corpus below it.
   FIXTURE_GLOB: tests/fixtures/**
 jobs:
-  # #1900: the maintainer approved a HEAD, not a pull request. A `safe-to-scan`
-  # label that outlived a force-push would be the hole the gate exists to close
-  # -- approve a benign diff, push the payload. So every new head
-  # (`synchronize`) and every reopen revokes the label and the PR waits for a
-  # maintainer again. This is the ONLY job here that holds a write grant on a
-  # fork-triggered event, so it holds exactly one scope, checks nothing out,
-  # and interpolates no event data into shell (everything through `env:`).
-  unlabel:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    if: >-
-      github.event_name == 'pull_request_target' &&
-      github.event.pull_request.head.repo.full_name != github.repository &&
-      (github.event.action == 'synchronize' ||
-       github.event.action == 'reopened')
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Revoke safe-to-scan on the new head
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          # Most pushes land on a fork PR that was never labelled, and GitHub
-          # answers a DELETE of an absent label with 404: that is "already
-          # revoked", not a failure, and failing on it would paint every such
-          # PR red. Any OTHER failure DOES fail the job -- a silently-failed
-          # revoke leaves a maintainer's approval standing on a head nobody
-          # reviewed, which is the one outcome this job exists to prevent.
-          err="$RUNNER_TEMP/unlabel.err"
-          if gh api --method DELETE \
-               "repos/$REPO/issues/$PR_NUMBER/labels/safe-to-scan" \
-               >/dev/null 2>"$err"; then
-            echo "safe-to-scan revoked; this head needs a maintainer again."
-          elif grep -q "HTTP 404" "$err"; then
-            echo "safe-to-scan was not set; nothing to revoke."
-          else
-            cat "$err" >&2
-            exit 1
-          fi
-
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # FOUR routes, and only three of them scan anything.
-    #   push                                     -> scan (full tool set)
-    #   pull_request_target + foreign head
-    #                       + labeled safe-to-scan -> scan (the #1900 gate)
-    #   pull_request        + same-repo head     -> scan (trusted contributor)
-    #   pull_request        + foreign head       -> REFUSE (first step, below)
-    #
-    # The fourth route is what makes the gate block a MERGE and not merely a
-    # scan. A fork PR raises `pull_request` as well as `pull_request_target`,
-    # and a job that is SKIPPED still reports its check -- which branch
-    # protection reads as satisfied. So on the `pull_request` fork route this
-    # job RUNS and fails on its first step: an unlabelled fork head produces a
-    # FAILED required check named `scan`, not a skipped one. When a maintainer
-    # then applies `safe-to-scan`, the pull_request_target run reports a newer
-    # `scan` check on that same head, and GitHub's "the latest check run with
-    # that name wins" semantic is what turns the required check green. That
-    # last semantic is the one part of this not provable from the repo -- to be
-    # confirmed on the first real fork PR after this merges. Either way the
-    # posture is fail-closed: if it did NOT hold, an unlabelled fork PR stays
-    # red, which is the safe direction to be wrong in.
+    # push always runs; a PR runs only from a SAME-REPO head. A fork PR skips
+    # here by design -- see the trigger comment -- and is scanned by
+    # security-fork.yml instead.
     if: >-
       github.event_name == 'push' ||
-      (github.event_name == 'pull_request_target' &&
-       github.event.pull_request.head.repo.full_name != github.repository &&
-       github.event.action == 'labeled' &&
-       github.event.label.name == 'safe-to-scan') ||
       (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'pull_request' &&
-       github.event.pull_request.head.repo.full_name != github.repository)
+       github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
       packages: read
       security-events: write
     steps:
-      # FIRST, ahead of both checkouts and of setup-python: nothing the fork
-      # controls is fetched, installed or executed before this refusal. Every
-      # later step inherits the implicit `success()` and so does not run once
-      # this one has failed; the only step that opts out of that (`always()`)
-      # names the trusted routes positively instead.
-      - name: Refuse an unlabelled fork head
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name != github.repository
-        run: |
-          # Unconditional on this route, and deliberately NOT a live label
-          # check. A refusal that could PASS would leave the rest of the job
-          # running under `pull_request`, where the controller checkout below
-          # is pinned to the fork's own head SHA -- untrusted code executing as
-          # the gate's scanner, which is the inversion this whole workflow
-          # exists to prevent. The labelled scan happens in the
-          # pull_request_target run, which pins the controller to the base SHA.
-          echo "::error::fork PR: a maintainer must review the diff and apply the safe-to-scan label; the scan reports from the pull_request_target run"
-          exit 1
-
-      # Controller = the scanner code that runs the gate. Fork PRs
-      # (pull_request_target) pin it to the BASE SHA so untrusted code can never
-      # execute as the controller. Same-repo PRs (pull_request) pin it to the
-      # HEAD SHA so a branch's own scanner changes are tested by their own CI
-      # (the trusted-contributor self-test), matching the trigger routing above.
-      # push uses the pushed SHA. The target is always mounted read-only below.
+      # Controller = the scanner code that runs the gate, and on both of this
+      # file's routes it is TRUSTED code: the pushed SHA, or a same-repo
+      # branch's own HEAD, so a branch's scanner changes are tested by their
+      # own CI (the trusted-contributor self-test). The fork case -- where the
+      # controller must be pinned to the BASE sha instead -- lives in
+      # security-fork.yml, unconditionally. The target is mounted read-only.
       - name: Checkout trusted scanner controller
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.base.sha) || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: controller
           persist-credentials: false
 
@@ -191,13 +86,13 @@ jobs:
           # found that the line ABOVE that pin upgraded pip itself from an
           # unconstrained artifact, so the unpinned tool installed the pinned
           # things. This workflow logs
-          # into GHCR, pulls/builds the tools image, and gates merges under
-          # pull_request_target with security-events: write -- what it installs
-          # is an execution primitive, so it is pinned by DIGEST, pip included.
+          # into GHCR, pulls/builds the tools image, and gates merges with
+          # security-events: write -- what it installs is an execution
+          # primitive, so it is pinned by DIGEST, pip included.
           #
-          # The file comes from `controller/`, the trusted checkout (the base
-          # SHA on a fork PR), never from `target/`: a PR that could edit the
-          # digests the gate installs by would be editing the gate.
+          # The file comes from `controller/`, the trusted checkout, never from
+          # `target/`: a PR that could edit the digests the gate installs by
+          # would be editing the gate.
           #
           # --require-hashes: pip refuses any artifact whose sha256 is not in
           # that file. --no-deps: the file is the complete closure rather than a
@@ -207,12 +102,6 @@ jobs:
             -r controller/.github/requirements-gate.txt
 
       - name: Log in to GitHub Container Registry
-        # #1900: never on the fork path. The tools image is public and pulls
-        # anonymously, and the step below falls back to a local build if the
-        # pull fails at all -- so a login here would write GITHUB_TOKEN into
-        # the runner's docker config, where a scanner turned against the
-        # runner could read it, in exchange for nothing.
-        if: github.event_name != 'pull_request_target'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -248,23 +137,7 @@ jobs:
       # reads this process's stderr as a diagnostic, whereas phases/tools.py
       # builds its failure note from the first 300 characters of it.
       - name: Run static-analysis tools
-        env:
-          # #1900: the dependency flag, off the fork path only. The `&&`/`||`
-          # ternary yields '--deps' when the left side is true and '' (an
-          # empty string, which the unquoted expansion below drops entirely)
-          # when it is not.
-          DEPS_FLAG: ${{ github.event_name != 'pull_request_target' && '--deps' || '' }}
         run: |
-          # A fork PR is scanned with FEWER tools, by design. The flag adds the
-          # dependency scanner (`select_tools`, run_tools.py:406-415), which is
-          # the one that reads the target's own lockfiles and manifests -- the
-          # surface #1742/#1877 live on. Nothing online is selected on either
-          # path (`--online` is never passed, so `filter_online` drops the
-          # online-only adapters: run_tools.py:495-505, flag at 1251, applied
-          # at 1025 and 1297), so
-          # `egress.session` yields an inactive session (tools/egress.py:323-326)
-          # and every container runs `--network none`. The full tool set runs
-          # on the push to main after the merge.
           tools_out="$RUNNER_TEMP/${{ env.TOOLS_OUT }}"
           manifest="$RUNNER_TEMP/panopticon-tools-manifest.json"
           mkdir -p "$tools_out"
@@ -274,14 +147,14 @@ jobs:
             --manifest "$manifest" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
             --progress \
-            $DEPS_FLAG
+            --deps
 
       # INTENTIONAL POLICY, not an oversight (#513): this CI gate fails on any
       # HIGH/CRITICAL *tool* finding on raw severity, WITHOUT the two-axis
       # evidence gate the rest of the system uses. That gate promotes a finding
       # only on an advisor CONFIRMED verdict (evidence.status tool_confirmed /
       # advisor_confirmed; see skill/scripts/evidence.py GATE_ELIGIBLE_DEFAULT
-      # and DEVELOPMENT.md). CI runs NO advisor phase — every tool finding here
+      # and DEVELOPMENT.md). CI runs NO advisor phase -- every tool finding here
       # is unverified `tool_reported`, so confirmed-only gating would gate on
       # nothing and the CI security gate would never fire. So CI deliberately
       # adopts the strict `--gate-unverified` posture: unverified tool findings
@@ -297,22 +170,7 @@ jobs:
             --exclude '${{ env.FIXTURE_GLOB }}'
 
       - name: Upload SARIF to GitHub Security tab
-        # #1900: the two TRUSTED routes, named positively. Under
-        # pull_request_target the run's `github.ref` is the BASE branch, so a
-        # fork-controlled SARIF would be filed against main's Security tab; and
-        # `always()` opts this step out of the implicit `success()`, so a
-        # "not pull_request_target" spelling would have run it on the
-        # `pull_request` fork route too -- after the refusal above failed, with
-        # no SARIF written. Push still uploads: its `github.event.pull_request`
-        # is empty, and the `push` disjunct is matched on its own.
-        # ACCEPTED RESIDUAL: the job's `security-events: write` cannot be
-        # narrowed per path within one job, so the grant is still present on
-        # the fork paths -- the label gate is what bounds who can reach it, and
-        # no step on either fork route uses it.
-        if: >-
-          always() && (github.event_name == 'push' ||
-          (github.event_name == 'pull_request' &&
-           github.event.pull_request.head.repo.full_name == github.repository))
+        if: always()
         uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: ${{ runner.temp }}/${{ env.TOOLS_OUT }}
