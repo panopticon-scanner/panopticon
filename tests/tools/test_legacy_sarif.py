@@ -217,7 +217,7 @@ class TestSecretAdapterSeverityIsNormalized(unittest.TestCase):
         # Non-vacuity, first: if a refreshed golden ever starts carrying
         # `level`, the assertion below stops proving the normalization.
         sarif = json.loads(_golden("gitleaks"))
-        run = sarif["runs"][0]
+        run = only(sarif["runs"])
         self.assertTrue(run["results"], "the gitleaks golden holds no results")
         for res in run["results"]:
             self.assertNotIn("level", res)
@@ -260,7 +260,7 @@ class TestCweFromSarifRelationships(unittest.TestCase):
         # Non-vacuity: the tags really do carry no CWE, so the assertions below
         # pin the relationships channel and not a second path to the same tag.
         sarif = json.loads(_golden("gosec"))
-        rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+        rules = only(sarif["runs"])["tool"]["driver"]["rules"]
         for rule in rules:
             tags = " ".join(str(t) for t in (rule.get("properties") or {}).get("tags") or [])
             self.assertNotIn("CWE", tags.upper(), rule.get("id"))

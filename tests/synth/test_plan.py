@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 import scripts.synthesize as syn
+import scripts.ingest_tools as ingest_tools
 import scripts.synth.findings as findings_mod
 import scripts.synth.coverage_io as coverage_io
 import scripts.synth.delta as delta_mod
@@ -683,13 +684,32 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                                         "region": {"startLine": 1,
                                                    "endLine": 4}}}]}]}]}
 
-    def _sarif(self, rel, tool="bandit", cwe="CWE-259"):
+    def _sarif(self, rel, tool="bandit", cwe="CWE-259", twin=False):
         hit = json.loads(json.dumps(self.SARIF))
-        hit["runs"][0]["tool"]["driver"]["name"] = tool
-        hit["runs"][0]["tool"]["driver"]["rules"] = (
-            [{"id": "B105", "properties": {"tags": [cwe]}}] if cwe else [])
-        (hit["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
+        driver = hit["runs"][0]["tool"]["driver"]
+        driver["name"] = tool
+        driver["rules"] = ([{"id": "B105", "properties": {"tags": [cwe]}}]
+                           if cwe else [])
+        result = hit["runs"][0]["results"][0]
+        (result["locations"][0]["physicalLocation"]
          ["artifactLocation"]["uri"]) = rel
+        if tool in ingest_tools.SECRET_ADAPTERS:
+            # Real gitleaks SARIF states no `level` at all (fix round 1, review
+            # C1): `sarif_utils.SECRET_ADAPTERS` is what grades it HIGH, and a
+            # fixture that supplies the missing field cannot see that.
+            result.pop("level", None)
+        if twin:
+            # A LINT twin beside it, under the same segment and carrying no
+            # CWE. Policy C admits one of the two and declines the other, which
+            # is what makes the two published tallies distinguishable at all.
+            driver["rules"].append({"id": "B602", "properties": {"tags": []}})
+            other = json.loads(json.dumps(result))
+            other["ruleId"] = "B602"
+            other["message"] = {"text": "subprocess call with shell=True"}
+            (other["locations"][0]["physicalLocation"]
+             ["artifactLocation"]["uri"]) = os.path.join(
+                 os.path.dirname(rel), "shell.py")
+            hit["runs"][0]["results"].append(other)
         return hit
 
     def _osv(self, rel):
@@ -708,7 +728,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
 
     def _run(self, security, rel="app/vendor/patched_auth.py", severity="all",
              delta=False, groups_json=None, tools_exclude=None,
-             tool="bandit", cwe="CWE-259", critical=False):
+             tool="bandit", cwe="CWE-259", critical=False, twin=False):
         """One synthesis over a single tool finding at `rel`.
 
         `rel` is the only thing that moves between the suppressed and the
@@ -724,13 +744,17 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
             os.makedirs(os.path.join(d, os.path.dirname(rel)))
             with open(os.path.join(d, rel), "w", encoding="utf-8") as fh:
                 fh.write("x = 1\n" * 50)     # real LoC, so health is measurable
+            if twin:
+                with open(os.path.join(d, os.path.dirname(rel), "shell.py"),
+                          "w", encoding="utf-8") as fh:
+                    fh.write("x = 1\n" * 50)
             tools = os.path.join(d, "tools")
             os.makedirs(tools)
             adapter = "osv-scanner" if critical else tool
             name = "%s.%s" % (adapter, "json" if critical else "sarif")
             with open(os.path.join(tools, name), "w", encoding="utf-8") as fh:
                 json.dump(self._osv(rel) if critical
-                          else self._sarif(rel, tool, cwe), fh)
+                          else self._sarif(rel, tool, cwe, twin), fh)
             with open(os.path.join(d, "tools-manifest.json"), "w",
                       encoding="utf-8") as fh:
                 json.dump({"schema_version": 1, "selected": [adapter],
@@ -833,6 +857,12 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         # to the ingest's own count, which is what stderr and security_gate say.
         cov = self._run("redteam", delta=True)[1]["meta"]["coverage"]
         self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
+        # Fix round 1, ruling 2: NEITHER gate tally may claim it. The delta
+        # filter runs before #1578's policy, so this drop never reached the
+        # policy at all -- counting it as "declined by the rule" would say the
+        # gate saw something it never did.
+        self.assertEqual(cov["tools_suppressed_gated"], {})
+        self.assertEqual(cov["tools_suppressed_not_gated"], {})
 
     def test_a_vendored_finding_below_the_severity_floor_does_not_count(self):
         # `--severity critical` removes the HIGH from the run entirely; the
@@ -841,6 +871,10 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(self._gate(severity="critical"), "PASS")
         cov = self._run("redteam", severity="critical")[1]["meta"]["coverage"]
         self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
+        # Same rule as the delta case: the operator's floor removed it upstream
+        # of the policy, so neither gate tally may claim it (fix round 1).
+        self.assertEqual(cov["tools_suppressed_gated"], {})
+        self.assertEqual(cov["tools_suppressed_not_gated"], {})
 
     # -- fix round 1, F2: the disclosure the gate FAIL rests on ----------------
 
@@ -1045,6 +1079,35 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(report["summary"]["gate"], "FAIL")
         self.assertEqual(cov["tools_suppressed_gated"], {"vendor": 1})
         self.assertEqual(cov["tools_suppressed_not_gated"], {})
+
+    def test_the_two_tallies_partition_what_the_gate_actually_saw(self):
+        """Fix round 1, ruling 2: the counts come off the POST-filter sets.
+
+        Two drops under one segment -- a CWE-259 credential and a CWE-less
+        lint hit -- so the segment alone cannot tell them apart and the
+        artifact has to. `tools_suppressed_gated` is what moved this gate,
+        `tools_suppressed_not_gated` what the rule declined, and
+        `tools_suppressed` is still the whole of what stayed off the gate.
+        """
+        _body, report = self._run("redteam", twin=True)
+        cov = report["meta"]["coverage"]
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+        self.assertEqual(cov["tools_suppressed_gated"], {"vendor": 1})
+        self.assertEqual(cov["tools_suppressed_not_gated"], {"vendor": 1})
+        self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
+        # ... and the ingest really did drop both, so the two halves still sum
+        # to the number stderr and `security_gate` print.
+        self.assertIn("excluded 2 finding", self.stderr)
+        self.assertEqual(report["findings"], [])
+
+    def test_the_declined_half_alone_leaves_the_gate_passing(self):
+        # The same pair minus the credential: nothing gates, and the withheld
+        # count is the only thing in the artifact that explains the PASS.
+        _body, report = self._run("redteam", cwe=None, twin=True)
+        cov = report["meta"]["coverage"]
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertEqual(cov["tools_suppressed_gated"], {})
+        self.assertEqual(cov["tools_suppressed_not_gated"], {"vendor": 2})
 
     def test_standard_mode_withholds_nothing_by_the_policy(self):
         # In standard mode the suppression stands for the gate outright, so
