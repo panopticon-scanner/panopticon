@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import scripts.runners.base as base
 
@@ -217,6 +218,64 @@ class TestATimeoutEndsTheWholeTree(GrandchildCase):
         runner.launch([sys.executable, "-c", "pass"])
         self.assertEqual(1, len(seen), "the launch registered no child")
         self.assertIsNotNone(seen[0].pid)
+
+
+class TestANonTimeoutFailureStillEndsTheTree(GrandchildCase):
+    """B2: the timeout is not the only way out of a launch.
+
+    `subprocess.run` had a bare `except BaseException: process.kill(); raise`
+    and ran the child inside `with Popen(...)`, so ANY exception out of
+    `communicate` -- a Ctrl-C on one of the main-thread launches
+    (`loop_batch.prove_output_schema_shape`, `probes/common._cli_help`,
+    `codex_host._dump_catalog`, `codex_host._capture_requests`), a
+    `MemoryError`, a bug in this method -- ended the child and closed the
+    pipes. Handling only `TimeoutExpired` left a host CLI and its whole worker
+    tree running, unregistered, with nobody holding a handle to it.
+    """
+
+    def _interrupted_by(self, error):
+        """Launch a real tree, then raise `error` out of `communicate` once
+        the grandchild is up. Returns the grandchild's pid."""
+        runner, seen = base.HostRunner(), []
+
+        def interrupted(_proc_self, *_args, **_kwargs):
+            seen.append(self.grandchild())      # the tree is really running
+            raise error
+
+        with mock.patch.object(subprocess.Popen, "communicate", interrupted):
+            with self.assertRaises(type(error)):
+                runner.launch(self.tree_argv(), timeout=30)
+        self.assertEqual([], runner.__dict__.get("_children") or [],
+                         "the failed launch left its child registered")
+        return seen[0]
+
+    def test_a_ctrl_c_mid_launch_leaves_nothing_running(self):
+        pid = self._interrupted_by(KeyboardInterrupt("Ctrl-C during the launch"))
+        self.assertTrue(await_death(pid),
+                        "an interrupted launch left the CLI's worker running")
+
+    def test_an_ordinary_exception_mid_launch_leaves_nothing_running(self):
+        pid = self._interrupted_by(RuntimeError("something else broke"))
+        self.assertTrue(await_death(pid),
+                        "a failed launch left the CLI's worker running")
+
+    def test_the_pipes_are_closed_when_a_launch_ends_badly(self):
+        # `with Popen(...)`: the fds go back whichever way the launch ends. A
+        # loop that leaks three descriptors per failed entry runs out of them.
+        runner, held = base.HostRunner(), []
+
+        def interrupted(proc_self, *_args, **_kwargs):
+            held.append(proc_self)
+            raise RuntimeError("boom")
+
+        with mock.patch.object(subprocess.Popen, "communicate", interrupted):
+            with self.assertRaises(RuntimeError):
+                runner.launch([sys.executable, "-c", "pass"])
+        proc = held[0]
+        for name in ("stdout", "stderr"):
+            stream = getattr(proc, name)
+            self.assertTrue(stream is None or stream.closed,
+                            "%s was left open by a failed launch" % name)
 
 
 class TestTerminateChildrenEndsTheWholeGroup(GrandchildCase):

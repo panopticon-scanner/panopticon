@@ -91,6 +91,11 @@ class ChildProcesses:
         * `procgroup.kill_group` on the timeout, which is the whole point:
           `subprocess.run` kills the direct pid and leaves the workers.
 
+        Any OTHER exception out of `communicate` ends the group too, and then
+        propagates untouched -- `subprocess.run`'s own bare
+        `except BaseException: process.kill(); raise`, with the group kill in
+        place of the pid kill.
+
         The `TimeoutExpired` it raises is the one every family's existing
         `except subprocess.TimeoutExpired` clause already reads -- same type,
         carrying the same partial `output`/`stderr` (D10 ruling 5) -- so no
@@ -111,17 +116,29 @@ class ChildProcesses:
             stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=text, start_new_session=True)
-        self.register_child(proc)
-        try:
+        with proc:                     # the three pipes go back whatever happens
+            self.register_child(proc)
             try:
-                out, err = proc.communicate(input, timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
-                procgroup.kill_group(proc)
-                out, err = self._drain(proc, exc)
-                raise subprocess.TimeoutExpired(
-                    argv, timeout, output=out, stderr=err) from None
-        finally:
-            self.unregister_child(proc)
+                try:
+                    out, err = proc.communicate(input, timeout=timeout)
+                except subprocess.TimeoutExpired as exc:
+                    procgroup.kill_group(proc)
+                    out, err = self._drain(proc, exc)
+                    raise subprocess.TimeoutExpired(
+                        argv, timeout, output=out, stderr=err) from exc
+                except BaseException:
+                    # The timeout is not the only way out. A Ctrl-C on one of
+                    # the MAIN-THREAD launches (`prove_output_schema_shape`,
+                    # `probes/common._cli_help`, codex_host's catalog and
+                    # surface probes), a MemoryError, a bug in this method:
+                    # each one used to leave a host CLI and its whole worker
+                    # tree running, with nobody holding a handle to it.
+                    # `subprocess.run` has had this clause since it was
+                    # written; it is the reason `run` never leaked a child.
+                    procgroup.kill_group(proc)
+                    raise
+            finally:
+                self.unregister_child(proc)
         return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
     @staticmethod
