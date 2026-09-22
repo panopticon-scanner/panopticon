@@ -21,6 +21,9 @@ GATE_SEVERITIES = frozenset({"HIGH", "CRITICAL"})
 # vendored list alone -- `venv`/`.venv`/`site-packages` with no `pyvenv.cfg`
 # behind them, and the fixture corpus, are the same evidence and reach this
 # gate through the same channel.
+# #1578 owner ruling 2026-09-22 (policy C) narrows WHICH of them redteam
+# re-admits: `ingest_tools.gates_when_suppressed` -- a CRITICAL or a
+# secret-class finding, never a HIGH lint opinion about bundled code.
 REDTEAM = "redteam"
 SECURITY_MODES = ("standard", REDTEAM)
 
@@ -63,11 +66,20 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     #1578: `suppressed` is what a NAME-BASED exclusion dropped, each entry
     naming the segment that dropped it. It is never part of `findings` -- the
     report-side suppression is what makes tool output usable at all -- but under
-    `redteam` it IS part of the gate: this gate blocks merges, and a payload
-    landed as `app/vendor/patched_auth.rb` passing it outright on the strength
-    of a conventional directory name is the defect. In `standard` mode the
-    suppression stands and `main` prints the count beside the gate line, so the
-    drop is disclosed rather than silent.
+    `redteam` PART of it is part of the gate: this gate blocks merges, and a
+    payload landed as `app/vendor/patched_auth.rb` passing it outright on the
+    strength of a conventional directory name is the defect. In `standard` mode
+    the suppression stands and `main` prints the count beside the gate line, so
+    the drop is disclosed rather than silent.
+
+    WHICH part, owner ruling 2026-09-22 (policy C): `gate_counted`, i.e.
+    `ingest_tools.gates_when_suppressed` -- a CRITICAL, or a secret-class
+    finding (a secret adapter, or a credential CWE). The first cut re-admitted
+    the whole set on severity alone and a vendor-heavy tree then failed a merge
+    on bundled-library lint noise, which is the noise the suppression exists to
+    keep out. The rest stays suppressed AND disclosed: `main` counts it beside
+    the verdict, and the report publishes it as
+    `meta.coverage.tools_suppressed_not_gated`.
 
     #1740: three classes reach it, not one (`ingest_tools.suppression_class`):
     `vendored`, `virtualenv-by-name` (a `venv`/`.venv`/`site-packages` segment
@@ -103,10 +115,23 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     unknown = set(dispositions) - known
     if unknown:
         failures.append("unexpected scanner output: %s" % ", ".join(sorted(unknown)))
-    gated = findings + suppressed if security_mode == REDTEAM else findings
+    gated = (findings + gate_counted(suppressed) if security_mode == REDTEAM
+             else findings)
     high = [finding for finding in gated
             if finding.get("severity") in GATE_SEVERITIES]
     return findings, dispositions, failures, high, suppressed
+
+
+def gate_counted(suppressed):
+    """The suppressed findings `--security redteam` actually counts (#1578 C).
+
+    Through `ingest_tools.gates_when_suppressed`, the one predicate the
+    driver's own report gate asks as well: two answers to it is a merge that
+    blocks in CI and passes in the report, or the reverse. `main` asks it again
+    to print how many of the drops moved this verdict and how many were
+    disclosed only -- the same predicate, never a second copy of the rule.
+    """
+    return [f for f in suppressed if ingest_tools.gates_when_suppressed(f)]
 
 
 def _by_class(suppressed):
@@ -152,10 +177,19 @@ def main(argv=None):
         # under one of their names, and an operator deciding whether to re-run
         # under redteam has to be able to tell a bundled library from a
         # directory someone named `venv` from this repo's own fixture corpus.
+        if args.security_mode == REDTEAM:
+            # #1578 policy C: under redteam the set SPLITS, so one number for
+            # it would be a lie either way -- "GATED" over a lint drop that did
+            # not move the verdict, or "NOT gated" over the CRITICAL that did.
+            counted = len(gate_counted(suppressed))
+            verdict = (" -- %d GATED (CRITICAL/secret, #1578 policy C), "
+                       "%d disclosed only, --security redteam"
+                       % (counted, len(suppressed) - counted))
+        else:
+            verdict = (" -- NOT gated; re-run with --security redteam to gate "
+                       "the CRITICAL and secret-class ones")
         note = ("; %d suppressed by directory name -- %s%s"
-                % (len(suppressed), _by_class(suppressed),
-                   " -- GATED, --security redteam" if args.security_mode == REDTEAM
-                   else " -- NOT gated; re-run with --security redteam to gate them"))
+                % (len(suppressed), _by_class(suppressed), verdict))
     if excluded:
         # Fix round 1 (ruling 3): the operator's own globs, counted where the
         # verdict is. `--exclude '**/venv/**'` under redteam un-gates exactly

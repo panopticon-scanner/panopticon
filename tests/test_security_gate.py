@@ -197,8 +197,21 @@ class TestSecurityGate(unittest.TestCase):
 
 
 def _vendored_sarif(level="error", uri="app/vendor/patched_auth.rb"):
+    """One suppressible finding: a HIGH hardcoded credential under *uri*.
+
+    #1578 owner ruling 2026-09-22 (policy C): the redteam gate re-admits a
+    suppressed finding only when it is CRITICAL or SECRET-CLASS, so the rule
+    now carries the CWE its message has always described. Every test below is
+    about WHICH DROP CLASS reaches the gate, not about the severity rule --
+    they need a finding that is gate-eligible once it gets there, and a
+    credential is what a "planted payload under `vendor/`" has always meant
+    here. The severity rule itself is pinned by
+    `TestPolicyCNarrowsTheRedteamGate`.
+    """
     return {"version": "2.1.0", "runs": [{
-        "tool": {"driver": {"name": "semgrep", "rules": []}},
+        "tool": {"driver": {"name": "semgrep",
+                            "rules": [{"id": "test.rule",
+                                       "properties": {"tags": ["CWE-798"]}}]}},
         "results": [{"ruleId": "test.rule", "level": level,
                      "message": {"text": "hardcoded credential"},
                      "locations": [{"physicalLocation": {
@@ -278,6 +291,130 @@ class TestVendoredSuppressionAndTheGate(unittest.TestCase):
                     tools, manifest, security_mode=mode)
                 self.assertEqual(len(high), 1, mode)
                 self.assertEqual(suppressed, [], mode)
+
+
+def _secret_sarif(tool="semgrep", uri="app/vendor/patched_auth.rb", cwe=None):
+    """One HIGH under *uri*, optionally tagged with a CWE on its rule.
+
+    `sarif_to_findings` scrapes the CWE out of the rule's `tags`, which is
+    exactly the channel `gates_when_suppressed` reads.
+    """
+    rules = ([{"id": "test.rule", "properties": {"tags": [cwe]}}] if cwe else [])
+    return {"version": "2.1.0", "runs": [{
+        "tool": {"driver": {"name": tool, "rules": rules}},
+        "results": [{"ruleId": "test.rule", "level": "error",
+                     "message": {"text": "hardcoded credential"},
+                     "locations": [{"physicalLocation": {
+                         "artifactLocation": {"uri": uri},
+                         "region": {"startLine": 1}}}]}]}]}
+
+
+def _critical_osv(uri="app/vendor/package-lock.json"):
+    """One CRITICAL (CVSS 9.8) dependency finding whose location is *uri*.
+
+    The SARIF path cannot express CRITICAL at all (`LEVEL_TO_SEV` tops out at
+    HIGH for `level: error`), so the CRITICAL arm of policy C needs a
+    CVSS-scored adapter.
+    """
+    return {"results": [{"source": {"path": uri}, "packages": [{
+        "package": {"name": "left-pad", "version": "1.0.0", "ecosystem": "npm"},
+        "groups": [{"ids": ["GHSA-rce"], "max_severity": "9.8"}],
+        "vulnerabilities": [{"id": "GHSA-rce", "summary": "remote code execution"}]}]}]}
+
+
+class TestPolicyCNarrowsTheRedteamGate(unittest.TestCase):
+    """#1578 owner ruling 2026-09-22 (policy C): what redteam re-admits.
+
+    The first cut of the redteam gate counted the WHOLE suppressed set on
+    severity alone (option B), so a vendor-heavy tree hard-FAILed a merge on
+    bundled-library lint noise -- the noise the suppression exists to keep out
+    (calibration-5/solidus: 592 of eslint-security's 623 messages were one
+    rule firing on jQuery under `vendor/`). C re-admits only what an operator
+    would want a merge blocked for: a CRITICAL, or a secret-class finding.
+
+    This gate and the driver's own report gate ask the one predicate
+    (`ingest_tools.gates_when_suppressed`), so the two verdicts cannot diverge.
+    """
+
+    def _repo(self, root, payloads):
+        """A tools dir holding `{tool: parsed-output}`, plus its manifest."""
+        tools = os.path.join(root, "tools")
+        os.makedirs(tools)
+        for tool, doc in payloads.items():
+            suffix = "json" if tool == "osv-scanner" else "sarif"
+            with open(os.path.join(tools, "%s.%s" % (tool, suffix)), "w",
+                      encoding="utf-8") as fh:
+                json.dump(doc, fh)
+        manifest_path = os.path.join(root, "manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump({"selected": sorted(payloads), "produced": sorted(payloads),
+                       "missing": []}, fh)
+        return tools, manifest_path
+
+    def _gate(self, payloads, mode="redteam"):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, payloads)
+            _f, _d, failures, high, suppressed = gate.evaluate(
+                tools, manifest, security_mode=mode)
+        self.assertEqual(failures, [])
+        return high, suppressed
+
+    def test_a_suppressed_high_lint_finding_no_longer_gates(self):
+        # The B behaviour this ruling reverses: a HIGH with no secret evidence
+        # is a scanner opinion about bundled code, and it may not block a merge.
+        high, suppressed = self._gate({"semgrep": _secret_sarif()})
+        self.assertEqual(high, [])
+        self.assertEqual([f["suppressed"] for f in suppressed], ["vendor"])
+
+    def test_a_suppressed_critical_gates(self):
+        high, suppressed = self._gate({"osv-scanner": _critical_osv()})
+        self.assertEqual([f["severity"] for f in high], ["CRITICAL"])
+        self.assertEqual([f["suppressed"] for f in suppressed], ["vendor"])
+
+    def test_a_suppressed_gitleaks_high_gates(self):
+        high, _s = self._gate({"gitleaks": _secret_sarif(tool="gitleaks")})
+        self.assertEqual(len(high), 1)
+
+    def test_a_suppressed_secret_cwe_gates_whichever_adapter_found_it(self):
+        high, _s = self._gate({"semgrep": _secret_sarif(cwe="CWE-798")})
+        self.assertEqual(len(high), 1)
+
+    def test_standard_mode_gates_none_of_them(self):
+        # Byte-identical to before the ruling: standard keeps every name-based
+        # suppression, and the count is disclosed beside the gate line.
+        for name, payload in (("lint", {"semgrep": _secret_sarif()}),
+                              ("critical", {"osv-scanner": _critical_osv()}),
+                              ("gitleaks", {"gitleaks": _secret_sarif(tool="gitleaks")})):
+            with self.subTest(payload=name):
+                high, suppressed = self._gate(payload, mode="standard")
+                self.assertEqual(high, [])
+                self.assertEqual(len(suppressed), 1)
+
+    def test_an_unsuppressed_lint_high_still_gates_in_both_modes(self):
+        # The oracle: policy C narrows the SUPPRESSED set and nothing else.
+        for mode in ("standard", "redteam"):
+            with self.subTest(mode=mode):
+                high, suppressed = self._gate(
+                    {"semgrep": _secret_sarif(uri="app/lib/patched_auth.rb")},
+                    mode=mode)
+                self.assertEqual(len(high), 1)
+                self.assertEqual(suppressed, [])
+
+    def test_the_gate_line_says_how_many_it_counted_and_how_many_it_withheld(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(root, {
+                "semgrep": _secret_sarif(),
+                "gitleaks": _secret_sarif(tool="gitleaks")})
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest,
+                                "--security", "redteam"])
+        line = buf.getvalue()
+        self.assertEqual(rc, 1)
+        self.assertIn("2 suppressed by directory name", line)
+        self.assertIn("1 GATED", line)
+        self.assertIn("1 disclosed only", line)
 
 
 class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
