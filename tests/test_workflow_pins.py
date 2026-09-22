@@ -768,6 +768,11 @@ CONTAINMENT_JOB = "containment"
 CONTAINMENT_SELECTOR = ("python3", "-m", "pytest",
                         "tests/tools/test_hostile_csproj.py", "-q", "-rs",
                         "-p", "no:cacheprovider")
+# Both of this workflow's jobs, so a THIRD is an explicit decision rather than
+# a silent one: the selector pins are per-job, so a new job would arrive with
+# no selector pinned at all, and this is the workflow where a job means
+# "something runs adapters, or hostile build logic, on a schedule".
+EXPECTED_ADAPTER_JOBS = ("containment", "integration")
 
 # The exact argv, in order. `tests/tools/` and not a `*_integration.py` glob:
 # the railsgoat probe that caught the stale brakeman CWE map lives in
@@ -840,15 +845,18 @@ def selector_defect(argvs, expected=ADAPTER_SELECTOR):
     return None
 
 
+def _adapter_doc():
+    path = os.path.join(WORKFLOW_DIR, ADAPTER_WORKFLOW)
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh.read()) or {}
+
+
 def _adapter_run_steps(job=ADAPTER_JOB):
     """One JOB's `run:` steps. #1655 added a second job to this workflow with
     a selector of its own (one file, deliberately), so a reader that pooled
     every step in the file would see two pytest commands where the pin
     describes one -- and would stop being able to say which job narrowed."""
-    path = os.path.join(WORKFLOW_DIR, ADAPTER_WORKFLOW)
-    with open(path, encoding="utf-8") as fh:
-        doc = yaml.safe_load(fh.read()) or {}
-    return [step for name, steps in run_jobs(doc) if name == job
+    return [step for name, steps in run_jobs(_adapter_doc()) if name == job
             for step in steps]
 
 
@@ -901,6 +909,14 @@ class TestTheAdapterJobsSelectorIsPinned(unittest.TestCase):
         argvs = [a for step in steps for a in pytest_argvs(step.script)]
         why = selector_defect(argvs, expected=CONTAINMENT_SELECTOR)
         self.assertIsNone(why, why or "")
+
+    def test_the_workflow_carries_exactly_the_two_pinned_jobs(self):
+        self.assertEqual(
+            EXPECTED_ADAPTER_JOBS, tuple(sorted(_adapter_doc().get("jobs") or {})),
+            "%s gained or lost a job. Each job here has its own pinned pytest "
+            "selector, so a new one is unpinned until it is named: add it to "
+            "EXPECTED_ADAPTER_JOBS and pin what it runs (#1655)."
+            % ADAPTER_WORKFLOW)
 
     def test_the_reader_actually_found_the_workflow(self):
         # Guards the guard: an unreadable workflow would produce no argvs and
@@ -1351,9 +1367,32 @@ class TestTheFleetsContainmentLaneIsOffline(unittest.TestCase):
                     "passing; the pin reads something else" % (wf, job))
 
 
+# The third control in the lane's own comment ("scheduled and manual only"),
+# and the only one that was argued in prose and pinned by nothing. `on:` is
+# read as `True` because YAML 1.1 parses the bare key as a boolean.
+EXPECTED_CONTAINMENT_TRIGGERS = {"schedule", "workflow_dispatch"}
+
+
 class TestTheContainmentLaneIsLeastPrivilege(unittest.TestCase):
     def test_the_lane_grants_itself_read_and_nothing_more(self):
         for (workflow, job), doc in _containment_docs().items():
             with self.subTest(job=job):
                 self.assertIsNone(permissions_defect(doc, job),
                                   permissions_defect(doc, job) or workflow)
+
+    def test_the_lane_is_never_reachable_from_a_pull_request(self):
+        # A `push:`/`pull_request:` trigger on this workflow would run the
+        # hostile MSBuild target on whatever a PR proposed -- the one edit the
+        # job's comment rules out and nothing else in the suite refuses.
+        # `privilege_defect` only fires on `pull_request_target`, and
+        # tests/test_integration_strictness.py asserts the two triggers are
+        # PRESENT, never that they are all there is.
+        for (workflow, _job), doc in _containment_docs().items():
+            with self.subTest(workflow=workflow):
+                triggers = set(doc.get(True, doc.get("on")) or {})
+                self.assertEqual(
+                    EXPECTED_CONTAINMENT_TRIGGERS, triggers,
+                    "%s carries a lane that executes attacker-shaped build "
+                    "logic; its trigger surface is scheduled and manual only "
+                    "(#1655). Adding one is a decision about whose code runs, "
+                    "not a workflow edit." % workflow)
