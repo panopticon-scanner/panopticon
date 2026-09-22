@@ -1213,3 +1213,60 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
         self.assertIn("vendored dependencies (vendor: 1)", text)
         self.assertIn("venv: 1", text)
         self.assertIn("test-fixture corpus", text)
+
+
+class TestToolOutputDirectoryIsBounded(unittest.TestCase):
+    """#1576 (run-13 OPS-2937048458): the ingest walk had no file-count cap.
+
+    Two glob calls built complete pathname lists for the whole directory and
+    the concatenation was sorted before a single entry was looked at, so the
+    per-file byte and finding caps bounded nothing about the enumeration
+    itself. `tools_dir` is a documented general-purpose input -- a prior job's
+    artifact directory -- and every unregistered name also costs one stderr
+    diagnostic.
+    """
+
+    def _dir(self, d, n):
+        for i in range(n):
+            with open(os.path.join(d, "t%03d.sarif" % i), "w",
+                      encoding="utf-8") as fh:
+                fh.write("{}")
+
+    def test_enumeration_stops_at_the_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._dir(d, 12)
+            err = io.StringIO()
+            with patch.object(it, "TOOL_OUTPUT_FILES_MAX", 5), \
+                    contextlib.redirect_stderr(err):
+                _findings, disp = it.ingest_dir_detailed(d, "g1")
+        self.assertEqual(len(disp), 5)
+        # A deterministic prefix, not whichever five the filesystem yielded.
+        self.assertEqual(sorted(disp), ["t000", "t001", "t002", "t003", "t004"])
+        self.assertIn("TOOL_OUTPUT_FILES_MAX", err.getvalue())
+        self.assertIn("12", err.getvalue())
+
+    def test_the_listing_buffer_is_trimmed_as_it_grows(self):
+        # The cap has to bite while the list is being BUILT: a cap applied to a
+        # finished list has already paid for the directory.
+        with tempfile.TemporaryDirectory() as d:
+            self._dir(d, 12)
+            paths, seen = it._capped_output_files(d, cap=3)
+        self.assertEqual(seen, 12)
+        self.assertEqual([os.path.basename(p) for p in paths],
+                         ["t000.sarif", "t001.sarif", "t002.sarif"])
+
+    def test_glob_parity_dotfiles_still_skipped(self):
+        # `glob.glob("*.json")` never matched a leading-dot name; the scandir
+        # walk must not start ingesting `.hidden.json`.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".hidden.json"), "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            with open(os.path.join(d, "semgrep.sarif"), "w", encoding="utf-8") as fh:
+                json.dump(SARIF, fh)
+            paths, seen = it._capped_output_files(d)
+        self.assertEqual(seen, 1)
+        self.assertEqual([os.path.basename(p) for p in paths], ["semgrep.sarif"])
+
+    def test_the_cap_clears_any_real_tools_directory(self):
+        # A real tools dir holds one file per registered adapter.
+        self.assertGreaterEqual(it.TOOL_OUTPUT_FILES_MAX, 10 * len(tools_mod.ADAPTERS))

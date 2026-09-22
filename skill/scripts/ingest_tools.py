@@ -6,7 +6,6 @@ registered adapters in ``scripts.tools.ADAPTERS`` and routed to the matching
 adapter for parsing. SARIF or JSON files whose basename has no registered
 adapter are skipped with a diagnostic. Stdlib-only.
 """
-import glob
 import json
 import os
 import sys
@@ -53,6 +52,59 @@ __all__ = [
     "suppression_class",
     "sarif_to_findings",
 ]
+
+
+# #1576 (run-13 OPS-2937048458): the most tool-output files one ingest reads
+# from a tools directory. A real one holds one file per registered adapter (15),
+# and a name with no registered adapter is rejected anyway -- at the cost of one
+# stderr diagnostic each -- so 1,000 is far past any legitimate directory and
+# only a hostile or runaway artifact tree reaches it. Past it the
+# lexicographically-later files are NOT read and the drop is announced on
+# stderr; it is never silent.
+TOOL_OUTPUT_FILES_MAX = 1_000
+_OUTPUT_SUFFIXES = (".sarif", ".json")
+
+
+def _capped_output_files(tools_dir, cap=None):
+    """The sorted `*.sarif` / `*.json` paths in `tools_dir`, at most `cap`.
+
+    Returns `(paths, seen)`, where `seen` counts every matching name in the
+    directory whether or not it was kept.
+
+    Enforced AS THE LIST GROWS, which is the whole point: the two glob calls
+    this replaces built complete pathname lists for the entire directory and
+    concatenated and sorted them before anything looked at the first entry, so
+    the per-file byte and finding caps bounded nothing about the enumeration.
+    The buffer is trimmed back to the lexicographically smallest `cap` entries
+    whenever it reaches twice that, so peak memory is bounded at 2*cap names
+    and the kept set is still deterministic.
+
+    Matches `glob.glob`'s selection exactly, leading-dot names included (glob
+    never returned them, and a `.hidden.json` must not start being ingested
+    because the walk changed).
+    """
+    cap = TOOL_OUTPUT_FILES_MAX if cap is None else cap
+    kept: list[str] = []
+    seen = 0
+    try:
+        scan = os.scandir(tools_dir)
+    except OSError:
+        return [], 0
+    with scan:
+        for entry in scan:
+            name = entry.name
+            if name.startswith(".") or not name.endswith(_OUTPUT_SUFFIXES):
+                continue
+            seen += 1
+            kept.append(entry.path)
+            if len(kept) >= cap * 2:
+                kept = sorted(kept)[:cap]
+    kept.sort()
+    if seen > cap:
+        print("ingest: %s holds %d tool-output file(s); reading the first %d "
+              "(TOOL_OUTPUT_FILES_MAX). %d file(s) were NOT ingested"
+              % (tools_dir, seen, cap, seen - cap), file=sys.stderr)
+    return kept[:cap], seen
 
 
 # Top-level dirs that are never project source: a nested checkout, the git dir,
@@ -536,8 +588,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     gl_excluded = 0   # dropped by an explicit exclude_glob (operator policy)
     ra_excluded = 0   # dropped as not-project-source (run-9 E3 / run-10 D1)
     suppressed: dict[str, int] = {}   # {segment: count} dropped on a directory NAME (#1578, #1740)
-    for path in sorted(glob.glob(os.path.join(tools_dir, "*.sarif"))
-                       + glob.glob(os.path.join(tools_dir, "*.json"))):
+    for path in _capped_output_files(tools_dir)[0]:
         tool = os.path.splitext(os.path.basename(path))[0]
         adapter = ADAPTERS.get(tool)
         if adapter is None:
