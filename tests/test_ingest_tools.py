@@ -1297,3 +1297,103 @@ class TestToolOutputDirectoryIsBounded(unittest.TestCase):
     def test_the_cap_clears_any_real_tools_directory(self):
         # A real tools dir holds one file per registered adapter.
         self.assertGreaterEqual(it.TOOL_OUTPUT_FILES_MAX, 10 * len(tools_mod.ADAPTERS))
+
+
+def _tool_finding(tool="semgrep", severity="HIGH", rule="test.rule", cwe=None):
+    """One tool-shaped finding, in the shape the adapters actually emit.
+
+    `citations.cwe` is where `sarif_utils.sarif_to_findings` puts the CWE tags
+    it scraped out of the rule, and `tool_evidence.rule_id` is where every
+    adapter puts the rule -- both are what `gates_when_suppressed` reads.
+    """
+    finding = {"id": "T-1", "severity": severity, "source": "tool:%s" % tool,
+               "title": "t", "location": {"file": "app/vendor/x.py",
+                                          "line_start": 1},
+               "tool_evidence": {"rule_id": rule}}
+    if cwe:
+        finding["citations"] = {"cwe": list(cwe)}
+    return finding
+
+
+class TestGatesWhenSuppressed(unittest.TestCase):
+    """#1578 owner ruling 2026-09-22 (policy C): which name-suppressed findings
+    still gate under `--security redteam`.
+
+    Option B gated the whole suppressed set on severity alone, so a
+    vendor-heavy tree hard-FAILed on bundled-library lint noise -- the very
+    noise the exclusion exists to keep out (calibration-5/solidus: 592 of
+    eslint-security's 623 messages were jQuery under `vendor/`). C narrows it:
+    a CRITICAL, or a secret-class finding, still gates; a HIGH lint opinion
+    does not.
+    """
+
+    def test_a_critical_gates_whatever_produced_it(self):
+        self.assertTrue(it.gates_when_suppressed(
+            _tool_finding(severity="CRITICAL")))
+
+    def test_a_high_lint_finding_does_not(self):
+        self.assertFalse(it.gates_when_suppressed(
+            _tool_finding(severity="HIGH", rule="detect-object-injection")))
+
+    def test_a_secret_adapters_high_gates(self):
+        self.assertTrue(it.gates_when_suppressed(
+            _tool_finding(tool="gitleaks", severity="HIGH")))
+
+    def test_a_secret_cwe_gates_whichever_adapter_carried_it(self):
+        self.assertTrue(it.gates_when_suppressed(
+            _tool_finding(tool="semgrep", severity="HIGH",
+                          cwe=["CWE-798"])))
+
+    def test_a_non_secret_cwe_does_not(self):
+        self.assertFalse(it.gates_when_suppressed(
+            _tool_finding(tool="semgrep", severity="HIGH",
+                          cwe=["CWE-79"])))
+
+    def test_the_enriched_object_shape_of_a_citation_is_read_too(self):
+        # Review I2: `report-schema.json` pins `citations.cwe.items` as
+        # `anyOf: [string, object]`, and `citations.enrich_citations` rewrites
+        # the list into `{"id", "name", "verified"}` objects -- both renderers
+        # read both shapes. Reading only the string shape is a security rule
+        # that switches itself off, silently, the day the gated set is routed
+        # through enrichment (which #1578's own option A would have done).
+        self.assertTrue(it.gates_when_suppressed(
+            _tool_finding(cwe=[{"id": "CWE-798", "name": "Hard-coded "
+                                "Credentials", "verified": True}])))
+        self.assertFalse(it.gates_when_suppressed(
+            _tool_finding(cwe=[{"id": "CWE-79", "name": "XSS"}])))
+
+    def test_a_lower_case_severity_answers_the_way_the_gate_does(self):
+        # Review M5: `security_gate` tests `severity in GATE_SEVERITIES`
+        # case-sensitively, so a predicate that case-folded was ANSWERING A
+        # DIFFERENT QUESTION than the gate it feeds -- the exact divergence one
+        # predicate exists to prevent. Both ingest paths emit upper case.
+        self.assertFalse(it.gates_when_suppressed(
+            _tool_finding(severity="critical")))
+        self.assertTrue(it.gates_when_suppressed(
+            _tool_finding(severity="CRITICAL")))
+
+    def test_the_cwe_is_read_off_the_rule_id_too(self):
+        # The dependency adapters put the rule id in `tool_evidence.rule_id`
+        # and cite nothing; a rule named for its CWE must still be recognised.
+        self.assertTrue(it.gates_when_suppressed(
+            _tool_finding(rule="CWE-522: insufficiently protected credentials")))
+
+    def test_the_constants_are_the_ruling_verbatim(self):
+        self.assertEqual(it.SECRET_ADAPTERS, frozenset({"gitleaks"}))
+        self.assertEqual(it.SECRET_CWES,
+                         frozenset({"CWE-798", "CWE-259", "CWE-321", "CWE-522"}))
+
+    def test_a_malformed_finding_never_gates_and_never_raises(self):
+        # The tally and the set are derived from scanner output; a renderer or
+        # a gate is not the place to discover a bad row.
+        for bad in (None, {}, {"severity": None}, {"citations": "lots"},
+                    {"citations": {"cwe": "CWE-798"}},
+                    {"citations": {"cwe": [None, 798]}},
+                    # Review M1: `evidence.tool_rule_id` does
+                    # `(finding.get("tool_evidence") or {}).get(...)`, so these
+                    # two RAISED AttributeError against a docstring promising
+                    # totality. The name of this test was the over-claim.
+                    {"tool_evidence": "nope"}, {"provenance": "nope"},
+                    {"tool_evidence": ["nope"], "provenance": 3}):
+            with self.subTest(bad=bad):
+                self.assertFalse(it.gates_when_suppressed(bad))

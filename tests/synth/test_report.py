@@ -3997,9 +3997,15 @@ class ReportInputsTest(unittest.TestCase):
     def test_stages_compose_with_a_gate_counted_suppressed_finding(self):
         # Re-review of item 25c R1: `build_report` hands the gated-suppressed
         # set to `resolve_findings`, and the by-hand recipe above stayed green
-        # only because its ToolAxis is empty. One gated HIGH must give the
+        # only because its ToolAxis is empty. One gated finding must give the
         # same envelope both ways -- FAIL from `build_report`, FAIL by hand.
-        gated = dict(_make_finding(severity="HIGH"))
+        #
+        # CRITICAL, not HIGH, since the #1578 owner ruling of 2026-09-22
+        # (policy C): a suppressed HIGH with no secret evidence no longer
+        # gates, so a HIGH here would empty the gated set and leave this test
+        # comparing two identical PASSes. The `assertEqual(..., "FAIL")` below
+        # is what keeps it from going vacuous again.
+        gated = dict(_make_finding(severity="CRITICAL"))
         gated["location"] = dict(gated.get("location") or {}, file="app/vendor/x.js")
         def inputs():
             return report_mod.ReportInputs(
@@ -4014,6 +4020,7 @@ class ReportInputsTest(unittest.TestCase):
         graded = grading_mod.grade_report(inp.run, resolved, reconciled)
         cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
         by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)
+        self.assertEqual(whole["summary"]["gate"], "FAIL")
         self.assertEqual(whole["summary"]["gate"], by_hand["summary"]["gate"])
         self.assertEqual(whole, by_hand)
 

@@ -21,6 +21,9 @@ GATE_SEVERITIES = frozenset({"HIGH", "CRITICAL"})
 # vendored list alone -- `venv`/`.venv`/`site-packages` with no `pyvenv.cfg`
 # behind them, and the fixture corpus, are the same evidence and reach this
 # gate through the same channel.
+# #1578 owner ruling 2026-09-22 (policy C) narrows WHICH of them redteam
+# re-admits: `ingest_tools.gates_when_suppressed` -- a CRITICAL or a
+# secret-class finding, never a HIGH lint opinion about bundled code.
 REDTEAM = "redteam"
 SECURITY_MODES = ("standard", REDTEAM)
 
@@ -63,11 +66,20 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     #1578: `suppressed` is what a NAME-BASED exclusion dropped, each entry
     naming the segment that dropped it. It is never part of `findings` -- the
     report-side suppression is what makes tool output usable at all -- but under
-    `redteam` it IS part of the gate: this gate blocks merges, and a payload
-    landed as `app/vendor/patched_auth.rb` passing it outright on the strength
-    of a conventional directory name is the defect. In `standard` mode the
-    suppression stands and `main` prints the count beside the gate line, so the
-    drop is disclosed rather than silent.
+    `redteam` PART of it is part of the gate: this gate blocks merges, and a
+    payload landed as `app/vendor/patched_auth.rb` passing it outright on the
+    strength of a conventional directory name is the defect. In `standard` mode
+    the suppression stands and `main` prints the count beside the gate line, so
+    the drop is disclosed rather than silent.
+
+    WHICH part, owner ruling 2026-09-22 (policy C): `gate_counted`, i.e.
+    `ingest_tools.gates_when_suppressed` -- a CRITICAL, or a secret-class
+    finding (a secret adapter, or a credential CWE). The first cut re-admitted
+    the whole set on severity alone and a vendor-heavy tree then failed a merge
+    on bundled-library lint noise, which is the noise the suppression exists to
+    keep out. The rest stays suppressed AND disclosed: `main` counts it beside
+    the verdict, and the report publishes it as
+    `meta.coverage.tools_suppressed_not_gated`.
 
     #1740: three classes reach it, not one (`ingest_tools.suppression_class`):
     `vendored`, `virtualenv-by-name` (a `venv`/`.venv`/`site-packages` segment
@@ -103,10 +115,52 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     unknown = set(dispositions) - known
     if unknown:
         failures.append("unexpected scanner output: %s" % ", ".join(sorted(unknown)))
-    gated = findings + suppressed if security_mode == REDTEAM else findings
-    high = [finding for finding in gated
+    kept = [finding for finding in findings
             if finding.get("severity") in GATE_SEVERITIES]
+    # #1578 fix round 1, ruling 2: the policy-admitted suppressed set does NOT
+    # re-take `GATE_SEVERITIES`. Passing `gates_when_suppressed` IS the floor
+    # for it -- a CRITICAL clears the severity test regardless, and a
+    # secret-class finding gates whatever grade its tool put on it, which is
+    # the ruling's point. Re-applying the floor meant admitting a finding and
+    # discarding it on the next line, with `main` printing it as GATED anyway:
+    # three committed secrets under `app/vendor/`, "3 GATED", `rc=0`. The
+    # SEVERITY half of that instance is fixed at the parse
+    # (`sarif_utils.SECRET_ADAPTERS`); this is the composition half, and it
+    # still bites any secret-class finding its adapter grades below HIGH.
+    #
+    # The floor stays on everything the gate KEEPS: policy C narrows the
+    # suppressed set and touches nothing else.
+    #
+    # THE TWO GATES COMPOSE THE SHARED PREDICATE DIFFERENTLY, and the line is
+    # deliberate (fix round 2, review I4). `GATE_SEVERITIES` is a floor this
+    # module hard-codes -- no operator chose it -- so a mode that says "do not
+    # lose a finding to a directory name" may bypass it. `--fail-on` on the
+    # driver side is the opposite: it is operator POLICY, in the same class as
+    # `--exclude` and as the `--severity` floor `plan.ingest_tool_findings`
+    # already applies to these very candidates (#1701 F1), and this codebase
+    # does not override an operator flag. So a secret-class MEDIUM under
+    # `vendor/` FAILS here and PASSES a `driver run --security redteam
+    # --fail-on high`. That is not the two gates disagreeing about the RULE --
+    # `gates_when_suppressed` answers identically on both sides -- it is one of
+    # them being told, by its operator, which severities may block. Pinned on
+    # both sides: `TestThePolicyIsTheFloorForTheSuppressedSet` here and
+    # `test_the_driver_gate_keeps_the_operators_fail_on` in
+    # tests/synth/test_plan.py.
+    high = kept + (gate_counted(suppressed) if security_mode == REDTEAM else [])
     return findings, dispositions, failures, high, suppressed
+
+
+def gate_counted(suppressed):
+    """The suppressed findings `--security redteam` actually counts (#1578 C).
+
+    Through `ingest_tools.gates_when_suppressed`, the one predicate the
+    driver's own report gate asks as well: two answers to it is a merge that
+    blocks in CI and passes in the report, or the reverse. Because `evaluate`
+    applies no further filter to what this returns, its length IS the number
+    that reached the gate -- which is what `main` prints, read back off the
+    verdict's own list rather than re-derived.
+    """
+    return [f for f in suppressed if ingest_tools.gates_when_suppressed(f)]
 
 
 def _by_class(suppressed):
@@ -152,10 +206,24 @@ def main(argv=None):
         # under one of their names, and an operator deciding whether to re-run
         # under redteam has to be able to tell a bundled library from a
         # directory someone named `venv` from this repo's own fixture corpus.
+        if args.security_mode == REDTEAM:
+            # #1578 policy C: under redteam the set SPLITS, so one number for
+            # it would be a lie either way -- "GATED" over a lint drop that did
+            # not move the verdict, or "NOT gated" over the CRITICAL that did.
+            # Counted off `high` -- the list the verdict was computed from --
+            # not re-derived from the policy, so the number and the exit code
+            # beside it can never disagree (fix round 1, ruling 2). A
+            # suppressed finding is the only kind carrying a `suppressed`
+            # segment, which is what identifies it in that list.
+            counted = sum(1 for f in high if f.get("suppressed"))
+            verdict = (" -- %d GATED (CRITICAL/secret, #1578 policy C), "
+                       "%d disclosed only, --security redteam"
+                       % (counted, len(suppressed) - counted))
+        else:
+            verdict = (" -- NOT gated; re-run with --security redteam to gate "
+                       "the CRITICAL and secret-class ones")
         note = ("; %d suppressed by directory name -- %s%s"
-                % (len(suppressed), _by_class(suppressed),
-                   " -- GATED, --security redteam" if args.security_mode == REDTEAM
-                   else " -- NOT gated; re-run with --security redteam to gate them"))
+                % (len(suppressed), _by_class(suppressed), verdict))
     if excluded:
         # Fix round 1 (ruling 3): the operator's own globs, counted where the
         # verdict is. `--exclude '**/venv/**'` under redteam un-gates exactly

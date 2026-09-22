@@ -200,13 +200,27 @@ def _build_report(tmpdir):
     # walk needs, and it survives on both -- which is also the point of zeroing
     # rather than dropping the row: the finding is still withheld from
     # `findings[]`, and the two rows sum to what the ingest actually dropped.
-    sarif = {"runs": [{"tool": {"driver": {"name": "bandit", "rules": []}},
+    # #1578 policy C: TWO results under `vendor/`, because the redteam gate now
+    # splits them. B105 carries CWE-259, so it is secret-class and gated; B602
+    # carries no CWE and is a lint opinion, so it is suppressed and NOT gated.
+    # All three tallies are non-empty that way, which is what the walk needs --
+    # an empty map stops at the map and never reaches the per-segment value.
+    sarif = {"runs": [{"tool": {"driver": {
+                           "name": "bandit",
+                           "rules": [{"id": "B105",
+                                      "properties": {"tags": ["CWE-259"]}},
+                                     {"id": "B602", "properties": {"tags": []}}]}},
                        "results": [
                            {"ruleId": "B105", "level": "warning",
                             "message": {"text": "hardcoded password"},
                             "locations": [{"physicalLocation": {
                                 "artifactLocation": {"uri": "vendor/lib/legacy.py"},
-                                "region": {"startLine": 1}}}]}]}]}
+                                "region": {"startLine": 1}}}]},
+                           {"ruleId": "B602", "level": "warning",
+                            "message": {"text": "subprocess with shell=True"},
+                            "locations": [{"physicalLocation": {
+                                "artifactLocation": {"uri": "vendor/lib/shell.py"},
+                                "region": {"startLine": 2}}}]}]}]}
     sarif_path = os.path.join(tools, "bandit.sarif")
     with open(sarif_path, "w", encoding="utf-8") as fh:
         json.dump(sarif, fh)
@@ -355,14 +369,20 @@ class TestSchemaParity(unittest.TestCase):
         self.assertEqual(meta["coverage"]["test_inventory"], {"app": "empty"})
         self.assertEqual(meta["coverage"]["tools_ran"], ["bandit"])
         # #1578: non-empty, or the per-segment value this section describes is
-        # never walked. #1701: 0 under this fixture's `--security redteam` --
-        # the count means "suppressed from the GATE", and redteam gates them.
-        self.assertEqual(meta["coverage"]["tools_suppressed"], {"vendor": 0})
+        # never walked. #1701: this counts what stayed off the GATE, and under
+        # this fixture's `--security redteam` that is the one B602 lint drop
+        # #1578 policy C declined -- the B105 credential beside it gated.
+        self.assertEqual(meta["coverage"]["tools_suppressed"], {"vendor": 1})
         # #1701 fix round 1 (F2): the other half of the same tally, and the only
         # thing in the artifact that explains a redteam gate verdict resting on
         # a finding `findings[]` does not hold. Non-empty for its own walk, and
         # the two must sum to the number the ingest and `security_gate` print.
         self.assertEqual(meta["coverage"]["tools_suppressed_gated"], {"vendor": 1})
+        # #1578 policy C: the narrowed rule's own number -- a SUBSET of
+        # `tools_suppressed` above, non-empty here so its per-segment value is
+        # walked like its two siblings.
+        self.assertEqual(meta["coverage"]["tools_suppressed_not_gated"],
+                         {"vendor": 1})
         self.assertTrue(self.report["discarded_claims"],
                         "no claim was discarded: the verdict axis did not run")
         self.assertTrue(self.report["findings"], "no finding survived")

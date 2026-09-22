@@ -5,6 +5,8 @@ import unittest
 
 from conftest import REPO_ROOT
 import scripts.discovery as discovery
+from _test_helpers import (fake_aws_key, fake_jwt, fake_pem,
+                           pem_begin, pem_end)
 import scripts.redact as redact
 
 
@@ -29,9 +31,7 @@ class TestRedact(unittest.TestCase):
         self.assertNotIn("z" * 24, out)
 
     def test_masks_pem_private_key_block(self):
-        pem = ("-----BEGIN RSA PRIVATE KEY-----\n"
-               "MIIEpAIBAAKCAQEA...secret...\n"
-               "-----END RSA PRIVATE KEY-----")
+        pem = fake_pem("MIIEpAIBAAKCAQEA...secret...")
         out = redact.redact("here it is:\n%s\nend" % pem)
         self.assertIn("[REDACTED_PRIVATE_KEY]", out)
         self.assertNotIn("secret", out)
@@ -43,10 +43,9 @@ class TestRedact(unittest.TestCase):
         and deleted everything in between. A truncated key snippet (gitleaks
         quotes one in the committed golden) plus any later complete block is all
         it takes."""
-        text = ("-----BEGIN RSA PRIVATE KEY-----\nMIIBtruncated\n"
+        text = (pem_begin() + "\nMIIBtruncated\n"
                 "KEEP THIS LINE\n"
-                "-----BEGIN RSA PRIVATE KEY-----\nMIIBrealkey\n"
-                "-----END RSA PRIVATE KEY-----\n")
+                + fake_pem("MIIBrealkey") + "\n")
         out = redact.redact(text)
         self.assertIn("KEEP THIS LINE", out)
         self.assertIn("[REDACTED_PRIVATE_KEY]", out)
@@ -56,9 +55,9 @@ class TestRedact(unittest.TestCase):
     # double-quoted literal per line, concatenated. Quotes sit INSIDE the block,
     # which is why a `[^"]`-bounded body could not match it.
     QUOTED_SOURCE_PEM = (
-        'KEY = ("-----BEGIN RSA PRIVATE KEY-----\\n"\n'
+        'KEY = ("%s\\n"\n'
         '       "MIIEpAIBAAKCAQEAxLEAKEDKEYBODY0123456789abcdef\\n"\n'
-        '       "-----END RSA PRIVATE KEY-----")')
+        '       "%s")' % (pem_begin(), pem_end()))
 
     def test_masks_a_pem_quoted_from_source_as_adjacent_string_literals(self):
         """#1639 P11 round 2 N1: the round-1 `[^"]` bound silently stopped
@@ -89,8 +88,7 @@ class TestRedact(unittest.TestCase):
         is a couple of KiB, so the bound costs nothing on the shapes that
         matter, and it is what keeps a flat pass over a structured document
         from swallowing an unbounded run of fields between two blocks."""
-        far = ("-----BEGIN RSA PRIVATE KEY-----\n" + "A" * 20000 +
-               "\n-----END RSA PRIVATE KEY-----")
+        far = fake_pem("A" * 20000)
         out = redact.redact("before " + far + " after")
         self.assertNotIn("[REDACTED_PRIVATE_KEY]", out)
         self.assertEqual(out, "before " + far + " after")
@@ -99,7 +97,7 @@ class TestRedact(unittest.TestCase):
         """The same bound from the other side: a BEGIN with no END anywhere
         leaves the document exactly as it was (nothing masked), rather than the
         engine scanning to EOF for a close that never comes."""
-        text = ("-----BEGIN RSA PRIVATE KEY-----\n" + "B" * 20000 +
+        text = (pem_begin() + "\n" + "B" * 20000 +
                 "\nTRAILING EVIDENCE\n")
         self.assertEqual(redact.redact(text), text)
 
@@ -187,8 +185,7 @@ class TestRedactAdditionalVendorFormats(unittest.TestCase):
     TestRedactRejectsGenericDetection."""
 
     CASES = {
-        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
-        "dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk": "[REDACTED_JWT]",
+        fake_jwt(): "[REDACTED_JWT]",
         "glpat-" + "A" * 20: "[REDACTED_TOKEN]",
         "npm_" + "b" * 36: "[REDACTED_TOKEN]",
         "hf_" + "c" * 34: "[REDACTED_TOKEN]",
@@ -537,7 +534,7 @@ class TestOnlyThePemRuleMayCrossAQuote(unittest.TestCase):
         "github_pat_" + "b" * 40,
         "sk-" + "C" * 32,
         "Authorization: Bearer " + "D" * 24,
-        "AKIA1234567890ABCDEF",
+        fake_aws_key("1234567890ABCDEF"),
         "xoxb-1234567890-abcdefghij",
         "AIza" + "E" * 35,
         "xapp-1-" + "F" * 20,
@@ -551,7 +548,7 @@ class TestOnlyThePemRuleMayCrossAQuote(unittest.TestCase):
         "sk_live_" + "M" * 24,
         "eyJ" + "N" * 12 + ".eyJ" + "O" * 12 + "." + "P" * 20,
         "postgres://svc_reports:Qfiller@db.internal:5432/app",
-        "-----BEGIN RSA PRIVATE KEY-----\nMIIBfiller\n-----END RSA PRIVATE KEY-----",
+        fake_pem("MIIBfiller"),
         "3f2504e0-4f89-11d3-9a0c-0305e82c3301",
     )
 
@@ -589,9 +586,9 @@ class TestOnlyThePemRuleMayCrossAQuote(unittest.TestCase):
         """Non-vacuity: the probe shape CAN express a crossing, so the guard
         above is capable of failing. This is also the behaviour round 2 restored
         -- a key quoted out of C/Java source one literal per line."""
-        probe = ('KEY = ("-----BEGIN RSA PRIVATE KEY-----\\n"\n'
+        probe = ('KEY = ("%s\\n"\n'
                  '       "MIIBfiller\\n"\n'
-                 '       "-----END RSA PRIVATE KEY-----")')
+                 '       "%s")' % (pem_begin(), pem_end()))
         m = self._pem_rule().search(probe)
         self.assertIsNotNone(m)
         self.assertIn('"', m.group(0))
