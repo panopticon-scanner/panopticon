@@ -1245,9 +1245,36 @@ class TestToolOutputDirectoryIsBounded(unittest.TestCase):
         self.assertIn("TOOL_OUTPUT_FILES_MAX", err.getvalue())
         self.assertIn("12", err.getvalue())
 
-    def test_the_listing_buffer_is_trimmed_as_it_grows(self):
-        # The cap has to bite while the list is being BUILT: a cap applied to a
-        # finished list has already paid for the directory.
+    def test_the_listing_buffer_never_grows_past_twice_the_cap(self):
+        """The trim must bite WHILE the list is built, not after it.
+
+        #1576 fix round 1: the previous version of this test asserted only the
+        returned prefix, which the trailing `kept[:cap]` produces whether or
+        not the growth-point trim ever runs -- mutating the `len(kept) >=
+        cap * 2` branch to `if False:` left it green while the buffer went back
+        to holding the whole directory. Watch the buffer instead of the result.
+        """
+        cap = 5
+        observed = []
+        real = it._trim_to_cap
+
+        def spy(kept, c):
+            observed.append(len(kept))
+            return real(kept, c)
+
+        with tempfile.TemporaryDirectory() as d:
+            self._dir(d, 10 * cap)
+            with patch.object(it, "_trim_to_cap", side_effect=spy):
+                paths, seen = it._capped_output_files(d, cap=cap)
+        self.assertEqual(seen, 10 * cap)
+        self.assertTrue(observed, "the buffer was never trimmed as it grew")
+        self.assertLessEqual(max(observed), 2 * cap,
+                             "peak buffer %d exceeded 2*cap" % max(observed))
+        # ...and the bound did not cost correctness: still the smallest `cap`.
+        self.assertEqual([os.path.basename(p) for p in paths],
+                         ["t%03d.sarif" % i for i in range(cap)])
+
+    def test_the_trim_keeps_the_lexicographically_smallest(self):
         with tempfile.TemporaryDirectory() as d:
             self._dir(d, 12)
             paths, seen = it._capped_output_files(d, cap=3)

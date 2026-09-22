@@ -65,6 +65,17 @@ TOOL_OUTPUT_FILES_MAX = 1_000
 _OUTPUT_SUFFIXES = (".sarif", ".json")
 
 
+def _trim_to_cap(kept, cap):
+    """The lexicographically smallest `cap` paths of `kept`.
+
+    A named function, not an inline slice, so the growth-point trim is
+    OBSERVABLE: `_capped_output_files` also trims on the way out, and a test
+    that watches only the returned list cannot tell whether the buffer was ever
+    bounded while it was being built (#1576 fix round 1).
+    """
+    return sorted(kept)[:cap]
+
+
 def _capped_output_files(tools_dir, cap=None):
     """The sorted `*.sarif` / `*.json` paths in `tools_dir`, at most `cap`.
 
@@ -98,7 +109,7 @@ def _capped_output_files(tools_dir, cap=None):
             seen += 1
             kept.append(entry.path)
             if len(kept) >= cap * 2:
-                kept = sorted(kept)[:cap]
+                kept = _trim_to_cap(kept, cap)
     kept.sort()
     if seen > cap:
         print("ingest: %s holds %d tool-output file(s); reading the first %d "
