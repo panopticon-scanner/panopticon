@@ -52,9 +52,8 @@ docker build -t panopticon-tools:latest .
 docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 docker run --rm \
   -v "$PWD/skill/scripts:/opt/panopticon/scripts:ro" \
-  -v "$PWD/skill/scripts/capture_goldens.py:/opt/panopticon/capture_goldens.py:ro" \
   -v "$PWD/tests/goldens/tool-raw:/out" \
-  panopticon-fixtures:latest python /opt/panopticon/capture_goldens.py /out
+  panopticon-fixtures:latest python /opt/panopticon/scripts/capture_goldens.py /out
 ```
 
 **2 — external targets, mounted at `/src`** (gosec, osv-scanner, eslint-security,
@@ -69,9 +68,8 @@ reachable.
 docker run --rm --network none \
   -v "/path/to/target:/src:ro" \
   -v "$PWD/skill/scripts:/opt/panopticon/scripts:ro" \
-  -v "$PWD/skill/scripts/capture_goldens.py:/opt/panopticon/capture_goldens.py:ro" \
   -v "$PWD/tests/goldens/tool-raw:/out" \
-  panopticon-tools:latest python3 /opt/panopticon/capture_goldens.py /out <adapter>
+  panopticon-tools:latest python3 /opt/panopticon/scripts/capture_goldens.py /out <adapter>
 ```
 
 **3 — the two `ONLINE_ONLY` adapters** (npm-audit, pip-audit) need a network and
@@ -79,6 +77,17 @@ a manifest with a known-vulnerable pin, so run pass 2 **without** `--network
 none` against a small probe directory (a `package-lock.json` pinning
 `lodash 4.17.15`, or a `requirements.txt` pinning `requests==2.19.0`). Offline
 they fail by design — `filter_online` drops them in favour of osv-scanner.
+
+**The layout above is configuration, not source** (#1654). The fixtures root
+(`/opt/panopticon-fixtures`), the `/src` mount, and the `/mnt` probes root
+each have an environment variable — `PANOPTICON_FIXTURES_ROOT`,
+`PANOPTICON_SRC_ROOT`, `PANOPTICON_PROBES_ROOT` — and a matching CLI flag
+(`--fixtures-root`, `--src-root`, `--probes-root`) that overrides it for one
+run, so a relocated mount no longer needs a source edit. `--target
+NAME=PATH` (repeatable) overrides a single adapter's target and wins over
+everything else; precedence is `--target` > CLI flag > environment variable
+> default. Run `capture_goldens.py --help` inside the container for the
+full flag list.
 
 **Mount a corpus, never your own checkout.** `gitleaks`, `bandit`, and `trivy`
 used to be pinned to `/mnt/panopticon` in `TARGETS`, so a refresh scanned the
