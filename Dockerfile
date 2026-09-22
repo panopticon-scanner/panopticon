@@ -53,8 +53,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #   gem  each .gem fetched to a file, gated on `sha256sum -c`, then installed
 #        --local --ignore-dependencies. No resolver runs.
 #   npm  `npm ci --ignore-scripts` against the committed
-#        tools-image/node/package-lock.json: 140 packages by integrity digest,
-#        and no package's install scripts execute.
+#        tools-image/node/package-lock.json: 139 packages, every one by
+#        integrity digest, and no package's install scripts execute.
 #
 # Two installs are deliberately NOT covered, and this is therefore not a claim
 # that every registry input to this image is hash-verified: `cargo install
@@ -124,7 +124,7 @@ RUN curl -sfL --connect-timeout 5 --max-time 60 "https://rubygems.org/downloads/
 
 # Node: eslint, eslint-plugin-security, @microsoft/eslint-formatter-sarif.
 # tools-image/node/package.json is the declared list and package-lock.json the
-# 140-package closure it resolves to; `npm ci` refuses to proceed if the two
+# 139-package closure it resolves to; `npm ci` refuses to proceed if the two
 # disagree, and --ignore-scripts means nothing in that tree runs install-time
 # code. Refresh with `npm install --package-lock-only --ignore-scripts`.
 #

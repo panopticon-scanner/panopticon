@@ -226,7 +226,7 @@ The versions are the input and yours to choose; the digests are not. After chang
 `name==version` line (or adding a package), run:
 
 ```bash
-python3 scripts/bump_pins.py requirements --write      # both files
+python3 scripts/bump_pins.py requirements --write      # all three files
 python3 scripts/bump_pins.py requirements --file .github/requirements-gate.txt --write
 ```
 
@@ -259,7 +259,7 @@ The differences between the files are deliberate:
   `--require-hashes` turns a missing dependency into a loud install-time failure instead.
 
 The tools image's Node closure is pinned the same way but by npm: `tools-image/node/package.json`
-is the declared list and `tools-image/node/package-lock.json` the 140-package closure, regenerated
+is the declared list and `tools-image/node/package-lock.json` the 139-package closure, regenerated
 with `npm install --package-lock-only --ignore-scripts`. The image installs it with
 `npm ci --ignore-scripts`, which fails rather than resolving anything if the two disagree.
 

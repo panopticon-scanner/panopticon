@@ -319,6 +319,32 @@ class TestRegistryClosuresArePinned(unittest.TestCase):
                 "bump both and re-run `npm install --package-lock-only "
                 "--ignore-scripts`" % (arg, m.group(1), deps.get(name)))
 
+    def test_the_prose_counts_match_the_committed_closures(self):
+        # Review round 1 caught the Dockerfile claiming "140 packages" when the
+        # lockfile installs 139 -- its 140th entry is the root project, which
+        # is not installed. A count written in a comment is a second source of
+        # truth unless something reads both, and the next refresh would rot
+        # these the same way, silently. So read both.
+        with open(os.path.join(ROOT, "requirements-tools.txt"),
+                  encoding="utf-8") as fh:
+            pins = len(re.findall(r"^[A-Za-z0-9._-]+==", fh.read(), re.M))
+        with open(os.path.join(ROOT, "tools-image", "node",
+                               "package-lock.json"), encoding="utf-8") as fh:
+            installed = len([name for name in json.load(fh)["packages"] if name])
+        for pattern, real, what in (
+                (r"requirements-tools\.txt`: (\d+) packages", pins, "pip pins"),
+                (r"package-lock\.json: (\d+) packages", installed, "npm packages"),
+                (r"(\d+)-package closure", installed, "npm packages")):
+            found = re.findall(pattern, self.text)
+            self.assertEqual(
+                1, len(found),
+                "expected exactly one %r in the Dockerfile, found %r -- the "
+                "guard cannot check a claim it cannot locate" % (pattern, found))
+            self.assertEqual(
+                str(real), found[0],
+                "the Dockerfile claims %s %s; the committed closure has %d"
+                % (found[0], what, real))
+
     def test_the_lockfile_pins_every_package_by_integrity(self):
         with open(os.path.join(ROOT, "tools-image", "node",
                                "package-lock.json"), encoding="utf-8") as fh:
