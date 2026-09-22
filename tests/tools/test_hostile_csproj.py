@@ -11,6 +11,13 @@ bare hosts/runners (e.g. ubuntu-latest, which ships the .NET SDK
 preinstalled) have no `--network none` to contain the egress attempt, so
 running this test there would perform the real curl.
 
+One lane does opt in (#1655, owner ruling 2026-09-22): the `containment`
+job in `.github/workflows/adapter-integration.yml`, daily at 08:00 UTC
+and on workflow_dispatch, which runs this file inside the fixtures image
+with `docker run --network none` -- the opt-in and the containment set
+together, by the same command. Nothing else in the fleet sets the flag,
+and `tests/test_workflow_pins.py` pins both halves of that sentence.
+
 The env var is opt-in *intent*, not proof of containment (issue #1183): a
 developer or CI job that sets it on a network-enabled host would execute the
 fixture's real egress. So before running the hostile build we independently
@@ -105,21 +112,30 @@ def _containment_decision(probe_enabled, egress_reachable=_egress_reachable):
 # what must not happen. What the guard below adds is the other half: WHERE
 # something has opted in, the remaining three preconditions are a FAILURE
 # rather than three more skips, so the probe cannot report green having run
-# nothing in the one environment built to run it.
+# nothing in the one environment built to run it. Since the owner ruling that
+# environment exists in CI as well as on a developer's box: the `containment`
+# lane sets the flag, so these three guards are live there.
 CONTAINMENT_PROBE_ENV = "PANOPTICON_CONTAINMENT_PROBE"
 
-# No scheduled CI lane sets the opt-in: `adapter-integration.yml` sets
-# PANOPTICON_REQUIRE_INTEGRATION=1 and not this one, so today the probe is for
-# a human running inside the no-egress container. That fact is PINNED, in both
-# directions, by tests/test_workflow_pins.py (EXPECTED_CONTAINMENT_LANES) --
-# the fleet is read with PyYAML there because this tree also runs inside the
-# fixtures image, which carries none. If a lane is ever added, that pin fails
-# and this sentence has to be rewritten with it.
+# Exactly one CI lane sets the opt-in: `adapter-integration.yml`'s
+# `containment` job, whose `docker run` carries both `--network none` and the
+# flag. Its sibling `integration` job runs this same file WITHOUT the flag, so
+# the probe skips there -- the correct answer for a lane that has a network.
+# Which lanes opt in, and that every one of them is offline on the same
+# command line, are both PINNED by tests/test_workflow_pins.py
+# (EXPECTED_CONTAINMENT_LANES, `uncontained_lanes()`) -- the fleet is read with
+# PyYAML there because this tree also runs inside the fixtures image, which
+# carries none. If the lane moves, is renamed or loses either control, those
+# pins fail and this sentence has to be rewritten with them.
 _NO_LANE = (
-    "no CI lane sets %s=1, so nothing is opted in here (#1655). Run this "
-    "inside the no-egress panopticon-tools container with the flag set; the "
-    "guard then requires the fixture, the adapter and dotnet rather than "
-    "skipping on them." % CONTAINMENT_PROBE_ENV)
+    "%s is not 1 here, so the containment probe is not opted in (#1655). The "
+    "lane that does opt in is the `containment` job in "
+    ".github/workflows/adapter-integration.yml (daily 08:00 UTC, plus "
+    "workflow_dispatch), which runs this file with `docker run --network "
+    "none` inside the fixtures image. To run it by hand, do the same: set the "
+    "flag inside the no-egress panopticon-tools container; the guard then "
+    "requires the fixture, the adapter and dotnet rather than skipping on "
+    "them." % CONTAINMENT_PROBE_ENV)
 
 
 def unmet_preconditions(environ=None, fixture=FIXTURE, adapters=None,
