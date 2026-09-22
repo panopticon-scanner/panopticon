@@ -529,6 +529,11 @@ def filter_online(chosen, online):
 # dispatcher -- a host-side test, a future runner -- is confined too, with no
 # docker flag in front of it.
 ADAPTER_EMPTY_CWD = "/panopticon-empty-cwd"
+# Where the target is mounted inside every scanner container. One name, so the
+# `-v` mount and the `-w` working directory cannot come to disagree about which
+# path gosec is being pointed at. (`_with_venv_excludes` and bandit's `--ini`
+# pin still spell it literally; both are outside #1877's scope.)
+TARGET_MOUNT = "/src"
 DISPATCH_KEEPS_TARGET_CWD = ("gosec",)
 
 
@@ -536,7 +541,7 @@ def _working_dir_flags(tool):
     """`-w` for *tool*'s container: outside the mount for every scanner but
     gosec, which needs the module root as its cwd (see above)."""
     inside = tool in DISPATCH_KEEPS_TARGET_CWD
-    return ["-w", "/src" if inside else ADAPTER_EMPTY_CWD]
+    return ["-w", TARGET_MOUNT if inside else ADAPTER_EMPTY_CWD]
 
 MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 
@@ -1106,7 +1111,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             docker = ([docker_bin, "run", "--rm"] + _resource_limit_flags()
                       + _privilege_drop_flags() + _working_dir_flags(tool)
                       + ["--network", "none",
-                         "-v", "%s:/src:ro" % os.path.abspath(target), image] + cmd)
+                         "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
+                         image] + cmd)
             _NETWORK_POSTURE[tool] = egress.NO_NETWORK
             with progress.tool(tool, index, total) as step:
                 done = step.finish(
@@ -1135,7 +1141,7 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             # because the image carried the stale code).
             scripts_dir = os.path.dirname(os.path.abspath(__file__))
             docker.extend([
-                "-v", "%s:/src:ro" % os.path.abspath(target),
+                "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
                 "-v", "%s:/opt/panopticon/scripts:ro" % scripts_dir, image,
                 "python3", "/opt/panopticon/scripts/_run_adapter.py", tool])
             with progress.tool(tool, index, total) as step:

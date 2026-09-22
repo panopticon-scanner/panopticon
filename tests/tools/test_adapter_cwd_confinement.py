@@ -49,8 +49,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen
 from scripts.tools import ADAPTERS
+from .conftest import scratch_cwd_recorder
 
 
 # Adapters that legitimately need cwd equal to (or inside) the target. An
@@ -143,28 +143,18 @@ def _seed_fixture(name, root):
 
 def _record_popen_calls(adapter, target):
     """Run *adapter*.invoke(target) with its scanner subprocess faked, and
-    return one record per launch.
+    return one record per launch: `{argv, cwd, existed, entries}`.
 
-    Each record is `{argv, cwd, existed, entries}`: `existed` and `entries`
-    are read INSIDE the fake Popen -- i.e. at the instant the scanner would
-    have started -- because that, not what the directory looks like after the
-    adapter's `finally` has run, is what the scanner would have resolved its
-    config against.
+    The recorder itself is `conftest.scratch_cwd_recorder`, shared with the
+    per-adapter pins (#1877 M6), so there is ONE definition of what "recorded
+    at launch" means: `existed` and `entries` are read INSIDE the fake Popen,
+    at the instant the scanner would have started, because that -- not what
+    the directory looks like after the adapter's `finally` has run -- is what
+    the scanner would have resolved its config against.
     """
     calls = []
-
-    def _record(cmd, **kwargs):
-        cwd = kwargs.get("cwd")
-        existed = cwd is not None and os.path.isdir(cwd)
-        calls.append({
-            "argv": list(cmd),
-            "cwd": cwd,
-            "existed": existed,
-            "entries": sorted(os.listdir(cwd)) if existed else None,
-        })
-        return FakePopen(stdout=b"", stderr=b"", returncode=0)
-
-    with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=_record):
+    with mock.patch("scripts.tools.base.subprocess.Popen",
+                    side_effect=scratch_cwd_recorder(calls, stdout=b"")):
         adapter.invoke(target)
     return calls
 
@@ -236,6 +226,12 @@ class TestAdapterCwdConfinement(unittest.TestCase):
                 continue          # documented target cwd; not a scratch
             with self.subTest(adapter=name):
                 _root, calls = self._invoke_in_fresh_target(name, adapter)
+                # Not vacuous (#1877 N7): an adapter that launches nothing
+                # would otherwise pass this by having no records to check.
+                self.assertTrue(
+                    calls,
+                    "%s: invoke() launched nothing -- the pin cannot verify "
+                    "this adapter's scratch cwd" % name)
                 permitted = _GENERATED_IN_CWD.get(name, [])
                 for call in calls:
                     cwd = call["cwd"]

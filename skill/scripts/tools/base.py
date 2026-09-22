@@ -486,6 +486,12 @@ def scratch_cwd(prefix: str) -> Iterator[str]:
     the whole class unreachable through the filesystem rather than only
     through each tool's grammar.
 
+    PRECONDITION, since several adapters pass their `target` straight through
+    to argv: the CALLER names the target by absolute path. `_run_adapter.py`
+    does so for every dispatched scan; a caller that hands an adapter a
+    relative path would have it resolved against this scratch, which by
+    construction holds nothing.
+
     `rmtree(ignore_errors=True)`, never `rmdir` (#1646 F3): this directory
     exists PRECISELY to be where stray writes land -- a build backend's temp
     file, pip's legacy in-cwd artifacts -- so "something wrote there" is the

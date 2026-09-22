@@ -55,6 +55,17 @@ class TestContainment(unittest.TestCase):
             self.assertLess(i + 1, len(cmd), "-w has no value argument")
             self.assertEqual(cmd[i + 1], "/src")
 
+    def test_gosec_is_the_only_tool_that_keeps_the_target_as_its_cwd(self):
+        # #1877 I3: the dispatcher's exception and the adapter-side one in
+        # tests/tools/test_adapter_cwd_confinement.py::ALLOWED_TARGET_CWD now
+        # name gosec INDEPENDENTLY -- the old `_is_inside` imported
+        # run_tools' tuple precisely so the two could not drift. Without this
+        # pin, adding a second name here would put another container back
+        # inside the mount with a green suite, because the two tests above
+        # iterate fixed tool lists. A new entry must be argued for in BOTH
+        # places, with its own reason.
+        self.assertEqual(tuple(rt.DISPATCH_KEEPS_TARGET_CWD), ("gosec",))
+
     def test_nvd_api_key_never_forwarded(self):
         for cmd in self._calls(["dependency-check"],
                                env={"NVD_API_KEY": "dummy"}):
