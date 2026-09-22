@@ -7,10 +7,12 @@ nothing pinned that at the source. The downstream consumer
 (`tests/tools/test_normalization_contract.py`) only fires after a human has
 regenerated and committed a golden.
 
-The module's own `sys.path.insert(0, "/opt/panopticon")` is a no-op off the
-image; `trim` and `_trim_xml` are pure bytes->bytes functions.
+The module's own import-root `sys.path.insert` is derived from `__file__` and
+is a no-op off the image (#1654); `trim` and `_trim_xml` are pure
+bytes->bytes functions.
 """
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -333,6 +335,131 @@ class TestCaptureTargets(unittest.TestCase):
         offenders = {n: t for n, t in cg.TARGETS.items()
                      if t == "/mnt/panopticon"}
         self.assertEqual(offenders, {})
+
+
+class TestImportRootFromFile(unittest.TestCase):
+    """#1654: the import root must come from the script's own location, not a
+    literal, so the module works at `<root>/scripts/capture_goldens.py` under
+    ANY root -- the image's `/opt/panopticon` and the repo's `skill/` alike."""
+
+    def test_no_hardcoded_opt_panopticon_import_root_literal(self):
+        src = inspect.getsource(cg)
+        self.assertNotIn('"/opt/panopticon"', src)
+        self.assertIn("os.path.abspath(__file__)", src)
+
+
+class TestTargetsFunction(unittest.TestCase):
+    """#1654: TARGETS becomes `targets(fixtures_root, src_root, probes_root)`,
+    so the image layout is configuration, not a table edited in lockstep with
+    the Dockerfiles."""
+
+    PINNED = {
+        "brakeman": "/opt/panopticon-fixtures/railsgoat",
+        "bundler-audit": "/opt/panopticon-fixtures/railsgoat",
+        "semgrep": "/opt/panopticon-fixtures/railsgoat",
+        "spotbugs": "/opt/panopticon-fixtures/WebGoat",
+        "dependency-check": "/opt/panopticon-fixtures/WebGoat",
+        "roslyn-secguard": "/opt/panopticon-fixtures/AspGoat",
+        "cargo-audit": "/opt/panopticon-fixtures/vulnerable-rust",
+        "bandit": "/src",
+        "gitleaks": "/src",
+        "trivy": "/src",
+        "osv-scanner": "/src",
+        "gosec": "/mnt/gotify",
+        "eslint-security": "/src",
+        "npm-audit": "/mnt/npmprobe",
+        "pip-audit": "/mnt/pipprobe",
+    }
+
+    def test_defaults_equal_the_pinned_table(self):
+        self.assertEqual(cg.targets(), self.PINNED)
+
+    def test_module_level_TARGETS_is_the_same_table(self):
+        # main() reads the bare name `TARGETS`, not a fresh `targets()` call
+        # each time, so a test can still substitute the whole mapping with
+        # `mock.patch.object(cg, "TARGETS", {...})`.
+        self.assertEqual(cg.TARGETS, self.PINNED)
+
+    def test_a_custom_fixtures_root_moves_every_fixtures_backed_entry(self):
+        out = cg.targets(fixtures_root="/tmp/fx")
+        for name, path in self.PINNED.items():
+            if path.startswith("/opt/panopticon-fixtures/"):
+                self.assertEqual(
+                    out[name], path.replace("/opt/panopticon-fixtures", "/tmp/fx"),
+                    name)
+            else:
+                self.assertEqual(out[name], path, name)
+
+    def test_a_custom_src_root_moves_every_src_entry(self):
+        out = cg.targets(src_root="/tmp/src2")
+        for name, path in self.PINNED.items():
+            self.assertEqual(out[name], "/tmp/src2" if path == "/src" else path,
+                             name)
+
+    def test_a_custom_probes_root_moves_every_probe_entry(self):
+        out = cg.targets(probes_root="/tmp/probes2")
+        self.assertEqual(out["gosec"], "/tmp/probes2/gotify")
+        self.assertEqual(out["npm-audit"], "/tmp/probes2/npmprobe")
+        self.assertEqual(out["pip-audit"], "/tmp/probes2/pipprobe")
+        untouched = set(self.PINNED) - {"gosec", "npm-audit", "pip-audit"}
+        for name in untouched:
+            self.assertEqual(out[name], self.PINNED[name], name)
+
+
+class TestMainRootConfiguration(unittest.TestCase):
+    """#1654: main() must resolve the same layered configuration (env var,
+    then a `--*-root` flag, then a per-tool `--target`) that `targets()`
+    exposes as a pure function -- an operator drives this through argv, not
+    through the function directly."""
+
+    def _run(self, argv_extra, env=None, adapters=None):
+        adapters = adapters if adapters is not None else {"brakeman": _Adapter()}
+        with tempfile.TemporaryDirectory() as out_dir:
+            argv = ["capture_goldens.py", out_dir] + list(argv_extra)
+            out = io.StringIO()
+            clean_env = {k: v for k, v in os.environ.items()
+                        if not k.startswith("PANOPTICON_")}
+            clean_env.update(env or {})
+            with unittest.mock.patch.object(cg, "ADAPTERS", adapters), \
+                 unittest.mock.patch.dict(os.environ, clean_env, clear=True), \
+                 unittest.mock.patch.object(cg.sys, "argv", argv), \
+                 contextlib.redirect_stdout(out):
+                cg.main()
+            return json.loads(out.getvalue())
+
+    def test_a_fixtures_root_env_var_moves_the_default_target(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        os.mkdir(os.path.join(root, "railsgoat"))
+        report = self._run([], env={"PANOPTICON_FIXTURES_ROOT": root})
+        self.assertEqual(report["brakeman"]["status"], "ok")
+
+    def test_a_target_flag_beats_a_customized_root(self):
+        bad_root = tempfile.mkdtemp()          # deliberately has no railsgoat/
+        good = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(bad_root, ignore_errors=True))
+        self.addCleanup(lambda: __import__("shutil").rmtree(good, ignore_errors=True))
+        report = self._run(
+            ["--fixtures-root", bad_root, "--target", "brakeman=%s" % good])
+        self.assertEqual(report["brakeman"]["status"], "ok")
+
+    def test_a_malformed_target_flag_is_a_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                self._run(["--target", "no-equals-sign"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_an_unknown_adapter_name_in_target_flag_is_a_usage_error(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                self._run(["--target", "not-a-real-adapter=/x"],
+                          adapters={"t": _Adapter()})
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_positional_form_is_unaffected_by_the_new_flags(self):
+        report = self._run(["brakeman"],
+                           adapters={"brakeman": _Adapter(), "other": _Adapter()})
+        self.assertEqual(set(report), {"brakeman"})
 
 
 if __name__ == "__main__":

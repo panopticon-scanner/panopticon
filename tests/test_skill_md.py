@@ -967,11 +967,23 @@ class TestCodexHostDocs(unittest.TestCase):
         self.assertIn("st_nlink", doc)
         self.assertIn("Exact grants are not narrowed this way", doc)
         self.assertNotIn("inherent to path-based confinement", doc)
-        # Fix round 1 (F1): and the residual the rule does NOT cover, because
-        # an operator deciding whether `--host claude` is safe against a
-        # prepared tree reads this paragraph. The sentence it replaced claimed
-        # parity with a broker that has no such gap.
+        # Fix round 1 (F1): and the DIRECTORY-argument half, because an
+        # operator deciding whether `--host claude` is safe against a prepared
+        # tree reads this paragraph. It was a stated residual until #1683
+        # closed it; what the paragraph must now carry is the rule and its two
+        # limits, since a rule with an unstated cap is a promise, not a fence.
         self.assertIn("#1683", doc)
+        self.assertNotIn("that residual is tracked as #1683", doc)
+        self.assertIn("walks the granted directory ONCE", doc)
+        self.assertIn("past 256 recorded files", doc)
+        self.assertIn("planted AFTER the grant is issued is not in the list", doc)
+        # Fix round 1 (A): and the operator's remedy, in the same words the
+        # stderr line uses -- `phases/setup._HARD_LINK_REMEDY`.
+        self.assertIn("git clone --no-hardlinks", doc)
+        # Fix round 2 (B1): the fold is a security property an operator relies
+        # on -- and so is its asymmetry, which is why both are stated.
+        self.assertIn("case- and normalization-folded", doc)
+        self.assertIn("the grant itself is never folded", doc)
         # Fix round 3 (N6): and what the skip line actually promises -- at most
         # eight named, inside a bounded block, the rest counted.
         self.assertIn("at most eight are named", doc)

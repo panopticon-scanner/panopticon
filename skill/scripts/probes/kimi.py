@@ -362,9 +362,30 @@ def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
                 os.makedirs(os.path.dirname(p), exist_ok=True)
                 with open(p, "w", encoding="utf-8") as fh:
                     fh.write("")
+            # #1683: a directory grant also carries the hard links the driver
+            # found beneath it when it was issued, and a Grep/Glob that would
+            # traverse one is refused. The list is built HERE by the driver's
+            # own walker (N1), so this proves the walk as well as the hook --
+            # a hand-written list would have measured only half the rule.
+            import scripts.phases.hard_links as hard_links
+            scan_dir = os.path.realpath(os.path.join(sandbox, "scan"))
+            clean = os.path.join(scan_dir, "clean")
+            planted = os.path.join(scan_dir, "planted.py")
+            os.makedirs(clean, exist_ok=True)
+            try:
+                os.link(outside, planted)
+            except OSError:
+                pass
+            # The rule is LIST-based -- the hook never stats -- so on a
+            # filesystem that refuses hard links the path stands in and the
+            # rows below still measure the rule, rather than refuting a host
+            # for something its volume cannot do.
+            recorded = hard_links.hard_links_under(scan_dir)[0] or [planted]
             scope_path = os.path.join(sandbox, "read-scope.json")
             with open(scope_path, "w", encoding="utf-8") as fh:
-                json.dump({"probe-cell": {"files": [inside], "dirs": [], "reads": []}}, fh)
+                json.dump({"probe-cell": {"files": [inside], "dirs": [], "reads": []},
+                           "probe-scan": {"files": [], "dirs": [scan_dir], "reads": [],
+                                          "hard_linked": recorded}}, fh)
             rows = (
                 ("bound Read inside scope",
                  {"tool_name": "Read", "tool_input": {"path": inside}}, "probe-cell", True),
@@ -380,6 +401,10 @@ def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
                  {"tool_name": "Read", "tool_input": {"path": inside}}, None, False),
                 ("unknown entry Read",
                  {"tool_name": "Read", "tool_input": {"path": inside}}, "not-armed", False),
+                ("directory-scoped Grep of a clean subdirectory",
+                 {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": clean}}, "probe-scan", True),
+                ("directory-scoped Grep over a recorded hard link",
+                 {"tool_name": "Grep", "tool_input": {"pattern": "x", "path": scan_dir}}, "probe-scan", False),
             )
             ok, detail = _guard_round_trip("read", scope_path, rows, runner=runner)
             if not ok:

@@ -6,8 +6,13 @@ import tempfile
 from .base import make_finding, omit_none, parse_json_bytes, run_tool
 from .sarif_utils import norm_uri
 
-# Global node_modules locations in the tools image, in priority order.
-_GLOBAL_NODE_DIRS = ("/usr/local/lib/node_modules", "/usr/lib/node_modules")
+# node_modules locations in the tools image, in priority order. The first is
+# the image's own prefix, installed by `npm ci --ignore-scripts` from the
+# lockfile this repo commits (#1734); the two global dirs are where the
+# superseded `npm install -g` put things, and stay so that an older published
+# image -- which a pinned digest can still pull -- keeps resolving the plugin.
+_GLOBAL_NODE_DIRS = ("/opt/panopticon-node/node_modules",
+                     "/usr/local/lib/node_modules", "/usr/lib/node_modules")
 
 
 def _plugin_entry() -> str:

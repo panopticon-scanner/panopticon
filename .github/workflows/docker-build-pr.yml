@@ -6,9 +6,14 @@ on:
     paths:
       - Dockerfile
       - Dockerfile.fixtures
-      # The fixture image's pinned dependency digests: changing them changes
-      # what that build installs, so the build has to run (#1641).
+      # The pinned dependency digests and lockfiles: changing them changes
+      # what a build installs, so the build has to run (#1641, #1734). The
+      # tools image's are the ones that decide whether `--require-hashes` and
+      # `npm ci` still succeed, and a stale digest fails the build rather than
+      # installing something else -- which is only useful if the build runs.
       - requirements-fixtures.txt
+      - requirements-tools.txt
+      - tools-image/**
       - .github/workflows/docker-publish.yml
       - .github/workflows/docker-build-pr.yml
       - skill/scripts/**

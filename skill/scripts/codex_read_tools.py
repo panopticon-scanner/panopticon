@@ -22,6 +22,12 @@ MAX_DIRECTORIES = 512
 MAX_ENTRIES = 20000
 MAX_SEARCH_BYTES = 8 * MAX_FILE_BYTES
 SCOPE_KEYS = ("files", "dirs", "reads")
+# NOT `hard_linked` (#1683): that key is the Claude/Kimi hooks' business alone.
+# A PreToolUse hook adjudicates one path argument and the HOST then traverses
+# the directory itself, so those guards need the walk the driver recorded; this
+# broker opens every file it returns, `search` included, and applies the
+# st_nlink rule per file -- so an extra key here is ignored, not obeyed
+# (tests/test_codex_read_tools.py::test_the_scope_key_the_hooks_added_is_ignored_here).
 # How a path was authorized, threaded from `_require` into `_open` (#1642).
 # A DIRECTORY grant names a SUBTREE, and `_under` matches it by name, so a link
 # planted inside it can name an inode outside it; an EXACT grant names the file

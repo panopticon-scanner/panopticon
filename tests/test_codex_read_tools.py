@@ -279,6 +279,49 @@ def test_the_hard_link_denial_is_one_wording(tree):
         "read scope denies a hard-linked file inside a directory grant (st_nlink=2)")
 
 
+def test_the_scope_key_the_hooks_added_is_ignored_here(tree):
+    # #1683 put `hard_linked` in every entry's scope, and this broker reads
+    # the same scope objects. It has no directory-argument traversal to
+    # refuse -- `search` opens each file itself and the st_nlink rule already
+    # governs that -- so the key is simply not its business: an extra key must
+    # neither refuse the scope nor narrow anything.
+    root, source, first, _, outside = tree
+    planted = hard_link_or_skip(outside, source / "innocent.txt")
+    reader = read_tools.Reader(
+        {"files": [str(first)], "dirs": [str(source)], "hard_linked": [planted]}, str(root))
+    assert reader.call("read_file", {"path": str(first)})["isError"] is False
+    assert reader.call("read_file", {"path": planted})["isError"] is True
+
+
+def test_the_directory_link_denial_is_one_wording(tree):
+    # #1683's half of the rule lives in the two PreToolUse hooks only: the
+    # Codex broker reads every file itself, so it has no directory-argument
+    # traversal to refuse and no third copy to keep in step. Two copies still
+    # drift -- that is what the pin above is for -- so they are pinned here,
+    # beside it, rather than in one hook's own suite.
+    import scripts.kimi_guard_hook as kimi_guard_hook
+    import scripts.read_guard_hook as read_guard_hook
+
+    assert (read_guard_hook.DIRECTORY_LINK_DENIAL
+            == kimi_guard_hook.DIRECTORY_LINK_DENIAL)
+    # ...and its sibling (fix round 2, I2): the grant closed AT or ABOVE the
+    # argument, where naming a file "beneath it" is false and "grep something
+    # narrower" is advice denied at every depth.
+    assert (read_guard_hook.DIRECTORY_GRANT_CLOSED
+            == kimi_guard_hook.DIRECTORY_GRANT_CLOSED)
+    assert read_guard_hook.DIRECTORY_GRANT_CLOSED % ("Glob", "/repo") == (
+        "Glob of directory /repo is denied: the whole directory grant is closed "
+        "(too many hard-linked files beneath it, or a subtree nothing could read "
+        "-- see the setup-scan stderr line). Read files by name.")
+    assert not hasattr(read_tools, "DIRECTORY_LINK_DENIAL")
+    assert not hasattr(read_tools, "DIRECTORY_GRANT_CLOSED")
+    assert read_guard_hook.DIRECTORY_LINK_DENIAL % ("Grep", "/repo", "/repo/a/b.txt") == (
+        "Grep of directory /repo is denied: this tool traverses the directory "
+        "itself, and the read scope recorded a hard-linked file beneath it "
+        "(/repo/a/b.txt) -- a link can name an inode outside the granted tree. "
+        "Grep a narrower directory, or a file by its path.")
+
+
 def test_symlink_swap_between_scope_check_and_open_is_denied(tree, monkeypatch):
     _, _, first, _, outside = tree
     reader = reader_for(tree)

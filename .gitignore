@@ -51,3 +51,9 @@ docs/superpowers
 
 # panopticon setup draft (promote with mv, never commit)
 panopticon.yml.draft
+
+# Regenerating tools-image/node/package-lock.json with a plain `npm install`
+# (rather than --package-lock-only) leaves a 140-package tree behind. The
+# image builds it from the lockfile; nothing here needs it on disk, and a
+# self-scan reads an untracked tree as a dirty tree.
+tools-image/node/node_modules/
