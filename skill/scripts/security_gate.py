@@ -115,10 +115,22 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     unknown = set(dispositions) - known
     if unknown:
         failures.append("unexpected scanner output: %s" % ", ".join(sorted(unknown)))
-    gated = (findings + gate_counted(suppressed) if security_mode == REDTEAM
-             else findings)
-    high = [finding for finding in gated
+    kept = [finding for finding in findings
             if finding.get("severity") in GATE_SEVERITIES]
+    # #1578 fix round 1, ruling 2: the policy-admitted suppressed set does NOT
+    # re-take `GATE_SEVERITIES`. Passing `gates_when_suppressed` IS the floor
+    # for it -- a CRITICAL clears the severity test regardless, and a
+    # secret-class finding gates whatever grade its tool put on it, which is
+    # the ruling's point. Re-applying the floor meant admitting a finding and
+    # discarding it on the next line, with `main` printing it as GATED anyway:
+    # three committed secrets under `app/vendor/`, "3 GATED", `rc=0`. The
+    # SEVERITY half of that instance is fixed at the parse
+    # (`sarif_utils.SECRET_ADAPTERS`); this is the composition half, and it
+    # still bites any secret-class finding its adapter grades below HIGH.
+    #
+    # The floor stays on everything the gate KEEPS: policy C narrows the
+    # suppressed set and touches nothing else.
+    high = kept + (gate_counted(suppressed) if security_mode == REDTEAM else [])
     return findings, dispositions, failures, high, suppressed
 
 
@@ -127,9 +139,10 @@ def gate_counted(suppressed):
 
     Through `ingest_tools.gates_when_suppressed`, the one predicate the
     driver's own report gate asks as well: two answers to it is a merge that
-    blocks in CI and passes in the report, or the reverse. `main` asks it again
-    to print how many of the drops moved this verdict and how many were
-    disclosed only -- the same predicate, never a second copy of the rule.
+    blocks in CI and passes in the report, or the reverse. Because `evaluate`
+    applies no further filter to what this returns, its length IS the number
+    that reached the gate -- which is what `main` prints, read back off the
+    verdict's own list rather than re-derived.
     """
     return [f for f in suppressed if ingest_tools.gates_when_suppressed(f)]
 
@@ -181,7 +194,12 @@ def main(argv=None):
             # #1578 policy C: under redteam the set SPLITS, so one number for
             # it would be a lie either way -- "GATED" over a lint drop that did
             # not move the verdict, or "NOT gated" over the CRITICAL that did.
-            counted = len(gate_counted(suppressed))
+            # Counted off `high` -- the list the verdict was computed from --
+            # not re-derived from the policy, so the number and the exit code
+            # beside it can never disagree (fix round 1, ruling 2). A
+            # suppressed finding is the only kind carrying a `suppressed`
+            # segment, which is what identifies it in that list.
+            counted = sum(1 for f in high if f.get("suppressed"))
             verdict = (" -- %d GATED (CRITICAL/secret, #1578 policy C), "
                        "%d disclosed only, --security redteam"
                        % (counted, len(suppressed) - counted))
