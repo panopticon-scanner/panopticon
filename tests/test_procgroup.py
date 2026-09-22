@@ -220,14 +220,20 @@ class TestAGroupIsSignalledOnlyWhenItIsSafeTo(_GroupCase):
     group -- so both arrived WITH the group kill and are pinned here.
 
     Both are asserted on the CALL (`os.killpg` spied) rather than on a
-    survivor, deliberately and for two different reasons. I3 fired for real
-    would end this test runner, which proves the point by destroying the
-    evidence. And a direct child that dies becomes a ZOMBIE until it is
-    waited on, so `os.kill(pid, 0)` still succeeds for it: an
+    survivor, because a direct child that dies becomes a ZOMBIE until it is
+    waited on, and `os.kill(pid, 0)` still succeeds for one: an
     it-is-still-alive assertion on a direct child passes whether or not the
     signal landed, which is a test that cannot fail. (The grandchild cases
     elsewhere in this file are safe from that -- a grandchild is reparented
     and reaped by init, never left a zombie of ours.)
+
+    Spying is NOT because the I3 case is unobservable when fired for real.
+    It is observable, and the end-to-end version in
+    tests/runners/test_children.py fires it: that test installs a SIGTERM
+    handler, so a regression is absorbed and RECORDED (`[] != [True]`, pytest
+    exiting 1) instead of killing the runner. Both halves are
+    mutation-checked -- deleting the own-group guard in `procgroup._pgid`
+    turns this case and that one red.
     """
 
     def test_a_reaped_handle_is_never_signalled_at_its_old_pid(self):

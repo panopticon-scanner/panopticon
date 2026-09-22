@@ -18,11 +18,14 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
 
+import scripts.procgroup as procgroup
 import scripts.runners.base as base
+import scripts.runners.children as children
 
 _POSIX = os.name == "posix"
 
@@ -194,6 +197,60 @@ class TestATimeoutEndsTheWholeTree(GrandchildCase):
         self.assertIn("working", base.stderr_head(ctx.exception.stderr))
         self.assertEqual(1, ctx.exception.timeout)
 
+    # A generous ceiling on the honest path: the entry timeout (1 s) plus
+    # `children.PARTIAL_OUTPUT_GRACE` (2 s) for the drain. Well clear of any
+    # real launch, and well under "never".
+    HANG_BOUND = 8.0
+
+    def test_a_child_that_survives_the_kill_does_not_hang_the_launch(self):
+        """The entry timeout is a BOUND, and everything after the kill has to
+        respect it too.
+
+        `kill_group`'s own final wait is bounded on purpose, because a child
+        can survive both the group kill and the handle kill -- uninterruptible
+        I/O, or a child that changed privilege so the signal comes back EPERM.
+        Anything `launch` does AFTER that has to be bounded for the same
+        reason. Running the launch inside `with proc:` was not:
+        `Popen.__exit__` ends with a bare `self.wait()` for every exit but
+        `KeyboardInterrupt` (read off the installed stdlib), and it ran
+        immediately after the bounded wait -- turning a one-second entry
+        timeout into a driver that never comes back.
+
+        The launch runs on a DAEMON thread so a regression is a failed
+        assertion rather than a hung suite.
+        """
+        self.assertEqual(2.0, children.PARTIAL_OUTPUT_GRACE)   # the bound below
+        runner, refused, outcome = base.HostRunner(), [], {}
+
+        def refuses(proc, grace=None):
+            """A kill that does not kill: what EPERM or an uninterruptible
+            child looks like from here."""
+            refused.append(proc)
+            return False
+
+        def run():
+            try:
+                runner.launch(self.tree_argv(), timeout=1)
+            except BaseException as exc:      # noqa: BLE001 - recorded, then asserted
+                outcome["raised"] = exc
+
+        with mock.patch.object(procgroup, "kill_group", refuses):
+            thread = threading.Thread(target=run, daemon=True)
+            started = time.monotonic()
+            thread.start()
+            thread.join(self.HANG_BOUND)
+            elapsed = time.monotonic() - started
+        if refused:                           # kill it for real, whatever happened
+            self.addCleanup(refused[0].wait)
+            self.addCleanup(refused[0].kill)
+            self.grandchild()                 # registers its own cleanup
+        self.assertFalse(
+            thread.is_alive(),
+            "launch did not return within %.0fs with a child that survived the "
+            "kill: the entry timeout is no longer a bound" % self.HANG_BOUND)
+        self.assertIsInstance(outcome.get("raised"), subprocess.TimeoutExpired)
+        self.assertLess(elapsed, self.HANG_BOUND)
+
     def test_the_registry_is_empty_once_a_launch_has_returned(self):
         # A finished child must not stay registered: `terminate_children`
         # would later signal a pid the OS has since handed to somebody else.
@@ -341,10 +398,14 @@ class TestTerminateChildrenEndsTheWholeGroup(GrandchildCase):
         """I3 end to end: a plain `Popen` -- no new session -- registered and
         terminated. The child dies; this process does not.
 
-        A SIGTERM handler is installed for the length of the test so that a
-        regression is RECORDED rather than fatal: `killpg` on this group would
-        otherwise end the test runner, which is a failure mode that deletes
-        its own evidence (measured while writing the guard)."""
+        A SIGTERM handler is installed for the length of the test, so a
+        regression is ABSORBED and recorded rather than killing the runner --
+        which is what makes this case fire-for-real AND mutation-checkable.
+        Verified: with the own-group guard deleted from `procgroup._pgid`,
+        this fails `Lists differ: [] != [True]` and pytest exits 1 (run inside
+        its own session, so the stray SIGTERM cannot reach anything else).
+        Without the handler the signal would end the runner instead, which is
+        a failure mode that deletes its own evidence."""
         runner, received = base.HostRunner(), []
         before = signal.getsignal(signal.SIGTERM)
         self.addCleanup(signal.signal, signal.SIGTERM, before)

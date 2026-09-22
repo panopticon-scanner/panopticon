@@ -94,7 +94,9 @@ class ChildProcesses:
         Any OTHER exception out of `communicate` ends the group too, and then
         propagates untouched -- `subprocess.run`'s own bare
         `except BaseException: process.kill(); raise`, with the group kill in
-        place of the pid kill.
+        place of the pid kill. The three pipes are closed in the `finally`
+        whichever way the launch ended; see the note there for why that is
+        written out rather than delegated to `with proc:`.
 
         The `TimeoutExpired` it raises is the one every family's existing
         `except subprocess.TimeoutExpired` clause already reads -- same type,
@@ -116,29 +118,47 @@ class ChildProcesses:
             stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=text, start_new_session=True)
-        with proc:                     # the three pipes go back whatever happens
-            self.register_child(proc)
+        self.register_child(proc)
+        try:
             try:
-                try:
-                    out, err = proc.communicate(input, timeout=timeout)
-                except subprocess.TimeoutExpired as exc:
-                    procgroup.kill_group(proc)
-                    out, err = self._drain(proc, exc)
-                    raise subprocess.TimeoutExpired(
-                        argv, timeout, output=out, stderr=err) from exc
-                except BaseException:
-                    # The timeout is not the only way out. A Ctrl-C on one of
-                    # the MAIN-THREAD launches (`prove_output_schema_shape`,
-                    # `probes/common._cli_help`, codex_host's catalog and
-                    # surface probes), a MemoryError, a bug in this method:
-                    # each one used to leave a host CLI and its whole worker
-                    # tree running, with nobody holding a handle to it.
-                    # `subprocess.run` has had this clause since it was
-                    # written; it is the reason `run` never leaked a child.
-                    procgroup.kill_group(proc)
-                    raise
-            finally:
-                self.unregister_child(proc)
+                out, err = proc.communicate(input, timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                procgroup.kill_group(proc)
+                out, err = self._drain(proc, exc)
+                raise subprocess.TimeoutExpired(
+                    argv, timeout, output=out, stderr=err) from exc
+            except BaseException:
+                # The timeout is not the only way out. A Ctrl-C on one of
+                # the MAIN-THREAD launches (`prove_output_schema_shape`,
+                # `probes/common._cli_help`, codex_host's catalog and
+                # surface probes), a MemoryError, a bug in this method:
+                # each one used to leave a host CLI and its whole worker
+                # tree running, with nobody holding a handle to it.
+                # `subprocess.run` has had this clause since it was
+                # written; it is the reason `run` never leaked a child.
+                procgroup.kill_group(proc)
+                raise
+        finally:
+            self.unregister_child(proc)
+            # The three descriptors go back however this ended -- a loop that
+            # leaks three per failed entry runs out of them. Explicitly, and
+            # NOT by running the launch inside `with proc:`: `Popen.__exit__`
+            # closes these same three and then makes a bare, UNBOUNDED
+            # `self.wait()` for every exit but `KeyboardInterrupt`. That wait
+            # lands immediately after `kill_group`, whose own final wait is
+            # bounded precisely because a child can survive the kill
+            # (uninterruptible I/O; EPERM from a child that changed
+            # privilege) -- so the context manager turned a bounded entry
+            # timeout into a driver that never returns. Measured at 8 s and
+            # still going. Zombies are not the price: `communicate` reaps on
+            # the way out of the success path, and `kill_group`'s bounded
+            # `reaped()` does it on every failure path.
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:         # already closed by communicate
+                        pass
         return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
     @staticmethod
