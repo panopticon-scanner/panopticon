@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from _test_helpers import FakePopen, first
+from conftest import REPO_ROOT
 import scripts.tools.eslint_security as es
 from scripts.tools import ADAPTERS
 
@@ -217,6 +218,37 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertEqual(
             entry, "/usr/local/lib/node_modules/eslint-plugin-security/index.js")
         self.assertTrue(os.path.isabs(entry))
+
+    def test_the_image_local_node_tree_wins_over_the_global_dirs(self):
+        # #1734: the image stopped installing eslint globally -- `npm install
+        # -g` resolved 136 transitive packages fresh from the registry and ran
+        # their install scripts as root, so the tree now comes from `npm ci`
+        # against a committed lockfile, in its own prefix. The adapter has to
+        # look THERE first. The two global dirs stay after it so an older
+        # published image, which a pinned digest can still pull, keeps working.
+        present = ("/opt/panopticon-node/node_modules",
+                   "/usr/local/lib/node_modules")
+        with mock.patch("os.path.isfile",
+                        side_effect=lambda p: p.startswith(present)):
+            entry = es._plugin_entry()
+        self.assertEqual(
+            "/opt/panopticon-node/node_modules/eslint-plugin-security/index.js",
+            entry)
+
+    def test_the_adapter_and_the_dockerfile_name_the_same_prefix(self):
+        # Two files have to agree on one path and neither imports the other, so
+        # the agreement is asserted rather than assumed: a Dockerfile that
+        # installs into a renamed prefix would leave the adapter resolving the
+        # plugin by bare specifier, which is the "Cannot find module" empty
+        # output that silently sank coverage certification in #run7.
+        with open(os.path.join(REPO_ROOT, "Dockerfile"), encoding="utf-8") as fh:
+            dockerfile = fh.read()
+        prefix = first(es._GLOBAL_NODE_DIRS, "node_modules dir")
+        self.assertEqual("/opt/panopticon-node/node_modules", prefix)
+        self.assertIn("COPY tools-image/node/package.json "
+                      "tools-image/node/package-lock.json "
+                      "%s/" % os.path.dirname(prefix), dockerfile)
+        self.assertIn('ENV PATH="%s/.bin:${PATH}"' % prefix, dockerfile)
 
     def test_invoke_passes_absolute_target_path(self):
         # Once cwd is pinned away from the target, the linted path on argv

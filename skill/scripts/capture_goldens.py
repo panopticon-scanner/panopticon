@@ -5,40 +5,70 @@ produces findings. The output seeds a normalization-contract test, so the
 payloads must be real tool output rather than hand-written approximations --
 the whole point is to prove parse() handles what the tools really emit.
 """
+import argparse
 import json
 import os
 import sys
 import xml.etree.ElementTree as ET
 
-sys.path.insert(0, "/opt/panopticon")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.run_tools import _redact_capture  # noqa: E402
 from scripts.tools import ADAPTERS  # noqa: E402
 
-F = "/opt/panopticon-fixtures"
-TARGETS = {
-    "brakeman": f"{F}/railsgoat",
-    "bundler-audit": f"{F}/railsgoat",
-    "semgrep": f"{F}/railsgoat",
-    "spotbugs": f"{F}/WebGoat",
-    "dependency-check": f"{F}/WebGoat",
-    "roslyn-secguard": f"{F}/AspGoat",
-    "cargo-audit": f"{F}/vulnerable-rust",
-    # /src, never the operator's own checkout: these three used to point at
-    # /mnt/panopticon, so gitleaks scanned the real working tree -- .env and all
-    # -- and #run12 committed the live key it found into a public golden. The
-    # goldens README already documented them as /src-mounted (pass 2); only this
-    # table disagreed. Refreshing gitleaks now needs a target that carries
-    # SYNTHETIC secrets, which is the point.
-    "bandit": "/src",
-    "gitleaks": "/src",
-    "trivy": "/src",
-    "osv-scanner": "/src",
-    "gosec": "/mnt/gotify",
-    "eslint-security": "/src",       # mounted at /src: eslint's flat config
-                                     # ignores files outside its base path
-    "npm-audit": "/mnt/npmprobe",
-    "pip-audit": "/mnt/pipprobe",
-}
+# The image layout as configuration (#1654): a hardcoded /opt/panopticon
+# import root above and a fixed TARGETS table below meant that moving a mount
+# or a fixture root required editing this file in lockstep with the
+# Dockerfiles. Each root is an environment variable, today's value as the
+# default, overridable per-run by a CLI flag (see _build_parser/main).
+DEFAULT_FIXTURES_ROOT = "/opt/panopticon-fixtures"
+DEFAULT_SRC_ROOT = "/src"
+DEFAULT_PROBES_ROOT = "/mnt"
+ENV_FIXTURES_ROOT = "PANOPTICON_FIXTURES_ROOT"
+ENV_SRC_ROOT = "PANOPTICON_SRC_ROOT"
+ENV_PROBES_ROOT = "PANOPTICON_PROBES_ROOT"
+
+
+def targets(fixtures_root=DEFAULT_FIXTURES_ROOT, src_root=DEFAULT_SRC_ROOT,
+            probes_root=DEFAULT_PROBES_ROOT) -> dict[str, str]:
+    """The tool -> scan-target mapping for one image layout.
+
+    Three roots make up the whole layout. `fixtures_root` holds the real
+    vulnerable corpora baked into the fixtures image (railsgoat, WebGoat,
+    AspGoat, vulnerable-rust). `probes_root` holds the /mnt-style
+    single-purpose probe mounts (gosec's Go module, the npm/pip lockfile
+    probes). `src_root` is the fourth kind of mount, explained below.
+    """
+    return {
+        "brakeman": f"{fixtures_root}/railsgoat",
+        "bundler-audit": f"{fixtures_root}/railsgoat",
+        "semgrep": f"{fixtures_root}/railsgoat",
+        "spotbugs": f"{fixtures_root}/WebGoat",
+        "dependency-check": f"{fixtures_root}/WebGoat",
+        "roslyn-secguard": f"{fixtures_root}/AspGoat",
+        "cargo-audit": f"{fixtures_root}/vulnerable-rust",
+        # /src, never the operator's own checkout: these three used to point at
+        # /mnt/panopticon, so gitleaks scanned the real working tree -- .env and all
+        # -- and #run12 committed the live key it found into a public golden. The
+        # goldens README already documented them as /src-mounted (pass 2); only this
+        # table disagreed. Refreshing gitleaks now needs a target that carries
+        # SYNTHETIC secrets, which is the point.
+        "bandit": src_root,
+        "gitleaks": src_root,
+        "trivy": src_root,
+        "osv-scanner": src_root,
+        "gosec": f"{probes_root}/gotify",
+        "eslint-security": src_root,       # mounted at /src: eslint's flat config
+                                           # ignores files outside its base path
+        "npm-audit": f"{probes_root}/npmprobe",
+        "pip-audit": f"{probes_root}/pipprobe",
+    }
+
+
+# The resolved default table, kept as a module attribute (not only the
+# `targets()` builder) so a test can substitute the whole mapping with
+# `mock.patch.object(cg, "TARGETS", {...})`: main() reads the bare name
+# `TARGETS`, looked up at call time, so the patch is visible for the call.
+TARGETS = targets()
 
 # Where each format keeps its finding list, so a trim keeps the envelope intact.
 LIST_KEYS = ("warnings", "results", "dependencies", "vulnerabilities", "advisories")
@@ -148,14 +178,67 @@ def redact_bytes(raw: bytes):
     return masked, masked != raw
 
 
-def main():
-    out_dir = sys.argv[1]
+def _target_override(value):
+    """argparse `type=` for `--target NAME=PATH`.
+
+    NAME must be a registered adapter and the value must contain '=';
+    raising ArgumentTypeError for either turns the mistake into an ordinary
+    argparse usage error (exit 2) rather than a KeyError deep in main().
+    """
+    name, sep, path = value.partition("=")
+    if not sep:
+        raise argparse.ArgumentTypeError(
+            "--target must be NAME=PATH (no '=' in %r)" % value)
+    if name not in ADAPTERS:
+        raise argparse.ArgumentTypeError(
+            "--target: %r is not a registered adapter" % name)
+    return name, path
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Capture one authentic raw payload per tool adapter.")
+    parser.add_argument("out_dir")
+    parser.add_argument("names", nargs="*",
+                        help="adapter names to capture (default: all registered)")
+    parser.add_argument("--fixtures-root", default=None,
+                        help="default: $%s or %r" %
+                        (ENV_FIXTURES_ROOT, DEFAULT_FIXTURES_ROOT))
+    parser.add_argument("--src-root", default=None,
+                        help="default: $%s or %r" % (ENV_SRC_ROOT, DEFAULT_SRC_ROOT))
+    parser.add_argument("--probes-root", default=None,
+                        help="default: $%s or %r" %
+                        (ENV_PROBES_ROOT, DEFAULT_PROBES_ROOT))
+    parser.add_argument("--target", action="append", default=[],
+                        type=_target_override, metavar="NAME=PATH",
+                        help="override one adapter's target (repeatable)")
+    return parser
+
+
+def main(argv=None):
+    args = _build_parser().parse_args(argv)
+    out_dir = args.out_dir
     os.makedirs(out_dir, exist_ok=True)
-    only = sys.argv[2:] or sorted(ADAPTERS)
+    only = args.names or sorted(ADAPTERS)
+
+    fixtures_root = args.fixtures_root or os.environ.get(
+        ENV_FIXTURES_ROOT, DEFAULT_FIXTURES_ROOT)
+    src_root = args.src_root or os.environ.get(ENV_SRC_ROOT, DEFAULT_SRC_ROOT)
+    probes_root = args.probes_root or os.environ.get(
+        ENV_PROBES_ROOT, DEFAULT_PROBES_ROOT)
+    if (fixtures_root, src_root, probes_root) == (
+            DEFAULT_FIXTURES_ROOT, DEFAULT_SRC_ROOT, DEFAULT_PROBES_ROOT):
+        # No root was customized by flag or environment: read the (possibly
+        # test-substituted) module-level table rather than rebuilding it.
+        target_map = dict(TARGETS)
+    else:
+        target_map = targets(fixtures_root, src_root, probes_root)
+    target_map.update(args.target)   # --target NAME=PATH wins outright
+
     report: dict[str, dict[str, str | int | None]] = {}
     for name in only:
         adapter = ADAPTERS.get(name)
-        target = TARGETS.get(name)
+        target = target_map.get(name)
         if adapter is None or target is None or not os.path.isdir(target):
             report[name] = {"status": "no-target", "target": target}
             continue

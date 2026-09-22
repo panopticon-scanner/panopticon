@@ -39,29 +39,109 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git gnupg ruby nodejs npm \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Registry policy (#1534): requested tool versions are pinned below; their
-# transitive registry dependencies currently resolve at image-build time.
-# pip --require-hashes and npm ci need complete per-platform lock sets, which
-# these standalone/global installs do not yet maintain. gem, cargo and dotnet
-# installs likewise select package versions without a repository-owned lock
-# of the whole dependency graph. This is the current version-pin baseline,
-# not a claim of reproducible or hash-verified registry inputs; #1734 tracks
-# tightening the transitive dependency policy. Direct binary downloads retain
-# their separate checksum requirements above and below.
+# Registry policy (#1534, #1734). Every package-manager install below takes
+# its WHOLE dependency closure from a file this repo commits, not from
+# whatever the index resolves on the day of the build. This image is published
+# publicly, rebuilt daily, and is the trust root of every scan run against
+# somebody else's repository, and all of these installs run as root -- so an
+# unpinned transitive release is install-time code execution here and a
+# substituted scanner everywhere downstream.
 #
-# Python tools. semgrep pinned (#outage 2026-08-18): the rules-corpus pin
-# below is a commit SHA on a live branch, but that pin is only meaningful
-# paired with a known-compatible semgrep build -- an unpinned `pip install`
-# would keep re-validating tomorrow's semgrep release against today's rules.
-RUN pip install --timeout=300 --no-cache-dir "semgrep==${SEMGREP_VERSION}" "bandit==${BANDIT_VERSION}" "bandit-sarif-formatter==${BANDIT_SARIF_FORMATTER_VERSION}"
+#   pip  `--require-hashes --no-deps -r requirements-tools.txt`: 92 packages,
+#        each with the sha256 of every wheel either published architecture may
+#        be served. --no-deps makes that file the complete list.
+#   gem  each .gem fetched to a file, gated on `sha256sum -c`, then installed
+#        --local --ignore-dependencies. No resolver runs.
+#   npm  `npm ci --ignore-scripts` against the committed
+#        tools-image/node/package-lock.json: 139 packages, every one by
+#        integrity digest, and no package's install scripts execute.
+#
+# Two installs are deliberately NOT covered, and this is therefore not a claim
+# that every registry input to this image is hash-verified: `cargo install
+# cargo-audit` and `dotnet tool install` still select a version without a
+# repository-owned lock of their graphs. Distro apt packages stay unpinned for
+# the reason given above. Direct binary downloads keep their own checksum
+# gates, above and below.
 
-# Ruby (brakeman + bundler-audit)
-RUN timeout 300 gem install --no-document "brakeman:${BRAKEMAN_VERSION}" "bundler-audit:${BUNDLER_AUDIT_VERSION}" \
+# Python tools: semgrep, bandit, bandit-sarif-formatter, pip-audit. The header
+# of requirements-tools.txt says how the closure was resolved and
+# `scripts/bump_pins.py requirements` writes its digests, reading each from
+# PyPI AND recomputing it from the downloaded wheel.
+#
+# semgrep's version (#outage 2026-08-18) is why the four tools keep their own
+# ARGs above: the rules-corpus pin below is a commit SHA on a live branch, and
+# that pin is only meaningful paired with a known-compatible semgrep build --
+# an unconstrained upgrade would keep re-validating tomorrow's semgrep release
+# against today's rules. A test fails when an ARG and the closure disagree, so
+# neither can be bumped alone.
+COPY requirements-tools.txt /tmp/requirements-tools.txt
+RUN pip install --timeout=300 --no-cache-dir --require-hashes --no-deps -r /tmp/requirements-tools.txt \
+    && rm /tmp/requirements-tools.txt
+
+# Ruby (brakeman + bundler-audit). `gem install name:version` pins the two
+# NAMED gems and lets RubyGems resolve and fetch whatever they require, so the
+# closure is written out here instead and no resolver runs at all: each .gem is
+# downloaded to a file, gated on the sha256 rubygems published for it, and
+# installed with --local --ignore-dependencies.
+#
+# The closure comes from rubygems' own API (`/api/v2/rubygems/<name>/versions/
+# <version>.json`, field `dependencies.runtime`): brakeman requires racc,
+# bundler-audit requires bundler and thor. racc and bundler are DEFAULT gems of
+# the ruby installed above, so thor is the only addition -- which is also why
+# nothing here is allowed to be silent about it: `bundle-audit update` on the
+# last line exercises thor and bundler-audit immediately, and
+# smoke_adapters.py runs `brakeman --version` at the end of the build, so a
+# base image that stopped shipping racc fails THERE rather than on a customer's
+# Rails repo months later.
+#
+# One digest per gem and no arch split: a .gem is platform-independent, and
+# both published architectures install the same bytes.
+#
+# `bundle-audit update` is the ruby-advisory-db -- data, not code -- and is
+# refreshed again below the ASSET_REFRESH cache boundary.
+ARG THOR_VERSION=1.5.0
+ARG THOR_GEM_SHA256=e3a9e55fe857e44859ce104a84675ab6e8cd59c650a49106a05f55f136425e73
+ARG BRAKEMAN_GEM_SHA256=759cc69341115e6c2dcd47b6fd8649a0b9bd540e3585ac8a0a94e31c66fee386
+ARG BUNDLER_AUDIT_GEM_SHA256=81c8766c71e47d0d28a0f98c7eed028539f21a6ea3cd8f685eb6f42333c9b4e9
+# DL3028 asks for `gem install <name>:<version>`, which is precisely the
+# registry install this replaces. These are local files, already pinned by
+# version in the URL and by digest in the ARGs above, and --local means the
+# index is never consulted.
+# hadolint ignore=DL3028
+RUN curl -sfL --connect-timeout 5 --max-time 60 "https://rubygems.org/downloads/thor-${THOR_VERSION}.gem" \
+        -o /tmp/thor.gem \
+    && echo "${THOR_GEM_SHA256}  /tmp/thor.gem" | sha256sum -c - \
+    && curl -sfL --connect-timeout 5 --max-time 120 "https://rubygems.org/downloads/brakeman-${BRAKEMAN_VERSION}.gem" \
+        -o /tmp/brakeman.gem \
+    && echo "${BRAKEMAN_GEM_SHA256}  /tmp/brakeman.gem" | sha256sum -c - \
+    && curl -sfL --connect-timeout 5 --max-time 60 "https://rubygems.org/downloads/bundler-audit-${BUNDLER_AUDIT_VERSION}.gem" \
+        -o /tmp/bundler-audit.gem \
+    && echo "${BUNDLER_AUDIT_GEM_SHA256}  /tmp/bundler-audit.gem" | sha256sum -c - \
+    && gem install --local --no-document --ignore-dependencies \
+        /tmp/thor.gem /tmp/brakeman.gem /tmp/bundler-audit.gem \
+    && rm /tmp/thor.gem /tmp/brakeman.gem /tmp/bundler-audit.gem \
     && timeout 120 bundle-audit update
 
-# Node (eslint + security plugin) + Python dependency audit
-RUN npm install --fetch-timeout=600000 -g "eslint@${ESLINT_VERSION}" "eslint-plugin-security@${ESLINT_PLUGIN_SECURITY_VERSION}" "@microsoft/eslint-formatter-sarif@${ESLINT_FORMATTER_SARIF_VERSION}" \
-    && pip install --timeout=300 --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"
+# Node: eslint, eslint-plugin-security, @microsoft/eslint-formatter-sarif.
+# tools-image/node/package.json is the declared list and package-lock.json the
+# 139-package closure it resolves to; `npm ci` refuses to proceed if the two
+# disagree, and --ignore-scripts means nothing in that tree runs install-time
+# code. Refresh with `npm install --package-lock-only --ignore-scripts`.
+#
+# WORKDIR, not `cd` (DL3003) and not `npm ci --prefix`: npm 12 reads the
+# lockfile from --prefix but the PROJECT from the working directory, so
+# `npm ci --prefix /opt/panopticon-node` dies with "Missing: node@0.0.0 from
+# lock file". Reset to `/`, the base image's own workdir, so nothing below
+# inherits this one.
+#
+# pip-audit used to ride along on the old npm line; it is one of the four
+# tools in the python closure above now. The three ARGs above stay as the
+# declared pins, and a test fails when they and package.json disagree.
+COPY tools-image/node/package.json tools-image/node/package-lock.json /opt/panopticon-node/
+WORKDIR /opt/panopticon-node
+RUN npm ci --fetch-timeout=600000 --ignore-scripts --omit=dev
+WORKDIR /
+ENV PATH="/opt/panopticon-node/node_modules/.bin:${PATH}"
 
 # OSV scanner (static Go binary)
 ARG OSV_SCANNER_VERSION=1.8.2

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import unittest
@@ -79,10 +80,19 @@ class TestDockerfile(unittest.TestCase):
 
 class TestDockerfilePhase1(unittest.TestCase):
     def test_phase1_adapters_mentioned(self):
+        # Each tool is asserted where the image actually gets it from, which
+        # after #1734 is no longer all one file: two of the three moved into a
+        # pinned closure, and a Dockerfile grep would pass on the PROSE that
+        # explains the move -- naming the tool in a comment is not shipping it.
         text = _read_dockerfile()
-        self.assertIn("pip-audit", text)
         self.assertIn("osv-scanner", text)
-        self.assertIn("eslint-plugin-security", text)
+        with open(os.path.join(ROOT, "requirements-tools.txt"),
+                  encoding="utf-8") as fh:
+            self.assertRegex(fh.read(), r"(?m)^pip-audit==")
+        with open(os.path.join(ROOT, "tools-image", "node", "package.json"),
+                  encoding="utf-8") as fh:
+            self.assertIn("eslint-plugin-security",
+                          json.load(fh)["dependencies"])
 
 
 class TestFindSecBugsIntegrity(unittest.TestCase):
@@ -347,6 +357,16 @@ class TestDockerBuildPrWorkflow(unittest.TestCase):
         paths = on.get("pull_request", {}).get("paths", [])
         self.assertIn(".github/workflows/docker-build-pr.yml", paths)
         self.assertIn("skill/scripts/**", paths)
+
+    def test_the_pinned_closures_are_trigger_paths(self):
+        # #1734: a lockfile edit changes what the image installs and is the
+        # ONE edit that can break `--require-hashes` or `npm ci` while leaving
+        # the Dockerfile byte-identical. Without these the build that would
+        # catch it never runs on the PR that caused it.
+        on = self.wf.get(True, {})
+        paths = on.get("pull_request", {}).get("paths", [])
+        for path in ("requirements-tools.txt", "tools-image/**"):
+            self.assertIn(path, paths)
 
     def test_tools_build_reads_the_main_branch_layer_cache(self):
         # #1421: this workflow fires on skill/scripts/**, so most PRs pay for it,
