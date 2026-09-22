@@ -334,5 +334,81 @@ class TestReadCappedReport(unittest.TestCase):
         self.assertIn("cannot read report", err.getvalue())
 
 
+class TestWriteTimeOutputCap(unittest.TestCase):
+    """#1576 (run-13 OPS-3272189615 / OPS-2007447947): a scanner that writes
+    its OWN report bypassed every bound until it had finished writing.
+
+    read_capped_report's 50 MiB ceiling is a READ-time bound on a write that
+    already happened: by the time it refuses the report, the temp volume is
+    already full and every concurrent scan on that worker is already in
+    trouble. run_tool now takes a path to watch while the child runs and kills
+    it the moment its output crosses the cap.
+    """
+
+    def _writer(self, target, chunks=100, size=65536, pause=0.02):
+        """argv for a child that writes `chunks` x `size` bytes into `target`."""
+        code = textwrap.dedent("""
+            import os, sys, time
+            d = sys.argv[1]
+            for i in range(%d):
+                with open(os.path.join(d, "part%%04d" %% i), "wb") as fh:
+                    fh.write(b"x" * %d)
+                time.sleep(%r)
+        """ % (chunks, size, pause))
+        return [sys.executable, "-c", code, target]
+
+    def test_a_scanner_that_overruns_the_cap_is_killed(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "report")
+            os.makedirs(out)
+            err = io.StringIO()
+            with mock.patch.object(base, "OUTPUT_WATCH_INTERVAL", 0.05), \
+                    contextlib.redirect_stderr(err):
+                with self.assertRaises(base.OutputCapExceeded):
+                    base.run_tool(self._writer(out), timeout=60,
+                                  watch_path=out, watch_cap=256 * 1024,
+                                  start_new_session=True)
+            written = base._output_size(out)
+        # Killed while writing, not after: the tree never reached the 6.4 MB
+        # the child wanted to write.
+        self.assertLess(written, 3 * 1024 * 1024)
+        self.assertIn("write-time output cap", err.getvalue())
+
+    def test_a_scanner_under_the_cap_is_untouched(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "report")
+            os.makedirs(out)
+            with mock.patch.object(base, "OUTPUT_WATCH_INTERVAL", 0.05):
+                stdout, rc = base.run_tool(
+                    self._writer(out, chunks=2, size=1024, pause=0),
+                    timeout=60, watch_path=out, watch_cap=1024 * 1024)
+        self.assertEqual(rc, 0)
+        self.assertEqual(stdout, b"")
+
+    def test_an_absent_watch_path_is_simply_zero(self):
+        # roslyn hands the SARIF path before the scanner has created it.
+        self.assertEqual(base._output_size("/no/such/path/at/all"), 0)
+
+    def test_output_size_sums_a_tree_without_following_links(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "a", "b"))
+            with open(os.path.join(d, "a", "b", "f"), "wb") as fh:
+                fh.write(b"x" * 1000)
+            with open(os.path.join(d, "top"), "wb") as fh:
+                fh.write(b"y" * 24)
+            outside = os.path.join(d, "a", "escape")
+            os.symlink("/etc", outside)      # never walked through
+            self.assertGreaterEqual(base._output_size(d), 1024)
+            self.assertLess(base._output_size(d), 10_000)
+
+    def test_the_write_cap_agrees_with_the_read_cap(self):
+        # Two bounds on the same report: a report the reader would refuse is
+        # not worth letting the scanner finish writing.
+        import inspect
+        sig = inspect.signature(base.run_tool)
+        self.assertEqual(sig.parameters["watch_cap"].default,
+                         base.MAX_TOOL_OUTPUT_BYTES)
+
+
 if __name__ == "__main__":
     unittest.main()
