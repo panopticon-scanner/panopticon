@@ -26,6 +26,18 @@ HARMLESS_RULE_PROPERTIES = {
     "precision": "very-high",
     "tags": ["LOW CONFIDENCE"],
 }
+PROPERTY_BAG_FIELDS = frozenset({
+    "externalizedProperties",
+    "parameters",
+    "properties",
+})
+REFERENCE_INDEX_FIELDS = frozenset({
+    "graphIndex",
+    "index",
+    "parentIndex",
+    "resultGraphIndex",
+    "runGraphIndex",
+})
 SARIF_SCHEMA_SOURCE = (
     "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/"
     "sarif-schema-2.1.0.json")
@@ -173,8 +185,8 @@ def _contains_unreviewed_metadata(value: Any, *, root_rule: bool = False,
     if not isinstance(value, dict):
         return False
     for key, item in value.items():
-        if key == "properties":
-            if at_root and root_rule:
+        if key in PROPERTY_BAG_FIELDS:
+            if key == "properties" and at_root and root_rule:
                 if item != HARMLESS_RULE_PROPERTIES:
                     return True
             elif item:
@@ -195,10 +207,73 @@ def _metadata_is_verified_harmless(result: dict[str, Any],
     preparation error. Only the current Semgrep shape is authorized to leave
     Security. This covers CVE/CVSS/CWE/OWASP without relying on their spelling.
     """
-    return (not _contains_unreviewed_metadata(rule, root_rule=True) and
+    return (rule.get("properties") == HARMLESS_RULE_PROPERTIES and
+            not _contains_unreviewed_metadata(rule, root_rule=True) and
             not _contains_unreviewed_metadata(result) and
             (referenced_message is None or
              not _contains_unreviewed_metadata(referenced_message)))
+
+
+def _shared_context_is_verified_harmless(
+        document: dict[str, Any], run: dict[str, Any]) -> bool:
+    tool = run["tool"]
+    driver = tool["driver"]
+    contexts = (
+        {key: value for key, value in document.items() if key != "runs"},
+        {key: value for key, value in run.items()
+         if key not in {"results", "tool"}},
+        {key: value for key, value in tool.items() if key != "driver"},
+        {key: value for key, value in driver.items()
+         if key not in {"globalMessageStrings", "rules"}},
+    )
+    # Shared caches are deliberately scanned wholesale. Metadata on an
+    # unreferenced cache entry can retain every candidate in the run; this
+    # sacrifices inventory routing for unfamiliar valid SARIF instead of
+    # introducing a partial graph/reference resolver that might lose context.
+    return not any(_contains_unreviewed_metadata(context)
+                   for context in contexts)
+
+
+def _has_unsupported_shared_context(
+        document: dict[str, Any], run: dict[str, Any]) -> bool:
+    if document.get("inlineExternalProperties"):
+        return True
+    if any(run.get(field) for field in (
+            "externalPropertyFileReferences", "policies", "taxonomies",
+            "translations")):
+        return True
+    tool = run["tool"]
+    if tool.get("extensions"):
+        return True
+    return any(
+        invocation.get("notificationConfigurationOverrides") or
+        invocation.get("ruleConfigurationOverrides")
+        for invocation in run.get("invocations", []))
+
+
+def _has_unsupported_candidate_reference(
+        result: dict[str, Any], run: dict[str, Any]) -> bool:
+    if result.get("rule"):
+        return True
+    uri_bases = run.get("originalUriBaseIds", {})
+
+    def visit(value: Any) -> bool:
+        if isinstance(value, list):
+            return any(visit(item) for item in value)
+        if not isinstance(value, dict):
+            return False
+        for key, item in value.items():
+            if (key in REFERENCE_INDEX_FIELDS and isinstance(item, int) and
+                    item >= 0):
+                return True
+            if key == "uriBaseId" and item:
+                if item != "%SRCROOT%" or item in uri_bases:
+                    return True
+            if visit(item):
+                return True
+        return False
+
+    return visit(result)
 
 
 def _is_semgrep(driver_name: str) -> bool:
@@ -208,10 +283,12 @@ def _is_semgrep(driver_name: str) -> bool:
 def _inventory_candidate(driver_name: str, rule_id: str | None,
                          result: dict[str, Any], rule: dict[str, Any] | None,
                          where: str,
-                         referenced_message: dict[str, Any] | None = None) -> bool:
+                         referenced_message: dict[str, Any] | None,
+                         context_is_verified_harmless: bool) -> bool:
     if rule is None:
         return False
     return (_inventory_scope_candidate(driver_name, rule_id, result, rule, where) and
+            context_is_verified_harmless and
             _metadata_is_verified_harmless(result, rule, referenced_message))
 
 
@@ -264,6 +341,9 @@ def _split_document(document: dict[str, Any],
         where = f"{source}.runs[{run_index}]"
         driver_name, rules, global_messages = _rules_for(run)
         results = run.get("results", [])
+        shared_context_is_harmless = (
+            _shared_context_is_verified_harmless(original, run) and
+            not _has_unsupported_shared_context(original, run))
         actionable = []
         for result_index, result in enumerate(results):
             result_where = f"{where}.results[{result_index}]"
@@ -277,7 +357,9 @@ def _split_document(document: dict[str, Any],
                     result, rule, global_messages, result_where)
             if _inventory_candidate(
                     driver_name, rule_id, result, rule, result_where,
-                    referenced_message):
+                    referenced_message,
+                    shared_context_is_harmless and
+                    not _has_unsupported_candidate_reference(result, run)):
                 inventory.append({
                     "source": source,
                     "run_index": run_index,

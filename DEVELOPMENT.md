@@ -101,12 +101,19 @@ summary + JSON artifact) with standards citations and CI gating.
   helper strictly decodes JSON, validates each complete capture offline against
   the fixed official SARIF 2.1.0 Draft 7 schema in `scripts/reference/`, and
   resolves localized result-message IDs through the rule or driver message
-  strings before routing. Nested property bags, taxa, and relationships are
-  checked recursively. Malformed captures and dangling message IDs fail
-  preparation before anything is published. The raw captures are retained as
-  their own artifact, and the helper publishes the Security and inventory
-  directories atomically so a preparation failure cannot appear as an empty
-  successful analysis.
+  strings before routing. All schema-defined property-bag carriers, taxa, and
+  relationships are checked recursively. Shared document, run, tool, driver,
+  and run-cache context is checked without traversing sibling results or
+  rules. Metadata on an unreferenced shared cache can therefore keep every
+  candidate in the run in Security; this conservative tradeoff avoids a
+  partial SARIF reference resolver. Unsupported external, taxonomy,
+  configuration-override, or indexed candidate references also remain in
+  Security, while the conventional unbacked `%SRCROOT%` base used by current
+  Semgrep captures remains eligible. Malformed captures and dangling message
+  IDs fail preparation before anything is published. The raw captures are
+  retained as their own artifact, and the helper publishes the Security and
+  inventory directories atomically so a preparation failure cannot appear as
+  an empty successful analysis.
 - **`meta.coverage` is the single home for what a run actually observed**:
   `adapters` (per-file disposition — `ok`/`empty`/`failed`, a findings count,
   and a `reason` when failed), `tools_ran`, `build_executing_tools`,

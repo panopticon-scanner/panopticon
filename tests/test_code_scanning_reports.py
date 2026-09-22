@@ -53,7 +53,7 @@ def _sarif(rules, results, driver="Semgrep OSS", run_properties=None,
         "version": "2.1.0",
         "runs": [{
             "tool": {"driver": driver_data},
-            "properties": run_properties or {"kept": ["byte", "for", "byte"]},
+            "properties": {} if run_properties is None else run_properties,
             "results": results,
         }],
     }
@@ -82,8 +82,8 @@ def test_split_preserves_non_inventory_data_and_raw_inputs(tmp_path):
     rules = [_rule(ANTHROPIC), _rule("security.sql-injection", "error")]
     inventory = _result(ANTHROPIC, 0)
     actionable = _result("security.sql-injection", 1, "error", "src/db.py")
-    document = _sarif(rules, [inventory, actionable],
-                      run_properties={"automationDetails": "unchanged"})
+    document = _sarif(rules, [inventory, actionable])
+    document["runs"][0]["automationDetails"] = {"id": "unchanged"}
     raw, output, before = _prepare(tmp_path, {
         "semgrep.sarif": document,
         "bandit.sarif": _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC, 0)],
@@ -244,6 +244,179 @@ def test_empty_nested_property_bags_are_harmless(tmp_path):
         tmp_path, {"semgrep.sarif": _sarif([_rule(ANTHROPIC)], [result])})
     assert json.loads((output / "security" / "semgrep.sarif").read_text())[
         "runs"][0]["results"] == []
+
+
+@pytest.mark.parametrize("root_properties", [None, {}])
+def test_root_rule_properties_must_be_present_and_exact(
+        tmp_path, root_properties):
+    rule = _rule(ANTHROPIC, properties={})
+    if root_properties is None:
+        del rule["properties"]
+    else:
+        rule["properties"] = root_properties
+    document = _sarif([rule], [_result(ANTHROPIC)])
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
+
+
+def test_default_configuration_parameters_stay_actionable(tmp_path):
+    rule = _rule(ANTHROPIC)
+    rule["defaultConfiguration"]["parameters"] = {"cve": "CVE-2026-1234"}
+    document = _sarif([rule], [_result(ANTHROPIC)])
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
+
+
+def test_policy_carriers_match_every_property_bag_reference_in_schema():
+    schema = json.loads(reports.SARIF_SCHEMA_PATH.read_bytes())
+    discovered = set()
+
+    def visit(value, field_name=None):
+        if isinstance(value, list):
+            for item in value:
+                visit(item, field_name)
+        elif isinstance(value, dict):
+            if value.get("$ref") == "#/definitions/propertyBag":
+                discovered.add(field_name)
+            for key, item in value.items():
+                visit(item, key)
+
+    visit(schema)
+    expected = {"properties", "parameters", "externalizedProperties"}
+    assert discovered == expected
+    assert reports.PROPERTY_BAG_FIELDS == expected
+
+
+@pytest.mark.parametrize("owner", ["document", "run", "tool", "driver"])
+def test_shared_ancestor_property_bags_keep_candidates_actionable(tmp_path, owner):
+    document = _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)])
+    run = document["runs"][0]
+    targets = {
+        "document": document,
+        "run": run,
+        "tool": run["tool"],
+        "driver": run["tool"]["driver"],
+    }
+    targets[owner]["properties"] = {"cve": "CVE-2026-1234"}
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
+
+
+@pytest.mark.parametrize("artifact_properties", [
+    {},
+    {"cve": "CVE-2026-1234"},
+])
+def test_indexed_artifact_references_stay_actionable(
+        tmp_path, artifact_properties):
+    result = _result(ANTHROPIC)
+    result["locations"][0]["physicalLocation"]["artifactLocation"] = {"index": 0}
+    document = _sarif([_rule(ANTHROPIC)], [result])
+    document["runs"][0]["artifacts"] = [{
+        "location": {"uri": "src/app.py"},
+        "properties": artifact_properties,
+    }]
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
+
+
+@pytest.mark.parametrize("artifact_properties,expected_inventory", [
+    ({}, 1),
+    ({"cve": "CVE-2026-1234"}, 0),
+])
+def test_unreferenced_cache_metadata_conservatively_taints_the_run(
+        tmp_path, artifact_properties, expected_inventory):
+    document = _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)])
+    document["runs"][0]["artifacts"] = [{
+        "location": {"uri": "unreferenced.py"},
+        "properties": artifact_properties,
+    }]
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    inventory = json.loads((output / "inventory" / "ai-inventory.json").read_text())
+    assert inventory["count"] == expected_inventory
+    security = json.loads((output / "security" / "semgrep.sarif").read_text())
+    assert len(security["runs"][0]["results"]) == 1 - expected_inventory
+
+
+def test_sibling_rules_results_and_unreferenced_messages_do_not_taint_candidate(
+        tmp_path):
+    clean_rule = _rule(ANTHROPIC)
+    sibling_rule = _rule(
+        "security.sibling",
+        properties={"tags": ["CVE-2026-1234"]})
+    candidate = _result(ANTHROPIC)
+    sibling = _result("security.sibling")
+    sibling["properties"] = {"cvss": "9.8"}
+    document = _sarif(
+        [clean_rule, sibling_rule], [candidate, sibling],
+        global_messages={"unreferenced": {
+            "text": "unused",
+            "properties": {"cwe": "CWE-79"},
+        }})
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    inventory = json.loads((output / "inventory" / "ai-inventory.json").read_text())
+    assert inventory["count"] == 1
+    assert inventory["results"][0]["result"] == candidate
+    security = json.loads((output / "security" / "semgrep.sarif").read_text())
+    assert security["runs"][0]["results"] == [sibling]
+
+
+def test_unbacked_conventional_uri_base_remains_inventory_eligible(tmp_path):
+    result = _result(ANTHROPIC)
+    result["locations"][0]["physicalLocation"]["artifactLocation"][
+        "uriBaseId"] = "%SRCROOT%"
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": _sarif([_rule(ANTHROPIC)], [result])})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text())[
+        "runs"][0]["results"] == []
+
+
+@pytest.mark.parametrize("context", [
+    "inline_external",
+    "external_reference",
+    "taxonomy",
+    "configuration_override",
+    "mapped_uri_base",
+    "logical_location_index",
+])
+def test_external_and_unsupported_context_stays_actionable(tmp_path, context):
+    result = _result(ANTHROPIC)
+    document = _sarif([_rule(ANTHROPIC)], [result])
+    run = document["runs"][0]
+    if context == "inline_external":
+        document["inlineExternalProperties"] = [{}]
+    elif context == "external_reference":
+        run["externalPropertyFileReferences"] = {
+            "results": [{"location": {"uri": "external.sarif"}}],
+        }
+    elif context == "taxonomy":
+        run["taxonomies"] = [{"name": "security-taxonomy"}]
+    elif context == "configuration_override":
+        run["invocations"] = [{
+            "executionSuccessful": True,
+            "ruleConfigurationOverrides": [{
+                "configuration": {"level": "warning"},
+                "descriptor": {"id": ANTHROPIC},
+            }],
+        }]
+    elif context == "mapped_uri_base":
+        result["locations"][0]["physicalLocation"]["artifactLocation"][
+            "uriBaseId"] = "%SRCROOT%"
+        run["originalUriBaseIds"] = {"%SRCROOT%": {"uri": "file:///src/"}}
+    else:
+        result["locations"][0]["logicalLocations"] = [{"index": 0}]
+        run["logicalLocations"] = [{"name": "function"}]
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
 
 
 @pytest.mark.parametrize("document", [
