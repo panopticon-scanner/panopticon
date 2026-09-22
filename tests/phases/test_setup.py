@@ -31,7 +31,7 @@ import scripts.repo_config as repo_config
 import scripts.runners.batch as batch_mod
 
 from _test_helpers import hard_link_or_skip
-from conftest import write_host_evidence
+from conftest import SKILL_ROOT, write_host_evidence
 from test_orchestrate import _all_proven_artifact, _refuted_artifact
 from tools.git_repo import make_git_repo
 
@@ -1341,6 +1341,148 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         self.assertIn("readiness gaps: docker", msg)
         self.assertIn("limitations", msg)
         self.assertIn("enforced-shells", msg)
+
+
+class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
+    """#1603, owner ruling 2026-09-22: **widen the caller**.
+
+    `setup_flow.readiness` had exactly one production caller and it sat inside
+    `scan_execute`'s vocab-absent fallback. On the COMMON path -- a repo whose
+    capability vocabulary is present -- readiness never ran, so the operator
+    never met the host-capability disclosure §5.1 makes mandatory, and 5.2
+    claimed four mandatory surfaces while delivering three and a half.
+
+    It runs on both paths now, at the mirrored point: after the scan has come
+    back and before the report and the draft are written, on the host the
+    setup was invoked for. It never fails setup -- setup is a DISCLOSURE
+    surface and `phases/readiness.py` is the gate that fails closed -- so a
+    gap is made visible three other ways: the completion line the operator
+    reads, the rendered report, and a non-empty `gaps` in the machine-readable
+    one.
+    """
+
+    PROPOSAL = {"groups": [{"capability": "Checkout",
+                            "match": ["src/checkout/**"], "tests": []}]}
+    # Deterministic readiness answers, stubbed rather than measured: the real
+    # rows depend on the docker/registration state of the machine running the
+    # suite, which is what this class must NOT be about.
+    OK = [("target-root", True, "ok")]
+    GAP = [("docker", False,
+            "docker unavailable -- install/start Docker or run with --no-tools"),
+           ("target-root", True, "ok")]
+    LIMITED = [("target-root", True, "ok"),
+               ("enforced-shells", None,
+                "generic registers no enforcement shells; reviewers run with "
+                "a prompt-advisory tool policy")]
+
+    def _setup(self, checks, host=None, allow_unenforced=False):
+        """A vocab-PRESENT `driver setup` driven through scan and ingest to
+        `complete`, whose readiness answers `checks`.
+
+        Returns (status, the readiness mock, the setup-report.json document,
+        setup-report.md's text).
+        """
+        d = make_git_repo(test_case=self, files={"src/checkout/pay.py": "x = 1\n"},
+                          branch="main", user_email="t@t", user_name="t")
+        # #1737: a registered machine, so the scan dispatches enforced instead
+        # of being refused for want of the operator's acknowledgement.
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        argv = (["setup", d] + (["--host", host] if host else [])
+                + (["--allow-unenforced"] if allow_unenforced else []))
+        args = driver.build_parser().parse_args(argv)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            first = setup.run_setup_flow(args)
+            self.assertEqual("checkpoint", first["status"], first)
+            # the host's return-persist half of the checkpoint
+            with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+                json.dump(self.PROPOSAL, fh)
+            with mock.patch("scripts.setup_flow.readiness",
+                            return_value=checks) as ready:
+                status = setup.run_setup_flow(args)
+        self.assertEqual("complete", status["status"], status)
+        with open(runio._pano(d, "setup-report.md"), encoding="utf-8") as fh:
+            report_md = fh.read()
+        return (status, ready,
+                runio._load_json(runio._pano(d, "setup-report.json")), report_md)
+
+    def test_readiness_runs_once_on_the_normal_path(self):
+        _status, ready, _doc, _md = self._setup(self.OK)
+        self.assertEqual(1, ready.call_count)
+
+    def test_the_host_measured_is_the_one_the_setup_was_invoked_for(self):
+        # Not the default, and not `_detect_host()`'s answer: the disclosure
+        # is about the host this setup is bootstrapping.
+        _status, ready, _doc, _md = self._setup(self.OK, host="generic",
+                                                allow_unenforced=True)
+        self.assertEqual({"host": "generic"}, ready.call_args.kwargs)
+        _status, ready, _doc, _md = self._setup(self.OK)
+        self.assertEqual({"host": "claude"}, ready.call_args.kwargs)
+
+    def test_the_rows_land_in_the_machine_readable_report(self):
+        # The SAME shape the fallback records in setup-complete.json, so one
+        # consumer reads either artifact with the same three keys...
+        _status, _ready, doc, _md = self._setup(self.GAP)
+        self.assertEqual([[n, ok, detail] for n, ok, detail in self.GAP],
+                         doc["readiness"])
+        self.assertEqual(["docker"], doc["gaps"])
+        self.assertEqual([], doc["limitations"])
+        # ...beside, never instead of, what setup-report.json already carried.
+        self.assertEqual(1, doc["schema_version"])
+        for key in ("report", "disclosure", "diff"):
+            self.assertIn(key, doc)
+
+    def test_a_gap_is_disclosed_and_does_not_fail_setup(self):
+        status, _ready, doc, md = self._setup(self.GAP)
+        self.assertEqual("complete", status["status"])
+        self.assertIn("readiness gaps: docker (fix before running a review)",
+                      status["message"])
+        self.assertEqual(["docker"], doc["gaps"])
+        self.assertIn("docker unavailable", md)
+
+    def test_a_clean_readiness_says_so_rather_than_going_silent(self):
+        # §5.1: "absence of warnings must mean 'measured and proven', never
+        # 'nobody looked'" -- so the passing case is stated out loud.
+        status, _ready, _doc, md = self._setup(self.OK)
+        self.assertIn("readiness OK", status["message"])
+        self.assertIn("## Readiness", md)
+        self.assertIn("readiness OK", md)
+
+    def test_gate_nothing_rows_render_through_the_shared_clause(self):
+        status, _ready, doc, md = self._setup(self.LIMITED, host="generic",
+                                              allow_unenforced=True)
+        name, _ok, detail = self.LIMITED[1]
+        self.assertEqual([[name, detail]], doc["limitations"])
+        # a limitation is not a gap...
+        self.assertEqual([], doc["gaps"])
+        self.assertNotIn("readiness gaps", status["message"])
+        # ...and it is not nothing: the fallback's own renderer, byte for byte.
+        clause = setup_readiness._limitations_clause([(name, detail)])
+        self.assertIn(clause, md)
+        self.assertIn(clause, status["message"])
+
+    def test_the_completion_message_still_points_at_the_draft_and_report(self):
+        status, _ready, _doc, _md = self._setup(self.OK)
+        self.assertIn("setup-report.md", status["message"])
+        self.assertIn(repo_config.DRAFT_NAME, status["message"])
+
+    def test_the_verdict_has_exactly_one_renderer(self):
+        # ONE shared helper for the suffix, not two copies. The remedy clause
+        # is its fingerprint: a second module spelling it is a second copy,
+        # and two copies of a disclosure drift while each path's own test
+        # keeps passing -- the failure §5.1's four-surface rule exists to
+        # prevent.
+        owners = []
+        for d, dirs, files in os.walk(os.path.join(SKILL_ROOT, "scripts")):
+            dirs[:] = sorted(x for x in dirs if x != "__pycache__")
+            for f in sorted(files):
+                if not f.endswith(".py"):
+                    continue
+                path = os.path.join(d, f)
+                with open(path, encoding="utf-8") as fh:
+                    if "(fix before running a review)" in fh.read():
+                        owners.append(os.path.relpath(path, SKILL_ROOT))
+        self.assertEqual(["scripts/phases/setup_readiness.py"], owners)
 
 
 class TestTheLimitationsClauseStaysReadable(unittest.TestCase):

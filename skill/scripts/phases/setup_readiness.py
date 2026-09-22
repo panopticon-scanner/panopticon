@@ -15,6 +15,8 @@ Formatting and shaping only: nothing here reads or writes a file. What is
 measured belongs to `setup_flow`; where the rows are written belongs to
 `phases/setup.py`.
 """
+import scripts.grouping_engine as grouping_engine
+
 
 # #1601. Every limitation carried a full remedy and they were all joined into
 # ONE line: on gemini that line measured 1847 characters, up ~17x from ~110,
@@ -28,9 +30,23 @@ measured belongs to `setup_flow`; where the rows are written belongs to
 # untruncated text of every limitation is in `setup-complete.json`'s
 # `limitations` array either way, so the message is an index into it rather
 # than a second copy of it.
+#
+# The artifact the "and N more" tail points at. A PARAMETER because the two
+# setup paths write their rows to different files -- the fallback's
+# `setup-complete.json` and the normal path's `setup-report.json` (#1603) --
+# and a tail naming the wrong one sends the operator to a file that does not
+# hold the text it promises.
+_FALLBACK_ARTIFACT = "setup-complete.json"
+REPORT_ARTIFACT = "setup-report.json"
+
 _LIMITATION_LINE = 119          # strictly under the 120-column bar
 _LIMITATION_MAX = 12            # remedies shown before the "and N more" tail
 _TRUNCATED = "..."
+
+# The word each `ok` renders as in the report section. `None` is NOT
+# APPLICABLE -- the third answer, never collapsed into either of the other
+# two: a check nobody could measure must not read as one that passed (§5.1).
+_VERDICT = {True: "ok", False: "gap", None: "not applicable"}
 
 
 def _limitation_line(name, detail):
@@ -58,7 +74,7 @@ def _limitation_line(name, detail):
     return head + (detail[:room] if room > 0 else "") + _TRUNCATED + ")"
 
 
-def _limitations_clause(limitations):
+def _limitations_clause(limitations, artifact=_FALLBACK_ARTIFACT):
     """Render the readiness checks that gate nothing (`ok is None`).
 
     Spec §5.1: "If there are limitations by host then we should LOUDLY declare
@@ -75,9 +91,8 @@ def _limitations_clause(limitations):
     out = ["limitations:"]
     out.extend(_limitation_line(name, detail) for name, detail in shown)
     if len(rows) > len(shown):
-        out.append("  - and %d more -- full text in "
-                   ".panopticon/setup-complete.json `limitations`"
-                   % (len(rows) - len(shown)))
+        out.append("  - and %d more -- full text in .panopticon/%s `limitations`"
+                   % (len(rows) - len(shown), artifact))
     return "\n".join(out)
 
 
@@ -86,3 +101,94 @@ def _stored_limitations(marker):
     marker written before the key existed, and any row that is not a pair."""
     return [(row[0], row[1]) for row in ((marker or {}).get("limitations") or [])
             if isinstance(row, (list, tuple)) and len(row) == 2]
+
+
+def _readiness_suffix(gaps):
+    """readiness's verdict as ONE clause, for whichever setup line carries it.
+
+    #1603: both setup paths print this now, so it is written once. The
+    fallback has said `readiness gaps: ... (fix before running a review)`
+    since Task 3 and the normal path says the same thing in the same words --
+    two spellings of one verdict are two things to keep in step, and the one
+    that falls behind is still green in its own test.
+
+    The clean case is a SENTENCE, not silence: §5.1's "absence of warnings
+    must mean 'measured and proven', never 'nobody looked'" only holds if the
+    passing case is stated out loud, the same rule surface 3 renders on every
+    all-proven report.
+    """
+    if not gaps:
+        return "readiness OK"
+    return "readiness gaps: %s (fix before running a review)" % ", ".join(gaps)
+
+
+def _readiness_record(checks):
+    """The three keys a setup artifact carries, off one `readiness()` answer.
+
+    ONE shape for both artifacts (#1603): the fallback's
+    `setup-complete.json` and the normal path's `setup-report.json` describe
+    readiness with the same three keys, so a consumer reads either without
+    knowing which path wrote it.
+
+    `ok is None` is NOT-APPLICABLE, a third answer the renderer used to
+    collapse into "fine". It is kept under its own key so a consumer can tell
+    "not applicable" from "measured and passed" (§5.1), and out of `gaps`,
+    which gate READY and carry a remedy.
+    """
+    return {"readiness": [[c[0], c[1], c[2]] for c in checks],
+            "gaps": [c[0] for c in checks if c[1] is False],
+            "limitations": [[c[0], c[2]] for c in checks if c[1] is None]}
+
+
+def _readiness_section(record):
+    """The readiness section of `setup-report.md` -- surface 4 in the artifact
+    an operator is told to read (#1603), rather than only in a line that
+    scrolls past.
+
+    The verdict, then every row that was measured, then the gate-nothing rows
+    through the SAME clause the fallback prints, so a limitation looks the
+    same wherever it is met. Every row is listed and not just the failures:
+    a disclosure surface has to say what was looked at, or a short section
+    cannot be told from a short list of checks.
+
+    Details are put through the report's own hygiene (#1120) because some of
+    them quote the reviewed repository -- a refused config's errors name its
+    groups -- and this text is written to a file rather than to a terminal.
+    """
+    out = ["## Readiness", "", _readiness_suffix(record["gaps"]), ""]
+    out += ["- %s: %s -- %s" % (grouping_engine._clean(name, token=True),
+                                _VERDICT.get(ok, ok), grouping_engine._clean(detail))
+            for name, ok, detail in record["readiness"]]
+    if record["limitations"]:
+        out += ["", _limitations_clause(
+            [(grouping_engine._clean(name, token=True), grouping_engine._clean(detail))
+             for name, detail in record["limitations"]], artifact=REPORT_ARTIFACT)]
+    return "\n".join(out) + "\n"
+
+
+def _readiness_tail(document, artifact=REPORT_ARTIFACT):
+    """The readiness tail for a COMPLETED setup, read back off the artifact
+    that path wrote -- `setup-report.json`, whose name the overflow tail
+    carries, since the normal path is this helper's caller. The vocab-absent
+    fallback assembles its own two lines from the same two helpers: its
+    completion line is unchanged by #1603, which means it still says nothing
+    when readiness is clean.
+
+    It is read back rather than passed down because the completion message is
+    assembled after the engine returns -- and on a re-invocation that finds
+    the work already done, no phase ran at all and the artifact is the only
+    thing that remembers.
+
+    An artifact carrying no readiness rows gets NO tail: `readiness OK` over a
+    setup that never measured is the exact inversion §5.1 forbids, and a
+    version that predates this record, or a target-supplied file, is precisely
+    the case where nobody looked.
+    """
+    document = document or {}
+    if not isinstance(document.get("readiness"), list):
+        return ""
+    tail = " — " + _readiness_suffix(document.get("gaps") or [])
+    limitations = _stored_limitations(document)
+    if limitations:
+        tail += "\n" + _limitations_clause(limitations, artifact=artifact)
+    return tail

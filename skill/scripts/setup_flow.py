@@ -1136,7 +1136,8 @@ def _draft_settings(repo, max_per_group, max_groups):
     return {k: v for k, v in settings.items() if v is not None}
 
 
-def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None):
+def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None,
+                    readiness=None, readiness_section=None):
     """Ingest a setup-scan proposal -> assemble (aliases, layers, floors) ->
     stage 3 (grouping_engine.plan_groups: scoped assignment, Tests sweep,
     Commons, layers, ceiling) -> additive-merge vs the committed root config ->
@@ -1145,7 +1146,22 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     committed config; nothing is written on any failure. No printing.
 
     The cap and the ceiling resolve CLI argument > `settings:` > default
-    (`discovery.DEFAULT_MAX_PER_GROUP`; `grouping_engine.ceiling_for`)."""
+    (`discovery.DEFAULT_MAX_PER_GROUP`; `grouping_engine.ceiling_for`).
+
+    `readiness` and `readiness_section` are #1603's half: the setup readiness
+    record (`{"readiness": rows, "gaps": [...], "limitations": [...]}`, the
+    same three keys the vocab-absent fallback writes into
+    `setup-complete.json`) and its already-rendered markdown. They ride in
+    here rather than being measured here because the report is written ONCE,
+    whole -- appending to a finished file would leave a window where the
+    artifact an operator is told to read carries a draft's worth of it.
+
+    The markdown arrives rendered because the renderer that shows a
+    gate-nothing check lives in `phases/setup_readiness.py`, whose package
+    imports this module: rendering it here would be the import cycle, or a
+    second copy of the clause. Both default to None -- the report is then
+    written exactly as before, which is what every non-setup caller (all of
+    them tests about the grouping) wants."""
     import setup_proposal as sp
     refusal = config_refusal(repo)          # I2: before anything is written
     if refusal:
@@ -1205,7 +1221,12 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
         merged, exclude_paths=_committed_exclude_paths(repo),
         settings=_draft_settings(repo, max_per_group, max_groups))
     report_text = grouping_engine.format_report(report, disclosure)
-    report_json = json.dumps({"schema_version": 1, "report": report, "disclosure": disclosure,
+    if readiness_section:
+        report_text = report_text.rstrip("\n") + "\n\n" + readiness_section
+    # The readiness keys go BESIDE the report's own, never over them: spread
+    # first so the four keys this function owns win whatever a caller passes.
+    report_json = json.dumps({**(readiness or {}),
+                              "schema_version": 1, "report": report, "disclosure": disclosure,
                               "diff": diff}, indent=1, sort_keys=True) + "\n"
     root = plan_contract.artifact_root(repo)
     draft = repo_config.draft_path(repo)

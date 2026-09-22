@@ -504,8 +504,17 @@ class TestSetupEstablishesHostPosture(LoopCase):
         status = self._setup_loop(d, **{"scripts.host_probes.run_probes":
                                         {"side_effect": _probes}})
         self.assertEqual(status["status"], "complete", status)
-        self.assertEqual(set(seen), {probes_common.headless_settings_path(d, "setup")})
-        self.assertEqual(set(seen),
+        # #1603 gave `run_probes` a SECOND caller in this invocation:
+        # `setup_flow._check_host_shells`, reached from the readiness that now
+        # runs on the normal setup path too. That one takes no `--mode` and so
+        # names no settings file -- documented behaviour (plain `driver setup`
+        # readiness cannot establish the headless launch controls; those probes
+        # answer `unknown`). The subject HERE is the posture step, so the
+        # assertion is over the calls that name a file at all: a posture step
+        # that regressed to the run-namespace path, or to None, still fails it.
+        armed = {p for p in seen if p is not None}
+        self.assertEqual(armed, {probes_common.headless_settings_path(d, "setup")})
+        self.assertEqual(armed,
                          {os.path.abspath(os.path.join(d, ".panopticon",
                                                        base.SETTINGS_FILE))})
 

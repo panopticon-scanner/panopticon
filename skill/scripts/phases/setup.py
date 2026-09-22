@@ -350,14 +350,39 @@ def ingest_done(review_root, manifest):
             or runio._json_parses(runio._pano(review_root, "setup-complete.json")))
 
 def ingest_execute(review_root, manifest):
-    res = setup_flow.ingest_proposal(review_root,
-                                     max_per_group=manifest.get("max_per_group"),
-                                     max_groups=manifest.get("max_groups"))
+    """Ingest the returned proposal -> draft + setup report, with THIS setup's
+    readiness answer recorded in it (#1603, owner ruling 2026-09-22).
+
+    Readiness used to run on the vocab-absent fallback alone, so an operator
+    whose tree had a capability vocabulary -- the common case -- never met the
+    host-capability disclosure §5.1 makes mandatory, and 5.2 claimed four
+    surfaces while delivering three and a half. It runs HERE, the mirror of
+    where the fallback takes it: after the scan has come back and before the
+    report and the draft are written, on the host this setup was invoked for
+    (never a detected one -- the disclosure is about the host being
+    bootstrapped).
+
+    It does NOT gate. `driver setup` is a disclosure surface, and the run-time
+    readiness phase is the one that fails closed; a setup refused for a
+    missing Docker would refuse the very bootstrap whose report says how to
+    fix it. So a gap is made visible three ways instead -- the completion
+    line, the report's own section, and a non-empty `gaps` in
+    setup-report.json.
+    """
+    checks = setup_flow.readiness(review_root, host=manifest.get("host", "claude"))
+    record = setup_readiness._readiness_record(checks)
+    res = setup_flow.ingest_proposal(
+        review_root,
+        max_per_group=manifest.get("max_per_group"),
+        max_groups=manifest.get("max_groups"),
+        readiness=record,
+        readiness_section=setup_readiness._readiness_section(record))
     if not res["ok"]:
         raise runio.DriverError("ingest: " + "; ".join(res["errors"]))
     return engine.PhaseResult(kind="advanced",
-                       message="setup: draft written %s; report %s"
-                       % (res["draft"], res["report_path"]))
+                       message="setup: draft written %s; report %s; %s"
+                       % (res["draft"], res["report_path"],
+                          setup_readiness._readiness_suffix(record["gaps"])))
 
 SETUP_PHASES = (
     engine.Phase("scan", "checkpoint", scan_done, scan_execute),
@@ -446,23 +471,20 @@ def _scan_fallback(review_root, manifest, host):
     and without entering ingest."""
     path, created, names = setup_flow.seed_flat_manifest(review_root)
     checks = setup_flow.readiness(review_root, host=host)
-    gaps = [c[0] for c in checks if c[1] is False]
-    # ok is None is NOT-APPLICABLE, a third answer the renderer used to collapse
-    # into "fine". Recorded under its own key so a consumer can tell "not
-    # applicable" from "measured and passed" (§5.1).
-    limitations = [(c[0], c[2]) for c in checks if c[1] is None]
-    runio._write_json(runio._pano(review_root, "setup-complete.json"), {
-        "schema_version": 1,
-        "mode": "fallback", "seed": path, "created": created, "groups": names,
-        "readiness": [[c[0], c[1], c[2]] for c in checks],
-        "gaps": gaps, "limitations": [[n, d] for n, d in limitations],
-        "run_id": manifest["run_id"]})
-    msg = ("setup: vocab-absent fallback — flat seed %s; readiness %s"
-           % (path, "OK" if not gaps else "gaps: " + ", ".join(gaps)))
+    # The three keys, and the verdict, from the helpers the normal path uses
+    # too (#1603) -- the only thing this path changed. What it records and
+    # what it prints are what they were.
+    record = setup_readiness._readiness_record(checks)
+    runio._write_json(runio._pano(review_root, "setup-complete.json"), dict(
+        record, schema_version=1,
+        mode="fallback", seed=path, created=created, groups=names,
+        run_id=manifest["run_id"]))
+    msg = ("setup: vocab-absent fallback — flat seed %s; %s"
+           % (path, setup_readiness._readiness_suffix(record["gaps"])))
     # LAST, and on its own lines (#1601): the clause is a list now, so
     # anything appended after it would land on the final remedy's line.
-    if limitations:
-        msg += "\n" + setup_readiness._limitations_clause(limitations)
+    if record["limitations"]:
+        msg += "\n" + setup_readiness._limitations_clause(record["limitations"])
     return engine.PhaseResult(kind="advanced", message=msg)
 
 def _drop_stale_fallback_marker(review_root):
@@ -593,6 +615,16 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
                 "`settings:` across and records the sizes you passed, but any "
                 "other hand-kept top-level key is yours to re-apply"
                 % (repo_config.DRAFT_NAME, repo_config.CONFIG_NAMES[0]))
+            # #1603: surface 4 on the line the operator actually reads.
+            # `ingest_execute`'s own message is discarded by the engine and
+            # replaced here, exactly as the fallback's is, so a disclosure
+            # left there would be a disclosure made to nobody (§5.1). Read
+            # back off the report rather than passed down, because a
+            # re-invocation that finds the work already done runs no phase at
+            # all -- and an artifact with no readiness rows gets no clause,
+            # never a `readiness OK` nobody measured.
+            result["message"] += setup_readiness._readiness_tail(
+                runio._load_json(runio._pano(review_root, "setup-report.json")))
         else:
             msg = ("setup complete -- vocab-absent fallback seeded a flat %s; "
                    "review, edit, and commit it" % repo_config.CONFIG_NAMES[0])
@@ -600,8 +632,10 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
                 runio._pano(review_root, "setup-complete.json")) or {}
             gaps = marker.get("gaps") or []
             if gaps:
-                msg += (" — readiness gaps: %s (fix before running a review)"
-                       % ", ".join(gaps))
+                # The same clause the normal path prints, from the same helper
+                # (#1603). This branch still says nothing when readiness is
+                # clean; the ruling widened the CALLER, not this line.
+                msg += " — " + setup_readiness._readiness_suffix(gaps)
             # This is the message the operator actually reads -- _scan_fallback's
             # is replaced here -- so the limitations clause has to be restated,
             # or declaring it there would be declaring it to nobody (§5.1).
