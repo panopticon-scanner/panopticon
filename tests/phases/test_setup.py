@@ -1630,9 +1630,13 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         # Nothing was ever written THROUGH the link; what was lost is the
         # refusal, and a security behaviour asserted three times in a diff and
         # absent from the code is worse than either.
-        self._setup(self.OK)                       # a complete report on disk
         for name in ("setup-report.json", "setup-report.md"):
             with self.subTest(artifact=name):
+                # A fresh, complete pair per artifact: `_plant_link` does not
+                # restore, so a seed outside the loop would leave the JSON a
+                # link from the first iteration and the markdown case would
+                # refuse on the JSON write, never reaching the branch it names.
+                self._setup(self.OK)
                 victim = self._plant_link(name)
                 with self.assertRaises(ValueError):
                     setup_flow.record_readiness(
