@@ -64,9 +64,9 @@ def _native_programs(compiler, trusted, target):
             "  fflush(stdout);\n"
             "}\n")
     subprocess.run([compiler, "-o", cli, cli_source], check=True,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, timeout=30)
     subprocess.run([compiler, *library_flags, "-o", library, library_source],
-                   check=True, capture_output=True, text=True)
+                   check=True, capture_output=True, text=True, timeout=30)
     return cli, loader_var, library
 
 
