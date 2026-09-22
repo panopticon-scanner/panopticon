@@ -1026,6 +1026,41 @@ class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
         self.assertEqual("panopticon-setup-scan", entry["agent"])
         self.assertFalse(os.path.exists(runio._pano(d, setup.SETUP_UNENFORCED_ACK)))
 
+    def test_the_ingest_invocation_probes_once_and_readiness_agrees_with_it(self):
+        # #1603 fix round 1, I1. Readiness used to take its OWN posture --
+        # `run_probes` with no settings path, no session root, and a second
+        # whole-tree shadow/discovery scan -- so `driver loop --setup --mode
+        # headless` printed "all measured and PROVEN" on stderr and then wrote
+        # five `unknown` remedies into the completion message and
+        # setup-report.json, for capabilities this very invocation had proved.
+        # §5.1's rule against a self-contradicting disclosure is enforced on
+        # surface 1 (#1597); surface 4 renders the posture the driver already
+        # established instead of measuring a second, weaker one.
+        d = self._repo()
+        calls = []
+
+        def _probes(host):
+            calls.append(host)
+            return _all_proven_artifact(host)
+
+        _code, status = self._setup(d, probes=_probes)
+        self.assertEqual("checkpoint", status["status"], status)
+        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+            json.dump({"groups": [{"capability": "Checkout", "match": ["src/**"],
+                                   "tests": []}]}, fh)
+        del calls[:]
+        code, status = self._setup(d, probes=_probes)                # -> ingest
+        self.assertEqual(0, code, status)
+        self.assertEqual("complete", status["status"], status)
+        self.assertEqual(1, len(calls),
+                         "one posture per invocation: %d probe rounds ran" % len(calls))
+        # ...and what readiness discloses is that posture, not a weaker one.
+        rows = {name: (ok, detail) for name, ok, detail
+                in runio._load_json(runio._pano(d, "setup-report.json"))["readiness"]}
+        self.assertEqual((True, host_disclosure.ALL_PROVEN), rows["host-capabilities"])
+        self.assertEqual([], [n for n in rows if n.startswith("host-capability:")])
+        self.assertNotIn("NOT PROVEN", status["message"])
+
     def test_a_standing_ack_is_dropped_once_the_shells_are_registered(self):
         # The bootstrap sequence itself: accept the risk once, emit the
         # shells, re-run. The acceptance must not outlive the posture it was
@@ -1415,9 +1450,12 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         # is about the host this setup is bootstrapping.
         _status, ready, _doc, _md = self._setup(self.OK, host="generic",
                                                 allow_unenforced=True)
-        self.assertEqual({"host": "generic"}, ready.call_args.kwargs)
+        self.assertEqual("generic", ready.call_args.kwargs["host"])
         _status, ready, _doc, _md = self._setup(self.OK)
-        self.assertEqual({"host": "claude"}, ready.call_args.kwargs)
+        self.assertEqual("claude", ready.call_args.kwargs["host"])
+        # ...and it renders the posture this invocation established rather
+        # than measuring a second one (#1603 fix round 1, I1).
+        self.assertIn("envelope", ready.call_args.kwargs)
 
     def test_the_rows_land_in_the_machine_readable_report(self):
         # The SAME shape the fallback records in setup-complete.json, so one

@@ -369,7 +369,14 @@ def ingest_execute(review_root, manifest):
     line, the report's own section, and a non-empty `gaps` in
     setup-report.json.
     """
-    checks = setup_flow.readiness(review_root, host=manifest.get("host", "claude"))
+    checks = setup_flow.readiness(
+        review_root, host=manifest.get("host", "claude"),
+        # #1603 fix round 1: the posture THIS invocation established, never a
+        # second one measured here. `driver setup` and `driver loop --setup`
+        # both run the posture step before either phase, and readiness that
+        # probed again disclosed a weaker answer than the stderr line printed
+        # moments earlier -- and re-scanned the whole tree to get it.
+        envelope=loop_batch.envelope_for(review_root, loop_batch.SETUP_NAMESPACE))
     record = setup_readiness._readiness_record(checks)
     res = setup_flow.ingest_proposal(
         review_root,
@@ -470,7 +477,9 @@ def _scan_fallback(review_root, manifest, host):
     done-predicates are satisfied -> run_engine completes without a checkpoint
     and without entering ingest."""
     path, created, names = setup_flow.seed_flat_manifest(review_root)
-    checks = setup_flow.readiness(review_root, host=host)
+    checks = setup_flow.readiness(
+        review_root, host=host,
+        envelope=loop_batch.envelope_for(review_root, loop_batch.SETUP_NAMESPACE))
     # The three keys, and the verdict, from the helpers the normal path uses
     # too (#1603) -- the only thing this path changed. What it records and
     # what it prints are what they were.
