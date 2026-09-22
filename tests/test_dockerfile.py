@@ -452,6 +452,13 @@ class TestDockerfileFixtures(unittest.TestCase):
         for line in lines:
             self.assertIn("dotnet restore", line)
             self.assertNotIn("dotnet build", line)
+            # Re-review I2: the restore is INTOLERANT on purpose. AspGoat's
+            # `|| echo "... skipped"` three lines up is the in-file model for
+            # making a flaky step tolerant; copied here it ships an unrestored
+            # fixture, the lane fails on applicability, and the message blames
+            # the probe -- the exact defect the bake exists to prevent.
+            self.assertNotIn("||", line, "the hostile restore must fail the image build, not fall through")
+            self.assertNotRegex(line, r";\s*(true|echo)\b", "the hostile restore must not be made tolerant")
 
     def test_fixture_refs_are_pinned_shas_not_mutable_branches(self):
         # #1252 (SEC-E2C): the goat fixtures must be pinned to immutable commit
