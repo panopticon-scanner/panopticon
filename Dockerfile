@@ -62,16 +62,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # repository-owned lock of their graphs. Distro apt packages stay unpinned for
 # the reason given above. Direct binary downloads keep their own checksum
 # gates, above and below.
-#
-# Python tools, installed from the closure this repo commits rather than from
-# whatever PyPI resolves on the day: requirements-tools.txt holds all 92
-# packages the four tools pull in, each with the sha256 of every wheel a linux
-# build may legitimately be served. --require-hashes makes pip refuse an
-# artifact whose digest is not in that file; --no-deps makes the file the
-# COMPLETE list rather than a resolver's starting point, so a missing line
-# fails the build loudly here instead of quietly fetching something unpinned.
-# `scripts/bump_pins.py requirements` is what writes the digests; it reads each
-# from PyPI AND recomputes it from the downloaded wheel.
+
+# Python tools: semgrep, bandit, bandit-sarif-formatter, pip-audit. The header
+# of requirements-tools.txt says how the closure was resolved and
+# `scripts/bump_pins.py requirements` writes its digests, reading each from
+# PyPI AND recomputing it from the downloaded wheel.
 #
 # semgrep's version (#outage 2026-08-18) is why the four tools keep their own
 # ARGs above: the rules-corpus pin below is a commit SHA on a live branch, and
@@ -127,16 +122,11 @@ RUN curl -sfL --connect-timeout 5 --max-time 60 "https://rubygems.org/downloads/
     && rm /tmp/thor.gem /tmp/brakeman.gem /tmp/bundler-audit.gem \
     && timeout 120 bundle-audit update
 
-# Node: eslint, eslint-plugin-security and
-# @microsoft/eslint-formatter-sarif, from the lockfile this repo
-# commits -- tools-image/node/package.json is the declared list and
-# package-lock.json is the 140-package closure it resolves to.
-# `npm install -g <pkg>@<version>` pinned the three NAMED packages and let the
-# registry decide the other 136 at build time -- running each one's install
-# scripts as root. `npm ci` installs exactly what
-# tools-image/node/package-lock.json records, refusing to proceed if the
-# lockfile and package.json disagree, and --ignore-scripts is the whole point:
-# no install-time code from anything in that tree runs.
+# Node: eslint, eslint-plugin-security, @microsoft/eslint-formatter-sarif.
+# tools-image/node/package.json is the declared list and package-lock.json the
+# 140-package closure it resolves to; `npm ci` refuses to proceed if the two
+# disagree, and --ignore-scripts means nothing in that tree runs install-time
+# code. Refresh with `npm install --package-lock-only --ignore-scripts`.
 #
 # WORKDIR, not `cd` (DL3003) and not `npm ci --prefix`: npm 12 reads the
 # lockfile from --prefix but the PROJECT from the working directory, so
