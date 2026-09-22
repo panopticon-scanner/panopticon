@@ -97,11 +97,16 @@ summary + JSON artifact) with standards citations and CI gating.
   keeps only the two named, note-level AI-usage rules from the exact supported
   `Semgrep OSS` driver in a separate JSON/Markdown inventory. A similar tool
   name, elevated severity, taxonomy relationship, or any metadata beyond the
-  reviewed low-confidence inventory shape keeps the result in Security. A
-  malformed candidate fails preparation before anything is published. The raw
-  captures are retained as their own artifact, and the helper publishes the
-  Security and inventory directories atomically so a preparation failure
-  cannot appear as an empty successful analysis.
+  reviewed low-confidence inventory shape keeps the result in Security. The
+  helper strictly decodes JSON, validates each complete capture offline against
+  the fixed official SARIF 2.1.0 Draft 7 schema in `scripts/reference/`, and
+  resolves localized result-message IDs through the rule or driver message
+  strings before routing. Nested property bags, taxa, and relationships are
+  checked recursively. Malformed captures and dangling message IDs fail
+  preparation before anything is published. The raw captures are retained as
+  their own artifact, and the helper publishes the Security and inventory
+  directories atomically so a preparation failure cannot appear as an empty
+  successful analysis.
 - **`meta.coverage` is the single home for what a run actually observed**:
   `adapters` (per-file disposition — `ok`/`empty`/`failed`, a findings count,
   and a `reason` when failed), `tools_ran`, `build_executing_tools`,

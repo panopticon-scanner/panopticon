@@ -3,14 +3,18 @@
 
 import argparse
 import copy
+import hashlib
 import html
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
-from typing import Any
+from typing import Any, cast
+
+import jsonschema
 
 
 INVENTORY_RULE_IDS = frozenset({
@@ -18,77 +22,109 @@ INVENTORY_RULE_IDS = frozenset({
     "opt.semgrep-rules.ai.generic.detect-generic-ai-oai",
 })
 SUPPORTED_SEMGREP_DRIVERS = frozenset({"Semgrep OSS"})
-SARIF_LEVELS = frozenset({"none", "note", "warning", "error"})
-
-# These are the standard SARIF fields whose semantics are known here. Unknown
-# top-level extensions stay in Security: a future producer must not be able to
-# add security metadata in a new field and pass an inevitably incomplete word
-# blocklist. The two standard taxonomy carriers are handled separately below.
-KNOWN_RULE_FIELDS = frozenset({
-    "id", "deprecatedIds", "guid", "deprecatedGuids", "name",
-    "deprecatedNames", "shortDescription", "fullDescription",
-    "messageStrings", "defaultConfiguration", "helpUri", "help",
-    "relationships", "properties",
-})
-KNOWN_RESULT_FIELDS = frozenset({
-    "ruleId", "ruleIndex", "rule", "kind", "level", "message",
-    "analysisTarget", "locations", "guid", "correlationGuid",
-    "occurrenceCount", "partialFingerprints", "fingerprints", "stacks",
-    "codeFlows", "graphs", "relatedLocations", "suppressions",
-    "baselineState", "rank", "attachments", "hostedViewerUri",
-    "workItemUris", "provenance", "fixes", "taxa", "webRequest",
-    "webResponse", "properties",
-})
-KNOWN_MESSAGE_FIELDS = frozenset({"text", "markdown", "id", "arguments", "properties"})
 HARMLESS_RULE_PROPERTIES = {
     "precision": "very-high",
     "tags": ["LOW CONFIDENCE"],
 }
+SARIF_SCHEMA_SOURCE = (
+    "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/"
+    "sarif-schema-2.1.0.json")
+SARIF_SCHEMA_SHA256 = "ad6db49878699b091f3eeb765b6e29e92a34bad4da88664d000c923b549c3a25"
+SARIF_REFERENCE_DIR = Path(__file__).with_name("reference")
+SARIF_SCHEMA_PATH = SARIF_REFERENCE_DIR / "sarif-schema-2.1.0.json"
+SARIF_NOTICE_PATH = SARIF_REFERENCE_DIR / "SARIF-2.1.0-NOTICES.md"
+_PLACEHOLDER = re.compile(r"(?<!\{)\{([0-9]+)\}(?!\})")
 
 
 class ReportError(ValueError):
     """The raw capture set cannot be split without losing information."""
 
 
-def _object(value: Any, where: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ReportError(f"{where} must be an object")
-    return value
+class _DuplicateKeyError(ValueError):
+    pass
 
 
-def _list(value: Any, where: str) -> list[Any]:
-    if not isinstance(value, list):
-        raise ReportError(f"{where} must be an array")
-    return value
+class _NonJSONConstantError(ValueError):
+    pass
 
 
-def _rules_for(run: dict[str, Any], where: str) -> tuple[str, list[dict[str, Any]]]:
-    tool = _object(run.get("tool"), f"{where}.tool")
-    driver = _object(tool.get("driver"), f"{where}.tool.driver")
-    driver_name = driver.get("name")
-    if not isinstance(driver_name, str) or not driver_name:
-        raise ReportError(f"{where}.tool.driver.name must be a non-empty string")
-    raw_rules = driver.get("rules", [])
-    rules = _list(raw_rules, f"{where}.tool.driver.rules")
-    checked = []
-    for index, value in enumerate(rules):
-        rule = _object(value, f"{where}.tool.driver.rules[{index}]")
-        rule_id = rule.get("id")
-        if rule_id is not None and (not isinstance(rule_id, str) or not rule_id):
-            raise ReportError(f"{where}.tool.driver.rules[{index}].id must be a non-empty string")
-        default = rule.get("defaultConfiguration")
-        if default is not None:
-            default = _object(default, f"{where}.tool.driver.rules[{index}].defaultConfiguration")
-            level = default.get("level")
-            if level is not None and level not in SARIF_LEVELS:
-                raise ReportError(
-                    f"{where}.tool.driver.rules[{index}].defaultConfiguration.level "
-                    "is not a SARIF level")
-        properties = rule.get("properties")
-        if properties is not None:
-            _object(properties, f"{where}.tool.driver.rules[{index}].properties")
-        checked.append(rule)
-    return driver_name, checked
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateKeyError
+        result[key] = value
+    return result
+
+
+def _reject_constant(_value: str) -> None:
+    raise _NonJSONConstantError
+
+
+def _strict_json(raw: bytes, source: str) -> Any:
+    try:
+        return json.loads(raw, object_pairs_hook=_unique_object,
+                          parse_constant=_reject_constant)
+    except _DuplicateKeyError as exc:
+        raise ReportError(f"{source}: duplicate object key in JSON") from exc
+    except _NonJSONConstantError as exc:
+        raise ReportError(f"{source}: non-JSON constant in JSON") from exc
+    except UnicodeDecodeError as exc:
+        raise ReportError(f"{source}: JSON is not valid UTF-8") from exc
+    except json.JSONDecodeError as exc:
+        raise ReportError(
+            f"{source}: invalid JSON syntax at line {exc.lineno}, "
+            f"column {exc.colno} ({exc.msg})") from exc
+
+
+def _sarif_validator() -> jsonschema.Draft7Validator:
+    try:
+        raw = SARIF_SCHEMA_PATH.read_bytes()
+    except OSError as exc:
+        raise ReportError(
+            f"local SARIF schema is unavailable: {SARIF_SCHEMA_PATH.name}") from exc
+    if hashlib.sha256(raw).hexdigest() != SARIF_SCHEMA_SHA256:
+        raise ReportError(
+            f"local SARIF schema checksum mismatch: {SARIF_SCHEMA_PATH.name}")
+    schema = _strict_json(raw, SARIF_SCHEMA_PATH.name)
+    try:
+        jsonschema.Draft7Validator.check_schema(schema)
+    except jsonschema.SchemaError as exc:
+        raise ReportError("local SARIF schema is invalid") from exc
+    return jsonschema.Draft7Validator(schema)
+
+
+def _json_path(parts: Any) -> str:
+    path = "$"
+    for part in parts:
+        if isinstance(part, int):
+            path += f"[{part}]"
+        elif isinstance(part, str) and part.isidentifier():
+            path += f".{part}"
+        else:
+            path += "[" + json.dumps(str(part), ensure_ascii=True) + "]"
+    return path
+
+
+def _validate_sarif(validator: jsonschema.Draft7Validator,
+                    document: Any, source: str) -> None:
+    errors = sorted(
+        validator.iter_errors(document),
+        key=lambda error: tuple(f"{type(part).__name__}:{part}"
+                                for part in error.absolute_path))
+    if errors:
+        error = errors[0]
+        raise ReportError(
+            f"{source}: SARIF schema validation failed at "
+            f"{_json_path(error.absolute_path)} "
+            f"(constraint: {error.validator}; {len(errors)} error(s))")
+
+
+def _rules_for(run: dict[str, Any]) -> tuple[
+        str, list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    driver = run["tool"]["driver"]
+    return (driver["name"], driver.get("rules", []),
+            driver.get("globalMessageStrings", {}))
 
 
 def _resolve_rule(result: dict[str, Any], rules: list[dict[str, Any]],
@@ -96,15 +132,10 @@ def _resolve_rule(result: dict[str, Any], rules: list[dict[str, Any]],
     has_id = "ruleId" in result
     has_index = "ruleIndex" in result
     rule_id = result.get("ruleId")
-    if has_id and (not isinstance(rule_id, str) or not rule_id):
-        raise ReportError(f"{where}.ruleId must be a non-empty string")
-
-    rule_index = result.get("ruleIndex")
+    rule_index = cast(int, result.get("ruleIndex", -1))
     indexed_rule = None
-    if has_index:
-        if isinstance(rule_index, bool) or not isinstance(rule_index, int):
-            raise ReportError(f"{where}.ruleIndex must be an integer")
-        if rule_index < 0 or rule_index >= len(rules):
+    if has_index and rule_index >= 0:
+        if rule_index >= len(rules):
             raise ReportError(f"{where}.ruleIndex {rule_index} is outside the rule array")
         indexed_rule = rules[rule_index]
         indexed_id = indexed_rule.get("id")
@@ -129,39 +160,45 @@ def _effective_level(result: dict[str, Any], rule: dict[str, Any],
                      where: str) -> str:
     level = result.get("level")
     if level is not None:
-        if level not in SARIF_LEVELS:
-            raise ReportError(f"{where}.level is not a SARIF level")
         return level
     default = rule.get("defaultConfiguration") or {}
     return default.get("level", "warning")
 
 
+def _contains_unreviewed_metadata(value: Any, *, root_rule: bool = False,
+                                  at_root: bool = True) -> bool:
+    if isinstance(value, list):
+        return any(_contains_unreviewed_metadata(item, at_root=False)
+                   for item in value)
+    if not isinstance(value, dict):
+        return False
+    for key, item in value.items():
+        if key == "properties":
+            if at_root and root_rule:
+                if item != HARMLESS_RULE_PROPERTIES:
+                    return True
+            elif item:
+                return True
+        if key in {"taxa", "relationships"} and item:
+            return True
+        if _contains_unreviewed_metadata(item, at_root=False):
+            return True
+    return False
+
+
 def _metadata_is_verified_harmless(result: dict[str, Any],
-                                   rule: dict[str, Any]) -> bool:
+                                   rule: dict[str, Any],
+                                   referenced_message: dict[str, Any] | None) -> bool:
     """Whether all candidate metadata has the exact reviewed inventory shape.
 
     Unknown metadata is valid input and remains actionable; it is not a report
     preparation error. Only the current Semgrep shape is authorized to leave
     Security. This covers CVE/CVSS/CWE/OWASP without relying on their spelling.
     """
-    if not set(rule).issubset(KNOWN_RULE_FIELDS):
-        return False
-    if not set(result).issubset(KNOWN_RESULT_FIELDS):
-        return False
-    if rule.get("properties") != HARMLESS_RULE_PROPERTIES:
-        return False
-    if result.get("properties") != {}:
-        return False
-    message = result.get("message")
-    if not isinstance(message, dict):
-        return False
-    if "properties" in message and message["properties"] != {}:
-        return False
-    if "relationships" in rule and rule["relationships"] != []:
-        return False
-    if "taxa" in result and result["taxa"] != []:
-        return False
-    return True
+    return (not _contains_unreviewed_metadata(rule, root_rule=True) and
+            not _contains_unreviewed_metadata(result) and
+            (referenced_message is None or
+             not _contains_unreviewed_metadata(referenced_message)))
 
 
 def _is_semgrep(driver_name: str) -> bool:
@@ -170,11 +207,12 @@ def _is_semgrep(driver_name: str) -> bool:
 
 def _inventory_candidate(driver_name: str, rule_id: str | None,
                          result: dict[str, Any], rule: dict[str, Any] | None,
-                         where: str) -> bool:
+                         where: str,
+                         referenced_message: dict[str, Any] | None = None) -> bool:
     if rule is None:
         return False
     return (_inventory_scope_candidate(driver_name, rule_id, result, rule, where) and
-            _metadata_is_verified_harmless(result, rule))
+            _metadata_is_verified_harmless(result, rule, referenced_message))
 
 
 def _inventory_scope_candidate(driver_name: str, rule_id: str | None,
@@ -186,56 +224,60 @@ def _inventory_scope_candidate(driver_name: str, rule_id: str | None,
     return _effective_level(result, rule, where) == "note"
 
 
-def _validate_inventory_message(result: dict[str, Any], where: str) -> None:
-    message = _object(result.get("message"), f"{where}.message")
-    unknown = set(message) - KNOWN_MESSAGE_FIELDS
-    if unknown:
-        raise ReportError(
-            f"{where}.message has unknown fields: {', '.join(sorted(unknown))}")
-    if "properties" in message:
-        _object(message["properties"], f"{where}.message.properties")
-    forms = []
-    for name in ("text", "markdown", "id"):
-        if name not in message:
-            continue
-        value = message[name]
-        if not isinstance(value, str) or not value:
-            raise ReportError(f"{where}.message.{name} must be a non-empty string")
-        forms.append(name)
-    if not forms:
-        raise ReportError(
-            f"{where}.message must contain non-empty text, markdown, or id")
-    if "arguments" in message:
-        arguments = _list(message["arguments"], f"{where}.message.arguments")
-        if "id" not in message:
-            raise ReportError(f"{where}.message.arguments requires message.id")
-        if any(not isinstance(argument, str) for argument in arguments):
-            raise ReportError(f"{where}.message.arguments must contain only strings")
+def _substitute_arguments(text: str, arguments: list[str]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        index = int(match.group(1))
+        return arguments[index] if index < len(arguments) else match.group(0)
+
+    return _PLACEHOLDER.sub(replace, text).replace("{{", "{").replace("}}", "}")
 
 
-def _split_document(document: Any, source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    original = _object(document, source)
-    runs = _list(original.get("runs"), f"{source}.runs")
+def _resolved_message(result: dict[str, Any], rule: dict[str, Any],
+                      global_messages: dict[str, dict[str, Any]],
+                      where: str) -> tuple[dict[str, Any] | None, str]:
+    message = result["message"]
+    referenced = None
+    if "id" in message:
+        message_id = message["id"]
+        referenced = rule.get("messageStrings", {}).get(message_id)
+        if referenced is None:
+            referenced = global_messages.get(message_id)
+        if referenced is None:
+            raise ReportError(
+                f"{where}.message.id does not resolve in rule.messageStrings "
+                "or driver.globalMessageStrings")
+    display = message.get("text")
+    if display is None:
+        # The schema requires text on every multiformatMessageString.
+        assert referenced is not None
+        display = referenced["text"]
+    return referenced, _substitute_arguments(display, message.get("arguments", []))
+
+
+def _split_document(document: dict[str, Any],
+                    source: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    original = document
+    runs = original["runs"]
     security = copy.deepcopy(original)
     inventory = []
-    for run_index, value in enumerate(runs):
+    for run_index, run in enumerate(runs):
         where = f"{source}.runs[{run_index}]"
-        run = _object(value, where)
-        driver_name, rules = _rules_for(run, where)
-        raw_results = run.get("results", [])
-        results = _list(raw_results, f"{where}.results")
+        driver_name, rules, global_messages = _rules_for(run)
+        results = run.get("results", [])
         actionable = []
-        for result_index, value in enumerate(results):
+        for result_index, result in enumerate(results):
             result_where = f"{where}.results[{result_index}]"
-            result = _object(value, result_where)
-            properties = result.get("properties")
-            if properties is not None:
-                _object(properties, f"{result_where}.properties")
             rule_id, rule = _resolve_rule(result, rules, result_where)
+            referenced_message = None
+            display_message = None
             if _inventory_scope_candidate(
                     driver_name, rule_id, result, rule, result_where):
-                _validate_inventory_message(result, result_where)
-            if _inventory_candidate(driver_name, rule_id, result, rule, result_where):
+                assert rule is not None
+                referenced_message, display_message = _resolved_message(
+                    result, rule, global_messages, result_where)
+            if _inventory_candidate(
+                    driver_name, rule_id, result, rule, result_where,
+                    referenced_message):
                 inventory.append({
                     "source": source,
                     "run_index": run_index,
@@ -244,6 +286,7 @@ def _split_document(document: Any, source: str) -> tuple[dict[str, Any], list[di
                     "rule_id": rule_id,
                     "rule": copy.deepcopy(rule),
                     "result": copy.deepcopy(result),
+                    "display_message": display_message,
                 })
             else:
                 actionable.append(copy.deepcopy(result))
@@ -283,9 +326,7 @@ def _render_markdown(rows: list[dict[str, Any]]) -> str:
                   "| --- | --- | --- | --- |"])
     for row in rows:
         result = row["result"]
-        message = result["message"]
-        text = next(message[name] for name in ("text", "markdown", "id")
-                    if name in message)
+        text = row["display_message"]
         lines.append("| %s | `%s` | `%s` | %s |" % (
             _markdown_text(row["tool"]), _markdown_text(row["rule_id"]),
             _markdown_text(_location(result)), _markdown_text(text)))
@@ -304,6 +345,8 @@ def prepare_reports(input_dir: str | os.PathLike[str],
     if destination.exists():
         raise ReportError(f"output path already exists: {destination}")
 
+    validator = _sarif_validator()
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.",
                                     dir=destination.parent))
@@ -315,18 +358,22 @@ def prepare_reports(input_dir: str | os.PathLike[str],
         inventory_rows = []
         for capture in captures:
             try:
-                document = json.loads(capture.read_bytes())
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raw = capture.read_bytes()
+            except OSError as exc:
                 raise ReportError(f"cannot read {capture.name}: {exc}") from exc
+            document = _strict_json(raw, capture.name)
+            _validate_sarif(validator, document, capture.name)
             security, rows = _split_document(document, capture.name)
             inventory_rows.extend(rows)
             (security_dir / capture.name).write_text(
-                json.dumps(security, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+                json.dumps(security, indent=2, sort_keys=False, allow_nan=False) + "\n",
+                encoding="utf-8")
 
         payload = {"version": 1, "count": len(inventory_rows),
                    "results": inventory_rows}
         (inventory_dir / "ai-inventory.json").write_text(
-            json.dumps(payload, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+            json.dumps(payload, indent=2, sort_keys=False, allow_nan=False) + "\n",
+            encoding="utf-8")
         (inventory_dir / "ai-inventory.md").write_text(
             _render_markdown(inventory_rows), encoding="utf-8")
         os.replace(staging, destination)

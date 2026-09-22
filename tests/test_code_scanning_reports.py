@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import os
 import subprocess
@@ -42,13 +43,16 @@ def _result(rule_id=None, rule_index=None, level=None, path="src/app.py"):
     return result
 
 
-def _sarif(rules, results, driver="Semgrep OSS", run_properties=None):
+def _sarif(rules, results, driver="Semgrep OSS", run_properties=None,
+           global_messages=None):
+    driver_data = {"name": driver, "version": "1.2.3", "rules": rules}
+    if global_messages is not None:
+        driver_data["globalMessageStrings"] = global_messages
     return {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
         "runs": [{
-            "tool": {"driver": {"name": driver, "version": "1.2.3",
-                                "rules": rules}},
+            "tool": {"driver": driver_data},
             "properties": run_properties or {"kept": ["byte", "for", "byte"]},
             "results": results,
         }],
@@ -145,7 +149,7 @@ def test_similar_elevated_other_scanner_and_security_metadata_stay_actionable(
 def test_rule_index_and_all_other_result_fields_are_preserved(tmp_path):
     rules = [_rule("security.first", "warning"), _rule(OPENAI)]
     inventory = _result(OPENAI, 1)
-    inventory["stacks"] = [{"message": {"text": "keep me"}}]
+    inventory["stacks"] = [{"frames": [], "message": {"text": "keep me"}}]
     _raw, output, _before = _prepare(
         tmp_path, {"semgrep.sarif": _sarif(rules, [inventory])})
     row = json.loads((output / "inventory" / "ai-inventory.json").read_text())[
@@ -173,12 +177,12 @@ def test_security_metadata_on_the_result_stays_actionable(tmp_path):
     ({"properties": {"precision": "very-high",
                      "tags": ["LOW CONFIDENCE", "OWASP-A03"]}}, {}),
     ({"relationships": [{"target": {"id": "CWE-79"}}]}, {}),
-    ({"futureSecurityMetadata": {"score": 9.8}}, {}),
+    ({"help": {"text": "help", "properties": {
+        "futureSecurityMetadata": {"score": 9.8}}}}, {}),
     ({}, {"taxa": [{"id": "CWE-79", "index": 0}]}),
     ({}, {"properties": {"cve": "CVE-2026-1234"}}),
     ({}, {"message": {"text": "observed SDK usage",
                        "properties": {"cvss": "9.8"}}}),
-    ({}, {"futureSecurityMetadata": {"score": 9.8}}),
 ])
 def test_any_known_or_unknown_security_metadata_stays_actionable(
         tmp_path, rule_update, result_update):
@@ -205,6 +209,41 @@ def test_explicitly_empty_taxa_and_relationships_are_harmless(tmp_path):
     assert security["runs"][0]["results"] == []
     assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
         "count"] == 1
+
+
+def test_nested_artifact_location_security_metadata_stays_actionable(tmp_path):
+    result = _result(ANTHROPIC)
+    result["locations"][0]["physicalLocation"]["artifactLocation"]["properties"] = {
+        "cve": "CVE-2026-1234",
+    }
+    document = _sarif([_rule(ANTHROPIC)], [result])
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "count"] == 0
+
+
+def test_deep_stack_frame_metadata_stays_actionable(tmp_path):
+    result = _result(ANTHROPIC)
+    result["stacks"] = [{"frames": [{
+        "location": {"physicalLocation": {
+            "artifactLocation": {"uri": "src/deep.py"},
+        }},
+        "properties": {"future-classification": "security"},
+    }]}]
+    document = _sarif([_rule(ANTHROPIC)], [result])
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+
+
+def test_empty_nested_property_bags_are_harmless(tmp_path):
+    result = _result(ANTHROPIC)
+    result["locations"][0]["physicalLocation"]["artifactLocation"]["properties"] = {}
+    result["stacks"] = [{"frames": [{"properties": {}}]}]
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": _sarif([_rule(ANTHROPIC)], [result])})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text())[
+        "runs"][0]["results"] == []
 
 
 @pytest.mark.parametrize("document", [
@@ -238,16 +277,39 @@ def test_malformed_inventory_candidate_message_fails_atomically(tmp_path, messag
     raw = tmp_path / "raw"
     _write(raw, "semgrep.sarif", _sarif([_rule(ANTHROPIC)], [result]))
     output = tmp_path / "reports"
-    with pytest.raises(reports.ReportError, match="message"):
+    with pytest.raises(reports.ReportError, match="schema validation"):
         reports.prepare_reports(raw, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("message", [
+    {"markdown": "**markdown alone is invalid**"},
+    {"text": "bad location"},
+])
+def test_official_schema_rejects_malformed_candidates_atomically(
+        tmp_path, message):
+    result = _result(ANTHROPIC)
+    result["message"] = message
+    if "bad location" in message.get("text", ""):
+        result["locations"] = "not-an-array"
+    raw = tmp_path / "raw"
+    _write(raw, "semgrep.sarif", _sarif([_rule(ANTHROPIC)], [result]))
+    output = tmp_path / "reports"
+    with pytest.raises(reports.ReportError) as caught:
+        reports.prepare_reports(raw, output)
+    error = str(caught.value)
+    assert "semgrep.sarif" in error
+    assert "$" in error
+    assert "constraint" in error
+    assert "not-an-array" not in error
     assert not output.exists()
 
 
 @pytest.mark.parametrize("message,visible", [
     ({"text": "plain text"}, "plain text"),
-    ({"markdown": "**markdown**"}, "markdown"),
+    ({"text": "plain", "markdown": "**markdown**"}, "plain"),
     ({"id": "localized-message", "arguments": ["one", "two"]},
-     "localized-message"),
+     "localized one two"),
 ])
 def test_all_sarif_message_forms_route_and_render_consistently(
         tmp_path, message, visible):
@@ -263,6 +325,61 @@ def test_all_sarif_message_forms_route_and_render_consistently(
     assert json.loads((output / "security" / "semgrep.sarif").read_text())[
         "runs"][0]["results"] == []
     assert visible in (output / "inventory" / "ai-inventory.md").read_text()
+
+
+def test_resolved_global_message_id_routes_without_mutating_result(tmp_path):
+    result = _result(ANTHROPIC)
+    result["message"] = {"id": "global-message", "arguments": ["SDK"]}
+    original = copy.deepcopy(result)
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": _sarif(
+        [_rule(ANTHROPIC)], [result],
+        global_messages={"global-message": {"text": "Observed {0}"}})})
+    row = json.loads((output / "inventory" / "ai-inventory.json").read_text())[
+        "results"][0]
+    assert row["result"] == original
+    assert "Observed SDK" in (output / "inventory" / "ai-inventory.md").read_text()
+
+
+def test_text_with_arguments_and_no_id_is_valid(tmp_path):
+    result = _result(ANTHROPIC)
+    result["message"] = {"text": "Observed SDK", "arguments": ["unused"]}
+    _raw, output, _before = _prepare(
+        tmp_path, {"semgrep.sarif": _sarif([_rule(ANTHROPIC)], [result])})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text())[
+        "runs"][0]["results"] == []
+
+
+@pytest.mark.parametrize("message_strings,global_strings", [
+    (None, None),
+    ({"different": {"text": "Different"}}, None),
+])
+def test_dangling_message_id_fails_atomically(
+        tmp_path, message_strings, global_strings):
+    rule = _rule(ANTHROPIC)
+    if message_strings is not None:
+        rule["messageStrings"] = message_strings
+    result = _result(ANTHROPIC)
+    result["message"] = {"id": "missing-message-string"}
+    raw = tmp_path / "raw"
+    _write(raw, "semgrep.sarif", _sarif(
+        [rule], [result], global_messages=global_strings))
+    output = tmp_path / "reports"
+    with pytest.raises(reports.ReportError, match="message.id"):
+        reports.prepare_reports(raw, output)
+    assert not output.exists()
+
+
+def test_malformed_referenced_message_string_fails_schema_validation(tmp_path):
+    rule = _rule(ANTHROPIC)
+    rule["messageStrings"] = {"bad": {"markdown": "missing required text"}}
+    result = _result(ANTHROPIC)
+    result["message"] = {"id": "bad"}
+    raw = tmp_path / "raw"
+    _write(raw, "semgrep.sarif", _sarif([rule], [result]))
+    output = tmp_path / "reports"
+    with pytest.raises(reports.ReportError, match="schema"):
+        reports.prepare_reports(raw, output)
+    assert not output.exists()
 
 
 def test_missing_and_invalid_inputs_fail_visibly_without_publishing(tmp_path):
@@ -283,9 +400,53 @@ def test_missing_and_invalid_inputs_fail_visibly_without_publishing(tmp_path):
     proc = subprocess.run(
         [sys.executable, reports.__file__, "--input-dir", os.fspath(raw),
          "--output-dir", os.fspath(output)],
-        capture_output=True, text=True, check=False)
+        capture_output=True, text=True, check=False,
+        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
     assert proc.returncode != 0
     assert "broken.sarif" in proc.stderr
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("raw_json,problem", [
+    ('{"version":"2.1.0","version":"2.1.0","runs":[]}', "duplicate object key"),
+    ('{"version":"2.1.0","runs":[],"rank":NaN}', "non-JSON constant"),
+    ('{"version":"2.1.0","runs":[],"rank":Infinity}', "non-JSON constant"),
+])
+def test_strict_json_rejects_duplicates_and_non_json_constants_atomically(
+        tmp_path, raw_json, problem):
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "malformed.sarif").write_text(raw_json, encoding="utf-8")
+    output = tmp_path / "reports"
+    with pytest.raises(reports.ReportError, match=problem) as caught:
+        reports.prepare_reports(raw, output)
+    assert "malformed.sarif" in str(caught.value)
+    assert not output.exists()
+
+
+def test_schema_is_the_unmodified_official_sarif_2_1_0_release():
+    schema = reports.SARIF_SCHEMA_PATH.read_bytes()
+    assert hashlib.sha256(schema).hexdigest() == reports.SARIF_SCHEMA_SHA256
+    notice = reports.SARIF_NOTICE_PATH.read_text(encoding="utf-8")
+    assert "Copyright © OASIS Open 2020" in notice
+    assert "Notices" in notice
+    assert reports.SARIF_SCHEMA_SOURCE in notice
+
+
+def test_missing_or_modified_schema_fails_without_publishing(tmp_path, monkeypatch):
+    raw = tmp_path / "raw"
+    _write(raw, "semgrep.sarif", _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)]))
+    output = tmp_path / "reports"
+    monkeypatch.setattr(reports, "SARIF_SCHEMA_PATH", tmp_path / "missing-schema.json")
+    with pytest.raises(reports.ReportError, match="schema"):
+        reports.prepare_reports(raw, output)
+    assert not output.exists()
+
+    modified = tmp_path / "modified-schema.json"
+    modified.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(reports, "SARIF_SCHEMA_PATH", modified)
+    with pytest.raises(reports.ReportError, match="checksum"):
+        reports.prepare_reports(raw, output)
     assert not output.exists()
 
 
