@@ -415,11 +415,8 @@ def _take_readiness(review_root, host):
     so it is a limitation, and `_readiness_suffix` refuses to call a record
     with nothing measured in it OK.
 
-    The POSTURE is this invocation's own (I1), never a second one measured
-    here: `driver setup` and `driver loop --setup` both establish it before
-    either phase runs, and readiness that probed again disclosed a weaker
-    answer than the stderr line printed moments earlier -- and re-scanned the
-    whole tree to get it.
+    The posture handed down is this invocation's own, never a second one
+    measured here -- `_check_host_shells` explains why (I1).
     """
     at = run_manifest._now_iso()
     try:
