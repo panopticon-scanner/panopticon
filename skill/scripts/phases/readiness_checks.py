@@ -107,16 +107,17 @@ SESSION_REMEDY = (
     "this repo and not about this machine, so it would resolve to headless here "
     "and find no binary")
 
-# #1639 P15 I2: the Python packages a RUN needs, as (import name, pip name).
-# Both are declared in `pyproject.toml`'s `[project] dependencies` and
+# #1639 P15 I2: declared Python runtime packages, as (import name, pip name).
+# All are declared in `pyproject.toml`'s `[project] dependencies` and
 # `tests/phases/test_readiness_verb.py` holds this tuple to that list, so the
-# two cannot drift. Checked HERE, before the first paid dispatch, because
-# neither failure is cheap where it actually lands: `jsonschema` is imported by
-# the completion path's artifact validation, which is deliberately fail-closed,
+# two cannot drift. Checked HERE, before the first paid dispatch. `jsonschema` is
+# imported by the completion path's artifact validation, which is deliberately fail-closed,
 # so an install without it does not quietly stop validating -- it exits
 # `artifact invalid` after the whole review has been paid for. PyYAML is a hard
-# import in discovery and takes the run down with a traceback.
-RUNTIME_PACKAGES = (("yaml", "pyyaml"), ("jsonschema", "jsonschema"))
+# import in discovery and takes the run down with a traceback. defusedxml
+# hardens the XML golden-capture path against DTD and entity expansion.
+RUNTIME_PACKAGES = (("yaml", "pyyaml"), ("defusedxml", "defusedxml"),
+                    ("jsonschema", "jsonschema"))
 
 PACKAGES_REMEDY = "pip install %s (or `pip install -e .` in a checkout)"
 

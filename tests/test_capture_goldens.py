@@ -106,6 +106,19 @@ class TestTrimXml(unittest.TestCase):
         root = ET.fromstring(cg.trim(doc).decode("utf-8"))
         self.assertEqual(len(root.findall("other")), 9)
 
+    def test_dtd_entity_input_is_rejected_without_expansion(self):
+        raw = (b'<!DOCTYPE BugCollection [<!ENTITY injected "target-secret">]>'
+               b'<BugCollection><BugInstance>&injected;</BugInstance>'
+               b'</BugCollection>')
+
+        out = cg.trim(raw)
+
+        # Rejected XML follows the existing malformed-input contract: return
+        # the original bytes for the later capture redaction pass. In
+        # particular, never serialize an entity-expanded intermediate report.
+        self.assertIs(out, raw)
+        self.assertNotIn(b"<BugInstance>target-secret", out)
+
 
 class _Adapter:
     """Stand-in for a tool adapter, each hook independently riggable."""

@@ -13,6 +13,9 @@ dependencies = [
     # The driver and synthesize load YAML (groups.yml, model-profiles.yml,
     # capability_*.yml); previously undeclared (#5.0-01).
     "pyyaml>=6.0.3",
+    # capture_goldens structurally trims untrusted scanner XML. Reject DTDs
+    # and entities rather than expanding target-controlled input.
+    "defusedxml>=0.7.1",
     # #run7 ARC-F2E declared jsonschema a runtime dep to stop schema validators
     # failing open in a bare `pip install panopticon`. #run10 recorded that no
     # runtime module imported it any more (codex_runner.validate_schema went
