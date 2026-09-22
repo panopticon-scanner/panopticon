@@ -243,8 +243,8 @@ def latest_gem_version(name: str) -> str:
     return _gem_version(version)
 
 
-def verified_gem_sha(name: str, version: str) -> tuple[str, list[str]]:
-    """(sha256, runtime dependency names) for `name-version.gem`.
+def verified_gem_sha(name: str, version: str) -> tuple[str, dict[str, str | None]]:
+    """(sha256, {runtime dependency: requirement string}) for `name-version.gem`.
 
     The digest is read from rubygems' release document AND recomputed from the
     downloaded .gem, for the reason the rustup family states: the published
@@ -279,7 +279,7 @@ def verified_gem_sha(name: str, version: str) -> tuple[str, list[str]]:
                     if isinstance(d, dict) and isinstance(d.get("name"), str)}
 
 
-def unreviewed_gem_requirements(name: str, runtime: dict) -> list[str]:
+def unreviewed_gem_requirements(name: str, runtime: dict[str, str | None]) -> list[str]:
     """How this release's runtime closure differs from the reviewed one, or [].
 
     Pure. `runtime` is `verified_gem_sha`'s second value: {dependency:
