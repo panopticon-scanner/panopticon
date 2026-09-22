@@ -18,6 +18,7 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import groups_schema
+from scripts import executable
 from scripts.tools import ADAPTERS, ONLINE_ONLY
 from scripts.tools import egress
 from scripts.tools.base import drain_stderr_async
@@ -152,15 +153,19 @@ def validate_output_dir(target, out_dir):
     return out_dir
 
 
-def docker_available(image="panopticon-tools", runner=None):
+def docker_available(image="panopticon-tools", runner=None, target=None):
     """Check if the specified Docker image is available."""
     runner = runner or subprocess.run
     try:
-        res = runner(["docker", "image", "inspect", image],
+        root = target or os.getcwd()
+        resolved = executable.resolve("docker", root, os.environ.get("PATH", ""))
+        docker_env = executable.sanitize_startup_environment(os.environ)
+        docker_env["PATH"] = resolved.path_env
+        res = runner([resolved.path, "image", "inspect", image],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     timeout=DOCKER_PROBE_TIMEOUT)
+                     timeout=DOCKER_PROBE_TIMEOUT, env=docker_env)
         return getattr(res, "returncode", 1) == 0
-    except FileNotFoundError:
+    except (FileNotFoundError, executable.ExecutableResolutionError):
         # docker binary genuinely absent -- the one benign case; stay quiet.
         return False
     except Exception as e:  # noqa: BLE001
@@ -557,7 +562,7 @@ def _working_dir_flags(tool):
 MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 
 
-def _popen_runner(cmd, stdout=None, stderr=None, timeout=None):
+def _popen_runner(cmd, stdout=None, stderr=None, timeout=None, env=None):
     """The default PRODUCTION runner (#1111 / run7 COD-A2A).
 
     Returns a live subprocess.Popen so _capture_run streams the child's stdout
@@ -568,10 +573,30 @@ def _popen_runner(cmd, stdout=None, stderr=None, timeout=None):
     honored here: Popen has no timeout=, so the wall-clock bound is enforced by
     _stream_and_write's watchdog instead (which also bounds a hung streaming read,
     something a single subprocess.run timeout could not do mid-buffer)."""
-    return subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
+    return subprocess.Popen(cmd, stdout=stdout, stderr=stderr, env=env)
 
 
-def _capture_run(label, tool, docker, out_path, runner):
+class _DockerRunner:
+    """Bind one runner seam to the trusted Docker child environment."""
+
+    def __init__(self, runner, env):
+        self._panopticon_runner = runner
+        self._panopticon_env = env
+
+    def __call__(self, cmd, **kwargs):
+        kwargs["env"] = self._panopticon_env
+        return self._panopticon_runner(cmd, **kwargs)
+
+
+class _DockerContext:
+    """The resolved Docker identity and the exact environment bound to it."""
+
+    def __init__(self, executable_path, env):
+        self.executable = executable_path
+        self.env = env
+
+
+def _capture_run(label, tool, docker, out_path, runner, docker_context=None):
     """Run one docker tool/adapter invocation and land its stdout at out_path.
 
     Streams stdout into a bounded sink so adversarial/large target output does
@@ -589,9 +614,9 @@ def _capture_run(label, tool, docker, out_path, runner):
     # only the CLI client. The cidfile must NOT pre-exist (docker refuses to start),
     # so it lives in a fresh temp dir cleaned up here. Inserted right after `run`.
     docker_bin = cidfile = cid_dir = None
-    if (len(docker) >= 2 and os.path.basename(str(docker[0])) == "docker"
-            and docker[1] == "run"):
-        docker_bin = docker[0]
+    if (docker_context is not None and len(docker) >= 2
+            and docker[0] == docker_context.executable and docker[1] == "run"):
+        docker_bin = docker_context.executable
         cid_dir = tempfile.mkdtemp(prefix="pano-cid-")
         cidfile = os.path.join(cid_dir, "cid")
         docker = docker[:2] + ["--cidfile", cidfile] + docker[2:]
@@ -602,7 +627,9 @@ def _capture_run(label, tool, docker, out_path, runner):
         if hasattr(proc, "stdout") and isinstance(proc.stdout, (bytes, type(None))):
             return _write_completed(label, tool, proc, out_path)
         return _stream_and_write(label, tool, proc, out_path,
-                                 docker_bin=docker_bin, cidfile=cidfile)
+                                 docker_bin=docker_bin, cidfile=cidfile,
+                                 docker_env=(docker_context.env
+                                             if docker_context is not None else None))
     except subprocess.TimeoutExpired:
         print("%s %s timed out after %ss; skipping" % (label, tool, TOOL_TIMEOUT),
               file=sys.stderr)
@@ -699,7 +726,7 @@ def _drain(stream):
 
 
 def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
-                      docker_bin=None, cidfile=None):
+                      docker_bin=None, cidfile=None, docker_env=None):
     """Stream stdout from a Popen-like object with an explicit byte cap AND a
     wall-clock deadline.
 
@@ -727,7 +754,8 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
         if not cid:
             return
         try:
-            subprocess.run([docker_bin, "kill", cid], capture_output=True, timeout=10)
+            subprocess.run([docker_bin, "kill", cid], capture_output=True, timeout=10,
+                           env=docker_env)
         except (subprocess.SubprocessError, OSError):
             pass
 
@@ -1059,7 +1087,16 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     validate_output_dir(target, out_dir)
     os.makedirs(out_dir, exist_ok=True)
     tools = filter_online(tools, online)
-    docker_bin = shutil.which("docker") or "docker"
+    resolved = executable.resolve("docker", target, os.environ.get("PATH", ""))
+    docker_bin = resolved.path
+    docker_env = executable.sanitize_startup_environment(os.environ)
+    docker_env["PATH"] = resolved.path_env
+    docker_context = _DockerContext(docker_bin, docker_env)
+
+    # One environment for scanner launches and every egress control-plane
+    # command. The wrapper preserves the injected runner seam while making an
+    # unsafe nested PATH impossible in production.
+    docker_runner = _DockerRunner(runner, docker_env)
     # #1317: NullProgress by default, so the five call sites below need no
     # `if progress:` guard and the runner's behaviour is byte-identical unless
     # a caller opts in.
@@ -1071,18 +1108,18 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     # the argv is built, read back by `write_manifest`. A claim written from
     # intent would survive the flags going away; this one does not.
     _NETWORK_POSTURE.clear()
-    with egress.session(docker_bin, tools, runner, run_id=run_id,
+    with egress.session(docker_bin, tools, docker_runner, run_id=run_id,
                         max_seconds=TOOL_TIMEOUT * total
                         + egress.SIDECAR_SLACK) as online_egress:
-        written = _run_selected(target, tools, out_dir, image, runner,
-                                progress, total, venv_dirs, docker_bin,
+        written = _run_selected(target, tools, out_dir, image, docker_runner,
+                                progress, total, venv_dirs, docker_context,
                                 online_egress)
     progress.footer(len(written), total)
     return written
 
 
 def _run_selected(target, tools, out_dir, image, runner, progress, total,
-                  venv_dirs, docker_bin, online_egress):
+                  venv_dirs, docker_context, online_egress):
     """The dispatch loop, one docker invocation per selected tool.
 
     Split out of `run_tools` only so the `egress.session` context (#1645) does
@@ -1090,6 +1127,7 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
     wrote, exactly as the loop did inline.
     """
     written = []
+    docker_bin = docker_context.executable
     for index, tool in enumerate(tools, 1):
         # #1645 ruling 2: an online adapter whose egress could not be
         # established does NOT fall back to Docker's default bridge. It is
@@ -1127,7 +1165,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             _NETWORK_POSTURE[tool] = egress.NO_NETWORK
             with progress.tool(tool, index, total) as step:
                 done = step.finish(
-                    _capture_run("tool", tool, docker, out_path, runner))
+                    _capture_run("tool", tool, docker, out_path, runner,
+                                 docker_context=docker_context))
             if done:
                 written.append(done)
             continue
@@ -1157,7 +1196,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                 "python3", "/opt/panopticon/scripts/_run_adapter.py", tool])
             with progress.tool(tool, index, total) as step:
                 done = step.finish(
-                    _capture_run("adapter", tool, docker, out_path, runner))
+                    _capture_run("adapter", tool, docker, out_path, runner,
+                                 docker_context=docker_context))
             if done:
                 written.append(done)
             continue
@@ -1341,7 +1381,7 @@ def main(argv=None):
     # the detected directories the scanners are actually told to skip.
     skip_dirs, venv_rows = partition_venv_dirs(find_virtualenvs(a.target),
                                                a.security_mode)
-    if not docker_available():
+    if not docker_available(target=a.target):
         print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
         # Still disclose the skip through the coverage manifest. Without this,
         # a caller who passed --manifest as its coverage-gating signal cannot

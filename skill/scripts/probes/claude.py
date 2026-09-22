@@ -14,10 +14,9 @@ The probe-id -> function registry stays in `host_probes.py`.
 from typing import Any
 import json
 import os
-import shutil
 import tempfile
 
-from scripts import (collect_usage, dispatch, hosts, model_resolver,
+from scripts import (collect_usage, dispatch, executable, hosts, model_resolver,
                     read_guard_hook, write_guard_hook)
 
 from . import common
@@ -551,7 +550,7 @@ def _ledger_carries_usage(ledger):
     return True, "%d of %d successful launches ledgered so far carried usage" % (with_usage, len(ok_rows))
 
 
-def _headless_usage_source(host, settings_path):
+def _headless_usage_source(host, settings_path, review_root):
     """The headless half of `probe_usage_source`: can the loop ledger what
     the runner's envelope reports?
 
@@ -599,6 +598,7 @@ def _headless_usage_source(host, settings_path):
     # empty, and sends them looking for a missing module.
     try:
         runner = runners_base.runner_for(host, "headless")
+        runner.review_root = os.path.abspath(review_root)
         cli, flags, launch = runner.CLI, tuple(runner.ENVELOPE_FLAGS), runner.runner
         launch_env = runner.launch_env()
     except Exception as exc:          # noqa: BLE001 -- a probe reports, never raises
@@ -619,22 +619,22 @@ def _headless_usage_source(host, settings_path):
                 "nothing here proves a launch of it prints an envelope to read usage "
                 "from, and an empty flag list would otherwise be advertised vacuously"
                 % (host, cli))
-    found = shutil.which(cli)
-    if not found:
+    try:
+        resolved = executable.resolve(cli, runner.review_root,
+                                      launch_env.get("PATH", ""))
+    except executable.ExecutableResolutionError:
         return (hosts.REFUTED, USAGE_SOURCE,
-                "no `%s` on PATH: the headless runner cannot launch, so no "
-                "envelope will ever carry usage and the ledger at %s stays empty"
-                % (cli, ledger))
-    # Through the runner's OWN env preparation and cwd (#1626 I2): the
-    # interrogation asks the CLI what it advertises under the environment a
-    # real entry would get, not under the caller's. `review_root` is None on
-    # the runner this probe builds -- `runner_for` never ran `prepare`, and a
-    # `--help` needs no tree -- so `cwd` falls back to the process's own; it
-    # is read off the runner rather than hard-coded to None so a runner that
-    # DOES have one is followed.
+                "no trusted `%s` on PATH outside review root %s: the headless runner "
+                "cannot launch, so no envelope will ever carry usage and the ledger at "
+                "%s stays empty"
+                % (cli, runner.review_root, ledger))
+    found = resolved.path
+    launch_env["PATH"] = resolved.path_env
+    # Use the runner's OWN env and cwd (#1626 I2). It did not run `prepare`,
+    # so run_probes supplies its actual review root before resolution/launch.
     advertised, why = common._cli_advertises(
         launch, found, flags, env=launch_env,
-        cwd=getattr(runner, "review_root", None))
+        cwd=runner.review_root)
     if advertised is None:
         return (hosts.UNKNOWN, USAGE_SOURCE, why)
     if not advertised:
@@ -651,7 +651,7 @@ def _headless_usage_source(host, settings_path):
             % (cli, found, why, ledger))
 
 
-def probe_usage_source(host, session_dir, home=None, settings_path=None):
+def probe_usage_source(host, session_dir, home=None, settings_path=None, review_root=None):
     """Where this host's usage figures come from, and that the source is
     reachable. The probe follows the MODE, exactly as the two guard probes do
     (spec 5.4 applied to spec 5.5): `settings_path` names the file a headless
@@ -685,7 +685,8 @@ def probe_usage_source(host, session_dir, home=None, settings_path=None):
     if not hosts.declares(host, hosts.USAGE_LEDGER):
         return (hosts.UNKNOWN, None, "host %r claims no usage ledger" % host)
     if settings_path is not None:
-        return _headless_usage_source(host, settings_path)
+        return _headless_usage_source(host, settings_path,
+                                      review_root or session_dir)
     root = home or os.path.expanduser("~")
     directory = os.path.join(root, ".claude", "projects",
                              collect_usage.project_slug(session_dir))

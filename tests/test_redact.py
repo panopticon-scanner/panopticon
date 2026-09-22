@@ -352,6 +352,11 @@ class TestUrlCredentialShapeIsFpMeasured(unittest.TestCase):
         # #1709: ledger error/refusal specimens, before and after masking.
         ("tests/test_ledger.py", "postgres://worker:%s@"),
         ("tests/test_ledger.py", "postgres://worker:[REDACTED]@"),
+        # Pin-updater transport and traceback regressions use fake URL
+        # credentials to prove rejection and non-disclosure before target I/O.
+        ("tests/test_bump_pins.py", "file://operator:do-not-print@"),
+        ("tests/test_bump_pins.py", "https://operator:do-not-print@"),
+        ("tests/test_bump_pins.py", "https://operator:%s@"),
     }
 
     # The rule's own definition and its own specimens. They are full of

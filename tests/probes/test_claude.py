@@ -730,7 +730,7 @@ class TestUsageSourceProbe(unittest.TestCase):
             self.assertNotIn("transcript directory", detail)
             self.assertFalse(os.path.isdir(os.path.join(home, ".claude")))
             # The interrogation is `<found cli> --help`, through the launcher.
-            self.assertEqual([[cli, "--help"]], self.help_calls)
+            self.assertEqual([[os.path.realpath(cli), "--help"]], self.help_calls)
 
     def test_headless_refutes_when_no_cli_is_on_path(self):
         # THE headless negative fixture. Transcripts present, CLI absent: the
@@ -1041,7 +1041,7 @@ class TestUsageSourceProbe(unittest.TestCase):
         # handed only the keys the runner cares about has no PATH and cannot
         # start, which is the C1 defect run_entry already carries a comment
         # about. One preparation, so the probe cannot regrow that bug.
-        self.assertEqual(bin_dir, env.get("PATH"))
+        self.assertEqual(os.path.realpath(bin_dir), env.get("PATH"))
 
     def test_headless_is_unknown_on_a_claiming_host_with_no_headless_runner(self):
         # A row that claims the ledger but ships no runners/<host>.py has no
