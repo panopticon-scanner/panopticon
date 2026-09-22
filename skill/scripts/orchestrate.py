@@ -20,6 +20,7 @@ import scripts.phases.engine as engine
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
+import scripts.phases.setup_readiness as setup_readiness
 import scripts.read_guard_hook as read_guard_hook
 import scripts.repo_config as repo_config
 import scripts.runners.base as runners_base
@@ -608,7 +609,17 @@ def _finish(status, review_root, guards, ledger, namespace, mode="headless", run
                 "overwrites a committed %s)" % (
                     runio._pano(review_root, "setup-report.md"), draft, draft,
                     os.path.join(review_root, repo_config.CONFIG_NAMES[0]),
-                    repo_config.CONFIG_NAMES[0])))
+                    repo_config.CONFIG_NAMES[0]))
+                # #1603: superseding the wording must not supersede the
+                # DISCLOSURE. Readiness runs on this path now (phases/setup.py's
+                # ingest_execute), and this message is the only one a
+                # `driver loop --setup` operator reads -- so 5.1's surface 4
+                # rides along, off the report this line already names. Same
+                # helper, same clause, same artifact as `driver setup`'s own
+                # completion line; an artifact with no readiness rows adds
+                # nothing.
+                + setup_readiness._readiness_tail(runio._load_json(
+                    runio._pano(review_root, "setup-report.json"))))
     return status
 
 
