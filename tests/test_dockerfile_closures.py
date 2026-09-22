@@ -2,9 +2,10 @@
 
 Split out of `test_dockerfile.py`, which these rules pushed past the 700-line
 ceiling. They travel together and away from the rest: everything here reads the
-Dockerfile as a SHELL SCRIPT -- folding continuations and dropping prose --
-where its sibling reads the same file as a sequence of instructions and
-asserts on literals. One reader, one subject, one file.
+Dockerfile as a SHELL SCRIPT -- folding continuations, dropping prose, and
+splitting a RUN into the statements a flag actually applies to -- where its
+sibling reads the same file as a sequence of instructions and asserts on
+literals. One reader, one subject, one file.
 """
 import json
 import os
@@ -29,10 +30,72 @@ def dockerfile_commands(text):
     return [joined for _n, joined in _logical_lines(body) if joined]
 
 
+# `&&`, `||`, `;` and `|`, longest first so `||` is not read as two pipes.
+_SEPARATORS = re.compile(r"&&|\|\||;|\|")
+
+
+def install_statements(text, pattern):
+    """Every STATEMENT in this Dockerfile that runs a command matching *pattern*.
+
+    A folded RUN line is a whole shell script, and a flag applies to ONE
+    command in it. Reading the joined line let a compliant install vouch for
+    anything appended to it: `pip install --require-hashes --no-deps -r
+    <closure> && pip install evil` contains every flag these rules look for,
+    and installs something unpinned in its second half. A reviewer proved it by
+    mutation; the rules now read the unit the flags actually apply to.
+
+    A crude split, deliberately: it cuts on separators inside quotes too, so
+    the gosec-verify `python3 -c "...; ...; ..."` one-liner and the `case ... ;;`
+    arch switches arrive as fragments. That is fine here and safe in the
+    direction that matters -- splitting can only ever produce MORE statements
+    to check, never hide one, and no fragment of a quoted string is going to
+    match an install pattern and pass. `tests/test_workflow_pins.py` needs the
+    quote-aware reader because it reports the offending command back; this
+    only has to find them all.
+    """
+    found = []
+    for command in dockerfile_commands(text):
+        for statement in _SEPARATORS.split(command):
+            statement = statement.strip()
+            if statement and pattern.search(statement):
+                found.append(statement)
+    return found
+
+
 _PIP_INSTALL = re.compile(r"\bpip\d?\s+(?:-\S+\s+)*install\b")
 _GEM_INSTALL = re.compile(r"\bgem\s+install\b")
 _NPM_INSTALL = re.compile(r"\bnpm\s+(?:\S+\s+)*install\b")
 _NPM_CI = re.compile(r"\bnpm\s+(?:\S+\s+)*ci\b")
+# `-r /tmp/requirements-tools.txt`, the one closure this image may install from.
+_TOOLS_CLOSURE = re.compile(r"-r\s+/tmp/requirements-tools\.txt")
+# `gem install ... thor:1.5.0` -- the REGISTRY form, versioned or not.
+_GEM_REGISTRY_SPEC = re.compile(r"\s[A-Za-z0-9_-]+:[0-9]")
+
+
+def unhashed_pip_installs(text):
+    """pip installs that do not make PyPI prove what it served."""
+    return [s for s in install_statements(text, _PIP_INSTALL)
+            if "--require-hashes" not in s]
+
+
+def widening_pip_installs(text):
+    """pip installs that leave the resolver room to add to the closure."""
+    return [s for s in install_statements(text, _PIP_INSTALL)
+            if "--no-deps" not in s or not _TOOLS_CLOSURE.search(s)]
+
+
+def resolving_gem_installs(text):
+    """gem installs that let RubyGems choose anything."""
+    return [s for s in install_statements(text, _GEM_INSTALL)
+            if "--local" not in s or "--ignore-dependencies" not in s
+            or _GEM_REGISTRY_SPEC.search(s)]
+
+
+def scripted_npm_installs(text):
+    """npm commands that resolve, or that run a package's install scripts."""
+    return [s for s in install_statements(text, _NPM_INSTALL)] + [
+        s for s in install_statements(text, _NPM_CI)
+        if "--ignore-scripts" not in s]
 
 
 
@@ -83,28 +146,75 @@ class TestRegistryClosuresArePinned(unittest.TestCase):
         found = dockerfile_commands(prose)
         self.assertEqual(["RUN echo ok && echo done"], found)
 
+    # --- mutation: a compliant install may not vouch for its neighbours -----
+    # One per rule, on scratch text rather than a scratch Dockerfile, because
+    # the rules are functions of text. Each takes the line the image really
+    # runs, appends the bare install a careless edit would add, and demands
+    # the appended one be named. The reviewer found all four by hand; these
+    # are the same mutation, kept.
+
+    COMPLIANT_PIP = ("RUN pip install --timeout=300 --no-cache-dir "
+                     "--require-hashes --no-deps -r /tmp/requirements-tools.txt")
+    COMPLIANT_GEM = ("RUN gem install --local --no-document "
+                     "--ignore-dependencies /tmp/thor.gem")
+    COMPLIANT_NPM = "RUN npm ci --fetch-timeout=600000 --ignore-scripts"
+
+    def _mutated(self, compliant, appended):
+        """The compliant line with `appended` bolted on as a continuation."""
+        return "%s \\\n    && %s\n" % (compliant, appended)
+
+    def test_an_appended_unhashed_pip_install_is_not_vouched_for(self):
+        self.assertEqual([], unhashed_pip_installs(self.COMPLIANT_PIP + "\n"))
+        self.assertEqual(
+            ["pip install evil"],
+            unhashed_pip_installs(self._mutated(self.COMPLIANT_PIP,
+                                                "pip install evil")))
+
+    def test_an_appended_widening_pip_install_is_not_vouched_for(self):
+        self.assertEqual([], widening_pip_installs(self.COMPLIANT_PIP + "\n"))
+        # --require-hashes but no --no-deps and not the committed closure
+        appended = "pip install --require-hashes -r /tmp/other.txt"
+        self.assertEqual([appended],
+                         widening_pip_installs(self._mutated(self.COMPLIANT_PIP,
+                                                             appended)))
+
+    def test_an_appended_registry_gem_install_is_not_vouched_for(self):
+        self.assertEqual([], resolving_gem_installs(self.COMPLIANT_GEM + "\n"))
+        for appended in ("gem install rainbow",
+                         "gem install --local rainbow:1.0.0"):
+            with self.subTest(appended=appended):
+                self.assertEqual(
+                    [appended],
+                    resolving_gem_installs(self._mutated(self.COMPLIANT_GEM,
+                                                         appended)))
+
+    def test_an_appended_scripted_npm_command_is_not_vouched_for(self):
+        self.assertEqual([], scripted_npm_installs(self.COMPLIANT_NPM + "\n"))
+        for appended in ("npm install evil", "npm ci"):
+            with self.subTest(appended=appended):
+                self.assertEqual(
+                    [appended],
+                    scripted_npm_installs(self._mutated(self.COMPLIANT_NPM,
+                                                        appended)))
+
     # --- pip ----------------------------------------------------------------
 
     def test_every_pip_install_requires_hashes(self):
-        installs = [c for c in self.commands if _PIP_INSTALL.search(c)]
-        self.assertTrue(installs, "no pip install found in the Dockerfile; the "
-                                  "reader is broken, not the file")
-        for cmd in installs:
-            self.assertIn(
-                "--require-hashes", cmd,
-                "a pip install that does not pass --require-hashes resolves "
-                "its transitive closure fresh from PyPI as root:\n  %s" % cmd)
+        self.assertTrue(install_statements(self.text, _PIP_INSTALL),
+                        "no pip install found in the Dockerfile; the reader "
+                        "is broken, not the file")
+        self.assertEqual(
+            [], unhashed_pip_installs(self.text),
+            "a pip install that does not pass --require-hashes resolves its "
+            "transitive closure fresh from PyPI as root:\n  %s"
+            % "\n  ".join(unhashed_pip_installs(self.text)))
 
     def test_the_pip_closure_is_the_complete_list_not_a_starting_point(self):
-        installs = [c for c in self.commands if _PIP_INSTALL.search(c)]
-        for cmd in installs:
-            self.assertIn(
-                "--no-deps", cmd,
-                "--require-hashes without --no-deps still lets pip WIDEN the "
-                "set; the file has to be the whole list:\n  %s" % cmd)
-            self.assertRegex(cmd, r"-r\s+/tmp/requirements-tools\.txt",
-                             "pip installs from something other than the "
-                             "committed closure:\n  %s" % cmd)
+        self.assertEqual(
+            [], widening_pip_installs(self.text),
+            "--require-hashes without --no-deps still lets pip WIDEN the set, "
+            "and only requirements-tools.txt is the whole list:\n  %s"
+            % "\n  ".join(widening_pip_installs(self.text)))
         self.assertIn("COPY requirements-tools.txt /tmp/requirements-tools.txt",
                       self.text,
                       "the closure is installed from a path the repo does not "
@@ -136,19 +246,15 @@ class TestRegistryClosuresArePinned(unittest.TestCase):
     # --- gem ----------------------------------------------------------------
 
     def test_every_gem_install_is_a_verified_local_file(self):
-        installs = [c for c in self.commands if _GEM_INSTALL.search(c)]
-        self.assertTrue(installs, "no gem install found in the Dockerfile")
-        for cmd in installs:
-            self.assertIn("--local", cmd,
-                          "a gem install without --local reaches RubyGems and "
-                          "resolves whatever it likes:\n  %s" % cmd)
-            self.assertIn("--ignore-dependencies", cmd,
-                          "without --ignore-dependencies the resolver runs "
-                          "anyway for anything the .gem requires:\n  %s" % cmd)
-            self.assertNotRegex(
-                cmd, r"gem install[^&|]*\s[A-Za-z0-9_-]+:[0-9]",
-                "the `name:version` form is a REGISTRY install; pass a "
-                "downloaded, checksum-verified .gem file:\n  %s" % cmd)
+        self.assertTrue(install_statements(self.text, _GEM_INSTALL),
+                        "no gem install found in the Dockerfile")
+        self.assertEqual(
+            [], resolving_gem_installs(self.text),
+            "a gem install needs --local (or it reaches RubyGems), "
+            "--ignore-dependencies (or the resolver runs anyway for what the "
+            ".gem requires), and a downloaded .gem path rather than the "
+            "`name:version` registry form:\n  %s"
+            % "\n  ".join(resolving_gem_installs(self.text)))
 
     def test_every_gem_download_is_checksum_verified(self):
         # Same shape as the release binaries above: an ARG holding the digest
@@ -175,19 +281,16 @@ class TestRegistryClosuresArePinned(unittest.TestCase):
     # --- npm ----------------------------------------------------------------
 
     def test_node_packages_come_from_npm_ci_not_npm_install(self):
-        offenders = [c for c in self.commands if _NPM_INSTALL.search(c)]
+        # Same statement split as pip and gem, for the same reason: `npm ci
+        # --ignore-scripts && npm ci` satisfied the joined-line check.
+        self.assertTrue(install_statements(self.text, _NPM_CI),
+                        "the image installs no node packages at all")
         self.assertEqual(
-            [], offenders,
-            "`npm install` resolves and may WRITE a lockfile; only `npm ci` "
-            "installs exactly what the committed package-lock.json "
-            "says:\n  %s" % "\n  ".join(offenders))
-        ci = [c for c in self.commands if _NPM_CI.search(c)]
-        self.assertTrue(ci, "the image installs no node packages at all")
-        for cmd in ci:
-            self.assertIn(
-                "--ignore-scripts", cmd,
-                "npm ci without --ignore-scripts runs install-time code from "
-                "every package in the tree, as root:\n  %s" % cmd)
+            [], scripted_npm_installs(self.text),
+            "`npm install` resolves and may WRITE a lockfile, and `npm ci` "
+            "without --ignore-scripts runs install-time code from every "
+            "package in the tree as root:\n  %s"
+            % "\n  ".join(scripted_npm_installs(self.text)))
 
     def test_the_node_closure_is_copied_from_the_repo(self):
         self.assertIn("COPY tools-image/node/package.json "
