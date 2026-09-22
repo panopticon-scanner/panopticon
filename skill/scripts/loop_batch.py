@@ -367,6 +367,15 @@ def expected_enforced(review_root, host, namespace=None):
             [hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)
 
 
+def _evidence_path(review_root, namespace):
+    """The capability artifact `driver._establish_host_posture` writes for this
+    namespace: setup's own, through the same `persist.run_dir` resolver the
+    writer uses, or the review run's flat/manifest-tagged one."""
+    if namespace is None:
+        return runio._pano(review_root, runio.HOST_CAPABILITIES)
+    return os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
+
+
 def evidence_for(review_root, namespace):
     """This namespace's own capability evidence, failing closed on absence.
 
@@ -377,8 +386,24 @@ def evidence_for(review_root, namespace):
     """
     if namespace is None:
         return runio.host_evidence(review_root)
-    return runio.evidence_at(
-        os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES))
+    return runio.evidence_at(_evidence_path(review_root, namespace))
+
+
+def envelope_for(review_root, namespace):
+    """The WHOLE capability artifact, where `evidence_for` answers with its
+    `capabilities` block alone (#1603 fix round 1).
+
+    The gates ask "what is proven" and take the block; the DISCLOSURE surfaces
+    render the document -- `host_disclosure.headline` reads `host` off it too,
+    and a bare capabilities map reads to them as "nobody looked". `driver
+    setup`'s readiness renders the posture this invocation already established
+    instead of taking a second, weaker one, so it needs the shape
+    `host_probes.run_probes` returns. `{}` for anything that is not a JSON
+    object -- absent, truncated, or planted at the name by the reviewed tree
+    -- which renders as NO EVIDENCE: never a posture nobody measured.
+    """
+    document = runio._load_json(_evidence_path(review_root, namespace))
+    return document if isinstance(document, dict) else {}
 
 
 def refuse_disagreeing(pending, expected):

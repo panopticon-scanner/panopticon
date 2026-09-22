@@ -504,6 +504,12 @@ class TestSetupEstablishesHostPosture(LoopCase):
         status = self._setup_loop(d, **{"scripts.host_probes.run_probes":
                                         {"side_effect": _probes}})
         self.assertEqual(status["status"], "complete", status)
+        # EVERY call, deliberately (#1603 fix round 1): readiness runs on this
+        # path now and must not take a posture of its own -- one that named no
+        # settings file would land here as a `None` and disclose `unknown` for
+        # capabilities this invocation proved. It renders the envelope the
+        # posture step established instead, so the population stays exactly
+        # the posture step's calls.
         self.assertEqual(set(seen), {probes_common.headless_settings_path(d, "setup")})
         self.assertEqual(set(seen),
                          {os.path.abspath(os.path.join(d, ".panopticon",
@@ -538,6 +544,43 @@ class TestSetupOnRails(LoopCase):
         self.assertIn("setup-report.md", status["message"])
         self.assertIn(repo_config.DRAFT_NAME, status["message"])
         self.assertTrue(os.path.isfile(runio._pano(d, "setup-proposal.json")))
+
+    def test_setup_on_rails_carries_the_readiness_clause_too(self):
+        # #1603. `_finish` supersedes run_setup_flow's completion message with
+        # the on-rails promotion wording whenever a draft exists -- and that
+        # message is the ONLY one a `driver loop --setup` operator reads, so
+        # dropping the readiness clause there would leave 5.1's surface 4
+        # reachable by `driver setup` alone, which is the hole this issue
+        # exists to close. The fallback branch has always kept its own message
+        # (the test below); this is the same guarantee for the draft branch.
+        d, _ = self._repo()
+
+        class SetupRunner(FakeRunner):
+            def run_entry(self, entry, env):
+                self.launched.append(entry["id"])
+                proposal = {"groups": [{"capability": "custom:App", "match": ["src/**"],
+                                        "tests": [],
+                                        "profile": {"purpose": "app", "surfaces": [],
+                                                    "entry_points": [],
+                                                    "trust_boundaries": []}}]}
+                return base.RunResult(entry_id="setup-scan", ok=True,
+                                      text=json.dumps(proposal), usage={}, cost_usd=0.0,
+                                      model=None, session_id=None, denials=[], error=None)
+        checks = [("docker", False, "docker unavailable -- install/start Docker "
+                                    "or run with --no-tools"),
+                  ("nvd-api-key", None, "absent -- dependency-check will be skipped")]
+        args = driver.build_parser().parse_args(["loop", d, "--setup"])
+        with mock.patch("scripts.runners.base.runner_for", return_value=SetupRunner()), \
+             mock.patch("scripts.setup_flow.readiness", return_value=checks), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(args)
+        self.assertEqual(status["status"], "complete", status)
+        # the promotion wording is still what it was...
+        self.assertIn(repo_config.DRAFT_NAME, status["message"])
+        # ...and the disclosure rides with it, gap and limitation alike.
+        self.assertIn("readiness gaps: docker (fix before running a review)",
+                      status["message"])
+        self.assertIn("nvd-api-key", status["message"])
 
     def test_setup_vocab_absent_fallback_keeps_its_own_complete_message(self):
         # Fix round 1, item 1: the vocab-absent fallback (phases/setup.py's

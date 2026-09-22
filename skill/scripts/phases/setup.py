@@ -13,11 +13,13 @@ import scripts.host_disclosure as host_disclosure
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
+import scripts.runners.base as runners_base
 import scripts.runners.batch as batch
 from . import engine
 from . import hard_links
 from . import runio
 from . import requests
+from . import setup_readiness
 
 
 SETUP_MANIFEST = run_manifest.SETUP_MANIFEST_NAME
@@ -271,13 +273,13 @@ def _remedy_clause(host, state):
     `headless_available` is the one owner of "does this family ship a runner",
     and it is asked rather than assumed -- a host that registers shells and
     ships no runner would otherwise be handed a `--mode headless` that
-    `runner_for` refuses, which is the same defect in a third place. Imported
-    locally, the way `probes.common.headless_settings_path` reaches the same
-    package: `phases` may import `runners` (only the reverse is banned), but
-    at call time, not at module import, so the cycle through
-    `runners.base -> dispatch` stays broken.
+    `runner_for` refuses, which is the same defect in a third place. Reached
+    through the module-level import, which #1603 fix round 2 needed anyway for
+    `LaunchRefused`: `phases` may import `runners` (only the reverse is
+    banned), and there is no cycle to route around -- `runners.base` reaches
+    `dispatch`, which imports only `model_resolver`, `codex_read_tools` and
+    `hosts`, none of which comes back here.
     """
-    import scripts.runners.base as runners_base
     row = hosts.spec(host)
     if row is None or not row.shell_format:
         return "Re"
@@ -349,14 +351,90 @@ def ingest_done(review_root, manifest):
             or runio._json_parses(runio._pano(review_root, "setup-complete.json")))
 
 def ingest_execute(review_root, manifest):
+    """Ingest the returned proposal -> draft + setup report, with THIS setup's
+    readiness answer recorded in it (#1603, owner ruling 2026-09-22).
+
+    Readiness used to run on the vocab-absent fallback alone, so an operator
+    whose tree had a capability vocabulary -- the common case -- never met the
+    host-capability disclosure §5.1 makes mandatory. It runs here now, on the
+    host this setup was invoked for, and -- mirroring the fallback's ORDER as
+    well as its call (fix round 1) -- it is taken AFTER the draft and the
+    report are written, so a readiness that cannot be taken costs the
+    operator the disclosure and never the bootstrap.
+
+    It does NOT gate either. `driver setup` is a disclosure surface and the
+    run-time readiness phase is the one that fails closed; a setup refused
+    for a missing Docker would refuse the very bootstrap whose report says
+    how to fix it. A gap is made visible three other ways -- the completion
+    line, the report's own section, and a non-empty `gaps` in
+    setup-report.json.
+    """
     res = setup_flow.ingest_proposal(review_root,
                                      max_per_group=manifest.get("max_per_group"),
                                      max_groups=manifest.get("max_groups"))
     if not res["ok"]:
         raise runio.DriverError("ingest: " + "; ".join(res["errors"]))
+    # AFTER the draft (fix round 1, I2 -- see the docstring).
+    record = _take_readiness(review_root, manifest.get("host", "claude"))
+    try:
+        setup_flow.record_readiness(review_root, record,
+                                    section=setup_readiness._readiness_section(record))
+    except OSError as exc:
+        # R1-2: the same rule one statement later -- draft and report are
+        # already on disk, so a full or read-only directory costs the rows and
+        # not the status, and the artifact then reads as "nobody looked".
+        # (`_open_w_nofollow`'s ValueError stays uncaught: a planted symlink
+        # is the guard working, and `run_setup_flow` makes it an `error`.)
+        print("driver setup: readiness not recorded in the setup report: %s"
+              % exc, file=sys.stderr, flush=True)
+    # The suffix rides here for symmetry with `_scan_fallback`'s and, like
+    # that one, is DISCARDED: `run_engine` collects phase names, never their
+    # messages. The operator's copy is composed in `run_setup_flow`.
     return engine.PhaseResult(kind="advanced",
-                       message="setup: draft written %s; report %s"
-                       % (res["draft"], res["report_path"]))
+                       message="setup: draft written %s; report %s; %s"
+                       % (res["draft"], res["report_path"],
+                          setup_readiness._readiness_suffix(record)))
+
+
+def _take_readiness(review_root, host):
+    """This setup's readiness record -- or the one row that says it could not
+    be taken. NEVER raises (fix round 1, I2).
+
+    `setup_flow.readiness` is mostly non-raising, but not by construction:
+    `_check_host_shells` runs `import dispatch`, `hosts.spec` and the
+    registration lookups outside its own try, and a row of the wrong width
+    raises in `_readiness_record`. Both escaped `run_setup_flow` -- which
+    catches only DriverError/EngineStalled/ValueError -- as a traceback with
+    no JSON status, taking the bootstrap with it. A failure to MEASURE is a
+    weaker reason to refuse a setup than a gap, which setup already survives.
+
+    OPERATIONAL failures only. `Exception`, not `BaseException`: a
+    KeyboardInterrupt or a SystemExit is the operator or the process leaving.
+    And not the suite's `LaunchRefused` either -- see the clause below.
+
+    The row carries the exception's CLASS as well as its text (a bare
+    `RuntimeError()` renders as "", and a disclosure naming nothing is the
+    mood §5.1 rejects), and `ok=None`, because nobody-looked is not a fault
+    with a remedy -- `_readiness_suffix` then refuses to call such a record
+    OK. The posture handed down is this invocation's own, never a second one
+    measured here; `_check_host_shells` explains why (I1).
+    """
+    at = run_manifest._now_iso()
+    try:
+        return setup_readiness._readiness_record(setup_flow.readiness(
+            review_root, host=host,
+            envelope=loop_batch.envelope_for(review_root, loop_batch.SETUP_NAMESPACE)),
+            probed_at=at)
+    except runners_base.LaunchRefused:
+        # NOT an operational failure: the suite's guard against starting a
+        # real host binary, whose whole value is that it FAILS a test (fix
+        # round 2, R1-1). `_check_host_shells` re-raises it by name for this
+        # reason and the degrade below moved the swallow one frame up.
+        raise
+    except Exception as exc:        # noqa: BLE001 -- see the docstring
+        return setup_readiness._readiness_record(
+            [("readiness", None,
+              "could not be taken: %s: %s" % (type(exc).__name__, exc))], probed_at=at)
 
 SETUP_PHASES = (
     engine.Phase("scan", "checkpoint", scan_done, scan_execute),
@@ -438,100 +516,26 @@ def _clear_setup_artifacts(review_root):
         except OSError:
             pass
 
-# #1601. Every limitation carried a full remedy and they were all joined into
-# ONE line: on gemini that line measured 1847 characters, up ~17x from ~110,
-# because a host that claims nothing legitimately has seven of them. Nothing
-# gating moved (shell-less hosts produce 7 rows and 0 gaps), which is the
-# reason it needed fixing rather than a reason to leave it -- §5.1's "LOUDLY
-# declare them" is about being READ, and a 1847-character line is a disclosure
-# in the letter and not in the fact.
-#
-# One remedy per line, under the column bar, and a bounded list: the full,
-# untruncated text of every limitation is in `setup-complete.json`'s
-# `limitations` array either way, so the message is an index into it rather
-# than a second copy of it.
-_LIMITATION_LINE = 119          # strictly under the 120-column bar
-_LIMITATION_MAX = 12            # remedies shown before the "and N more" tail
-_TRUNCATED = "..."
-
-
-def _limitation_line(name, detail):
-    """One limitation on one line, no longer than `_LIMITATION_LINE` -- unless
-    the NAME alone is longer than that, in which case the name wins.
-
-    The name is never what gets cut: it is the key `setup-complete.json`
-    stores the untruncated detail under, and the string an operator greps the
-    readiness rows for. A line whose name has been sliced in half identifies
-    nothing and points at nothing. Only the detail is trimmed, and it says so.
-
-    R1 Minor 4: this used to slice the whole rendered line, so the docstring
-    above asserted a guarantee the code did not make -- measured, a 156-char
-    name came back cut mid-name. Every check name this repo emits is
-    code-controlled and far under the bar (the longest,
-    `host-capability:tool_policy_enforced`, is 36 characters), so the
-    name-wins branch is a promise kept rather than a trade-off anyone meets.
-    """
-    detail = str(detail)     # read off setup-complete.json: any JSON shape
-    line = "  - %s (%s)" % (name, detail)
-    if len(line) <= _LIMITATION_LINE:
-        return line
-    head = "  - %s (" % name
-    room = _LIMITATION_LINE - len(head) - len(_TRUNCATED) - 1   # the ")"
-    return head + (detail[:room] if room > 0 else "") + _TRUNCATED + ")"
-
-
-def _limitations_clause(limitations):
-    """Render the readiness checks that gate nothing (`ok is None`).
-
-    Spec §5.1: "If there are limitations by host then we should LOUDLY declare
-    them", and "absence of warnings must mean 'measured and proven', never
-    'nobody looked'". A check whose `ok` is None was never measured against a
-    pass/fail bar -- gemini registering no enforcement shells is a FACT, not a
-    fault. So it must not join `gaps` (those gate READY and carry a remedy),
-    and it must not be swallowed either: `readiness OK` on a host that cannot
-    enforce is exactly the ambiguity §5.1 forbids. Its own clause, carrying the
-    check's own detail, which already names the capability and the host.
-    """
-    rows = list(limitations)
-    shown = rows[:_LIMITATION_MAX]
-    out = ["limitations:"]
-    out.extend(_limitation_line(name, detail) for name, detail in shown)
-    if len(rows) > len(shown):
-        out.append("  - and %d more -- full text in "
-                   ".panopticon/setup-complete.json `limitations`"
-                   % (len(rows) - len(shown)))
-    return "\n".join(out)
-
-def _stored_limitations(marker):
-    """The `limitations` pairs from a setup-complete.json, or []. Tolerates a
-    marker written before the key existed, and any row that is not a pair."""
-    return [(row[0], row[1]) for row in ((marker or {}).get("limitations") or [])
-            if isinstance(row, (list, tuple)) and len(row) == 2]
-
 def _scan_fallback(review_root, manifest, host):
     """Vocab-absent path (parity with orchestrator.run_setup): flat top-dir seed
     + readiness gate, then a fallback-complete marker so both setup phases'
     done-predicates are satisfied -> run_engine completes without a checkpoint
     and without entering ingest."""
     path, created, names = setup_flow.seed_flat_manifest(review_root)
-    checks = setup_flow.readiness(review_root, host=host)
-    gaps = [c[0] for c in checks if c[1] is False]
-    # ok is None is NOT-APPLICABLE, a third answer the renderer used to collapse
-    # into "fine". Recorded under its own key so a consumer can tell "not
-    # applicable" from "measured and passed" (§5.1).
-    limitations = [(c[0], c[2]) for c in checks if c[1] is None]
-    runio._write_json(runio._pano(review_root, "setup-complete.json"), {
-        "schema_version": 1,
-        "mode": "fallback", "seed": path, "created": created, "groups": names,
-        "readiness": [[c[0], c[1], c[2]] for c in checks],
-        "gaps": gaps, "limitations": [[n, d] for n, d in limitations],
-        "run_id": manifest["run_id"]})
-    msg = ("setup: vocab-absent fallback — flat seed %s; readiness %s"
-           % (path, "OK" if not gaps else "gaps: " + ", ".join(gaps)))
+    # The seed first, then the measurement -- this path's own order, which
+    # `ingest_execute` now mirrors. Same helpers as the normal path (#1603):
+    # what this records and what it prints are what they were.
+    record = _take_readiness(review_root, host)
+    runio._write_json(runio._pano(review_root, "setup-complete.json"), dict(
+        record, schema_version=1,
+        mode="fallback", seed=path, created=created, groups=names,
+        run_id=manifest["run_id"]))
+    msg = ("setup: vocab-absent fallback — flat seed %s; %s"
+           % (path, setup_readiness._readiness_suffix(record)))
     # LAST, and on its own lines (#1601): the clause is a list now, so
     # anything appended after it would land on the final remedy's line.
-    if limitations:
-        msg += "\n" + _limitations_clause(limitations)
+    if record["limitations"]:
+        msg += "\n" + setup_readiness._limitations_clause(record["limitations"])
     return engine.PhaseResult(kind="advanced", message=msg)
 
 def _drop_stale_fallback_marker(review_root):
@@ -662,20 +666,33 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
                 "`settings:` across and records the sizes you passed, but any "
                 "other hand-kept top-level key is yours to re-apply"
                 % (repo_config.DRAFT_NAME, repo_config.CONFIG_NAMES[0]))
+            # #1603: surface 4 on the line the operator actually reads.
+            # `ingest_execute`'s own message is discarded by the engine and
+            # replaced here, exactly as the fallback's is, so a disclosure
+            # left there would be a disclosure made to nobody (§5.1). Read
+            # back off the report rather than passed down, because a
+            # re-invocation that finds the work already done runs no phase at
+            # all -- and an artifact with no readiness rows gets no clause,
+            # never a clean verdict nobody measured.
+            result["message"] += setup_readiness._readiness_tail(
+                runio._load_json(runio._pano(review_root, "setup-report.json")))
         else:
             msg = ("setup complete -- vocab-absent fallback seeded a flat %s; "
                    "review, edit, and commit it" % repo_config.CONFIG_NAMES[0])
-            marker = runio._load_json(
-                runio._pano(review_root, "setup-complete.json")) or {}
-            gaps = marker.get("gaps") or []
-            if gaps:
-                msg += (" — readiness gaps: %s (fix before running a review)"
-                       % ", ".join(gaps))
+            # Sanitized, like the normal path's (fix round 1, I3): this
+            # marker is a `.panopticon` file the reviewed tree can plant, and
+            # both branches sit outside the status protocol's try.
+            marker = setup_readiness._stored_record(runio._load_json(
+                runio._pano(review_root, "setup-complete.json")))
+            if marker["gaps"]:
+                # The same clause the normal path prints, from the same helper
+                # (#1603). This branch still says nothing when readiness is
+                # clean; the ruling widened the CALLER, not this line.
+                msg += " — " + setup_readiness._readiness_suffix(marker)
             # This is the message the operator actually reads -- _scan_fallback's
             # is replaced here -- so the limitations clause has to be restated,
             # or declaring it there would be declaring it to nobody (§5.1).
-            limitations = _stored_limitations(marker)
-            if limitations:
-                msg += "\n" + _limitations_clause(limitations)
+            if marker["limitations"]:
+                msg += "\n" + setup_readiness._limitations_clause(marker["limitations"])
             result["message"] = msg
     return result
