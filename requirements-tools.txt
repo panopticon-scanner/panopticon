@@ -274,8 +274,9 @@ packaging==26.3 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
 pbr==7.0.3 \
     --hash=sha256:ff223894eb1cd271a98076b13d3badff3bb36c424074d26334cd25aebeecea6b
-peewee==3.19.0 \
-    --hash=sha256:de220b94766e6008c466e00ce4ba5299b9a832117d9eb36d45d0062f3cfd7417
+peewee==4.5.1 \
+    --hash=sha256:8005cb45c54e1a282a2f24ddd583f0f7a80cd5d9c635d50d63f57c11d88c392a \
+    --hash=sha256:dbbdc93e9be08d1df49ceed48dc5d609bfeda6112848086f1f6c1f1debe70975
 pip==26.2.1 \
     --hash=sha256:71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e
 pip-api==0.0.35 \
