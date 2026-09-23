@@ -387,13 +387,16 @@ python3 scripts/bump_pins.py requirements --file .github/requirements-gate.txt -
 Dependabot proposes version bumps: the root `pip` entry sees `requirements-fixtures.txt`,
 `requirements-tools.txt`, and `pyproject.toml`; the `/.github` entry sees the gate file. The root
 entry groups routine Python version updates and filters proposals that would break the current
-Semgrep 1.177.0 tools graph: all version updates for `mcp` and `opentelemetry-*`, major updates for
-`peewee`, and major/minor updates for `click` and `jsonschema`. These filters match dependency
-names across the root entry, including the same name in `pyproject.toml`; they are not specific to
-the tools file. Revisit them when upgrading the scanner roots. They use `update-types`, so security
-updates remain eligible, though a security fix that conflicts with this graph needs manual
-whole-graph resolution. The digests are still this script's job, and `--require-hashes` fails the
-build until they match.
+pinned tools graph: all version updates for `mcp`, `opentelemetry-*`, and `pydantic-core` (Pydantic
+2.13.5 requires exactly pydantic-core 2.46.5); major updates for `peewee`, `boltons`, `protobuf`,
+`wcmatch`, and `wrapt`; and major/minor updates for `click`, `jsonschema`, `exceptiongroup`,
+`importlib-metadata`, and `pyjwt`. Semgrep 1.177.0 constrains `boltons`, `exceptiongroup`, `pyjwt`,
+and `wcmatch`; pinned OpenTelemetry packages constrain `importlib-metadata`, `protobuf`, and
+`wrapt`. These filters match dependency names across the root entry, including the same name in
+`pyproject.toml`; they are not specific to the tools file. Revisit them when upgrading the scanner
+roots and other pinned parents together. They use `update-types`, so security updates remain
+eligible, though a security fix that conflicts with this graph needs manual whole-graph resolution.
+The digests are still this script's job, and `--require-hashes` fails the build until they match.
 
 It reads every artifact PyPI publishes for that release, keeps the ones a linux build may install
 (the `any` wheels plus the linux `x86_64` and `aarch64` ones — `docker-publish.yml` builds the

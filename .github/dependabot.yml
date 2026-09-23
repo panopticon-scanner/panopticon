@@ -33,6 +33,40 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
+      # Semgrep 1.177.0 pins these dependency families to the current major
+      # or minor line through its transitive requirements.
+      - dependency-name: "boltons"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "exceptiongroup"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "pyjwt"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "wcmatch"
+        update-types:
+          - "version-update:semver-major"
+      # OpenTelemetry's API, proto, and instrumentation packages constrain
+      # these dependencies until their pinned parents move together.
+      - dependency-name: "importlib-metadata"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "protobuf"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "wrapt"
+        update-types:
+          - "version-update:semver-major"
+      # Pydantic 2.13.5 requires the exact pydantic-core 2.46.5 release.
+      - dependency-name: "pydantic-core"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
