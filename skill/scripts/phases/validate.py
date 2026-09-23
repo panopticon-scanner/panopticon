@@ -9,6 +9,7 @@ import sys
 
 import scripts.diff_map as diff_map
 import scripts.run_manifest as run_manifest
+import scripts.safe_git as safe_git
 from . import engine
 from . import runio
 
@@ -120,8 +121,7 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
     if os.path.exists(baseline):
         return baseline
     try:
-        proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
-                      capture_output=True, text=True, timeout=15)
+        proc = safe_git.probe(review_root, ["status", "--porcelain", "-z"], runner=runner)
     except (subprocess.SubprocessError, OSError) as exc:
         print("driver: clean-tree baseline probe FAILED (%s); the integrity guard "
               "will fail closed at validate" % exc, file=sys.stderr, flush=True)
@@ -214,8 +214,7 @@ def _tree_delta(review_root, runner):
                 % _MAX_BASELINE_FILES]
     baseline = _porcelain_z_records(snapshot.get("status") or "")
     try:
-        proc = runner(["git", "-C", review_root, "status", "--porcelain", "-z"],
-                      capture_output=True, text=True, timeout=15)
+        proc = safe_git.probe(review_root, ["status", "--porcelain", "-z"], runner=runner)
         if proc.returncode != 0:
             # #run9 OPS-E1A: a baseline exists but the verification probe failed --
             # we can't confirm the tree is unchanged, so fail closed, never []-clean.

@@ -8,6 +8,7 @@ import io
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -93,6 +94,69 @@ class TestResolveReviewRoot(unittest.TestCase):
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         subprocess.run(["git", "init", "-q", d], check=True)
         return d
+
+    def _assert_enclosing_checkout_git_is_not_executed(self, target_kind, linked=False):
+        d = self._git_repo()
+        if linked:
+            subprocess.run(["git", "-C", d, "-c", "user.name=T", "-c", "user.email=t@t",
+                            "commit", "--allow-empty", "-qm", "initial"], check=True)
+            checkout = os.path.join(d, "linked")
+            subprocess.run(["git", "-C", d, "worktree", "add", "--detach", checkout],
+                           check=True, capture_output=True)
+        else:
+            checkout = d
+        source = os.path.join(checkout, "src")
+        os.makedirs(source)
+        target = source
+        if target_kind == "file":
+            target = os.path.join(source, "item.py")
+            open(target, "w").close()
+        malicious_bin = os.path.join(checkout, "bin")
+        os.makedirs(malicious_bin)
+        marker = os.path.join(checkout, "git-executed")
+        candidate = os.path.join(malicious_bin, "git")
+        with open(candidate, "w") as fh:
+            fh.write("#!/bin/sh\nprintf hit > %s\nprintf '%%s\\n' %s\n"
+                     % (shlex.quote(marker), shlex.quote(source)))
+        os.chmod(candidate, 0o700)
+        with mock.patch.dict(os.environ, {"PATH": malicious_bin + os.pathsep + os.environ["PATH"]}):
+            result = runio.resolve_review_root(target)
+        self.assertFalse(os.path.exists(marker), "repository Git executed before root was established")
+        self.assertEqual(result, (checkout, None, None))
+
+    def test_subdirectory_target_rejects_enclosing_checkout_git(self):
+        self._assert_enclosing_checkout_git_is_not_executed("directory")
+
+    def test_file_target_rejects_enclosing_checkout_git(self):
+        self._assert_enclosing_checkout_git_is_not_executed("file")
+
+    def test_linked_worktree_subdirectory_rejects_enclosing_checkout_git(self):
+        self._assert_enclosing_checkout_git_is_not_executed("directory", linked=True)
+
+    def test_linked_worktree_file_rejects_enclosing_checkout_git(self):
+        self._assert_enclosing_checkout_git_is_not_executed("file", linked=True)
+
+    def test_inherited_git_environment_cannot_redirect_requested_root(self):
+        requested, other = self._git_repo(), self._git_repo()
+        with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(other, ".git"),
+                                         "GIT_WORK_TREE": other}):
+            self.assertEqual(runio.resolve_review_root(requested), (requested, None, None))
+
+    def test_linked_worktree_keeps_its_own_root(self):
+        d = self._git_repo()
+        subprocess.run(["git", "-C", d, "-c", "user.name=T", "-c", "user.email=t@t",
+                        "commit", "--allow-empty", "-qm", "initial"], check=True)
+        linked = os.path.join(d, "linked")
+        subprocess.run(["git", "-C", d, "worktree", "add", "--detach", linked],
+                       check=True, capture_output=True)
+        sub = os.path.join(linked, "sub")
+        os.makedirs(sub)
+        self.assertEqual(runio.resolve_review_root(sub), (linked, None, None))
+
+    def test_missing_trusted_git_falls_back_to_requested_directory(self):
+        d = self._git_repo()
+        with mock.patch.dict(os.environ, {"PATH": d}):
+            self.assertEqual(runio.resolve_review_root(d), (d, None, None))
 
     def test_resolves_repo_root_from_subdir(self):
         d = self._git_repo()

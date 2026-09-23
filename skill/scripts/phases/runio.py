@@ -16,6 +16,7 @@ import scripts.ocrdb as ocrdb
 import scripts.redact as redact
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
+import scripts.safe_git as safe_git
 import scripts.safe_write as safe_write
 
 
@@ -481,8 +482,7 @@ def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
         # timeout locally -- run()'s outer handler doesn't cover SubprocessError,
         # so it would escape as an uncaught traceback -- and fall through to the
         # existing non-git return.
-        proc = runner(["git", "-C", start, "rev-parse", "--show-toplevel"],
-                      capture_output=True, text=True, timeout=15)
+        proc = safe_git.probe(start, ["rev-parse", "--show-toplevel"], runner=runner)
         if proc.returncode == 0 and proc.stdout.strip():
             return os.path.realpath(proc.stdout.strip()), None, None
     except (OSError, subprocess.SubprocessError):
