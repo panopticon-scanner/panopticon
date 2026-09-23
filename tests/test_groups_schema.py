@@ -168,6 +168,25 @@ class TestChunkNameCollision(unittest.TestCase):
         self.assertIn("API_1", errs[0])
         self.assertIn("silently clobber", errs[0])
 
+    def test_casefolded_authored_and_minted_names_collide(self):
+        cases = [
+            {"API": {"match": ["a"]}, "api": {"match": ["b"]}},
+            {"API": {"match": ["a"]}, "api_1": {"match": ["b"]}},
+            {"Product": {"API": {"match": ["a"]}},
+             "product": {"api_1": {"match": ["b"]}}},
+            {"ungrouped_1": {"match": ["a"]}},
+        ]
+        for groups in cases:
+            with self.subTest(groups=groups):
+                errs = self._errs({"groups": groups})
+                self.assertTrue(errs)
+                self.assertIn("rename", " ".join(errs).lower())
+
+    def test_casefolded_chunk_names_remain_namespaced(self):
+        self.assertEqual(self._errs({"groups": {
+            "API_1": {"match": ["a"]},
+            "Product": {"api": {"match": ["b"]}}}}), [])
+
     def test_collision_is_caught_inside_a_parent_too(self):
         # Chunk names are minted from the FLAT id, so the check must see
         # `Product:API` -> `Product:API_1`, not the bare subgroup name.

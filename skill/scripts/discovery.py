@@ -1126,8 +1126,9 @@ def fold_tiny_commons(commons_named, catalog):
     keys on FILES, not group names, so a `.env` or a lockfile still floors its
     group to SEC wherever it lands.
     """
-    if COMMONS_FOLD_NAME in catalog or any(
-            tests_axis.group_labels(n)[:1] == [COMMONS_FOLD_NAME] for n in catalog):
+    if any(tests_axis.group_labels(n)[:1] and
+           tests_axis.group_labels(n)[0].casefold() == COMMONS_FOLD_NAME.casefold()
+           for n in catalog):
         return commons_named
     tiny = {n for n, fs in commons_named.items() if len(fs) < COMMONS_MIN_FILES}
     if not tiny:
@@ -1296,9 +1297,10 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     # A committed PARENT (`Docs` with subgroups) is only present as `Docs:*`
     # flat ids; its top-level name is just as taken (setup's plan_groups
     # excludes on the same `tops`).
-    tops = {tests_axis.group_labels(n)[0] for n in catalog if tests_axis.group_labels(n)}
+    tops = {tests_axis.group_labels(n)[0].casefold()
+            for n in catalog if tests_axis.group_labels(n)}
     commons = {n: g for n, g in commons_catalog().items()
-               if n not in catalog and n not in tops}
+               if n.casefold() not in tops}
     commons_named, residual = assign_by_catalog(leftovers, commons)
     commons_named = fold_tiny_commons(commons_named, catalog)
     groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
@@ -1326,11 +1328,15 @@ def _assert_unique_names(groups):
     the committed catalog; this is the backstop for the ones that only exist
     once chunking has run (a Commons group's chunk name, the residual sink).
     """
-    seen, dupes = set(), set()
+    seen: dict[str, str] = {}
+    dupes: set[str] = set()
     for g in groups:
-        if g["name"] in seen:
-            dupes.add(g["name"])
-        seen.add(g["name"])
+        name = g["name"]
+        key = name.casefold()
+        if key in seen:
+            dupes.update((seen[key], name))
+        else:
+            seen[key] = name
     if dupes:
         raise ValueError(
             "duplicate group name(s) %s: two groups would write the same "
@@ -1443,6 +1449,9 @@ def _matrix_catalog(repo):
     if doc.doc is None:
         return {}
     groups, errs = groups_schema.parse_groups(doc.doc)
+    collisions = groups_schema._reserved_name_errors(groups)
+    if collisions:
+        raise ValueError("; ".join(collisions))
     for e in errs:
         print("committed %s: %s" % (repo_config.CONFIG_NAMES[0], e), file=sys.stderr)
     return groups
@@ -1609,7 +1618,7 @@ def main(argv=None):
                   file=sys.stderr)
             return 2
         assigned, _, _ = assign_scoped(
-            allf, {args.scope_group: catalog[args.scope_group]},
+            allf, catalog,
             prefixes=tests_axis.distinguishing_prefixes(catalog))
         scoped = assigned.get(args.scope_group, [])
         if not scoped:

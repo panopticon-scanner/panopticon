@@ -263,25 +263,37 @@ def _parse_leaf(name, raw, errors):
 
 
 def _reserved_name_errors(groups):
-    """Authored ids that collide with a machine-minted chunk name.
+    """Authored ids that collide with another id or a machine-minted name.
 
     Operates on FLAT ids, which is what makes it scope-correct for free:
     `Product:API` chunks to `Product:API_1`, so an authored `Product:API_1`
     collides while a top-level `API_1` does not.
     """
     errors = []
+    by_key: dict[str, str] = {}
+    for gid in sorted(groups):
+        key = gid.casefold()
+        earlier = by_key.get(key)
+        if earlier is not None:
+            errors.append(
+                f"group {gid}: collides with group {earlier} on "
+                f"case-insensitive findings artifacts -- rename one group")
+        else:
+            by_key[key] = gid
     for gid in sorted(groups):
         m = _CHUNK_SUFFIX_RE.match(gid)
         base = m.group("base") if m else None
-        if base is not None and base in groups:
+        owner = by_key.get(base.casefold()) if base is not None else None
+        if owner is not None:
             errors.append(
-                f"group {gid}: collides with the chunk names of group {base} "
-                f"(an oversize group splits into {base}_1, {base}_2, ...). Both "
+                f"group {gid}: collides with the chunk names of group {owner} "
+                f"(an oversize group splits into {owner}_1, {owner}_2, ...). Both "
                 f"would write findings-{gid}-<domain>.json and one would "
                 f"silently clobber the other -- rename it")
         # Top-level only: the residual sink owns `Ungrouped` and its chunks.
         # A subgroup `Foo:Ungrouped` is namespaced and cannot collide.
-        if ":" not in gid and RESIDUAL_SINK in (gid, base):
+        if ":" not in gid and RESIDUAL_SINK.casefold() in (
+                gid.casefold(), base.casefold() if base is not None else None):
             errors.append(
                 f"group {gid}: {RESIDUAL_SINK!r} and {RESIDUAL_SINK}_<n> are "
                 f"reserved for the unmatched-file sink; a group named this "

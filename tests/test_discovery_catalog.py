@@ -519,6 +519,14 @@ class TestGroupNameUniqueness(unittest.TestCase):
         self.assertIn("Docs", msg)
         self.assertNotIn("App_1", msg)   # names the offender, not the innocent
 
+    def test_case_variant_emitted_name_raises_instead_of_clobbering(self):
+        with self.assertRaises(ValueError) as ctx:
+            orchestrator._assert_unique_names(
+                [{"name": "Docs"}, {"name": "App_1"}, {"name": "docs"}])
+        self.assertIn("Docs", str(ctx.exception))
+        self.assertIn("docs", str(ctx.exception))
+        self.assertNotIn("App_1", str(ctx.exception))
+
     def test_unique_names_pass_through(self):
         self.assertIsNone(orchestrator._assert_unique_names(
             [{"name": "A"}, {"name": "A_1"}, {"name": "B"}]))
