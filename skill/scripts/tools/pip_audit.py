@@ -1,9 +1,11 @@
 """pip-audit adapter for Python dependency CVEs."""
 from __future__ import annotations
 import contextvars
+import errno
 import glob
 import os
 import re
+import stat
 import sys
 import tempfile
 import tomllib
@@ -21,13 +23,60 @@ _manifest_path_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 DEFAULT_MANIFEST = "requirements.txt"
 
 
+class PyprojectInputError(Exception):
+    """A bounded, target-independent reason pyproject.toml cannot be audited."""
+
+    def __init__(self, reason: str, *, truncated: bool = False):
+        super().__init__(reason)
+        self.truncated = truncated
+
+
 def _deps_from_pyproject(target: str) -> list[str] | None:
     """Static PEP 621 read — never invokes a build backend (#218)."""
     path = os.path.join(target, "pyproject.toml")
     try:
-        with open(path, "rb") as fh:
-            data = tomllib.load(fh)
-    except (OSError, ValueError):
+        # O_NONBLOCK prevents a target FIFO from hanging the scanner while
+        # O_NOFOLLOW makes the descriptor check safe against symlink swaps.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise PyprojectInputError("pyproject.toml is a symbolic link") from None
+        # Some special files (notably Unix sockets) fail open before fstat can
+        # inspect the descriptor. lstat classifies only that failed path; a
+        # missing or unreadable regular file keeps its ordinary None result.
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError:
+            return None
+        if stat.S_ISLNK(mode):
+            raise PyprojectInputError("pyproject.toml is a symbolic link") from None
+        if not stat.S_ISREG(mode):
+            raise PyprojectInputError("pyproject.toml is not a regular file") from None
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise PyprojectInputError("pyproject.toml is not a regular file")
+        if info.st_size > _MAX_READ_BYTES:
+            raise PyprojectInputError(
+                "pyproject.toml exceeds the 1 MiB read limit", truncated=True)
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1  # fdopen owns the descriptor from here.
+            raw = fh.read(_MAX_READ_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(raw) > _MAX_READ_BYTES:
+        raise PyprojectInputError(
+            "pyproject.toml exceeds the 1 MiB read limit", truncated=True)
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except RecursionError:
+        raise PyprojectInputError(
+            "pyproject.toml exceeds the TOML nesting limit") from None
+    except (ValueError, OSError):
         return None
     project = data.get("project")
     if not isinstance(project, dict):
@@ -469,7 +518,11 @@ class PipAuditAdapter:
         else:
             # Never pass the project directory positionally: resolving a
             # source tree can invoke its PEP 517 build backend (#218).
-            deps = _deps_from_pyproject(target)
+            try:
+                deps = _deps_from_pyproject(target)
+            except PyprojectInputError as exc:
+                print("pip-audit: %s" % exc, file=sys.stderr)
+                return b"", 2
             if not deps:
                 print("pip-audit: no static [project.dependencies] in %s; "
                       "skipping (osv-scanner covers this target)" % target,
@@ -526,7 +579,14 @@ class PipAuditAdapter:
             kept_n = len(report["kept"])
             source = os.path.relpath(req, target)
         else:
-            deps = _deps_from_pyproject(target)
+            try:
+                deps = _deps_from_pyproject(target)
+            except PyprojectInputError as exc:
+                return {"source": _source_label("pyproject.toml", rejected),
+                        "kept": 0,
+                        "dropped": [{"line": "pyproject.toml", "reason": str(exc)}],
+                        "hashes_stripped": False, "truncated": exc.truncated,
+                        "dropped_truncated": 0}
             if not deps and not rejected:
                 return None
             text, truncated = _bounded("\n".join(deps or []))
