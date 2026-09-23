@@ -48,6 +48,157 @@ FINDING = {
 }
 
 
+def _split_finding(name, rejected=False):
+    return {
+        **FINDING,
+        "fingerprint": "fingerprint-" + name,
+        "id": "SEC-" + name,
+        "short_title": name,
+        "location": {"file": "src/" + name + ".py", "line_start": 7},
+        "evidence": {"status": "rejected" if rejected else "advisor_confirmed"},
+    }
+
+
+def _split_report(tmp_path):
+    records = {
+        "active-inline": _split_finding("active-inline"),
+        "active-part": _split_finding("active-part"),
+        "rejected-inline": _split_finding("rejected-inline", True),
+        "rejected-part": _split_finding("rejected-part", True),
+        "rejected-spill": _split_finding("rejected-spill", True),
+    }
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({
+        "findings": [records["active-inline"]],
+        "discarded_claims": [records["rejected-inline"]],
+        "meta": {"parts": ["part.json"], "discarded_claims_file": "discarded.json"},
+    }), encoding="utf-8")
+    (tmp_path / "part.json").write_text(json.dumps({
+        "findings": [records["active-part"]],
+        "discarded_claims": [records["rejected-part"]],
+    }), encoding="utf-8")
+    (tmp_path / "discarded.json").write_text(json.dumps({
+        "discarded_claims": [records["rejected-spill"]],
+    }), encoding="utf-8")
+    return report, records
+
+
+def _run_split_main(monkeypatch, report, *options, ledger=None):
+    monkeypatch.setattr(file_issues.sys, "argv", [
+        "file_issues.py", "--report", str(report), "--report-url",
+        "https://example.test/report.json", "--run-label", "run 12",
+        "--run-date", "2026-09-23", "--run-state-doc", "run-state.md",
+        "--throttle", "0", *options,
+    ])
+    with mock.patch.object(file_issues, "load_ledger", return_value=ledger or {}) as load, \
+            mock.patch.object(file_issues, "create", side_effect=lambda *args, **kwargs:
+                              None if args[3] else "https://example.test/issue/1") as create, \
+            mock.patch.object(file_issues, "record") as record, \
+            mock.patch.object(file_issues.triage, "gh_env", return_value={}) as gh_env:
+        file_issues.main()
+    return load, create, record, gh_env
+
+
+@pytest.mark.parametrize(("options", "expected"), [
+    ((), ["active-inline", "active-part", "rejected-inline", "rejected-part", "rejected-spill"]),
+    (("--only", "findings"), ["active-inline", "active-part"]),
+    (("--only", "rejected"), ["rejected-inline", "rejected-part", "rejected-spill"]),
+    (("--limit", "3"), ["active-inline", "active-part", "rejected-inline"]),
+    (("--only", "rejected", "--limit", "2"), ["rejected-inline", "rejected-part"]),
+])
+def test_main_files_selected_split_records_in_order(tmp_path, monkeypatch, options, expected):
+    report, records = _split_report(tmp_path)
+    load, create, record, gh_env = _run_split_main(monkeypatch, report, *options)
+    load.assert_called_once_with()
+    gh_env.assert_called_once_with()
+    assert create.call_count == record.call_count == len(expected)
+    for name, created, saved in zip(expected, create.call_args_list, record.call_args_list):
+        finding = records[name]
+        rejected = name.startswith("rejected")
+        title, body, labels, dry, throttle = created.args
+        assert title == file_issues.title_for(finding)
+        assert "**Fingerprint:** `%s`" % finding["fingerprint"] in body
+        assert "**Finding id in report:** `%s`" % finding["id"] in body
+        assert "**Location:** `src/%s.py:7`" % name in body
+        assert "self-scan run 12, 2026-09-23" in body
+        assert "https://example.test/report.json" in body
+        assert "run-state.md" in body
+        assert ("evidence:rejected" in labels) == rejected
+        assert ("false-positive" in labels) == rejected
+        assert dry is False and throttle == 0
+        assert saved.args[1:] == (
+            file_issues.key_for(finding, rejected), "https://example.test/issue/1")
+
+
+def test_main_skips_existing_split_record(tmp_path, monkeypatch):
+    report, records = _split_report(tmp_path)
+    existing = file_issues.key_for(records["rejected-part"], True)
+    _, create, record, _ = _run_split_main(
+        monkeypatch, report, "--only", "rejected", ledger={existing: "existing-url"})
+    assert [call.args[0] for call in create.call_args_list] == [
+        file_issues.title_for(records[name]) for name in ("rejected-inline", "rejected-spill")]
+    assert [call.args[1] for call in record.call_args_list] == [
+        file_issues.key_for(records[name], True) for name in ("rejected-inline", "rejected-spill")]
+
+
+def test_main_dry_run_reads_all_split_records_without_ledger(tmp_path, monkeypatch):
+    report, records = _split_report(tmp_path)
+    load, create, record, gh_env = _run_split_main(monkeypatch, report, "--dry-run")
+    load.assert_not_called()
+    gh_env.assert_not_called()
+    record.assert_not_called()
+    assert [call.args[0] for call in create.call_args_list] == [
+        file_issues.title_for(records[name]) for name in records]
+    assert all(call.args[3] is True for call in create.call_args_list)
+
+
+@pytest.mark.parametrize("channel", ["parts", "discarded_claims_file"])
+@pytest.mark.parametrize("bad", ["missing", "malformed", "absolute", "traversal", "symlink"])
+def test_main_validates_all_continuations_before_side_effects(
+        tmp_path, monkeypatch, channel, bad):
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+    report, _ = _split_report(report_dir)
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    if bad == "missing":
+        pointer = "missing.json"
+    elif bad == "malformed":
+        pointer = "malformed.json"
+        (report_dir / pointer).write_text("{", encoding="utf-8")
+    elif bad == "absolute":
+        pointer = str(outside)
+    elif bad == "traversal":
+        pointer = "../outside.json"
+    else:
+        pointer = "outside-link.json"
+        (report_dir / pointer).symlink_to(outside)
+    data = json.loads(report.read_text(encoding="utf-8"))
+    if channel == "parts":
+        # A valid earlier part catches implementations that publish as they load.
+        data["meta"]["parts"].append(pointer)
+    else:
+        data["meta"]["discarded_claims_file"] = pointer
+    report.write_text(json.dumps(data), encoding="utf-8")
+    ledger = tmp_path / file_issues.LEDGER
+    ledger.parent.mkdir()
+    ledger.write_text('{"sentinel": "unchanged"}', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(file_issues.sys, "argv", [
+        "file_issues.py", "--report", str(report), "--throttle", "0"])
+    with mock.patch.object(file_issues, "load_ledger") as load, \
+            mock.patch.object(file_issues, "create") as create, \
+            mock.patch.object(file_issues, "record") as record, \
+            mock.patch.object(file_issues.triage, "gh_env") as gh_env:
+        with pytest.raises((OSError, json.JSONDecodeError, ValueError)):
+            file_issues.main()
+    load.assert_not_called()
+    create.assert_not_called()
+    record.assert_not_called()
+    gh_env.assert_not_called()
+    assert ledger.read_text(encoding="utf-8") == '{"sentinel": "unchanged"}'
+
+
 class TestGhBinIsTriagesResolution(unittest.TestCase):
     """#1650 R1 residual: `_gh_bin` must BE `triage.gh_bin()`, not a lookalike.
 
