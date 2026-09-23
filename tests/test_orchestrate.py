@@ -634,6 +634,125 @@ class TestHeadlessLoop(LoopCase):
         self.assertFalse(write_guard_hook.is_armed(
             settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
 
+    def test_an_interrupt_with_a_tampered_batch_list_preserves_its_files(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        outside = os.path.join(d, ".panopticon", "keep-outside.json")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("keep")
+        opened, original_open = [], batch_mod.Batch.open
+
+        def capture(batch_self):
+            opened.append(batch_self)
+            return original_open(batch_self)
+
+        def tamper_and_interrupt():
+            opened[0].entries[0]["artifacts"].append(outside)
+            raise KeyboardInterrupt
+
+        seen = self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC",
+                                  then=tamper_and_interrupt)
+        with mock.patch.object(batch_mod.Batch, "open", capture):
+            status = self._return_persist(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertTrue(seen["reply"])
+        self.assertIn("rollback incomplete", status["message"])
+        self.assertIn("batch artifact escapes the run folder", status["message"])
+        req = orchestrate.requests.load_dispatch_request(d) or {}
+        completed = next(e["out_file"] for e in req["entries"]
+                         if e["id"] == "review-app-SEC")
+        self.assertTrue(os.path.isfile(completed))
+        self.assertEqual(["batch-1.json"], self._manifests(runner.run_dir))
+        with open(outside, encoding="utf-8") as fh:
+            self.assertEqual("keep", fh.read())
+
+    def test_failed_recovery_flag_defers_bookkeeping_until_the_next_resume(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        outside = os.path.join(d, ".panopticon", "keep-outside.json")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("keep")
+        prior = {"app/SEC": 1, "app/ACC": 1}
+        original_seed = self._seed_coverage
+
+        def seed_prior_attempts(review_root, domains):
+            result = original_seed(review_root, domains)
+            runio._write_json(runio._pano(review_root, review._ATTEMPTS_FILE), prior)
+            return result
+
+        opened, original_open = [], batch_mod.Batch.open
+
+        def capture(batch_self):
+            opened.append(batch_self)
+            return original_open(batch_self)
+
+        def tamper_and_interrupt():
+            opened[0].entries[0]["artifacts"].append(outside)
+            raise KeyboardInterrupt
+
+        seen = self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC",
+                                  then=tamper_and_interrupt)
+        with mock.patch.object(self, "_seed_coverage", side_effect=seed_prior_attempts), \
+             mock.patch.object(batch_mod.Batch, "open", capture):
+            interrupted = self._return_persist(d, floor, runner)
+        self.assertEqual("error", interrupted["status"], interrupted)
+        self.assertTrue(seen["reply"])
+        self.assertIn("rollback incomplete", interrupted["message"])
+        manifest = os.path.join(runner.run_dir, "batch-1.json")
+        self.assertTrue(os.path.isfile(manifest))
+        self.assertNotIn("recovering", runio._load_json(manifest))
+        req = orchestrate.requests.load_dispatch_request(d) or {}
+        completed = next(e["out_file"] for e in req["entries"]
+                         if e["id"] == "review-app-SEC")
+        self.assertTrue(os.path.isfile(completed))
+        self.assertEqual({"app/SEC": 2, "app/ACC": 2},
+                         runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)))
+        before = ledger_mod.Ledger(runner.run_dir).lines()
+        self.assertFalse(any(row.get("status") in (ledger_mod.ROLLED_BACK,
+                                                    ledger_mod.CANCELLED) for row in before))
+        with open(outside, encoding="utf-8") as fh:
+            self.assertEqual("keep", fh.read())
+
+        self._stamp_crash_owner(runner.run_dir, pid=self._dead_pid())
+        stale_doc = runio._load_json(manifest)
+        refused_doc = copy.deepcopy(stale_doc)
+        refused_doc["entries"][0]["artifacts"].append(outside)
+        runio._write_json(manifest, refused_doc)
+        refused_runner = FakeRunner()
+        with mock.patch("scripts.runners.base.runner_for", return_value=refused_runner), \
+             contextlib.redirect_stderr(io.StringIO()), \
+             contextlib.redirect_stdout(io.StringIO()):
+            refused = orchestrate.loop(self._args(d, "--allow-unenforced"))
+        self.assertEqual("error", refused["status"], refused)
+        self.assertIn("escapes the run folder", refused["message"])
+        self.assertEqual([], refused_runner.launched)
+        self.assertTrue(os.path.isfile(manifest))
+        self.assertTrue(os.path.isfile(completed))
+        self.assertEqual({"app/SEC": 2, "app/ACC": 2},
+                         runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)))
+        self.assertEqual(before, ledger_mod.Ledger(runner.run_dir).lines())
+
+        runio._write_json(manifest, stale_doc)
+        resumed = FakeRunner()
+        with mock.patch("scripts.runners.base.runner_for", return_value=resumed), \
+             mock.patch.object(orchestrate, "_first_run",
+                               return_value=orchestrate._status("error", "stopped after recovery")), \
+             contextlib.redirect_stderr(io.StringIO()), \
+             contextlib.redirect_stdout(io.StringIO()):
+            status = orchestrate.loop(self._args(d, "--allow-unenforced"))
+        self.assertEqual("error", status["status"], status)
+        self.assertEqual([], resumed.launched)
+        self.assertEqual([], self._manifests(runner.run_dir))
+        self.assertFalse(os.path.lexists(completed))
+        self.assertEqual(prior, runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)))
+        after = ledger_mod.Ledger(runner.run_dir).lines()
+        self.assertEqual(before, after[:len(before)])
+        rolled = [row for row in after if row.get("status") in (ledger_mod.ROLLED_BACK,
+                                                                 ledger_mod.CANCELLED)]
+        self.assertEqual(2, len(rolled), rolled)
+        with open(outside, encoding="utf-8") as fh:
+            self.assertEqual("keep", fh.read())
+
     def _dead_pid(self):
         """A pid that is certainly not running: a child spawned and reaped."""
         proc = subprocess.Popen([sys.executable, "-c", ""])
@@ -718,6 +837,31 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(resumed.launched, [])
         self.assertTrue(all(os.path.exists(p) for p in existing))
         self.assertTrue(os.path.exists(path))
+
+    def test_a_linked_retained_reply_parent_in_a_crash_record_preserves_every_artifact(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        run_dir = crashed.run_dir
+        manifest = os.path.join(run_dir, self._manifests(run_dir)[0])
+        doc = runio._load_json(manifest)
+        rejected = os.path.join(run_dir, orchestrate.persist.REJECTED_DIR)
+        os.makedirs(rejected, exist_ok=True)
+        alias = os.path.join(run_dir, "linked-replies")
+        os.symlink(rejected, alias)
+        retained = os.path.join(rejected, "review-app-SEC-1.json")
+        with open(retained, "w", encoding="utf-8") as fh:
+            fh.write("keep")
+        doc["entries"][0]["artifacts"].append(os.path.join(alias, os.path.basename(retained)))
+        runio._write_json(manifest, doc)
+        before = self._untouched(d, run_dir)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("symlink", status["message"])
+        self.assertEqual([], resumed.launched)
+        self.assertEqual(before, self._untouched(d, run_dir))
+        with open(retained, encoding="utf-8") as fh:
+            self.assertEqual("keep", fh.read())
 
     # #1698: a manifest on disk is a CRASHED batch only if the process that
     # opened it is gone. A second `driver loop` on the same run folder used to
