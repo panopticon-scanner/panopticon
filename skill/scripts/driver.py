@@ -930,7 +930,7 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     if args.reset:
         try:
             _clear_run_artifacts(review_root)  # resolve the tag before the manifest goes
-        except runio.DriverError as exc:
+        except (runio.DriverError, OSError) as exc:
             return runio._error_status("unsafe reset cleanup: %s" % exc)
         run_manifest.reset_run(review_root)
     # #1681 Plan 2: ONE resolution per invocation -- both branches below read
@@ -957,7 +957,7 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         # can't raise an uncaught FileExistsError and wedge the run.
         try:
             _clear_run_artifacts(review_root)
-        except runio.DriverError as exc:
+        except (runio.DriverError, OSError) as exc:
             return runio._error_status("unsafe fresh-manifest cleanup: %s" % exc)
         run_manifest.reset_run(review_root)
         manifest = run_manifest.build_manifest(

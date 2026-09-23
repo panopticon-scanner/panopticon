@@ -878,6 +878,50 @@ def test_public_reset_refuses_linked_runs_parent(tmp_path):
     assert (pano / "run-manifest.json").exists()
 
 
+def test_public_reset_reports_latest_directory_cleanup_failure(tmp_path):
+    root, pano, tag = _root(tmp_path)
+    active = pano / "runs" / tag
+    active.mkdir(parents=True)
+    (active / "scratch").write_text("remove")
+    latest = pano / "runs" / "latest"
+    latest.mkdir()
+    (latest / "sentinel").write_text("keep latest")
+    other = pano / "runs" / "other-run"
+    other.mkdir()
+    (other / "sentinel").write_text("keep other")
+
+    args = driver.build_parser().parse_args(["run", str(root), "--reset"])
+    status = driver.run(args, phases=())
+
+    assert status["status"] == "error"
+    assert "reset cleanup" in status["message"]
+    assert not active.exists()
+    assert (latest / "sentinel").read_text() == "keep latest"
+    assert (other / "sentinel").read_text() == "keep other"
+    assert (pano / "run-manifest.json").exists()
+
+
+def test_public_fresh_manifest_reports_legacy_directory_cleanup_failure(tmp_path):
+    root = tmp_path / "review"
+    pano = root / ".panopticon"
+    pano.mkdir(parents=True)
+    stale = pano / "groups.json"
+    stale.mkdir()
+    (stale / "sentinel").write_text("keep malformed artifact")
+    other = pano / "runs" / "other-run"
+    other.mkdir(parents=True)
+    (other / "sentinel").write_text("keep other")
+
+    args = driver.build_parser().parse_args(["run", str(root)])
+    status = driver.run(args, phases=())
+
+    assert status["status"] == "error"
+    assert "fresh-manifest cleanup" in status["message"]
+    assert (stale / "sentinel").read_text() == "keep malformed artifact"
+    assert (other / "sentinel").read_text() == "keep other"
+    assert not (pano / "run-manifest.json").exists()
+
+
 def test_fresh_manifest_path_cleans_legacy_artifacts(tmp_path, monkeypatch):
     root = tmp_path / "review"
     pano = root / ".panopticon"
