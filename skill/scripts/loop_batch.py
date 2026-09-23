@@ -278,8 +278,12 @@ def rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
         # finishes the file removals and ledgers nothing.
         batch.begin_recovery()
     except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
-        notes.append("the crash record was not flagged, so a leftover may be "
-                     "recovered twice: %s: %s" % (type(exc).__name__, exc))
+        notes.append("the crash record was not flagged; rollback bookkeeping "
+                     "is deferred to recovery: %s: %s" % (type(exc).__name__, exc))
+        # Without a durable flag, ledger rows and attempt refunds here would
+        # be repeated when a later process recovers the unflagged manifest.
+        # The guards are already down; leave every other effect to recovery.
+        return INTERRUPTED % (done, total) + "; rollback incomplete: " + "; ".join(notes)
     try:
         ledger.rollback_rows(pending, finished, checkpoint, mode, runner.host)
     except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
