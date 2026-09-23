@@ -6,9 +6,9 @@ Why this matters, generalized past cargo-audit's own bug: a scanner's cwd is
 the directory ITS OWN config/dispatch resolution walks from. cargo is a
 dispatcher that reads `.cargo/config.toml` upward from cwd and honours
 `[alias]`; bundle-audit resolves its default `.bundler-audit.yml` against the
-directory it scans; npm reads `.npmrc`, semgrep `.semgrepignore`, gitleaks
-`.gitleaksignore`. Either lets a HOSTILE target plant a file that redirects
-what the scanner does or reads, purely by virtue of `cwd=target`. The fix is
+directory it scans; npm reads `.npmrc`, semgrep `.semgrepignore`. A hostile
+target can plant such a file and redirect what the scanner does or reads,
+purely by virtue of `cwd=target`. The fix is
 the shape pip-audit already used (#1646) and `base.scratch_cwd` now carries:
 invoke from an empty scratch directory and name the target explicitly, by
 path, in argv.
@@ -125,6 +125,9 @@ _GENERATED_IN_CWD = {
     # the scratch so the target's own .bundler-audit.yml is never the default
     # (#1742 finding 3).
     "bundler-audit": ["empty-bundler-audit.yml"],
+    # Gitleaks explicitly selects scanner-owned rules. Its source-root
+    # .gitleaksignore is read separately by the pinned binary.
+    "gitleaks": ["gitleaks.toml"],
 }
 
 

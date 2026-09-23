@@ -59,8 +59,8 @@ class TestLegacySarifAdapter(unittest.TestCase):
         launch = only(calls, "bandit launch")
         self.assertIn("/some/target", launch["argv"])
         # #1877: every legacy tool but gosec names its scan root on argv and
-        # runs from an empty scratch, so the target's own `.bandit` /
-        # `.semgrepignore` / `.gitleaksignore` is no longer read from the cwd.
+        # runs from a scratch, so cwd-relative config is isolated. Gitleaks
+        # still reads source-root `.gitleaksignore` independently.
         assert_scratch_cwd(self, launch, "/some/target")
 
     def test_invoke_runs_gosec_in_target_directory(self):
