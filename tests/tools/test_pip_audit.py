@@ -5,6 +5,8 @@ import io
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -13,6 +15,7 @@ import pytest
 
 from _test_helpers import FakePopen, fake_aws_key, first, only
 import scripts.ingest_tools as ingest_tools
+import scripts.run_tools as run_tools
 import scripts.tools.pip_audit as pa
 
 try:
@@ -402,6 +405,116 @@ class TestStaticPyproject(unittest.TestCase):
         deps = pa._deps_from_pyproject(
             self._target(b'\xff\xfe[project]\nname = "x"\n'))
         self.assertIsNone(deps)
+
+
+class TestPyprojectReadBoundary(unittest.TestCase):
+    def _target(self, content=None):
+        target = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, target, ignore_errors=True)
+        path = os.path.join(target, "pyproject.toml")
+        if content is not None:
+            with open(path, "wb") as fh:
+                fh.write(content)
+        return target, path
+
+    def _assert_refused(self, target, reason, truncated):
+        stderr = io.StringIO()
+        with mock.patch.object(pa, "run_tool") as launch, \
+             contextlib.redirect_stderr(stderr):
+            raw, status = pa.PipAuditAdapter().invoke(target)
+            report = pa.PipAuditAdapter().sanitization_report(target)
+        launch.assert_not_called()
+        self.assertNotEqual(status, 0)
+        self.assertNotEqual(raw, b'{"dependencies": [], "fixes": []}')
+        self.assertIn(reason, stderr.getvalue())
+        self.assertLess(len(stderr.getvalue()), 200)
+        self.assertNotIn(target, stderr.getvalue())
+        self.assertEqual(report["source"], "pyproject.toml")
+        self.assertEqual(report["kept"], 0)
+        self.assertEqual(report["dropped"],
+                         [{"line": "pyproject.toml", "reason": reason}])
+        self.assertEqual(report["truncated"], truncated)
+        self.assertEqual(report["dropped_truncated"], 0)
+        self.assertLess(len(json.dumps(report)), 1000)
+        self.assertEqual(run_tools.collect_sanitization(
+            {"pip-audit": pa.PipAuditAdapter()}, target), {"pip-audit": report})
+
+    def test_exact_read_limit_keeps_static_dependencies(self):
+        content = PYPROJECT_STATIC + b"#" + b"x" * (
+            pa._MAX_READ_BYTES - len(PYPROJECT_STATIC) - 1)
+        self.assertEqual(len(content), pa._MAX_READ_BYTES)
+        target, _ = self._target(content)
+        self.assertEqual(pa._deps_from_pyproject(target),
+                         ["requests==2.25.1", "urllib3>=1.26", "pytest"])
+        seen = {}
+
+        def fake_run(cmd, **_kwargs):
+            with open(cmd[cmd.index("--requirement") + 1], encoding="utf-8") as fh:
+                seen["lines"] = fh.read().splitlines()
+            return b"{}", 0
+
+        with mock.patch.object(pa, "run_tool", side_effect=fake_run):
+            self.assertEqual(pa.PipAuditAdapter().invoke(target), (b"{}", 0))
+        report = pa.PipAuditAdapter().sanitization_report(target)
+        self.assertEqual(seen["lines"],
+                         ["requests==2.25.1", "urllib3>=1.26", "pytest"])
+        self.assertEqual((report["kept"], report["truncated"]), (3, False))
+
+    def test_limit_plus_one_is_refused_before_toml_parse(self):
+        content = PYPROJECT_STATIC + b"#" + b"x" * (
+            pa._MAX_READ_BYTES - len(PYPROJECT_STATIC))
+        self.assertEqual(len(content), pa._MAX_READ_BYTES + 1)
+        target, _ = self._target(content)
+        with mock.patch.object(pa.tomllib, "loads") as parse:
+            self._assert_refused(target, "pyproject.toml exceeds the 1 MiB read limit", True)
+        parse.assert_not_called()
+
+    def test_giant_single_comment_line_is_refused(self):
+        target, _ = self._target(PYPROJECT_STATIC + b"#" + b"x" * pa._MAX_READ_BYTES)
+        self._assert_refused(target, "pyproject.toml exceeds the 1 MiB read limit", True)
+
+    def test_sparse_oversized_file_is_refused_before_toml_parse(self):
+        target, path = self._target(PYPROJECT_STATIC)
+        os.truncate(path, 8 * pa._MAX_READ_BYTES)
+        with mock.patch.object(pa.tomllib, "loads") as parse:
+            self._assert_refused(target, "pyproject.toml exceeds the 1 MiB read limit", True)
+        parse.assert_not_called()
+
+    def test_excessive_toml_nesting_is_refused(self):
+        nested = b"[project]\nname = " + b"[" * 1200 + b"1" + b"]" * 1200
+        target, _ = self._target(nested)
+        self._assert_refused(target, "pyproject.toml exceeds the TOML nesting limit", False)
+
+    def test_symlink_to_regular_file_is_refused(self):
+        target, path = self._target()
+        with open(os.path.join(target, "real.toml"), "wb") as fh:
+            fh.write(PYPROJECT_STATIC)
+        os.symlink("real.toml", path)
+        self._assert_refused(target, "pyproject.toml is a symbolic link", False)
+
+    def test_directory_is_refused_as_non_regular_file(self):
+        target, path = self._target()
+        os.mkdir(path)
+        self._assert_refused(target, "pyproject.toml is not a regular file", False)
+
+    def test_fifo_refusal_cannot_hang_reader(self):
+        target, path = self._target()
+        os.mkfifo(path)
+        # A child and a hard deadline keep the RED run safe: the old open()
+        # blocks forever on this path without a writer.
+        code = ("import json, sys; sys.path.insert(0, sys.argv[1]); "
+                "import scripts.tools.pip_audit as pa; "
+                "a = pa.PipAuditAdapter(); raw, rc = a.invoke(sys.argv[2]); "
+                "print(json.dumps({'rc': rc, 'raw': raw.decode(), "
+                "'report': a.sanitization_report(sys.argv[2])}))")
+        skill_root = os.path.dirname(os.path.dirname(os.path.dirname(pa.__file__)))
+        result = subprocess.run([sys.executable, "-c", code, skill_root, target],
+                                capture_output=True, text=True, timeout=2, check=True)
+        observed = json.loads(result.stdout)
+        self.assertNotEqual(observed["rc"], 0)
+        self.assertEqual(observed["report"]["dropped"],
+                         [{"line": "pyproject.toml",
+                           "reason": "pyproject.toml is not a regular file"}])
 
 
 # #1646 (SEC-E3A): the adapter used to hand pip-audit the REPOSITORY'S OWN
