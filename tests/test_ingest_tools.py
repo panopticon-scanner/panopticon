@@ -21,6 +21,94 @@ SARIF = {
 
 
 class TestIngest(unittest.TestCase):
+    @staticmethod
+    def _severity_sarif(rule_properties=None, result_properties=None,
+                        level="error", default_level=None):
+        rule = {"id": "CVE-2026-1234"}
+        if rule_properties is not None:
+            rule["properties"] = rule_properties
+        if default_level is not None:
+            rule["defaultConfiguration"] = {"level": default_level}
+        result = {"ruleId": rule["id"], "message": {"text": "Example"},
+                  "locations": [{"physicalLocation": {
+                      "artifactLocation": {"uri": "/src/app.py"},
+                      "region": {"startLine": 7}}}]}
+        if level is not None:
+            result["level"] = level
+        if result_properties is not None:
+            result["properties"] = result_properties
+        return {"runs": [{"tool": {"driver": {"rules": [rule]}},
+                          "results": [result]}]}
+
+    def test_sarif_trivy_rule_security_severity_preserves_critical(self):
+        sarif = self._severity_sarif(
+            rule_properties={"security-severity": "9.8",
+                             "tags": ["vulnerability", "security", "CRITICAL"]})
+        finding = first(it.sarif_to_findings(sarif, "trivy", "g1", "TR"))
+        self.assertEqual(finding["severity"], "CRITICAL")
+        self.assertEqual(finding["location"], {"file": "app.py", "line_start": 7})
+        self.assertEqual(finding["tool_evidence"]["rule_id"], "CVE-2026-1234")
+        self.assertEqual(finding["citations"]["cve"], ["CVE-2026-1234"])
+
+    def test_sarif_result_metadata_precedes_rule_and_level(self):
+        cases = [({"security-severity": "5.3"}, "MEDIUM"),
+                 ({"security-severity": 9.8, "severity": "LOW"}, "CRITICAL"),
+                 ({"severity": "CRITICAL"}, "CRITICAL"),
+                 ({"tags": ["medium", "CRITICAL", "not-high"]}, "CRITICAL")]
+        for props, expected in cases:
+            with self.subTest(props=props):
+                sarif = self._severity_sarif(
+                    rule_properties={"security-severity": "7.5"},
+                    result_properties=props, level="note")
+                finding = first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))
+                self.assertEqual(finding["severity"], expected)
+
+    def test_sarif_rule_metadata_and_default_level_fallback(self):
+        cases = [({"severity": "MODERATE"}, "MEDIUM"),
+                 ({"tags": ["security", "critical"]}, "CRITICAL"),
+                 ({"tags": ["critical vulnerability"]}, "LOW"),
+                 ({"security-severity": "0", "severity": "HIGH"}, "HIGH")]
+        for props, expected in cases:
+            with self.subTest(props=props):
+                sarif = self._severity_sarif(rule_properties=props, level="note")
+                self.assertEqual(first(it.sarif_to_findings(sarif, "trivy", "g1", "TR"))
+                                 ["severity"], expected)
+        sarif = self._severity_sarif(level=None, default_level="error")
+        self.assertEqual(first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))
+                         ["severity"], "HIGH")
+        sarif = self._severity_sarif(level="bogus", default_level="note")
+        self.assertEqual(first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))
+                         ["severity"], "LOW")
+
+    def test_sarif_malformed_optional_metadata_preserves_findings(self):
+        bad_scores = [0, -1, 10.1, True, "nan", "inf", {}, []]
+        sarif = self._severity_sarif(
+            rule_properties={"tags": "CRITICAL"},
+            result_properties={"security-severity": first(bad_scores), "severity": "LOW"},
+            level="warning")
+        results = first(sarif["runs"])["results"]
+        base_result = first(results)
+        for index, score in enumerate(bad_scores):
+            sibling = dict(base_result, ruleId=f"R{index}",
+                           properties={"security-severity": score, "severity": "LOW"})
+            results.append(sibling)
+        results.append(dict(base_result, ruleId="bag", properties=["CRITICAL"]))
+        sarif["runs"][0]["tool"]["driver"]["rules"].append(
+            {"id": "bag", "properties": ["CRITICAL"]})
+        findings = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
+        self.assertEqual(len(findings), len(results))
+        self.assertEqual([f["severity"] for f in findings[:-1]],
+                         ["LOW"] * (len(results) - 1))
+        self.assertEqual(findings[-1]["severity"], "MEDIUM")
+
+    def test_gitleaks_severity_floor_preserves_critical(self):
+        for props, expected in [({"severity": "LOW"}, "HIGH"),
+                                ({"security-severity": "9.8"}, "CRITICAL")]:
+            with self.subTest(props=props):
+                sarif = self._severity_sarif(result_properties=props, level="note")
+                self.assertEqual(first(it.sarif_to_findings(sarif, "gitleaks", "g1", "GL"))
+                                 ["severity"], expected)
+
     def test_sarif_to_findings(self):
         out = it.sarif_to_findings(SARIF, "semgrep", "g1", "SG")
         self.assertEqual(len(out), 1)

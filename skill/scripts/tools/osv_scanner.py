@@ -1,9 +1,35 @@
 """OSV scanner adapter for cross-ecosystem dependency advisories."""
 from __future__ import annotations
+import math
 from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
                    omit_none, parse_json_bytes, run_tool, scratch_cwd,
                    _cvss_v3_score)
 from .sarif_utils import _norm_uri
+
+
+_DATABASE_SEVERITIES = {"CRITICAL": "CRITICAL", "HIGH": "HIGH",
+                        "MEDIUM": "MEDIUM", "MODERATE": "MEDIUM", "LOW": "LOW"}
+
+
+def _group_score(raw: object) -> float | None:
+    """OSV group scores include zero, which the existing CVSS bucket grades LOW."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return None
+    try:
+        score = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return score if math.isfinite(score) and 0 <= score <= 10 else None
+
+
+def _database_severity(vuln: dict) -> str | None:
+    metadata = vuln.get("database_specific")
+    if not isinstance(metadata, dict):
+        return None
+    label = metadata.get("severity")
+    if not isinstance(label, str):
+        return None
+    return _DATABASE_SEVERITIES.get(label.strip().upper())
 
 
 class OsvScannerAdapter:
@@ -47,18 +73,22 @@ class OsvScannerAdapter:
                 if not isinstance(pkg_entry, dict):
                     continue
                 pkg = pkg_entry.get("package", {}) or {}
-                sev_by_id = {}
+                sev_by_id: dict[str, float] = {}
                 for grp in pkg_entry.get("groups", []) or []:
-                    try:
-                        score = float(grp.get("max_severity") or "")
-                    except (TypeError, ValueError):
+                    if not isinstance(grp, dict):
                         continue
-                    for vid in grp.get("ids", []) or []:
-                        sev_by_id[vid] = score
+                    score = _group_score(grp.get("max_severity"))
+                    if score is None:
+                        continue
+                    ids = grp.get("ids")
+                    for vid in ids if isinstance(ids, list) else []:
+                        if isinstance(vid, str):
+                            sev_by_id[vid] = max(score, sev_by_id.get(vid, score))
                 for vuln in pkg_entry.get("vulnerabilities", []) or []:
                     if not isinstance(vuln, dict):
                         continue
-                    vuln_score = sev_by_id.get(vuln.get("id"))
+                    vuln_id = vuln.get("id")
+                    vuln_score = sev_by_id.get(vuln_id) if isinstance(vuln_id, str) else None
                     if vuln_score is not None:
                         severity = cvss_bucket(vuln_score)
                     else:
@@ -67,10 +97,13 @@ class OsvScannerAdapter:
                         if isinstance(raw_sev, list):
                             for entry in raw_sev:
                                 if isinstance(entry, dict) and entry.get("type") == "CVSS_V3":
-                                    entry_score = _cvss_v3_score(entry.get("score") or entry.get("score_vector") or "")
+                                    vector = entry.get("score") or entry.get("score_vector") or ""
+                                    entry_score = _cvss_v3_score(vector) if isinstance(vector, str) else None
                                     if entry_score is not None:
                                         severity = cvss_bucket(entry_score)
                                         break
+                    if severity is None:
+                        severity = _database_severity(vuln)
                     if severity is None:
                         # #run7 review: floor an unscored advisory at LOW, not
                         # INFO -- a real vuln with no CVSS stays a visible
