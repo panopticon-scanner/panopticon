@@ -125,6 +125,55 @@ class TestEnvelope(unittest.TestCase):
         self.assertEqual(res.denials, ENVELOPE["permission_denials"])
         self.assertIsNone(res.error)
 
+    def test_primary_model_uses_output_then_cost_then_name_in_either_order(self):
+        runner = claude_runner.Runner("claude")
+        cases = [
+            ({"helper": {"outputTokens": 1, "costUSD": 10},
+              "main": {"outputTokens": 1000, "costUSD": 1}}, "main"),
+            ({"helper": {"costUSD": 0.01}, "main": {"costUSD": 0.1}}, "main"),
+            ({"zeta": {"outputTokens": 4, "costUSD": 0.1},
+              "alpha": {"outputTokens": 4, "costUSD": 0.1}}, "alpha"),
+        ]
+        for models, expected in cases:
+            for ordered in (models, dict(reversed(list(models.items())))):
+                with self.subTest(models=ordered):
+                    result = runner.parse_envelope(
+                        "e1", json.dumps(dict(ENVELOPE, modelUsage=ordered)), 0)
+                    self.assertEqual(expected, result.model)
+                    self.assertEqual(ordered, result.models)
+
+    def test_malformed_model_usage_is_safe_and_kept_as_evidence(self):
+        runner = claude_runner.Runner("claude")
+        for raw, expected in [
+            (None, (None, {})), ({}, (None, {})),
+            ({"broken": None, "valid": {"outputTokens": 3}},
+             ("valid", {"broken": None, "valid": {"outputTokens": 3}})),
+            ({"broken": {"outputTokens": "many", "costUSD": -4},
+              "valid": {"outputTokens": 0, "costUSD": 0.1}},
+             ("valid", {"broken": {"outputTokens": "many", "costUSD": -4},
+                        "valid": {"outputTokens": 0, "costUSD": 0.1}})),
+        ]:
+            with self.subTest(raw=raw):
+                result = runner.parse_envelope(
+                    "e1", json.dumps(dict(ENVELOPE, modelUsage=raw)), 0)
+                self.assertEqual(expected, (result.model, result.models))
+
+        nonfinite = {"broken": {"outputTokens": float("nan"),
+                                 "costUSD": float("inf")},
+                     "valid": {"outputTokens": 2, "costUSD": 0.1}}
+        result = runner.parse_envelope(
+            "e1", json.dumps(dict(ENVELOPE, modelUsage=nonfinite)), 0)
+        self.assertEqual("valid", result.model)
+        self.assertEqual(set(nonfinite), set(result.models))
+
+    def test_error_envelope_still_carries_all_model_usage(self):
+        models = {"helper": {"outputTokens": 1}, "main": {"outputTokens": 8}}
+        result = claude_runner.Runner("claude").parse_envelope(
+            "e1", json.dumps(dict(ENVELOPE, is_error=True, modelUsage=models)), 1)
+        self.assertFalse(result.ok)
+        self.assertEqual("main", result.model)
+        self.assertEqual(models, result.models)
+
     def test_the_host_surface_is_the_envelopes_own_error_not_the_agents_text(self):
         # #1623 C1: `error` carries 200 characters of the AGENT's reply, so a
         # cell whose finding is about a 403 handler must not read as a 403.
