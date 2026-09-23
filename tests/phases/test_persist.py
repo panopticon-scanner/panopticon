@@ -267,6 +267,42 @@ class TestRetainRejected(unittest.TestCase):
         self.assertEqual("second", self._record(2)["reply"])
         self.assertEqual(2, self._record(2)["attempt"])
 
+    def test_legacy_unsafe_record_requires_exact_id_and_new_name_takes_precedence(self):
+        original = _entry(self.entry["out_file"], id="review-Auth:Core-COD",
+                          delivery="return_json")
+        neighbor = _entry(self.entry["out_file"], id="review-Auth Core-COD",
+                          delivery="return_json")
+        legacy = os.path.join(self.run_dir, "rejected", "review-Auth_Core-COD-3.json")
+        runio._write_json(legacy, {"schema_version": 1, "entry_id": original["id"],
+                                   "attempt": 3, "kind": persist.REFUSAL,
+                                   "reason": "legacy only", "reply": "{}"})
+        self.assertEqual(3, persist.last_rejection(self.run_dir, original["id"])["attempt"])
+        self.assertIsNone(persist.last_rejection(self.run_dir, neighbor["id"]))
+        new_path = persist.retain_rejected(self.run_dir, original, "{}", "new reason",
+                                           kind=persist.REFUSAL)
+        self.assertTrue(new_path.endswith("-4.json"), new_path)
+        self.assertEqual("new reason", persist.last_rejection(self.run_dir, original["id"])["reason"])
+        self.assertIsNone(persist.last_rejection(self.run_dir, neighbor["id"]))
+        runio._write_json(new_path, {"entry_id": neighbor["id"], "attempt": 4})
+        self.assertIsNone(persist.last_rejection(self.run_dir, original["id"]))
+        next_path = persist.retain_rejected(self.run_dir, original, "{}", "after bad record",
+                                            kind=persist.REFUSAL)
+        self.assertTrue(next_path.endswith("-5.json"), next_path)
+
+    def test_legacy_unsafe_fallback_does_not_follow_a_symlink(self):
+        entry_id = "review-Auth:Core-COD"
+        outside = os.path.join(self.d, "outside.json")
+        with open(outside, "w", encoding="utf-8") as fh:
+            json.dump({"entry_id": entry_id, "attempt": 7, "kind": persist.REFUSAL}, fh)
+        directory = os.path.join(self.run_dir, "rejected")
+        os.makedirs(directory)
+        os.symlink(outside, os.path.join(directory, "review-Auth_Core-COD-7.json"))
+        self.assertIsNone(persist.last_rejection(self.run_dir, entry_id))
+        path = persist.retain_rejected(
+            self.run_dir, _entry(self.entry["out_file"], id=entry_id), "{}", "new",
+            kind=persist.REFUSAL)
+        self.assertTrue(path.endswith("-1.json"), path)
+
     def test_an_oversized_reply_is_capped_and_says_so(self):
         persist.retain_rejected(self.run_dir, self.entry, "x" * (400 * 1024), "too big",
                                 kind=persist.REFUSAL)

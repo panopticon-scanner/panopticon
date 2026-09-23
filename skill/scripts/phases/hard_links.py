@@ -1,4 +1,4 @@
-"""The ONE walk behind a directory read grant (#1683).
+"""Read-scope grants and the ONE walk behind a directory grant (#1683).
 
 A directory grant is matched by NAME, and nothing resolves a hard link,
 because the link IS the file: a link planted inside the granted subtree,
@@ -32,6 +32,36 @@ import stat
 # directory itself -- rather than truncating the list and adjudicating against
 # a half-measured tree.
 CAP = 256
+
+
+def scope(files=(), dirs=(), reads=(), hard_linked=None):
+    """An entry's read scope: absolute, byte-exact paths the read guard
+    matches after realpath. `files` duplicates entry["files"] on purpose (the
+    guard reads one key of one shape); `dirs` is a directory scope (setup-
+    scan); `reads` is the extra-file allowance -- whatever the builder grants
+    beyond the entry's files (the SEC cell's security checklist,
+    `review._cell_reads`), plus the entry's own `prompt_file` once
+    `requests._materialize_prompts` stamps one, so a host that dispatches from
+    the file (marker line first, pointer second) is not denied its own prompt
+    by the read guard.
+
+    `hard_linked` belongs to `dirs` (#1683): the multiply-linked files beneath
+    the granted directory, found by `hard_links_under` ONCE because a
+    PreToolUse hook may not walk the tree on every Grep. The hooks refuse a
+    directory-argument Grep/Glob that would traverse one.
+
+    A `dirs` grant must ANSWER for it: omitting the keyword raises, an empty
+    list is the answer for a clean tree. That the one builder issuing such a
+    grant calls the walker was a fact about today's code; this makes it a
+    property of the shape (fix round 1), because a directory grant whose
+    links nobody looked for is the hole #1683 is about."""
+    if dirs and hard_linked is None:
+        raise ValueError(
+            "a directory grant must record its hard links: pass "
+            "hard_linked=hard_links_under(...) (an empty list is the answer "
+            "for a clean tree)")
+    return {"files": list(files), "dirs": list(dirs), "reads": list(reads),
+            "hard_linked": list(hard_linked or ())}
 
 
 def _absent(exc):

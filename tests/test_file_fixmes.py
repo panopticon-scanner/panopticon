@@ -5,6 +5,7 @@ hardcoded, so filing a later run's FIXMEs required editing the script. They are
 now flags; defaults preserve run-2 behavior. Also pins the section parser.
 """
 import os
+import json
 import shutil
 import tempfile
 import unittest
@@ -109,6 +110,51 @@ def test_main_rejects_malformed_ledger_before_github_calls(tmp_path):
     gh_env.assert_not_called()
     create.assert_not_called()
     assert ledger.read_text(encoding="utf-8") == '{"schema_version": 2, "entries": []}'
+
+
+def test_run_scoped_keys_resume_and_preserve_legacy_default(tmp_path):
+    doc = tmp_path / "fixmes.md"
+    doc.write_text(FIXME_DOC, encoding="utf-8")
+    ledger = tmp_path / "ledger.json"
+    created = []
+
+    def file_once(*args, **kwargs):
+        created.append(args)
+        return "https://example.test/%d" % len(created)
+
+    def run(*flags):
+        with mock.patch.object(file_fixmes, "LEDGER", str(ledger)), \
+                mock.patch.object(file_fixmes.file_issues.sys, "argv",
+                                  ["file_fixmes.py", "--doc", str(doc), *flags]), \
+                mock.patch.object(file_fixmes.triage, "gh_env", return_value={}), \
+                mock.patch.object(file_fixmes, "create", side_effect=file_once):
+            file_fixmes.main()
+
+    run("--run-label", "run-3", "--doc-url", "https://example.test/doc",
+        "--run-date", "2026-09-23")
+    assert "run-3 self-scan (2026-09-23" in created[0][1]
+    assert "https://example.test/doc" in created[0][1]
+    run("--run-label", "run-3")
+    assert len(created) == 2
+    entries = json.loads(ledger.read_text(encoding="utf-8"))["entries"]
+    assert set(entries) == {json.dumps(["run-3", "FIXME-1"], separators=(",", ":")),
+                            json.dumps(["run-3", "FIXME-2"], separators=(",", ":"))}
+
+    ledger.write_text(json.dumps({"FIXME-1": "https://example.test/old"}), encoding="utf-8")
+    created.clear()
+    with mock.patch.object(file_fixmes, "LEDGER", str(ledger)), \
+            mock.patch.object(file_fixmes, "DOC", str(doc)), \
+            mock.patch.object(file_fixmes.file_issues.sys, "argv", ["file_fixmes.py"]), \
+            mock.patch.object(file_fixmes.triage, "gh_env", return_value={}), \
+            mock.patch.object(file_fixmes, "create", side_effect=file_once):
+        file_fixmes.main()
+    assert len(created) == 1
+    entries = json.loads(ledger.read_text(encoding="utf-8"))["entries"]
+    assert "FIXME-1" in entries
+    assert json.dumps(["run-2", "FIXME-2"], separators=(",", ":")) in entries
+    created.clear()
+    run("--run-label", "run-3")
+    assert len(created) == 2  # the run-2 bare key never hides run-3's FIXME-1
 
 
 if __name__ == "__main__":

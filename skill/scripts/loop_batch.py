@@ -175,14 +175,18 @@ def recover_stale(review_root, request, host, mode, namespace=None):
             if eid in claimed:
                 raise ValueError(refusal + "several stale batches claim the same entry")
             claimed.add(eid)
-            safe_id = requests._PROMPT_FILE_SAFE.sub("_", eid) or "entry"
+            safe_id = requests.entry_file_component(eid)
             for i, artifact in enumerate(paths):
                 if (not isinstance(artifact, str) or not os.path.isabs(artifact)
                         or os.path.commonpath((root, os.path.realpath(os.path.dirname(artifact)))) != root):
                     raise ValueError(refusal + "artifact escapes the run folder")
+                if i and os.path.islink(os.path.dirname(artifact)):
+                    raise ValueError(refusal + "retained-reply parent is a symlink")
                 if i and (os.path.realpath(os.path.dirname(artifact)) != os.path.join(root, persist.REJECTED_DIR)
                           or not re.fullmatch(re.escape(safe_id) + r"-[0-9]+\.json",
-                                              os.path.basename(artifact))):
+                                              os.path.basename(artifact))
+                          or (os.path.lexists(artifact) and
+                              (persist._read_rejection(artifact) or {}).get("entry_id") != eid)):
                     raise ValueError(refusal + "unexpected retained-reply artifact")
             pending.append(entry)
         batch = batch_mod.Batch(root, doc["batch"], doc["checkpoint"], pending)

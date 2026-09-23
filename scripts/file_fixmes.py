@@ -6,12 +6,14 @@ never appear in a report artifact and `file_issues.py` cannot see them. They
 live as `## FIXME-N — title` sections in the FIXME doc, each followed by a
 line of backtick-quoted labels.
 
-Shares file_issues.py's resume discipline: a ledger keyed by FIXME id, written
-after each success, so a re-run files only the remainder.
+Shares file_issues.py's resume discipline: a ledger keyed by run label and
+FIXME id, written after each success, so a re-run files only the remainder.
+Run labels must identify runs uniquely, even if docs move between checkouts.
 
 Usage:  python3 scripts/file_fixmes.py [--dry-run] [--limit N] [--throttle S]
 """
 import argparse
+import json
 import re
 from typing import Any
 
@@ -112,6 +114,11 @@ def body_for(f, doc=DOC, doc_url=DOC_URL, run_label=RUN_LABEL, run_date=RUN_DATE
 create = file_issues.create
 
 
+def key_for(run_label, section_id):
+    """Stable, unambiguous identity of one section within one run."""
+    return json.dumps((run_label, section_id), ensure_ascii=False, separators=(",", ":"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -120,13 +127,19 @@ def main():
     ap.add_argument("--doc", default=DOC, help="path to the run's FIXME doc")
     ap.add_argument("--doc-url", default=DOC_URL,
                     help="public URL of the FIXME doc, embedded in each issue")
-    ap.add_argument("--run-label", default=RUN_LABEL, help="e.g. 'run-3'")
+    ap.add_argument("--run-label", default=RUN_LABEL,
+                    help="unique identity for this run, e.g. 'run-3'")
     ap.add_argument("--run-date", default=RUN_DATE, help="e.g. '2026-08-08'")
     a = ap.parse_args()
 
     fixmes = parse(a.doc)
     ledger = {} if a.dry_run else file_issues.load_ledger(LEDGER)
-    todo = [f for f in fixmes if f["id"] not in ledger]
+    # Only the original default run-2 source may inherit historical bare keys.
+    # Keep those rows untouched; recording a later section writes the v2 map.
+    legacy_default = a.run_label == RUN_LABEL and a.doc == DOC
+    todo = [f for f in fixmes
+            if key_for(a.run_label, f["id"]) not in ledger
+            and not (legacy_default and f["id"] in ledger)]
     if a.limit:
         todo = todo[:a.limit]
     skipped = len(fixmes) - len(todo)
@@ -145,7 +158,7 @@ def main():
                      f["labels"] or ["self-scan"],
                      a.dry_run, a.throttle, env=env)
         if url:
-            file_issues.record(ledger, f["id"], url, LEDGER)
+            file_issues.record(ledger, key_for(a.run_label, f["id"]), url, LEDGER)
             created += 1
     if not a.dry_run:
         print("\ncreated %d of %d; ledger: %s" % (created, len(todo), LEDGER))
