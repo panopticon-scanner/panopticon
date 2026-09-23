@@ -188,8 +188,6 @@ LEDGER_SCHEMA_VERSION = 2
 
 def normalize_ledger(raw_ledger):
     """Normalize legacy ledger keys (e.g. absolute paths) to canonical repo-relative keys (#1124)."""
-    if not isinstance(raw_ledger, dict):
-        return {}
     migrated = {}
     for k, v in raw_ledger.items():
         parts = k.split("|")
@@ -207,17 +205,41 @@ def _unwrap_ledger(data, path):
 
     v2 states its version, so its keys are taken AS WRITTEN -- no '|'-counting.
     A bare map is the legacy v1 shape and gets the one-time key migration."""
-    if isinstance(data, dict) and "schema_version" in data:
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "ledger %s must be a JSON object, got %s; refusing to treat a "
+            "present ledger as empty. Restore or repair it before filing."
+            % (path, type(data).__name__))
+    if "schema_version" in data:
         version = data.get("schema_version")
+        if type(version) is not int:
+            raise RuntimeError(
+                "ledger %s has non-integer schema_version %r; restore or repair "
+                "it before filing." % (path, version))
         if version != LEDGER_SCHEMA_VERSION:
             raise RuntimeError(
                 "ledger %s declares schema_version %r, but this filer speaks %d. "
-                "A newer filer wrote it; reading it anyway would mis-key the "
-                "dedup state and re-file findings as duplicate public issues. "
-                "Upgrade this filer, or delete the ledger deliberately to start "
-                "fresh." % (path, version, LEDGER_SCHEMA_VERSION))
+                "%s Reading it anyway would mis-key the dedup state and re-file "
+                "findings as duplicate public issues. Restore a supported ledger "
+                "or upgrade this filer."
+                % (path, version, LEDGER_SCHEMA_VERSION,
+                   "A newer filer wrote it." if version > LEDGER_SCHEMA_VERSION
+                   else "This version is unsupported."))
         entries = data.get("entries")
-        return dict(entries) if isinstance(entries, dict) else {}
+        if not isinstance(entries, dict):
+            raise RuntimeError(
+                "ledger %s must have an entries object, got %s; restore or "
+                "repair it before filing." % (path, type(entries).__name__))
+    else:
+        entries = data
+    for key, url in entries.items():
+        if not isinstance(key, str) or not isinstance(url, str):
+            raise RuntimeError(
+                "ledger %s has an invalid entry at key %r: expected a string "
+                "key mapped to an issue URL string; restore or repair it "
+                "before filing." % (path, key))
+    if "schema_version" in data:
+        return dict(entries)
     return normalize_ledger(data)
 
 
@@ -270,7 +292,6 @@ def record(ledger, key, url, path=LEDGER):
     The caller's dict is a snapshot taken at start-up; re-reading under the lock
     is what keeps a concurrent filer's entries from being erased by this write.
     """
-    ledger[key] = url
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with _ledger_lock(path):
         try:
@@ -283,8 +304,9 @@ def record(ledger, key, url, path=LEDGER):
             # -- that would drop every entry it still holds (#run9 COD-B1A).
             raise RuntimeError(
                 "ledger %s is present but unreadable/corrupt (%s); refusing to "
-                "overwrite it." % (path, e)) from e
+                "overwrite it. Restore or repair it before filing." % (path, e)) from e
         merged.update(ledger)
+        merged[key] = url
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"schema_version": LEDGER_SCHEMA_VERSION,

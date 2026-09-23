@@ -8,6 +8,9 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
+
+import pytest
 
 import file_fixmes
 
@@ -89,6 +92,23 @@ class TestScrubbing(unittest.TestCase):
         title = file_fixmes.file_issues.scrub(
             file_fixmes.file_issues.defang("%s — %s" % (f["id"], f["title"])))
         self.assertNotIn(root, title)
+
+
+def test_main_rejects_malformed_ledger_before_github_calls(tmp_path):
+    doc = tmp_path / "fixmes.md"
+    doc.write_text(FIXME_DOC, encoding="utf-8")
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text('{"schema_version": 2, "entries": []}', encoding="utf-8")
+    with mock.patch.object(file_fixmes, "LEDGER", str(ledger)), \
+            mock.patch.object(file_fixmes.file_issues.sys, "argv",
+                              ["file_fixmes.py", "--doc", str(doc)]), \
+            mock.patch.object(file_fixmes.triage, "gh_env") as gh_env, \
+            mock.patch.object(file_fixmes, "create", return_value="url") as create:
+        with pytest.raises(RuntimeError):
+            file_fixmes.main()
+    gh_env.assert_not_called()
+    create.assert_not_called()
+    assert ledger.read_text(encoding="utf-8") == '{"schema_version": 2, "entries": []}'
 
 
 if __name__ == "__main__":

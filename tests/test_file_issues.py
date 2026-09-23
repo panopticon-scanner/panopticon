@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import tempfile
@@ -326,6 +327,96 @@ class TestLedgerSafety(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(
                 file_issues.load_ledger(path=os.path.join(d, "nope.json")), {})
+
+
+MALFORMED_LEDGERS = [
+    ("list", "[]"),
+    ("null", "null"),
+    ("scalar", "42"),
+    ("missing entries", '{"schema_version": 2}'),
+    ("list entries", '{"schema_version": 2, "entries": []}'),
+    ("null entries", '{"schema_version": 2, "entries": null}'),
+    ("boolean version", '{"schema_version": true, "entries": {}}'),
+    ("float version", '{"schema_version": 2.0, "entries": {}}'),
+    ("newer version", '{"schema_version": 3, "entries": {}}'),
+    ("malformed JSON", "{not json"),
+    ("invalid legacy value", '{"key": 42}'),
+    ("invalid v2 value", '{"schema_version": 2, "entries": {"key": null}}'),
+]
+
+
+@pytest.mark.parametrize(("shape", "raw"), MALFORMED_LEDGERS)
+def test_load_ledger_rejects_malformed_present_state(tmp_path, shape, raw):
+    path = tmp_path / "ledger.json"
+    path.write_text(raw, encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as caught:
+        file_issues.load_ledger(str(path))
+
+    message = str(caught.value).lower()
+    assert str(path).lower() in message, shape
+    assert any(word in message for word in ("restore", "repair", "upgrade", "delete")), shape
+    assert path.read_text(encoding="utf-8") == raw
+
+
+@pytest.mark.parametrize(("shape", "raw"), MALFORMED_LEDGERS)
+def test_record_rejects_malformed_disk_without_mutating_snapshot(tmp_path, shape, raw):
+    path = tmp_path / "ledger.json"
+    path.write_text(raw, encoding="utf-8")
+    snapshot = {"earlier": "https://example.test/issues/1"}
+    with mock.patch.object(file_issues.os, "replace", wraps=os.replace) as replace:
+        with pytest.raises(RuntimeError) as caught:
+            file_issues.record(snapshot, "new", "https://example.test/issues/2", str(path))
+
+    message = str(caught.value).lower()
+    assert str(path).lower() in message, shape
+    assert any(word in message for word in ("restore", "repair", "upgrade", "delete")), shape
+    assert path.read_text(encoding="utf-8") == raw
+    assert snapshot == {"earlier": "https://example.test/issues/1"}
+    assert not path.with_name(path.name + ".tmp").exists()
+    replace.assert_not_called()
+
+
+def test_empty_legacy_and_v2_ledgers_are_valid(tmp_path):
+    path = tmp_path / "ledger.json"
+    for raw in ("{}", '{"schema_version": 2, "entries": {}}'):
+        path.write_text(raw, encoding="utf-8")
+        assert file_issues.load_ledger(str(path)) == {}
+        snapshot = {}
+        file_issues.record(snapshot, "new", "https://example.test/issues/1", str(path))
+        assert snapshot == {"new": "https://example.test/issues/1"}
+        assert file_issues.load_ledger(str(path)) == snapshot
+
+
+def test_record_migrates_legacy_key_and_preserves_v2_key(tmp_path):
+    path = tmp_path / "ledger.json"
+    legacy_key = "fp|SEC-1|%sskill/x.py|finding" % file_issues.repo_root()
+    path.write_text(json.dumps({legacy_key: "url-old"}), encoding="utf-8")
+    file_issues.record({}, "new", "url-new", str(path))
+    assert file_issues.load_ledger(str(path)) == {
+        "fp|SEC-1|skill/x.py|finding": "url-old", "new": "url-new"}
+
+    path.write_text(json.dumps({"schema_version": 2,
+                                "entries": {legacy_key: "url-old"}}), encoding="utf-8")
+    file_issues.record({}, "new", "url-new", str(path))
+    assert file_issues.load_ledger(str(path)) == {legacy_key: "url-old", "new": "url-new"}
+
+
+def test_main_rejects_malformed_ledger_before_github_calls(tmp_path, monkeypatch):
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"findings": [FINDING]}), encoding="utf-8")
+    ledger = tmp_path / file_issues.LEDGER
+    ledger.parent.mkdir()
+    ledger.write_text("[]", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    with mock.patch.object(file_issues.sys, "argv", ["file_issues.py", "--report", str(report)]), \
+            mock.patch.object(file_issues.triage, "gh_env") as gh_env, \
+            mock.patch.object(file_issues, "create", return_value="url") as create:
+        with pytest.raises(RuntimeError):
+            file_issues.main()
+    gh_env.assert_not_called()
+    create.assert_not_called()
+    assert ledger.read_text(encoding="utf-8") == "[]"
 
 
 if __name__ == "__main__":
