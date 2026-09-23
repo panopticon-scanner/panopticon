@@ -1264,7 +1264,7 @@ def _render_heatmap(report):
     for name, row in rows:
         label = labels.get(name, name)
         cells = [
-            f"<th scope='row' class='heat-label' title='{_escape(label)}'>"
+            f"<th scope='row' class='heat-label' title='{_escape(label)}'>" +
             f"{_escape(label)}</th>"
         ]
         for p in active_panels:
