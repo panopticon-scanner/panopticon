@@ -300,3 +300,48 @@ class TestLegacySarifIsApplicable(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestScannerRuleTagsOutrankTheSarifLevel(unittest.TestCase):
+    """#1790 (review of the #1964 split, Minor 1): a scanner's own grade wins.
+
+    gosec writes `level: error` on every result -- that is its SARIF envelope,
+    not its opinion -- and puts its opinion in the rule tags (`HIGH`, `MEDIUM`,
+    `LOW`). Before #1790 the envelope won and a MEDIUM-tagged rule (G112, G301,
+    G304, G124 in real gosec output) graded HIGH. Now the tag outranks the
+    level, so those grade MEDIUM. Pinned on the real capture's shape, with one
+    rule's tag rewritten in memory, because the capture itself holds only
+    HIGH-tagged rules -- which the first test proves, so the second cannot pass
+    by accident.
+    """
+
+    def _sarif(self):
+        return json.loads(_golden("gosec"))
+
+    def _fired_rules(self, sarif):
+        run = only(sarif["runs"])
+        fired = {r["ruleId"] for r in run["results"]}
+        return [rule for rule in run["tool"]["driver"]["rules"] if rule["id"] in fired]
+
+    def test_the_capture_is_high_tagged_and_grades_high(self):
+        sarif = self._sarif()
+        rules = self._fired_rules(sarif)
+        self.assertTrue(rules)
+        for rule in rules:
+            self.assertIn("HIGH", (rule.get("properties") or {}).get("tags") or [], rule.get("id"))
+        findings = su.sarif_to_findings(sarif, "gosec", "g1", "GS")
+        self.assertTrue(findings)
+        for f in findings:
+            self.assertEqual("HIGH", f["severity"], f)
+
+    def test_a_medium_tagged_rule_grades_medium_despite_level_error(self):
+        sarif = self._sarif()
+        run = only(sarif["runs"])
+        rule = first(self._fired_rules(sarif))
+        rule["properties"]["tags"] = ["security", "MEDIUM"]
+        graded = {(f.get("tool_evidence") or {}).get("rule_id"): f["severity"]
+                  for f in su.sarif_to_findings(sarif, "gosec", "g1", "GS")}
+        self.assertEqual("MEDIUM", graded[rule["id"]])
+        self.assertIn("HIGH", graded.values(), "the untouched rules still grade HIGH")
+        for res in run["results"]:
+            self.assertEqual("error", res.get("level"), "the envelope really says error")
