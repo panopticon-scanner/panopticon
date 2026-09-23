@@ -108,26 +108,26 @@ class _GlobMatcher:
         width = len(tokens) + 1
         previous = [True] + [False] * len(tokens)
         partial = [False] * width
-        for i, token in enumerate(tokens, 1):
-            if token in ("*", "**", "**/"):
+        for i, atom in enumerate(tokens, 1):
+            if atom in ("*", "**", "**/"):
                 previous[i] = previous[i - 1]
         for char in path:
             current = [False] * width
             next_partial = [False] * width
             # An unanchored pattern can begin at any basename boundary.
             current[0] = not self._anchored and char == "/"
-            for i, token in enumerate(tokens, 1):
-                if token == "*":
+            for i, atom in enumerate(tokens, 1):
+                if atom == "*":
                     current[i] = current[i - 1] or (previous[i] and char != "/")
-                elif token == "**":
+                elif atom == "**":
                     current[i] = current[i - 1] or previous[i]
-                elif token == "**/":
+                elif atom == "**/":
                     current[i] = current[i - 1] or (partial[i] and char == "/")
                     next_partial[i] = char != "/" and (previous[i] or partial[i])
-                elif token == "?":
+                elif atom == "?":
                     current[i] = previous[i - 1] and char != "/"
                 else:
-                    current[i] = previous[i - 1] and char == token
+                    current[i] = previous[i - 1] and char == atom
             previous, partial = current, next_partial
         return True if previous[-1] else None
 
