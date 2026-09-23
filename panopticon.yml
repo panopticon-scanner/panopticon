@@ -128,6 +128,7 @@ groups:
       - '!skill/scripts/phases/hard_links.py'
       - skill/scripts/orchestrate.py
       - skill/scripts/progress.py
+      - skill/scripts/safe_git.py
       tests:
       - tests/test_driver.py
       - tests/test_driver_verify.py
@@ -140,6 +141,8 @@ groups:
       - tests/test_assets.py
       - tests/test_e2e.py
       - tests/test_tree_baseline.py
+      - tests/test_safe_git.py
+      - tests/test_temp_root_guard.py
       panels:
       - ARC
       - SEC
