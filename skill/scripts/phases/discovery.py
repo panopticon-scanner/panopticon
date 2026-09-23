@@ -156,7 +156,7 @@ def discovery_execute(review_root, manifest):
     if doc is None:
         raise runio.DriverError(
             "discovery: discovery --repo-scan produced no groups.json "
-            "(rc=%s): %s" % (proc.returncode, runio._redact_output((proc.stderr or proc.stdout)[:400])))
+            "(rc=%s): %s" % (proc.returncode, runio._redact_output(proc.stderr or proc.stdout)[:400]))
     if isinstance(doc, dict):
         # The child is a repo profiler with no notion of a run -- it also serves
         # `panopticon discovery` by hand -- so the RUN BINDING is stamped by the
