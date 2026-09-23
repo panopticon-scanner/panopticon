@@ -73,12 +73,17 @@ class TestIngest(unittest.TestCase):
                 sarif = self._severity_sarif(rule_properties=props, level="note")
                 self.assertEqual(first(it.sarif_to_findings(sarif, "trivy", "g1", "TR"))
                                  ["severity"], expected)
+        # The rule's `defaultConfiguration.level` is deliberately NOT a
+        # fallback yet (see `_sarif_severity`): a result with no usable
+        # `level` keeps the historical "warning" grade whatever the rule says.
+        # The gate PR that can tell pre-existing findings from new ones flips
+        # these two expectations to HIGH and LOW.
         sarif = self._severity_sarif(level=None, default_level="error")
         self.assertEqual(first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))
-                         ["severity"], "HIGH")
+                         ["severity"], "MEDIUM")
         sarif = self._severity_sarif(level="bogus", default_level="note")
         self.assertEqual(first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))
-                         ["severity"], "LOW")
+                         ["severity"], "MEDIUM")
 
     def test_sarif_malformed_optional_metadata_preserves_findings(self):
         bad_scores = [0, -1, 10.1, True, "nan", "inf", {}, []]

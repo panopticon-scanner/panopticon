@@ -166,14 +166,24 @@ def _metadata_severity(properties):
 
 
 def _sarif_severity(result, rule):
+    """Explicit result or rule metadata first, then the result's own `level`.
+
+    NOT read here, on purpose: the rule's `defaultConfiguration.level`.
+    Semgrep writes no `level` on its results and `error` on the rule for every
+    ERROR-severity rule, so reading it would grade those HIGH -- correct, and
+    what #1790 asks for, but on this repository's own tree it promotes 24
+    findings the CI gate has never seen as HIGH (all adjudicated as dismissed
+    alerts on GitHub). That fallback lands together with the gate change that
+    can tell a pre-existing finding from a new one; until then a missing
+    result `level` keeps the historical "warning" grade.
+    """
     for owner in (result, rule):
         explicit = _metadata_severity(_properties(owner.get("properties")))
         if explicit is not None:
             return explicit
-    for level in (result.get("level"),
-                  _properties(rule.get("defaultConfiguration")).get("level")):
-        if isinstance(level, str) and level.lower() in LEVEL_TO_SEV:
-            return LEVEL_TO_SEV[level.lower()]
+    level = result.get("level")
+    if isinstance(level, str) and level.lower() in LEVEL_TO_SEV:
+        return LEVEL_TO_SEV[level.lower()]
     return LEVEL_TO_SEV["warning"]
 
 
