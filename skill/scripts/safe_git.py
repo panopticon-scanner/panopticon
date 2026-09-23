@@ -12,6 +12,28 @@ from scripts import executable
 _MAX_REPOSITORIES = 64
 
 
+def _checkout_boundary(start):
+    """Exclude enclosing checkout code before the first Git executable runs.
+
+    Walk real filesystem ancestors without interpreting target gitfiles or
+    invoking Git. Use the outermost metadata boundary conservatively, so a
+    nested checkout cannot make an enclosing checkout's bin/ trusted again.
+    This boundary only selects executables; the probe keeps its requested cwd.
+    """
+    boundary = directory = os.path.realpath(os.path.abspath(start))
+    while True:
+        try:
+            os.lstat(os.path.join(directory, ".git"))
+        except FileNotFoundError:
+            pass
+        else:
+            boundary = directory
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return boundary
+        directory = parent
+
+
 def probe(root, args, runner=subprocess.run):
     """Run a captured text probe with one 15-second subprocess deadline.
 
@@ -19,7 +41,7 @@ def probe(root, args, runner=subprocess.run):
     disabling content normalization or hiding submodule dirt. Unsupported
     command filters fail closed; their values are never included in errors.
     """
-    resolved = executable.resolve("git", root, os.environ.get("PATH", ""))
+    resolved = executable.resolve("git", _checkout_boundary(root), os.environ.get("PATH", ""))
     env = {"PATH": resolved.path_env, "LC_ALL": "C",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
            "GIT_CONFIG_GLOBAL": os.devnull}

@@ -158,3 +158,28 @@ def test_only_effective_filter_command_is_refused(tmp_path):
                                    subprocess.CompletedProcess([], 0, "", "")])
     assert safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner).returncode == 0
     assert runner.call_count == 3
+
+
+def test_root_probe_uses_outer_checkout_boundary_but_keeps_requested_cwd(tmp_path):
+    outer = tmp_path / "outer"
+    inner = outer / "inner"
+    start = inner / "src"
+    start.mkdir(parents=True)
+    (outer / ".git").mkdir()
+    (inner / ".git").write_text("gitdir: /unused/linked-metadata\n")
+    alias = tmp_path / "alias"
+    alias.symlink_to(start, target_is_directory=True)
+    runner = mock.Mock(return_value=subprocess.CompletedProcess([], 0, str(inner), ""))
+    resolved = executable.ResolvedExecutable("/trusted/git", "/trusted/bin")
+    with mock.patch.object(executable, "resolve", return_value=resolved) as resolve:
+        safe_git.probe(str(alias), ["rev-parse", "--show-toplevel"], runner=runner)
+    assert resolve.call_args.args[1] == str(outer)
+    assert runner.call_args.args[0][:3] == ["/trusted/git", "-C", str(alias)]
+
+
+def test_unreadable_checkout_boundary_does_not_launch_git(tmp_path):
+    runner = mock.Mock()
+    with mock.patch.object(safe_git.os, "lstat", side_effect=PermissionError("unreadable")):
+        with pytest.raises(OSError):
+            safe_git.probe(str(tmp_path), ["rev-parse", "--show-toplevel"], runner=runner)
+    runner.assert_not_called()
