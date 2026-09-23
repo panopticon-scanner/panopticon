@@ -864,7 +864,7 @@ class TestTheDeltaAwareGate(unittest.TestCase):
     same call with the same flags, and a head finding that matches one of its
     findings is reported as pre-existing instead of counted. The standing set
     stays governed by what already governs it -- the post-merge zero-alert
-    audit (`scripts/code_scanning_audit.py`, #1947) and the owner's own
+    audit (`scripts/code_scanning_audit.py`) and the owner's own
     dismissals. A NEW HIGH/CRITICAL still fails the merge, which is the whole
     point of the gate.
     """
