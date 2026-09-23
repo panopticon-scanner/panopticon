@@ -104,8 +104,12 @@ class TestForkScanNeverSkipsForAFork(unittest.TestCase):
     def test_it_holds_no_write_grant_at_all(self):
         # No security-events (it uploads nothing), no pull-requests (it writes
         # no labels): the only job here that writes anything is `unlabel`.
+        # #1790's `actions: read` is READ, and it reads one thing -- the base
+        # commit's own `raw-scanner-captures` artifact from `security.yml` on
+        # main, which no fork can write.
         self.assertEqual(self.job.get("permissions"),
-                         {"contents": "read", "packages": "read"})
+                         {"contents": "read", "packages": "read",
+                          "actions": "read"})
 
 
 class TestTheLabelGateIsTheFirstThingThatRuns(unittest.TestCase):

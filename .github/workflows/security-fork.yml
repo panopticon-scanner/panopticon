@@ -158,6 +158,11 @@ jobs:
     permissions:
       contents: read
       packages: read
+      # #1790: the one grant this job gained, and it reads -- the BASE commit's
+      # `raw-scanner-captures` artifact from its `security.yml` run on main.
+      # A fork PR gets the same delta as a same-repo one, off the same
+      # base-branch capture that no fork can write.
+      actions: read
     steps:
       # FIRST, ahead of every checkout: nothing the fork controls is fetched,
       # installed or executed before the label has been checked. Every later
@@ -295,15 +300,81 @@ jobs:
             --exclude '${{ env.GOLDEN_GLOB }}' \
             --progress
 
+      # #1790: the base commit's OWN capture, so the gate can tell a finding
+      # this PR ADDS from one main already carries. `security.yml` has uploaded
+      # `raw-scanner-captures` on every run since long before anything read it
+      # -- `if: always()`, so even a run whose gate went red leaves a baseline
+      # behind -- which is why every commit on main has one to fetch.
+      #
+      # `actions: read` on this job is for exactly this step and nothing else:
+      # reading another run's artifacts is the only thing it grants.
+      - name: Download the base commit's scanner captures
+        id: baseline
+        # No step-level `if:`: this job's own condition is already the
+        # fork pull-request test, and a second spelling of it here is a
+        # second place for the two files to drift.
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # `gh` resolves the repository from the checkout's git remote, and
+          # the workspace root is not one (both checkouts are in subdirectories),
+          # so it is named explicitly rather than inferred.
+          GH_REPO: ${{ github.repository }}
+          # The BASE sha, never the head: a baseline taken from the PR's own
+          # head would carry the PR's own findings and excuse every one of them.
+          # Through `env:`, like every other event value either file reads.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # This step SUCCEEDS on both of its branches and says which one it
+          # took through its output -- it is never `continue-on-error`, which
+          # would let a failure here skip the gate's own step AND let the job
+          # carry on. Both `gh` calls sit in the `if` condition, where `set -e`
+          # does not fire, so an API hiccup takes the `else` (strict) rather
+          # than failing a required check over a missing convenience.
+          set -euo pipefail
+          found=false
+          if run_id="$(gh run list --workflow security.yml --commit "$BASE_SHA" \
+                --status success --json databaseId --limit 1 \
+                --jq '.[0].databaseId // empty')" \
+             && [ -n "$run_id" ] \
+             && gh run download "$run_id" -n raw-scanner-captures \
+                  -D "$RUNNER_TEMP/baseline"; then
+            found=true
+            echo "baseline: security.yml run $run_id, base commit $BASE_SHA"
+          else
+            echo "::notice::No usable security.yml capture for the base commit; this PR is gated strictly, on every HIGH/CRITICAL finding in the tree rather than only the ones it adds."
+          fi
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+
       # Same unverified-strict policy as security.yml's gate (#513), and the
       # same command: a HIGH/CRITICAL tool finding fails this check.
       - name: Gate on HIGH/CRITICAL tool findings (unverified-strict policy)
+        env:
+          BASELINE_FOUND: ${{ steps.baseline.outputs.found }}
         run: |
+          # #1790: the baseline flags are passed ONLY when the step above
+          # actually downloaded one. A skipped step's output is the empty
+          # string, so the push-to-main route -- and a PR whose base has no
+          # capture -- runs strict through the same single command, with no
+          # second copy of it to drift from this one.
+          set -euo pipefail
+          baseline=()
+          if [ "$BASELINE_FOUND" = "true" ]; then
+            baseline=(--baseline-dir "$RUNNER_TEMP/baseline/panopticon-tools-output"
+                      --baseline-manifest "$RUNNER_TEMP/baseline/panopticon-tools-manifest.json")
+          fi
+          # `${baseline[@]+"${baseline[@]}"}` and not `"${baseline[@]}"`: under
+          # `set -u` an EMPTY array expansion is an unbound-variable error on
+          # bash before 4.4, which would fail this step -- and so the required
+          # check -- on the strict route, the one that has to work everywhere.
+          # The long form expands to no words at all when the array is empty
+          # and to properly quoted words when it is not.
           python controller/skill/scripts/security_gate.py \
             --tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
             --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
-            --exclude '${{ env.GOLDEN_GLOB }}'
+            --exclude '${{ env.GOLDEN_GLOB }}' \
+            ${baseline[@]+"${baseline[@]}"}
 
       # NO `Upload SARIF` step, deliberately: this job holds no
       # security-events grant, and under pull_request_target the run's

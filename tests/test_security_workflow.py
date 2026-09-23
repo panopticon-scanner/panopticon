@@ -139,11 +139,14 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
 
     def test_the_scan_jobs_permissions_are_the_recorded_ones(self):
         # Pinned, not merely present: a later edit that widens them has to
-        # come through this line.
+        # come through this line. #1790 added `actions: read`, and it is the
+        # narrowest grant that can read the BASE commit run's
+        # `raw-scanner-captures` artifact -- see
+        # `TestTheDeltaBaselineIsFetchedOnThePullRequestRoutes`.
         self.assertEqual(
             self._workflow()["jobs"]["scan"]["permissions"],
             {"contents": "read", "packages": "read",
-             "security-events": "write"})
+             "security-events": "write", "actions": "read"})
 
     def test_only_trusted_controller_runs_gate_and_scanners(self):
         runs = self._run_text(self._workflow())
@@ -255,7 +258,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         job = workflow["jobs"]["scan"]
         self.assertEqual(job["permissions"], {
             "contents": "read", "packages": "read",
-            "security-events": "write",
+            "security-events": "write", "actions": "read",
         })
         names = [step.get("name") for step in job["steps"]]
         self.assertIn(
@@ -419,6 +422,148 @@ class TestBothScanStepsCarryBothExclusions(unittest.TestCase):
             for name in self.STEPS:
                 self.assertEqual(steps[name].count("--exclude"), 2,
                                  (path, name, steps[name]))
+
+
+class TestTheDeltaBaselineIsFetchedOnThePullRequestRoutes(unittest.TestCase):
+    """#1790 owner ruling 2026-09-23: a PR is gated on what it ADDS.
+
+    `security_gate --baseline-dir` needs the base commit's own capture, and
+    `security.yml` has been uploading one as `raw-scanner-captures` on every
+    run -- `if: always()`, so a red gate on main still leaves a baseline behind
+    -- since long before anything read it. These two steps are what fetch it,
+    one per PR route, and they are the only reason either job now holds
+    `actions: read`.
+
+    Everything here is a fail-toward-strictness pin. The step must not be
+    allowed to fail (a `continue-on-error` step that dies takes the gate's
+    `--baseline-dir` with it AND lets the job carry on), it must succeed in
+    both of its branches, and the gate must receive the flags only when the
+    download actually happened -- otherwise a PR whose base has no capture
+    would point the gate at an absent directory and depend on the gate's own
+    recovery to notice.
+    """
+
+    BASELINE = "Download the base commit's scanner captures"
+    GATE = "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"
+    PR_ROUTES = ((WORKFLOW, "scan"), (FORK_WORKFLOW, "fork-scan"))
+
+    def _job(self, path, job):
+        with open(path, encoding="utf-8") as fh:
+            return yaml.safe_load(fh)["jobs"][job]
+
+    def _step(self, job, name):
+        return next((s for s in job.get("steps", []) if s.get("name") == name),
+                    None)
+
+    def test_both_pull_request_routes_fetch_the_base_commits_captures(self):
+        for path, name in self.PR_ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name), self.BASELINE)
+                self.assertIsNotNone(step, path)
+                self.assertEqual(step.get("id"), "baseline")
+                run = _without_comments(step["run"])
+                self.assertIn("gh run list --workflow security.yml", run)
+                self.assertIn("--status success", run)
+                self.assertIn("--json databaseId", run)
+                self.assertIn("--limit 1", run)
+                self.assertIn("gh run download", run)
+                self.assertIn("-n raw-scanner-captures", run)
+                self.assertIn('-D "$RUNNER_TEMP/baseline"', run)
+
+    def test_the_base_is_the_pull_requests_base_sha_read_through_env(self):
+        # The BASE commit, never the head: a baseline taken from the PR's own
+        # head would contain the PR's own findings and excuse all of them.
+        for path, name in self.PR_ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name), self.BASELINE)
+                self.assertEqual(step["env"]["BASE_SHA"],
+                                 "${{ github.event.pull_request.base.sha }}")
+                self.assertEqual(step["env"]["GH_TOKEN"], "${{ github.token }}")
+                self.assertEqual(step["env"]["GH_REPO"], "${{ github.repository }}")
+                self.assertNotIn("${{ github.event", _without_comments(step["run"]))
+
+    def test_the_fetch_precedes_the_gate(self):
+        for path, name in self.PR_ROUTES:
+            with self.subTest(workflow=path):
+                steps = [s.get("name") for s in self._job(path, name)["steps"]]
+                self.assertLess(steps.index(self.BASELINE), steps.index(self.GATE))
+
+    def test_the_step_succeeds_in_both_branches_and_never_swallows_a_failure(self):
+        for path, name in self.PR_ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name), self.BASELINE)
+                self.assertNotIn("continue-on-error", step)
+                run = _without_comments(step["run"])
+                self.assertIn("set -euo pipefail", run)
+                self.assertIn("else", run)
+                self.assertIn("::notice::", run)
+                # Both arms write the output the gate reads. A branch that
+                # wrote none would leave the gate reading an empty string,
+                # which is strict -- but by accident rather than by decision.
+                self.assertEqual(run.count('>> "$GITHUB_OUTPUT"'), 1)
+                self.assertIn('echo "found=$found" >> "$GITHUB_OUTPUT"', run)
+
+    def test_the_push_to_main_route_never_fetches_a_baseline(self):
+        # `#1947`'s post-merge zero-alert audit governs main; a push there is
+        # gated strictly, as it always was.
+        step = self._step(self._job(WORKFLOW, "scan"), self.BASELINE)
+        self.assertEqual(step.get("if"), "github.event_name == 'pull_request'")
+
+    def test_the_fork_route_needs_no_condition_of_its_own(self):
+        # `fork-scan` runs only for a fork PULL REQUEST (its job `if:`), so a
+        # step-level event test there would be a second spelling of the same
+        # fact -- and a second place for the two files to drift.
+        step = self._step(self._job(FORK_WORKFLOW, "fork-scan"), self.BASELINE)
+        self.assertIsNone(step.get("if"))
+
+    def test_the_gate_receives_the_flags_only_when_the_download_succeeded(self):
+        for path, name in self.PR_ROUTES:
+            with self.subTest(workflow=path):
+                gate = self._step(self._job(path, name), self.GATE)
+                self.assertEqual(gate["env"]["BASELINE_FOUND"],
+                                 "${{ steps.baseline.outputs.found }}")
+                run = _without_comments(gate["run"])
+                self.assertIn('if [ "$BASELINE_FOUND" = "true" ]; then', run)
+                self.assertIn(
+                    '--baseline-dir "$RUNNER_TEMP/baseline/panopticon-tools-output"',
+                    run)
+                self.assertIn(
+                    '--baseline-manifest '
+                    '"$RUNNER_TEMP/baseline/panopticon-tools-manifest.json"',
+                    run)
+                # Exactly one invocation of the gate, so the exclusions and the
+                # flags cannot drift between a baseline branch and a strict one.
+                self.assertEqual(run.count("security_gate.py"), 1)
+                self.assertEqual(run.count("--baseline-dir"), 1)
+
+    def test_a_skipped_fetch_leaves_the_gate_strict(self):
+        # The push-to-main route skips the fetch, and a skipped step's outputs
+        # are the empty string -- which is not "true", so no flag is passed.
+        # This is the whole mechanism by which one gate command serves both
+        # routes; it is asserted rather than assumed because the alternative
+        # (a second, strict copy of the command) is what the drift test bans.
+        gate = self._step(self._job(WORKFLOW, "scan"), self.GATE)
+        run = _without_comments(gate["run"])
+        self.assertIn('if [ "$BASELINE_FOUND" = "true" ]; then', run)
+        self.assertNotIn('"$BASELINE_FOUND" !=', run)
+        self.assertIsNone(gate.get("if"))
+
+    def test_actions_read_is_the_only_permission_either_file_gained(self):
+        # Pinned as whole blocks: `actions: read` is what reads another run's
+        # artifacts, and nothing else moved to get it.
+        self.assertEqual(
+            self._job(WORKFLOW, "scan")["permissions"],
+            {"contents": "read", "packages": "read",
+             "security-events": "write", "actions": "read"})
+        self.assertEqual(
+            self._job(FORK_WORKFLOW, "fork-scan")["permissions"],
+            {"contents": "read", "packages": "read", "actions": "read"})
+        self.assertEqual(
+            self._job(FORK_WORKFLOW, "unlabel")["permissions"],
+            {"pull-requests": "write"})
+        with open(FORK_WORKFLOW, encoding="utf-8") as fh:
+            self.assertEqual(yaml.safe_load(fh)["permissions"],
+                             {"contents": "read", "packages": "read"})
 
 
 if __name__ == "__main__":
