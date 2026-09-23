@@ -63,8 +63,10 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/scripts/citations.py` — CWE validation (bundled catalog), OWASP derivation, reduced-SSVC,
   opt-in EPSS (`--epss`, stdlib urllib). Tolerant: a malformed citation never aborts a run.
 - `skill/scripts/run_tools.py` — select scanners, run them against a read-only mount,
-  and collect scanner captures. Invoked alone, it records a skipped scan if Docker/image
-  is absent; the normal driver checks those prerequisites in readiness before dispatch.
+  and collect scanner captures. If Docker or the image is unavailable, a standalone
+  invocation prints a skip warning and records missing coverage only when
+  `--manifest` is supplied; the normal driver checks those prerequisites in readiness
+  before dispatch.
 - `skill/scripts/ingest_tools.py` — SARIF → normalized findings (source `tool:<name>`, CWE/CVE citations).
 - `skill/scripts/evidence.py` — evidence axis: status derivation, verify-queue triage, verdict ingestion.
 - `skill/scripts/group_runner.py` — fan-out resume + coverage primitives: `entry_is_done`/
