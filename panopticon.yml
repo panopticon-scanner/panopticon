@@ -234,6 +234,7 @@ groups:
       - skill/scripts/executable.py
       - skill/scripts/runners/**
       - skill/scripts/kimi_toml.py
+      - skill/scripts/toml_values.py
       tests:
       - tests/runners/**
       - tests/test_executable_provenance.py

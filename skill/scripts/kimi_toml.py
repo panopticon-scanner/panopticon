@@ -16,8 +16,7 @@ the `[mcp]` scrub here for both halves of that reason: it is a fact about the
 per-run config FILE, with no knowledge of the runner beyond the block it
 names, and the runner had no room left for it.
 """
-import datetime
-import json
+import scripts.toml_values as toml_values
 
 
 # #1640 (run-13 AGT-3297306866). The per-run home mediates what it can guard,
@@ -107,34 +106,14 @@ def mediated_mcp(source=None, disclose=None):
 
 
 def _toml_key(key):
-    if key and all(c.isalnum() or c in "_-" for c in key):
-        return key
-    return json.dumps(key)
+    return toml_values.key(key)
 
 
 def _toml_value(value, key=None):
     """One TOML scalar. `key` is carried so a value this writer cannot emit
     names the key it came from: a bare "cannot emit TOML for None" in the
     middle of `prepare` names no config line."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return json.dumps(value)
-    # datetime BEFORE date: every datetime is also a date (C2). tomllib hands
-    # these back for any TOML date-time, and a CLI config that carries one
-    # (`last_update_check`, an install stamp) used to abort the whole run.
-    if isinstance(value, datetime.datetime):
-        return value.isoformat()               # offset or local date-time
-    if isinstance(value, datetime.date):
-        return value.isoformat()               # local date
-    if isinstance(value, datetime.time):
-        return value.isoformat()               # local time
-    if isinstance(value, (int, float)):
-        return repr(value)
-    if isinstance(value, list):
-        return "[%s]" % ", ".join(_toml_value(v, key) for v in value)
-    raise TypeError("cannot emit TOML for the value at %r: %r"
-                    % (key if key is not None else "<root>", value))
+    return toml_values.value(value, key)
 
 
 def _split(table):

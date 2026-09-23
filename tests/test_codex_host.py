@@ -56,6 +56,33 @@ def _config(argv):
     return tomllib.loads("\n".join(argv[i + 1] for i, arg in enumerate(argv) if arg == "-c"))
 
 
+def test_overrides_round_trip_unicode_strings_and_literal_keys():
+    config = {
+        "model_providers": {
+            "a.b": {"雪/🚀": "launch 🚀 /tmp/雪\tline\nnext\x7f\x00"},
+            'say "hi"': ["emoji 😀", 'slashes / and "', {"nested": "值"}],
+        },
+        "plain": {"empty": {}, "enabled": True, "count": 7},
+    }
+    overrides = list(codex_host._overrides(config))
+    assert overrides[::2] == ["-c"] * (len(overrides) // 2)
+    assert any(arg.startswith("model_providers={") for arg in overrides[1::2])
+    assert all(re.fullmatch(r"[A-Za-z0-9_.-]+", arg.split("=", 1)[0])
+               for arg in overrides[1::2])
+    assert _config(overrides) == config
+
+
+def test_overrides_refuse_unrepresentable_top_level_key():
+    with pytest.raises(ValueError, match="top-level"):
+        list(codex_host._overrides({"a.b": 1}))
+
+
+@pytest.mark.parametrize("config", [{"value": "bad \ud800"}, {"bad \ud800": "value"}])
+def test_overrides_refuse_lone_surrogates(config):
+    with pytest.raises(ValueError, match="surrogate"):
+        list(codex_host._overrides(config))
+
+
 def _register(root, name="panopticon-scout", mutation=None):
     config = codex_host.safety_config()
     config.update({"name": name, "description": "fixture", "developer_instructions": "Review only."})
