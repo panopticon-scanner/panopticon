@@ -132,6 +132,23 @@ class TestOsvScannerAdapter(unittest.TestCase):
         self.assertEqual(by_id["zero"]["severity"], "LOW")
         self.assertEqual(by_id["zero"]["tool_evidence"]["cvss_max_severity"], 0.0)
 
+    def test_overflowing_json_group_score_keeps_advisory_and_valid_sibling(self):
+        vulnerabilities = [
+            {"id": "HUGE", "database_specific": {"severity": "CRITICAL"}},
+            {"id": "VALID", "database_specific": {"severity": "LOW"}},
+        ]
+        groups = [{"ids": ["HUGE"], "max_severity": 10 ** 400},
+                  {"ids": ["VALID"], "max_severity": 7.5}]
+        findings = osv.OsvScannerAdapter().parse(
+            self._severity_sample(vulnerabilities, groups), "g1")
+        self.assertEqual(len(findings), 2)
+        by_id = {f["tool_evidence"]["rule_id"]: f for f in findings}
+        self.assertEqual(by_id["HUGE"]["severity"], "CRITICAL")
+        self.assertNotIn("cvss_max_severity", by_id["HUGE"]["tool_evidence"])
+        self.assertEqual(by_id["VALID"]["severity"], "HIGH")
+        self.assertEqual(by_id["VALID"]["tool_evidence"]["cvss_max_severity"], 7.5)
+        self.assertEqual(by_id["HUGE"]["location"]["file"], "requirements.txt")
+
     def test_parse_real_shape_produces_findings(self):
         findings = osv.OsvScannerAdapter().parse(OSV_REAL_SAMPLE, "g1")
         self.assertEqual(len(findings), 2)

@@ -140,7 +140,7 @@ def _security_score(value):
         return None
     try:
         score = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return score if math.isfinite(score) and 0 < score <= 10 else None
 

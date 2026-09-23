@@ -101,6 +101,24 @@ class TestIngest(unittest.TestCase):
                          ["LOW"] * (len(results) - 1))
         self.assertEqual(findings[-1]["severity"], "MEDIUM")
 
+    def test_overflowing_json_security_score_keeps_result_and_valid_sibling(self):
+        sarif = self._severity_sarif(
+            result_properties={"security-severity": 10 ** 400,
+                               "severity": "CRITICAL"}, level="error")
+        results = first(sarif["runs"])["results"]
+        results.append(dict(first(results), ruleId="R-SIBLING",
+                            properties={"security-severity": "7.5"}))
+        parsed = json.loads(json.dumps(sarif))
+        findings = it.sarif_to_findings(parsed, "trivy", "g1", "TR")
+        self.assertEqual(len(findings), 2)
+        by_rule = {f["tool_evidence"]["rule_id"]: f for f in findings}
+        self.assertEqual(by_rule["CVE-2026-1234"]["severity"], "CRITICAL")
+        self.assertEqual(by_rule["R-SIBLING"]["severity"], "HIGH")
+        self.assertEqual(by_rule["CVE-2026-1234"]["location"],
+                         {"file": "app.py", "line_start": 7})
+        self.assertEqual(by_rule["CVE-2026-1234"]["citations"]["cve"],
+                         ["CVE-2026-1234"])
+
     def test_gitleaks_severity_floor_preserves_critical(self):
         for props, expected in [({"severity": "LOW"}, "HIGH"),
                                 ({"security-severity": "9.8"}, "CRITICAL")]:
