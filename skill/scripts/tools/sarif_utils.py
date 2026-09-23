@@ -166,24 +166,49 @@ def _metadata_severity(properties):
 
 
 def _sarif_severity(result, rule):
-    """Explicit result or rule metadata first, then the result's own `level`.
+    """Four sources, in this order: explicit result metadata, explicit rule
+    metadata, the result's own `level`, the rule's `defaultConfiguration.level`
+    -- and "warning" when a document states none of them.
 
-    NOT read here, on purpose: the rule's `defaultConfiguration.level`.
-    Semgrep writes no `level` on its results and `error` on the rule for every
-    ERROR-severity rule, so reading it would grade those HIGH -- correct, and
-    what #1790 asks for, but on this repository's own tree it promotes 24
-    findings the CI gate has never seen as HIGH (all adjudicated as dismissed
-    alerts on GitHub). That fallback lands together with the gate change that
-    can tell a pre-existing finding from a new one; until then a missing
-    result `level` keeps the historical "warning" grade.
+    The last step is #1790, and the order is the whole of it. A `level` the
+    scanner put on THIS result is a statement about this hit and outranks a
+    default the rule carries for every hit; a default the rule carries outranks
+    a grade nobody stated. Semgrep is the case that makes the step load-
+    bearing: it writes no `level` on any result and `defaultConfiguration.level:
+    error` on every ERROR-severity rule, so the "warning" floor graded every one
+    of them MEDIUM -- below `security_gate.GATE_SEVERITIES` -- and the CI gate
+    could not fail on a semgrep finding at all. That is the hole #1578 closed
+    for gitleaks, reached from the other side.
+
+    It ships with the gate change that makes it safe to merge, not before it
+    (#1964 was split for this). On this repository's own tree the step promotes
+    24 findings the gate had never seen as HIGH, every one of them already
+    adjudicated as a dismissed alert on GitHub -- so a strict pre-merge gate
+    would have failed main the day this line landed. `security_gate
+    --baseline-dir` counts only findings absent from the base commit's own
+    scan, which is what lets a correct severity and a green main coexist.
+
+    THE STEP GRADES DOWN AS WELL AS UP, and the downward half is the larger one
+    (fix round 1, review M5). Measured on two real captures of this repo:
+    semgrep states no result `level` at all, and its rule defaults there are
+    `error` ~24, `warning` ~9 and `note` **241**. So beside the 24
+    MEDIUM -> HIGH promotions, 241 findings go MEDIUM -> LOW, and a rule
+    defaulting to `none` now yields INFO where the "warning" floor yielded
+    MEDIUM. That is more faithful -- semgrep's `note` IS its INFO grade, and
+    the floor was inventing a grade the scanner never stated -- and it has no
+    CI-gate effect, since that floor is HIGH/CRITICAL. It DOES change what a
+    `driver run --severity medium` or `--fail-on medium` sees on such a tree:
+    241 fewer tool findings on the axis. Pinned by
+    `test_the_rule_default_grades_DOWN_as_well_as_up`.
     """
     for owner in (result, rule):
         explicit = _metadata_severity(_properties(owner.get("properties")))
         if explicit is not None:
             return explicit
-    level = result.get("level")
-    if isinstance(level, str) and level.lower() in LEVEL_TO_SEV:
-        return LEVEL_TO_SEV[level.lower()]
+    default = _properties(rule.get("defaultConfiguration")).get("level")
+    for level in (result.get("level"), default):
+        if isinstance(level, str) and level.lower() in LEVEL_TO_SEV:
+            return LEVEL_TO_SEV[level.lower()]
     return LEVEL_TO_SEV["warning"]
 
 

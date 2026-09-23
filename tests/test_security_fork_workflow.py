@@ -104,8 +104,12 @@ class TestForkScanNeverSkipsForAFork(unittest.TestCase):
     def test_it_holds_no_write_grant_at_all(self):
         # No security-events (it uploads nothing), no pull-requests (it writes
         # no labels): the only job here that writes anything is `unlabel`.
+        # #1790's `actions: read` is READ, and it reads one thing -- the base
+        # commit's own `raw-scanner-captures` artifact from `security.yml` on
+        # main, which no fork can write.
         self.assertEqual(self.job.get("permissions"),
-                         {"contents": "read", "packages": "read"})
+                         {"contents": "read", "packages": "read",
+                          "actions": "read"})
 
 
 class TestTheLabelGateIsTheFirstThingThatRuns(unittest.TestCase):
@@ -274,6 +278,23 @@ class TestTheTwoWorkflowsDoNotDrift(unittest.TestCase):
         self.assertEqual(_script(_step(self.base, name)).split(),
                          _script(_step(self.fork, name)).split())
 
+    def test_the_baseline_fetch_is_identical(self):
+        # Review M6. This class is the only one that compares the two files
+        # token for token; the per-file substring pins in
+        # `test_security_workflow.py` would all pass with the two copies
+        # disagreeing about `--limit`, `--jq`, `--status success`, the hop
+        # bound or the `::notice::` text. The fork route is gated on the same
+        # terms as the same-repo one or it is not the same gate.
+        name = "Download the base commit's scanner captures"
+        base, fork = _step(self.base, name), _step(self.fork, name)
+        self.assertIsNotNone(base)
+        self.assertIsNotNone(fork)
+        self.assertEqual(_script(base).split(), _script(fork).split())
+        self.assertEqual(base.get("env"), fork.get("env"))
+        self.assertEqual(base.get("timeout-minutes"), fork.get("timeout-minutes"))
+        self.assertEqual(base.get("continue-on-error"),
+                         fork.get("continue-on-error"))
+
     def test_the_image_step_is_identical(self):
         name = "Pull or build panopticon-tools image"
         base, fork = _step(self.base, name), _step(self.fork, name)
@@ -299,7 +320,15 @@ class TestNeitherWorkflowSwallowsAFailure(unittest.TestCase):
     """I2: `continue-on-error: true` on the gate step (or on the job) turns a
     refusal into a green check and lets every later step run anyway. It is a
     one-line edit that no other assertion here would catch, so it is refused
-    outright -- neither file has any use for it."""
+    outright -- neither file has any use for it.
+
+    #1790 fix round 1 briefly carved out the baseline fetch, to stop a slow
+    `gh run download` from reding a required check. Fix round 2 took the
+    exemption back and bought the same degradation inside that step's script
+    instead (per-call `timeout`, a wall-clock budget, every call in an
+    `if`/`&&` position): a rule that admits its first exception stops being
+    read as a rule, and the property was available without one.
+    """
 
     def test_no_continue_on_error_anywhere_in_either_workflow(self):
         offenders = []
