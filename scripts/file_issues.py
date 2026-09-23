@@ -454,30 +454,19 @@ def main():
                     help="path to the run's coverage/run-state doc, linked in each issue")
     a = ap.parse_args()
 
-    with open(a.report, encoding="utf-8") as fh:
-        report = json.load(fh)
-    findings = list(report["findings"])
-    # A large report is split; meta.parts names the continuation files, resolved
-    # beside the main artifact. Reading only the first part silently under-files.
-    for part in (report.get("meta") or {}).get("parts") or []:
-        ppath = resolve_part_path(os.path.dirname(os.path.abspath(a.report)), part)
-        try:
-            with open(ppath, encoding="utf-8") as fh:
-                pdata = json.load(fh)
-        except (OSError, json.JSONDecodeError) as e:
-            print("FAILED to load report part %s (%s)" % (ppath, e), file=sys.stderr)
-            raise
-
-        part_findings = pdata.get("findings") or []
-        findings.extend(part_findings)
-        print("loaded %d finding(s) from part %s" % (len(part_findings), part), file=sys.stderr)
+    # Load every continuation before any issue creation or ledger access. The
+    # shared loader confines both parts and the rejected-claim spill file.
+    report = _reconcile.load_report(a.report)
+    findings = report["findings"]
+    print("loaded %d finding(s) and %d rejected claim(s)" % (
+        len(findings), len(report["discarded_claims"])), file=sys.stderr)
 
     work = []
     if a.only != "rejected":
         for f in findings:
             work.append((f, False))
     if a.only != "findings":
-        for f in report.get("discarded_claims", []):
+        for f in report["discarded_claims"]:
             work.append((f, True))
     if a.limit:
         work = work[:a.limit]

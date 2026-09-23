@@ -47,11 +47,7 @@ def _resolve_part_path(base_dir, part):
 
 
 def load_report(path):
-    """Load a report, merging meta.parts continuation files.
-
-    Mirrors scripts/file_issues.py's merge (same confinement check) so a
-    part cannot point outside the report's own directory.
-    """
+    """Load a report, merging confined part and rejected-claim continuations."""
     with open(path, encoding="utf-8") as fh:
         report = json.load(fh)
     findings = list(report.get("findings") or [])
