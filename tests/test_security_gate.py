@@ -832,5 +832,335 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
         self.assertIn("NOT gated", line)
 
 
+def _delta_result(rule="dangerous-subprocess-use-audit", uri="/src/app.py",
+                  line=1, message="found subprocess function with user input",
+                  level="error"):
+    """One SARIF result, every field of the delta identity separately settable."""
+    return {"ruleId": rule, "level": level, "message": {"text": message},
+            "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": uri},
+                "region": {"startLine": line}}}]}
+
+
+def _delta_sarif(*results, tool="semgrep"):
+    return {"version": "2.1.0", "runs": [{
+        "tool": {"driver": {"name": tool, "rules": []}},
+        "results": list(results)}]}
+
+
+class TestTheDeltaAwareGate(unittest.TestCase):
+    """#1790 owner ruling 2026-09-23: what a PRE-MERGE gate is entitled to fail on.
+
+    The strict gate answers one question -- does this tree carry a
+    HIGH/CRITICAL tool finding -- and on an already-scanned repository that is
+    the wrong question. `#1790`'s severity fix promotes 24 findings on this
+    repo's own tree, every one of them already read and dismissed by the owner
+    on GitHub's Security tab, so a strict gate would fail every PR from the
+    moment it merged, forever, over a standing set nobody disputes and nobody
+    can clear by editing their own diff.
+
+    `--baseline-dir` makes the gate DELTA-aware: the base commit's own capture
+    (uploaded by `security.yml` on every push to main) is ingested through the
+    same call with the same flags, and a head finding that matches one of its
+    findings is reported as pre-existing instead of counted. The standing set
+    stays governed by what already governs it -- the post-merge zero-alert
+    audit (`scripts/code_scanning_audit.py`, #1947) and the owner's own
+    dismissals. A NEW HIGH/CRITICAL still fails the merge, which is the whole
+    point of the gate.
+    """
+
+    def _capture(self, root, name, payloads):
+        """A `<root>/<name>/` laid out the way the CI artifact is."""
+        base = os.path.join(root, name)
+        tools = os.path.join(base, "panopticon-tools-output")
+        os.makedirs(tools)
+        for tool, doc in payloads.items():
+            suffix = "json" if tool == "osv-scanner" else "sarif"
+            with open(os.path.join(tools, "%s.%s" % (tool, suffix)), "w",
+                      encoding="utf-8") as fh:
+                json.dump(doc, fh)
+        manifest = os.path.join(base, "panopticon-tools-manifest.json")
+        with open(manifest, "w", encoding="utf-8") as fh:
+            json.dump({"selected": sorted(payloads), "produced": sorted(payloads),
+                       "missing": []}, fh)
+        return tools, manifest
+
+    def _run(self, head, baseline=None, extra=()):
+        """(rc, stdout, stderr) from `main`, with or without a baseline."""
+        argv = ["--tools-dir", head[0], "--manifest", head[1]]
+        if baseline is not None:
+            argv += ["--baseline-dir", baseline[0],
+                     "--baseline-manifest", baseline[1]]
+        argv += list(extra)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = gate.main(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_a_finding_the_base_commit_already_had_does_not_gate(self):
+        with tempfile.TemporaryDirectory() as root:
+            same = _delta_sarif(_delta_result())
+            head = self._capture(root, "head", {"semgrep": same})
+            base = self._capture(root, "base", {"semgrep": same})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("0 HIGH/CRITICAL new", out)
+        self.assertIn("1 HIGH/CRITICAL pre-existing", out)
+
+    def test_it_is_listed_under_a_heading_that_says_what_governs_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            same = _delta_sarif(_delta_result())
+            head = self._capture(root, "head", {"semgrep": same})
+            base = self._capture(root, "base", {"semgrep": same})
+            _rc, out, _err = self._run(head, base)
+        self.assertIn("pre-existing (in the base commit's scan; governed by "
+                      "the post-merge audit and GitHub dismissals)", out)
+        # The same row shape as a gating finding: nothing about a pre-existing
+        # finding is harder to read than the one that failed the build.
+        self.assertRegex(out, r"HIGH SG-\d+ app\.py:1 - found subprocess")
+
+    def test_a_finding_the_base_commit_did_not_have_still_fails_the_merge(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(), _delta_result(uri="/src/new.py"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 1)
+        self.assertIn("1 HIGH/CRITICAL new", out)
+        self.assertIn("1 HIGH/CRITICAL pre-existing", out)
+        self.assertIn("new.py:1", out)
+
+    def test_a_second_identical_hit_in_the_same_file_is_new(self):
+        # The multiset rule, and the reason identity alone is not enough: a
+        # `subprocess.run` added BESIDE a pre-existing one produces a second
+        # finding with the same tool, rule, path and message. Each baseline
+        # finding may excuse at most one head finding, so the second gates.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(line=1), _delta_result(line=40))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result(line=1))})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 1)
+        self.assertIn("1 HIGH/CRITICAL new", out)
+        self.assertIn("1 HIGH/CRITICAL pre-existing", out)
+
+    def test_a_line_shift_does_not_break_a_match(self):
+        # Lines are deliberately NOT part of the identity: an unrelated edit
+        # above a finding moves every line below it, and a gate that called
+        # those NEW would fail on a diff that did not touch them.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(line=93))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result(line=7))})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("1 HIGH/CRITICAL pre-existing", out)
+
+    def test_the_container_mount_prefix_does_not_break_a_match(self):
+        # Semgrep writes `/src/app.py` (the container mount) and bandit writes
+        # `app.py`; ingest normalizes both. Matching on INGESTED findings is
+        # what makes the two spellings one identity -- raw SARIF would not.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(uri="app.py"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/app.py"))})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("1 HIGH/CRITICAL pre-existing", out)
+
+    def test_a_different_message_at_the_same_place_is_a_different_finding(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(message="found subprocess function with $TAINTED"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 1)
+        self.assertIn("1 HIGH/CRITICAL new", out)
+        self.assertIn("0 HIGH/CRITICAL pre-existing", out)
+
+    def test_a_different_rule_at_the_same_place_is_a_different_finding(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(rule="hooks-path-traversal-python"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            rc, _out, _err = self._run(head, base)
+        self.assertEqual(rc, 1)
+
+    def test_the_same_finding_from_a_different_tool_is_a_different_finding(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"bandit": _delta_sarif(
+                _delta_result(), tool="bandit")})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            rc, _out, _err = self._run(head, base)
+        self.assertEqual(rc, 1)
+
+    def test_whitespace_in_a_message_is_collapsed_before_matching(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(message="found subprocess\n  function with user input"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result(message="found subprocess function with user input"))})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 0, out)
+
+    def test_a_suppressed_critical_the_baseline_had_is_pre_existing(self):
+        # Policy C's population is the one the delta applies to: under redteam
+        # a CRITICAL under `vendor/` reaches the gate, and it may be excused
+        # for the same reason any other pre-existing finding is.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"osv-scanner": _critical_osv()})
+            base = self._capture(root, "base", {"osv-scanner": _critical_osv()})
+            rc, out, _err = self._run(head, base, ("--security", "redteam"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("1 HIGH/CRITICAL pre-existing", out)
+
+    def test_a_suppressed_critical_the_baseline_did_not_have_gates(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"osv-scanner": _critical_osv()})
+            base = self._capture(root, "base", {"osv-scanner": {"results": []}})
+            rc, out, _err = self._run(head, base, ("--security", "redteam"))
+        self.assertEqual(rc, 1)
+        self.assertIn("1 HIGH/CRITICAL new", out)
+
+    def test_a_missing_baseline_directory_runs_strict_and_says_why(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result())})
+            absent = (os.path.join(root, "gone", "panopticon-tools-output"),
+                      os.path.join(root, "gone", "panopticon-tools-manifest.json"))
+            rc, out, err = self._run(head, absent)
+        self.assertEqual(rc, 1, out)          # strict: the finding gates
+        self.assertIn("security-gate: baseline unusable", err)
+        self.assertIn("1 HIGH/CRITICAL", out)
+        self.assertNotIn("pre-existing", out)
+
+    def test_a_malformed_baseline_manifest_runs_strict_and_says_why(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result())})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            with open(base[1], "w", encoding="utf-8") as fh:
+                fh.write("{not json")
+            rc, out, err = self._run(head, base)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("security-gate: baseline unusable", err)
+        self.assertNotIn("pre-existing", out)
+
+    def test_an_inconsistent_baseline_manifest_runs_strict_and_says_why(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result())})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            with open(base[1], "w", encoding="utf-8") as fh:
+                json.dump({"selected": ["semgrep"], "produced": [],
+                           "missing": []}, fh)
+            rc, _out, err = self._run(head, base)
+        self.assertEqual(rc, 1)
+        self.assertIn("security-gate: baseline unusable", err)
+
+    def test_the_baseline_note_is_one_line(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result())})
+            absent = (os.path.join(root, "gone", "panopticon-tools-output"),
+                      os.path.join(root, "gone", "panopticon-tools-manifest.json"))
+            _rc, _out, err = self._run(head, absent)
+        self.assertEqual(
+            [line for line in err.splitlines() if "baseline" in line].__len__(), 1,
+            err)
+
+    def test_the_baseline_directory_requires_its_manifest(self):
+        # The default `<dir>/../panopticon-tools-manifest.json` is NOT assumed:
+        # a gate that guesses where the baseline manifest is would silently
+        # read the WRONG scan's manifest on any layout but the one it expects.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result())})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    gate.main(["--tools-dir", head[0], "--manifest", head[1],
+                               "--baseline-dir", base[0]])
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_without_the_flag_the_verdict_line_is_the_one_it_always_was(self):
+        # The strict path is byte-identical, not merely equivalent: every
+        # other caller of this gate reads that line.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result())})
+            rc, out, _err = self._run(head)
+        self.assertEqual(rc, 1)
+        self.assertEqual(out.splitlines()[0],
+                         "Ingested 1 non-excluded tool findings; 1 HIGH/CRITICAL")
+
+    def test_with_the_flag_the_line_carries_both_counts_and_the_old_note(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(), _delta_result(uri="/src/new.py"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            _rc, out, _err = self._run(head, base)
+        self.assertEqual(out.splitlines()[0],
+                         "Ingested 2 non-excluded tool findings; "
+                         "1 HIGH/CRITICAL new; 1 HIGH/CRITICAL pre-existing")
+
+    def test_a_coverage_failure_on_the_head_still_exits_two(self):
+        # Exit codes are unchanged, and the HEAD is the only side that can
+        # raise one: a baseline is an excuse to count LESS, never a reason to
+        # refuse to answer.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result())})
+            with open(head[1], "w", encoding="utf-8") as fh:
+                json.dump({"selected": ["semgrep", "trivy"],
+                           "produced": ["semgrep"], "missing": ["trivy"]}, fh)
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            rc, _out, err = self._run(head, base)
+        self.assertEqual(rc, 2)
+        self.assertIn("trivy: no output", err)
+
+    def test_the_baseline_is_ingested_with_the_heads_own_exclusions(self):
+        # One definition of "a finding" on both sides. An `--exclude` that
+        # applied to the head but not the baseline would leave the baseline
+        # carrying findings the head can never produce -- harmless -- while the
+        # reverse silently excuses a head finding the operator never scoped
+        # out. The same call, the same globs, the same mode.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/tests/fixtures/evil.py"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif()})
+            rc, out, _err = self._run(head, base,
+                                      ("--exclude", "tests/fixtures/**"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("0 HIGH/CRITICAL new", out)
+        self.assertIn("1 excluded by --exclude", out)
+
+    def test_a_medium_is_neither_new_nor_pre_existing(self):
+        # The delta splits the GATE population and nothing else: a finding
+        # below the floor was never counted and does not become countable by
+        # being absent from the baseline.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result(level="note"))})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif()})
+            rc, out, _err = self._run(head, base)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.splitlines()[0],
+                         "Ingested 1 non-excluded tool findings; "
+                         "0 HIGH/CRITICAL new; 0 HIGH/CRITICAL pre-existing")
+
+
 if __name__ == "__main__":
     unittest.main()
