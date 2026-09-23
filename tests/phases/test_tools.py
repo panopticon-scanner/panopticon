@@ -1,5 +1,7 @@
 """Tests for scripts.phases.tools: the SAST/SCA adapter phase.
 """
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -224,6 +226,24 @@ class TestToolsPhase(unittest.TestCase):
         self.assertFalse(marker["ran"])
         self.assertTrue(marker["crashed"])
         self.assertEqual(marker["returncode"], 2)
+
+    def test_crash_redacts_complete_key_before_limiting_diagnostic(self):
+        key = ("-----BEGIN PRIVATE KEY-----\n" + "A" * 80
+               + "\n-----END PRIVATE KEY-----")
+        stderr = "x" * 260 + key + " trailing diagnostic"
+        captured = io.StringIO()
+        with mock.patch("scripts.phases.child._run_child",
+                        return_value=mock.Mock(returncode=2, stdout="", stderr=stderr)), \
+             contextlib.redirect_stderr(captured):
+            result = tools_phase.tools_execute(self.root, self.manifest)
+        marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
+        self.assertTrue(marker["crashed"])
+        self.assertEqual(marker["returncode"], 2)
+        for diagnostic in (marker["note"], captured.getvalue(), result.message):
+            self.assertIn("[REDACTED_PRIVATE_KEY]", diagnostic)
+            self.assertNotIn("-----BEGIN PRIVATE", diagnostic)
+            self.assertNotIn("A" * 20, diagnostic)
+        self.assertLessEqual(len(marker["note"]), 300)
 
     def test_no_tools_flag_skips_subprocess(self):
         m = {"run_id": "R", "flags": {"tools": False}}

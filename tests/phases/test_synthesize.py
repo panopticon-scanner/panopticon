@@ -401,6 +401,39 @@ class TestSynthesizePhase(unittest.TestCase):
                 synthesize.synthesize_execute(self.root, self.manifest)
         self.assertIn("artifact invalid", str(ctx.exception))
 
+    def test_missing_report_redacts_complete_key_before_head_limit(self):
+        key = ("-----BEGIN PRIVATE KEY-----\n" + "A" * 80
+               + "\n-----END PRIVATE KEY-----")
+        stderr = "x" * 360 + key + " trailing diagnostic"
+        with mock.patch("scripts.phases.child._run_child",
+                        return_value=mock.Mock(returncode=1, stdout="", stderr=stderr)):
+            with self.assertRaises(runio.DriverError) as caught:
+                synthesize.synthesize_execute(self.root, self.manifest)
+        error = str(caught.exception)
+        self.assertIn("[REDACTED_PRIVATE_KEY]", error)
+        self.assertNotIn("-----BEGIN PRIVATE", error)
+        self.assertEqual(runio._error_status(error)["status"], "error")
+
+    def test_invalid_artifact_redacts_complete_jwt_before_tail_limit(self):
+        jwt = "eyJ" + "a" * 20 + ".eyJ" + "b" * 20 + "." + "c" * 24
+        stderr = "diagnostic " + jwt + " " + "z" * 360
+
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"summary": {"gate": "PASS"}}, fh)
+            return mock.Mock(returncode=validate_schema_mod.ARTIFACT_INVALID,
+                             stdout="", stderr=stderr)
+
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            with self.assertRaises(runio.DriverError) as caught:
+                synthesize.synthesize_execute(self.root, self.manifest)
+        error = str(caught.exception)
+        self.assertIn("[REDACTED_JWT]", error)
+        self.assertNotIn("eyJ", error)
+        status = runio._error_status(error)
+        self.assertEqual(status["status"], "error")
+        self.assertNotIn("eyJ", str(status))
+
     def test_an_invalid_artifact_still_repoints_the_compat_path_at_this_run(self):
         # #1639 P15 I3: `.panopticon/report.json` is the documented
         # backward-compat path. Raising before the relink left it pointing at
