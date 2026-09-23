@@ -1161,6 +1161,147 @@ class TestTheDeltaAwareGate(unittest.TestCase):
                          "Ingested 1 non-excluded tool findings; "
                          "0 HIGH/CRITICAL new; 0 HIGH/CRITICAL pre-existing")
 
+    # --- fix round 1, I2: an unusable baseline is strict AND audible --------
+    #
+    # The `isdir` check was the only structural one, and everything past it is
+    # tolerant by design: `_capped_output_files` swallows `PermissionError` and
+    # returns no files, the SARIF parse skips a file it cannot read rather than
+    # raising, and `load_manifest` validates a manifest's INTERNAL consistency
+    # without ever asking whether the scan behind it delivered. So three
+    # different broken baselines all produced an empty pool, `delta=True`, a
+    # verdict line asserting `0 HIGH/CRITICAL pre-existing`, and no stderr line
+    # at all. Strict, and therefore not a bypass -- but silently strict, and
+    # the line misreported a delta that had not been applied.
+
+    def test_a_baseline_whose_scanner_wrote_garbage_is_unusable(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result())})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            with open(os.path.join(base[0], "semgrep.sarif"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("{not json")
+            rc, out, err = self._run(head, base)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("security-gate: baseline unusable", err)
+        self.assertIn("semgrep", err)
+        self.assertNotIn("pre-existing", out)
+
+    def test_a_baseline_missing_an_adapter_it_selected_is_unusable(self):
+        # The review's second probe: a manifest that is internally consistent
+        # (`selected == produced`, `missing` empty) while the output file for
+        # that adapter is simply not there. `load_manifest` cannot see it --
+        # only the ingest's own dispositions can, which is what
+        # `lost_required_coverage` reads.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result())})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            os.remove(os.path.join(base[0], "semgrep.sarif"))
+            rc, out, err = self._run(head, base)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("security-gate: baseline unusable", err)
+        self.assertIn("semgrep: no output", err)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0,
+                     "root reads a 0o000 directory regardless of its mode")
+    def test_an_unreadable_baseline_directory_is_unusable(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"semgrep": _delta_sarif(
+                _delta_result())})
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result())})
+            os.chmod(base[0], 0o000)
+            try:
+                rc, out, err = self._run(head, base)
+            finally:
+                os.chmod(base[0], 0o755)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("security-gate: baseline unusable", err)
+        self.assertNotIn("pre-existing", out)
+
+    def test_a_usable_baseline_says_nothing_on_stderr_about_being_unusable(self):
+        # The oracle for the three above: the note fires on a broken baseline
+        # and only on a broken one.
+        with tempfile.TemporaryDirectory() as root:
+            same = _delta_sarif(_delta_result())
+            head = self._capture(root, "head", {"semgrep": same})
+            base = self._capture(root, "base", {"semgrep": same})
+            rc, _out, err = self._run(head, base)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("baseline unusable", err)
+
+    def test_a_baseline_finding_under_an_excluded_glob_is_not_in_the_pool(self):
+        # M7: the mutant this kills replaces `exclude_globs=exclude_globs or []`
+        # with `exclude_globs=[]` in `load_baseline`. Today identity is
+        # path-keyed, so an excluded baseline finding can only ever match an
+        # excluded head finding and the mutant is equivalent -- but the name of
+        # `test_the_baseline_is_ingested_with_the_heads_own_exclusions` and the
+        # docstring under it both claim the baseline is scoped, and nothing
+        # measured it. Read off `load_baseline` directly, because the claim is
+        # about the POOL and not about a verdict that happens to agree.
+        # `vendored/**` rather than the CI globs: a path the operator scoped
+        # out and NOTHING else did, so the only thing that can drop it from the
+        # pool is `exclude_globs` reaching `ingest_dir_detailed`. Under
+        # `tests/fixtures/**` the name-based fixture rule drops it anyway and
+        # the assertion would hold with the argument deleted.
+        with tempfile.TemporaryDirectory() as root:
+            base = self._capture(root, "base", {"semgrep": _delta_sarif(
+                _delta_result(uri="/src/docs/generated/api.py"),
+                _delta_result(uri="/src/app.py"))})
+            scoped, why_not = gate.load_baseline(
+                base[0], base[1], ["docs/generated/**"])
+            unscoped, _why = gate.load_baseline(base[0], base[1])
+        self.assertIsNone(why_not)
+        self.assertEqual(
+            sorted((f.get("location") or {}).get("file") for f in scoped),
+            ["app.py"])
+        self.assertEqual(
+            sorted((f.get("location") or {}).get("file") for f in unscoped),
+            ["app.py", "docs/generated/api.py"])
+
+    # --- fix round 1, I3: GATED means "this blocks the merge" ---------------
+
+    def test_the_gated_count_agrees_with_the_exit_code_under_a_delta(self):
+        # The bug: `0 HIGH/CRITICAL new ... 1 GATED ... rc=0`. GATED has one
+        # meaning in this codebase -- this finding blocks the merge -- and a
+        # verdict line that contradicts its own exit code is the defect class
+        # #1578 and #1740 spent two rounds removing from this very line.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"osv-scanner": _critical_osv()})
+            base = self._capture(root, "base", {"osv-scanner": _critical_osv()})
+            rc, out, _err = self._run(head, base, ("--security", "redteam"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("0 GATED", out)
+        self.assertIn("1 pre-existing, 0 disclosed only", out)
+
+    def test_a_suppressed_critical_the_baseline_lacks_is_gated_and_counted(self):
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {"osv-scanner": _critical_osv()})
+            base = self._capture(root, "base", {"osv-scanner": {"results": []}})
+            rc, out, _err = self._run(head, base, ("--security", "redteam"))
+        self.assertEqual(rc, 1)
+        self.assertIn("1 GATED", out)
+        self.assertIn("0 pre-existing, 0 disclosed only", out)
+
+    def test_the_three_suppression_counts_always_sum_to_the_suppressed_total(self):
+        # GATED + pre-existing + disclosed-only partitions the suppressed set,
+        # so no finding can be counted twice or vanish between the three.
+        with tempfile.TemporaryDirectory() as root:
+            head = self._capture(root, "head", {
+                "osv-scanner": _critical_osv(),
+                "semgrep": _lint_sarif()})
+            base = self._capture(root, "base", {
+                "osv-scanner": _critical_osv(),
+                "semgrep": _lint_sarif()})
+            rc, out, _err = self._run(head, base, ("--security", "redteam"))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("2 suppressed by directory name", out)
+        self.assertIn("0 GATED (CRITICAL/secret, #1578 policy C), "
+                      "1 pre-existing, 1 disclosed only, --security redteam", out)
+
 
 if __name__ == "__main__":
     unittest.main()

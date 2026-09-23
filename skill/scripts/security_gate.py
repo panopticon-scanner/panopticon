@@ -31,11 +31,11 @@ SECURITY_MODES = ("standard", REDTEAM)
 
 # #1790 owner ruling 2026-09-23: what this gate prints over the findings it
 # declined to count. The wording is the ruling -- a pre-existing finding is not
-# forgiven, it is governed somewhere else: `scripts/code_scanning_audit.py`
-# (#1947) fails the push to main on any OPEN alert, and an alert the owner has
-# read and dismissed is not open. A reader who sees one of these listed and
-# wants it gone dismisses it there, or fixes it; either way not here, on a PR
-# whose diff never touched it.
+# forgiven, it is governed somewhere else: the post-merge code-scanning audit
+# (`scripts/code_scanning_audit.py`) fails the push to main on any OPEN alert,
+# and an alert the owner has read and dismissed is not open. A reader who sees
+# one of these listed and wants it gone dismisses it there, or fixes it; either
+# way not here, on a commit whose diff never touched it.
 BASELINE_HEADING = ("pre-existing (in the base commit's scan; governed by the "
                     "post-merge audit and GitHub dismissals)")
 
@@ -200,10 +200,18 @@ def finding_identity(finding):
     already collapses a title, so a scanner that re-wraps its own prose does not
     invent a finding.
 
-    SEVERITY is not in it. A finding whose grade moved between two commits --
-    the scanner bumped its rule, or this repo's own parser did (#1790 is exactly
-    that) -- is the same finding at a new grade, and a pre-merge gate on someone
-    else's diff is not the place to re-adjudicate a standing one.
+    SEVERITY is not in it, and the reason is narrower than it first looks. A
+    PARSER change cannot produce a grade difference between the two sides: both
+    are ingested by the same `ingest_dir_detailed` call in the same process, so
+    `#1790`'s own promotion moves baseline and head together. What CAN is the
+    SCANNER: `ghcr.io/…-tools:latest` is unpinned, so an image shipping a rule
+    pack that re-grades a rule from `warning` to `error` turns every standing
+    occurrence of it HIGH on the head side while the baseline capture still
+    carries the old grade. Keeping severity out means that day reds nobody's
+    PR -- and costs what the review measured: the re-graded findings are
+    DISCLOSED under the pre-existing heading on every route rather than counted.
+    A strict full-tree lane that would count them is a follow-up, not this
+    gate's job.
     """
     location = finding.get("location") or {}
     return (evidence.tool_name(finding) or "",
@@ -233,25 +241,47 @@ def load_baseline(baseline_dir, manifest_path, exclude_globs=None,
     new -- the delta applies to precisely the population `evaluate` counts, and
     to no other.
 
-    The baseline's own manifest is READ AND VALIDATED even though nothing here
-    keys on its contents. A capture whose manifest is inconsistent is a capture
-    whose scan may have lost an adapter, and a baseline missing an adapter's
-    findings is a baseline that excuses nothing it should have -- which is the
-    safe direction, but it is not a thing to discover silently.
+    FOUR probes, and every one of them exists because the layers underneath are
+    TOLERANT (fix round 1, I2). `isdir` alone was the only structural check, and
+    past it: `_capped_output_files` swallows a `PermissionError` and reports no
+    files, the SARIF parse skips a file it cannot read instead of raising, and
+    `load_manifest` validates a manifest's INTERNAL consistency without ever
+    asking whether the scan behind it delivered. Three different broken
+    baselines therefore produced an empty pool, a verdict line asserting
+    `0 HIGH/CRITICAL pre-existing`, and not one word on stderr.
+
+    So: the directory must exist and be readable (`os.access`, next to `isdir`,
+    because an unreadable directory is not a directory this can use); the
+    manifest must load; the ingest must not raise; and -- the probe that catches
+    the other two silent cases -- the baseline's OWN coverage must be intact,
+    through `ingest_tools.lost_required_coverage`, the same definition
+    `evaluate` applies to the head. A baseline whose semgrep wrote unparseable
+    bytes, or whose selected adapter left no file at all, is lost coverage
+    exactly as it would be on the head side, and a baseline missing an
+    adapter's findings excuses nothing it should have. That IS the safe
+    direction -- the pool only ever shrinks -- but silently strict is still
+    silent, and this gate's whole contract is that a degraded run says so.
     """
-    if not os.path.isdir(baseline_dir):
+    if not os.path.isdir(baseline_dir) or not os.access(
+            baseline_dir, os.R_OK | os.X_OK):
         return [], "%s is not a readable directory" % baseline_dir
     try:
-        load_manifest(manifest_path)
+        manifest = load_manifest(manifest_path)
     except ValueError as exc:
         return [], str(exc)
     suppressed: list[dict[str, Any]] = []
     try:
-        findings, _dispositions = ingest_tools.ingest_dir_detailed(
+        findings, dispositions = ingest_tools.ingest_dir_detailed(
             baseline_dir, "ci", exclude_globs=exclude_globs or [],
             suppressed_out=suppressed)
     except Exception as exc:  # noqa: BLE001 - a broken baseline is not a verdict
         return [], "cannot ingest %s: %r" % (baseline_dir, exc)
+    lost = ingest_tools.lost_required_coverage(manifest, dispositions)
+    if lost:
+        return [], ("%s did not deliver its own scan: %s"
+                    % (baseline_dir, "; ".join(
+                        "%s: %s" % (name, info["reason"])
+                        for name, info in lost.items())))
     return (findings
             + (gate_counted(suppressed) if security_mode == REDTEAM else []),
             None)
@@ -367,20 +397,25 @@ def main(argv=None):
             # #1578 policy C: under redteam the set SPLITS, so one number for
             # it would be a lie either way -- "GATED" over a lint drop that did
             # not move the verdict, or "NOT gated" over the CRITICAL that did.
-            # Counted off `high` -- the list the verdict was computed from --
-            # not re-derived from the policy, so the number and the exit code
+            # Counted off the lists the verdict was computed from -- never
+            # re-derived from the policy -- so the number and the exit code
             # beside it can never disagree (fix round 1, ruling 2). A
             # suppressed finding is the only kind carrying a `suppressed`
-            # segment, which is what identifies it in that list.
-            # Off `high`, the POLICY-C population, not off `new`: this half
-            # of the line is about which suppressed findings reached the gate
-            # at all, which is a different question from whether the base
-            # commit already carried them. The delta half of the verdict line
-            # answers that one, so both splits of the same list are printed.
-            counted = sum(1 for f in high if f.get("suppressed"))
+            # segment, which is what identifies it in either list.
+            #
+            # THREE numbers since the delta landed (#1790 fix round 1, I3), and
+            # the invariant above is why. GATED asserts "this blocks the merge",
+            # and with two numbers it said that about a suppressed CRITICAL the
+            # base commit already carried -- `0 new ... 1 GATED ... rc=0`. So
+            # GATED counts `new`, the population that actually gates;
+            # pre-existing counts the ones the baseline excused; disclosed-only
+            # is what policy C declined, unchanged. The three partition
+            # `suppressed`, so nothing is counted twice or lost between them.
+            gated = sum(1 for f in new if f.get("suppressed"))
+            excused = sum(1 for f in pre_existing if f.get("suppressed"))
             verdict = (" -- %d GATED (CRITICAL/secret, #1578 policy C), "
-                       "%d disclosed only, --security redteam"
-                       % (counted, len(suppressed) - counted))
+                       "%d pre-existing, %d disclosed only, --security redteam"
+                       % (gated, excused, len(suppressed) - gated - excused))
         else:
             verdict = (" -- NOT gated; re-run with --security redteam to gate "
                        "the CRITICAL and secret-class ones")
