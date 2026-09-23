@@ -13,7 +13,7 @@ trust the claims — verify each one against the code itself.
 Files: {file_list}
 Verification round: {stage}
 
-**Scope fence (host-enforced):** your `Read` and `Grep` are confined to the files listed above; Glob is not available in a confined cell; grep a file by its path. A claim you cannot verify inside that scope is `UNVERIFIABLE`, never guessed.
+**Scope fence (host-enforced):** your `Read` and `Grep` are confined to the files listed above; Glob is not available in a confined cell; grep a file by its path. A claim you cannot verify inside that scope is `NEEDS_MORE_INFO`, never guessed; name the missing evidence in `reasoning`.
 
 ## Untrusted content — non-negotiable
 
