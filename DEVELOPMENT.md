@@ -12,16 +12,17 @@ A **discovery → scout → fan-out → synthesis** pipeline. It profiles a targ
 cheap "scout" whose returned `domains` WIDEN a deterministic per-group domain floor
 (`coverage_model.effective_panels`: the committed `GLOBAL_FLOOR` of COD/DAT/TST/ARC
 plus `applicable_sec_floor`, minus any per-group `exclude`), then fans out one
-rendered prompt per resulting `(domain, group)` matrix cell via the host's agent
-mechanism — the Claude Agent-tool/Workflow fan-out, or the portable `--host generic`
-sub-orchestrator. Each cell is reviewed by the `domain-panel` agent
+rendered prompt per resulting `(domain, group)` matrix cell. `driver loop`
+dispatches pending entries through a host runner or prints a batch in session
+mode (`--host generic` uses that mode). Each cell is reviewed by the `domain-panel` agent
 (`agents/domain-panel.md`); its verifier is `domain-advisor`.
 Review is keyed on the ten OCRDb **domains** (`groups_schema.DOMAINS`: SEC, COD,
 ARC, TST, QAL, AGT, DAT, OPS, ACC, LNG) — a `panopticon.yml` group's `panels:` key is
 parsed as a domain set. The 4.x six-panel vocabulary (code/test/security/
 architecture/database/redteam) survives only as a reporting axis.
-Optionally, findings are grounded with real static-analysis tools from a Docker
-container. It synthesizes everything into a `CodeReviewReport` (terminal markdown
+Findings are grounded with static-analysis tools from a Docker container when
+the normal driver's readiness check passes; `--no-tools` explicitly runs without
+that layer. It synthesizes everything into a `CodeReviewReport` (terminal markdown
 summary + JSON artifact) with standards citations and CI gating.
 
 ## Architecture
@@ -31,12 +32,25 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/scripts/discovery.py` — resolve a target (`-f/-d/-g/-c/--pr`/repo) to cohesive
   ≤15-file groups (`groups.json`); extracted from the retired `orchestrator.py` (5.0 Slice A).
   Language-neutral, stdlib only.
-- `skill/scripts/driver.py` — the 5.0 resumable driver: a table-driven phase state machine
-  (`discovery`→`coverage`→`tools`→`review`→`verify`→`synthesize`→`validate`) that runs
+- `skill/scripts/driver.py` — the resumable driver: a table-driven phase state machine
+  (`readiness`→`discovery`→`coverage`→`tools`→`review`→`verify`→`synthesize`→`validate`) that runs
   `discovery.py`/`dispatch.py`/`synthesize.py`/`run_tools.py` itself and stops at each dispatch
   checkpoint; the phase cursor is recomputed from disk every invocation (crash/compaction-resumable).
   Thin entry script: the CLI, the `PHASES` table, `run()` and `main()`. Each phase lives in
   `skill/scripts/phases/` (one module per phase, plus `runio`/`engine`/`requests`/`setup`).
+- `skill/scripts/phases/readiness.py` and `readiness_checks.py` — the first, pre-dispatch
+  checkpoint records Docker/image, runtime dependency and other environment checks in
+  `readiness.json`; a failing required check stops the normal driver run. Host capability
+  posture is established before the phases and rechecked on each invocation.
+- `skill/scripts/orchestrate.py` and `loop_batch.py` — `driver loop` repeatedly calls the
+  driver, reads each bound dispatch request, arms guards, runs pending entries, persists
+  results and returns to the driver's done predicates. Batch records track ownership,
+  rollback and crash recovery; a live or unprovable foreign owner blocks resume.
+- `skill/scripts/runners/` — the one-entry host runner interface and headless Claude,
+  Kimi and Codex adapters; session mode prints a batch for host-side dispatch.
+  `skill/scripts/hosts.py` holds host claims and selection, while `host_probes.py` and
+  `probes/` measure this run's capabilities. A declaration alone grants no enforcement:
+  unknown or refuted security posture needs the documented, disclosed unenforced path.
 - `skill/scripts/synthesize.py` — merge per-panel finding files (+ optional `--tools-dir` tool
   findings) into a validated `CodeReviewReport`: dedupe/reinforce, grade, gate, citations.
   Thin entry script: the work lives in `skill/scripts/synth/`, one stage per module.
@@ -48,25 +62,30 @@ summary + JSON artifact) with standards citations and CI gating.
   overrides, host-aware fallbacks).
 - `skill/scripts/citations.py` — CWE validation (bundled catalog), OWASP derivation, reduced-SSVC,
   opt-in EPSS (`--epss`, stdlib urllib). Tolerant: a malformed citation never aborts a run.
-- `skill/scripts/run_tools.py` — detect the `panopticon-tools` Docker image, run selected scanners
-  against a read-only mount, collect SARIF. Degrades gracefully if Docker/image absent.
+- `skill/scripts/run_tools.py` — select scanners, run them against a read-only mount,
+  and collect scanner captures. Invoked alone, it records a skipped scan if Docker/image
+  is absent; the normal driver checks those prerequisites in readiness before dispatch.
 - `skill/scripts/ingest_tools.py` — SARIF → normalized findings (source `tool:<name>`, CWE/CVE citations).
 - `skill/scripts/evidence.py` — evidence axis: status derivation, verify-queue triage, verdict ingestion.
 - `skill/scripts/group_runner.py` — fan-out resume + coverage primitives: `entry_is_done`/
   `pending_entries` (the done-predicate and resume set) and `fan_out_coverage` (planned-vs-executed,
   derived from the dispatch plan + the findings files on disk).
-- `skill/scripts/write_guard_hook.py` — the `PreToolUse` write-guard: `allowlist_from_plan`/`decide`
-  (the allow/block decision) and `install`/`uninstall` (register/remove the hook + allowlist for the
-  fan-out phase, merge-preserving of unrelated settings).
-- `Dockerfile` — `panopticon-tools` image: semgrep, gitleaks, trivy, bandit, brakeman, gosec,
-  eslint, roslyn-secguard. Build once: `docker build -t panopticon-tools <this dir>`.
+- `skill/scripts/write_guard_hook.py` and `read_guard_hook.py` — Claude `PreToolUse`
+  hooks installed for dispatch: the former binds a reviewer to its own declared
+  `out_file`; the latter confines `Read`/`Grep`/`Glob` to its entry scope. The loop
+  installs and removes grants around batches; other hosts use their own runner controls.
+- `skill/scripts/tools/__init__.py` — scanner adapter registry: semgrep, gitleaks,
+  trivy, bandit, gosec, eslint-security, brakeman, bundler-audit, spotbugs,
+  dependency-check, cargo-audit, roslyn-secguard, osv-scanner, pip-audit and
+  npm-audit (the last two require `--online`). `Dockerfile` builds the
+  `panopticon-tools` image: `docker build -t panopticon-tools <this dir>`.
 - `skill/reference/` — `report-schema.json`, `scope-profile-schema.json`, `cwe-catalog.json`
   (curated CWE→OWASP map), `security-checklists.md`, `code-review-groups.example.yml`.
 - `skill/agents/` — host-neutral role prompt templates: `scout.md`, `setup-scan.md`,
   `domain-panel.md`, `domain-advisor.md`, `advisor.md`.
 
 ## Key design decisions (don't relitigate without reason)
-- **Fan out via rendered prompts** dispatched by the host's agent mechanism (`scout`, `domain-panel`, `domain-advisor`, `advisor`).
+- **Fan out via rendered prompts** dispatched through the host runner (`scout`, `domain-panel`, `domain-advisor`, `advisor`).
   One cell per `(domain, group)`: the domain set is the committed floor widened by the
   scout's returned `domains` (`coverage_model.effective_panels`). The scout's judgement
   can only ADD domains, never remove a floor domain — #1193.
@@ -133,38 +152,34 @@ summary + JSON artifact) with standards citations and CI gating.
 - **Citations are hybrid**: tools emit CWE/OWASP/CVE natively (authoritative); agents assert;
   `synthesize` validates/enriches. Never emit a guessed citation (no CVE → no EPSS; unlisted
   CWE → kept but `verified:false`; missing SSVC inputs → omitted).
-- **Tool container is optional** and auto-detected; absent → clean fleet-only behavior.
-- **Scan-time network is disabled** (`--network none` on every tool run):
-  advisory/rules data is baked into the tools image (weekly rebuild).
+- **Normal driver tool coverage is checked before dispatch.** Readiness refuses
+  missing Docker or the tools image by default; `--no-tools` is the explicit,
+  report-disclosed choice to review without scanner evidence. Standalone
+  `run_tools.py` instead skips when the image is unavailable and records missing
+  coverage in its manifest when requested.
+- **Offline scans have no network** (`--network none`); advisory/rules data is
+  baked into the tools image (weekly rebuild).
   Parse-only adapters never execute target code. roslyn-secguard executes
   target build logic inside the no-egress, no-secret, read-only-mount
   container — the report records it in `meta.coverage.build_executing_tools`.
   pip-audit/npm-audit run only under `run_tools.py --online`.
 - **Tolerant by design**: `load_findings` and `enrich_citations` skip/log malformed input,
   never abort the run (a bad finding must not lose a real CRITICAL or skip the CI gate).
-- **Fan-out coverage is capacity-bound, not orchestrator-context-bound (P2 SP-A, #435,
-  #444, #436).** Every finding used to transit the orchestrator's context twice — inbound as a
-  reviewer's returned JSON, outbound as the orchestrator's re-emitted `Write` — so a large plan
-  truncated fan-out at whatever entry the context filled up on (measured: one run covered 1 of
-  ~10 groups, invisibly). SP-A flips the contract: each fan-out reviewer (`domain_panel`,
-  `domain_advisor`) holds scoped `Write` and **writes its own `out_file` directly**, returning
-  only a short confirmation — findings never re-transit the parent's context, so coverage is
-  bounded by how many agents the platform can run, not by context capacity. This is the
-  `group_runner` role, defined by a contract (every pending entry's `out_file` written, plus a
-  tally) with two realizations: on Claude Code it runs **mechanically** as a deterministic
-  Workflow — one agent per pending entry, the harness bounds concurrency and journals progress,
-  and re-runs a stalled or failed entry itself; on other hosts it is a **portable** nested
-  sub-orchestrator subagent per group (the run-2 verify pattern), holding scoped `Write` and
-  prose-contracted to never end a turn with an entry unresolved. Both return only a tally to the
-  parent, never findings.
-- **Reviewer self-write is enforced by a harness hook, not just convention.** A `PreToolUse`
-  write-guard (`write_guard_hook.install`/`.uninstall`, `skill/scripts/write_guard_hook.py`) is
-  installed before fan-out and torn down after; it blocks any `Write`/`Edit` whose target isn't
-  in the dispatch plan's declared `out_file` set, so a reviewer holding `Write` cannot touch the
-  repo, materialize a secret, or clobber a sibling's findings file. (The hook enforces the plan's
-  out_file *set*, not a per-agent-singular allowlist — a harness spike confirmed a session-wide
-  hook cannot distinguish which subagent fired it, so per-agent tightening is a blocked follow-up,
-  not shipped here.) A blocked write is disclosed in the tally, never fatal.
+- **Fan-out resumes from artifacts, not an orchestrator's memory (P2 SP-A, #435,
+  #444, #436).** `driver loop` owns pending-entry selection, bounded host launches,
+  per-entry persistence and the ledger. `loop_batch` validates batch ownership and
+  recovers interrupted work before another launch. A reviewer with a proved artifact
+  write guard may write its own `out_file`; otherwise the entry returns JSON for the
+  host to persist. Codex uses returned JSON. The runner's final text does not advance
+  a phase until the driver's done predicate sees the required file on disk.
+- **Write and read confinement follow proved host capabilities.** The installed
+  Claude write hook keeps grants by entry ID and binds a reviewer through its dispatch
+  marker (or the headless entry environment); a bound reviewer may write only its own
+  `out_file`, never a sibling's. Its batch-wide union applies to the orchestrator, not
+  to a bound reviewer. The Claude read hook similarly binds `Read`/`Grep`/`Glob` to
+  the entry's declared scope. Kimi has its own read/write hook surface; Codex uses
+  its read broker and returns findings for host persistence. `hosts.posture` uses
+  probe evidence, not registry claims, to decide which controls a run can rely on.
 - **Resume is a done-predicate, never a re-run-everything.** An entry is done iff its `out_file`
   exists AND parses as findings JSON (`group_runner.entry_is_done`) — missing, truncated, or
   corrupt is NOT done and is re-dispatched. `group_runner.pending_entries` is the exact resume set
@@ -183,7 +198,8 @@ Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g <name>` one committed 
 changes, `--pr N`, or whole repo — see `docs/PANOPTICON.md` "Modes" for the authoritative
 flag list). `--epss` enables EPSS lookups; `--fail-on high`
 gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once (above);
-it's used automatically when present, `--no-tools` to skip.
+normal runs require Docker and the tools image at readiness, or `--no-tools` to
+skip the layer explicitly. `driver readiness` prints a read-only preflight.
 
 ### Test-only injection seams
 Two module attributes exist so the unit suite can refuse a real launch, and neither may ever be
@@ -474,7 +490,8 @@ History:
   `setup`/`run`/`next`) that the host drives through a status protocol:
   discovery → coverage (per-group scout + surface-gated universal floor) →
   tools → review → verify (primary + backup + per-finding tool advisors) →
-  synthesize → validate. The legacy orchestrator is retired (P6 collapse).
+  synthesize → validate. This is the 5.0.0 sequence; the current driver puts
+  readiness first. The legacy orchestrator is retired (P6 collapse).
   Highlights: driver-path integrity controls wired (`dispatch-plan-driver.json`
   reconcile + `out-file-hashes.json` content snapshot, #1024); tool findings
   routed through the verify phase to reach `tool_confirmed` (#5.0-03); the
