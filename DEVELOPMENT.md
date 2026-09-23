@@ -384,9 +384,16 @@ python3 scripts/bump_pins.py requirements --write      # all three files
 python3 scripts/bump_pins.py requirements --file .github/requirements-gate.txt --write
 ```
 
-Dependabot proposes the version bumps themselves — `.github/dependabot.yml` has a `pip` entry for
-`/` (the fixture file) and one for `/.github` (the gate file) — but the digests are this script's
-job, and `--require-hashes` fails the build until they match.
+Dependabot proposes version bumps: the root `pip` entry sees `requirements-fixtures.txt`,
+`requirements-tools.txt`, and `pyproject.toml`; the `/.github` entry sees the gate file. The root
+entry groups routine Python version updates and filters proposals that would break the current
+Semgrep 1.177.0 tools graph: all version updates for `mcp` and `opentelemetry-*`, major updates for
+`peewee`, and major/minor updates for `click` and `jsonschema`. These filters match dependency
+names across the root entry, including the same name in `pyproject.toml`; they are not specific to
+the tools file. Revisit them when upgrading the scanner roots. They use `update-types`, so security
+updates remain eligible, though a security fix that conflicts with this graph needs manual
+whole-graph resolution. The digests are still this script's job, and `--require-hashes` fails the
+build until they match.
 
 It reads every artifact PyPI publishes for that release, keeps the ones a linux build may install
 (the `any` wheels plus the linux `x86_64` and `aarch64` ones — `docker-publish.yml` builds the
@@ -405,11 +412,19 @@ The differences between the files are deliberate:
   it is not written by hand. Bandit's native SARIF formatter depends on `jschema-to-python` and
   `sarif-om`; both remain explicit in the closure because `--no-deps` will not install them. A normal
   `bump_pins.py requirements` refresh preserves every explicit pin. For a fresh dependency resolution,
-  include Bandit's `sarif` extra so the resolver retains both packages. Resolve the closure with
+  resolve the complete Semgrep, Bandit with `sarif` extra (to retain both formatter packages), and
+  pip-audit roots together for Python 3.12 on both supported Linux architectures. Flat transitive
+  pins must move together when upstream constraints change:
+  valid hashes and a successful `--no-deps` install alone do not prove the graph is compatible.
+  Update the corresponding Docker `ARG` pins when a scanner root changes. Resolve the closure with
   `uv pip compile --generate-hashes --python-version 3.12 --python-platform x86_64-unknown-linux-gnu`
   (and again for `aarch64-unknown-linux-gnu`; the two resolve to the same set today), then re-run
   `bump_pins.py requirements --file requirements-tools.txt --write` so the digests are ones this
-  repo re-verified. Do NOT commit `uv pip compile --universal` output directly: it adds packages
+  repo re-verified against downloaded artifacts. Build the tools image for both architectures;
+  its install now runs `python3 -m pip check` to reject declared dependency conflicts, followed by
+  the existing scanner smoke tests for real startup and output. Run the related Dockerfile, workflow
+  pin, smoke-adapter, and bump-pins tests when changing this closure. Do NOT commit
+  `uv pip compile --universal` output directly: it adds packages
   behind environment markers, and `rewrite_requirements` does not carry a marker through a rewrite,
   so a win32-only package would arrive as an unconditional pin the linux build cannot satisfy.
 - `requirements-fixtures.txt` is installed without `--no-deps`, so pip resolves pytest's graph and

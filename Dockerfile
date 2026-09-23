@@ -77,6 +77,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # neither can be bumped alone.
 COPY requirements-tools.txt /tmp/requirements-tools.txt
 RUN pip install --timeout=300 --no-cache-dir --require-hashes --no-deps -r /tmp/requirements-tools.txt \
+    && python3 -m pip check \
     && rm /tmp/requirements-tools.txt
 
 # Ruby (brakeman + bundler-audit). `gem install name:version` pins the two

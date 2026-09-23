@@ -7,6 +7,32 @@ updates:
       time: "09:00"
     cooldown:
       default-days: 7
+    groups:
+      python-version-updates:
+        applies-to: version-updates
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "mcp"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+      - dependency-name: "opentelemetry-*"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+      - dependency-name: "peewee"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "click"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "jsonschema"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
