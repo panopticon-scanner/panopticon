@@ -1,0 +1,43 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "lodash": {
+      "name": "lodash",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        {
+          "source": 1001,
+          "name": "lodash",
+          "dependency": "lodash",
+          "title": "Prototype Pollution in lodash",
+          "url": "https://github.com/advisories/GHSA-aaaa-bbbb-cccc",
+          "severity": "high",
+          "cves": ["CVE-2021-23337"],
+          "range": "<4.17.11"
+        },
+        "other-package",
+        {
+          "source": 1002,
+          "name": "lodash",
+          "dependency": "lodash",
+          "title": "Regular Expression Denial of Service in lodash",
+          "url": "https://github.com/advisories/GHSA-dddd-eeee-ffff",
+          "severity": "moderate",
+          "cves": ["CVE-2020-8203"],
+          "range": ">=4.17.11 <4.17.21"
+        }
+      ],
+      "effects": [],
+      "range": "<4.17.21",
+      "nodes": ["node_modules/lodash"],
+      "fixAvailable": {"name": "lodash", "version": "4.17.21", "isSemVerMajor": false}
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {"info": 0, "low": 0, "moderate": 1, "high": 1,
+                        "critical": 0, "total": 2},
+    "dependencies": {"prod": 2, "dev": 0, "optional": 0, "peer": 0,
+                     "peerOptional": 0, "total": 1}
+  }
+}

@@ -1,6 +1,7 @@
 import contextvars
 import json
 import os
+from pathlib import Path
 import shutil
 import tempfile
 import unittest
@@ -45,6 +46,8 @@ NPM_AUDIT_SAMPLE = json.dumps({
         }
     }
 }).encode()
+
+NPM_AUDIT_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "npm-audit"
 
 
 class TestNpmAuditAdapter(unittest.TestCase):
@@ -173,6 +176,61 @@ class TestNpmAuditAdapter(unittest.TestCase):
         self.assertEqual(f["tool_evidence"]["package_name"], "lodash")
         self.assertEqual(f["tool_evidence"]["fixed_version"], "4.17.21")
 
+    def test_parse_v2_preserves_each_independent_advisory(self):
+        raw = (NPM_AUDIT_FIXTURES / "multi-advisory.json").read_bytes()
+        findings = na.NpmAuditAdapter().parse(raw, "g1")
+        self.assertEqual(len(findings), 2)
+        self.assertEqual(len({f["id"] for f in findings}), 2)
+        self.assertEqual([f["tool_evidence"]["rule_id"] for f in findings],
+                         ["1001", "1002"])
+        self.assertEqual([f["references"] for f in findings], [
+            ["https://github.com/advisories/GHSA-aaaa-bbbb-cccc"],
+            ["https://github.com/advisories/GHSA-dddd-eeee-ffff"],
+        ])
+        self.assertEqual([f["citations"]["cve"] for f in findings],
+                         [["CVE-2021-23337"], ["CVE-2020-8203"]])
+        self.assertEqual([f["severity"] for f in findings], ["HIGH", "MEDIUM"])
+        self.assertEqual([f["tool_evidence"]["vulnerable_versions"] for f in findings],
+                         ["<4.17.11", ">=4.17.11 <4.17.21"])
+        self.assertEqual([f["title"] for f in findings], [
+            "lodash <4.17.11: Prototype Pollution in lodash",
+            "lodash >=4.17.11 <4.17.21: Regular Expression Denial of Service in lodash",
+        ])
+        self.assertEqual([f["location"]["file"] for f in findings],
+                         ["package-lock.json", "package-lock.json"])
+
+    def test_real_npm_error_documents_fail_ingestion(self):
+        for name, detail in (("network-error.json", "EAI_AGAIN"),
+                             ("missing-lock-error.json", "ENOLOCK")):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tools_dir:
+                raw = (NPM_AUDIT_FIXTURES / name).read_bytes()
+                target = self._target("package-lock.json")
+                with mock.patch.object(na, "run_tool", return_value=(raw, 1)):
+                    captured, exit_code = contextvars.copy_context().run(
+                        na.NpmAuditAdapter().invoke, target)
+                self.assertEqual(exit_code, 1)  # npm also uses 1 for findings.
+                with open(os.path.join(tools_dir, "npm-audit.json"), "wb") as fh:
+                    fh.write(captured)
+                findings, dispositions = ingest_tools.ingest_dir_detailed(
+                    tools_dir, "g1", target_root=target)
+                self.assertEqual(findings, [])
+                self.assertEqual(dispositions["npm-audit"]["status"], "failed")
+                self.assertIn("unparseable:", dispositions["npm-audit"]["reason"])
+                self.assertIn(detail, dispositions["npm-audit"]["reason"])
+
+    def test_real_v2_report_ingests_both_advisories_at_shrinkwrap(self):
+        with tempfile.TemporaryDirectory() as tools_dir:
+            raw = (NPM_AUDIT_FIXTURES / "multi-advisory.json").read_bytes()
+            with open(os.path.join(tools_dir, "npm-audit.json"), "wb") as fh:
+                fh.write(raw)
+            findings, dispositions = ingest_tools.ingest_dir_detailed(
+                tools_dir, "g1", target_root=self._target("npm-shrinkwrap.json"))
+        self.assertEqual(dispositions["npm-audit"]["status"], "ok")
+        self.assertEqual(dispositions["npm-audit"]["findings"], 2)
+        self.assertEqual(len(findings), 2)
+        self.assertEqual({f["location"]["file"] for f in findings},
+                         {"npm-shrinkwrap.json"})
+
     def test_parse_v2_skips_string_via_entries(self):
         sample = json.dumps({
             "auditReportVersion": 2,
@@ -208,6 +266,8 @@ class TestNpmAuditAdapter(unittest.TestCase):
         }).encode()
         findings = na.NpmAuditAdapter().parse(sample, "g1")
         self.assertEqual(first(findings)["severity"], "MEDIUM")
+        self.assertEqual(first(findings)["tool_evidence"]["vulnerable_versions"],
+                         "<4.17.21")
 
     def test_parse_omits_none_tool_evidence_fields_v1(self):
         sample = json.dumps({
@@ -405,12 +465,17 @@ class TestNpmAuditAdapter(unittest.TestCase):
         self.assertEqual("package-lock.json", first(findings2)["location"]["file"])
 
     def test_parse_empty_findings(self):
-        findings = na.NpmAuditAdapter().parse(b"{}", "g1")
-        self.assertEqual(findings, [])
-        findings = na.NpmAuditAdapter().parse(b'{"advisories": {}}', "g1")
-        self.assertEqual(findings, [])
-        findings = na.NpmAuditAdapter().parse(b'{"vulnerabilities": {}}', "g1")
-        self.assertEqual(findings, [])
+        for raw in (b'{"advisories": {}}',
+                    b'{"auditReportVersion": 2, "vulnerabilities": {}}'):
+            with self.subTest(raw=raw):
+                self.assertEqual(na.NpmAuditAdapter().parse(raw, "g1"), [])
+
+    def test_unknown_or_malformed_reports_cannot_prove_a_clean_audit(self):
+        for raw in (b"{}", b'{"message": "audit failed"}',
+                    b'{"unexpected": {}}', b'{"vulnerabilities": []}',
+                    b'{"error": {"code": "ENOLOCK"}, "vulnerabilities": {}}'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                na.NpmAuditAdapter().parse(raw, "g1")
 
 
 if __name__ == "__main__":

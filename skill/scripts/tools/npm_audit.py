@@ -77,6 +77,23 @@ class NpmAuditAdapter:
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)
+        if not isinstance(data, dict):
+            raise ValueError("npm audit output is not a report object")
+        if "error" in data:
+            error = data["error"]
+            if isinstance(error, dict):
+                detail = ": ".join(str(error[key]) for key in ("code", "summary")
+                                   if error.get(key))
+            else:
+                detail = str(error)
+            raise ValueError(f"npm audit error: {detail or 'unknown error'}")
+        if not any(key in data for key in ("advisories", "vulnerabilities")):
+            if data.get("message"):
+                raise ValueError(f"npm audit error: {data['message']}")
+            raise ValueError("npm audit output has no advisories or vulnerabilities report")
+        for key in ("advisories", "vulnerabilities"):
+            if key in data and not isinstance(data[key], dict):
+                raise ValueError(f"npm audit {key} is not an object")
         # Resolved ONCE per parse, not per finding: it stats the target root.
         manifest = self._located_at()
         out = []
@@ -102,26 +119,27 @@ class NpmAuditAdapter:
 
         # Current npm audit output (auditReportVersion 2+).
         for vuln in data.get("vulnerabilities", {}).values():
-            via = self._primary_via(vuln)
-            if via is None:
-                continue
             fix = vuln.get("fixAvailable")
             fixed_version = fix.get("version") if isinstance(fix, dict) else None
-            out.append(self._finding_from(
-                n, group, manifest,
-                name=vuln.get("name"),
-                versions_title=vuln.get("range", ""),
-                versions_evidence=vuln.get("range"),
-                severity_raw=via.get("severity") or vuln.get("severity"),
-                title=via.get("title", "vulnerability"),
-                description=via.get("title", "No description provided."),
-                remediation=f"Upgrade to a fixed version: {fixed_version or 'see advisory'}",
-                url=via.get("url"),
-                cves=via.get("cves"),
-                rule_id=str(via.get("source")) if via.get("source") is not None else None,
-                fixed_version=fixed_version,
-            ))
-            n += 1
+            for via in self._advisories(vuln):
+                advisory_range = via.get("range")
+                affected_range = (advisory_range if advisory_range is not None
+                                  else vuln.get("range"))
+                out.append(self._finding_from(
+                    n, group, manifest,
+                    name=vuln.get("name"),
+                    versions_title=affected_range if affected_range is not None else "",
+                    versions_evidence=affected_range,
+                    severity_raw=via.get("severity") or vuln.get("severity"),
+                    title=via.get("title", "vulnerability"),
+                    description=via.get("title", "No description provided."),
+                    remediation=f"Upgrade to a fixed version: {fixed_version or 'see advisory'}",
+                    url=via.get("url"),
+                    cves=via.get("cves"),
+                    rule_id=str(via.get("source")) if via.get("source") is not None else None,
+                    fixed_version=fixed_version,
+                ))
+                n += 1
 
         return out
 
@@ -166,17 +184,15 @@ class NpmAuditAdapter:
             }),
         )
 
-    def _primary_via(self, vuln: dict) -> dict | None:
-        """Return the primary advisory from an npm v2 vulnerability's via list.
+    def _advisories(self, vuln: dict) -> list[dict]:
+        """Return every advisory from an npm v2 vulnerability's via list.
 
         ``via`` may contain either advisory dicts or dependency-name strings.
         Strings are transitive chain markers with no CVE, so they are skipped.
         """
         via = vuln.get("via")
         if isinstance(via, dict):
-            return via
+            return [via]
         if isinstance(via, list):
-            for entry in via:
-                if isinstance(entry, dict):
-                    return entry
-        return None
+            return [entry for entry in via if isinstance(entry, dict)]
+        return []
