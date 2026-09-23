@@ -26,6 +26,19 @@ from . import runio
 
 
 _PROMPT_FILE_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+_SAFE_ENTRY_ID = re.compile(r"[A-Za-z0-9._-]{1,160}\Z")
+
+
+def entry_file_component(entry_id):
+    """A bounded, unambiguous filename component for an original entry ID.
+
+    Safe existing names stay byte-for-byte stable. ``~`` cannot start a safe
+    name, so hashed names cannot collide with them or with lossy old names.
+    """
+    original = str(entry_id)
+    if _SAFE_ENTRY_ID.fullmatch(original):
+        return original
+    return "~" + hashlib.sha256(original.encode("utf-8")).hexdigest()
 
 def bound_model(host, role):
     """The model this entry REQUESTS, as a string, from the one resolver.
@@ -142,7 +155,7 @@ def _prompt_file_path(review_root, entry_id, namespace=None):
     The id is sanitized to a single flat filename -- an entry id embeds a group
     name, which is operator-supplied, so a `/` or `..` in it must not steer the
     write out of the prompts directory."""
-    safe = _PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
+    safe = entry_file_component(entry_id)
     return runio._pano(review_root, _prompts_dir(namespace), "%s.txt" % safe)
 
 def _materialize_prompts(review_root, entries, namespace=None):

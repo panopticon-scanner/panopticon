@@ -9,6 +9,7 @@ never writes a findings file by hand. Refusals write nothing.
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -160,13 +161,17 @@ def last_rejection(run_folder, entry_id):
     """The most recent `rejected/` record for this entry, or None."""
     if not run_folder or not entry_id:
         return None
-    safe_id = requests._PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
     directory = os.path.join(run_folder, REJECTED_DIR)
-    attempt = _next_attempt(directory, safe_id) - 1
-    if attempt < 1:
-        return None
-    record = runio._load_json(os.path.join(directory, "%s-%d.json" % (safe_id, attempt)))
-    return record if isinstance(record, dict) else None
+    component = requests.entry_file_component(entry_id)
+    record, newest = _latest_record(directory, component, entry_id)
+    if newest:
+        return record
+    # Older builds substituted unsafe characters with underscores. A shared
+    # legacy basename is only history for the exact ID inside the record.
+    legacy = requests._PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
+    if legacy != component:
+        record, _ = _latest_record(directory, legacy, entry_id, legacy=True)
+    return record
 
 
 def retry_block(run_folder, entry):
@@ -207,20 +212,55 @@ def retry_block(run_folder, entry):
                                  "shape": envelope_shape(entry)}, prior
 
 
-def _next_attempt(directory, safe_id):
-    """1 + the highest attempt already recorded for this entry. Keyed on the
-    numbers on disk rather than on a count, so a record an operator deleted
-    cannot make the next one collide with a surviving sibling."""
+def _read_rejection(path):
+    """Read one confined regular record without following a planted link."""
+    try:
+        runio._confine_artifact_path(path)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, encoding="utf-8") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                return None
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _latest_record(directory, component, entry_id, *, legacy=False):
+    """Latest record and attempt for this ID; verify every legacy candidate.
+
+    A new-name record owns its basename even when unreadable: do not reuse
+    that attempt or fall back to older history. Legacy names may contain rows
+    for other IDs, so search them until an exact original ID is found.
+    """
     try:
         names = os.listdir(directory)
     except OSError:
-        return 1
-    seen = [0]
+        return None, 0
+    attempts = []
     for name in names:
         match = _ATTEMPT.search(name)
-        if match and name[:match.start()] == safe_id:
-            seen.append(int(match.group(1)))
-    return 1 + max(seen)
+        if match and name[:match.start()] == component:
+            attempts.append((int(match.group(1)), name))
+    for attempt, name in sorted(attempts, reverse=True):
+        record = _read_rejection(os.path.join(directory, name))
+        if record is not None and record.get("entry_id") == entry_id:
+            return record, attempt
+        if not legacy:
+            return None, attempt
+    return None, 0
+
+
+def _next_attempt(directory, entry_id):
+    """Continue this ID's numbered history, including verified legacy rows."""
+    component = requests.entry_file_component(entry_id)
+    _, highest = _latest_record(directory, component, entry_id)
+    legacy = requests._PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
+    if legacy != component:
+        _, old_highest = _latest_record(directory, legacy, entry_id, legacy=True)
+        highest = max(highest, old_highest)
+    return highest + 1
 
 
 def retain_rejected(run_folder, entry, text, reason, *, kind):
@@ -254,10 +294,10 @@ def retain_rejected(run_folder, entry, text, reason, *, kind):
     body = str(text or "")
     if not run_folder or not entry_id or not body:
         return None
-    safe_id = requests._PROMPT_FILE_SAFE.sub("_", str(entry_id)) or "entry"
+    safe_id = requests.entry_file_component(entry_id)
     directory = os.path.join(run_folder, REJECTED_DIR)
     kept, truncated = _safe_reply(body)
-    attempt = _next_attempt(directory, safe_id)
+    attempt = _next_attempt(directory, entry_id)
     record = {"schema_version": 1, "entry_id": entry_id, "attempt": attempt, "kind": kind,
               # D10 F3: the reason is built by interpolating REPLY content, so
               # it gets the same masking the reply does. Bounded at the source

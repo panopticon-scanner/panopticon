@@ -819,6 +819,38 @@ class TestHeadlessLoop(LoopCase):
         self.assertTrue(any(r.get("status") == ledger_mod.ROLLED_BACK for r in after))
         self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)), attempts)
 
+    def test_recovery_accepts_hashed_rejection_name_and_refuses_unrelated_one(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        manifest = os.path.join(crashed.run_dir, self._manifests(crashed.run_dir)[0])
+        doc = runio._load_json(manifest)
+        req = orchestrate.requests.previous_request(d)
+        old_id = doc["entries"][0]["id"]
+        new_id = "review-app:unsafe-SEC"
+        doc["entries"][0]["id"] = new_id
+        next(e for e in req["entries"] if e["id"] == old_id)["id"] = new_id
+        component = orchestrate.requests.entry_file_component(new_id)
+        retained = os.path.join(crashed.run_dir, "rejected", component + "-1.json")
+        runio._write_json(retained, {"entry_id": new_id, "attempt": 1})
+        wrong = os.path.join(crashed.run_dir, "rejected", "unrelated-1.json")
+        runio._write_json(wrong, {"entry_id": "unrelated", "attempt": 1})
+        doc["entries"][0]["artifacts"].append(wrong)
+        runio._write_json(manifest, doc)
+        with self.assertRaisesRegex(ValueError, "unexpected retained-reply artifact"):
+            loop_batch.recover_stale(d, req, "claude", "headless")
+        self.assertTrue(os.path.exists(retained))
+        doc["entries"][0]["artifacts"][-1] = retained
+        runio._write_json(manifest, doc)
+        runio._write_json(retained, {"entry_id": "unrelated", "attempt": 1})
+        with self.assertRaisesRegex(ValueError, "unexpected retained-reply artifact"):
+            loop_batch.recover_stale(d, req, "claude", "headless")
+        self.assertTrue(os.path.exists(retained))
+        runio._write_json(retained, {"entry_id": new_id, "attempt": 1})
+        with contextlib.redirect_stderr(io.StringIO()):
+            loop_batch.recover_stale(d, req, "claude", "headless")
+        self.assertFalse(os.path.exists(retained))
+        self.assertFalse(os.path.exists(manifest))
+
     def test_an_outside_path_in_a_crash_record_refuses_before_any_deletion(self):
         d, floor = self._repo(floor=("SEC", "ACC"))
         crashed = self._leave_crashed_batch(d, floor)

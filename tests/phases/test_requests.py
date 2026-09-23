@@ -23,6 +23,19 @@ import scripts.ocrdb as ocrdb
 import scripts.model_resolver as model_resolver
 
 
+def test_entry_component_is_bounded_and_collision_free():
+    ids = ("review-Auth:Core-COD", "review-Auth_Core-COD", "review-Auth Core-COD",
+           "é", "~prefix", "../escape", "a/b", "a" * 161)
+    components = [requests.entry_file_component(eid) for eid in ids]
+    assert len(set(components)) == len(ids)
+    assert components[1] == ids[1]
+    assert requests.entry_file_component("a" * 160) == "a" * 160
+    for name in components:
+        assert len(name) <= 160
+        assert "/" not in name and "\\" not in name and name not in (".", "..")
+    assert all(name.startswith("~") for i, name in enumerate(components) if i != 1)
+
+
 class TestWriteDispatchRequest(unittest.TestCase):
     def test_writes_host_agnostic_request(self):
         with tempfile.TemporaryDirectory() as root:
@@ -320,6 +333,27 @@ class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
         self.assertEqual(2, written["prior_rejection"]["attempt"])
         self.assertIn("second reason", written["prompt"])
         self.assertNotIn("first reason", written["prompt"])
+
+    def test_colliding_old_names_keep_independent_prompts_and_retries(self):
+        ids = ("review-Auth:Core-COD", "review-Auth_Core-COD", "review-Auth Core-COD")
+        entries = [dict(self.entry, id=eid, prompt="prompt " + eid) for eid in ids]
+        run_folder = persist.run_dir(self.root)
+        persist.retain_rejected(run_folder, entries[0], "first", "colon first",
+                                kind=persist.REFUSAL)
+        persist.retain_rejected(run_folder, entries[0], "second", "colon second",
+                                kind=persist.REFUSAL)
+        persist.retain_rejected(run_folder, entries[1], "neighbor", "underscore only",
+                                kind=persist.REFUSAL)
+        written = requests._materialize_prompts(self.root, entries)
+        self.assertEqual(3, len({e["prompt_file"] for e in written}))
+        for entry in written:
+            with open(entry["prompt_file"], encoding="utf-8") as fh:
+                self.assertEqual(entry["prompt"], fh.read())
+        self.assertEqual(2, written[0]["prior_rejection"]["attempt"])
+        self.assertIn("colon second", written[0]["prompt"])
+        self.assertEqual(1, written[1]["prior_rejection"]["attempt"])
+        self.assertIn("underscore only", written[1]["prompt"])
+        self.assertNotIn("prior_rejection", written[2])
 
     def test_the_envelope_shape_is_the_one_the_role_is_refused_against(self):
         self.assertIn('"verdicts"', persist.envelope_shape(
