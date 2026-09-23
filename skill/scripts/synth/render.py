@@ -166,6 +166,28 @@ def _suppressed_gated_line(gated):
             % ", ".join("%s: %d" % (seg, n) for seg, n in rows))
 
 
+def _excluded_tools_line(value):
+    """Show a measured tool-policy exclusion without inventing legacy data."""
+    if not isinstance(value, dict):
+        return ""
+    count, globs = value.get("count"), value.get("globs")
+    if (not isinstance(count, int) or isinstance(count, bool) or count < 0
+            or not isinstance(globs, list)
+            or any(not isinstance(glob, str) or not glob for glob in globs)):
+        return ""
+    # JSON quotes preserve the exact glob, including control characters. A
+    # longer code-span delimiter keeps target-authored backticks inert.
+    def code(glob):
+        quoted = json.dumps(glob, ensure_ascii=False)
+        ticks = "`"
+        while ticks in quoted:
+            ticks += "`"
+        return ticks + quoted + ticks
+
+    policy = ", ".join(code(glob) for glob in globs) if globs else "none"
+    return "**Tool findings excluded by policy:** %d — globs: %s" % (count, policy)
+
+
 def _config_line(config):
     """#1681 Plan 2: what the reviewed repository's own config asked for and
     did not get. Silent unless something was refused or clamped -- a config
@@ -245,6 +267,9 @@ def render_summary(report):
         lines.insert(3, "**Coverage:** NOT CERTIFIED — %s"
                      % ("; ".join(parts) or s.get("coverage_note") or "incomplete"))
     _cov = report["meta"].get("coverage") or {}
+    excluded = _excluded_tools_line(_cov.get("tools_excluded"))
+    if excluded:
+        lines.insert(3, excluded)
     sup = _suppressed_line(_cov.get("tools_suppressed"),
                            _cov.get("tools_suppressed_not_gated"))
     if sup:

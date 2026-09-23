@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from typing import Any
 import hashlib
 import html
+import json
 import os
 import re
 
@@ -594,6 +595,7 @@ def _render_header(report):
     # outranks one that did not.
     parts.append(_render_suppressed_gated_tools(meta))
     parts.append(_render_suppressed_tools(meta))
+    parts.append(_render_excluded_tools(meta))
     return "\n".join(parts)
 
 
@@ -808,6 +810,24 @@ def _render_suppressed_gated_tools(meta):
             % " &middot; ".join("%s: %d" % (_escape(seg), n) for seg, n in rows))
 
 
+def _render_excluded_tools(meta):
+    """Show the measured policy count and globs beside tool suppression."""
+    coverage = meta.get("coverage")
+    value = coverage.get("tools_excluded") if isinstance(coverage, dict) else None
+    if not isinstance(value, dict):
+        return ""
+    count, globs = value.get("count"), value.get("globs")
+    if (not isinstance(count, int) or isinstance(count, bool) or count < 0
+            or not isinstance(globs, list)
+            or any(not isinstance(glob, str) or not glob for glob in globs)):
+        return ""
+    policy = (" &middot; ".join("<code>%s</code>" % _escape(
+        json.dumps(glob, ensure_ascii=False)) for glob in globs)
+        if globs else "none")
+    return ("<div class='coverage'>Tool findings excluded by policy: %d "
+            "&mdash; globs: %s</div>" % (count, policy))
+
+
 def _render_compare_summary(label, report):
     """One panel of the --compare view, including THIS report's host posture.
 
@@ -831,6 +851,7 @@ def _render_compare_summary(label, report):
     )
     meta = report.get("meta")
     host_caps = _render_host_capabilities(meta if isinstance(meta, dict) else {})
+    excluded_tools = _render_excluded_tools(meta if isinstance(meta, dict) else {})
     return f"""
 <div class="compare-panel">
 <h3>{_escape(label)}</h3>
@@ -841,6 +862,7 @@ def _render_compare_summary(label, report):
 </div>
 <div class="stat-minis">{stat_cards}</div>
 {host_caps}
+{excluded_tools}
 </div>
 """
 

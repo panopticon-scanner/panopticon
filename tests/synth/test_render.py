@@ -468,6 +468,52 @@ class TestSuppressedToolFindingsAreRendered(unittest.TestCase):
                     "suppressed", render_mod.render_summary(self._report(bad)))
 
 
+class TestExcludedToolFindingsAreRendered(unittest.TestCase):
+    def _report(self, excluded=_OMIT):
+        coverage = {"tools_suppressed": {"vendor": 2}}
+        if excluded is not _OMIT:
+            coverage["tools_excluded"] = excluded
+        return {"meta": {"target": "src", "coverage": coverage},
+                "summary": {"overall_grade": "B", "risk_level": "MEDIUM",
+                            "gate": "PASS", "stats": {}, "evidence_stats": {},
+                            "coverage_certified": True},
+                "groups": [], "findings": []}
+
+    def test_count_and_every_glob_appear_beside_suppression(self):
+        out = render_mod.render_summary(self._report(
+            {"count": 3, "globs": ["vendor/**", "tests/fixtures/**"]}))
+        self.assertIn("**Tool findings excluded by policy:** 3", out)
+        self.assertIn("`\"vendor/**\"`", out)
+        self.assertIn("`\"tests/fixtures/**\"`", out)
+        self.assertIn("**Tool findings suppressed:** vendor: 2", out)
+
+    def test_measured_zero_with_or_without_policy_is_explicit(self):
+        for globs in (["vendor/**"], []):
+            with self.subTest(globs=globs):
+                out = render_mod.render_summary(self._report(
+                    {"count": 0, "globs": globs}))
+                self.assertIn("**Tool findings excluded by policy:** 0", out)
+                self.assertEqual('`"vendor/**"`' in out, bool(globs))
+
+    def test_legacy_missing_and_malformed_optional_block_do_not_claim_zero(self):
+        for excluded in (_OMIT, None, "bad", {"count": "many", "globs": []},
+                         {"count": 1, "globs": "bad"}):
+            with self.subTest(excluded=excluded):
+                out = render_mod.render_summary(self._report(excluded))
+                self.assertNotIn("Tool findings excluded by policy", out)
+                self.assertIn("**Tool findings suppressed:** vendor: 2", out)
+
+    def test_hostile_glob_cannot_inject_a_markdown_heading(self):
+        glob = '<script>" & `x`\n## Forged section'
+        out = render_mod.render_summary(self._report(
+            {"count": 1, "globs": [glob]}))
+        self.assertIn("**Tool findings excluded by policy:** 1", out)
+        self.assertIn(r'\n## Forged section', out)
+        self.assertNotIn("\n## Forged section", out)
+        self.assertIn('<script>', out)
+        self.assertIn('" &', out)
+
+
 class TestTargetConfigLine(unittest.TestCase):
     """#1681 Plan 2: the summary says when a target's config was refused."""
 

@@ -1465,3 +1465,62 @@ class TestSuppressedToolFindingsInHtml(unittest.TestCase):
     def test_a_segment_name_cannot_inject_markup(self):
         out = hr.render(self._report({"<script>alert(1)</script>": 1}))
         self.assertNotIn("<script>alert(1)</script>", out)
+
+
+class TestExcludedToolFindingsInHtml(unittest.TestCase):
+    def _report(self, excluded=_NO_KEY):
+        report = _minimal_report()
+        coverage = report["meta"].setdefault("coverage", {})
+        coverage["tools_suppressed"] = {"vendor": 2}
+        if excluded is not _NO_KEY:
+            coverage["tools_excluded"] = excluded
+        return report
+
+    def test_header_names_count_and_every_glob_beside_suppression(self):
+        out = hr.render(self._report(
+            {"count": 3, "globs": ["vendor/**", "tests/fixtures/**"]}))
+        self.assertIn("Tool findings excluded by policy: 3", out)
+        self.assertIn("vendor/**", out)
+        self.assertIn("tests/fixtures/**", out)
+        self.assertIn("Tool findings suppressed by directory name: vendor: 2", out)
+
+    def test_measured_zero_is_visible_with_and_without_globs(self):
+        for globs in (["vendor/**"], []):
+            with self.subTest(globs=globs):
+                out = hr.render(self._report({"count": 0, "globs": globs}))
+                self.assertIn("Tool findings excluded by policy: 0", out)
+                self.assertEqual("vendor/**" in out, bool(globs))
+
+    def test_legacy_missing_and_malformed_optional_block_are_safe(self):
+        for excluded in (_NO_KEY, None, "bad", {"count": "many", "globs": []},
+                         {"count": 1, "globs": "bad"}):
+            with self.subTest(excluded=excluded):
+                out = hr.render(self._report(excluded))
+                self.assertNotIn("Tool findings excluded by policy", out)
+                self.assertIn("Tool findings suppressed by directory name", out)
+
+    def test_hostile_glob_is_escaped_and_stays_on_one_html_line(self):
+        glob = '<script>" & `x`\n## Forged section'
+        out = hr.render(self._report({"count": 1, "globs": [glob]}))
+        disclosure = out.split("Tool findings excluded by policy: 1", 1)[1].split(
+            "</div>", 1)[0]
+        self.assertNotIn("<script>", disclosure)
+        self.assertNotIn("\n## Forged section", disclosure)
+        self.assertIn("&lt;script&gt;", disclosure)
+        self.assertIn("&quot;", disclosure)
+        self.assertIn("&amp;", disclosure)
+        self.assertIn(r'\n## Forged section', disclosure)
+
+    def test_compare_panels_disclose_their_own_distinct_policies(self):
+        base = self._report({"count": 8, "globs": ["base/**"]})
+        head = self._report({"count": 0, "globs": ["head/**"]})
+        base_panel = hr._render_compare_summary("Base", base)
+        head_panel = hr._render_compare_summary("Head", head)
+        self.assertIn("Tool findings excluded by policy: 8", base_panel)
+        self.assertIn("base/**", base_panel)
+        self.assertNotIn("head/**", base_panel)
+        self.assertIn("Tool findings excluded by policy: 0", head_panel)
+        self.assertIn("head/**", head_panel)
+        self.assertNotIn("base/**", head_panel)
+        out = hr.render(head, compare_report=base)
+        self.assertEqual(out.count("Tool findings excluded by policy:"), 2)
