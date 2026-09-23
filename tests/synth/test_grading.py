@@ -1,8 +1,12 @@
 """Tests for scripts.synth.grading: health score, letter grade, certification, gate roles.
 """
 import os
+from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import scripts.hosts as hosts_mod
 import scripts.synth.findings as findings_mod
@@ -187,6 +191,130 @@ class TestHealthScore(unittest.TestCase):
 
     def test_nonblank_loc_tolerates_missing_file(self):
         self.assertEqual(grading_mod.nonblank_loc("/no/such/dir", [{"name": "g", "files": ["nope.py"]}]), 0)
+
+
+class TestLocConfinement(unittest.TestCase):
+    def test_outside_paths_and_lexical_aliases(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "repo"
+            root.mkdir()
+            (root / "sub").mkdir()
+            (root / "good.py").write_text("one\n\n  \ntwo\n", encoding="utf-8")
+            outside = Path(d) / "outside.py"
+            outside.write_text("secret\n" * 20, encoding="utf-8")
+            files = ["good.py", "sub/../good.py", str(root / "good.py"),
+                     str(outside), "../outside.py"]
+            self.assertEqual(grading_mod.nonblank_loc(str(root), [{"files": files}]), 2)
+            alias = Path(d) / "repo_alias"
+            alias.symlink_to(root, target_is_directory=True)
+            self.assertEqual(grading_mod.nonblank_loc(str(alias),
+                [{"files": ["good.py", str(alias / "good.py"), str(root / "good.py")]}]), 2)
+
+    def test_symlinked_files_and_internal_parents_are_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "repo"
+            root.mkdir()
+            inside = root / "inside"
+            inside.mkdir()
+            (inside / "good.py").write_text("inside\n", encoding="utf-8")
+            outside = Path(d) / "outside"
+            outside.mkdir()
+            (outside / "secret.py").write_text("secret\n" * 9, encoding="utf-8")
+            (root / "outside_file.py").symlink_to(outside / "secret.py")
+            (root / "outside_dir").symlink_to(outside, target_is_directory=True)
+            (root / "inside_dir").symlink_to(inside, target_is_directory=True)
+            (root / "inside_file.py").symlink_to(inside / "good.py")
+            files = ["inside/good.py", "outside_file.py", "outside_dir/secret.py",
+                     "inside_dir/good.py", "inside_file.py"]
+            self.assertEqual(grading_mod.nonblank_loc(str(root), [{"files": files}]), 1)
+
+    def test_invalid_rows_paths_and_target_do_not_use_cwd(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "repo"
+            root.mkdir()
+            (root / "good.py").write_text("good\n", encoding="utf-8")
+            rows = [None, 3, {"files": "good.py"}, {"files": [None, 3, {}, "good.py"]}]
+            self.assertEqual(grading_mod.nonblank_loc(str(root), rows), 1)
+            with patch.dict(os.environ, {"PWD": str(root)}), patch("os.getcwd", return_value=str(root)):
+                self.assertEqual(grading_mod.nonblank_loc(str(root / "missing"),
+                                                          [{"files": ["good.py"]}]), 0)
+                self.assertEqual(grading_mod.nonblank_loc("", [{"files": ["good.py"]}]), 0)
+            self.assertEqual(grading_mod.nonblank_loc(None, [{"files": ["good.py"]}]), 0)
+            self.assertEqual(grading_mod.nonblank_loc(str(root / "good.py"),
+                                                      [{"files": ["good.py"]}]), 0)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO requires POSIX")
+    def test_fifo_and_link_to_device_cannot_block(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "repo"
+            root.mkdir()
+            os.mkfifo(root / "pipe")
+            if Path("/dev/zero").exists():
+                (root / "device").symlink_to("/dev/zero")
+            code = ("import sys; from scripts.synth.grading import nonblank_loc; "
+                    "print(nonblank_loc(sys.argv[1], [{'files': ['pipe', 'device']}]))")
+            env = dict(os.environ, PYTHONPATH=str(Path(grading_mod.__file__).parents[2]))
+            result = subprocess.run([sys.executable, "-c", code, str(root)],
+                                    capture_output=True, text=True, timeout=2, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "0")
+
+    def test_oversize_and_binary_files_are_unmeasurable(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            with (root / "sparse.py").open("wb") as fh:
+                fh.truncate(8 * 1024 * 1024 + 1)
+            (root / "binary.py").write_bytes(b"one\x00two\n")
+            (root / "good.py").write_text("good\n", encoding="utf-8")
+            files = ["sparse.py", "binary.py", "good.py"]
+            self.assertEqual(grading_mod.nonblank_loc(str(root), [{"files": files}]), 1)
+            self.assertEqual(grading_mod.health_stats(0, [{"severity": "HIGH"}])["score"], None)
+            self.assertIsNone(grading_mod.health_grade(
+                grading_mod.health_stats(grading_mod.nonblank_loc(str(root),
+                    [{"files": ["sparse.py", "binary.py"]}]), [{"severity": "HIGH"}])["score"]))
+
+    def test_giant_line_and_total_byte_budget_skip_whole_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "a.py").write_text("a\n", encoding="utf-8")
+            (root / "large.py").write_text("x" * 20, encoding="utf-8")
+            (root / "b.py").write_text("b\n", encoding="utf-8")
+            with patch.object(grading_mod, "MAX_LOC_FILE_BYTES", 32), \
+                 patch.object(grading_mod, "MAX_LOC_TOTAL_BYTES", 10):
+                self.assertEqual(grading_mod.nonblank_loc(str(root),
+                    [{"files": ["a.py", "large.py", "b.py"]}]), 2)
+            with patch.object(grading_mod, "MAX_LOC_FILE_BYTES", 16):
+                self.assertEqual(grading_mod.nonblank_loc(str(root),
+                    [{"files": ["large.py"]}]), 0)
+
+    def test_growth_after_stat_cannot_count_partial_prefix(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            growing = root / "growing.py"
+            growing.write_bytes(b"a\n")
+            original_read = os.read
+            changed = False
+
+            def grow_then_read(fd, count):
+                nonlocal changed
+                if not changed:
+                    changed = True
+                    with growing.open("ab") as fh:
+                        fh.write(b"b\n" * 10)
+                return original_read(fd, count)
+
+            with patch.object(grading_mod, "MAX_LOC_FILE_BYTES", 8), \
+                 patch.object(grading_mod.os, "read", side_effect=grow_then_read):
+                self.assertEqual(grading_mod.nonblank_loc(str(root),
+                    [{"files": ["growing.py"]}]), 0)
+
+    def test_candidate_budget_limits_entries_even_when_invalid(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "good.py").write_text("good\n", encoding="utf-8")
+            with patch.object(grading_mod, "MAX_LOC_CANDIDATES", 2):
+                self.assertEqual(grading_mod.nonblank_loc(str(root),
+                    [{"files": [None, "missing.py", "good.py"]}]), 0)
 
 class TestGateSeverityRoles(unittest.TestCase):
     """Which severities --fail-on puts in play, and which the FAIL is made of.
