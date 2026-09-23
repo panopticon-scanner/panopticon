@@ -1082,7 +1082,13 @@ def _render_card(finding, delta=None):
         chips.append(f"<span class='chip'>{_escape(cve)}</span>")
     epss_list = citations.get("epss")
     if isinstance(epss_list, list):
-        scores = [e.get("score", 0.0) for e in epss_list if isinstance(e, dict)]
+        scores = []
+        for entry in epss_list:
+            if not isinstance(entry, dict):
+                continue
+            score = entry.get("score")
+            if isinstance(score, (int, float)) and not isinstance(score, bool) and 0 <= score <= 1:
+                scores.append(score)
         if scores:
             chips.append(f"<span class='chip'>EPSS:{max(scores):.2f}</span>")
     if chips:
