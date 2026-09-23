@@ -84,8 +84,56 @@ def glob_errors(label, field, globs):
 _warned_globs: set[tuple[str, str]] = set()
 
 
+class _GlobMatcher:
+    """Iterative glob DP: O(tokens * path length) time, O(tokens) memory.
+
+    Each row records which token prefixes match the path prefix consumed so
+    far. A second row tracks a nonempty, not-yet-terminated segment for **/.
+    Every character visits each token once; no paths or wildcard allocations
+    are retried, and matching never calls a regex or recurses. ``pattern`` is
+    regex-shaped diagnostic text only. The supported match contract is a
+    truthy result on a full-path match and None otherwise, not re.Match data.
+    """
+
+    def __init__(self, pattern: str, tokens: tuple[str, ...] | None = None,
+                 anchored: bool = True):
+        self.pattern = pattern
+        self._tokens = tokens
+        self._anchored = anchored
+
+    def match(self, path: str) -> bool | None:
+        if self._tokens is None:
+            return None
+        tokens = self._tokens
+        width = len(tokens) + 1
+        previous = [True] + [False] * len(tokens)
+        partial = [False] * width
+        for i, token in enumerate(tokens, 1):
+            if token in ("*", "**", "**/"):
+                previous[i] = previous[i - 1]
+        for char in path:
+            current = [False] * width
+            next_partial = [False] * width
+            # An unanchored pattern can begin at any basename boundary.
+            current[0] = not self._anchored and char == "/"
+            for i, token in enumerate(tokens, 1):
+                if token == "*":
+                    current[i] = current[i - 1] or (previous[i] and char != "/")
+                elif token == "**":
+                    current[i] = current[i - 1] or previous[i]
+                elif token == "**/":
+                    current[i] = current[i - 1] or (partial[i] and char == "/")
+                    next_partial[i] = char != "/" and (previous[i] or partial[i])
+                elif token == "?":
+                    current[i] = previous[i - 1] and char != "/"
+                else:
+                    current[i] = previous[i - 1] and char == token
+            previous, partial = current, next_partial
+        return True if previous[-1] else None
+
+
 def glob_to_re(pat, label="config"):
-    """Compile one gitignore-flavored glob to a regex over repo-relative paths.
+    """Compile one gitignore-flavored glob to a bounded repo-path matcher.
 
     #1740 fix round 2: THE translator, for every consumer of a committed glob.
     It lived in `discovery` while `run_tools`/`ingest_tools` matched the same
@@ -101,7 +149,8 @@ def glob_to_re(pat, label="config"):
     anchored to the repo root, and a TRAILING ``/`` claims the directory and
     everything under it (#1501: ``docs/`` is gitignore's most natural idiom
     and used to compile to a regex requiring the path to end in ``/``, which a
-    repo-relative FILE path never does -- a silent zero-match).
+    repo-relative FILE path never does -- a silent zero-match). Newlines are
+    ordinary filename characters, and matches consume the entire path.
     """
     # A glob this compiler cannot translate faithfully must never be
     # translated wrongly (#1501). A setup proposal carrying one is refused
@@ -109,14 +158,14 @@ def glob_to_re(pat, label="config"):
     # NOT blocking (this module's standing policy, `_committed_matrix`), so
     # one still reaches this compiler -- where the old behaviour was to
     # `re.escape` the brackets into a literal that claimed the wrong files.
-    # Disclose and compile to a never-matching regex instead: refuse to guess.
+    # Disclose and return a never-matching matcher instead: refuse to guess.
     defect = glob_defect(pat)
     if defect:
         if (label, pat) not in _warned_globs:
             _warned_globs.add((label, pat))
             print("%s: glob %r matches nothing: %s (#1501)"
                   % (label, pat[:80], defect), file=sys.stderr)
-        return re.compile(r"(?!)")
+        return _GlobMatcher(r"(?!)")
     # Collapse runs of adjacent segment-crossing wildcards BEFORE compiling.
     # `**/**/.../x` compiles to sequential `(?:[^/]+/)*` quantifiers -- the
     # textbook catastrophic-backtracking ReDoS shape -- and repo-supplied
@@ -125,21 +174,15 @@ def glob_to_re(pat, label="config"):
     # segments are semantically redundant, so fold each run down to one.
     pat = re.sub(r"(?:\*\*/)+", "**/", pat)
     pat = re.sub(r"\*\*\*+", "**", pat)
-    # #run7 SEC-H4A: the `**`-collapse above only tames adjacent `**` runs. A
-    # SINGLE-`*` pattern like `a*a*...Z` compiles to `a[^/]*a[^/]*...Z` -- the
-    # classic (.*a)+ catastrophic-backtracking shape (empirically >5s on a
-    # moderate filename), unaffected by the collapse. Atomic groups can't fix it
-    # (a glob `*` MUST backtrack so a trailing literal can match), so bound
-    # complexity AFTER the collapse: a legitimate glob has a handful of wildcards,
-    # so an over-long / over-wildcarded pattern is hostile or degenerate --
-    # disclose it and compile to a never-matching regex rather than hang discovery
-    # (which reads the root config from the untrusted redteam target, BEFORE
-    # dispatch).
+    # Preserve the existing authored-pattern complexity limits, after collapse.
+    # These are validation policy, not the execution bound: even an accepted
+    # twenty-star pattern can stall a backtracking regex. _GlobMatcher bounds
+    # work for every accepted pattern independently of these limits.
     if len(pat) > 256 or pat.count("*") > 20:
         print("%s: ignoring over-complex glob pattern "
               "(len=%d, wildcards=%d): %r"
               % (label, len(pat), pat.count("*"), pat[:80]), file=sys.stderr)
-        return re.compile(r"(?!)")   # matches nothing
+        return _GlobMatcher(r"(?!)")   # matches nothing
     anchored = "/" in pat[:-1] if pat.endswith("/") else "/" in pat
     if pat.startswith("/"):
         pat = pat[1:]
@@ -149,29 +192,34 @@ def glob_to_re(pat, label="config"):
     # as gitignore reads it.
     if pat.endswith("/"):
         pat += "**"
-    out, i = [], 0
+    out, tokens, i = [], [], 0
     while i < len(pat):
         c = pat[i]
         if c == "*":
             if pat[i:i + 3] == "**/":
+                tokens.append("**/")
                 out.append(r"(?:[^/]+/)*")
                 i += 3
             elif pat[i:i + 2] == "**":
-                out.append(r".*")
+                tokens.append("**")
+                out.append(r"[\s\S]*")
                 i += 2
             else:
+                tokens.append("*")
                 out.append(r"[^/]*")
                 i += 1
         elif c == "?":
+            tokens.append("?")
             out.append(r"[^/]")
             i += 1
         else:
+            tokens.append(c)
             out.append(re.escape(c))
             i += 1
     body = "".join(out)
     if not anchored:
-        body = r"(?:.*/)?" + body
-    return re.compile("^" + body + "$")
+        body = r"(?:[\s\S]*/)?" + body
+    return _GlobMatcher("^" + body + r"\Z", tuple(tokens), anchored)
 
 
 def matched_glob(path, patterns, label="config"):
