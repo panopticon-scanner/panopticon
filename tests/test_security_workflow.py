@@ -606,9 +606,16 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
                 clear = run.index("rm -rf")
                 self.assertLess(clear, run.index("gh run download"))
                 self.assertGreater(clear, run.index("gh run list"))
-                # `${RUNNER_TEMP:?}`, because this is the one command in the
-                # step where an empty value is destructive rather than useless.
-                self.assertIn('rm -rf "${RUNNER_TEMP:?}/baseline"', run)
+                # Guarded by `[ -n "${RUNNER_TEMP:-}" ]`, because this is the one
+                # command in the step where an empty value is destructive
+                # rather than useless -- and guarded rather than `:?`-expanded,
+                # because a `:?` failure aborts the step (rc=1, no `found=`),
+                # the one thing the step promises never to do; the guard fails
+                # this hop and the run degrades to strict.
+                self.assertIn(
+                    '[ -n "${RUNNER_TEMP:-}" ] && rm -rf "$RUNNER_TEMP/baseline"',
+                    run)
+                self.assertNotIn("${RUNNER_TEMP:?}", run)
 
     def test_the_notice_names_the_sha_the_baseline_came_from(self):
         for path, name in self.ROUTES:

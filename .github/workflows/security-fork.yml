@@ -320,9 +320,11 @@ jobs:
           # of its archive would leave those files for a later hop to extract
           # over -- a baseline spliced from two commits, which the gate's
           # lost-coverage probe cannot see because the surviving manifest is
-          # the later run's. `${RUNNER_TEMP:?}` rather than `$RUNNER_TEMP`
+          # the later run's. The `[ -n "${RUNNER_TEMP:-}" ]` guard is there
           # because this is the one command here where an empty value is
-          # destructive rather than merely useless.
+          # destructive rather than merely useless -- and it is a guard,
+          # not a `:?` expansion, so an empty value fails this hop and the
+          # run degrades to strict instead of aborting the step.
           #
           # The all-zero sha is what a branch creation or a force push reports
           # as `before`; protected main cannot produce either, which is exactly
@@ -340,7 +342,7 @@ jobs:
                   --commit "$sha" --status completed --json databaseId --limit 1 \
                   --jq '.[0].databaseId // empty')" \
                && [ -n "$run_id" ] \
-               && rm -rf "${RUNNER_TEMP:?}/baseline" \
+               && [ -n "${RUNNER_TEMP:-}" ] && rm -rf "$RUNNER_TEMP/baseline" \
                && timeout 180 gh run download "$run_id" \
                     -n raw-scanner-captures -D "$RUNNER_TEMP/baseline"; then
               found=true

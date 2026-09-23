@@ -148,7 +148,12 @@ summary + JSON artifact) with standards citations and CI gating.
   further back, and at the sixth nothing — no PR, no push — can find a baseline
   again. The walk is kept for the cases a status filter cannot help with: an
   artifact that has expired (90-day retention) and a cancelled run that has
-  none.
+  none. Downloadable is not the same as complete: the walk stops at the first
+  artifact it can download, and it is the gate, not the run's conclusion,
+  that decides whether that baseline is usable. A run that died mid-scan
+  costs one strict, audible commit before the next hop heals it, and because
+  `--limit 1` takes the newest completed run at a sha whatever its
+  conclusion, a cancelled run costs one hop.
 
   Every route is delta-aware because a half-delta eats itself: leaving the push
   to `main` strict means main's own gate fails on the standing set, the run's
