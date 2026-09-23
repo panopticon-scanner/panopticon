@@ -67,6 +67,88 @@ MARKERS = [
 
 
 class TestOsvScannerAdapter(unittest.TestCase):
+    @staticmethod
+    def _severity_sample(vulnerabilities, groups=None):
+        return json.dumps({"results": [{
+            "source": {"path": "/src/requirements.txt"},
+            "packages": [{"package": {"name": "dep", "version": "1", "ecosystem": "PyPI"},
+                          "vulnerabilities": vulnerabilities, "groups": groups or []}],
+        }]}).encode()
+
+    def test_database_labels_preserved_for_unscored_advisories(self):
+        labels = {"CRITICAL": "CRITICAL", "high": "HIGH", "MoDeRaTe": "MEDIUM",
+                  "LOW": "LOW", "unknown": "LOW", "very CRITICAL": "LOW"}
+        vulnerabilities = [{"id": key, "database_specific": {"severity": key}}
+                           for key in labels]
+        vulnerabilities += [{"id": "malformed", "database_specific": "critical"},
+                            {"id": "bad-label", "database_specific": {"severity": ["CRITICAL"]}}]
+        findings = osv.OsvScannerAdapter().parse(self._severity_sample(vulnerabilities), "g1")
+        by_id = {f["tool_evidence"]["rule_id"]: f for f in findings}
+        self.assertEqual({key: by_id[key]["severity"] for key in labels}, labels)
+        self.assertEqual(by_id["malformed"]["severity"], "LOW")
+        self.assertEqual(by_id["bad-label"]["severity"], "LOW")
+        self.assertEqual(len(findings), len(vulnerabilities))
+
+    def test_v4_without_calculator_uses_database_label(self):
+        vuln = {"id": "V4", "severity": [{"type": "CVSS_V4", "score": "CVSS:4.0/..."}],
+                "database_specific": {"severity": "CRITICAL"}}
+        findings = osv.OsvScannerAdapter().parse(self._severity_sample([vuln]), "g1")
+        finding = first(findings)
+        self.assertEqual(finding["severity"], "CRITICAL")
+        self.assertEqual(finding["tool_evidence"]["rule_id"], "V4")
+        self.assertNotIn("cvss_max_severity", finding["tool_evidence"])
+
+    def test_cvss_v3_vector_precedes_conflicting_database_label(self):
+        vuln = {"id": "V3", "severity": [{"type": "CVSS_V3",
+                "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}],
+                "database_specific": {"severity": "LOW"}}
+        finding = first(osv.OsvScannerAdapter().parse(self._severity_sample([vuln]), "g1"))
+        self.assertEqual(finding["severity"], "CRITICAL")
+
+    def test_valid_group_score_wins_and_duplicate_group_membership_uses_maximum(self):
+        vuln = {"id": "SCORE", "database_specific": {"severity": "LOW"}}
+        groups = [{"ids": ["SCORE"], "max_severity": "5.3"},
+                  {"ids": ["SCORE"], "max_severity": "9.8"},
+                  {"ids": ["SCORE"], "max_severity": "4.0"}]
+        finding = first(osv.OsvScannerAdapter().parse(self._severity_sample([vuln], groups), "g1"))
+        self.assertEqual(finding["severity"], "CRITICAL")
+        self.assertEqual(finding["tool_evidence"]["cvss_max_severity"], 9.8)
+
+    def test_invalid_group_scores_fall_through_and_zero_is_valid_low(self):
+        # OSV group score 0 remains a valid LOW score; SARIF security-severity
+        # 0 has no grade and falls through to its other metadata.
+        bad_scores = [float("nan"), float("inf"), float("-inf"), True,
+                      -1, 10.1, "nan", "Infinity", {}, []]
+        vulnerabilities = [{"id": str(i), "database_specific": {"severity": "HIGH"}}
+                           for i in range(len(bad_scores))]
+        vulnerabilities.append({"id": "zero", "database_specific": {"severity": "CRITICAL"}})
+        groups = [{"ids": [str(i)], "max_severity": score}
+                  for i, score in enumerate(bad_scores)]
+        groups.append({"ids": ["zero"], "max_severity": 0})
+        findings = osv.OsvScannerAdapter().parse(self._severity_sample(vulnerabilities, groups), "g1")
+        by_id = {f["tool_evidence"]["rule_id"]: f for f in findings}
+        self.assertEqual([by_id[str(i)]["severity"] for i in range(len(bad_scores))],
+                         ["HIGH"] * len(bad_scores))
+        self.assertEqual(by_id["zero"]["severity"], "LOW")
+        self.assertEqual(by_id["zero"]["tool_evidence"]["cvss_max_severity"], 0.0)
+
+    def test_overflowing_json_group_score_keeps_advisory_and_valid_sibling(self):
+        vulnerabilities = [
+            {"id": "HUGE", "database_specific": {"severity": "CRITICAL"}},
+            {"id": "VALID", "database_specific": {"severity": "LOW"}},
+        ]
+        groups = [{"ids": ["HUGE"], "max_severity": 10 ** 400},
+                  {"ids": ["VALID"], "max_severity": 7.5}]
+        findings = osv.OsvScannerAdapter().parse(
+            self._severity_sample(vulnerabilities, groups), "g1")
+        self.assertEqual(len(findings), 2)
+        by_id = {f["tool_evidence"]["rule_id"]: f for f in findings}
+        self.assertEqual(by_id["HUGE"]["severity"], "CRITICAL")
+        self.assertNotIn("cvss_max_severity", by_id["HUGE"]["tool_evidence"])
+        self.assertEqual(by_id["VALID"]["severity"], "HIGH")
+        self.assertEqual(by_id["VALID"]["tool_evidence"]["cvss_max_severity"], 7.5)
+        self.assertEqual(by_id["HUGE"]["location"]["file"], "requirements.txt")
+
     def test_parse_real_shape_produces_findings(self):
         findings = osv.OsvScannerAdapter().parse(OSV_REAL_SAMPLE, "g1")
         self.assertEqual(len(findings), 2)
