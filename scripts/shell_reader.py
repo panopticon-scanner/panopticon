@@ -434,13 +434,13 @@ def _stage(text, context):
     sinks: dict[str, str | None] = {}
     pending = None
 
-    def take(token):
-        substitutions.extend(value for kind, value in _markers(token).values()
+    def take(word):
+        substitutions.extend(value for kind, value in _markers(word).values()
                              if kind == "subst")
 
     for raw in tokens:
-        token = context.token(raw)
-        entry = _markers(token).get(token)
+        word = context.token(raw)
+        entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             continue
         if entry and entry[0] == "redirect":
@@ -449,32 +449,32 @@ def _stage(text, context):
         if pending is not None:
             fd, op = pending
             pending = None
-            take(token)
+            take(word)
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
             if op in (">&", "<&"):
-                if _fd_or_close(token):
-                    sinks[number] = None if token == "-" else sinks.get(token.lstrip("0") or "0")
+                if _fd_or_close(word):
+                    sinks[number] = None if word == "-" else sinks.get(word.lstrip("0") or "0")
                     continue
                 if fd or op == "<&":
                     sinks[number] = None       # invalid/unresolved fd operand
                     continue
                 op = "&>"                     # unnumbered >&file
             if op == "<":
-                reads.append(token)
+                reads.append(word)
                 sinks[number] = None           # an input file is not an output sink
             else:
-                writes.append(token)
-                sinks[number] = token
+                writes.append(word)
+                sinks[number] = word
                 if op.startswith("&"):
-                    sinks["2"] = token
+                    sinks["2"] = word
             continue
         if entry and entry[0] == "heredoc":
             heredoc, expands = entry[1]
             if expands:
                 substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
             continue
-        take(token)
-        argv.append(token)
+        take(word)
+        argv.append(word)
     stdout = sinks.get("1")
     return Stage(argv, writes, reads, heredoc, substitutions,
                  [stdout] if stdout is not None else [])
