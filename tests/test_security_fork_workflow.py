@@ -278,6 +278,23 @@ class TestTheTwoWorkflowsDoNotDrift(unittest.TestCase):
         self.assertEqual(_script(_step(self.base, name)).split(),
                          _script(_step(self.fork, name)).split())
 
+    def test_the_baseline_fetch_is_identical(self):
+        # Review M6. This class is the only one that compares the two files
+        # token for token; the per-file substring pins in
+        # `test_security_workflow.py` would all pass with the two copies
+        # disagreeing about `--limit`, `--jq`, `--status success`, the hop
+        # bound or the `::notice::` text. The fork route is gated on the same
+        # terms as the same-repo one or it is not the same gate.
+        name = "Download the base commit's scanner captures"
+        base, fork = _step(self.base, name), _step(self.fork, name)
+        self.assertIsNotNone(base)
+        self.assertIsNotNone(fork)
+        self.assertEqual(_script(base).split(), _script(fork).split())
+        self.assertEqual(base.get("env"), fork.get("env"))
+        self.assertEqual(base.get("timeout-minutes"), fork.get("timeout-minutes"))
+        self.assertEqual(base.get("continue-on-error"),
+                         fork.get("continue-on-error"))
+
     def test_the_image_step_is_identical(self):
         name = "Pull or build panopticon-tools image"
         base, fork = _step(self.base, name), _step(self.fork, name)
@@ -303,9 +320,25 @@ class TestNeitherWorkflowSwallowsAFailure(unittest.TestCase):
     """I2: `continue-on-error: true` on the gate step (or on the job) turns a
     refusal into a green check and lets every later step run anyway. It is a
     one-line edit that no other assertion here would catch, so it is refused
-    outright -- neither file has any use for it."""
+    outright -- with exactly ONE exception, named below.
 
-    def test_no_continue_on_error_anywhere_in_either_workflow(self):
+    `Download the base commit's scanner captures` (#1790 fix round 1, review
+    M3) holds no verdict: it fetches an optional convenience under a 5-minute
+    deadline, and a step timeout is not one of the `if`/`else` branches its
+    script is careful to cover. Without the flag, a slow `gh run download`
+    fails the step, fails the job, and reds a required check -- the opposite of
+    the degrade this design is built on. With it, the failure costs the delta
+    (no `found=true` is written, so the gate reads the empty string and runs
+    STRICT) and nothing else. That is the test for whether a step may carry it:
+    does its failure make the gate stricter, or make it disappear? Every other
+    step in both files is the second kind.
+    """
+
+    # The step name, spelled once, because the exemption is to a NAME and not
+    # to a position: a renamed or re-purposed step must come back through here.
+    SOFT = {"Download the base commit's scanner captures"}
+
+    def test_no_continue_on_error_anywhere_but_the_baseline_fetch(self):
         offenders = []
         for path in (BASE, FORK):
             wf = _load(path)
@@ -313,12 +346,24 @@ class TestNeitherWorkflowSwallowsAFailure(unittest.TestCase):
                 if "continue-on-error" in job:
                     offenders.append("%s / job %s" % (os.path.basename(path), name))
                 for step in job.get("steps") or []:
-                    if "continue-on-error" in step:
+                    if ("continue-on-error" in step
+                            and step.get("name") not in self.SOFT):
                         offenders.append("%s / %s / step %r"
                                          % (os.path.basename(path), name,
                                             step.get("name")))
         self.assertEqual(offenders, [], "continue-on-error turns a refusal "
                                         "into a pass: %s" % offenders)
+
+    def test_the_exemption_is_not_vacuous_and_covers_one_step_per_file(self):
+        # An exemption nothing uses is an exemption nobody re-reads. Both files
+        # must actually carry it, on exactly that step, or the ban above has
+        # silently widened.
+        for path in (BASE, FORK):
+            soft = [step.get("name")
+                    for job in (_load(path).get("jobs") or {}).values()
+                    for step in job.get("steps") or []
+                    if step.get("continue-on-error")]
+            self.assertEqual(soft, sorted(self.SOFT), os.path.basename(path))
 
 
 if __name__ == "__main__":

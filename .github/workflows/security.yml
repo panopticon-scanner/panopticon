@@ -167,21 +167,44 @@ jobs:
             --progress \
             --deps
 
-      # #1790: the base commit's OWN capture, so the gate can tell a finding
-      # this PR ADDS from one main already carries. `security.yml` has uploaded
-      # `raw-scanner-captures` on every run since long before anything read it
-      # -- `if: always()`, so even a run whose gate went red leaves a baseline
-      # behind -- which is why every commit on main has one to fetch.
+      # #1790 fix round 1 (review C1): EVERY route fetches a baseline, and no
+      # route is inert. The first cut fetched one on the PR routes only and
+      # left the push to main strict, which defeated itself in four moves:
+      # `#1790`'s promotion makes main's own gate fail on 24 findings; this
+      # workflow has ONE job, so the run's conclusion is `failure`; the next
+      # PR's lookup asks for a SUCCESSFUL run at its base commit and finds
+      # none; and that PR is then gated strictly on all 24, which its author
+      # cannot clear from their own diff -- so main never goes green and every
+      # later PR inherits the same state.
+      #
+      # `raw-scanner-captures` IS uploaded on a red run (`if: always()` below),
+      # but a run that failed may have failed on lost coverage, and a partial
+      # baseline would excuse head findings on the strength of a scan that did
+      # not finish. So `--status success` stays and the step WALKS BACK
+      # instead: the base commit, then up to five first-parent ancestors, until
+      # it finds one with a successful run to download from. Walking further
+      # back only makes the gate stricter -- an older baseline means more
+      # findings read as new -- never looser.
+      #
+      # What main gets in exchange for no longer being gated on its own
+      # standing set: that set is DISCLOSED under the pre-existing heading on
+      # every single run, and it is governed by the post-merge code-scanning
+      # audit (`scripts/code_scanning_audit.py`) and the owner's own GitHub
+      # dismissals, which is where a finding is fixed or ruled on.
       #
       # `actions: read` on this job is for exactly this step and nothing else:
       # reading another run's artifacts is the only thing it grants.
       - name: Download the base commit's scanner captures
         id: baseline
-        # PR route only. A push to main is gated strictly and always was:
-        # the standing set on main is governed by the post-merge zero-alert
-        # audit (#1947) and by the owner's own dismissals, not by a
-        # baseline of itself.
-        if: github.event_name == 'pull_request'
+        # Review M3. This step holds no verdict, and a step TIMEOUT is not one
+        # of the branches its script is careful to cover: without the flag a
+        # slow `gh run download` fails the step, fails the job, and reds a
+        # required check. With it, the deadline's expiry costs the DELTA and
+        # nothing else -- no `found=true` is written, the gate reads the empty
+        # string and runs strict. That is the test for whether a step here may
+        # carry the flag, and this is the only step in either file that passes
+        # it (`TestNeitherWorkflowSwallowsAFailure`).
+        continue-on-error: true
         timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
@@ -189,29 +212,47 @@ jobs:
           # the workspace root is not one (both checkouts are in subdirectories),
           # so it is named explicitly rather than inferred.
           GH_REPO: ${{ github.repository }}
-          # The BASE sha, never the head: a baseline taken from the PR's own
-          # head would carry the PR's own findings and excuse every one of them.
-          # Through `env:`, like every other event value either file reads.
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Push to main: the PREVIOUS main head. Pull request (either
+          # trigger): the PR's base -- never its own head, which would carry
+          # the PR's own findings and excuse every one of them. Any other event
+          # resolves to the empty string, which the script reads as "no base"
+          # and runs strict. Through `env:`, like every other event value
+          # either file reads.
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
         run: |
-          # This step SUCCEEDS on both of its branches and says which one it
-          # took through its output -- it is never `continue-on-error`, which
-          # would let a failure here skip the gate's own step AND let the job
-          # carry on. Both `gh` calls sit in the `if` condition, where `set -e`
-          # does not fire, so an API hiccup takes the `else` (strict) rather
-          # than failing a required check over a missing convenience.
+          # Both `gh` calls sit inside the `if` condition, where `set -e` does
+          # not fire, so an API hiccup advances the walk or ends it rather than
+          # failing the step. The all-zero sha is what a branch creation or a
+          # force push reports as `before`; protected main cannot produce
+          # either, which is exactly why the guard is written down.
           set -euo pipefail
+          MAX_HOPS=5
+          ZERO_SHA=0000000000000000000000000000000000000000
           found=false
-          if run_id="$(gh run list --workflow security.yml --commit "$BASE_SHA" \
-                --status success --json databaseId --limit 1 \
-                --jq '.[0].databaseId // empty')" \
-             && [ -n "$run_id" ] \
-             && gh run download "$run_id" -n raw-scanner-captures \
-                  -D "$RUNNER_TEMP/baseline"; then
-            found=true
-            echo "baseline: security.yml run $run_id, base commit $BASE_SHA"
-          else
-            echo "::notice::No usable security.yml capture for the base commit; this PR is gated strictly, on every HIGH/CRITICAL finding in the tree rather than only the ones it adds."
+          sha="$BASE_SHA"
+          hops=0
+          while [ -n "$sha" ] && [ "$sha" != "$ZERO_SHA" ]; do
+            if run_id="$(gh run list --workflow security.yml --commit "$sha" \
+                  --status success --json databaseId --limit 1 \
+                  --jq '.[0].databaseId // empty')" \
+               && [ -n "$run_id" ] \
+               && gh run download "$run_id" -n raw-scanner-captures \
+                    -D "$RUNNER_TEMP/baseline"; then
+              found=true
+              echo "::notice::Baseline: security.yml run $run_id at commit $sha, $hops hop(s) back from $BASE_SHA."
+              break
+            elif [ "$hops" -ge "$MAX_HOPS" ]; then
+              break
+            else
+              hops=$((hops + 1))
+              if ! sha="$(gh api "repos/$GH_REPO/commits/$sha" \
+                    --jq '.parents[0].sha // empty')"; then
+                sha=""
+              fi
+            fi
+          done
+          if [ "$found" != true ]; then
+            echo "::notice::No successful security.yml run carrying raw-scanner-captures within $MAX_HOPS first-parent hop(s) back from ${BASE_SHA:-(this event has no base commit)}; this run is gated strictly, on every HIGH/CRITICAL finding in the tree rather than only the ones it adds."
           fi
           echo "found=$found" >> "$GITHUB_OUTPUT"
 

@@ -140,9 +140,9 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
     def test_the_scan_jobs_permissions_are_the_recorded_ones(self):
         # Pinned, not merely present: a later edit that widens them has to
         # come through this line. #1790 added `actions: read`, and it is the
-        # narrowest grant that can read the BASE commit run's
+        # narrowest grant that can read a base commit run's
         # `raw-scanner-captures` artifact -- see
-        # `TestTheDeltaBaselineIsFetchedOnThePullRequestRoutes`.
+        # `TestTheDeltaBaselineIsFetchedOnEveryRoute`.
         self.assertEqual(
             self._workflow()["jobs"]["scan"]["permissions"],
             {"contents": "read", "packages": "read",
@@ -424,28 +424,38 @@ class TestBothScanStepsCarryBothExclusions(unittest.TestCase):
                                  (path, name, steps[name]))
 
 
-class TestTheDeltaBaselineIsFetchedOnThePullRequestRoutes(unittest.TestCase):
-    """#1790 owner ruling 2026-09-23: a PR is gated on what it ADDS.
+class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
+    """#1790 owner ruling 2026-09-23, as amended by the controller's C1 ruling:
+    EVERY route is delta-aware, and no route is inert.
 
-    `security_gate --baseline-dir` needs the base commit's own capture, and
-    `security.yml` has been uploading one as `raw-scanner-captures` on every
-    run -- `if: always()`, so a red gate on main still leaves a baseline behind
-    -- since long before anything read it. These two steps are what fetch it,
-    one per PR route, and they are the only reason either job now holds
-    `actions: read`.
+    The first cut fetched a baseline on the PR routes only and left the push to
+    main strict. That combination was self-defeating, and the review measured
+    it: the moment `#1790`'s promotion merged, main's own gate failed on the 24
+    findings it promotes; `security.yml` has one job, so the RUN's conclusion
+    was `failure`; and the next PR's lookup (`--status success`) therefore found
+    no run at its base commit and fell back to strict on all 24 -- which no
+    author could clear from their own diff, so main never went green again and
+    every subsequent PR inherited the same state.
 
-    Everything here is a fail-toward-strictness pin. The step must not be
-    allowed to fail (a `continue-on-error` step that dies takes the gate's
-    `--baseline-dir` with it AND lets the job carry on), it must succeed in
-    both of its branches, and the gate must receive the flags only when the
-    download actually happened -- otherwise a PR whose base has no capture
-    would point the gate at an absent directory and depend on the gate's own
-    recovery to notice.
+    So: the push route resolves `github.event.before` (the previous main head)
+    and the PR routes resolve `base.sha`, and from whichever sha that is the
+    step walks up to five FIRST-PARENT ancestors looking for one with a
+    successful run. `--status success` stays -- a red run's capture may be
+    partial -- and walking further back only makes the gate stricter (an older
+    baseline means more findings read as new), never looser.
+
+    Everything else here is a fail-toward-strictness pin. The gate receives the
+    flags only when a download actually happened, and the fetch step degrades to
+    strict rather than to red (`continue-on-error: true`, review M3: a step
+    timeout on a 5-minute deadline must not fail a required check over a
+    missing convenience).
     """
 
     BASELINE = "Download the base commit's scanner captures"
     GATE = "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"
     PR_ROUTES = ((WORKFLOW, "scan"), (FORK_WORKFLOW, "fork-scan"))
+    ROUTES = PR_ROUTES
+    MAX_HOPS = 5
 
     def _job(self, path, job):
         with open(path, encoding="utf-8") as fh:
@@ -470,17 +480,71 @@ class TestTheDeltaBaselineIsFetchedOnThePullRequestRoutes(unittest.TestCase):
                 self.assertIn("-n raw-scanner-captures", run)
                 self.assertIn('-D "$RUNNER_TEMP/baseline"', run)
 
-    def test_the_base_is_the_pull_requests_base_sha_read_through_env(self):
-        # The BASE commit, never the head: a baseline taken from the PR's own
-        # head would contain the PR's own findings and excuse all of them.
-        for path, name in self.PR_ROUTES:
+    def test_each_route_resolves_its_own_base_and_reads_it_through_env(self):
+        # One expression, pinned whole. A push to main compares against the
+        # PREVIOUS main head (`github.event.before`); a pull request compares
+        # against its base -- never its own head, which would carry the PR's
+        # own findings and excuse every one of them. Any other event (schedule,
+        # dispatch) resolves to the empty string, which the script reads as "no
+        # base" and runs strict.
+        for path, name in self.ROUTES:
             with self.subTest(workflow=path):
                 step = self._step(self._job(path, name), self.BASELINE)
-                self.assertEqual(step["env"]["BASE_SHA"],
-                                 "${{ github.event.pull_request.base.sha }}")
+                self.assertEqual(
+                    step["env"]["BASE_SHA"],
+                    "${{ github.event_name == 'push' && github.event.before"
+                    " || github.event.pull_request.base.sha }}")
                 self.assertEqual(step["env"]["GH_TOKEN"], "${{ github.token }}")
                 self.assertEqual(step["env"]["GH_REPO"], "${{ github.repository }}")
                 self.assertNotIn("${{ github.event", _without_comments(step["run"]))
+
+    def test_the_all_zero_sha_is_refused_rather_than_queried(self):
+        # A branch creation and a force push report an all-zero `before`.
+        # Protected main cannot produce either, which is exactly why the guard
+        # is asserted rather than assumed: nothing else would catch its removal.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertIn("ZERO_SHA=0000000000000000000000000000000000000000",
+                              run)
+                self.assertIn('[ "$sha" != "$ZERO_SHA" ]', run)
+
+    def test_the_walk_back_is_bounded_and_first_parent(self):
+        # The C1 fix, and the two properties that keep it safe. BOUNDED: a
+        # baseline hunt that could walk the whole history would spend a
+        # required check's budget on API calls. FIRST-PARENT: on this repo's
+        # merge-commit history the first parent is main's own line, so the
+        # walk stays on commits `security.yml` actually ran against.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertIn("MAX_HOPS=%d" % self.MAX_HOPS, run)
+                self.assertIn('[ "$hops" -ge "$MAX_HOPS" ]', run)
+                self.assertIn('gh api "repos/$GH_REPO/commits/$sha"', run)
+                self.assertIn(".parents[0].sha", run)
+
+    def test_the_success_filter_stays(self):
+        # Deliberate, and the opposite of the other obvious fix for C1. A run
+        # whose gate went red still uploaded its captures (`if: always()`), but
+        # a run that FAILED may have failed on lost coverage -- a partial
+        # baseline would excuse head findings on the strength of a scan that
+        # did not finish. Walking back to an older complete scan is the
+        # stricter answer and the one taken.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertIn("--status success", run)
+
+    def test_the_notice_names_the_sha_the_baseline_came_from(self):
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertEqual(run.count("::notice::"), 2)   # found, and not
+                self.assertIn("hop(s) back from", run)
 
     def test_the_fetch_precedes_the_gate(self):
         for path, name in self.PR_ROUTES:
@@ -488,11 +552,29 @@ class TestTheDeltaBaselineIsFetchedOnThePullRequestRoutes(unittest.TestCase):
                 steps = [s.get("name") for s in self._job(path, name)["steps"]]
                 self.assertLess(steps.index(self.BASELINE), steps.index(self.GATE))
 
-    def test_the_step_succeeds_in_both_branches_and_never_swallows_a_failure(self):
-        for path, name in self.PR_ROUTES:
+    def test_the_fetch_degrades_to_strict_and_never_to_red(self):
+        # Review M3. Both `gh` calls sit in the `if` condition so an API
+        # failure takes the `else`, but a step TIMEOUT is not a branch: it ends
+        # the step, and without `continue-on-error` that ends the job and reds
+        # a required check because a download was slow. The deadline stays (an
+        # unbounded fetch in front of the gate is worse), and its expiry now
+        # costs the delta rather than the check -- a step that never writes
+        # `found=true` leaves the gate reading the empty string, which is
+        # strict. This is the ONLY step in either file allowed to carry the
+        # flag; `TestNeitherWorkflowSwallowsAFailure` refuses it everywhere
+        # else, the gate step included.
+        for path, name in self.ROUTES:
             with self.subTest(workflow=path):
                 step = self._step(self._job(path, name), self.BASELINE)
-                self.assertNotIn("continue-on-error", step)
+                self.assertIs(step.get("continue-on-error"), True)
+                self.assertEqual(step.get("timeout-minutes"), 5)
+                gate = self._step(self._job(path, name), self.GATE)
+                self.assertNotIn("continue-on-error", gate)
+
+    def test_the_step_succeeds_in_both_branches_and_writes_one_output(self):
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name), self.BASELINE)
                 run = _without_comments(step["run"])
                 self.assertIn("set -euo pipefail", run)
                 self.assertIn("else", run)
@@ -503,18 +585,17 @@ class TestTheDeltaBaselineIsFetchedOnThePullRequestRoutes(unittest.TestCase):
                 self.assertEqual(run.count('>> "$GITHUB_OUTPUT"'), 1)
                 self.assertIn('echo "found=$found" >> "$GITHUB_OUTPUT"', run)
 
-    def test_the_push_to_main_route_never_fetches_a_baseline(self):
-        # `#1947`'s post-merge zero-alert audit governs main; a push there is
-        # gated strictly, as it always was.
-        step = self._step(self._job(WORKFLOW, "scan"), self.BASELINE)
-        self.assertEqual(step.get("if"), "github.event_name == 'pull_request'")
-
-    def test_the_fork_route_needs_no_condition_of_its_own(self):
-        # `fork-scan` runs only for a fork PULL REQUEST (its job `if:`), so a
-        # step-level event test there would be a second spelling of the same
-        # fact -- and a second place for the two files to drift.
-        step = self._step(self._job(FORK_WORKFLOW, "fork-scan"), self.BASELINE)
-        self.assertIsNone(step.get("if"))
+    def test_no_route_skips_the_fetch(self):
+        # The `if: github.event_name == 'pull_request'` this replaces is what
+        # made the feature inert: it left main strict, main's gate red on the
+        # 24 promoted findings, the run's conclusion `failure`, and therefore
+        # no successful run for any PR's lookup to find. Every route fetches;
+        # which sha it fetches FOR is decided by `BASE_SHA`, and a route with
+        # no base resolves to the empty string and runs strict on its own.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name), self.BASELINE)
+                self.assertIsNone(step.get("if"))
 
     def test_the_gate_receives_the_flags_only_when_the_download_succeeded(self):
         for path, name in self.PR_ROUTES:
@@ -536,12 +617,27 @@ class TestTheDeltaBaselineIsFetchedOnThePullRequestRoutes(unittest.TestCase):
                 self.assertEqual(run.count("security_gate.py"), 1)
                 self.assertEqual(run.count("--baseline-dir"), 1)
 
+    def test_the_fork_route_fetches_before_it_checks_out_fork_content(self):
+        # Review M9. This is the only step in `fork-scan` that exports
+        # `GH_TOKEN`, and the job now holds `actions: read`. Running it before
+        # the target checkout keeps the token's step away from fork-controlled
+        # material on disk. Free, and it costs nothing to keep true.
+        steps = [s.get("name") for s in self._job(FORK_WORKFLOW, "fork-scan")["steps"]]
+        self.assertLess(steps.index("Checkout trusted scanner controller"),
+                        steps.index(self.BASELINE))
+        self.assertLess(steps.index(self.BASELINE),
+                        steps.index("Checkout scan target"))
+
     def test_a_skipped_fetch_leaves_the_gate_strict(self):
         # The push-to-main route skips the fetch, and a skipped step's outputs
         # are the empty string -- which is not "true", so no flag is passed.
         # This is the whole mechanism by which one gate command serves both
         # routes; it is asserted rather than assumed because the alternative
         # (a second, strict copy of the command) is what the drift test bans.
+        # A fetch that timed out, or one whose walk-back found nothing, never
+        # writes `found=true`; the gate tests for that literal, so anything
+        # else -- including the empty string a failed step leaves behind --
+        # runs strict through the same single command.
         gate = self._step(self._job(WORKFLOW, "scan"), self.GATE)
         run = _without_comments(gate["run"])
         self.assertIn('if [ "$BASELINE_FOUND" = "true" ]; then', run)
