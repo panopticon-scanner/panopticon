@@ -41,7 +41,7 @@ import re
 from typing import cast
 
 import shell_reader
-from shell_reader import ARM, command, conditional, negated
+from shell_reader import command, conditional, negated
 
 
 # A download: the tool that ran, the URL it was given, the file it lands in
@@ -96,7 +96,7 @@ def _basename(url):
     if not url:
         return None
     name = os.path.basename(url.split("?", 1)[0].split("#", 1)[0].rstrip("/"))
-    return name or None
+    return shell_reader.derived(name, url) if name else None
 
 
 def _pick_url(operands):
@@ -126,6 +126,7 @@ def parse_fetch(tool, args, stage, piped_to):
             break
         if token.startswith("--"):
             name, sep, inline = token[2:].partition("=")
+            inline = shell_reader.derived(inline, token)
             if name in dest_long:
                 dest = inline if sep else (args[i] if i < len(args) else None)
                 i += 0 if sep else 1
@@ -140,7 +141,7 @@ def parse_fetch(tool, args, stage, piped_to):
             while j < len(token):
                 ch, j = token[j], j + 1
                 if ch == dest_short:
-                    dest = token[j:] if token[j:] else (
+                    dest = shell_reader.derived(token[j:], token) if token[j:] else (
                         args[i] if i < len(args) else None)
                     i += 0 if token[j:] else 1
                     break
@@ -148,7 +149,7 @@ def parse_fetch(tool, args, stage, piped_to):
                     remote_name = True
                     continue
                 if dir_short and ch == dir_short:
-                    directory = token[j:] if token[j:] else (
+                    directory = shell_reader.derived(token[j:], token) if token[j:] else (
                         args[i] if i < len(args) else None)
                     i += 0 if token[j:] else 1
                     break
@@ -170,12 +171,13 @@ def parse_fetch(tool, args, stage, piped_to):
     dest = cast(str | None, dest)
     if directory and dest and not os.path.isabs(dest) and (
             tool == "curl" or not named):
-        dest = os.path.join(directory, dest)
-    if stage.stdout_writes:
+        dest = shell_reader.derived(os.path.join(directory, dest), directory, dest)
+    if stage.stdout_writes and (dest is None or dest in STDOUT):
         dest = stage.stdout_writes[-1]           # `curl ... > /tmp/x`; a
-        # stderr redirect (`2>&1`, `2>/dev/null`, `2>err.log`) never lands
-        # here -- `stage.writes` is not enough, it also carries fds that are
-        # not where the fetcher's stream goes (#1733)
+        # Track stdout only when the fetcher actually writes there. An
+        # explicit output file is independent of the shell stdout redirect.
+        # `stage.writes` also carries other opened files; only the final fd 1
+        # sink (including ordered fd copies) can receive this stream.
         if dest == "/dev/stderr":
             # A STDOUT redirect landing on `/dev/stderr` is also "nothing was
             # written" -- but only when a redirect put it there. `-o
@@ -334,7 +336,7 @@ def _arm(statement):
     the split cuts on `|` -- the `b)` of an `a|b)` alternation, which is why
     every stage is asked and not only the first.
     """
-    return any(stage.argv and ARM.match(stage.argv[0])
+    return any(stage.argv and shell_reader.is_arm(stage.argv[0])
                for stage in statement.stages)
 
 

@@ -1437,3 +1437,107 @@ class TestCli(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class TestRedirectAndMarkerProvenance(unittest.TestCase):
+    URL = 'https://example.test/i.sh'
+
+    def test_redirect_variants_bind_use_and_checksum(self):
+        for redirect in ('>f', '>>f', '>|f', '&>f', '&>>f',
+                         ' 3>f 1>&3', ' 3>f 1>&3 3>g', ' 2>f 1>&2', ' 2>&1>f'):
+            with self.subTest(redirect=redirect):
+                fetch = 'curl ' + self.URL + redirect
+                self.assertEqual('f', wg.fetches(fetch)[0].dest)
+                self.assertIsNotNone(wg.fetch_exec_defect(fetch + ' && sh f'))
+                checked = fetch + '\necho "' + HEX + '  f" | sha256sum -c -\nsh f'
+                self.assertIsNone(wg.fetch_exec_defect(checked))
+                self.assertIsNotNone(wg.fetch_exec_defect(checked.replace('  f"', '  other"')))
+
+    def test_dynamic_destination_is_unknown_without_claiming_execution(self):
+        for output in ('> $(mktemp)', '-o "$(mktemp)"', '-o$(mktemp)',
+                       '--output=$(mktemp)', '--output-dir=$(mktemp) -o f',
+                       ' 3>$(mktemp) 1>&3'):
+            with self.subTest(output=output):
+                defect = wg.fetch_exec_defect('curl ' + self.URL + ' ' + output)
+                self.assertIsNotNone(defect)
+                self.assertIn('unknown destination', defect)
+                self.assertNotIn('running', defect)
+                self.assertNotIn('@@', defect)
+        self.assertIsNone(wg.fetch_exec_defect('curl ' + self.URL))
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            'f=$(mktemp); curl ' + self.URL + ' > "$f"; sh "$f"'))
+
+    def test_literals_in_nested_scripts_are_not_filtered(self):
+        for wrapper in ('eval', 'sh -c'):
+            for marker in ('@@subst0@@', '@@heredoc0@@', '@@casearm@@',
+                           '@@group-open@@', '@@group-close@@'):
+                script = wrapper + ' "echo ' + marker + '; curl ' + self.URL + ' | sh"'
+                self.assertIsNotNone(wg.fetch_exec_defect(script), script)
+
+    def test_literal_substitution_is_not_credited_twice(self):
+        script = 'eval "@@subst0@@" "$(curl ' + self.URL + ')"'
+        self.assertEqual(1, len(wg.fetches(script)))
+        self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_literal_case_marker_does_not_promote_command(self):
+        self.assertEqual([], wg.fetches('@@casearm@@curl ' + self.URL + ' | sh'))
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            'case x in a|b) echo @@casearm@@; curl ' + self.URL + ' | sh;; esac'))
+
+    def test_literal_destination_stays_literal_beside_real_substitution(self):
+        for marker in ('@@subst0@@', '@@heredoc0@@', '@@casearm@@',
+                       '@@group-open@@', '@@group-close@@'):
+            fetch = 'curl ' + self.URL + ' > "' + marker + '" "$(echo unused)"'
+            self.assertIsNone(wg.fetch_exec_defect(fetch))
+            defect = wg.fetch_exec_defect(fetch + '; sh "' + marker + '"')
+            self.assertIsNotNone(defect)
+            self.assertIn(marker, defect)
+            self.assertNotIn('unknown destination', defect)
+
+
+class TestDestinationProvenanceControls(unittest.TestCase):
+    def test_only_the_final_stdout_sink_is_dynamic(self):
+        script = 'curl https://example.test/i.sh >$(mktemp) >f; sh f'
+        defect = wg.fetch_exec_defect(script)
+        self.assertIsNotNone(defect)
+        self.assertNotIn('unknown destination', defect)
+        self.assertEqual('f', wg.fetches(script)[0].dest)
+        self.assertIsNone(wg.fetch_exec_defect(
+            'curl https://example.test/i.sh >$(mktemp) 1>&2'))
+
+    def test_a_literal_eval_operand_beside_real_substitution_is_still_read(self):
+        script = ('eval "echo @@subst0@@; curl https://example.test/literal | sh" '
+                  '"$(curl https://example.test/substitution)"')
+        self.assertEqual(2, len(wg.fetches(script)))
+        defects = wg.fetch_exec_defects(script)
+        self.assertEqual(2, len(defects))
+        self.assertTrue(any('/literal' in d for d in defects))
+        self.assertTrue(any('/substitution' in d for d in defects))
+
+
+class TestExplicitDestinationPrecedence(unittest.TestCase):
+    def test_named_output_is_not_replaced_by_stdout_redirection(self):
+        for tool, output in (('curl', '-o'), ('wget', '-O')):
+            with self.subTest(tool=tool):
+                fetch = tool + ' https://example.test/i.sh ' + output + ' f >$(mktemp)'
+                self.assertEqual('f', wg.fetches(fetch)[0].dest)
+                self.assertIsNone(wg.fetch_exec_defect(fetch))
+                defect = wg.fetch_exec_defect(fetch + '; sh f')
+                self.assertIsNotNone(defect)
+                self.assertNotIn('unknown destination', defect)
+
+    def test_dynamic_named_output_is_not_hidden_by_static_stdout_redirection(self):
+        for tool, output in (('curl', '-o'), ('wget', '-O')):
+            with self.subTest(tool=tool):
+                fetch = tool + ' https://example.test/i.sh ' + output + ' $(mktemp) >f'
+                self.assertIn('unknown destination', wg.fetch_exec_defect(fetch))
+
+    def test_explicit_stdout_still_follows_redirection(self):
+        for tool, output in (('curl', '-o'), ('wget', '-O')):
+            for stdout in ('-', '/dev/stdout'):
+                with self.subTest(tool=tool, stdout=stdout):
+                    fetch = tool + ' https://example.test/i.sh ' + output + ' ' + stdout + '>f'
+                    self.assertEqual('f', wg.fetches(fetch)[0].dest)
+                    self.assertIsNotNone(wg.fetch_exec_defect(fetch + '; sh f'))
+                    self.assertIn('unknown destination',
+                                  wg.fetch_exec_defect(fetch.replace('>f', '>$(mktemp)')))
