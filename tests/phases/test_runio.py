@@ -13,6 +13,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import pytest
+
 from _test_helpers import fake_pem
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
@@ -790,3 +792,151 @@ class TestCommittedExcludePaths(unittest.TestCase):
                      "{{{\n"):                                  # not YAML
             with self.subTest(body=body), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(runio.committed_exclude_paths(self._root(body)), [])
+
+
+# Reset cleanup must stay in the reviewed tree, even with planted links.
+def _root(tmp_path):
+    root = tmp_path / "review"
+    pano = root / ".panopticon"
+    pano.mkdir(parents=True)
+    body = {"host": "claude", "security_mode": "standard",
+            "scope": {"mode": "repo"}, "created": "2026-09-23T00:00:00Z",
+            "run_id": "abc123", "review_root": str(root)}
+    run_manifest.write_manifest(str(root), body)
+    return root, pano, run_manifest.run_tag(body)
+
+
+@pytest.mark.parametrize("neighbor", [False, True])
+def test_linked_runs_parent_refuses_before_any_delete(tmp_path, neighbor):
+    root, pano, tag = _root(tmp_path)
+    destination = (pano / "neighbor") if neighbor else (tmp_path / "outside")
+    destination.mkdir()
+    active = destination / tag
+    active.mkdir()
+    (active / "sentinel").write_text("keep")
+    (destination / "latest").write_text("keep latest")
+    (pano / "runs").symlink_to(destination, target_is_directory=True)
+    (pano / "groups.json").write_text("keep legacy")
+    with pytest.raises(runio.DriverError, match="symlink"):
+        driver._clear_run_artifacts(str(root))
+    assert (active / "sentinel").read_text() == "keep"
+    assert (destination / "latest").read_text() == "keep latest"
+    assert (pano / "groups.json").read_text() == "keep legacy"
+
+
+@pytest.mark.parametrize("name", ["active", "tools", "verdicts"])
+def test_final_link_never_deletes_referent(tmp_path, name):
+    root, pano, tag = _root(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel").write_text("keep")
+    path = pano / "runs" / tag if name == "active" else pano / name
+    path.parent.mkdir(exist_ok=True)
+    path.symlink_to(outside, target_is_directory=True)
+    driver._clear_run_artifacts(str(root))
+    assert (outside / "sentinel").read_text() == "keep"
+
+
+def test_linked_artifact_root_refuses_without_delete(tmp_path):
+    root, pano, tag = _root(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel").write_text("keep")
+    pano.rename(root / "old-pano")
+    (root / ".panopticon").symlink_to(outside, target_is_directory=True)
+    with pytest.raises((ValueError, runio.DriverError), match="symlink"):
+        driver._clear_run_artifacts(str(root))
+    assert (outside / "sentinel").read_text() == "keep"
+
+
+@pytest.mark.parametrize("reset", [False, True])
+def test_public_run_refuses_linked_artifact_root(tmp_path, reset):
+    root = tmp_path / "review"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel").write_text("keep")
+    (root / ".panopticon").symlink_to(outside, target_is_directory=True)
+    argv = ["run", str(root)] + (["--reset"] if reset else [])
+    status = driver.run(driver.build_parser().parse_args(argv), phases=())
+    assert status["status"] == "error"
+    assert "unsafe artifact root" in status["message"]
+    assert (outside / "sentinel").read_text() == "keep"
+
+
+def test_public_reset_refuses_linked_runs_parent(tmp_path):
+    root, pano, tag = _root(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "latest").write_text("keep")
+    (pano / "runs").symlink_to(outside, target_is_directory=True)
+    args = driver.build_parser().parse_args(["run", str(root), "--reset"])
+    status = driver.run(args, phases=())
+    assert status["status"] == "error"
+    assert "unsafe reset cleanup" in status["message"]
+    assert (outside / "latest").read_text() == "keep"
+    assert (pano / "run-manifest.json").exists()
+
+
+def test_fresh_manifest_path_cleans_legacy_artifacts(tmp_path, monkeypatch):
+    root = tmp_path / "review"
+    pano = root / ".panopticon"
+    pano.mkdir(parents=True)
+    (pano / "groups.json").write_text("stale")
+    (root / "panopticon.yaml").write_text("keep")
+    real_clear = driver._clear_run_artifacts
+
+    class CleanupReached(Exception):
+        pass
+
+    def clear_then_stop(review_root):
+        real_clear(review_root)
+        raise CleanupReached
+
+    monkeypatch.setattr(driver, "_clear_run_artifacts", clear_then_stop)
+    args = driver.build_parser().parse_args(["run", str(root)])
+    with pytest.raises(CleanupReached):
+        driver.run(args, phases=())
+    assert not (pano / "groups.json").exists()
+    assert (root / "panopticon.yaml").read_text() == "keep"
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+def test_foreign_manifest_cannot_authorize_existing_run_delete(tmp_path, tracked):
+    root, pano, tag = _root(tmp_path)
+    active = pano / "runs" / tag
+    active.mkdir(parents=True)
+    (active / "sentinel").write_text("keep")
+    path = pano / "run-manifest.json"
+    body = json.loads(path.read_text())
+    if tracked:
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "add", "-f",
+                        ".panopticon/run-manifest.json"], check=True)
+    else:
+        body["review_root"] = str(tmp_path / "foreign")
+        path.write_text(json.dumps(body))
+    driver._clear_run_artifacts(str(root))
+    assert (active / "sentinel").read_text() == "keep"
+
+
+def test_normal_cleanup_preserves_unrelated_run_report_and_config(tmp_path):
+    root, pano, tag = _root(tmp_path)
+    active = pano / "runs" / tag
+    other = pano / "runs" / "other-run"
+    active.mkdir(parents=True)
+    other.mkdir()
+    (active / "scratch").write_text("remove")
+    (other / "sentinel").write_text("keep")
+    (pano / "tools").mkdir()
+    (pano / "tools" / "stale").write_text("remove")
+    (pano / "groups.json").write_text("remove")
+    (pano / f"{tag}-report.json").write_text("keep report")
+    (root / "panopticon.yaml").write_text("keep config")
+    driver._clear_run_artifacts(str(root))
+    assert not active.exists()
+    assert not (pano / "tools").exists()
+    assert not (pano / "groups.json").exists()
+    assert (other / "sentinel").read_text() == "keep"
+    assert (pano / f"{tag}-report.json").read_text() == "keep report"
+    assert (root / "panopticon.yaml").read_text() == "keep config"

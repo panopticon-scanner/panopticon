@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -129,6 +130,28 @@ class TestRunManifest(unittest.TestCase):
     def test_run_tag_none_for_empty_manifest(self):   # §5.1 (falls back to flat)
         self.assertIsNone(rm.run_tag(None))
         self.assertIsNone(rm.run_tag({}))
+
+    def test_run_tag_is_total_for_json_shapes(self):
+        for value in ([], ["repo"], "repo", 12, True, None):
+            with self.subTest(top_level=value):
+                self.assertIsNone(rm.run_tag(value))
+        for scope in ([], ["repo"], "repo", 12, True, None):
+            for created in ([], {}, 12, True, "../../x/y", "2026-09-23T00:00:00Z"):
+                with self.subTest(scope=scope, created=created):
+                    tag = rm.run_tag({"host": "claude", "security_mode": "standard",
+                                      "scope": scope, "created": created, "run_id": "abc123"})
+                    self.assertRegex(tag, r"^[A-Za-z0-9-]+$")
+                    self.assertLessEqual(len(tag), 220)
+        long = "a" * 1000
+        tag = rm.run_tag({"host": long, "security_mode": long,
+                          "scope": {"mode": long}, "created": long,
+                          "run_id": long})
+        self.assertIsNotNone(re.fullmatch(r"[A-Za-z0-9-]+", tag))
+        self.assertLessEqual(len(tag), 220)
+
+    def test_load_manifest_discards_unhashable_host(self):
+        rm.write_manifest(self.root, {"host": [], "review_root": self.root})
+        self.assertIsNone(rm.load_manifest(self.root))
 
     def test_scope_recorded_and_conflict_detected(self):
         m = rm.build_manifest(**self._params(

@@ -85,12 +85,17 @@ def run_tag(manifest):
     write path, where the host comes from CLI args) and `load_manifest` (the
     read path, which discards an unusable manifest exactly like a corrupt one).
     """
-    if not manifest:
+    if not isinstance(manifest, dict) or not manifest:
         return None
-    host = _slug(manifest.get("host"), "host")
-    mode = _slug(manifest.get("security_mode"), "standard")
-    scope = _slug((manifest.get("scope") or {}).get("mode"), "repo")
-    stamp = (manifest.get("created") or "")[:10].replace("-", "") or "00000000"
+    # Bound each untrusted part, leaving ordinary existing tags byte-identical.
+    host = _slug(manifest.get("host"), "host")[:60]
+    mode = _slug(manifest.get("security_mode"), "standard")[:60]
+    scope_value = manifest.get("scope")
+    scope_mode = scope_value.get("mode") if isinstance(scope_value, dict) else None
+    scope = _slug(scope_mode, "repo")[:60]
+    created = manifest.get("created")
+    stamp_text = created[:10].replace("-", "") if isinstance(created, str) else ""
+    stamp = _slug(stamp_text, "00000000")[:10]
     rid = _slug(manifest.get("run_id"), "")[:8] or "00000000"
     return f"{host}-{mode}-{scope}-{stamp}-{rid}"
 
@@ -223,7 +228,8 @@ def load_manifest(review_root):
         return None
     if not isinstance(data, dict):
         return None
-    if data.get("host") is not None and hosts.spec(data["host"]) is None:
+    if data.get("host") is not None and (
+            not isinstance(data["host"], str) or hosts.spec(data["host"]) is None):
         print("driver: discarding run-manifest.json naming unknown host %r "
               "(known: %s)" % (data.get("host"), "|".join(hosts.known_hosts())),
               file=sys.stderr, flush=True)
