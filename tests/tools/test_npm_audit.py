@@ -190,6 +190,12 @@ class TestNpmAuditAdapter(unittest.TestCase):
         self.assertEqual([f["citations"]["cve"] for f in findings],
                          [["CVE-2021-23337"], ["CVE-2020-8203"]])
         self.assertEqual([f["severity"] for f in findings], ["HIGH", "MEDIUM"])
+        self.assertEqual([f["tool_evidence"]["vulnerable_versions"] for f in findings],
+                         ["<4.17.11", ">=4.17.11 <4.17.21"])
+        self.assertEqual([f["title"] for f in findings], [
+            "lodash <4.17.11: Prototype Pollution in lodash",
+            "lodash >=4.17.11 <4.17.21: Regular Expression Denial of Service in lodash",
+        ])
         self.assertEqual([f["location"]["file"] for f in findings],
                          ["package-lock.json", "package-lock.json"])
 
@@ -260,6 +266,8 @@ class TestNpmAuditAdapter(unittest.TestCase):
         }).encode()
         findings = na.NpmAuditAdapter().parse(sample, "g1")
         self.assertEqual(first(findings)["severity"], "MEDIUM")
+        self.assertEqual(first(findings)["tool_evidence"]["vulnerable_versions"],
+                         "<4.17.21")
 
     def test_parse_omits_none_tool_evidence_fields_v1(self):
         sample = json.dumps({

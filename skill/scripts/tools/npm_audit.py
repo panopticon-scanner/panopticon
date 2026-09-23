@@ -122,11 +122,14 @@ class NpmAuditAdapter:
             fix = vuln.get("fixAvailable")
             fixed_version = fix.get("version") if isinstance(fix, dict) else None
             for via in self._advisories(vuln):
+                advisory_range = via.get("range")
+                affected_range = (advisory_range if advisory_range is not None
+                                  else vuln.get("range"))
                 out.append(self._finding_from(
                     n, group, manifest,
                     name=vuln.get("name"),
-                    versions_title=vuln.get("range", ""),
-                    versions_evidence=vuln.get("range"),
+                    versions_title=affected_range if affected_range is not None else "",
+                    versions_evidence=affected_range,
                     severity_raw=via.get("severity") or vuln.get("severity"),
                     title=via.get("title", "vulnerability"),
                     description=via.get("title", "No description provided."),
