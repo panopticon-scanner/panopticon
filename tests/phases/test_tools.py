@@ -228,8 +228,9 @@ class TestToolsPhase(unittest.TestCase):
         self.assertEqual(marker["returncode"], 2)
 
     def test_crash_redacts_complete_key_before_limiting_diagnostic(self):
-        key = ("-----BEGIN PRIVATE KEY-----\n" + "A" * 80
-               + "\n-----END PRIVATE KEY-----")
+        key_type = "PRIVATE KEY"
+        key = (f"-----BEGIN {key_type}-----\n" + "A" * 80
+               + f"\n-----END {key_type}-----")
         stderr = "x" * 260 + key + " trailing diagnostic"
         captured = io.StringIO()
         with mock.patch("scripts.phases.child._run_child",

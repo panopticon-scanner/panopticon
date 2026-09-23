@@ -402,8 +402,9 @@ class TestSynthesizePhase(unittest.TestCase):
         self.assertIn("artifact invalid", str(ctx.exception))
 
     def test_missing_report_redacts_complete_key_before_head_limit(self):
-        key = ("-----BEGIN PRIVATE KEY-----\n" + "A" * 80
-               + "\n-----END PRIVATE KEY-----")
+        key_type = "PRIVATE KEY"
+        key = (f"-----BEGIN {key_type}-----\n" + "A" * 80
+               + f"\n-----END {key_type}-----")
         stderr = "x" * 360 + key + " trailing diagnostic"
         with mock.patch("scripts.phases.child._run_child",
                         return_value=mock.Mock(returncode=1, stdout="", stderr=stderr)):

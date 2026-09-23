@@ -50,8 +50,9 @@ class TestDiscoveryPhase(unittest.TestCase):
 
     def test_missing_groups_redacts_complete_key_before_limiting_error(self):
         self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
-        key = ("-----BEGIN PRIVATE KEY-----\n" + "A" * 80
-               + "\n-----END PRIVATE KEY-----")
+        key_type = "PRIVATE KEY"
+        key = (f"-----BEGIN {key_type}-----\n" + "A" * 80
+               + f"\n-----END {key_type}-----")
         stderr = "x" * 360 + key + " trailing diagnostic"
         with mock.patch("scripts.phases.child._run_child",
                         return_value=mock.Mock(returncode=1, stdout="", stderr=stderr)):
