@@ -1,4 +1,5 @@
 import os
+import re
 import unittest
 
 import yaml
@@ -139,11 +140,14 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
 
     def test_the_scan_jobs_permissions_are_the_recorded_ones(self):
         # Pinned, not merely present: a later edit that widens them has to
-        # come through this line.
+        # come through this line. #1790 added `actions: read`, and it is the
+        # narrowest grant that can read a base commit run's
+        # `raw-scanner-captures` artifact -- see
+        # `TestTheDeltaBaselineIsFetchedOnEveryRoute`.
         self.assertEqual(
             self._workflow()["jobs"]["scan"]["permissions"],
             {"contents": "read", "packages": "read",
-             "security-events": "write"})
+             "security-events": "write", "actions": "read"})
 
     def test_only_trusted_controller_runs_gate_and_scanners(self):
         runs = self._run_text(self._workflow())
@@ -255,7 +259,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         job = workflow["jobs"]["scan"]
         self.assertEqual(job["permissions"], {
             "contents": "read", "packages": "read",
-            "security-events": "write",
+            "security-events": "write", "actions": "read",
         })
         names = [step.get("name") for step in job["steps"]]
         self.assertIn(
@@ -419,6 +423,383 @@ class TestBothScanStepsCarryBothExclusions(unittest.TestCase):
             for name in self.STEPS:
                 self.assertEqual(steps[name].count("--exclude"), 2,
                                  (path, name, steps[name]))
+
+
+class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
+    """#1790 owner ruling 2026-09-23, as amended by the controller's C1 ruling:
+    EVERY route is delta-aware, and no route is inert.
+
+    The first cut fetched a baseline on the PR routes only and left the push to
+    main strict. That combination was self-defeating, and the review measured
+    it: the moment `#1790`'s promotion merged, main's own gate failed on the 24
+    findings it promotes; `security.yml` has one job, so the RUN's conclusion
+    was `failure`; and the next PR's lookup (`--status success`) therefore found
+    no run at its base commit and fell back to strict on all 24 -- which no
+    author could clear from their own diff, so main never went green again and
+    every subsequent PR inherited the same state.
+
+    So: the push route resolves `github.event.before` (the previous main head)
+    and the PR routes resolve `base.sha`, and from whichever sha that is the
+    step walks up to five FIRST-PARENT ancestors looking for one with a
+    successful run. `--status success` stays -- a red run's capture may be
+    partial -- and walking further back only makes the gate stricter (an older
+    baseline means more findings read as new), never looser.
+
+    Everything else here is a fail-toward-strictness pin. The gate receives the
+    flags only when a download actually happened, and the fetch step degrades to
+    strict rather than to red (`continue-on-error: true`, review M3: a step
+    timeout on a 5-minute deadline must not fail a required check over a
+    missing convenience).
+    """
+
+    BASELINE = "Download the base commit's scanner captures"
+    GATE = "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"
+    PR_ROUTES = ((WORKFLOW, "scan"), (FORK_WORKFLOW, "fork-scan"))
+    ROUTES = PR_ROUTES
+    MAX_HOPS = 5
+
+    def _job(self, path, job):
+        with open(path, encoding="utf-8") as fh:
+            return yaml.safe_load(fh)["jobs"][job]
+
+    def _step(self, job, name):
+        return next((s for s in job.get("steps", []) if s.get("name") == name),
+                    None)
+
+    def _budget(self, path, name):
+        """Every NUMBER the fetch's bound is made of, parsed out of the script.
+
+        Review N2. The three "bounded" pins this replaces were substring
+        assertions, and substrings do not bound anything: `"MAX_HOPS=5"` is a
+        substring of `"MAX_HOPS=500"`, `"DEADLINE=300"` of `"DEADLINE=3000"`,
+        and a regex for `timeout` + digits matches any cap. All five inflations passed
+        the whole suite, and together they put the pathological walk at ~50
+        minutes against a job ceiling of 30 -- the step killed, the required
+        check red, and every guard test still green. So the values are parsed
+        and the ARITHMETIC is asserted, which is the thing that was meant.
+
+        Each pattern must match exactly once: a second `timeout` cap on the
+        same command, or a second `MAX_HOPS=`, is an ambiguity this must not
+        silently resolve.
+        """
+        job = self._job(path, name)
+        run = _without_comments(self._step(job, self.BASELINE)["run"])
+        def one(pattern):
+            found = re.findall(pattern, run)
+            self.assertEqual(len(found), 1, (pattern, run))
+            return int(found[0])
+        return {
+            "hops": one(r"MAX_HOPS=(\d+)"),
+            "deadline": one(r"DEADLINE=(\d+)"),
+            "limit": one(r"--limit (\d+)"),
+            "list": one(r"timeout (\d+) gh run list"),
+            "download": one(r"timeout (\d+) gh run download"),
+            "api": one(r"timeout (\d+) gh api"),
+            "ceiling": job["timeout-minutes"] * 60,
+        }
+
+    def test_both_pull_request_routes_fetch_the_base_commits_captures(self):
+        for path, name in self.PR_ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name), self.BASELINE)
+                self.assertIsNotNone(step, path)
+                self.assertEqual(step.get("id"), "baseline")
+                run = _without_comments(step["run"])
+                self.assertIn("gh run list --workflow security.yml", run)
+                self.assertIn("--status completed", run)   # N1; see below
+                self.assertIn("--json databaseId", run)
+                self.assertIn("--limit 1", run)
+                self.assertIn("gh run download", run)
+                self.assertIn("-n raw-scanner-captures", run)
+                self.assertIn('-D "$RUNNER_TEMP/baseline"', run)
+
+    def test_each_route_resolves_its_own_base_and_reads_it_through_env(self):
+        # One expression, pinned whole. A push to main compares against the
+        # PREVIOUS main head (`github.event.before`); a pull request compares
+        # against its base -- never its own head, which would carry the PR's
+        # own findings and excuse every one of them. Any other event (schedule,
+        # dispatch) resolves to the empty string, which the script reads as "no
+        # base" and runs strict.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name), self.BASELINE)
+                self.assertEqual(
+                    step["env"]["BASE_SHA"],
+                    "${{ github.event_name == 'push' && github.event.before"
+                    " || github.event.pull_request.base.sha }}")
+                self.assertEqual(step["env"]["GH_TOKEN"], "${{ github.token }}")
+                self.assertEqual(step["env"]["GH_REPO"], "${{ github.repository }}")
+                self.assertNotIn("${{ github.event", _without_comments(step["run"]))
+
+    def test_the_all_zero_sha_is_refused_rather_than_queried(self):
+        # A branch creation and a force push report an all-zero `before`.
+        # Protected main cannot produce either, which is exactly why the guard
+        # is asserted rather than assumed: nothing else would catch its removal.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertIn("ZERO_SHA=0000000000000000000000000000000000000000",
+                              run)
+                self.assertIn('[ "$sha" != "$ZERO_SHA" ]', run)
+
+    def test_the_walk_back_is_bounded_and_first_parent(self):
+        # The C1 fix, and the two properties that keep it safe. BOUNDED: a
+        # baseline hunt that could walk the whole history would spend a
+        # required check's budget on API calls. FIRST-PARENT: on this repo's
+        # merge-commit history the first parent is main's own line, so the
+        # walk stays on commits `security.yml` actually ran against.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertIn('[ "$hops" -ge "$MAX_HOPS" ]', run)
+                self.assertIn('gh api "repos/$GH_REPO/commits/$sha"', run)
+                self.assertIn(".parents[0].sha", run)
+                # Parsed, not matched as a substring (N2): `MAX_HOPS=500`
+                # contains `MAX_HOPS=5`.
+                self.assertEqual(self._budget(path, name)["hops"], self.MAX_HOPS)
+
+    def test_the_status_filter_admits_a_completed_run(self):
+        # Review N1. `--status success` was kept in fix round 1 to stop a
+        # partial baseline from excusing head findings -- and by fix round 2
+        # that was belt over a working brace: `load_baseline` runs
+        # `lost_required_coverage` on the baseline itself and REFUSES a partial
+        # or unparseable one loudly and strictly (I2). What the belt still did
+        # was create an ABSORBING STATE. A HIGH the owner dismisses on the
+        # Security tab rather than removing from tool output reds main's own
+        # run; each following commit reaches the last green one a hop further
+        # back; at the sixth it is past `MAX_HOPS`, and from then on NOTHING --
+        # no PR, no push -- can find a baseline, which is C1 restored with no
+        # way out. Six runs lost to a registry outage, or a 90-day artifact
+        # expiry on a slow repo, reach the same state with no finding at all.
+        #
+        # `completed` admits a red run's capture, which `if: always()` has
+        # always uploaded. The walk stays for the cases a status filter cannot
+        # help with: an expired artifact, and a cancelled run that has none.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertIn("--status completed", run)
+                # Not merely "the flag changed": the word must be gone from the
+                # script, notice text included, or a later edit reads as though
+                # the filter were still there.
+                self.assertNotIn("success", run)
+
+    def test_the_download_target_is_cleared_before_every_attempt(self):
+        # Review N3. Every hop downloads into the SAME directory. A download
+        # that fails after extracting part of its archive leaves those files
+        # behind, and a later successful hop extracts over them -- a baseline
+        # spliced from two different commits, which `lost_required_coverage`
+        # cannot see because the surviving manifest is the later run's. Both
+        # commits are on main and within five hops, so the blast radius is
+        # small; the fix is one line, so the radius is not the argument.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertEqual(run.count("rm -rf"), 1)
+                # In the `&&` chain, BEFORE the download: a clear that ran
+                # after it, or in a branch the download does not share, clears
+                # nothing that matters.
+                clear = run.index("rm -rf")
+                self.assertLess(clear, run.index("gh run download"))
+                self.assertGreater(clear, run.index("gh run list"))
+                # Guarded by `[ -n "${RUNNER_TEMP:-}" ]`, because this is the one
+                # command in the step where an empty value is destructive
+                # rather than useless -- and guarded rather than `:?`-expanded,
+                # because a `:?` failure aborts the step (rc=1, no `found=`),
+                # the one thing the step promises never to do; the guard fails
+                # this hop and the run degrades to strict.
+                self.assertIn(
+                    '[ -n "${RUNNER_TEMP:-}" ] && rm -rf "$RUNNER_TEMP/baseline"',
+                    run)
+                self.assertNotIn("${RUNNER_TEMP:?}", run)
+
+    def test_the_notice_names_the_sha_the_baseline_came_from(self):
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertEqual(run.count("::notice::"), 2)   # found, and not
+                self.assertIn("hop(s) back from", run)
+
+    def test_the_fetch_precedes_the_gate(self):
+        for path, name in self.PR_ROUTES:
+            with self.subTest(workflow=path):
+                steps = [s.get("name") for s in self._job(path, name)["steps"]]
+                self.assertLess(steps.index(self.BASELINE), steps.index(self.GATE))
+
+    def test_the_fetch_degrades_to_strict_without_softening_the_step(self):
+        # Review M3, fix round 2. The first answer was `continue-on-error: true`
+        # plus `timeout-minutes: 5`, which bought the degradation by making one
+        # step's failure invisible -- and `continue-on-error` is refused
+        # OUTRIGHT in these two files (`TestNeitherWorkflowSwallowsAFailure`),
+        # because it is the one-line edit that turns the gate's own refusal
+        # into a pass. Buying a property by weakening that ban is the wrong
+        # trade even when this particular step is harmless.
+        #
+        # So neither key is here. The same property is bought inside the
+        # SCRIPT: every `gh` call is wrapped in coreutils `timeout`, every one
+        # of them sits in an `if`/`&&` position where `set -e` does not fire,
+        # and a `timeout` that fires returns 124 -- a failure like any other,
+        # which advances the walk or ends it. A slow or absent `gh` therefore
+        # costs the DELTA (no `found=true`, so the gate reads the empty string
+        # and runs strict) and can never cost the check.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name), self.BASELINE)
+                self.assertNotIn("continue-on-error", step)
+                self.assertNotIn("timeout-minutes", step)
+                gate = self._step(self._job(path, name), self.GATE)
+                self.assertNotIn("continue-on-error", gate)
+
+    def test_every_gh_call_in_the_fetch_carries_its_own_deadline(self):
+        # The half of the trade above that has to be measured rather than
+        # asserted in prose: ONE unwrapped `gh` is a step that can hang until
+        # the JOB's 30-minute ceiling kills it, which reds the required check
+        # exactly as `continue-on-error` was there to prevent.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                calls = [m.start() for m in re.finditer(r"(?<![\w-])gh\s", run)]
+                self.assertEqual(len(calls), 3, run)   # list, download, api
+                for pos in calls:
+                    self.assertRegex(run[max(0, pos - 24):pos],
+                                     r"timeout \d+ $")
+
+    def test_the_whole_walk_is_bounded_well_inside_the_jobs_ceiling(self):
+        # Per-call deadlines do not bound the WALK. The pathological path is a
+        # completed run at every sha whose download fails: six list calls, six
+        # downloads and five parent lookups, which at the shipped caps is
+        # 1740s against a job ceiling of 1800 -- inside it by a minute, which
+        # is not a bound anyone should rely on. `DEADLINE`, tested at the TOP
+        # of the loop, is what bounds it: an iteration may START inside the
+        # budget, so the true worst case is the budget plus ONE WHOLE
+        # ITERATION's caps (N4: list + download + api, not one call's).
+        #
+        # Asserted as ARITHMETIC over the values parsed out of the script
+        # (N2), so inflating any literal fails here even though each one on its
+        # own still "looks" pinned.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                b = self._budget(path, name)
+                self.assertIn('[ "$SECONDS" -lt "$DEADLINE" ]',
+                              _without_comments(
+                                  self._step(self._job(path, name),
+                                             self.BASELINE)["run"]))
+                iteration = b["list"] + b["download"] + b["api"]
+                worst = b["deadline"] + iteration
+                # Half the job's budget: the scan itself has to fit in the rest
+                # of it, so "under the ceiling" is not the bar -- "nowhere near
+                # it" is.
+                self.assertLess(worst, b["ceiling"] // 2,
+                                "worst-case fetch %ds vs job ceiling %ds: %r"
+                                % (worst, b["ceiling"], b))
+                # And the un-deadlined walk, which is what `DEADLINE` exists
+                # for. Not required to fit -- it is stated so a reader can see
+                # why the budget is load-bearing rather than decorative.
+                undeadlined = ((b["hops"] + 1) * (b["list"] + b["download"])
+                               + b["hops"] * b["api"])
+                self.assertGreater(undeadlined, worst)
+                self.assertEqual(b["limit"], 1)   # one run id, parsed not matched
+
+    def test_the_step_succeeds_in_both_branches_and_writes_one_output(self):
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name), self.BASELINE)
+                run = _without_comments(step["run"])
+                self.assertIn("set -euo pipefail", run)
+                self.assertIn("else", run)
+                self.assertIn("::notice::", run)
+                # Both arms write the output the gate reads. A branch that
+                # wrote none would leave the gate reading an empty string,
+                # which is strict -- but by accident rather than by decision.
+                self.assertEqual(run.count('>> "$GITHUB_OUTPUT"'), 1)
+                self.assertIn('echo "found=$found" >> "$GITHUB_OUTPUT"', run)
+
+    def test_no_route_skips_the_fetch(self):
+        # The `if: github.event_name == 'pull_request'` this replaces is what
+        # made the feature inert: it left main strict, main's gate red on the
+        # 24 promoted findings, the run's conclusion `failure`, and therefore
+        # no successful run for any PR's lookup to find. Every route fetches;
+        # which sha it fetches FOR is decided by `BASE_SHA`, and a route with
+        # no base resolves to the empty string and runs strict on its own.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                step = self._step(self._job(path, name), self.BASELINE)
+                self.assertIsNone(step.get("if"))
+
+    def test_the_gate_receives_the_flags_only_when_the_download_succeeded(self):
+        for path, name in self.PR_ROUTES:
+            with self.subTest(workflow=path):
+                gate = self._step(self._job(path, name), self.GATE)
+                self.assertEqual(gate["env"]["BASELINE_FOUND"],
+                                 "${{ steps.baseline.outputs.found }}")
+                run = _without_comments(gate["run"])
+                self.assertIn('if [ "$BASELINE_FOUND" = "true" ]; then', run)
+                self.assertIn(
+                    '--baseline-dir "$RUNNER_TEMP/baseline/panopticon-tools-output"',
+                    run)
+                self.assertIn(
+                    '--baseline-manifest '
+                    '"$RUNNER_TEMP/baseline/panopticon-tools-manifest.json"',
+                    run)
+                # Exactly one invocation of the gate, so the exclusions and the
+                # flags cannot drift between a baseline branch and a strict one.
+                self.assertEqual(run.count("security_gate.py"), 1)
+                self.assertEqual(run.count("--baseline-dir"), 1)
+
+    def test_every_route_fetches_before_it_checks_out_the_scan_target(self):
+        # Review M9, widened in fix round 2. This is the only step in either
+        # job that exports `GH_TOKEN`, and both jobs now hold `actions: read`,
+        # so it runs before ANY scanned content is on disk -- fork-controlled
+        # on one route, a PR branch's own on the other. The two files were
+        # already identical in the step's CONTENT; this makes them identical in
+        # its POSITION too, which is one less thing for a later reader to
+        # "reconcile" in the wrong direction.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                steps = [s.get("name") for s in self._job(path, name)["steps"]]
+                self.assertLess(steps.index("Checkout trusted scanner controller"),
+                                steps.index(self.BASELINE))
+                self.assertLess(steps.index(self.BASELINE),
+                                steps.index("Checkout scan target"))
+
+    def test_a_skipped_fetch_leaves_the_gate_strict(self):
+        # The push-to-main route skips the fetch, and a skipped step's outputs
+        # are the empty string -- which is not "true", so no flag is passed.
+        # This is the whole mechanism by which one gate command serves both
+        # routes; it is asserted rather than assumed because the alternative
+        # (a second, strict copy of the command) is what the drift test bans.
+        # A fetch that timed out, or one whose walk-back found nothing, never
+        # writes `found=true`; the gate tests for that literal, so anything
+        # else -- including the empty string a failed step leaves behind --
+        # runs strict through the same single command.
+        gate = self._step(self._job(WORKFLOW, "scan"), self.GATE)
+        run = _without_comments(gate["run"])
+        self.assertIn('if [ "$BASELINE_FOUND" = "true" ]; then', run)
+        self.assertNotIn('"$BASELINE_FOUND" !=', run)
+        self.assertIsNone(gate.get("if"))
+
+    def test_actions_read_is_the_only_permission_either_file_gained(self):
+        # Pinned as whole blocks: `actions: read` is what reads another run's
+        # artifacts, and nothing else moved to get it.
+        self.assertEqual(
+            self._job(WORKFLOW, "scan")["permissions"],
+            {"contents": "read", "packages": "read",
+             "security-events": "write", "actions": "read"})
+        self.assertEqual(
+            self._job(FORK_WORKFLOW, "fork-scan")["permissions"],
+            {"contents": "read", "packages": "read", "actions": "read"})
+        self.assertEqual(
+            self._job(FORK_WORKFLOW, "unlabel")["permissions"],
+            {"pull-requests": "write"})
+        with open(FORK_WORKFLOW, encoding="utf-8") as fh:
+            self.assertEqual(yaml.safe_load(fh)["permissions"],
+                             {"contents": "read", "packages": "read"})
 
 
 if __name__ == "__main__":
