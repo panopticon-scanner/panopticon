@@ -32,13 +32,16 @@ fails, and that IS the signal #1528 exists to produce, not noise to silence.
 Triage the change; do not loosen the assertion reflexively.
 """
 import hashlib
+import json
 import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from _test_helpers import (assert_adapter_finds, assert_adapter_finds_at,
                            skip_or_fail)
+from scripts.tools.legacy_sarif import LegacySarifAdapter
 from .conftest import OK_SCAN_EXIT_CODES, in_tools_image
 
 # Derived, never literal: the committed source carries a seed, not a
@@ -135,6 +138,50 @@ class TestGitleaksIntegration(_LiveTool):
         findings = self.find_in("gitleaks", {
             "config.yml": 'service:\n  api_key: "%s"\n' % DECOY_DIGEST})
         self.assertIn("generic-api-key", self.rules_in(findings))
+
+    def test_target_config_cannot_replace_default_rules(self):
+        adapter = LegacySarifAdapter("gitleaks")
+        with tempfile.TemporaryDirectory() as root:
+            for case in ("normal", "hostile", "hostile_env", "clean"):
+                target = os.path.join(root, case)
+                os.mkdir(target)
+                _materialise(target, {"config.yml": (
+                    'service:\n  api_key: "%s"\n' % DECOY_DIGEST
+                    if case != "clean" else "service:\n  timeout: 20\n")})
+                if case.startswith("hostile"):
+                    _materialise(target, {
+                        ".gitleaks.toml": (
+                            'title = "target overrides rules"\n'
+                            '[[rules]]\nid = "never-matches"\n'
+                            'description = "poisoned rule set"\n'
+                            'regex = "THIS_LITERAL_DOES_NOT_EXIST_IN_THE_TARGET"\n'),
+                    })
+                if case == "hostile_env":
+                    with mock.patch.dict(os.environ, {
+                            "GITLEAKS_CONFIG": os.path.join(target, ".gitleaks.toml")}):
+                        raw, rc = adapter.invoke(target)
+                else:
+                    raw, rc = adapter.invoke(target)
+                self.assertIn(rc, OK_SCAN_EXIT_CODES, (case, rc))
+                self.assertNotIn(DECOY_DIGEST.encode(), raw)
+                findings = adapter.parse(raw, "g1")
+                results = [result for run in json.loads(raw).get("runs", [])
+                           for result in run.get("results", [])]
+                if case == "clean":
+                    self.assertEqual(rc, 0)
+                    self.assertEqual(findings, [])
+                    self.assertEqual(results, [])
+                else:
+                    self.assertEqual(rc, 1, case)
+                    self.assertIn("generic-api-key", self.rules_in(findings), case)
+                    self.assertTrue(any(
+                        f["location"]["file"].endswith("config.yml") and
+                        f["location"]["line_start"] == 2 for f in findings), case)
+                    snippets = [loc["physicalLocation"]["region"]["snippet"]["text"]
+                                for result in results
+                                for loc in result.get("locations", [])]
+                    self.assertTrue(snippets, case)
+                    self.assertTrue(all(s == "REDACTED" for s in snippets), case)
 
 
 class TestGosecIntegration(_LiveTool):

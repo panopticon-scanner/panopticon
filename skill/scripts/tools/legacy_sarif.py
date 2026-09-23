@@ -1,6 +1,7 @@
 """Adapter that preserves the existing SARIF ingestion for semgrep/bandit/etc."""
 from __future__ import annotations
 import json
+from pathlib import Path
 
 from . import sarif_utils as su
 from .base import run_tool, scratch_cwd
@@ -81,9 +82,16 @@ class LegacySarifAdapter:
             return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=target)
         # #1877: every other tool here names its scan root on argv (semgrep,
         # trivy, bandit positionally; gitleaks via `--source`), so the cwd is
-        # a scratch and `.semgrepignore` / `.gitleaksignore` / `.bandit`
-        # sitting in the target's root are no longer read from it.
+        # a scratch, so cwd-relative scanner configuration comes from there.
+        # Gitleaks separately reads source-root `.gitleaksignore` even with a
+        # scratch cwd; that remaining source-root behavior is outside this fix.
         with scratch_cwd("%s-cwd-" % self.name) as cwd:
+            if self.name == "gitleaks":
+                # An explicit scanner-owned config wins over a target's
+                # .gitleaks.toml (and GITLEAKS_CONFIG). Extend all built-ins.
+                config = Path(cwd) / "gitleaks.toml"
+                config.write_bytes(b"[extend]\nuseDefault = true\n")
+                cmd.extend(("--config", str(config)))
             return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
