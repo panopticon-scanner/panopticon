@@ -1,5 +1,5 @@
 # tests/test_diff_map.py
-import contextlib, io, os, unittest, subprocess, tempfile, shutil
+import contextlib, io, json, os, unittest, subprocess, tempfile, shutil
 from unittest import mock
 
 import scripts.diff_map as diff_map
@@ -8,6 +8,13 @@ from tools.git_repo import make_git_repo
 
 def _git(d, *a):
     subprocess.run(["git", "-C", d, *a], check=True, capture_output=True)
+
+
+def _git_bytes(d, *args, input_bytes=None):
+    return subprocess.run(
+        [b"git", b"-C", os.fsencode(d), *args], input=input_bytes,
+        check=True, capture_output=True, timeout=30,
+    ).stdout
 
 DIFF = """diff --git a/app/db.py b/app/db.py
 index 111..222 100644
@@ -441,17 +448,41 @@ class TestHunkMap(unittest.TestCase):
         self.assertTrue(diff_map.classify(
             {"location": {"file": "a.py", "line_start": 9}}, m)["on_diff"], m)
 
-    def test_diff_output_that_is_not_utf8_fails_loud(self):
-        # The diff is read as BYTES (so no newline translation) and decoded
-        # here, pinned to UTF-8 rather than the operator's locale. Undecodable
-        # output must stay a loud DiffMapError -- what text-mode strict
-        # decoding already did -- never a silently empty map (#5.0-08).
+    def test_non_utf8_payload_keeps_ranges_and_serializable_utf8_keys(self):
+        for label, payload in (("latin-1", "café".encode("latin-1")),
+                               ("shift-jis", "表".encode("shift_jis"))):
+            with self.subTest(encoding=label):
+                name = "café.py"
+                d = make_git_repo(
+                    test_case=self,
+                    files={name: "".join("line%d\n" % i for i in range(1, 11))},
+                    branch="main", realpath=False,
+                )
+                _git(d, "checkout", "-q", "-b", "feat")
+                lines = [("line%d\n" % i).encode("ascii") for i in range(1, 11)]
+                lines[1] = b"value = '" + payload + b"'\n"
+                lines[8] = b"CHANGED9\n"
+                with open(os.path.join(d, name), "wb") as fh:
+                    fh.writelines(lines)
+                _git(d, "commit", "-qam", label)
+                m = diff_map.hunk_map(d, "main")
+                self.assertEqual(m, {name: [(2, 2), (9, 9)]})
+                serialized = json.dumps(m, ensure_ascii=False).encode("utf-8")
+                self.assertEqual(json.loads(serialized), {name: [[2, 2], [9, 9]]})
+                for key in m:
+                    key.encode("utf-8", "strict")
+
+    def test_non_utf8_filename_fails_loud(self):
+        # An undecodable path in the diff must never become a JSON map key.
         def fake(repo, args, timeout=60, text=True):
             r = mock.Mock()
             if args[0] == "merge-base":
                 r.returncode, r.stdout, r.stderr = 0, "deadbeef\n", ""
             elif args[0] == "-c":
-                r.returncode, r.stdout, r.stderr = 0, b"+++ b/\xff\xfe.py\n", b""
+                r.returncode, r.stdout, r.stderr = 0, (
+                    b"diff --git a/bad_\xff.py b/bad_\xff.py\n"
+                    b"--- /dev/null\n+++ b/bad_\xff.py\n"
+                    b"@@ -0,0 +1 @@\n+fixture\n"), b""
             else:
                 r.returncode, r.stdout, r.stderr = 0, "", ""
             return r
@@ -548,6 +579,50 @@ class TestHunkMap(unittest.TestCase):
         # #1738 fix round 1: and the diff is read as BYTES, because text mode
         # rewrites a lone \r to \n and forges a diff line out of payload.
         self.assertFalse(seen["text"])
+
+
+class TestNonUtf8GitPaths(unittest.TestCase):
+    """Real Git index entries exercise paths this macOS filesystem refuses."""
+
+    def _repo_with_bad_index_path(self, rename):
+        d = _make_repo(self)
+        path = b"bad_\xe9.py"
+        if rename:
+            blob = _git_bytes(d, b"rev-parse", b"HEAD:a.py").strip()
+            _git_bytes(d, b"update-index", b"--force-remove", b"a.py")
+        else:
+            blob = _git_bytes(d, b"hash-object", b"-w", b"--stdin",
+                              input_bytes=b"fixture\n").strip()
+        _git_bytes(d, b"update-index", b"--add", b"--cacheinfo",
+                   b"100644," + blob + b"," + path)
+        return d
+
+    def test_real_git_rejects_quoted_and_unquoted_bad_filename(self):
+        for quote_path in (b"true", b"false"):
+            with self.subTest(quote_path=quote_path):
+                d = self._repo_with_bad_index_path(rename=False)
+                raw = _git_bytes(d, b"-c", b"core.quotePath=" + quote_path,
+                                 b"diff", b"--cached", b"--unified=0",
+                                 b"--src-prefix=a/", b"--dst-prefix=b/", b"HEAD")
+                self.assertIn(b"\\351" if quote_path == b"true" else b"\xe9", raw)
+                with self.assertRaisesRegex(diff_map.DiffMapError, "UTF-8"):
+                    diff_map.parse_unified_diff(raw.decode("utf-8", "surrogateescape"))
+
+    def test_real_git_rejects_bad_filename_in_pure_rename(self):
+        for quote_path in (b"true", b"false"):
+            with self.subTest(quote_path=quote_path):
+                d = self._repo_with_bad_index_path(rename=True)
+                raw = _git_bytes(d, b"-c", b"core.quotePath=" + quote_path,
+                                 b"diff", b"--cached", b"--find-renames",
+                                 b"--unified=0", b"--src-prefix=a/",
+                                 b"--dst-prefix=b/", b"HEAD")
+                self.assertIn(b"similarity index 100%", raw)
+                self.assertIn(
+                    b'rename to "bad_\\351.py"' if quote_path == b"true"
+                    else b"rename to bad_\xe9.py", raw,
+                )
+                with self.assertRaisesRegex(diff_map.DiffMapError, "UTF-8"):
+                    diff_map.parse_unified_diff(raw.decode("utf-8", "surrogateescape"))
 
 
 class TestHunkMapUntrackedQuotedPaths(unittest.TestCase):
@@ -1271,4 +1346,3 @@ class TestSyncConfig(unittest.TestCase):
             self.assertTrue(any("symlink" in n for n in notes), notes)
             self.assertTrue(any("removed the PR's panopticon.yml" in n for n in notes), notes)
             self.assertFalse(os.path.exists(os.path.join(wt, "panopticon.yml")))
-

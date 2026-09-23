@@ -72,7 +72,7 @@ def _unquote_git_path(s):
     \\ verbatim, and \NNN for any other byte (up to three OCTAL digits). The
     escapes reconstitute BYTES, so the result is decoded UTF-8 with
     `surrogateescape` -- the same spelling `os.fsdecode` gives discovery for
-    the same name, which is what keeps the two sets comparable.
+    the same name. The parser rejects undecodable map keys before returning.
 
     Anything that is not exactly a C-quoted string -- unquoted, unterminated,
     a trailing backslash, an unknown escape, an octal value above 0xFF -- is
@@ -164,6 +164,14 @@ def _git_header_path(line):
     return p if rem[5 + half:] == p else None
 
 
+def _require_utf8_key(path):
+    """Refuse paths that cannot be represented in the UTF-8 hunk artifact."""
+    try:
+        path.encode("utf-8", "strict")
+    except UnicodeEncodeError as exc:
+        raise DiffMapError("delta map path is not UTF-8: %r" % path) from exc
+
+
 def parse_unified_diff(text):
     r"""{path: [(start, end), ...]} of changed NEW-side line ranges.
 
@@ -198,7 +206,8 @@ def parse_unified_diff(text):
     diff, whose `@@@` payload cannot be budgeted at all and whose two-column
     markers forge a header from content beginning with "+ " (defence-in-depth
     for a direct caller: hunk_map's own `git diff <base_sha>` never emits
-    one, see the guard). Same contract as
+    one, see the guard). Also refuses any resulting path that cannot be
+    encoded as UTF-8. Same contract as
     hunk_map's other guards (#5.0-08, #1256): half a map scopes the on-diff
     gate to half the change and passes vacuously for the rest, so it is never
     returned.
@@ -281,6 +290,8 @@ def parse_unified_diff(text):
             "diff/merge-base guards refuse (#5.0-08)." % budget)
     if pending is not None:
         result.setdefault(pending, [])
+    for key in result:
+        _require_utf8_key(key)
     return result
 
 
@@ -303,9 +314,9 @@ def _run_git(repo, args, timeout=60, text=True):
 def _decode_git(raw, lossy=False):
     """UTF-8-decode what `_run_git(..., text=False)` returned.
 
-    Strict by default so undecodable diff output fails loud at the call site
-    rather than quietly losing a path; `lossy` is for stderr, which is only
-    ever quoted back to the operator in a message.
+    Strict by default for non-diff Git output; `lossy` is for stderr, which is
+    only ever quoted back to the operator in a message. Diff output has its
+    own surrogateescape decode in hunk_map so source bytes remain countable.
     """
     return (raw or b"").decode("utf-8", "replace" if lossy else "strict")
 
@@ -388,18 +399,11 @@ def hunk_map(repo, base, exclude=()):
         raise DiffMapError("git diff against %s failed (rc=%s): %s"
                            % (base_sha, diff.returncode,
                               _decode_git(diff.stderr, lossy=True).strip()))
-    try:
-        # Pinned to UTF-8, not the operator's locale: git hands back path and
-        # content bytes as they are, and every other surface this map meets
-        # (the findings' location.file, diff-hunks.json) is UTF-8. Undecodable
-        # output stays a loud DiffMapError -- exactly what strict text-mode
-        # decoding already raised here -- never a silently empty map (#5.0-08).
-        diff_text = _decode_git(diff.stdout)
-    except UnicodeDecodeError as e:
-        raise DiffMapError(
-            "git diff against %s produced output that is not UTF-8 (%s). The "
-            "delta cannot be computed, and an empty diff would pass the "
-            "on-diff gate vacuously." % (base_sha, e))
+    # Git's diff framing is ASCII, while source payload can use another
+    # encoding. Preserve those bytes as surrogates so hunk budgeting still
+    # counts their lines; parse_unified_diff rejects any surrogate in a
+    # resulting path before it can become a map key or JSON artifact.
+    diff_text = (diff.stdout or b"").decode("utf-8", "surrogateescape")
     result = parse_unified_diff(diff_text)
     # `git diff` omits untracked files; add them as whole-file ranges.
     try:
@@ -468,6 +472,7 @@ def hunk_map(repo, base, exclude=()):
                       "delta map, so it contributes no changed-line ranges: %s"
                       % (rel, e), file=sys.stderr)
                 continue
+            _require_utf8_key(rel)
             result[rel] = [(1, max(n, 1))]
     for name in exclude:
         result.pop(name, None)
