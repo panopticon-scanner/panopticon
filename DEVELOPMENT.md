@@ -135,16 +135,24 @@ summary + JSON artifact) with standards citations and CI gating.
   Which commit is the base depends on the route: a PR compares against its
   `base.sha`, a push to `main` against the previous main head
   (`github.event.before`). From there the workflow walks the base itself plus
-  **up to five first-parent ancestors** looking for a *successful*
-  `security.yml` run to download from. A red run does upload its captures, but
-  it may have failed on lost coverage, and a partial baseline would excuse head
-  findings on the strength of a scan that did not finish — so an older complete
-  baseline is taken instead, which is strictly more conservative (more findings
-  read as new, never fewer).
+  **up to five first-parent ancestors** looking for a **completed**
+  `security.yml` run to download from — `completed`, not `successful`. A run
+  whose gate went red still uploaded its captures (`if: always()`), and the
+  gate refuses a *partial* baseline on its own terms anyway: `load_baseline`
+  runs the same `lost_required_coverage` check over the baseline's manifest and
+  dispositions that `evaluate` runs over the head, and rejects a baseline whose
+  scan lost an adapter loudly and strictly. Filtering on `success` as well
+  looked conservative and was in fact an absorbing state: a HIGH the owner
+  dismisses on the Security tab rather than removing from tool output reds
+  `main`'s own run, each following commit reaches the last green one a hop
+  further back, and at the sixth nothing — no PR, no push — can find a baseline
+  again. The walk is kept for the cases a status filter cannot help with: an
+  artifact that has expired (90-day retention) and a cancelled run that has
+  none.
 
   Every route is delta-aware because a half-delta eats itself: leaving the push
   to `main` strict means main's own gate fails on the standing set, the run's
-  conclusion is `failure`, no PR's lookup can then find a successful run at its
+  conclusion is `failure`, no PR's lookup can then find a usable run at its
   base, and every PR falls back to strict on findings its author cannot clear.
   The standing set on `main` is instead governed by the post-merge audit below
   and by the owner's own GitHub dismissals, and it is **disclosed** under the

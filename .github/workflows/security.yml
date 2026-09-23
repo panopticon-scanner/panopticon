@@ -93,14 +93,27 @@ jobs:
       # cannot clear from their own diff -- so main never goes green and every
       # later PR inherits the same state.
       #
-      # `raw-scanner-captures` IS uploaded on a red run (`if: always()` below),
-      # but a run that failed may have failed on lost coverage, and a partial
-      # baseline would excuse head findings on the strength of a scan that did
-      # not finish. So `--status success` stays and the step WALKS BACK
-      # instead: the base commit, then up to five first-parent ancestors, until
-      # it finds one with a successful run to download from. Walking further
-      # back only makes the gate stricter -- an older baseline means more
-      # findings read as new -- never looser.
+      # `--status completed`, NOT `--status success` (review N1). The success
+      # filter was there to stop a partial baseline -- a run that failed on
+      # lost coverage -- from excusing head findings. That is now exactly what
+      # the gate itself refuses: `load_baseline` runs `lost_required_coverage`
+      # on the baseline's own manifest and dispositions and rejects a partial
+      # or unparseable one LOUDLY and STRICTLY. The filter was belt over a
+      # working brace, and the belt had a failure mode of its own: an
+      # ABSORBING STATE. A HIGH the owner dismisses on the Security tab rather
+      # than removing from tool output reds main's own run; each following
+      # commit reaches the last green one a hop further back; at the sixth it
+      # is past `MAX_HOPS`, and from then on nothing -- no PR, no push -- can
+      # find a baseline. That is the C1 deadlock again, with no way out. Six
+      # runs lost to a registry outage, or a 90-day artifact expiry on a slow
+      # repo, reach it with no finding involved at all. A red run's capture is
+      # uploaded (`if: always()` below) and is now selectable.
+      #
+      # The WALK still earns its keep, for the cases no status filter can
+      # help with: an artifact that has expired, and a cancelled run that has
+      # none. From the base commit, up to five first-parent ancestors. Walking
+      # further back only makes the gate stricter -- an older baseline means
+      # more findings read as new -- never looser.
       #
       # What main gets in exchange for no longer being gated on its own
       # standing set: that set is DISCLOSED under the pre-existing heading on
@@ -149,13 +162,27 @@ jobs:
           #     it and never ends the step;
           #   * `DEADLINE` bounds the WHOLE walk, which the per-call caps do
           #     not: six list calls, six failed downloads and five parent
-          #     lookups at those caps is ~29 minutes against a job ceiling of
-          #     30. Checked every iteration, so the worst case is the budget
-          #     plus one call's cap.
+          #     lookups at those caps is 1740s against a job ceiling of 1800 --
+          #     inside it by a minute, which is not a bound. The budget is
+          #     tested at the TOP of the loop, so an iteration may START inside
+          #     it: the worst case is the budget plus ONE WHOLE ITERATION's
+          #     caps (60 + 180 + 60), i.e. 600s, not the budget plus one call's
+          #     (review N4). `TestTheDeltaBaselineIsFetchedOnEveryRoute`
+          #     asserts that arithmetic over these very numbers, so inflating
+          #     any of them fails there rather than here.
           #
           # A slow, broken or absent `gh` therefore costs the DELTA -- no
           # `found=true` is written, the gate reads the empty string and runs
           # strict on the whole tree -- and can never cost the check.
+          #
+          # `rm -rf` before EVERY attempt (review N3): each hop downloads into
+          # the same directory, and a download that fails after extracting part
+          # of its archive would leave those files for a later hop to extract
+          # over -- a baseline spliced from two commits, which the gate's
+          # lost-coverage probe cannot see because the surviving manifest is
+          # the later run's. `${RUNNER_TEMP:?}` rather than `$RUNNER_TEMP`
+          # because this is the one command here where an empty value is
+          # destructive rather than merely useless.
           #
           # The all-zero sha is what a branch creation or a force push reports
           # as `before`; protected main cannot produce either, which is exactly
@@ -170,9 +197,10 @@ jobs:
           while [ -n "$sha" ] && [ "$sha" != "$ZERO_SHA" ] \
                 && [ "$SECONDS" -lt "$DEADLINE" ]; do
             if run_id="$(timeout 60 gh run list --workflow security.yml \
-                  --commit "$sha" --status success --json databaseId --limit 1 \
+                  --commit "$sha" --status completed --json databaseId --limit 1 \
                   --jq '.[0].databaseId // empty')" \
                && [ -n "$run_id" ] \
+               && rm -rf "${RUNNER_TEMP:?}/baseline" \
                && timeout 180 gh run download "$run_id" \
                     -n raw-scanner-captures -D "$RUNNER_TEMP/baseline"; then
               found=true
@@ -189,7 +217,7 @@ jobs:
             fi
           done
           if [ "$found" != true ]; then
-            echo "::notice::No successful security.yml run carrying raw-scanner-captures within $MAX_HOPS first-parent hop(s) back from ${BASE_SHA:-(this event has no base commit)}; this run is gated strictly, on every HIGH/CRITICAL finding in the tree rather than only the ones it adds."
+            echo "::notice::No completed security.yml run carrying raw-scanner-captures within $MAX_HOPS first-parent hop(s) back from ${BASE_SHA:-(this event has no base commit)}; this run is gated strictly, on every HIGH/CRITICAL finding in the tree rather than only the ones it adds."
           fi
           echo "found=$found" >> "$GITHUB_OUTPUT"
 

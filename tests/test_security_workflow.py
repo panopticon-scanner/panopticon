@@ -466,6 +466,38 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
         return next((s for s in job.get("steps", []) if s.get("name") == name),
                     None)
 
+    def _budget(self, path, name):
+        """Every NUMBER the fetch's bound is made of, parsed out of the script.
+
+        Review N2. The three "bounded" pins this replaces were substring
+        assertions, and substrings do not bound anything: `"MAX_HOPS=5"` is a
+        substring of `"MAX_HOPS=500"`, `"DEADLINE=300"` of `"DEADLINE=3000"`,
+        and a regex for `timeout` + digits matches any cap. All five inflations passed
+        the whole suite, and together they put the pathological walk at ~50
+        minutes against a job ceiling of 30 -- the step killed, the required
+        check red, and every guard test still green. So the values are parsed
+        and the ARITHMETIC is asserted, which is the thing that was meant.
+
+        Each pattern must match exactly once: a second `timeout` cap on the
+        same command, or a second `MAX_HOPS=`, is an ambiguity this must not
+        silently resolve.
+        """
+        job = self._job(path, name)
+        run = _without_comments(self._step(job, self.BASELINE)["run"])
+        def one(pattern):
+            found = re.findall(pattern, run)
+            self.assertEqual(len(found), 1, (pattern, run))
+            return int(found[0])
+        return {
+            "hops": one(r"MAX_HOPS=(\d+)"),
+            "deadline": one(r"DEADLINE=(\d+)"),
+            "limit": one(r"--limit (\d+)"),
+            "list": one(r"timeout (\d+) gh run list"),
+            "download": one(r"timeout (\d+) gh run download"),
+            "api": one(r"timeout (\d+) gh api"),
+            "ceiling": job["timeout-minutes"] * 60,
+        }
+
     def test_both_pull_request_routes_fetch_the_base_commits_captures(self):
         for path, name in self.PR_ROUTES:
             with self.subTest(workflow=path):
@@ -474,7 +506,7 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
                 self.assertEqual(step.get("id"), "baseline")
                 run = _without_comments(step["run"])
                 self.assertIn("gh run list --workflow security.yml", run)
-                self.assertIn("--status success", run)
+                self.assertIn("--status completed", run)   # N1; see below
                 self.assertIn("--json databaseId", run)
                 self.assertIn("--limit 1", run)
                 self.assertIn("gh run download", run)
@@ -521,23 +553,62 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
             with self.subTest(workflow=path):
                 run = _without_comments(
                     self._step(self._job(path, name), self.BASELINE)["run"])
-                self.assertIn("MAX_HOPS=%d" % self.MAX_HOPS, run)
                 self.assertIn('[ "$hops" -ge "$MAX_HOPS" ]', run)
                 self.assertIn('gh api "repos/$GH_REPO/commits/$sha"', run)
                 self.assertIn(".parents[0].sha", run)
+                # Parsed, not matched as a substring (N2): `MAX_HOPS=500`
+                # contains `MAX_HOPS=5`.
+                self.assertEqual(self._budget(path, name)["hops"], self.MAX_HOPS)
 
-    def test_the_success_filter_stays(self):
-        # Deliberate, and the opposite of the other obvious fix for C1. A run
-        # whose gate went red still uploaded its captures (`if: always()`), but
-        # a run that FAILED may have failed on lost coverage -- a partial
-        # baseline would excuse head findings on the strength of a scan that
-        # did not finish. Walking back to an older complete scan is the
-        # stricter answer and the one taken.
+    def test_the_status_filter_admits_a_completed_run(self):
+        # Review N1. `--status success` was kept in fix round 1 to stop a
+        # partial baseline from excusing head findings -- and by fix round 2
+        # that was belt over a working brace: `load_baseline` runs
+        # `lost_required_coverage` on the baseline itself and REFUSES a partial
+        # or unparseable one loudly and strictly (I2). What the belt still did
+        # was create an ABSORBING STATE. A HIGH the owner dismisses on the
+        # Security tab rather than removing from tool output reds main's own
+        # run; each following commit reaches the last green one a hop further
+        # back; at the sixth it is past `MAX_HOPS`, and from then on NOTHING --
+        # no PR, no push -- can find a baseline, which is C1 restored with no
+        # way out. Six runs lost to a registry outage, or a 90-day artifact
+        # expiry on a slow repo, reach the same state with no finding at all.
+        #
+        # `completed` admits a red run's capture, which `if: always()` has
+        # always uploaded. The walk stays for the cases a status filter cannot
+        # help with: an expired artifact, and a cancelled run that has none.
         for path, name in self.ROUTES:
             with self.subTest(workflow=path):
                 run = _without_comments(
                     self._step(self._job(path, name), self.BASELINE)["run"])
-                self.assertIn("--status success", run)
+                self.assertIn("--status completed", run)
+                # Not merely "the flag changed": the word must be gone from the
+                # script, notice text included, or a later edit reads as though
+                # the filter were still there.
+                self.assertNotIn("success", run)
+
+    def test_the_download_target_is_cleared_before_every_attempt(self):
+        # Review N3. Every hop downloads into the SAME directory. A download
+        # that fails after extracting part of its archive leaves those files
+        # behind, and a later successful hop extracts over them -- a baseline
+        # spliced from two different commits, which `lost_required_coverage`
+        # cannot see because the surviving manifest is the later run's. Both
+        # commits are on main and within five hops, so the blast radius is
+        # small; the fix is one line, so the radius is not the argument.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertEqual(run.count("rm -rf"), 1)
+                # In the `&&` chain, BEFORE the download: a clear that ran
+                # after it, or in a branch the download does not share, clears
+                # nothing that matters.
+                clear = run.index("rm -rf")
+                self.assertLess(clear, run.index("gh run download"))
+                self.assertGreater(clear, run.index("gh run list"))
+                # `${RUNNER_TEMP:?}`, because this is the one command in the
+                # step where an empty value is destructive rather than useless.
+                self.assertIn('rm -rf "${RUNNER_TEMP:?}/baseline"', run)
 
     def test_the_notice_names_the_sha_the_baseline_came_from(self):
         for path, name in self.ROUTES:
@@ -593,18 +664,40 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
                                      r"timeout \d+ $")
 
     def test_the_whole_walk_is_bounded_well_inside_the_jobs_ceiling(self):
-        # Per-call deadlines do not bound the WALK: six `gh run list` calls,
-        # six failed downloads and five `gh api` calls at those caps is
-        # ~29 minutes, against a job `timeout-minutes: 30` -- so the pathological
-        # path could still red the check. A wall-clock budget checked on every
-        # iteration bounds it at the budget plus one call's cap.
+        # Per-call deadlines do not bound the WALK. The pathological path is a
+        # completed run at every sha whose download fails: six list calls, six
+        # downloads and five parent lookups, which at the shipped caps is
+        # 1740s against a job ceiling of 1800 -- inside it by a minute, which
+        # is not a bound anyone should rely on. `DEADLINE`, tested at the TOP
+        # of the loop, is what bounds it: an iteration may START inside the
+        # budget, so the true worst case is the budget plus ONE WHOLE
+        # ITERATION's caps (N4: list + download + api, not one call's).
+        #
+        # Asserted as ARITHMETIC over the values parsed out of the script
+        # (N2), so inflating any literal fails here even though each one on its
+        # own still "looks" pinned.
         for path, name in self.ROUTES:
             with self.subTest(workflow=path):
-                job = self._job(path, name)
-                run = _without_comments(self._step(job, self.BASELINE)["run"])
-                self.assertIn("DEADLINE=300", run)
-                self.assertIn('[ "$SECONDS" -lt "$DEADLINE" ]', run)
-                self.assertEqual(job.get("timeout-minutes"), 30)
+                b = self._budget(path, name)
+                self.assertIn('[ "$SECONDS" -lt "$DEADLINE" ]',
+                              _without_comments(
+                                  self._step(self._job(path, name),
+                                             self.BASELINE)["run"]))
+                iteration = b["list"] + b["download"] + b["api"]
+                worst = b["deadline"] + iteration
+                # Half the job's budget: the scan itself has to fit in the rest
+                # of it, so "under the ceiling" is not the bar -- "nowhere near
+                # it" is.
+                self.assertLess(worst, b["ceiling"] // 2,
+                                "worst-case fetch %ds vs job ceiling %ds: %r"
+                                % (worst, b["ceiling"], b))
+                # And the un-deadlined walk, which is what `DEADLINE` exists
+                # for. Not required to fit -- it is stated so a reader can see
+                # why the budget is load-bearing rather than decorative.
+                undeadlined = ((b["hops"] + 1) * (b["list"] + b["download"])
+                               + b["hops"] * b["api"])
+                self.assertGreater(undeadlined, worst)
+                self.assertEqual(b["limit"], 1)   # one run id, parsed not matched
 
     def test_the_step_succeeds_in_both_branches_and_writes_one_output(self):
         for path, name in self.ROUTES:
