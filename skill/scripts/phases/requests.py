@@ -18,6 +18,7 @@ from scripts import hosts
 from scripts import model_resolver
 from scripts import read_guard_hook
 from . import coverage
+from . import hard_links
 # D10 ruling 2: the retry prompt carries the last refusal, and `persist` owns
 # both the records and the run-folder resolver. A mutual pair like
 # coverage<->requests: read by module attribute, at call time only.
@@ -71,33 +72,9 @@ def entry_marker(entry_id):
 
 
 def scope(files=(), dirs=(), reads=(), hard_linked=None):
-    """An entry's read scope: absolute, byte-exact paths the read guard
-    matches after realpath. `files` duplicates entry["files"] on purpose (the
-    guard reads one key of one shape); `dirs` is a directory scope (setup-
-    scan); `reads` is the extra-file allowance -- whatever the builder grants
-    beyond the entry's files (the SEC cell's security checklist,
-    `review._cell_reads`), plus the entry's own `prompt_file` once
-    `_materialize_prompts` stamps one, so a host that dispatches from the
-    file (marker line first, pointer second) is not denied its own prompt by
-    the read guard.
-
-    `hard_linked` belongs to `dirs` (#1683): the multiply-linked files beneath
-    the granted directory, found by `phases/hard_links` ONCE here because a
-    PreToolUse hook may not walk the tree on every Grep. The hooks refuse a
-    directory-argument Grep/Glob that would traverse one.
-
-    A `dirs` grant must ANSWER for it: omitting the keyword raises, an empty
-    list is the answer for a clean tree. That the one builder issuing such a
-    grant calls the walker was a fact about today's code; this makes it a
-    property of the shape (fix round 1), because a directory grant whose
-    links nobody looked for is the hole #1683 is about."""
-    if dirs and hard_linked is None:
-        raise ValueError(
-            "a directory grant must record its hard links: pass "
-            "hard_linked=hard_links_under(...) (an empty list is the answer "
-            "for a clean tree)")
-    return {"files": list(files), "dirs": list(dirs), "reads": list(reads),
-            "hard_linked": list(hard_linked or ())}
+    """Build an entry's read scope, including its directory-link measurement."""
+    return hard_links.scope(files=files, dirs=dirs, reads=reads,
+                            hard_linked=hard_linked)
 
 
 # #1344 F4 (a). The ONE wording for the return-persist instruction. Two builders
