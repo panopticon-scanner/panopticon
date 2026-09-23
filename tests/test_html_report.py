@@ -162,6 +162,62 @@ class TestHtmlReport(unittest.TestCase):
         self.assertNotIn("<dt>CVSS</dt>", out)
         self.assertIn("EPSS:0.40", out)
 
+    def test_render_skips_each_invalid_epss_score_and_keeps_valid_maximum(self):
+        invalid_rows = [
+            {"score": None},
+            {"score": "0.9"},
+            {"score": "<script>alert(1)</script>"},
+            {"score": {"bad": 1}},
+            {"score": [0.9]},
+            {"score": True},
+            {"score": False},
+            {},
+            {"score": -0.1},
+            {"score": 1.1},
+            {"score": float("nan")},
+            {"score": float("inf")},
+            {"score": float("-inf")},
+            {"score": 10**1000},
+        ]
+        for invalid_row in invalid_rows:
+            with self.subTest(invalid_row=invalid_row):
+                report = _minimal_report()
+                report["findings"][0]["citations"] = {
+                    "cwe": [{"id": "CWE-89"}],
+                    "epss": [{"score": 0.4}, invalid_row, {"score": 0.8}],
+                }
+                out = hr.render(report)
+                self.assertIn("SEC-001", out)
+                self.assertIn("SQL injection", out)
+                self.assertIn("CWE-89", out)
+                self.assertIn("EPSS:0.80", out)
+                self.assertNotIn("EPSS:0.90", out)
+                self.assertNotIn("<script>alert(1)</script>", out)
+
+    def test_render_omits_epss_chip_when_all_scores_invalid(self):
+        report = _minimal_report()
+        report["findings"][0]["citations"] = {
+            "cwe": [{"id": "<CWE-89>"}],
+            "epss": [{"score": None}, {"score": "0.9"}, {}, {"score": True}],
+        }
+        out = hr.render(report)
+        self.assertIn("</html>", out)
+        self.assertIn("SEC-001", out)
+        self.assertIn("SQL injection", out)
+        self.assertIn("&lt;CWE-89&gt;", out)
+        self.assertNotIn("<CWE-89>", out)
+        self.assertNotIn("EPSS:", out)
+
+    def test_render_epss_accepts_zero_and_one(self):
+        for score, expected in ((0, "0.00"), (1, "1.00")):
+            with self.subTest(score=score):
+                report = _minimal_report()
+                report["findings"][0]["citations"] = {
+                    "epss": [{"score": score}],
+                }
+                out = hr.render(report)
+                self.assertIn(f"EPSS:{expected}", out)
+
     def test_citation_quality_cannot_inject_markup(self):
         report = _minimal_report()
         payload = "none'><img src=x onerror=alert(1)><span class='"
