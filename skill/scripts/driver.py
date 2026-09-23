@@ -9,6 +9,7 @@ docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md.
 import argparse
 import glob as _glob
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -179,16 +180,25 @@ def _clear_run_artifacts(review_root):
     the matrix lives outside `.panopticon/` entirely — or another run's
     folder/report. MUST run BEFORE the manifest is removed, so the tag still
     resolves; with no/corrupt manifest it degrades to the legacy flat sweep."""
-    base = os.path.join(review_root, ".panopticon")
-    tag = runio._run_tag(review_root)
-    if tag:
-        shutil.rmtree(os.path.join(base, "runs", tag), ignore_errors=True)
-        # runs/latest now dangles (its target folder is gone) — drop the pointer;
-        # report.json is left pointing at the kept durable report.
-        try:
-            os.remove(os.path.join(base, "runs", "latest"))
-        except OSError:
-            pass
+    try:
+        base = plan_contract.artifact_root(review_root)
+    except ValueError as exc:
+        raise runio.DriverError("unsafe artifact root: %s" % exc) from exc
+    manifest = run_manifest.load_manifest(review_root)
+    tag = None
+    if manifest and runio._foreign_manifest_reason(
+            manifest, review_root, run_manifest.manifest_path(review_root)) is None:
+        tag = run_manifest.run_tag(manifest)
+    # Defense at the deletion boundary, independent of the tag producer.
+    if tag is not None and (not isinstance(tag, str) or
+                            re.fullmatch(r"[A-Za-z0-9-]{1,220}", tag) is None):
+        raise runio.DriverError("refusing cleanup with unsafe run tag")
+
+    # Collect and vet EVERY destination before the first removal. A linked
+    # `runs` parent must never redirect the active folder or `latest` unlink.
+    run_dir = os.path.join(base, "runs", tag) if tag else None
+    latest = os.path.join(base, "runs", "latest")
+    paths = []
     # Migration safety: sweep any legacy FLAT run artifacts a pre-5.1 run may have
     # left at top-level. The report.json SYMLINK points at the durable tag-named
     # report and is kept; only a STALE FLAT report.json (a real file — pre-5.1 or
@@ -198,12 +208,26 @@ def _clear_run_artifacts(review_root):
         for path in _glob.glob(os.path.join(base, pat)):
             if os.path.basename(path) == "report.json" and os.path.islink(path):
                 continue
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-    for sub in ("tools", "verdicts"):
-        shutil.rmtree(os.path.join(base, sub), ignore_errors=True)
+            paths.append(path)
+    dirs = [os.path.join(base, sub) for sub in ("tools", "verdicts")]
+    candidates = [run_dir, latest] + paths + dirs if run_dir else paths + dirs
+    for path in candidates:
+        runio._confine_link_parent(path)
+
+    def remove_dir(path):
+        if os.path.islink(path):
+            os.unlink(path)  # remove only the final link, never its referent
+        elif os.path.isdir(path):
+            shutil.rmtree(path)
+
+    if run_dir:
+        remove_dir(run_dir)
+        if os.path.lexists(latest):
+            os.unlink(latest)
+    for path in paths:
+        os.remove(path)
+    for path in dirs:
+        remove_dir(path)
 
 
 def hosts_runner_modes():
@@ -904,7 +928,10 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
             diff_map.release_worktree(worktree, repo=args.target)
         return runio._error_status("unsafe artifact root: %s" % exc)
     if args.reset:
-        _clear_run_artifacts(review_root)   # §5.1: resolve the tag before the manifest goes
+        try:
+            _clear_run_artifacts(review_root)  # resolve the tag before the manifest goes
+        except (runio.DriverError, OSError) as exc:
+            return runio._error_status("unsafe reset cleanup: %s" % exc)
         run_manifest.reset_run(review_root)
     # #1681 Plan 2: ONE resolution per invocation -- both branches below read
     # it, so the disclosures print once and the manifest records exactly what
@@ -928,7 +955,10 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         # #5.0-13: load_manifest also returns None for a CORRUPT (present-but-
         # unparseable) manifest — remove it first so write_manifest (write-once)
         # can't raise an uncaught FileExistsError and wedge the run.
-        _clear_run_artifacts(review_root)
+        try:
+            _clear_run_artifacts(review_root)
+        except (runio.DriverError, OSError) as exc:
+            return runio._error_status("unsafe fresh-manifest cleanup: %s" % exc)
         run_manifest.reset_run(review_root)
         manifest = run_manifest.build_manifest(
             target=args.target, review_root=review_root,
