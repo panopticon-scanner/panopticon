@@ -194,7 +194,7 @@ def synthesize_execute(review_root, manifest):
     # with the reason.
     if not synthesize_done(review_root, manifest):
         raise runio.DriverError("synthesize produced no usable report.json (rc=%s): %s"
-                          % (proc.returncode, runio._redact_output((proc.stderr or proc.stdout)[:400])))
+                          % (proc.returncode, runio._redact_output(proc.stderr or proc.stdout)[:400]))
     # §5.1: point the flat compat paths at the latest tag-named report, so every
     # existing reader of report.json / report.json.html resolves it unchanged, and
     # refresh runs/latest. The tag-named files are the durable top-level outputs;
@@ -230,5 +230,5 @@ def synthesize_execute(review_root, manifest):
         raise runio.DriverError(
             "synthesize wrote an artifact that fails its own published schema "
             "(rc=%s): %s" % (proc.returncode,
-                             runio._redact_output((proc.stderr or proc.stdout)[-400:])))
+                             runio._redact_output(proc.stderr or proc.stdout)[-400:]))
     return engine.PhaseResult(kind="advanced", message="synthesize: report.json written")
