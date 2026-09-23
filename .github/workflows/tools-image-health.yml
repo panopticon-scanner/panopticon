@@ -36,11 +36,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       packages: read
     env:
       MAX_AGE_DAYS: "3"   # nightly build; >3 days old means ~3 missed rebuilds
       IMAGE_NAME: ${{ github.event.repository.name }}-tools
     steps:
+      - name: Check out freshness script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - name: Assert ${{ github.event.repository.name }}-tools:latest is fresh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,7 +54,11 @@ jobs:
         run: |
           set -euo pipefail
           api="/orgs/${OWNER}/packages/container/${IMAGE_NAME}/versions?per_page=100"
-          if ! resp=$(gh api "${api}" 2>err.txt); then
+          api_stderr=$(mktemp)
+          trap 'rm -f "${api_stderr}"' EXIT
+          if ! resp=$(gh api "${api}" 2>"${api_stderr}"); then
+            printf 'gh api diagnostic: %q\n' "$(cat "${api_stderr}")" >&2
+            echo "::warning::Failed to look up ${IMAGE_NAME}:latest publish time; skipping freshness check."
             .github/scripts/image-freshness.sh "" "${MAX_AGE_DAYS}" "${IMAGE_NAME}"
             exit 0
           fi
