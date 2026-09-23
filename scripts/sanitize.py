@@ -68,7 +68,11 @@ def scrub(text):
 
 _MENTION_RE = re.compile(r"@(?=[A-Za-z0-9._-])")
 _ISSUEREF_RE = re.compile(r"(?<![\w])#(?=\d)")
+_REPO_ISSUEREF_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?=\d)")
 _AUTOLINK_RE = re.compile(r"<([a-zA-Z][a-zA-Z0-9+.-]*://[^>]+)>")
+_HTTP_RE = re.compile(r"\bhttps?://", re.IGNORECASE)
+_WWW_RE = re.compile(r"\bwww\.(?=[A-Za-z0-9])", re.IGNORECASE)
 
 
 def defang(text):
@@ -77,11 +81,12 @@ def defang(text):
     s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", s)
     s = _MENTION_RE.sub("@\u200b", s)
     s = _ISSUEREF_RE.sub("#\u200b", s)
+    s = _REPO_ISSUEREF_RE.sub(lambda m: m.group(1) + "#\u200b", s)
     s = s.replace("](", "]\u200b(")
     s = s.replace("][", "]\u200b[")
     s = s.replace("]:", "]\u200b:")
     s = s.replace("![", "!\u200b[")
     s = _AUTOLINK_RE.sub(lambda m: "<\u200b" + m.group(1) + ">", s)
-    s = re.sub(r"\bhttps://", "h\u200bttps://", s)
-    s = re.sub(r"\bhttp://", "h\u200bttp://", s)
+    s = _HTTP_RE.sub(lambda m: m.group(0)[0] + "\u200b" + m.group(0)[1:], s)
+    s = _WWW_RE.sub(lambda m: m.group(0)[0] + "\u200b" + m.group(0)[1:], s)
     return s

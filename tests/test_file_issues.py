@@ -332,6 +332,39 @@ class TestBodyDefang(unittest.TestCase):
         self.assertIn("h\u200bttps://", file_issues.defang("https://example.com"))
         self.assertIn("h\u200bttp://", file_issues.defang("http://example.com"))
 
+    def test_defang_reference_and_url_variants_directly(self):
+        cases = {
+            "owner/repo#123": "owner/repo#\u200b123",
+            "HTTPS://github.com/owner/repo/issues/123":
+                "H\u200bTTPS://github.com/owner/repo/issues/123",
+            "Http://example.test/path": "H\u200bttp://example.test/path",
+            "www.example.test/path": "w\u200bww.example.test/path",
+            "#123 @team [link](https://example.test/path)":
+                "#\u200b123 @\u200bteam [link]\u200b(h\u200bttps://example.test/path)",
+        }
+        for original, expected in cases.items():
+            with self.subTest(original=original):
+                self.assertEqual(file_issues.defang(original), expected)
+                self.assertEqual(file_issues.defang(expected), expected)
+        ordinary = "ordinary prose and `parse()` code span"
+        self.assertEqual(file_issues.defang(ordinary), ordinary)
+
+    def test_body_defangs_variants_but_keeps_trusted_report_url(self):
+        untrusted = ("owner/repo#123 HTTPS://github.com/owner/repo/issues/123 "
+                     "Http://example.test/path www.example.test/path "
+                     "#123 @team [link](https://example.test/path) "
+                     "ordinary prose and `parse()` code span")
+        trusted = "https://example.test/trusted-report.json"
+        body = file_issues.body_for(
+            self._f(description=untrusted), report_url=trusted)
+        self.assertIn(file_issues.defang(untrusted), body)
+        self.assertNotIn("owner/repo#123", body)
+        self.assertNotIn("HTTPS://github.com/owner/repo/issues/123", body)
+        self.assertNotIn("Http://example.test/path", body)
+        self.assertNotIn("www.example.test/path", body)
+        self.assertIn("ordinary prose and `parse()` code span", body)
+        self.assertIn("](%s)" % trusted, body)
+
 
 class TestRepoRootPortability(unittest.TestCase):
     """#602: REPO_ROOT was a hardcoded machine-specific absolute path; on any
