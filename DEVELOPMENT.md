@@ -113,6 +113,24 @@ summary + JSON artifact) with standards citations and CI gating.
   severity as a conservative pre-merge floor (fixture noise excluded via
   F-CAL-2) — a documented strict policy (#513), NOT the authority for the
   reported grade, which still comes from the evidence/advisor pipeline.
+  **On a pull request that floor is applied to what the PR ADDS** (#1790,
+  owner ruling 2026-09-23). Both PR routes download the base commit's own
+  `raw-scanner-captures` artifact and pass it to the gate as
+  `--baseline-dir`/`--baseline-manifest`; the gate ingests it through the same
+  call with the same `--exclude` globs and the same security mode, and a head
+  finding matching one of the baseline's — same tool, rule, normalized path and
+  message, matched as a MULTISET so a second identical hit is still new, and
+  with line numbers deliberately excluded so an unrelated edit above a finding
+  does not resurrect it — is printed under `pre-existing (in the base commit's
+  scan; …)` and not counted. **A new HIGH/CRITICAL still fails the check.** The
+  standing set on `main` is governed by the post-merge zero-alert audit below
+  and by the owner's own GitHub dismissals, not by this gate: a finding listed
+  as pre-existing is fixed or dismissed there, not on a PR whose diff never
+  touched it. **No baseline, no delta**: a push to `main`, or a PR whose base
+  commit has no usable capture (none uploaded, artifact expired, download
+  failed, manifest malformed), is gated strictly on the whole tree — the
+  workflow says so with a `::notice::` and the gate with one stderr line. It
+  fails toward strictness in every direction and never toward silence.
   After that gate reads the unchanged raw captures and manifest, the workflow
   runs `scripts/code_scanning_reports.py` in runner temporary storage. It
   keeps only the two named, note-level AI-usage rules from the exact supported
@@ -346,6 +364,12 @@ dependency scanner reading the PR's own lockfiles) and no SARIF upload, because 
 `pull_request_target` the upload would be filed against `main`'s Security tab. The full set runs on
 the push to main after the merge.
 
+What the fork path does NOT scan less of is the delta. A fork PR is gated on exactly the same terms
+as a same-repo one (#1790): `fork-scan` downloads the same base-commit `raw-scanner-captures`
+artifact — from `security.yml`'s run on the base branch, which nothing in a fork can write — and
+passes it to the same gate command. Both jobs hold `actions: read` for that download and for
+nothing else.
+
 **Post-merge zero-alert audit.** On a push to `main`, `security.yml` follows its actionable SARIF
 upload with a read-only `scripts/code_scanning_audit.py` check. The check independently proves that
 the Security upload and CodeQL's separate Python upload both finished for the exact current main
@@ -355,9 +379,14 @@ dismissed findings pass because GitHub omits them from `state=open`, while a reo
 fingerprinted alert is open again and fails.
 
 This is a post-merge detector, not universal pre-merge protection. The fork workflow intentionally
-uploads no SARIF, so a fork warning/note may first turn the main audit red after merge; the existing
-raw HIGH/CRITICAL gate remains the fork's pre-merge floor. For a read-only reproduction, take the
-singular `sarif-id` output from the main Security upload and run:
+uploads no SARIF, so a fork warning/note may first turn the main audit red after merge; the raw
+HIGH/CRITICAL gate remains the fork's pre-merge floor — applied, since #1790, to the findings the
+fork PR adds to its base commit rather than to every finding in the tree. That division is the
+point: this audit is what speaks for the standing set on `main`, which is why the pre-merge gate is
+free to stop failing every PR over it. A pre-existing finding clears by being fixed, or by being
+dismissed on the Security tab (GitHub omits a dismissed alert from `state=open`, so the audit
+passes); it never clears by being ignored. For a read-only reproduction, take the singular
+`sarif-id` output from the main Security upload and run:
 
 ```bash
 GH_TOKEN="$(gh auth token)" python3 scripts/code_scanning_audit.py \
