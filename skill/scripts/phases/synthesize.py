@@ -180,6 +180,8 @@ def synthesize_execute(review_root, manifest):
         cmd += ["--diff-hunks", diff_hunks]
     if flags.get("diff_context") is not None:
         cmd += ["--diff-context", str(flags["diff_context"])]
+    if flags.get("max_verify") is not None:
+        cmd += ["--max-verify", str(flags["max_verify"])]
     cmd += findings
     proc = child._run_child(cmd, review_root=review_root, phase="synthesize")
     # A failing gate exits non-zero but still writes the report — that is a valid
