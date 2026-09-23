@@ -1580,3 +1580,36 @@ class TestReviewedRedirectBoundaries(unittest.TestCase):
                     self.assertIsNone(wg.fetch_exec_defect(fetch + '; sh f'))
                     dynamic = fetch.replace(output + ' /dev/null', output + ' $(mktemp)')
                     self.assertIn('unknown destination', wg.fetch_exec_defect(dynamic))
+
+
+class TestInferredFilenameOrigin(unittest.TestCase):
+    FETCHERS = ('curl -O --output-dir', 'wget -P')
+
+    def test_inferred_dash_filename_binds_directory_use_and_checksum(self):
+        for fetcher in self.FETCHERS:
+            for redirect in ('', ' >g', ' >$(mktemp)'):
+                with self.subTest(fetcher=fetcher, redirect=redirect):
+                    fetch = fetcher + ' out https://example.test/-' + redirect
+                    self.assertEqual('out/-', wg.fetches(fetch)[0].dest)
+                    defect = wg.fetch_exec_defect(fetch + '; sh out/-')
+                    self.assertIsNotNone(defect)
+                    self.assertNotIn('unknown destination', defect)
+                    checked = fetch + '\necho "' + HEX + '  out/-" | sha256sum -c -\nsh out/-'
+                    self.assertIsNone(wg.fetch_exec_defect(checked))
+                    self.assertIsNotNone(wg.fetch_exec_defect(
+                        checked.replace('  out/-"', '  other"')))
+
+    def test_inferred_dash_filename_keeps_dynamic_directory_provenance(self):
+        for fetcher in self.FETCHERS:
+            for redirect in ('', ' >g'):
+                with self.subTest(fetcher=fetcher, redirect=redirect):
+                    fetch = fetcher + ' "$(mktemp)" https://example.test/-' + redirect
+                    self.assertTrue(shell_reader.has_substitution(wg.fetches(fetch)[0].dest))
+                    self.assertIn('unknown destination', wg.fetch_exec_defect(fetch))
+
+    def test_inferred_dash_without_directory_is_still_a_filename(self):
+        for fetcher in ('curl -O', 'wget'):
+            with self.subTest(fetcher=fetcher):
+                fetch = fetcher + ' https://example.test/- >g'
+                self.assertEqual('-', wg.fetches(fetch)[0].dest)
+                self.assertIsNotNone(wg.fetch_exec_defect(fetch + '; sh ./-'))

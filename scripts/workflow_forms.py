@@ -172,7 +172,9 @@ def parse_fetch(tool, args, stage, piped_to):
         dest = _basename(url) if (tool == "wget" or remote_name) else None
     # The sentinel has been resolved; remaining destinations are paths or stdout.
     dest = cast(str | None, dest)
-    to_stdout = dest is None or dest in _STDOUT_DESTINATIONS
+    # A remote basename of "-" is a filename, not the explicit output
+    # option that requests stdout. Keep that origin through directory joining.
+    to_stdout = dest is None or (named and dest in _STDOUT_DESTINATIONS)
     if not to_stdout and directory and dest and not os.path.isabs(dest) and (
             tool == "curl" or not named):
         dest = shell_reader.derived(os.path.join(directory, dest), directory, dest)
@@ -194,7 +196,8 @@ def parse_fetch(tool, args, stage, piped_to):
         # download's destination, and what tee wrote is what runs next.
         written = [t for t in piped_to[1:] if not t.startswith("-")]
         dest = written[0] if written else None
-    if dest in STDOUT:
+    # Suppress stream/discard outputs without discarding an inferred "-" file.
+    if dest in STDOUT and (named or to_stdout):
         dest = None
     return Fetch(tool, url, dest, piped_to)
 
