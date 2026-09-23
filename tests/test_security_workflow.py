@@ -1,4 +1,5 @@
 import os
+import re
 import unittest
 
 import yaml
@@ -552,24 +553,58 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
                 steps = [s.get("name") for s in self._job(path, name)["steps"]]
                 self.assertLess(steps.index(self.BASELINE), steps.index(self.GATE))
 
-    def test_the_fetch_degrades_to_strict_and_never_to_red(self):
-        # Review M3. Both `gh` calls sit in the `if` condition so an API
-        # failure takes the `else`, but a step TIMEOUT is not a branch: it ends
-        # the step, and without `continue-on-error` that ends the job and reds
-        # a required check because a download was slow. The deadline stays (an
-        # unbounded fetch in front of the gate is worse), and its expiry now
-        # costs the delta rather than the check -- a step that never writes
-        # `found=true` leaves the gate reading the empty string, which is
-        # strict. This is the ONLY step in either file allowed to carry the
-        # flag; `TestNeitherWorkflowSwallowsAFailure` refuses it everywhere
-        # else, the gate step included.
+    def test_the_fetch_degrades_to_strict_without_softening_the_step(self):
+        # Review M3, fix round 2. The first answer was `continue-on-error: true`
+        # plus `timeout-minutes: 5`, which bought the degradation by making one
+        # step's failure invisible -- and `continue-on-error` is refused
+        # OUTRIGHT in these two files (`TestNeitherWorkflowSwallowsAFailure`),
+        # because it is the one-line edit that turns the gate's own refusal
+        # into a pass. Buying a property by weakening that ban is the wrong
+        # trade even when this particular step is harmless.
+        #
+        # So neither key is here. The same property is bought inside the
+        # SCRIPT: every `gh` call is wrapped in coreutils `timeout`, every one
+        # of them sits in an `if`/`&&` position where `set -e` does not fire,
+        # and a `timeout` that fires returns 124 -- a failure like any other,
+        # which advances the walk or ends it. A slow or absent `gh` therefore
+        # costs the DELTA (no `found=true`, so the gate reads the empty string
+        # and runs strict) and can never cost the check.
         for path, name in self.ROUTES:
             with self.subTest(workflow=path):
                 step = self._step(self._job(path, name), self.BASELINE)
-                self.assertIs(step.get("continue-on-error"), True)
-                self.assertEqual(step.get("timeout-minutes"), 5)
+                self.assertNotIn("continue-on-error", step)
+                self.assertNotIn("timeout-minutes", step)
                 gate = self._step(self._job(path, name), self.GATE)
                 self.assertNotIn("continue-on-error", gate)
+
+    def test_every_gh_call_in_the_fetch_carries_its_own_deadline(self):
+        # The half of the trade above that has to be measured rather than
+        # asserted in prose: ONE unwrapped `gh` is a step that can hang until
+        # the JOB's 30-minute ceiling kills it, which reds the required check
+        # exactly as `continue-on-error` was there to prevent.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                calls = [m.start() for m in re.finditer(r"(?<![\w-])gh\s", run)]
+                self.assertEqual(len(calls), 3, run)   # list, download, api
+                for pos in calls:
+                    self.assertRegex(run[max(0, pos - 24):pos],
+                                     r"timeout \d+ $")
+
+    def test_the_whole_walk_is_bounded_well_inside_the_jobs_ceiling(self):
+        # Per-call deadlines do not bound the WALK: six `gh run list` calls,
+        # six failed downloads and five `gh api` calls at those caps is
+        # ~29 minutes, against a job `timeout-minutes: 30` -- so the pathological
+        # path could still red the check. A wall-clock budget checked on every
+        # iteration bounds it at the budget plus one call's cap.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                job = self._job(path, name)
+                run = _without_comments(self._step(job, self.BASELINE)["run"])
+                self.assertIn("DEADLINE=300", run)
+                self.assertIn('[ "$SECONDS" -lt "$DEADLINE" ]', run)
+                self.assertEqual(job.get("timeout-minutes"), 30)
 
     def test_the_step_succeeds_in_both_branches_and_writes_one_output(self):
         for path, name in self.ROUTES:
@@ -617,16 +652,21 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
                 self.assertEqual(run.count("security_gate.py"), 1)
                 self.assertEqual(run.count("--baseline-dir"), 1)
 
-    def test_the_fork_route_fetches_before_it_checks_out_fork_content(self):
-        # Review M9. This is the only step in `fork-scan` that exports
-        # `GH_TOKEN`, and the job now holds `actions: read`. Running it before
-        # the target checkout keeps the token's step away from fork-controlled
-        # material on disk. Free, and it costs nothing to keep true.
-        steps = [s.get("name") for s in self._job(FORK_WORKFLOW, "fork-scan")["steps"]]
-        self.assertLess(steps.index("Checkout trusted scanner controller"),
-                        steps.index(self.BASELINE))
-        self.assertLess(steps.index(self.BASELINE),
-                        steps.index("Checkout scan target"))
+    def test_every_route_fetches_before_it_checks_out_the_scan_target(self):
+        # Review M9, widened in fix round 2. This is the only step in either
+        # job that exports `GH_TOKEN`, and both jobs now hold `actions: read`,
+        # so it runs before ANY scanned content is on disk -- fork-controlled
+        # on one route, a PR branch's own on the other. The two files were
+        # already identical in the step's CONTENT; this makes them identical in
+        # its POSITION too, which is one less thing for a later reader to
+        # "reconcile" in the wrong direction.
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                steps = [s.get("name") for s in self._job(path, name)["steps"]]
+                self.assertLess(steps.index("Checkout trusted scanner controller"),
+                                steps.index(self.BASELINE))
+                self.assertLess(steps.index(self.BASELINE),
+                                steps.index("Checkout scan target"))
 
     def test_a_skipped_fetch_leaves_the_gate_strict(self):
         # The push-to-main route skips the fetch, and a skipped step's outputs

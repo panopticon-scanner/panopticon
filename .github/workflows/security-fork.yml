@@ -251,24 +251,15 @@ jobs:
       # `actions: read` on this job is for exactly this step and nothing else:
       # reading another run's artifacts is the only thing it grants.
       #
-      # It sits HERE, between the two checkouts, and not beside the gate
-      # (review M9): it is the only step in this job that exports
-      # `GH_TOKEN`, so it runs before any fork-controlled content is on
-      # disk. The base it reads is a main commit either way --
-      # `pull_request_target` is `branches: [main]` -- so nothing a fork
-      # controls chooses which baseline is fetched.
+      # It sits HERE, between the two checkouts, on BOTH routes: it is the only
+      # step in either job that exports `GH_TOKEN`, so it runs before any
+      # scanned content is on disk -- fork-controlled on one route, a PR
+      # branch's own on the other. The base it reads is a main commit either
+      # way (`pull_request_target` is `branches: [main]`, and a push route
+      # reads main's previous head), so nothing a fork controls chooses which
+      # baseline is fetched.
       - name: Download the base commit's scanner captures
         id: baseline
-        # Review M3. This step holds no verdict, and a step TIMEOUT is not one
-        # of the branches its script is careful to cover: without the flag a
-        # slow `gh run download` fails the step, fails the job, and reds a
-        # required check. With it, the deadline's expiry costs the DELTA and
-        # nothing else -- no `found=true` is written, the gate reads the empty
-        # string and runs strict. That is the test for whether a step here may
-        # carry the flag, and this is the only step in either file that passes
-        # it (`TestNeitherWorkflowSwallowsAFailure`).
-        continue-on-error: true
-        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           # `gh` resolves the repository from the checkout's git remote, and
@@ -283,24 +274,47 @@ jobs:
           # either file reads.
           BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
         run: |
-          # Both `gh` calls sit inside the `if` condition, where `set -e` does
-          # not fire, so an API hiccup advances the walk or ends it rather than
-          # failing the step. The all-zero sha is what a branch creation or a
-          # force push reports as `before`; protected main cannot produce
-          # either, which is exactly why the guard is written down.
+          # NO `continue-on-error` and NO `timeout-minutes` (review M3, fix
+          # round 2). This step must not be able to red a required check
+          # because GitHub's API was slow -- but buying that by softening the
+          # step means carving an exception into a ban this repository keeps
+          # ABSOLUTE, since `continue-on-error: true` is the one-line edit that
+          # turns the gate's own refusal into a pass. The property is bought
+          # here instead, where it costs no rule:
+          #
+          #   * every `gh` call carries its own coreutils `timeout`, so a hung
+          #     API returns 124 rather than hanging until the JOB's ceiling;
+          #   * every one of them sits in an `if`/`&&` position, where `set -e`
+          #     does not fire, so a non-zero status advances the walk or ends
+          #     it and never ends the step;
+          #   * `DEADLINE` bounds the WHOLE walk, which the per-call caps do
+          #     not: six list calls, six failed downloads and five parent
+          #     lookups at those caps is ~29 minutes against a job ceiling of
+          #     30. Checked every iteration, so the worst case is the budget
+          #     plus one call's cap.
+          #
+          # A slow, broken or absent `gh` therefore costs the DELTA -- no
+          # `found=true` is written, the gate reads the empty string and runs
+          # strict on the whole tree -- and can never cost the check.
+          #
+          # The all-zero sha is what a branch creation or a force push reports
+          # as `before`; protected main cannot produce either, which is exactly
+          # why the guard is written down.
           set -euo pipefail
           MAX_HOPS=5
+          DEADLINE=300
           ZERO_SHA=0000000000000000000000000000000000000000
           found=false
           sha="$BASE_SHA"
           hops=0
-          while [ -n "$sha" ] && [ "$sha" != "$ZERO_SHA" ]; do
-            if run_id="$(gh run list --workflow security.yml --commit "$sha" \
-                  --status success --json databaseId --limit 1 \
+          while [ -n "$sha" ] && [ "$sha" != "$ZERO_SHA" ] \
+                && [ "$SECONDS" -lt "$DEADLINE" ]; do
+            if run_id="$(timeout 60 gh run list --workflow security.yml \
+                  --commit "$sha" --status success --json databaseId --limit 1 \
                   --jq '.[0].databaseId // empty')" \
                && [ -n "$run_id" ] \
-               && gh run download "$run_id" -n raw-scanner-captures \
-                    -D "$RUNNER_TEMP/baseline"; then
+               && timeout 180 gh run download "$run_id" \
+                    -n raw-scanner-captures -D "$RUNNER_TEMP/baseline"; then
               found=true
               echo "::notice::Baseline: security.yml run $run_id at commit $sha, $hops hop(s) back from $BASE_SHA."
               break
@@ -308,7 +322,7 @@ jobs:
               break
             else
               hops=$((hops + 1))
-              if ! sha="$(gh api "repos/$GH_REPO/commits/$sha" \
+              if ! sha="$(timeout 60 gh api "repos/$GH_REPO/commits/$sha" \
                     --jq '.parents[0].sha // empty')"; then
                 sha=""
               fi
