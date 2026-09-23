@@ -4,6 +4,7 @@ finalization.
 import contextlib
 import io
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -29,6 +30,88 @@ class TestValidatePhase(unittest.TestCase):
             user_email="t@t",
             user_name="t",
         )
+
+    def _marker_command(self, root):
+        marker = os.path.join(root, ".panopticon", "probe-marker")
+        return marker, "printf hit > %s; cat" % shlex.quote(marker)
+
+    def test_local_fsmonitor_never_executes_in_baseline_or_delta(self):
+        d = self._git_repo()
+        marker, command = self._marker_command(d)
+        subprocess.run(["git", "-C", d, "config", "core.fsmonitor", command], check=True)
+        validate_phase.capture_tree_baseline(d)
+        self.assertFalse(os.path.exists(marker))
+        self.assertEqual(validate_phase._tree_delta(d, subprocess.run), [])
+        self.assertFalse(os.path.exists(marker))
+
+    def _install_clean_filter(self, d):
+        marker, command = self._marker_command(d)
+        with open(os.path.join(d, "a.py"), "w") as fh:
+            fh.write("before\n")
+        with open(os.path.join(d, ".gitattributes"), "w") as fh:
+            fh.write("a.py filter=fixture\n")
+        subprocess.run(["git", "-C", d, "add", "a.py", ".gitattributes"], check=True)
+        subprocess.run(["git", "-C", d, "commit", "-qm", "filter fixture"], check=True)
+        subprocess.run(["git", "-C", d, "config", "filter.fixture.clean", command], check=True)
+        # Same-size content defeats the size-only fast path and requests cleaning.
+        with open(os.path.join(d, "a.py"), "w") as fh:
+            fh.write("after!\n")
+        return marker
+
+    def test_clean_filter_baseline_never_executes_and_fails_closed(self):
+        d = self._git_repo()
+        marker = self._install_clean_filter(d)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            baseline = validate_phase.capture_tree_baseline(d)
+        self.assertFalse(os.path.exists(marker))
+        with open(baseline) as fh:
+            self.assertEqual(fh.read(), validate_phase._TREE_BASELINE_PROBE_FAILED)
+        self.assertIn("filter", err.getvalue())
+        self.assertTrue(validate_phase._tree_delta(d, subprocess.run))
+
+    def test_clean_filter_delta_never_executes_and_fails_closed(self):
+        d = self._git_repo()
+        validate_phase.capture_tree_baseline(d)
+        marker = self._install_clean_filter(d)
+        delta = validate_phase._tree_delta(d, subprocess.run)
+        self.assertFalse(os.path.exists(marker))
+        self.assertTrue(delta)
+        self.assertIn("filter", " ".join(delta))
+
+    def _submodule_repo(self):
+        d, child = self._git_repo(), self._git_repo()
+        subprocess.run(["git", "-C", d, "-c", "protocol.file.allow=always", "submodule",
+                        "add", child, "sub"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", d, "commit", "-qam", "add submodule"], check=True)
+        return d, os.path.join(d, "sub")
+
+    def test_normal_submodule_dirt_remains_visible(self):
+        d, sub = self._submodule_repo()
+        # Repository preferences must not silently remove this integrity surface.
+        subprocess.run(["git", "-C", d, "config", "submodule.sub.ignore", "all"], check=True)
+        validate_phase.capture_tree_baseline(d)
+        with open(os.path.join(sub, "a.py"), "w") as fh:
+            fh.write("dirty submodule\n")
+        delta = validate_phase._tree_delta(d, subprocess.run)
+        self.assertTrue(any("sub" in entry for entry in delta), delta)
+
+    def test_submodule_filter_never_executes(self):
+        d, sub = self._submodule_repo()
+        validate_phase.capture_tree_baseline(d)
+        os.makedirs(os.path.join(sub, ".panopticon"), exist_ok=True)
+        subprocess.run(["git", "-C", sub, "config", "user.name", "T"], check=True)
+        subprocess.run(["git", "-C", sub, "config", "user.email", "t@t"], check=True)
+        marker = self._install_clean_filter(sub)
+        delta = validate_phase._tree_delta(d, subprocess.run)
+        self.assertFalse(os.path.exists(marker))
+        self.assertIn("filter", " ".join(delta))
+
+    def test_missing_trusted_git_fails_closed(self):
+        d = self._git_repo()
+        with mock.patch.dict(os.environ, {"PATH": d}):
+            validate_phase.capture_tree_baseline(d)
+        self.assertTrue(validate_phase._tree_delta(d, subprocess.run))
 
     def test_clean_tree_advances(self):
         d = self._git_repo()

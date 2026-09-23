@@ -94,6 +94,28 @@ class TestResolveReviewRoot(unittest.TestCase):
         subprocess.run(["git", "init", "-q", d], check=True)
         return d
 
+    def test_inherited_git_environment_cannot_redirect_requested_root(self):
+        requested, other = self._git_repo(), self._git_repo()
+        with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(other, ".git"),
+                                         "GIT_WORK_TREE": other}):
+            self.assertEqual(runio.resolve_review_root(requested), (requested, None, None))
+
+    def test_linked_worktree_keeps_its_own_root(self):
+        d = self._git_repo()
+        subprocess.run(["git", "-C", d, "-c", "user.name=T", "-c", "user.email=t@t",
+                        "commit", "--allow-empty", "-qm", "initial"], check=True)
+        linked = os.path.join(d, "linked")
+        subprocess.run(["git", "-C", d, "worktree", "add", "--detach", linked],
+                       check=True, capture_output=True)
+        sub = os.path.join(linked, "sub")
+        os.makedirs(sub)
+        self.assertEqual(runio.resolve_review_root(sub), (linked, None, None))
+
+    def test_missing_trusted_git_falls_back_to_requested_directory(self):
+        d = self._git_repo()
+        with mock.patch.dict(os.environ, {"PATH": d}):
+            self.assertEqual(runio.resolve_review_root(d), (d, None, None))
+
     def test_resolves_repo_root_from_subdir(self):
         d = self._git_repo()
         sub = os.path.join(d, "pkg")
