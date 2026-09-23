@@ -297,3 +297,19 @@ class TestRedirectLexicalControls(unittest.TestCase):
             parsed = shell_reader.statements('case x in a|b) ' + literal + ';; esac')
             arm = next(s.stages[0] for s in parsed if shell_reader.is_arm(s.stages[0].argv[0]))
             self.assertEqual([literal], shell_reader.command(arm.argv))
+
+
+class TestGroupRedirectBoundaries(unittest.TestCase):
+    def test_io_numbers_immediately_after_group_tokens_are_not_argv(self):
+        for script, writes, stdout in (
+            ('(1>f curl URL)', ['f'], ['f']),
+            ('(3>f 1>&3 curl URL)', ['f'], ['f']),
+            ('(curl URL)1>f', ['f'], ['f']),
+            ('(curl URL>f)2>g', ['f', 'g'], ['f']),
+            ('((3>f 1>&3 curl URL))', ['f'], ['f']),
+        ):
+            with self.subTest(script=script):
+                parsed = stage(script)
+                self.assertEqual(['curl', 'URL'], parsed.argv)
+                self.assertEqual(writes, parsed.writes)
+                self.assertEqual(stdout, parsed.stdout_writes)

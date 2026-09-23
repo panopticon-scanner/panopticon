@@ -1541,3 +1541,42 @@ class TestExplicitDestinationPrecedence(unittest.TestCase):
                     self.assertIsNotNone(wg.fetch_exec_defect(fetch + '; sh f'))
                     self.assertIn('unknown destination',
                                   wg.fetch_exec_defect(fetch.replace('>f', '>$(mktemp)')))
+
+
+class TestReviewedRedirectBoundaries(unittest.TestCase):
+    def test_group_adjacent_redirects_bind_use_and_checksum(self):
+        for fetch in ('(1>f curl https://example.test/a)',
+                      '(3>f 1>&3 curl https://example.test/a)'):
+            with self.subTest(fetch=fetch):
+                self.assertEqual('f', wg.fetches(fetch)[0].dest)
+                self.assertIsNotNone(wg.fetch_exec_defect(fetch + '; sh f'))
+                checked = fetch + '\necho "' + HEX + '  f" | sha256sum -c -\nsh f'
+                self.assertIsNone(wg.fetch_exec_defect(checked))
+                self.assertIsNotNone(wg.fetch_exec_defect(checked.replace('  f"', '  other"')))
+
+    def test_output_directory_does_not_change_explicit_stdout(self):
+        for directory in ('out', '$(mktemp)'):
+            for stdout in ('-', '/dev/stdout', '/dev/fd/1'):
+                with self.subTest(directory=directory, stdout=stdout):
+                    fetch = ('curl https://example.test/a --output-dir '
+                             + directory + ' -o ' + stdout)
+                    self.assertIsNone(wg.fetches(fetch)[0].dest)
+                    self.assertIsNone(wg.fetch_exec_defect(fetch))
+                    redirected = fetch + ' >f'
+                    self.assertEqual('f', wg.fetches(redirected)[0].dest)
+                    self.assertIsNotNone(wg.fetch_exec_defect(redirected + '; sh f'))
+                    checked = redirected + '\necho "' + HEX + '  f" | sha256sum -c -\nsh f'
+                    self.assertIsNone(wg.fetch_exec_defect(checked))
+                    self.assertIn('unknown destination',
+                                  wg.fetch_exec_defect(fetch + ' >$(mktemp)'))
+
+    def test_explicit_discard_does_not_follow_stdout_redirects(self):
+        for tool, output in (('curl', '-o'), ('wget', '-O')):
+            for redirect in (' >$(mktemp)', ' 3>$(mktemp) 1>&3', ' >f'):
+                with self.subTest(tool=tool, redirect=redirect):
+                    fetch = tool + ' https://example.test/a ' + output + ' /dev/null' + redirect
+                    self.assertIsNone(wg.fetches(fetch)[0].dest)
+                    self.assertIsNone(wg.fetch_exec_defect(fetch))
+                    self.assertIsNone(wg.fetch_exec_defect(fetch + '; sh f'))
+                    dynamic = fetch.replace(output + ' /dev/null', output + ' $(mktemp)')
+                    self.assertIn('unknown destination', wg.fetch_exec_defect(dynamic))

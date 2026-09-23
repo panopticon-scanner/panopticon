@@ -83,7 +83,10 @@ _DEST_LONG = {"curl": ("output",), "wget": ("output-document",)}
 # the default name only (`-O` wins outright).
 _DIR_LONG = {"curl": ("output-dir",), "wget": ("directory-prefix",)}
 _DIR_SHORT = {"curl": "", "wget": "P"}
-STDOUT = ("-", "/dev/stdout", "/dev/fd/1", "/dev/null")
+# Only these destinations follow fd 1. Discarding a response in /dev/null
+# is independent of stdout, although both are suppressed in the final result.
+_STDOUT_DESTINATIONS = ("-", "/dev/stdout", "/dev/fd/1")
+STDOUT = _STDOUT_DESTINATIONS + ("/dev/null",)
 # `curl --version` in a diagnostics step downloads nothing; without this it
 # parses as a fetch with no URL, which the rule now REPORTS rather than drops.
 _INFORMATIONAL = ("--version", "-V", "--help", "-h", "--manual", "-M", "--usage")
@@ -169,10 +172,11 @@ def parse_fetch(tool, args, stage, piped_to):
         dest = _basename(url) if (tool == "wget" or remote_name) else None
     # The sentinel has been resolved; remaining destinations are paths or stdout.
     dest = cast(str | None, dest)
-    if directory and dest and not os.path.isabs(dest) and (
+    to_stdout = dest is None or dest in _STDOUT_DESTINATIONS
+    if not to_stdout and directory and dest and not os.path.isabs(dest) and (
             tool == "curl" or not named):
         dest = shell_reader.derived(os.path.join(directory, dest), directory, dest)
-    if stage.stdout_writes and (dest is None or dest in STDOUT):
+    if stage.stdout_writes and to_stdout:
         dest = stage.stdout_writes[-1]           # `curl ... > /tmp/x`; a
         # Track stdout only when the fetcher actually writes there. An
         # explicit output file is independent of the shell stdout redirect.

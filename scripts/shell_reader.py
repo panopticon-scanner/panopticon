@@ -344,6 +344,7 @@ def _split(text, context):
                 at_token_start, i = False, i + 2
                 continue
             buf.append(" " + groups[0] + " ")
+            word_start, redirect_target = len(buf), False
             at_token_start, i = True, i + 1
             continue
         if ch == ")":
@@ -352,6 +353,7 @@ def _split(text, context):
                 cases[-1] = "body"
             else:
                 buf.append(" " + groups[1] + " ")
+                word_start, redirect_target = len(buf), False
             at_token_start, i = True, i + 1
             continue
         redirect = _REDIRECT.match(text, i)
