@@ -7,6 +7,7 @@ import shlex
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from scripts import dispatch, host_probes, hosts
@@ -294,12 +295,53 @@ class TestKimiUsageWireProbe(unittest.TestCase):
         # means "a stand-in for ~" to the OTHER consumer -- and wrote its
         # fixture session there, cleaning only its own sandbox. It now has no
         # such parameter: every path it writes is inside the tempdir it owns.
-        before = set(os.listdir(tempfile.gettempdir()))
-        _state, _by, detail = kimi_probes.probe_kimi_usage_wire("kimi")
-        after = set(os.listdir(tempfile.gettempdir()))
-        self.assertEqual(set(), after - before)
-        home = detail.split("run home ", 1)[1].split(" ", 1)[0]
-        self.assertFalse(os.path.exists(home))     # the sandbox is gone with it
+        import scripts.runners.kimi as kimi_runner
+
+        real_tempdir = tempfile.TemporaryDirectory
+        real_wire_path = kimi_runner.wire_path
+        sandboxes = []
+        wire_paths = []
+
+        with real_tempdir(prefix="kimi test parent ") as parent:
+            parent = Path(parent)
+            sibling = parent / "unrelated sibling.txt"
+            sibling.write_text("unrelated work", encoding="utf-8")
+
+            def sandbox_tempdir(*args, **kwargs):
+                self.assertNotIn("dir", kwargs)
+                temporary = real_tempdir(*args, dir=parent, **kwargs)
+                sandboxes.append(Path(temporary.name))
+                return temporary
+
+            def observed_wire_path(run_home, session_id):
+                self.assertEqual(1, len(sandboxes))
+                sandbox = sandboxes[0].resolve(strict=True)
+                home = Path(run_home).resolve(strict=True)
+                resolved = real_wire_path(run_home, session_id)
+                self.assertIsNotNone(resolved)
+                wire = Path(resolved).resolve(strict=True)
+                self.assertTrue(home.is_relative_to(sandbox))
+                self.assertTrue(wire.is_relative_to(sandbox))
+                self.assertTrue(wire.is_file())
+                wire_paths.append((home, wire))
+                return resolved
+
+            with mock.patch.object(tempfile, "TemporaryDirectory",
+                                   side_effect=sandbox_tempdir), \
+                 mock.patch.object(kimi_runner, "wire_path",
+                                   side_effect=observed_wire_path):
+                state, by, _detail = kimi_probes.probe_kimi_usage_wire("kimi")
+
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertEqual(kimi_probes.KIMI_USAGE_WIRE, by)
+            self.assertEqual(1, len(sandboxes))
+            self.assertEqual(1, len(wire_paths))
+            sandbox = sandboxes[0]
+            home, wire = wire_paths[0]
+            self.assertFalse(sandbox.exists())
+            self.assertFalse(home.exists())
+            self.assertFalse(wire.exists())
+            self.assertTrue(sibling.is_file())
 
     def test_a_layout_wire_path_cannot_resolve_is_refuted(self):
         import scripts.runners.kimi as kimi_runner
