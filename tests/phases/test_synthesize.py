@@ -11,7 +11,9 @@ from unittest import mock
 from scripts import hosts
 from conftest import write_host_evidence
 import scripts.config_schema as config_schema
+import scripts.evidence as evidence
 import scripts.phases.runio as runio
+import scripts.phases.verify_tools as verify_tools
 import scripts.run_manifest as run_manifest
 import scripts.synthesize as syn
 import scripts.synth.validate_schema as validate_schema_mod
@@ -228,6 +230,106 @@ class TestSynthesizePhase(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--out") + 1],
                          runio._pano(self.root, "report.json"))
         self.assertEqual(cmd[cmd.index("--run-id") + 1], "R")   # §5.1: X0X provenance
+
+    def test_forwards_the_manifest_verify_cap_including_zero(self):
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        for cap in (None, 0, 1, 3):
+            with self.subTest(cap=cap):
+                self.manifest["flags"]["max_verify"] = cap
+                with mock.patch("scripts.phases.child._run_child",
+                                side_effect=fake_run) as run:
+                    synthesize.synthesize_execute(self.root, self.manifest)
+                cmd = run.call_args.args[0]
+                if cap is None:
+                    self.assertNotIn("--max-verify", cmd)
+                else:
+                    self.assertEqual(cmd[cmd.index("--max-verify") + 1], str(cap))
+                    self.assertEqual(syn.build_parser().parse_args(
+                        ["--max-verify", str(cap)]).max_verify, cap)
+
+    def test_committed_cap_refusal_and_explicit_cli_override_reach_manifest(self):
+        parsed = config_schema.parse_settings({"settings": {"max_verify": 1}})
+        parser = driver.build_parser()
+        for argv, expected in ((["run", "."], None),
+                               (["run", ".", "--max-verify", "2"], 2)):
+            with self.subTest(argv=argv):
+                args = parser.parse_args(argv)
+                with mock.patch("scripts.phases.runio.committed_settings",
+                                return_value=parsed), \
+                     contextlib.redirect_stderr(io.StringIO()):
+                    resolved = driver._resolve_config(args, self.root)
+                flags = driver._cli_flags(args, self.root, resolution=resolved)
+                manifest = run_manifest.build_manifest(
+                    target=self.root, review_root=self.root, host="generic",
+                    security_mode="standard", flags=flags, config=resolved,
+                    run_id="R")
+                self.assertEqual(manifest["flags"]["max_verify"], expected)
+                if expected is None:
+                    self.assertEqual([r["key"] for r in resolved.refused],
+                                     ["max_verify"])
+                else:
+                    self.assertTrue(any("command line" in d
+                                        for d in resolved.disclosures))
+
+    def test_real_child_reports_combined_queue_cut_and_dispatched_tool_id(self):
+        def result(rule, line, level):
+            return {"ruleId": rule, "level": level,
+                    "message": {"text": rule}, "locations": [{"physicalLocation": {
+                        "artifactLocation": {"uri": "src/app.py"},
+                        "region": {"startLine": line}}}]}
+
+        os.makedirs(os.path.join(self.root, "src"))
+        with open(os.path.join(self.root, "src", "app.py"), "w") as fh:
+            fh.write("a = 1\nb = 2\nc = 3\n")
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                         {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+        runio._write_json(runio._pano(self.root, "coverage-app.json"),
+                         {"group": "app", "floor": [], "effective": [],
+                          "run_id": "R"})
+        runio._write_json(runio._pano(self.root, "findings-app-SEC.json"), {
+            "findings": [{"domain": "SEC", "code": "SEC-A1A",
+                          "severity": "CRITICAL", "title": "panel claim",
+                          "category": "authz", "location": {
+                              "file": "src/app.py", "line_start": 3}}],
+            "_panopticon": {"run_id": "R", "role": "domain_panel",
+                             "domain": "SEC", "group": "app"}})
+        os.makedirs(runio._pano(self.root, "tools"))
+        runio._write_json(runio._pano(self.root, "tools", "semgrep.sarif"),
+                         {"runs": [{"tool": {"driver": {"name": "semgrep",
+                                                           "rules": []}},
+                                    "results": [result("high", 1, "error"),
+                                                result("low", 2, "note")]}]})
+        runio._write_json(runio._pano(self.root, "tools-ran.json"),
+                         {"ran": True, "run_id": "R"})
+        manifest = {"run_id": "R", "host": "generic", "security_mode": "standard",
+                    "flags": {"max_verify": 2, "fail_on": "high"}}
+        dispatched = verify_tools._tool_verify_queue(self.root, manifest)
+        self.assertEqual(len(dispatched), 1)
+        qid, dispatched_finding = dispatched[0]
+        os.makedirs(runio._pano(self.root, "verdicts"))
+        runio._write_json(runio._pano(self.root, "verdicts", qid + ".json"),
+                         {"finding_id": dispatched_finding["id"],
+                          "verdict": "CONFIRMED", "reasoning": "checked"})
+
+        synthesize.synthesize_execute(self.root, manifest)  # real child subprocess
+        report = runio._load_json(runio._pano(self.root, "report.json"))
+        verdicts = report["meta"]["coverage"]["verdicts"]
+        self.assertEqual((verdicts["queued"], verdicts["cut"]), (2, 1))
+        self.assertEqual(verdicts["matched"], 1)
+        tool_findings = [f for f in report["findings"]
+                         if evidence.is_tool_sourced(f)]
+        self.assertEqual(len(tool_findings), 2)
+        dispatched_report = next(f for f in tool_findings
+                                 if f["id"] == dispatched_finding["id"])
+        omitted_report = next(f for f in tool_findings
+                              if f["id"] != dispatched_finding["id"])
+        self.assertEqual(dispatched_report["fingerprint"], qid)
+        self.assertEqual(dispatched_report["evidence"]["status"], "tool_confirmed")
+        self.assertEqual(omitted_report["evidence"]["status"], "tool_reported")
 
     def test_passes_the_committed_exclude_paths_as_tools_exclude(self):
         # #1740 fix round 1 (controller addition): the report-side gate reads
