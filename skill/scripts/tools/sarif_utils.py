@@ -4,15 +4,19 @@ This module exists to break the circular import between scripts.ingest_tools
 and scripts.tools.legacy_sarif. It is stdlib-only.
 """
 import json
+import math
 import os
 import re
 import sys
 
 from scripts.provenance import tool_provenance
-from .base import new_finding_id
+from .base import cvss_bucket, new_finding_id
 
 
 LEVEL_TO_SEV = {"error": "HIGH", "warning": "MEDIUM", "note": "LOW", "none": "INFO"}
+SEVERITY_LABELS = {"CRITICAL": "CRITICAL", "HIGH": "HIGH", "MEDIUM": "MEDIUM",
+                   "MODERATE": "MEDIUM", "LOW": "LOW"}
+SEVERITY_RANK = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 PREFIX = {"semgrep": "SG", "trivy": "TR", "gitleaks": "GL", "bandit": "BN", "gosec": "GS"}
 CWE_TAG = re.compile(r"(CWE-\d+)", re.IGNORECASE)
 CVE_TAG = re.compile(r"(CVE-\d{4}-\d{4,})", re.IGNORECASE)
@@ -117,11 +121,60 @@ _norm_uri = norm_uri
 def rules_index(run):
     idx = {}
     for r in (run.get("tool", {}).get("driver", {}).get("rules") or []):
-        idx[r.get("id")] = r
+        if isinstance(r, dict):
+            idx[r.get("id")] = r
     return idx
 
 
 _rules_index = rules_index
+
+
+def _properties(value):
+    """Treat malformed optional SARIF property bags as absent."""
+    return value if isinstance(value, dict) else {}
+
+
+def _security_score(value):
+    """SARIF security-severity 0 is absent, unlike an OSV zero group score."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return score if math.isfinite(score) and 0 < score <= 10 else None
+
+
+def _severity_label(value):
+    if not isinstance(value, str):
+        return None
+    return SEVERITY_LABELS.get(value.strip().upper())
+
+
+def _metadata_severity(properties):
+    score = _security_score(properties.get("security-severity"))
+    if score is not None:
+        return cvss_bucket(score)
+    label = _severity_label(properties.get("severity"))
+    if label is not None:
+        return label
+    tags = properties.get("tags")
+    labels = (_severity_label(tag) for tag in tags if isinstance(tag, str)) \
+        if isinstance(tags, list) else ()
+    return max((label for label in labels if label is not None),
+               key=SEVERITY_RANK.__getitem__, default=None)
+
+
+def _sarif_severity(result, rule):
+    for owner in (result, rule):
+        explicit = _metadata_severity(_properties(owner.get("properties")))
+        if explicit is not None:
+            return explicit
+    for level in (result.get("level"),
+                  _properties(rule.get("defaultConfiguration")).get("level")):
+        if isinstance(level, str) and level.lower() in LEVEL_TO_SEV:
+            return LEVEL_TO_SEV[level.lower()]
+    return LEVEL_TO_SEV["warning"]
 
 
 def relationship_cwes(rule):
@@ -182,15 +235,14 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
             if not isinstance(res, dict):
                 continue
             try:
-                level = str(res.get("level", "warning")).lower()
-                sev = LEVEL_TO_SEV.get(level, "INFO")
-                if tool_name in SECRET_ADAPTERS:
-                    # See SECRET_ADAPTERS: gitleaks states no `level` at all,
-                    # so the map's default was grading a committed credential
-                    # MEDIUM and the merge gate could not fail on one. This can
-                    # only ever RAISE a grade -- `LEVEL_TO_SEV` tops out at
-                    # HIGH -- so an adapter that does say `level: error` is
-                    # unaffected, and nothing here can lower a scanner's word.
+                rule_id = res.get("ruleId")
+                if tool_name == "bandit" and rule_id in NOISE_RULES:
+                    continue
+                rule = rules.get(rule_id, {})
+                sev = _sarif_severity(res, rule)
+                if tool_name in SECRET_ADAPTERS and SEVERITY_RANK[sev] < SEVERITY_RANK["HIGH"]:
+                    # A committed secret has a minimum HIGH grade; explicit
+                    # CRITICAL scanner metadata remains CRITICAL.
                     sev = "HIGH"
                 # #run10 COD-C3A: a location-less SARIF result is VALID (a
                 # config-wide or project-level finding from semgrep/bandit/trivy/
@@ -207,12 +259,12 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
                     phys = locs[0].get("physicalLocation", {})
                     loc = {"file": _norm_uri(phys.get("artifactLocation", {}).get("uri")),
                            "line_start": phys.get("region", {}).get("startLine")}
-                rule_id = res.get("ruleId")
-                if tool_name == "bandit" and rule_id in NOISE_RULES:
-                    continue
-                rule = rules.get(res.get("ruleId"), {})
-                tags = " ".join(str(t) for t in (rule.get("properties", {}).get("tags") or []))
-                blob = " ".join([res.get("ruleId", ""), tags, json.dumps(res.get("properties", {}))])
+                rule_props = _properties(rule.get("properties"))
+                result_props = _properties(res.get("properties"))
+                rule_tags = rule_props.get("tags")
+                tags = " ".join(str(t) for t in rule_tags) if isinstance(rule_tags, list) else ""
+                blob = " ".join([res.get("ruleId", ""), tags,
+                                 json.dumps(result_props, default=str)])
                 # #1578 I1: the tag scrape, UNION the rule's CWE taxonomy
                 # relationships -- gosec files its CWE only in the second.
                 cwes = sorted(set(m.group(1).upper() for m in CWE_TAG.finditer(blob))

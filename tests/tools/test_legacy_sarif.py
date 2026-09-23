@@ -178,13 +178,13 @@ class TestLegacySarifAdapter(unittest.TestCase):
         self.assertEqual(findings[0]["location"], {"file": "", "line_start": None})
         self.assertIn("file", findings[0]["location"])
 
-    def test_parse_unknown_level_defaults_to_info(self):
+    def test_parse_unknown_level_defaults_to_warning(self):
         adapter = legacy.LegacySarifAdapter("semgrep")
         sarif = {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
                            "results": [{"ruleId": "weird", "level": "banana"}]}]}
         findings = adapter.parse(json.dumps(sarif).encode(), "g1")
         self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["severity"], "INFO")
+        self.assertEqual(findings[0]["severity"], "MEDIUM")
 
 
 GOLDEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
