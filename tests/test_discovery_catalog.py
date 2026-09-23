@@ -1,6 +1,8 @@
 """Catalog, glob semantics, group objects, and assign-by-catalog tests."""
 import io
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -58,6 +60,28 @@ class TestGlobSemantics(unittest.TestCase):
         # a normal glob with a handful of wildcards is unaffected
         self.assertTrue(
             orchestrator._glob_to_re("tests/fixtures/**").match("tests/fixtures/x.py"))
+
+    def test_accepted_twenty_star_pattern_finishes_in_subprocess(self):
+        # The cap accepts exactly twenty separated stars. Keep the old regex
+        # failure isolated: subprocess.run kills/reaps it after the deadline.
+        script = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from scripts import discovery, groups_schema
+pattern = "a*" * 20 + "Z"
+matcher = discovery._glob_to_re(pattern)
+assert matcher.match("a" * 200 + "Y") is None
+assert matcher.match("a" * 200 + "Z")
+assert not discovery.match_patterns("a" * 200 + "Y", [pattern])
+assert groups_schema.matched_glob("a" * 200 + "Z", [pattern]) == pattern
+# Deep paths must not encounter a recursive matching limit either.
+assert discovery._glob_to_re("root/**/end").match("root/" + "dir/" * 2000 + "end")
+"""
+        skill_root = os.path.dirname(os.path.dirname(groups_schema.__file__))
+        result = subprocess.run(
+            [sys.executable, "-c", script, skill_root],
+            capture_output=True, text=True, timeout=3, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_no_slash_matches_basename_at_any_depth(self):
         self.assertTrue(self._m("README.md", ["*.md"]))
