@@ -113,6 +113,78 @@ summary + JSON artifact) with standards citations and CI gating.
   severity as a conservative pre-merge floor (fixture noise excluded via
   F-CAL-2) — a documented strict policy (#513), NOT the authority for the
   reported grade, which still comes from the evidence/advisor pipeline.
+  The raw grade itself moved in #1790: a SARIF result stating no `level` of its
+  own is now graded by its rule's `defaultConfiguration.level` rather than by an
+  invented `warning` default. That is **bidirectional**, and the downward half is
+  the larger one — on this repository's own captures semgrep's rule defaults are
+  `error` ~24, `warning` ~9 and `note` **241**, so 24 findings went MEDIUM → HIGH
+  and 241 went MEDIUM → LOW (a `none` default now yields INFO). No CI-gate effect,
+  since that floor is HIGH/CRITICAL, but a `driver run --severity medium` or
+  `--fail-on medium` sees a correspondingly smaller tool axis on such a tree.
+  **That floor is applied to what a commit ADDS** (#1790, owner ruling
+  2026-09-23; route coverage settled by the controller's C1 ruling the same
+  day). Every route — push to `main`, same-repo PR, fork PR — downloads a base
+  commit's own `raw-scanner-captures` artifact and passes it to the gate as
+  `--baseline-dir`/`--baseline-manifest`; the gate ingests it through the same
+  call with the same `--exclude` globs and the same security mode, and a head
+  finding matching one of the baseline's — same tool, rule, normalized path and
+  message, matched as a MULTISET so a second identical hit is still new, and
+  with line numbers deliberately excluded so an unrelated edit above a finding
+  does not resurrect it — is printed under `pre-existing (in the base commit's
+  scan; …)` and not counted. **A new HIGH/CRITICAL still fails the check.**
+  Which commit is the base depends on the route: a PR compares against its
+  `base.sha`, a push to `main` against the previous main head
+  (`github.event.before`). From there the workflow walks the base itself plus
+  **up to five first-parent ancestors** looking for a **completed**
+  `security.yml` run to download from — `completed`, not `successful`. A run
+  whose gate went red still uploaded its captures (`if: always()`), and the
+  gate refuses a *partial* baseline on its own terms anyway: `load_baseline`
+  runs the same `lost_required_coverage` check over the baseline's manifest and
+  dispositions that `evaluate` runs over the head, and rejects a baseline whose
+  scan lost an adapter loudly and strictly. Filtering on `success` as well
+  looked conservative and was in fact an absorbing state: a HIGH the owner
+  dismisses on the Security tab rather than removing from tool output reds
+  `main`'s own run, each following commit reaches the last green one a hop
+  further back, and at the sixth nothing — no PR, no push — can find a baseline
+  again. The walk is kept for the cases a status filter cannot help with: an
+  artifact that has expired (90-day retention) and a cancelled run that has
+  none. Downloadable is not the same as complete: the walk stops at the first
+  artifact it can download, and it is the gate, not the run's conclusion,
+  that decides whether that baseline is usable. A run that died mid-scan
+  costs one strict, audible commit before the next hop heals it, and because
+  `--limit 1` takes the newest completed run at a sha whatever its
+  conclusion, a cancelled run costs one hop.
+
+  Every route is delta-aware because a half-delta eats itself: leaving the push
+  to `main` strict means main's own gate fails on the standing set, the run's
+  conclusion is `failure`, no PR's lookup can then find a usable run at its
+  base, and every PR falls back to strict on findings its author cannot clear.
+  The standing set on `main` is instead governed by the post-merge audit below
+  and by the owner's own GitHub dismissals, and it is **disclosed** under the
+  pre-existing heading on every single run rather than hidden: a finding listed
+  there is fixed or dismissed on the Security tab, not on a commit whose diff
+  never touched it.
+
+  **No baseline, no delta.** A run whose walk-back found nothing (no run within
+  five hops, artifacts expired, an event with no base commit at all), or whose
+  baseline is unusable — unreadable directory, malformed manifest, or a
+  baseline whose own scan lost an adapter's coverage — is gated strictly on the
+  whole tree. The workflow says so with a `::notice::` and the gate with one
+  stderr line naming what was wrong. It fails toward strictness in every
+  direction and never toward silence.
+
+  **Two blind spots in the identity, both inherent to the ruling.** Replacement
+  *inside one file is invisible*: five findings in a file that share one
+  identity are matched five-for-five, so a diff deleting all five and adding
+  five fresh ones gates on nothing. And a *pure move reads as new*: renaming a
+  file turns every finding in it into a new one, because the path is part of
+  the identity. The first is the one an author controls; a full-tree review, not
+  this gate, is what catches it. **One residual to know about**: the tools image
+  (`ghcr.io/…-tools:latest`) is unpinned, so an image that re-grades a semgrep
+  rule from `warning` to `error` promotes every standing occurrence at once —
+  severity is not part of the identity, so those are disclosed as pre-existing
+  rather than counted, on every route. A scheduled strict full-tree lane that
+  would count them is a follow-up.
   After that gate reads the unchanged raw captures and manifest, the workflow
   runs `scripts/code_scanning_reports.py` in runner temporary storage. It
   keeps only the two named, note-level AI-usage rules from the exact supported
@@ -346,6 +418,15 @@ dependency scanner reading the PR's own lockfiles) and no SARIF upload, because 
 `pull_request_target` the upload would be filed against `main`'s Security tab. The full set runs on
 the push to main after the merge.
 
+What the fork path does NOT scan less of is the delta. A fork PR is gated on exactly the same terms
+as a same-repo one (#1790): `fork-scan` downloads the same base-commit `raw-scanner-captures`
+artifact — from `security.yml`'s run on the base branch, which nothing in a fork can write — and
+runs the same fetch step, with the same five-hop walk-back, and the same gate command. Both jobs
+hold `actions: read` for that download and for nothing else. The fetch runs *between* the two
+checkouts there, so the one step that carries a token runs before any fork-controlled content is on
+disk, and `pull_request_target` is `branches: [main]`, so the sha it resolves is always a `main`
+commit.
+
 **Post-merge zero-alert audit.** On a push to `main`, `security.yml` follows its actionable SARIF
 upload with a read-only `scripts/code_scanning_audit.py` check. The check independently proves that
 the Security upload and CodeQL's separate Python upload both finished for the exact current main
@@ -355,9 +436,15 @@ dismissed findings pass because GitHub omits them from `state=open`, while a reo
 fingerprinted alert is open again and fails.
 
 This is a post-merge detector, not universal pre-merge protection. The fork workflow intentionally
-uploads no SARIF, so a fork warning/note may first turn the main audit red after merge; the existing
-raw HIGH/CRITICAL gate remains the fork's pre-merge floor. For a read-only reproduction, take the
-singular `sarif-id` output from the main Security upload and run:
+uploads no SARIF, so a fork warning/note may first turn the main audit red after merge; the raw
+HIGH/CRITICAL gate remains the fork's pre-merge floor — applied, since #1790, to the findings the
+fork PR adds to its base commit rather than to every finding in the tree. That division is the
+point: **this audit is what speaks for the standing set on `main`**, which is why the pre-merge gate
+on every route is free to stop failing over it. A pre-existing finding clears by being fixed, or by
+being dismissed on the Security tab (GitHub omits a dismissed alert from `state=open`, so the audit
+passes); it never clears by being ignored, and the gate prints it under the pre-existing heading on
+every run so nobody has to remember it is there. For a read-only reproduction, take the singular
+`sarif-id` output from the main Security upload and run:
 
 ```bash
 GH_TOKEN="$(gh auth token)" python3 scripts/code_scanning_audit.py \
