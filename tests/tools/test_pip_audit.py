@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -496,6 +497,23 @@ class TestPyprojectReadBoundary(unittest.TestCase):
         target, path = self._target()
         os.mkdir(path)
         self._assert_refused(target, "pyproject.toml is not a regular file", False)
+
+    def test_unix_socket_open_failure_is_disclosed(self):
+        target, path = self._target()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(path)
+            self._assert_refused(target, "pyproject.toml is not a regular file", False)
+
+    def test_unreadable_regular_file_keeps_ordinary_absent_result(self):
+        target, _ = self._target(PYPROJECT_STATIC)
+        with mock.patch.object(pa.os, "open", side_effect=PermissionError("denied")), \
+             mock.patch.object(pa, "run_tool") as launch, \
+             contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(pa._deps_from_pyproject(target))
+            self.assertEqual(pa.PipAuditAdapter().invoke(target),
+                             (b'{"dependencies": [], "fixes": []}', 0))
+            self.assertIsNone(pa.PipAuditAdapter().sanitization_report(target))
+        launch.assert_not_called()
 
     def test_fifo_refusal_cannot_hang_reader(self):
         target, path = self._target()

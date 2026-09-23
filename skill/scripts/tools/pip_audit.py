@@ -41,6 +41,17 @@ def _deps_from_pyproject(target: str) -> list[str] | None:
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise PyprojectInputError("pyproject.toml is a symbolic link") from None
+        # Some special files (notably Unix sockets) fail open before fstat can
+        # inspect the descriptor. lstat classifies only that failed path; a
+        # missing or unreadable regular file keeps its ordinary None result.
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError:
+            return None
+        if stat.S_ISLNK(mode):
+            raise PyprojectInputError("pyproject.toml is a symbolic link") from None
+        if not stat.S_ISREG(mode):
+            raise PyprojectInputError("pyproject.toml is not a regular file") from None
         return None
     try:
         info = os.fstat(fd)
