@@ -318,22 +318,29 @@ class TestScannerRuleTagsOutrankTheSarifLevel(unittest.TestCase):
     def _sarif(self):
         return json.loads(_golden("gosec"))
 
+    def _fired_rules(self, sarif):
+        run = only(sarif["runs"])
+        fired = {r["ruleId"] for r in run["results"]}
+        return [rule for rule in run["tool"]["driver"]["rules"] if rule["id"] in fired]
+
     def test_the_capture_is_high_tagged_and_grades_high(self):
         sarif = self._sarif()
-        rules = only(sarif["runs"])["tool"]["driver"]["rules"]
+        rules = self._fired_rules(sarif)
         self.assertTrue(rules)
         for rule in rules:
             self.assertIn("HIGH", (rule.get("properties") or {}).get("tags") or [], rule.get("id"))
-        for f in su.sarif_to_findings(json.dumps(sarif), "gosec", "g1", "GS"):
+        findings = su.sarif_to_findings(sarif, "gosec", "g1", "GS")
+        self.assertTrue(findings)
+        for f in findings:
             self.assertEqual("HIGH", f["severity"], f)
 
     def test_a_medium_tagged_rule_grades_medium_despite_level_error(self):
         sarif = self._sarif()
         run = only(sarif["runs"])
-        rule = run["tool"]["driver"]["rules"][0]
+        rule = self._fired_rules(sarif)[0]
         rule["properties"]["tags"] = ["security", "MEDIUM"]
         graded = {(f.get("tool_evidence") or {}).get("rule_id"): f["severity"]
-                  for f in su.sarif_to_findings(json.dumps(sarif), "gosec", "g1", "GS")}
+                  for f in su.sarif_to_findings(sarif, "gosec", "g1", "GS")}
         self.assertEqual("MEDIUM", graded[rule["id"]])
         self.assertIn("HIGH", graded.values(), "the untouched rules still grade HIGH")
         for res in run["results"]:
