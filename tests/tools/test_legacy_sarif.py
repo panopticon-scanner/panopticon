@@ -337,7 +337,7 @@ class TestScannerRuleTagsOutrankTheSarifLevel(unittest.TestCase):
     def test_a_medium_tagged_rule_grades_medium_despite_level_error(self):
         sarif = self._sarif()
         run = only(sarif["runs"])
-        rule = self._fired_rules(sarif)[0]
+        rule = first(self._fired_rules(sarif))
         rule["properties"]["tags"] = ["security", "MEDIUM"]
         graded = {(f.get("tool_evidence") or {}).get("rule_id"): f["severity"]
                   for f in su.sarif_to_findings(sarif, "gosec", "g1", "GS")}
