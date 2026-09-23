@@ -3,11 +3,50 @@ import html
 import os
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from unittest import mock
 
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.html_report as hr
+
+
+class _FragmentParser(HTMLParser):
+    """Keep the generated fragment's element tree for semantic assertions."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = {"tag": "root", "attrs": {}, "children": [], "text": ""}
+        self.stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        node = {"tag": tag, "attrs": dict(attrs), "children": [], "text": ""}
+        self.stack[-1]["children"].append(node)
+        if tag not in {"br", "hr", "img", "input", "meta", "link"}:
+            self.stack.append(node)
+
+    def handle_endtag(self, tag):
+        if len(self.stack) > 1 and self.stack[-1]["tag"] == tag:
+            self.stack.pop()
+
+    def handle_data(self, data):
+        self.stack[-1]["text"] += data
+
+
+def _nodes(node, tag):
+    return ([node] if node["tag"] == tag else []) + [
+        match for child in node["children"] for match in _nodes(child, tag)
+    ]
+
+
+def _text(node):
+    return node["text"] + "".join(_text(child) for child in node["children"])
+
+
+def _parse(fragment):
+    parser = _FragmentParser()
+    parser.feed(fragment)
+    return parser.root
 
 
 def _minimal_report(findings=None):
@@ -118,12 +157,29 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("Top issues", out)
         self.assertIn("SQL injection", out)
 
-    def test_findings_section_has_tabs(self):
+    def test_findings_severity_buttons_control_one_visible_result_set(self):
         report = _minimal_report()
-        out = hr.render(report)
-        self.assertIn('data-tab="ALL"', out)
-        self.assertIn('data-tab="HIGH"', out)
-        self.assertIn('data-tab="CRITICAL"', out)
+        root = _parse(hr._render_findings(report))
+        groups = [n for n in _nodes(root, "div") if n["attrs"].get("role") == "group"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["attrs"].get("aria-label"), "Filter findings by severity")
+        buttons = _nodes(groups[0], "button")
+        self.assertEqual([b["attrs"].get("data-severity-filter") for b in buttons],
+                         ["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"])
+        self.assertTrue(all(b["attrs"].get("type") == "button" for b in buttons))
+        self.assertEqual([b["attrs"].get("aria-pressed") for b in buttons],
+                         ["true", "false", "false", "false", "false", "false"])
+        self.assertEqual([_text(b).strip() for b in buttons],
+                         ["ALL 1", "CRITICAL 0", "HIGH 1", "MEDIUM 0", "LOW 0", "INFO 0"])
+        result_sets = [n for n in _nodes(root, "div") if "data-severity-results" in n["attrs"]]
+        self.assertEqual(len(result_sets), len(buttons))
+        self.assertEqual([b["attrs"].get("aria-controls") for b in buttons],
+                         [p["attrs"].get("id") for p in result_sets])
+        self.assertEqual(len({p["attrs"].get("id") for p in result_sets}), len(buttons))
+        self.assertEqual(["hidden" in p["attrs"] for p in result_sets],
+                         [False, True, True, True, True, True])
+        self.assertNotIn("role=\"tablist\"", hr._render_findings(report))
+        self.assertNotIn("aria-selected", hr._render_findings(report))
 
     def test_findings_has_expand_all_button(self):
         report = _minimal_report()
@@ -270,6 +326,31 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("App", out)  # the group name is the row label
         self.assertIn("heat-cell", out)  # a group x panel cell rendered
         self.assertIn("heat-total", out)
+
+    def test_heatmap_table_names_rows_columns_and_explicit_zeroes(self):
+        report = _minimal_report()
+        report["groups"] = [
+            {"name": "Quiet <group>", "files": ["quiet.py"]},
+            {"name": "App & API", "files": ["app.py"]},
+        ]
+        report["findings"].append({
+            "id": "CODE-1", "title": "lint", "severity": "LOW", "panel": "code",
+            "location": {"file": "app.py"},
+        })
+        root = _parse(hr._render_heatmap(report))
+        tables = _nodes(root, "table")
+        self.assertEqual(len(tables), 1)
+        self.assertEqual(_text(_nodes(tables[0], "caption")[0]).strip(), "Group heatmap")
+        headers = _nodes(tables[0], "th")
+        self.assertEqual([_text(h).strip() for h in headers if h["attrs"].get("scope") == "col"],
+                         ["Group", "code", "security", "Total"])
+        self.assertEqual([_text(h).strip() for h in headers if h["attrs"].get("scope") == "row"],
+                         ["App & API", "Quiet <group>"])
+        rows = _nodes(_nodes(tables[0], "tbody")[0], "tr")
+        self.assertEqual([[_text(cell).strip() for cell in row["children"]] for row in rows],
+                         [["App & API", "1", "1", "2"], ["Quiet <group>", "0", "0", "0"]])
+        self.assertIn("&lt;group&gt;", hr._render_heatmap(report))
+        self.assertNotIn("<group>", hr._render_heatmap(report))
 
     def test_heatmap_grid_buckets_by_group_and_panel(self):
         report = _minimal_report()  # one HIGH security finding on app.py, group "App"

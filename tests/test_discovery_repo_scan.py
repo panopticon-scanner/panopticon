@@ -4,8 +4,11 @@ import io
 import json
 import os
 import tempfile
+import types
 import unittest
 import unittest.mock
+
+from scripts import diff_map
 
 from discovery_test_helpers import (
     discovery, orchestrator, touch, run_scan, run_scan_with_err, grouped,
@@ -432,3 +435,68 @@ class TestWorktreeDirty(unittest.TestCase):
         with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
             fh.write("changed\n")
         self.assertTrue(discovery._worktree_dirty(repo, exclude=names))
+
+    def test_control_characters_and_arrows_are_exact_excluded_paths(self):
+        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
+        odd_name = "line\nbreak -> tab\tfile.py"
+        with open(os.path.join(repo, odd_name), "w", encoding="utf-8") as fh:
+            fh.write("new\n")
+        self.assertTrue(discovery._worktree_dirty(repo))
+        self.assertFalse(discovery._worktree_dirty(repo, exclude=(odd_name,)))
+        with open(os.path.join(repo, "other.py"), "w", encoding="utf-8") as fh:
+            fh.write("new\n")
+        self.assertTrue(discovery._worktree_dirty(repo, exclude=(odd_name,)))
+
+    def test_rename_to_excluded_name_still_counts_source(self):
+        repo = make_git_repo(test_case=self, files={"old.yml": "version: 1\n"})
+        git_cmd(repo, "mv", "old.yml", "panopticon.yml")
+        self.assertTrue(discovery._worktree_dirty(repo, exclude=("panopticon.yml",)))
+
+    def test_rename_from_excluded_name_still_counts_destination(self):
+        repo = make_git_repo(test_case=self, files={"panopticon.yml": "version: 1\n"})
+        git_cmd(repo, "mv", "panopticon.yml", "new.yml")
+        self.assertTrue(discovery._worktree_dirty(repo, exclude=("panopticon.yml",)))
+
+    def test_copy_record_checks_both_paths_and_consumes_pair(self):
+        # Git can report a copy when copy detection is configured. Both paths
+        # belong to one record; the next NUL is a separate status entry.
+        status = b"C  panopticon.yml\0source.py\0?? other.py\0"
+        with unittest.mock.patch.object(
+            discovery, "_git", return_value=types.SimpleNamespace(stdout=status)
+        ) as git:
+            self.assertTrue(discovery._worktree_dirty("/unused", exclude=("panopticon.yml", "other.py")))
+            self.assertTrue(discovery._worktree_dirty("/unused", exclude=("panopticon.yml", "source.py")))
+            self.assertFalse(discovery._worktree_dirty("/unused", exclude=("panopticon.yml", "source.py", "other.py")))
+        self.assertEqual(git.call_count, 3)
+        git.assert_any_call("/unused", ["status", "--porcelain", "-z"], text=False)
+
+
+class TestChangedSymlinks(unittest.TestCase):
+    def test_untracked_symlink_leaves_are_omitted_with_a_diagnostic(self):
+        repo = make_git_repo(test_case=self, files={"target.py": "pass\n"})
+        with tempfile.TemporaryDirectory() as outside:
+            outside_target = os.path.join(outside, "outside.py")
+            with open(outside_target, "w", encoding="utf-8") as fh:
+                fh.write("pass\n")
+            os.symlink("target.py", os.path.join(repo, "inside.py"))
+            os.symlink(outside_target, os.path.join(repo, "outside.py"))
+            with open(os.path.join(repo, "regular.py"), "w", encoding="utf-8") as fh:
+                fh.write("pass\n")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                changed = discovery.collect_changed_files(repo, "HEAD")
+            self.assertEqual(changed, ["regular.py"])
+            self.assertIn("inside.py", err.getvalue())
+            self.assertIn("outside.py", err.getvalue())
+            self.assertIn("symlink", err.getvalue())
+            self.assertEqual(diff_map.hunk_map(repo, "HEAD"), {"regular.py": [(1, 1)]})
+
+    def test_tracked_symlink_change_keeps_its_hunk(self):
+        repo = make_git_repo(test_case=self, files={"first.py": "pass\n", "second.py": "pass\n"})
+        os.symlink("first.py", os.path.join(repo, "link.py"))
+        git_cmd(repo, "add", "link.py")
+        git_cmd(repo, "commit", "-qm", "add link")
+        os.unlink(os.path.join(repo, "link.py"))
+        os.symlink("second.py", os.path.join(repo, "link.py"))
+        self.assertEqual(discovery.collect_changed_files(repo, "HEAD"), ["link.py"])
+        self.assertEqual(diff_map.hunk_map(repo, "HEAD"), {"link.py": [(1, 1)]})

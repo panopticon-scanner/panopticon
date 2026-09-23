@@ -575,6 +575,10 @@ class TestHunkMap(unittest.TestCase):
         argv = seen["diff"]
         self.assertIn("diff.mnemonicPrefix=false", argv)
         self.assertIn("core.quotepath=false", argv)
+        self.assertIn("--unified=0", argv)
+        self.assertIn("--no-color", argv)
+        self.assertIn("--find-renames", argv)
+        self.assertIn("--src-prefix=a/", argv)
         self.assertIn("--dst-prefix=b/", argv)
         # #1738 fix round 1: and the diff is read as BYTES, because text mode
         # rewrites a lone \r to \n and forges a diff line out of payload.

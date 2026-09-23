@@ -9,6 +9,53 @@ boilerplate. Previously 18 tests/tools/ files each repeated the same
 """
 import os
 import sys
+import shlex
+import tempfile
+
+import pytest
+
+
+def _refuse_repository_temp_root(path, source):
+    """Keep disposable test roots outside checkouts without executing Git.
+
+    Resolve symlinks first; a .git directory and a linked-worktree gitfile both
+    establish a boundary. Do this before HOME setup or test collection: a
+    nominal non-Git fixture inside a checkout otherwise discovers its ancestor.
+    """
+    if not path:
+        return
+    resolved = os.path.realpath(os.path.abspath(os.fspath(path)))
+    ancestor = resolved
+    while True:
+        if os.path.lexists(os.path.join(ancestor, ".git")):
+            raise pytest.UsageError(
+                "%s resolves inside a Git checkout (%s). Use an external temp "
+                "directory for TMPDIR and --basetemp before running tests."
+                % (source, resolved))
+        parent = os.path.dirname(ancestor)
+        if parent == ancestor:
+            break
+        ancestor = parent
+
+
+def _check_explicit_basetemp(arguments):
+    for index, argument in enumerate(arguments):
+        if argument.startswith("--basetemp="):
+            _refuse_repository_temp_root(argument.split("=", 1)[1], "--basetemp")
+        elif argument == "--basetemp" and index + 1 < len(arguments):
+            _refuse_repository_temp_root(arguments[index + 1], "--basetemp")
+
+
+# Import-time checks precede all registry/HOME setup below. The parsed option
+# hook also covers addopts from config files and pytest.main([...]) callers.
+_refuse_repository_temp_root(tempfile.gettempdir(), "effective tempfile root")
+_check_explicit_basetemp(sys.argv[1:])
+_check_explicit_basetemp(shlex.split(os.environ.get("PYTEST_ADDOPTS", "")))
+
+
+def pytest_configure(config):
+    _refuse_repository_temp_root(config.getoption("basetemp"), "--basetemp")
+
 
 _TESTS = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_TESTS)
@@ -50,7 +97,6 @@ for _p in reversed((_TESTS,
 # under the registry the first import had already expanded.
 import atexit  # noqa: E402
 import shutil  # noqa: E402
-import tempfile  # noqa: E402
 
 _TEST_HOME = os.environ.get("PANOPTICON_TEST_HOME")
 if not _TEST_HOME:
@@ -94,7 +140,6 @@ import tools  # noqa: E402,F401
 # Refuse the daemon by default and make reaching it an explicit, marked choice.
 import subprocess  # noqa: E402
 
-import pytest  # noqa: E402
 
 import scripts.codex_host as _codex_host  # noqa: E402
 import scripts.run_tools as _run_tools  # noqa: E402

@@ -167,8 +167,8 @@ def tools_execute(review_root, manifest):
     # selected adapter produces nothing, so the run stays honest without a hard
     # stop that a missing Docker image doesn't deserve.
     crashed = (not produced) and proc.returncode not in (0, None)
-    raw_err = (proc.stderr or "").strip()[:300]
-    note = "" if produced else (runio._redact_output(raw_err)
+    raw_err = (proc.stderr or "").strip()
+    note = "" if produced else (runio._redact_output(raw_err)[:300]
                                 or ("tool scan crashed" if crashed
                                     else "no tool output produced"))
     runio._write_json(runio._pano(review_root, "tools-ran.json"),

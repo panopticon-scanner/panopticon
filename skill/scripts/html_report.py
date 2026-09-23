@@ -148,7 +148,7 @@ button, .tab { font-family: var(--ui); }
 .findings-controls button:hover, .tab:hover, summary:hover { border-color: var(--accent-border); color: var(--accent); }
 .tabs { display: flex; gap: .3rem; margin-bottom: .75rem; flex-wrap: wrap; }
 .tab { font-family: var(--mono); font-size: 11px; }
-.tab[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); font-weight: 700; }
+.tab[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); font-weight: 700; }
 .fgroup { margin-bottom: .5rem; }
 .fgroup > summary { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--ink2); cursor: pointer; padding: .5rem 0 .35rem; list-style: none; display: flex; align-items: center; gap: .5rem; border-bottom: 1px solid var(--border); }
 .fgroup > summary::-webkit-details-marker { display: none; }
@@ -183,13 +183,14 @@ button, .tab { font-family: var(--ui); }
 .unverified-findings > details { background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; }
 .unverified-findings summary { cursor: pointer; font-weight: 600; }
 .heatmap { margin: 1.2rem 0; overflow-x: auto; }
-.heatmap-grid { display: grid; gap: 2px; font-family: var(--mono); font-size: 11px; min-width: max-content; }
-.heat-head { color: var(--faint); font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; text-align: center; padding: 2px 4px; align-self: end; }
+.heatmap-table { width: 100%; min-width: max-content; border-collapse: separate; border-spacing: 2px; font-family: var(--mono); font-size: 11px; }
+.heatmap-table caption { text-align: left; font-family: var(--ui); font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: .75rem; }
+.heat-head { color: var(--faint); font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; text-align: center; padding: 2px 4px; }
 .heat-head.heat-label-head { text-align: left; }
-.heat-label { color: var(--ink2); padding: 3px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.heat-cell { text-align: center; font-weight: 700; padding: 3px 0; border-radius: 2px; }
+.heat-label { color: var(--ink2); padding: 3px 6px; white-space: nowrap; text-align: left; font-weight: 400; min-width: 160px; }
+.heat-cell { text-align: center; font-weight: 700; padding: 3px 0; border-radius: 2px; min-width: 64px; }
 .heat-cell.empty { background: transparent; }
-.heat-total { text-align: center; font-weight: 700; padding: 3px 0; border-radius: 2px; background: var(--chip); color: var(--ink); }
+.heat-total { text-align: center; font-weight: 700; padding: 3px 0; border-radius: 2px; background: var(--chip); color: var(--ink); min-width: 56px; }
 .compare-dashboard { display: flex; gap: .5rem; flex-wrap: wrap; }
 .compare-panel { flex: 1; min-width: 250px; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; }
 .stat-minis { margin-top: .5rem; }
@@ -238,15 +239,16 @@ _JS = """
       });
     }
 
-    document.querySelectorAll('[data-tab]').forEach(function (tab) {
-      tab.addEventListener('click', function () {
-        var group = tab.closest('[data-tab-group]');
+    document.querySelectorAll('[data-severity-filter]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        var group = button.closest('[data-severity-filter-group]');
         if (!group) return;
-        var target = tab.getAttribute('data-tab');
-        group.querySelectorAll('[data-tab]').forEach(function (t) { t.setAttribute('aria-selected', 'false'); });
-        tab.setAttribute('aria-selected', 'true');
-        group.querySelectorAll('[data-panel]').forEach(function (p) {
-          p.hidden = p.getAttribute('data-panel') !== target;
+        var target = button.getAttribute('aria-controls');
+        group.querySelectorAll('[data-severity-filter]').forEach(function (b) {
+          b.setAttribute('aria-pressed', String(b === button));
+        });
+        group.querySelectorAll('[data-severity-results]').forEach(function (panel) {
+          panel.hidden = panel.id !== target;
         });
       });
     });
@@ -1254,29 +1256,35 @@ def _render_heatmap(report):
     if not rows or not active_panels:
         return ""
     labels = _group_display_labels(report)
-    cols = "minmax(160px,1fr) %s 56px" % " ".join(["64px"] * len(active_panels))
-    cells = ["<div class='heat-head heat-label-head'>Group</div>"]
+    headers = ["<th scope='col' class='heat-head heat-label-head'>Group</th>"]
     for p in active_panels:
-        cells.append(f"<div class='heat-head'>{_escape(p)}</div>")
-    cells.append("<div class='heat-head'>Total</div>")
+        headers.append(f"<th scope='col' class='heat-head'>{_escape(p)}</th>")
+    headers.append("<th scope='col' class='heat-head'>Total</th>")
+    body_rows = []
     for name, row in rows:
         label = labels.get(name, name)
-        cells.append(
-            f"<div class='heat-label' title='{_escape(label)}'>{_escape(label)}</div>")
+        cells = [
+            f"<th scope='row' class='heat-label' title='{_escape(label)}'>" +
+            f"{_escape(label)}</th>"
+        ]
         for p in active_panels:
             c = row["cells"].get(p)
             if c:
                 sev = c["worst"].lower()
                 cells.append(
-                    f"<div class='heat-cell' style='color:var(--sev-{sev});"
-                    f"background:var(--sev-{sev}-tint)'>{c['count']}</div>")
+                    f"<td class='heat-cell' style='color:var(--sev-{sev});"
+                    f"background:var(--sev-{sev}-tint)'>{c['count']}</td>")
             else:
-                cells.append("<div class='heat-cell empty'></div>")
-        cells.append(f"<div class='heat-total'>{row['total']}</div>")
+                cells.append("<td class='heat-cell empty'>0</td>")
+        cells.append(f"<td class='heat-total'>{row['total']}</td>")
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
     return f"""
 <section class="heatmap">
-<h3>Group heatmap</h3>
-<div class="heatmap-grid" style="grid-template-columns:{cols}">{''.join(cells)}</div>
+<table class="heatmap-table">
+<caption>Group heatmap</caption>
+<thead><tr>{''.join(headers)}</tr></thead>
+<tbody>{''.join(body_rows)}</tbody>
+</table>
 </section>
 """
 
@@ -1321,16 +1329,19 @@ def _render_findings(report):
                 f"{cards}</details>")
         return "\n".join(out)
 
-    tabs = []
+    buttons = []
     panels = []
     for sev in ["ALL"] + _SEV_ORDER:
         count = len(by_sev[sev])
-        tabs.append(
-            f'<button class="tab" data-tab="{sev}" aria-selected="{str(sev == "ALL").lower()}">'
+        panel_id = f"severity-results-{sev.lower()}"
+        buttons.append(
+            f'<button type="button" class="tab" data-severity-filter="{sev}" '
+            f'aria-pressed="{str(sev == "ALL").lower()}" aria-controls="{panel_id}">'
             f"{sev} <span class='count'>{count}</span></button>"
         )
         hidden = "" if sev == "ALL" else "hidden"
-        panels.append(f'<div class="tab-panel" data-panel="{sev}" {hidden}>'
+        panels.append(f'<div id="{panel_id}" class="tab-panel" '
+                      f'data-severity-results="{sev}" {hidden}>'
                       f'{_grouped_cards(by_sev[sev])}</div>')
 
     unverified_section = ""
@@ -1346,12 +1357,12 @@ def _render_findings(report):
 """
 
     return f"""
-<section class="findings" data-tab-group="findings">
+<section class="findings" data-severity-filter-group>
 <h2>Findings</h2>
 <div class="findings-controls">
 <button type="button" class="toggle-all" data-expand-all>Expand all</button>
 </div>
-<div class="tabs" role="tablist">{"".join(tabs)}</div>
+<div class="tabs" role="group" aria-label="Filter findings by severity">{"".join(buttons)}</div>
 {"".join(panels)}
 </section>
 {unverified_section}

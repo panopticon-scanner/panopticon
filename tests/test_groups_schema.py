@@ -1,5 +1,8 @@
 # tests/test_groups_schema.py
 import unittest
+from unittest import mock
+
+import pytest
 
 import scripts.groups_schema as gs
 
@@ -296,3 +299,84 @@ class TestGlobsAreRefusedRatherThanMiscompiled(unittest.TestCase):
                      "**/vendor/**", "/README.md", "LICENSE*", "docs/"):
             with self.subTest(glob=glob):
                 self.assertIsNone(gs.glob_defect(glob))
+
+
+@pytest.mark.parametrize(("pattern", "path", "matches"), [
+    ("src/*.py", "src/file.py", True),
+    ("src/*.py", "nested/src/file.py", False),
+    ("/file.py", "file.py", True),
+    ("/file.py", "nested/file.py", False),
+    ("*.py", "deep/nested/file.py", True),
+    ("*.py", "deep/nested/file.py/child", False),
+    ("src/*", "src/", True),
+    ("src/*", "src/a/b", False),
+    ("src/?", "src/a", True),
+    ("src/?", "src/", False),
+    ("src/?", "src//", False),
+    ("src/**/file", "src/file", True),
+    ("src/**/file", "src/a/b/file", True),
+    ("src/**/file", "src//file", False),
+    ("src/**/file", "src/a//file", False),
+    ("src/**/file", "src/afile", False),
+    ("src/**", "src/", True),
+    ("src/**", "src//a/b", True),
+    ("src/a**z", "src/a/b/z", True),
+    ("src/a**/z", "src/az", True),
+    ("src/a**/z", "src/a/z", False),
+    ("src/a**/z", "src/ab/z", True),
+    ("docs/", "docs", False),
+    ("docs/", "docs/", True),
+    ("docs/", "nested/docs/guide/file", True),
+    ("src/docs/", "nested/src/docs/file", False),
+    ("src/docs/", "src/docs/file", True),
+    ("**/" * 25 + "x", "a/b/x", True),
+    ("a***z", "a/b/z", True),
+    ("file.[ch]", "file.c", False),
+    ("file.[ch]", "file.[ch]", False),
+    ("file.txt", "file.txt\n", False),
+    ("file.txt", "line\nbreak/file.txt", True),
+    ("src/*", "src/line\nbreak", True),
+    ("src/?", "src/\n", True),
+    ("src/**", "src/line\nbreak/deep/file", True),
+    ("src/**/file", "src/line\nbreak/file", True),
+    ("src/**/file", "src/line\nbreak/file\n", False),
+    ("docs/", "docs/line\nbreak", True),
+    ("src/line\nbreak", "src/line\nbreak", True),
+    ("", "", True),
+    ("*", "", True),
+    ("**/x", "/x", False),
+    ("x", "/x", True),
+    ("x", "a//x", True),
+])
+def test_bounded_glob_semantics(pattern, path, matches):
+    assert bool(gs.glob_to_re(pattern).match(path)) is matches
+
+
+def test_glob_matching_does_not_compile_a_regex():
+    # Regex-shaped .pattern remains diagnostics only, including invalid globs.
+    with mock.patch.object(gs.re, "compile", side_effect=AssertionError("regex matcher")):
+        for pattern, path in [("src/**/x", "src/a/x"), ("*.py", "a/b.py")]:
+            matcher = gs.glob_to_re(pattern)
+            assert isinstance(matcher.pattern, str)
+            assert matcher.match(path)
+        assert gs.glob_to_re("[ab]").match("a") is None
+        assert gs.glob_to_re("a*" * 21).match("a" * 21) is None
+        assert gs.glob_to_re("a" * 257).match("a" * 257) is None
+
+
+def test_bounded_glob_ordered_exclusion_and_negation():
+    patterns = ["src/**", "!src/keep/**", "src/keep/generated/*"]
+    assert gs.matched_glob("src/drop.py", patterns) == "src/**"
+    assert gs.matched_glob("src/keep/a.py", patterns) is None
+    assert gs.matched_glob("src/keep/generated/a.py", patterns) == patterns[-1]
+    assert gs.matched_glob("src/keep/generated/deep/a.py", patterns) is None
+
+
+def test_invalid_glob_warning_is_still_once_per_caller(capsys):
+    with mock.patch.object(gs, "_warned_globs", set()):
+        for _ in range(2):
+            assert gs.glob_to_re("[ab]", "test-one").match("a") is None
+        assert gs.glob_to_re("[ab]", "test-two").match("a") is None
+    stderr = capsys.readouterr().err
+    assert stderr.count("matches nothing") == 2
+    assert "test-one" in stderr and "test-two" in stderr

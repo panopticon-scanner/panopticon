@@ -245,6 +245,8 @@ def _nul_separated_paths(raw):
 
 def _unreviewable_reason(full):
     """Why a path git listed is not reviewable surface, in the operator's terms."""
+    if os.path.islink(full):
+        return "is a symlink leaf"
     if not os.path.lexists(full):
         return "no longer exists in the working tree"
     if not os.path.isfile(full):
@@ -255,7 +257,7 @@ def _unreviewable_reason(full):
 
 def _worktree_dirty(repo, exclude=()):
     """True when repo's working tree has uncommitted changes (git status
-    --porcelain is non-empty) -- used to set diff-hunks.json's
+    --porcelain -z is non-empty) -- used to set diff-hunks.json's
     includes_uncommitted for the P6.3 --repo-scan delta scopes: True for a
     live tree (e.g. -c usage), False for a clean checkout.
 
@@ -267,16 +269,25 @@ def _worktree_dirty(repo, exclude=()):
     run, and the driver's own sync is declared as the PR author's uncommitted
     work.
     """
-    r = _git(repo, ["status", "--porcelain"])
+    r = _git(repo, ["status", "--porcelain", "-z"], text=False)
     names = set(exclude)
-    for line in r.stdout.splitlines():
-        if not line.strip():
-            continue
-        path = line[3:]                     # "XY <path>"; git quotes odd names,
-        if " -> " in path:                  # which then match no plain name here
-            path = path.split(" -> ", 1)[1]   # rename/copy: the NEW path changed
-        if path.strip() not in names:
+    records = (r.stdout or b"").split(b"\0")
+    i = 0
+    while i < len(records) - 1:
+        record = records[i]
+        i += 1
+        if len(record) < 4 or record[2:3] != b" ":
+            return True  # malformed status must not look clean
+        paths = [os.fsdecode(record[3:])]
+        if b"R" in record[:2] or b"C" in record[:2]:
+            if i >= len(records) - 1:
+                return True
+            paths.append(os.fsdecode(records[i]))
+            i += 1
+        if any(path not in names for path in paths):
             return True
+    if records[-1]:
+        return True  # incomplete NUL record must not look clean
     return False
 
 def collect_changed_files(repo, base=None, exclude=()):
@@ -329,6 +340,7 @@ def collect_changed_files(repo, base=None, exclude=()):
             except Exception:
                 return None
     changed = set()
+    untracked = set()
     try:
         # --find-renames: same rename semantics as diff_map.hunk_map, so the
         # reviewed file set and the on-diff hunk map can never diverge on a
@@ -353,7 +365,8 @@ def collect_changed_files(repo, base=None, exclude=()):
     try:
         out = _git(repo, ["-c", "core.quotepath=false", "ls-files", "--others",
                           "--exclude-standard", "-z"], text=False)
-        changed.update(_nul_separated_paths(out.stdout))
+        untracked.update(_nul_separated_paths(out.stdout))
+        changed.update(untracked)
     except Exception:
         pass
     for name in exclude:
@@ -361,7 +374,12 @@ def collect_changed_files(repo, base=None, exclude=()):
     out = []
     for p in sorted(changed):
         full = os.path.join(repo, p)
-        if os.path.isfile(full) and _within(repo, full):
+        # Untracked links have no hunks; a tracked link target change does.
+        if p not in untracked or not os.path.islink(full):
+            reviewable = os.path.isfile(full) and _within(repo, full)
+        else:
+            reviewable = False
+        if reviewable:
             out.append(p.replace(os.sep, "/"))
         else:
             # #1739: the drop itself is correct -- the reviewed set is files --
