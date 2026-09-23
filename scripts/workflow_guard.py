@@ -480,7 +480,13 @@ def _defect(fetch, index, stmts, checks, conditions=None):
         return ("hands %s straight to `%s`, so there is no file to check -- "
                 "download it to a file, `sha256sum -c` that file, then run it"
                 % (shell_reader.readable(fetch.url) or "a download",
-                   shell_reader.readable(" ".join(fetch.piped_to))))
+                   " ".join(shell_reader.readable(t) for t in fetch.piped_to)))
+    if shell_reader.has_substitution(fetch.dest):
+        return ("fetches %s to an unknown destination (%s) containing a shell "
+                "substitution, so this guard cannot bind the downloaded file "
+                "to a checksum or later use -- name a stable file and verify it"
+                % (shell_reader.readable(fetch.url) or "a download",
+                   shell_reader.readable(fetch.dest)))
     names, uses = _uses(stmts, fetch.dest, after=index)
     if not uses:
         return None                             # fetched and only read: not this rule

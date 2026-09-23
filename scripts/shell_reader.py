@@ -36,13 +36,14 @@ back for a human reading an error message.
 import collections
 import os
 import re
+import secrets
 import shlex
 
 # One shell command: its argv, the files it redirects into / reads from, the
 # heredoc body attached to it, the command substitutions inside it -- the
 # `$(...)`, `<(...)` and backtick texts, which are commands in their own right
 # and where `eval "$(curl ...)"` hides its download -- and stdout_writes, the
-# subset of `writes` a shell actually delivers to file descriptor 1. `writes`
+# final file sink of descriptor 1 after ordered redirects/duplications. `writes`
 # also carries an explicit OTHER fd (`2>err.log`) so the guard's file-tracking
 # stays correct; `stdout_writes` is the one a caller may call THE destination
 # (#1733). `&>word`/`&>>word` and the UNNUMBERED `>&word` land there too --
@@ -73,33 +74,63 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
-# Only a pattern parsed INSIDE a case body receives this marker. A closing
-# subshell parenthesis (or a quoted command name ending in one) is not an arm.
-# LIMITATION, shared with `@@substN@@` and `@@heredocN@@`: a marker is a
-# spelling, not a capability, so a target script CAN write one -- and since
-# `command()` drops a leading arm marker, a step spelling `@@casearm@@curl`
-# hides the fetch behind it. There is no cheap unforgeable alternative: every
-# character survives `shlex` quoting, and a control character does not help
-# either: PyYAML's reader does reject a RAW control character in a workflow
-# file, but a double-quoted YAML scalar spells one with a backslash-u escape
-# and loads the real thing (checked, this fix round). Closing it needs a
-# per-parse nonce, or `statements()` neutralising the whole marker family in
-# its input before parsing -- either of which changes the marker CONTRACT, not
-# a constant, so it is a change of its own. The index guard in `_stage.take`
-# ("an index past the end belongs to ANOTHER parse") is the shape of the
-# defence that is in place today.
-_CASE_ARM = "@@casearm@@"
-ARM = re.compile(r"^@@casearm@@")
-_GROUP_TOKENS = ("@@group-open@@", "@@group-close@@")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
-_REDIRECT = re.compile(r"^(\d*)(>>|>|<)(.*)$")
-# `&>word`/`&>>word`: bash's combined-stream shorthand for `>word 2>&1` --
-# always fd 1, and `_split` already keeps it glued to `word` (the `&`/`>`
-# handling it shares with `2>&1`). It never takes a leading fd digit.
-_AMP_REDIRECT = re.compile(r"^&(>>|>)(.*)$")
+_REDIRECT = re.compile(r"&>>|&>|>>|>\||>&|<&|>|<")
 _HEREDOC_OP = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
-_HEREDOC_REF = re.compile(r"^@@heredoc(\d+)@@$")
-SUBST_REF = re.compile(r"@@subst(\d+)@@")
+
+
+class _Token(str):
+    """String-compatible shell word with capabilities from its own parse.
+
+    String operations deliberately discard provenance. Consumers deriving a
+    path must use `derived` to retain only the markers actually in that path.
+    Re-parsing a word starts a fresh context, never reuses these capabilities.
+    """
+    def __new__(cls, text, markers):
+        token = super().__new__(cls, text)
+        token.markers = markers
+        return token
+
+    markers: dict[str, tuple[str, object]]
+
+
+def _markers(text):
+    return text.markers if isinstance(text, _Token) else {}
+
+
+def derived(text, *sources):
+    """Carry provenance through an explicit substring/path transformation."""
+    markers = {key: value for source in sources
+               for key, value in _markers(source).items() if key in text}
+    return _Token(text, markers) if markers else text
+
+
+class _Parse:
+    def __init__(self, source):
+        # No source spelling can collide, even if a nonce source is replaced
+        # in a test. No global registry: tokens retain only their own entries.
+        self.prefix = "@@shell-" + secrets.token_hex(16) + "-"
+        while self.prefix in source:
+            self.prefix += "x"
+        self.entries: dict[str, tuple[str, object]] = {}
+        self.pattern = re.compile(re.escape(self.prefix) + r"\d+@@")
+
+    def new(self, kind, value=None):
+        marker = self.prefix + str(len(self.entries)) + "@@"
+        self.entries[marker] = (kind, value)
+        return marker
+
+    def token(self, text):
+        markers = {m: self.entries[m] for m in self.pattern.findall(text)
+                   if m in self.entries}
+        return _Token(text, markers) if markers else text
+
+
+def is_arm(token):
+    return any(kind == "arm" and token.startswith(key)
+               for key, (kind, _value) in _markers(token).items())
+
+
 _SUBST_OPEN = re.compile(r"\$\(|<\(|>\(")
 
 # --- reading the shell -------------------------------------------------------
@@ -122,14 +153,14 @@ def join_continuations(script):
     return re.sub(r"\\\n\s*", " ", script)
 
 
-def _lift_heredocs(text):
-    """(text with each heredoc body replaced by a `@@heredocN@@` token, bodies).
+def _lift_heredocs(text, context):
+    """Replace each heredoc with a token belonging to this parse context.
 
     `sha256sum -c <<EOF ... EOF` is one of the two ways a step writes down what
     it expects, so the body has to reach the checker rather than being parsed
     as a dozen stray statements.
     """
-    lines, bodies, out, i = text.splitlines(), [], [], 0
+    lines, out, i = text.splitlines(), [], 0
     while i < len(lines):
         line = lines[i]
         m = _HEREDOC_OP.search(line)
@@ -148,11 +179,10 @@ def _lift_heredocs(text):
             out.append(line)
             i += 1
             continue
-        bodies.append(("\n".join(body), not m.group("q")))
-        out.append("%s @@heredoc%d@@ %s"
-                   % (line[:m.start()], len(bodies) - 1, line[m.end():]))
+        marker = context.new("heredoc", ("\n".join(body), not m.group("q")))
+        out.append("%s %s %s" % (line[:m.start()], marker, line[m.end():]))
         i = j + 1
-    return "\n".join(out), bodies
+    return "\n".join(out)
 
 
 def _closing(text, opening):
@@ -175,8 +205,8 @@ def _closing(text, opening):
     return None
 
 
-def _lift_substitutions(text):
-    """(text with each substitution replaced by a `@@substN@@` token, inners).
+def _lift_substitutions(text, context):
+    """(text with parse-local substitution tokens, inner shell texts).
 
     `$(...)`, `<(...)` and backticks are commands, and a `|` or `;` inside one
     belongs to THAT command, not to the statement around it -- so they come out
@@ -204,7 +234,7 @@ def _lift_substitutions(text):
             end = text.find("`", i + 1)
             if end != -1:
                 inners.append(text[i + 1:end])
-                out.append("@@subst%d@@" % (len(inners) - 1))
+                out.append(context.new("subst", inners[-1]))
                 i = end + 1
                 continue
         opening = _SUBST_OPEN.match(text, i)
@@ -213,7 +243,7 @@ def _lift_substitutions(text):
             inner = text[opening.end():end - 1] if end else ""
             if end and not inner.startswith("("):   # `$((...))` is arithmetic
                 inners.append(inner)
-                out.append("@@subst%d@@" % (len(inners) - 1))
+                out.append(context.new("subst", inners[-1]))
                 i = end
                 continue
         out.append(ch)
@@ -221,7 +251,7 @@ def _lift_substitutions(text):
     return "".join(out), inners
 
 
-def _split(text):
+def _split(text, context):
     """[[stage text, ...], ...]: statements, each a list of pipeline stages.
 
     Quote-aware by hand rather than by regex, because the whole defect being
@@ -232,6 +262,8 @@ def _split(text):
     buf: list[str] = []
     quote, at_token_start, i, n = None, True, 0, len(text)
     cases: list[str] = []
+    groups = (context.new("group"), context.new("group"))
+    word_start, redirect_target = 0, False
     # A `case` header is exactly three words (`case`, the word, `in`), so the
     # shlex probe below only has to run while the buffer can still BE one --
     # `header_words` counts the words the buffer has closed, `header_live`
@@ -244,10 +276,11 @@ def _split(text):
     header_words, header_live = 0, True
 
     def end_stage():
-        nonlocal header_words, header_live
+        nonlocal header_words, header_live, word_start, redirect_target
         stages.append("".join(buf))
         del buf[:]
-        header_words, header_live = 0, True
+        header_words, header_live, word_start = 0, True, 0
+        redirect_target = False
 
     def end_statement(separator):
         end_stage()
@@ -261,6 +294,10 @@ def _split(text):
         ch = text[i]
         if quote:
             buf.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                buf.append(text[i + 1])
+                i += 2
+                continue
             if ch == quote:
                 quote = None
             i += 1
@@ -294,7 +331,7 @@ def _split(text):
                 words = shlex.split("".join(buf))
             except ValueError:
                 words = []
-            words = [w for w in words if w not in _GROUP_TOKENS]
+            words = [w for w in words if w not in groups]
             if len(words) == 3 and words[0] == "case" and words[-1] == "in":
                 end_statement(";")
                 cases.append("pattern")
@@ -306,21 +343,32 @@ def _split(text):
                 buf.append("()")
                 at_token_start, i = False, i + 2
                 continue
-            buf.append(" " + _GROUP_TOKENS[0] + " ")
+            buf.append(" " + groups[0] + " ")
+            word_start, redirect_target = len(buf), False
             at_token_start, i = True, i + 1
             continue
         if ch == ")":
             if cases and cases[-1] == "pattern":
-                buf[:] = [_CASE_ARM + "".join(buf).lstrip() + ")"]
+                buf[:] = [context.new("arm") + "".join(buf).lstrip() + ")"]
                 cases[-1] = "body"
             else:
-                buf.append(" " + _GROUP_TOKENS[1] + " ")
+                buf.append(" " + groups[1] + " ")
+                word_start, redirect_target = len(buf), False
             at_token_start, i = True, i + 1
             continue
-        prev = "".join(buf[-1:]).strip()
-        if ch in "&|" and (prev in (">", "&") or text[i:i + 2] == "&>"):
-            buf.append(ch)                      # `2>&1`, `&>log`: a redirection
-            at_token_start, i = False, i + 1
+        redirect = _REDIRECT.match(text, i)
+        if redirect and not (cases and cases[-1] == "pattern"):
+            # Only unquoted, unescaped digits comprising the whole preceding
+            # word are an IO number. An attached URL (or quoted "2") is argv.
+            word = "".join(buf[word_start:])
+            op, fd = redirect.group(), ""
+            if (not redirect_target and not op.startswith("&")
+                    and word.isascii() and word.isdigit()):
+                fd = word
+                del buf[word_start:]
+            buf.append(" " + context.new("redirect", (fd, op)) + " ")
+            word_start, redirect_target = len(buf), True
+            at_token_start, i = True, redirect.end()
             continue
         if ch == "|" and text[i:i + 2] != "||":
             if cases and cases[-1] == "pattern":
@@ -349,8 +397,12 @@ def _split(text):
             at_token_start = True
             i += len(arm_end) if arm_end else len(separator)
             continue
+        if ch.isspace() and len(buf) > word_start:
+            redirect_target = False
         buf.append(ch)
         at_token_start = ch.isspace()
+        if at_token_start:
+            word_start = len(buf)
         i += 1
     end_statement("")
     return statements
@@ -365,127 +417,77 @@ def _fd_or_close(word):
     not. The `&>word` spelling carries no such ambiguity at all (`&>2` is
     always a file named `2`), so this is never consulted for it.
     """
-    return word == "-" or word.isdigit()
+    return word == "-" or (word.isascii() and word.isdigit())
 
 
-def _stage(text, bodies, inners):
-    """One pipeline stage, with its redirections, heredoc and substitutions
-    lifted out."""
+def _stage(text, context):
+    """Read lexical redirect operators in order, copying fd sinks by value."""
     try:
         tokens = shlex.split(text)
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
-    argv = []
-    writes: list[str] = []
-    reads: list[str] = []
-    heredoc = None
-    stdout_writes: list[str] = []
+    argv, writes, reads = [], [], []
     substitutions: list[str] = []
+    heredoc = None
+    # Missing and closed fds have no known file sink. A dup copies the current
+    # sink; later opens/closes of the original fd cannot change that snapshot.
+    sinks: dict[str, str | None] = {}
     pending = None
 
-    def take(token):
-        # A redirection TARGET can be a command too (`bash < <(curl ...)`), so
-        # the substitutions come off the token before it is filed away as a
-        # path -- otherwise the whole command inside it is discarded unread.
-        # An index past the end belongs to ANOTHER parse: a caller re-reading
-        # a substitution's text hands over markers this parse never made, and
-        # a guard that raises on them reports nothing at all.
-        substitutions.extend(inners[int(n)] for n in SUBST_REF.findall(token)
-                             if int(n) < len(inners))
+    def take(word):
+        substitutions.extend(value for kind, value in _markers(word).values()
+                             if kind == "subst")
 
-    def write(fd, target):
-        # `1>x` and a bare `>x` both mean fd 1 -- the shell's default target
-        # for `>`/`>>` with no leading digit -- and only that one is where
-        # `curl`/`wget`'s stream actually goes; `2>x` is a real write this
-        # stage makes (kept in `writes` for the file-tracking that reads it),
-        # but never the destination a fetch is reported against (#1733).
-        writes.append(target)
-        if fd in ("", "1"):
-            stdout_writes.append(target)
-
-    def combined_write(target):
-        # `&>word`, `&>>word`, and the UNNUMBERED `>&word`: bash's shorthand
-        # for `>word 2>&1` -- always fd 1, and always a real file, whatever
-        # `word` looks like (round 1 of #1733's fix; see `_fd_or_close`).
-        take(target)
-        write("1", target)
-
-    for token in tokens:
-        if token in _GROUP_TOKENS:
+    for raw in tokens:
+        word = context.token(raw)
+        entry = _markers(word).get(word)
+        if entry and entry[0] == "group":
+            continue
+        if entry and entry[0] == "redirect":
+            pending = entry[1]
             continue
         if pending is not None:
-            kind, fd, is_write = pending
+            fd, op = pending
             pending = None
-            if kind == "amp":
-                # `>& word` / `&> word`: the target landed in its own token
-                # because whitespace separates it from the operator. Only the
-                # unnumbered `>&`/`&>` (write side) carries a real file here:
-                # a numbered `N>&` (`is_write` but `fd` set) is a bash
-                # "ambiguous redirect" runtime error for a non-digit word,
-                # and the read side (`<&`) has no file-fallback AT ALL, so
-                # neither is modelled as a write.
-                if not fd and _fd_or_close(token):
-                    continue                     # `>& 2`, `>& -`
-                if is_write and not fd:
-                    combined_write(token)         # `>& word`, `&> word`
-                continue
-            take(token)
-            if is_write:
-                write(fd, token)
-            else:
-                reads.append(token)
-            continue
-        ref = _HEREDOC_REF.match(token)
-        if ref and int(ref.group(1)) < len(bodies):
-            heredoc, expands = bodies[int(ref.group(1))]
-            if expands:
-                # `<<EOF` expands, `<<'EOF'` does not: the body of an expanding
-                # heredoc is shell, and the interpreter reading it runs what a
-                # `$(...)` in there produced.
-                substitutions.extend(_lift_substitutions(heredoc)[1])
-            continue
-        amp = _AMP_REDIRECT.match(token)
-        if amp:
-            target = amp.group(2)
-            if target:
-                combined_write(target)
-            else:
-                pending = ("amp", "", True)      # `&> word`: always unnumbered
-            continue
-        redirect = _REDIRECT.match(token)
-        if redirect:
-            fd, op, target = redirect.groups()
-            is_write = op != "<"
-            if target:
-                if target.startswith("&"):
-                    remainder = target[1:]
-                    if is_write and not fd and remainder and (
-                            not _fd_or_close(remainder)):
-                        combined_write(remainder)  # unnumbered `>&word`
-                    elif not remainder:
-                        pending = ("amp", fd, is_write)  # bare `>&`/`<&`
-                    # else `2>&1`, `>&2`, `>&-`: duplication/close -- nothing
+            take(word)
+            number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
+            if op in (">&", "<&"):
+                if _fd_or_close(word):
+                    sinks[number] = None if word == "-" else sinks.get(word.lstrip("0") or "0")
                     continue
-                take(target)
-                if is_write:
-                    write(fd, target)
-                else:
-                    reads.append(target)
+                if fd or op == "<&":
+                    sinks[number] = None       # invalid/unresolved fd operand
+                    continue
+                op = "&>"                     # unnumbered >&file
+            if op == "<":
+                reads.append(word)
+                sinks[number] = None           # an input file is not an output sink
             else:
-                pending = ("write" if is_write else "read", fd, is_write)
+                writes.append(word)
+                sinks[number] = word
+                if op.startswith("&"):
+                    sinks["2"] = word
             continue
-        take(token)
-        argv.append(token)
-    return Stage(argv, writes, reads, heredoc, substitutions, stdout_writes)
+        if entry and entry[0] == "heredoc":
+            heredoc, expands = entry[1]
+            if expands:
+                substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
+            continue
+        take(word)
+        argv.append(word)
+    stdout = sinks.get("1")
+    return Stage(argv, writes, reads, heredoc, substitutions,
+                 [stdout] if stdout is not None else [])
 
 
 def statements(script):
     """Every statement in a `run:` script, in order, as parsed stages."""
-    text, bodies = _lift_heredocs(join_continuations(without_comments(script)))
-    text, inners = _lift_substitutions(text)
+    context = _Parse(script)
+    text = _lift_heredocs(join_continuations(without_comments(script)), context)
+    text, _inners = _lift_substitutions(text, context)
     out = []
-    for raw, separator in _split(text):
-        stages = [_stage(s, bodies, inners) for s in raw]
+    for raw, separator in _split(text, context):
+        stages = [_stage(s, context) for s in raw]
         if any(s.argv for s in stages):
             out.append(Statement(stages, separator))
     return out
@@ -507,7 +509,7 @@ def command(argv):
         # `f () {` spelling both put a name where the command was expected,
         # which is where a long step keeps its download. A `case` arm pattern
         # (`a) curl ... ;;`) is the same class, and hid the fetch outright.
-        if _FUNCTION.match(argv[0]) or ARM.match(argv[0]):
+        if _FUNCTION.match(argv[0]) or is_arm(argv[0]):
             argv.pop(0)
             continue
         if len(argv) > 1 and argv[1] == "()" and _NAME.match(argv[0]):
@@ -560,16 +562,18 @@ def conditional(argv):
 
 
 def readable(text):
-    """A lifted substitution back in a shape a human recognises, for an error
-    message: `-o $(mktemp)` should not be reported as `-o @@subst0@@`."""
-    return SUBST_REF.sub("$(...)", text) if text else text
+    """Render only this token's genuine lifted substitutions for diagnostics."""
+    for key, (kind, _value) in _markers(text).items():
+        if kind == "subst":
+            text = text.replace(key, "$(...)")
+    return text
 
 
 def is_marker(token):
-    """True for a token that is (or contains) something this parse lifted out.
+    """True only for actual lifted text, never a target-authored lookalike."""
+    return bool(_markers(token))
 
-    A `@@substN@@` or `@@heredocN@@` stands for text held in THIS parse's
-    tables, so it means nothing to any other parse: a reader that re-reads a
-    token as a script of its own has to ask this first.
-    """
-    return bool(SUBST_REF.search(token) or _HEREDOC_REF.match(token))
+
+def has_substitution(token):
+    """Whether a word/path depends on a substitution generated by its parse."""
+    return any(kind == "subst" for kind, _value in _markers(token).values())
