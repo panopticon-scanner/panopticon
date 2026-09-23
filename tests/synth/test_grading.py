@@ -308,6 +308,63 @@ class TestLocConfinement(unittest.TestCase):
                 self.assertEqual(grading_mod.nonblank_loc(str(root),
                     [{"files": ["growing.py"]}]), 0)
 
+    def _assert_failed_read_charges_budget(self, failure_stage):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for name in ("bad.py", "good.py", "later.py"):
+                (root / name).write_bytes(b"x\n")
+            original_read = os.read
+            original_fstat = os.fstat
+            original_close = os.close
+            first_fd = None
+            measured_bytes = 0
+            failed = False
+
+            def tracked_read(fd, count):
+                nonlocal first_fd, measured_bytes, failed
+                if first_fd is None:
+                    first_fd = fd
+                if failure_stage == "read" and fd == first_fd and measured_bytes == 2 and not failed:
+                    failed = True
+                    raise OSError("injected second read failure")
+                content = original_read(fd, count)
+                measured_bytes += len(content)
+                return content
+
+            def tracked_fstat(fd):
+                nonlocal failed
+                if failure_stage == "stat" and fd == first_fd and not failed:
+                    failed = True
+                    raise OSError("injected final stat failure")
+                return original_fstat(fd)
+
+            def tracked_close(fd):
+                nonlocal failed
+                if failure_stage == "close" and fd == first_fd and not failed:
+                    failed = True
+                    original_close(fd)
+                    raise OSError("injected close failure")
+                return original_close(fd)
+
+            with patch.object(grading_mod, "MAX_LOC_TOTAL_BYTES", 4), \
+                 patch.object(grading_mod.os, "read", side_effect=tracked_read), \
+                 patch.object(grading_mod.os, "fstat", side_effect=tracked_fstat), \
+                 patch.object(grading_mod.os, "close", side_effect=tracked_close):
+                loc = grading_mod.nonblank_loc(str(root),
+                    [{"files": ["bad.py", "good.py", "later.py"]}])
+            self.assertTrue(failed)
+            self.assertEqual(measured_bytes, 4)
+            self.assertEqual(loc, 1)
+
+    def test_read_error_after_successful_bytes_charges_budget(self):
+        self._assert_failed_read_charges_budget("read")
+
+    def test_final_stat_error_after_successful_bytes_charges_budget(self):
+        self._assert_failed_read_charges_budget("stat")
+
+    def test_close_error_after_successful_bytes_charges_budget(self):
+        self._assert_failed_read_charges_budget("close")
+
     def test_candidate_budget_limits_entries_even_when_invalid(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
