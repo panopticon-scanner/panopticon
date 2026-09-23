@@ -742,6 +742,85 @@ class TestASwallowedCheckIsNotACheck(unittest.TestCase):
             'echo "%s  /tmp/payload" | sha256sum -c - && echo verified\n' % HEX))
 
 
+class TestChecksumRescueStatus(unittest.TestCase):
+    FETCH = "curl -fsSL https://example.test/payload -o payload\n"
+    USE = "sh payload\n"
+
+    def checked(self, rescue):
+        return wg.fetch_exec_defect(
+            self.FETCH + 'echo "%s  payload" | sha256sum -c - || %s\n'
+            % (HEX, rescue) + self.USE)
+
+    def test_success_and_unknown_exit_statuses_do_not_certify_failure(self):
+        for rescue in ("exit 0", "return 0", "exit 256", "return 256",
+                       "exit $STATUS", "return $STATUS", "exit nope",
+                       "return nope"):
+            with self.subTest(rescue=rescue):
+                self.assertIsNotNone(self.checked(rescue))
+
+    def test_group_uses_its_last_status(self):
+        for rescue in ("{ false; echo recovered; }",
+                       "{ false; true; }", "{ false; exit 0; }",
+                       "{ false; return 256; }", "{ true; exit; }",
+                       "{ echo recovered; exit $?; }", "(false; true)",
+                       "((false; true))", "(false; (false; true))",
+                       "false || true", "(false) || true",
+                       "{ false; } || true", "(exit 1) || true",
+                       "((exit 1); echo recovered)",
+                       "{ if true; then false; else true; fi; }"):
+            with self.subTest(rescue=rescue):
+                self.assertIsNotNone(self.checked(rescue))
+
+    def test_known_nonzero_rescues_remain_gates(self):
+        for rescue in ("exit 1", "return 2", "exit 257", "false", "exit",
+                       "return", "exit $?", "return $?",
+                       "{ echo mismatch; exit 1; }", "{ echo mismatch; false; }",
+                       "{ false; exit; }", "(echo mismatch; false)",
+                       "((echo mismatch; false))", "(false; (true; false))",
+                       "(exit 1; echo unreachable)"):
+            with self.subTest(rescue=rescue):
+                self.assertIsNone(self.checked(rescue))
+
+
+class TestPipelineStreamProvenance(unittest.TestCase):
+    URL = "https://example.test/install"
+
+    def test_forwarding_stages_reach_executors(self):
+        for stages in ("cat | sh", "cat saved - | sh", "tee install.sh | sh",
+                       "tr a-z A-Z | bash", "sed s/a/b/ | python3 -",
+                       "cat | tee install.sh | bash"):
+            with self.subTest(stages=stages):
+                self.assertTrue(wg.fetch_exec_defects(
+                    "curl -fsSL %s | %s" % (self.URL, stages)))
+
+    def test_read_only_and_disconnected_streams(self):
+        for script in ("curl -fsSL %s | cat" % self.URL,
+                       "curl -fsSL %s | cat > saved | sh" % self.URL,
+                       "curl -fsSL %s | cat saved | sh" % self.URL,
+                       "curl -fsSL %s | sed s/a/b/ saved | sh" % self.URL,
+                       "curl -fsSL %s | cat | sh < local" % self.URL,
+                       "curl -fsSL %s -o saved | cat | sh" % self.URL,
+                       "curl -fsSL %s -o /dev/null | cat | sh" % self.URL,
+                       "curl -fsSL %s > saved | cat | sh" % self.URL):
+            with self.subTest(script=script):
+                self.assertFalse(wg.fetch_exec_defects(script))
+
+    def test_tee_still_names_the_file_it_writes(self):
+        script = "curl -fsSL %s | tee install.sh | sh" % self.URL
+        self.assertEqual("install.sh", wg.fetches(script)[0].dest)
+        self.assertTrue(wg.fetch_exec_defects(script))
+
+    def test_wget_stdout_and_tee_without_executor(self):
+        self.assertTrue(wg.fetch_exec_defects(
+            "wget -qO- %s | cat | sh" % self.URL))
+        self.assertFalse(wg.fetch_exec_defects(
+            "curl -fsSL %s | tee install.sh" % self.URL))
+
+    def test_pipeline_inside_a_substitution_is_still_executed(self):
+        self.assertTrue(wg.fetch_exec_defects(
+            'echo "$(curl -fsSL %s | cat | sh)"' % self.URL))
+
+
 class TestTheMessageSaysWhatWasChecked(unittest.TestCase):
     """#1697: one sentence was doing four jobs.
 

@@ -115,8 +115,8 @@ def _pick_url(operands):
     return operands[0] if operands else None
 
 
-def parse_fetch(tool, args, stage, piped_to):
-    """One `curl`/`wget` argv -> the Fetch it performs."""
+def _parse_fetch(tool, args, stage, piped_to):
+    """A Fetch and whether its response still leaves on standard output."""
     value_short, value_long = _VALUE_SHORT[tool], _VALUE_LONG[tool]
     dest_short, dest_long = _DEST_SHORT[tool], _DEST_LONG[tool]
     dir_short, dir_long = _DIR_SHORT[tool], _DIR_LONG[tool]
@@ -164,7 +164,7 @@ def parse_fetch(tool, args, stage, piped_to):
         operands.append(token)
     url = _pick_url(operands)
     if url is None and any(a in _INFORMATIONAL for a in args):
-        return None                             # `curl --version`, `wget --help`
+        return None, False                      # `curl --version`, `wget --help`
     named = dest is not _UNSET
     if not named:
         # wget writes the URL's basename by default; curl streams to stdout
@@ -175,6 +175,7 @@ def parse_fetch(tool, args, stage, piped_to):
     # A remote basename of "-" is a filename, not the explicit output
     # option that requests stdout. Keep that origin through directory joining.
     to_stdout = dest is None or (named and dest in _STDOUT_DESTINATIONS)
+    streams = to_stdout and not stage.stdout_writes
     if not to_stdout and directory and dest and not os.path.isabs(dest) and (
             tool == "curl" or not named):
         dest = shell_reader.derived(os.path.join(directory, dest), directory, dest)
@@ -199,7 +200,66 @@ def parse_fetch(tool, args, stage, piped_to):
     # Suppress stream/discard outputs without discarding an inferred "-" file.
     if dest in STDOUT and (named or to_stdout):
         dest = None
-    return Fetch(tool, url, dest, piped_to)
+    return Fetch(tool, url, dest, piped_to), streams
+
+
+def parse_fetch(tool, args, stage, piped_to):
+    """One `curl`/`wget` argv -> the four-field Fetch it performs."""
+    return _parse_fetch(tool, args, stage, piped_to)[0]
+
+
+def _reads_stdin(argv):
+    """Whether a forwarding stage consumes its pipeline input."""
+    name = os.path.basename(argv[0])
+    if name == "cat":
+        return "-" in argv[1:] or all(t.startswith("-") for t in argv[1:])
+    if name == "tr":
+        return True
+    if name != "sed" or any(t.startswith(("-i", "--in-place"))
+                            for t in argv[1:]):
+        return False
+    # sed's first bare operand is the script unless -e/-f supplies it;
+    # further bare operands are input files, which disconnect standard input.
+    scripted, i = False, 1
+    if "-" in argv[1:]:
+        return True
+    while i < len(argv):
+        token = argv[i]
+        if token in ("-e", "-f", "--expression", "--file"):
+            scripted, i = True, i + 2
+            continue
+        if token.startswith(("-e", "-f", "--expression=", "--file=")):
+            scripted = True
+        elif not token.startswith("-"):
+            if scripted:
+                return False
+            scripted = True
+        i += 1
+    return scripted
+
+
+def streamed_fetch(tool, args, stage, following, executors):
+    """A direct stream-to-executor view, separate from the Fetch's file view.
+
+    `tee` may both write the file named by parse_fetch and pass the same bytes
+    onward. The ordinary Fetch keeps that destination; this view supplies a
+    stdout-only record for the execution check.
+    """
+    fetch, streams = _parse_fetch(tool, args, stage, None)
+    if not fetch or not streams:
+        return None
+    for next_stage in following:
+        argv = command(next_stage.argv)
+        if not argv or next_stage.reads:
+            break
+        name = os.path.basename(argv[0])
+        if name in executors:
+            return fetch._replace(dest=None, piped_to=tuple(argv))
+        if next_stage.stdout_writes or name not in ("cat", "tr", "sed", "tee"):
+            break
+        if name != "tee" and not _reads_stdin(argv):
+            break
+    return None
 
 
 # --- what an operand stands for ----------------------------------------------
@@ -482,8 +542,25 @@ def in_container(argv, dest, interpreters):
 # a test.
 # The `|| ...` branches that keep a check a check: they fail the step, which
 # is exactly what errexit would have done.
-_FATAL = ("exit", "return", "false")
 _GROUP_OPEN = ("{", "(")
+
+
+def _known_status(argv, inherited):
+    """Known exit status, or None when this command's result is not proved."""
+    if not argv:
+        return inherited
+    name = os.path.basename(argv[0])
+    if name in ("exit", "return"):
+        if len(argv) == 1 or argv[1] == "$?":
+            return inherited
+        if len(argv) != 2 or not re.fullmatch(r"[+-]?[0-9]+", argv[1]):
+            return None
+        return int(argv[1]) % 256
+    if name == "false" and len(argv) == 1:
+        return 1
+    if name == "true" and len(argv) == 1:
+        return 0
+    return None
 
 
 def _stops_the_job(stmts, index):
@@ -496,17 +573,47 @@ def _stops_the_job(stmts, index):
     following = stmts[index + 1:index + 11]
     if not following:
         return False
-    first = following[0].stages[0].argv if following[0].stages else []
-    grouped = bool(first) and first[0] in _GROUP_OPEN
+    first_stage = following[0].stages[0] if following[0].stages else None
+    first = first_stage.argv if first_stage else []
+    grouped = bool(first_stage and (first_stage.group_open or
+                                    (first and first[0] in _GROUP_OPEN)))
+    status = 1  # The rescue is entered only after the checksum fails.
+    depth = subshell_depth = 0
+    exited_subshell = None
     for statement in following:
         for stage in statement.stages:
-            argv = command(stage.argv)
-            if argv and os.path.basename(argv[0]) in _FATAL:
-                return True
-        if not grouped or any("}" in t or ")" in t
-                              for stage in statement.stages for t in stage.argv):
+            depth += stage.group_open + stage.argv.count("{")
+            subshell_depth += stage.group_open
+            if exited_subshell is None:
+                # The bounded status walk does not evaluate conditional arms.
+                if any(t in ("if", "then", "elif", "else", "fi", "while",
+                             "until", "do", "done", "case", "esac", "for")
+                       for t in stage.argv):
+                    return False
+                argv = command(stage.argv)
+                if argv:
+                    name = os.path.basename(argv[0])
+                    status = _known_status(argv, status)
+                    if name in ("exit", "return"):
+                        if subshell_depth:
+                            if name == "return":
+                                return False
+                            exited_subshell = subshell_depth
+                        else:
+                            return status is not None and status != 0
+            depth -= stage.group_close + stage.argv.count("}")
+            subshell_depth -= stage.group_close
+            if depth < 0 or subshell_depth < 0:
+                return False
+            if exited_subshell is not None and subshell_depth < exited_subshell:
+                exited_subshell = None
+        if not grouped or depth == 0:
+            if statement.separator == "||":
+                return False
             break
-    return False
+        if statement.separator in ("&&", "||"):
+            return False
+    return (not grouped or depth == 0) and status is not None and status != 0
 
 
 def swallowed(stmts, index, statement, stage):

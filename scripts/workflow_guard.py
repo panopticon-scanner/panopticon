@@ -139,7 +139,7 @@ import shell_reader
 from shell_reader import command, statements
 from workflow_forms import (CONTAINERS, FETCHERS, STDOUT, covers, described,
                             in_container, names_file, parse_fetch, regions,
-                            same_file, scripts, swallowed)
+                            same_file, scripts, streamed_fetch, swallowed)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -174,7 +174,7 @@ _DIGEST = re.compile(r"\b[0-9a-f]{40,128}\b"
 
 # --- which statements fetch --------------------------------------------------
 
-def _fetch_records(stmts):
+def _fetch_records(stmts, stream_exec=False):
     """[(statement index, Fetch)] for every download in the script."""
     found = []
     for index, statement in enumerate(stmts):
@@ -186,12 +186,15 @@ def _fetch_records(stmts):
                 fetch = parse_fetch(os.path.basename(argv[0]), argv[1:],
                                     stage, piped_to)
                 if fetch is not None:
+                    if stream_exec:
+                        fetch = (streamed_fetch(os.path.basename(argv[0]), argv[1:],
+                                                stage, following, EXECUTORS) or fetch)
                     found.append((index, fetch))
-            found.extend((index, f) for f in _substituted(argv, stage))
+            found.extend((index, f) for f in _substituted(argv, stage, stream_exec))
     return found
 
 
-def _substituted(argv, stage):
+def _substituted(argv, stage, stream_exec=False):
     """Every fetch inside this stage's command substitutions, credited to the
     command that CONSUMES it -- `eval`, `sh -c`, `bash <(...)` -- because that
     is what decides whether the downloaded bytes become behaviour."""
@@ -199,7 +202,7 @@ def _substituted(argv, stage):
     executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
     found = []
     for inner in stage.substitutions:
-        for _index, fetch in _fetch_records(statements(inner)):
+        for _index, fetch in _fetch_records(statements(inner), stream_exec):
             if fetch is None:
                 continue
             if executes or fetch.piped_to is None:
@@ -535,7 +538,7 @@ def _defects(stmts, conditions=None, soft=()):
     checks = _checks(stmts, soft)
     conditions = conditions or {}
     found = []
-    for index, fetch in _fetch_records(stmts):
+    for index, fetch in _fetch_records(stmts, stream_exec=True):
         why = _defect(fetch, index, stmts, checks, conditions)
         if why:
             found.append((index, why))

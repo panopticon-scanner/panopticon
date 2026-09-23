@@ -313,3 +313,33 @@ class TestGroupRedirectBoundaries(unittest.TestCase):
                 self.assertEqual(['curl', 'URL'], parsed.argv)
                 self.assertEqual(writes, parsed.writes)
                 self.assertEqual(stdout, parsed.stdout_writes)
+
+
+class TestSubshellBoundaryMetadata(unittest.TestCase):
+    def test_existing_stage_constructor_keeps_its_six_fields(self):
+        parsed = stage("echo ready")
+        self.assertEqual(0, parsed.group_open)
+        self.assertEqual(0, parsed.group_close)
+        self.assertEqual(['echo', 'ready'], parsed.argv)
+        legacy = shell_reader.Stage([], [], [], None, [], [])
+        self.assertEqual((0, 0), (legacy.group_open, legacy.group_close))
+
+    def test_nested_and_tight_subshells_count_boundaries(self):
+        for script, opens, closes in (
+            ('(false; true)', (1, 0), (0, 1)),
+            ('((false;true))', (2, 0), (0, 2)),
+            ('(false; (true; false))', (1, 1, 0), (0, 0, 2)),
+        ):
+            with self.subTest(script=script):
+                parsed = shell_reader.statements(script)
+                self.assertEqual(opens, tuple(s.stages[0].group_open for s in parsed))
+                self.assertEqual(closes, tuple(s.stages[0].group_close for s in parsed))
+
+    def test_quoted_and_escaped_parentheses_remain_literals(self):
+        for script in ('echo "(" ")"', r'echo \( \)', "echo '(literal)'",
+                       "echo '@@group-open@@' '@@group-close@@'", "(echo '(')"):
+            with self.subTest(script=script):
+                parsed = stage(script)
+                expected = 1 if script.startswith("(") else 0
+                self.assertEqual(expected, parsed.group_open)
+                self.assertEqual(expected, parsed.group_close)

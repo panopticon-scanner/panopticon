@@ -50,7 +50,11 @@ import shlex
 # bash's `>word 2>&1` shorthand, a real file whatever `word` looks like. A
 # target beginning with `&` whose remainder IS a duplication or close (`&1`,
 # `&-`) -- `2>&1`, `>&2`, `>&-` -- lands in neither list.
-Stage = collections.namedtuple("Stage", "argv writes reads heredoc substitutions stdout_writes")
+# Parse-local subshell markers leave argv alone; counts retain their boundaries
+# for the checksum handler without exposing marker tokens as commands.
+Stage = collections.namedtuple(
+    "Stage", "argv writes reads heredoc substitutions stdout_writes group_open group_close",
+    defaults=(0, 0))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -262,7 +266,7 @@ def _split(text, context):
     buf: list[str] = []
     quote, at_token_start, i, n = None, True, 0, len(text)
     cases: list[str] = []
-    groups = (context.new("group"), context.new("group"))
+    groups = (context.new("group", "("), context.new("group", ")"))
     word_start, redirect_target = 0, False
     # A `case` header is exactly three words (`case`, the word, `in`), so the
     # shlex probe below only has to run while the buffer can still BE one --
@@ -427,6 +431,7 @@ def _stage(text, context):
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
     argv, writes, reads = [], [], []
+    group_open = group_close = 0
     substitutions: list[str] = []
     heredoc = None
     # Missing and closed fds have no known file sink. A dup copies the current
@@ -442,6 +447,10 @@ def _stage(text, context):
         word = context.token(raw)
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
+            if entry[1] == "(":
+                group_open += 1
+            else:
+                group_close += 1
             continue
         if entry and entry[0] == "redirect":
             pending = entry[1]
@@ -477,7 +486,7 @@ def _stage(text, context):
         argv.append(word)
     stdout = sinks.get("1")
     return Stage(argv, writes, reads, heredoc, substitutions,
-                 [stdout] if stdout is not None else [])
+                 [stdout] if stdout is not None else [], group_open, group_close)
 
 
 def statements(script):
