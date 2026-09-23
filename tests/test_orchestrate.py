@@ -634,6 +634,37 @@ class TestHeadlessLoop(LoopCase):
         self.assertFalse(write_guard_hook.is_armed(
             settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
 
+    def test_an_interrupt_with_a_tampered_batch_list_preserves_its_files(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        outside = os.path.join(d, ".panopticon", "keep-outside.json")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("keep")
+        opened, original_open = [], batch_mod.Batch.open
+
+        def capture(batch_self):
+            opened.append(batch_self)
+            return original_open(batch_self)
+
+        def tamper_and_interrupt():
+            opened[0].entries[0]["artifacts"].append(outside)
+            raise KeyboardInterrupt
+
+        seen = self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC",
+                                  then=tamper_and_interrupt)
+        with mock.patch.object(batch_mod.Batch, "open", capture):
+            status = self._return_persist(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertTrue(seen["reply"])
+        self.assertIn("unsafe batch artifact", status["message"])
+        req = orchestrate.requests.load_dispatch_request(d) or {}
+        completed = next(e["out_file"] for e in req["entries"]
+                         if e["id"] == "review-app-SEC")
+        self.assertTrue(os.path.isfile(completed))
+        self.assertEqual(["batch-1.json"], self._manifests(runner.run_dir))
+        with open(outside, encoding="utf-8") as fh:
+            self.assertEqual("keep", fh.read())
+
     def _dead_pid(self):
         """A pid that is certainly not running: a child spawned and reaped."""
         proc = subprocess.Popen([sys.executable, "-c", ""])
@@ -718,6 +749,31 @@ class TestHeadlessLoop(LoopCase):
         self.assertEqual(resumed.launched, [])
         self.assertTrue(all(os.path.exists(p) for p in existing))
         self.assertTrue(os.path.exists(path))
+
+    def test_a_linked_retained_reply_parent_in_a_crash_record_preserves_every_artifact(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        run_dir = crashed.run_dir
+        manifest = os.path.join(run_dir, self._manifests(run_dir)[0])
+        doc = runio._load_json(manifest)
+        rejected = os.path.join(run_dir, orchestrate.persist.REJECTED_DIR)
+        os.makedirs(rejected, exist_ok=True)
+        alias = os.path.join(run_dir, "linked-replies")
+        os.symlink(rejected, alias)
+        retained = os.path.join(rejected, "review-app-SEC-1.json")
+        with open(retained, "w", encoding="utf-8") as fh:
+            fh.write("keep")
+        doc["entries"][0]["artifacts"].append(os.path.join(alias, os.path.basename(retained)))
+        runio._write_json(manifest, doc)
+        before = self._untouched(d, run_dir)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("symlink", status["message"])
+        self.assertEqual([], resumed.launched)
+        self.assertEqual(before, self._untouched(d, run_dir))
+        with open(retained, encoding="utf-8") as fh:
+            self.assertEqual("keep", fh.read())
 
     # #1698: a manifest on disk is a CRASHED batch only if the process that
     # opened it is gone. A second `driver loop` on the same run folder used to

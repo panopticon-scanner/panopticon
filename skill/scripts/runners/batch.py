@@ -47,6 +47,7 @@ per-dispatch marker in `phases.persist.rollback_markers`.
 import os
 import re
 import socket
+import stat
 import time
 from typing import TypedDict
 
@@ -140,15 +141,89 @@ class Batch:
     """
 
     def __init__(self, run_dir, number, checkpoint, entries):
-        self.path = manifest_path(run_dir, number)
+        if not isinstance(run_dir, str) or not run_dir or "\0" in run_dir:
+            raise ValueError("invalid batch run folder")
+        self.run_dir = os.path.abspath(run_dir)
+        self._root_real = os.path.realpath(self.run_dir)
+        try:
+            root_stat = os.lstat(self.run_dir)
+        except OSError as exc:
+            raise ValueError("invalid batch run folder: %s" % exc) from exc
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise ValueError("invalid batch run folder: not a directory")
+        self._root_identity = (root_stat.st_dev, root_stat.st_ino)
+        self._parents: dict[str, dict[str, tuple[int, int]]] = {}
+        self.path = manifest_path(self.run_dir, number)
         self.number = int(number)
         self.checkpoint = checkpoint
         self.opened_at = None
         self.recovering = False
-        self.entries: list[BatchEntry] = [
-            {"id": e.get("id"),
-             "artifacts": [os.path.abspath(e["out_file"])] if e.get("out_file") else []}
-            for e in entries or [] if isinstance(e, dict)]
+        self.entries: list[BatchEntry] = []
+        for entry in entries or []:
+            if isinstance(entry, dict):
+                out_file = entry.get("out_file")
+                paths = ([self._confine(out_file, remember=True)]
+                         if out_file is not None and out_file != "" else [])
+                self.entries.append({"id": entry.get("id"), "artifacts": paths})
+
+    def _confine(self, path, *, remember=False):
+        """Validate one destination without following its final symlink.
+
+        The selected spelling may pass through a system alias such as /tmp;
+        only links at the run root or below it can redirect this batch's work.
+        Existing parent identities are also pinned for live entries so a
+        directory exchanged after registration cannot redirect a later unlink.
+        """
+        if not isinstance(path, str) or not path or "\0" in path:
+            raise ValueError("invalid batch artifact path")
+        full = os.path.abspath(path)
+        try:
+            inside = os.path.commonpath((self.run_dir, full)) == self.run_dir
+        except ValueError as exc:
+            raise ValueError("batch artifact escapes the run folder") from exc
+        if not inside or full == self.run_dir:
+            raise ValueError("batch artifact escapes the run folder")
+        try:
+            root_stat = os.lstat(self.run_dir)
+        except OSError as exc:
+            raise ValueError("batch run folder changed: %s" % exc) from exc
+        if (not stat.S_ISDIR(root_stat.st_mode)
+                or (root_stat.st_dev, root_stat.st_ino) != self._root_identity
+                or os.path.realpath(self.run_dir) != self._root_real):
+            raise ValueError("batch run folder changed")
+        known = self._parents.get(full, {})
+        observed = {}
+        parent = os.path.dirname(full)
+        relative = os.path.relpath(parent, self.run_dir)
+        current = self.run_dir
+        for component in (() if relative == "." else relative.split(os.sep)):
+            current = os.path.join(current, component)
+            try:
+                info = os.lstat(current)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ValueError("batch artifact parent changed: %s" % exc) from exc
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError("batch artifact parent is a symlink: %s" % current)
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError("batch artifact parent is not a directory: %s" % current)
+            identity = (info.st_dev, info.st_ino)
+            if current in known and known[current] != identity:
+                raise ValueError("batch artifact parent changed: %s" % current)
+            observed[current] = identity
+        if remember:
+            self._parents[full] = observed
+        return full
+
+    def _validated_artifacts(self):
+        paths = []
+        for row in self.entries:
+            if not isinstance(row, dict) or not isinstance(row.get("artifacts"), list):
+                raise ValueError("invalid batch artifact list")
+            for path in row["artifacts"]:
+                paths.append(self._confine(path))
+        return paths
 
     def document(self):
         """The record, stamped with the process WRITING it (#1698).
@@ -182,6 +257,8 @@ class Batch:
         that lands on the very first entry still has the list."""
         # Reserve this name exclusively: a crash record belongs to recovery,
         # never to the next batch with the same iteration number.
+        self._confine(self.path)
+        self._validated_artifacts()
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(fd)
         self.opened_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -193,6 +270,8 @@ class Batch:
         # a symlink planted at `<name>.tmp`: this path is INSIDE the scanned
         # tree, so on a redteam target that link is the target's to plant --
         # the same reason `runners/claude.py` writes host-settings.json with it.
+        self._confine(self.path)
+        self._validated_artifacts()
         write_guard_hook._atomic_write_json(self.path, self.document(), indent=2)
 
     def add_artifact(self, entry_id, path):
@@ -200,11 +279,13 @@ class Batch:
         about -- `persist.retain_rejected` names the record only once it has
         written it. Kept in the manifest so the rollback stays a LIST and
         never becomes a glob over the rejected folder."""
-        if not path:
+        if path is None or path == "":
             return
-        full = os.path.abspath(path)
         for row in self.entries:
-            if row["id"] == entry_id and full not in row["artifacts"]:
+            if row["id"] == entry_id:
+                full = self._confine(path, remember=True)
+                if full in row["artifacts"]:
+                    return
                 row["artifacts"].append(full)
                 self._write()
                 return
@@ -234,10 +315,19 @@ class Batch:
         replace the interrupt's own message.
         """
         removed, problems = [], []
-        for path in self.artifacts():
+        try:
+            self._confine(self.path)
+            paths = self._validated_artifacts()
+        except ValueError as exc:
+            return [], ["unsafe batch artifact: %s" % exc]
+        for path in paths:
             try:
+                self._confine(path)
                 os.remove(path)
                 removed.append(path)
+            except ValueError as exc:
+                problems.append("unsafe batch artifact: %s" % exc)
+                break
             except FileNotFoundError:
                 continue
             except OSError as exc:
@@ -250,7 +340,10 @@ class Batch:
         """Delete the manifest; the clean path's "this batch is over". Returns
         a list of problems, empty when there were none."""
         try:
+            self._confine(self.path)
             os.remove(self.path)
+        except ValueError as exc:
+            return ["unsafe batch manifest: %s" % exc]
         except FileNotFoundError:
             pass
         except OSError as exc:
