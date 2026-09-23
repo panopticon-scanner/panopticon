@@ -187,6 +187,19 @@ def _sarif_severity(result, rule):
     would have failed main the day this line landed. `security_gate
     --baseline-dir` counts only findings absent from the base commit's own
     scan, which is what lets a correct severity and a green main coexist.
+
+    THE STEP GRADES DOWN AS WELL AS UP, and the downward half is the larger one
+    (fix round 1, review M5). Measured on two real captures of this repo:
+    semgrep states no result `level` at all, and its rule defaults there are
+    `error` ~24, `warning` ~9 and `note` **241**. So beside the 24
+    MEDIUM -> HIGH promotions, 241 findings go MEDIUM -> LOW, and a rule
+    defaulting to `none` now yields INFO where the "warning" floor yielded
+    MEDIUM. That is more faithful -- semgrep's `note` IS its INFO grade, and
+    the floor was inventing a grade the scanner never stated -- and it has no
+    CI-gate effect, since that floor is HIGH/CRITICAL. It DOES change what a
+    `driver run --severity medium` or `--fail-on medium` sees on such a tree:
+    241 fewer tool findings on the axis. Pinned by
+    `test_the_rule_default_grades_DOWN_as_well_as_up`.
     """
     for owner in (result, rule):
         explicit = _metadata_severity(_properties(owner.get("properties")))
