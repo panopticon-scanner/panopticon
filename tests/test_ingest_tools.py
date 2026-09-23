@@ -73,17 +73,47 @@ class TestIngest(unittest.TestCase):
                 sarif = self._severity_sarif(rule_properties=props, level="note")
                 self.assertEqual(first(it.sarif_to_findings(sarif, "trivy", "g1", "TR"))
                                  ["severity"], expected)
-        # The rule's `defaultConfiguration.level` is deliberately NOT a
-        # fallback yet (see `_sarif_severity`): a result with no usable
-        # `level` keeps the historical "warning" grade whatever the rule says.
-        # The gate PR that can tell pre-existing findings from new ones flips
-        # these two expectations to HIGH and LOW.
+        # #1790: the rule's `defaultConfiguration.level` is the LAST fallback,
+        # read only when the result states no usable `level` of its own.
+        # Semgrep states none on any result and `error` on every
+        # ERROR-severity rule, so without this line the CI gate graded every
+        # one of them MEDIUM and could not fail on a single semgrep finding --
+        # the hole #1578 closed for gitleaks, in the other direction. It lands
+        # with the delta-aware gate (`security_gate --baseline-dir`), which is
+        # what keeps the findings it promotes on an already-scanned tree from
+        # turning that tree red the day it merges.
         sarif = self._severity_sarif(level=None, default_level="error")
         self.assertEqual(first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))
-                         ["severity"], "MEDIUM")
+                         ["severity"], "HIGH")
         sarif = self._severity_sarif(level="bogus", default_level="note")
         self.assertEqual(first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))
-                         ["severity"], "MEDIUM")
+                         ["severity"], "LOW")
+
+    def test_the_rule_default_grades_DOWN_as_well_as_up(self):
+        """#1790 fix round 1 (review M5): the fallback is bidirectional.
+
+        The promotion is the half everyone costed -- 24 findings on this repo's
+        own tree went MEDIUM -> HIGH and needed the delta gate to ship. The
+        other half was measured only in review: semgrep states no result
+        `level` at all, and on the same two captures its rule defaults are
+        `error: ~24`, `warning: ~9` and `note: 241`. So 241 findings went the
+        other way, MEDIUM -> LOW, and a rule defaulting to `none` now yields
+        INFO where the "warning" floor used to yield MEDIUM.
+
+        No CI-gate effect (that floor is HIGH/CRITICAL) and arguably more
+        correct -- semgrep's `note` IS its INFO grade -- but a
+        `driver run --severity medium` / `--fail-on medium` sees a smaller tool
+        axis on such a tree, and that is a behaviour change nothing else in
+        this file pins.
+        """
+        for default_level, expected in (("error", "HIGH"), ("warning", "MEDIUM"),
+                                        ("note", "LOW"), ("none", "INFO")):
+            with self.subTest(default_level=default_level):
+                sarif = self._severity_sarif(level=None,
+                                             default_level=default_level)
+                self.assertEqual(
+                    first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))
+                    ["severity"], expected)
 
     def test_sarif_malformed_optional_metadata_preserves_findings(self):
         bad_scores = [0, -1, 10.1, True, "nan", "inf", {}, []]
