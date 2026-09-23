@@ -2,6 +2,7 @@
 from typing import Any
 from dataclasses import dataclass
 import os
+import stat
 
 from . import findings as findings_mod
 
@@ -183,25 +184,126 @@ def weighted_defect(findings):
             total += weight * _loc_span(f)
     return total
 
+MAX_LOC_FILE_BYTES = 8 * 1024 * 1024
+MAX_LOC_TOTAL_BYTES = 64 * 1024 * 1024
+MAX_LOC_CANDIDATES = 10_000
+
+
+def _loc_parts(path, lexical_root, real_root):
+    """Return components beneath the supplied root, without following them."""
+    normalized = os.path.normpath(path if os.path.isabs(path)
+                                  else os.path.join(lexical_root, path))
+    for root in (lexical_root, real_root):
+        if os.path.commonpath((root, normalized)) == root:
+            relative = os.path.relpath(normalized, root)
+            return () if relative == "." else tuple(relative.split(os.sep))
+    return None
+
+
+def _read_loc_file(root_fd, parts, remaining):
+    """Read one complete regular UTF-8 file, returning LOC and bytes consumed."""
+    consumed = 0
+    try:
+        directory_fd = os.dup(root_fd)
+        try:
+            directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            for component in parts[:-1]:
+                next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+                previous_fd = directory_fd
+                directory_fd = next_fd
+                os.close(previous_fd)
+            flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
+            fd = os.open(parts[-1], flags, dir_fd=directory_fd)
+            try:
+                info = os.fstat(fd)
+                allowance = min(MAX_LOC_FILE_BYTES, remaining)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > allowance:
+                    return 0, 0
+                chunks = []
+                while consumed < allowance:
+                    chunk = os.read(fd, min(64 * 1024, allowance - consumed))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    consumed += len(chunk)
+                # A growing file must not contribute a counted prefix. The second
+                # stat also handles a file exactly as large as the byte allowance.
+                if os.fstat(fd).st_size > consumed:
+                    return 0, consumed
+                content = b"".join(chunks)
+                if b"\x00" in content:
+                    return 0, consumed
+                try:
+                    text = content.decode("utf-8")
+                except UnicodeError:
+                    return 0, consumed
+                return sum(bool(line.strip()) for line in text.splitlines()), consumed
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory_fd)
+    except (OSError, ValueError):
+        # Reads count against the call budget even when a later read, stat,
+        # or descriptor close makes this file unmeasurable.
+        return 0, consumed
+
+
 def nonblank_loc(target, groups_meta):
-    """Total non-blank lines across the UNIQUE reviewed files (the numerator).
-    Each file path is resolved against `target` (a repo root) or cwd; a missing,
-    unreadable, or binary file is skipped, never fatal -- the score degrades
-    gracefully rather than crashing synthesis."""
-    base = target if os.path.isdir(target) else "."
+    """Count unique nonblank lines in regular text files confined to target.
+
+    Skip unsafe or incomplete files. Work is bounded to 8 MiB per file,
+    64 MiB read per call, and 10,000 candidate rows per call; files over a
+    bound contribute zero, so large repositories may have a smaller measured
+    LOC denominator. Symlinks beneath target are never followed.
+    """
+    try:
+        target_path = os.fspath(target)
+        if not isinstance(target_path, str) or not target_path:
+            return 0
+        lexical_root = os.path.abspath(target_path)
+        real_root = os.path.realpath(lexical_root)
+        root_fd = os.open(real_root, os.O_RDONLY | os.O_DIRECTORY)
+    except (OSError, TypeError, ValueError):
+        return 0
+
+    if not isinstance(groups_meta, (list, tuple)):
+        os.close(root_fd)
+        return 0
+
     seen = set()
     total = 0
-    for g in groups_meta:
-        for rel in g.get("files") or []:
-            if rel in seen:
+    remaining = MAX_LOC_TOTAL_BYTES
+    candidates = 0
+    try:
+        for group in groups_meta:
+            if not isinstance(group, dict):
                 continue
-            seen.add(rel)
-            path = rel if os.path.isabs(rel) else os.path.join(base, rel)
-            try:
-                with open(path, encoding="utf-8", errors="ignore") as fh:
-                    total += sum(1 for line in fh if line.strip())
-            except (OSError, ValueError):
+            files = group.get("files")
+            if not isinstance(files, list):
                 continue
+            for path in files:
+                candidates += 1
+                if candidates > MAX_LOC_CANDIDATES:
+                    return total
+                if not isinstance(path, str):
+                    continue
+                try:
+                    parts = _loc_parts(path, lexical_root, real_root)
+                except (OSError, ValueError):
+                    continue
+                if not parts or parts in seen:
+                    continue
+                seen.add(parts)
+                try:
+                    count, consumed = _read_loc_file(root_fd, parts, remaining)
+                except (OSError, ValueError):
+                    continue
+                total += count
+                remaining -= consumed
+                if remaining == 0:
+                    return total
+    finally:
+        os.close(root_fd)
     return total
 
 HEALTH_FORMULA = "100 * total_loc / (total_loc + weighted_defect)"
