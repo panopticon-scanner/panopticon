@@ -109,6 +109,7 @@ class RunResult:
                                    # `host_error` is what decides whose failure it was, and
                                    # widening that input would read an entry's own stderr noise
                                    # as an outage.
+    models: dict = dataclasses.field(default_factory=dict)  # host-reported per-model usage
 
     def __post_init__(self):
         """Classify any result that did not say (#1623).

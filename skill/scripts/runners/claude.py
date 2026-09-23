@@ -1,6 +1,7 @@
 """The Claude headless runner (spec 4.4): one `claude -p` per entry, hooks
 supplied by a run-specific --settings file, usage from the JSON envelope."""
 import json
+import math
 import os
 import subprocess
 
@@ -22,6 +23,27 @@ import scripts.runners.schema as schema_argv_rules
 # name, because that is what tests/conftest.py's `LAUNCH_SEAMS` swaps and what
 # tests/test_host_launch_guard.py walks the AST for; only its VALUE changed.
 DEFAULT_RUNNER = None
+
+
+def _measured_number(details, field):
+    """A usable host measurement, never a malformed value or inferred zero."""
+    value = details.get(field) if isinstance(details, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return value if not isinstance(value, float) or math.isfinite(value) else None
+
+
+def _primary_model(model_usage):
+    """Attribute the turn by measured output, then cost, then a stable name."""
+    ranked = []
+    for name, details in model_usage.items():
+        if not isinstance(details, dict):
+            continue
+        output = _measured_number(details, "outputTokens")
+        cost = _measured_number(details, "costUSD")
+        ranked.append((-(output if output is not None else 0),
+                       -(cost if cost is not None else 0), name))
+    return min(ranked)[2] if ranked else None
 
 
 class Runner(base.HostRunner):
@@ -163,7 +185,7 @@ class Runner(base.HostRunner):
         usage = raw_usage if isinstance(raw_usage, dict) else {}
         raw_model_usage = data.get("modelUsage")
         model_usage = raw_model_usage if isinstance(raw_model_usage, dict) else {}
-        model = next(iter(model_usage), None)
+        model = _primary_model(model_usage)
         raw_denials = data.get("permission_denials")
         denials = raw_denials if isinstance(raw_denials, list) else []
         # D10 ruling 3: under `--json-schema` the CLI may return the object in
@@ -196,7 +218,7 @@ class Runner(base.HostRunner):
         return base.RunResult(entry_id=entry_id, ok=error is None, text=text if error is None else "",
                                usage=usage, cost_usd=data.get("total_cost_usd"), model=model,
                                session_id=data.get("session_id"), denials=denials, error=error,
-                               host_error=host_error,
+                               host_error=host_error, models=model_usage,
                                stderr=diagnosis if error is not None else None)
 
     def launch_env(self, overlay=None):

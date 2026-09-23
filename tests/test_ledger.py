@@ -18,6 +18,8 @@ from unittest import mock
 import scripts.ledger as ledger_mod
 import scripts.money as money
 import scripts.runners.base as base
+import scripts.runners.claude as claude_runner
+import scripts.synth.cost as cost_mod
 from test_orchestrate import LoopCase
 
 
@@ -33,6 +35,55 @@ class TestLedgerMoney(LoopCase):
     def _result(self, cost, error=None):
         return base.RunResult(entry_id="e", ok=True, text="", usage={}, cost_usd=cost,
                               model=None, session_id=None, denials=[], error=error)
+
+    def test_claude_models_reach_usage_and_meta_cost_without_changing_aggregates(self):
+        run_dir, _floor = self._repo()
+        ledger = ledger_mod.Ledger(run_dir)
+        runner = claude_runner.Runner("claude")
+        models = {
+            "helper": {"inputTokens": 3, "outputTokens": 1,
+                       "cacheReadInputTokens": 2, "costUSD": 0.01},
+            "main": {"inputTokens": 5, "outputTokens": 10,
+                     "cacheCreationInputTokens": 4, "costUSD": 0.2},
+        }
+        for entry_id, failed in (("success", False), ("error", True)):
+            envelope = {"result": "reply", "is_error": failed,
+                        "usage": {"input_tokens": 8, "output_tokens": 11,
+                                  "cache_read_input_tokens": 2,
+                                  "cache_creation_input_tokens": 4},
+                        "total_cost_usd": 0.21, "modelUsage": models}
+            result = runner.parse_envelope(entry_id, json.dumps(envelope), int(failed))
+            ledger.record({"id": entry_id}, "review", result, "headless", "claude")
+        # A pre-change single-model row must remain readable and count toward
+        # the existing aggregate without attributing its lumped usage by model.
+        ledger.record({"id": "legacy"}, "verify",
+                      base.RunResult(entry_id="legacy", ok=True, text="",
+                                     usage={"input_tokens": 7}, cost_usd=0.03,
+                                     model="old", session_id=None, denials=[], error=None),
+                      "headless", "claude")
+        rows = ledger.lines()
+        self.assertEqual([models, models], [row["models"] for row in rows[:2]])
+        self.assertNotIn("models", rows[2])
+        self.assertEqual([True, False, True], [row["ok"] for row in rows])
+        doc = ledger.usage_document()
+        self.assertEqual(57, doc["total"])
+        self.assertEqual({"review": 50, "verify": 7, "scout": 0,
+                          "unattributed": 0}, doc["by_phase"])
+        self.assertEqual({"input_tokens": 23, "output_tokens": 22,
+                          "cache_read_input_tokens": 4,
+                          "cache_creation_input_tokens": 8}, doc["by_field"])
+        self.assertEqual({
+            "helper": {"input_tokens": 6, "output_tokens": 2,
+                       "cache_read_input_tokens": 4, "cost_usd": 0.02},
+            "main": {"input_tokens": 10, "output_tokens": 20,
+                     "cache_creation_input_tokens": 8, "cost_usd": 0.4},
+        }, doc["by_model"])
+        self.assertEqual(money._money("0.45"), ledger.total_cost())
+        with open(os.path.join(run_dir, "usage.json"), "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        meta = cost_mod.cost_section(cost_mod.CostInputs(
+            run_usage=cost_mod.load_run_usage(run_dir)), 0, 0)
+        self.assertEqual(doc, meta["tokens"])
 
     def test_a_non_finite_cost_never_enters_the_ledger(self):
         ledger = self._ledger()

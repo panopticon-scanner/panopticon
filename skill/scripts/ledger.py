@@ -10,9 +10,11 @@ and `_rows`/`lines`/`total_cost`/`usage_document` are its readers -- the last
 two go through `scripts.money` for the exact-decimal cost arithmetic and the
 `LedgerCorrupt` fault a line that cannot be read back as money raises.
 """
+import math
 import os
 import sys
 import time
+from decimal import Decimal
 
 import scripts.money as money
 import scripts.phases.runio as runio
@@ -23,6 +25,24 @@ PHASE_OF_CHECKPOINT = {"scout": "scout", "review": "review", "verify": "verify",
                        "scan": "unattributed"}          # R-P6-9: collect_usage.PHASES keys
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
+MODEL_USAGE_FIELDS = {"inputTokens": "input_tokens", "outputTokens": "output_tokens",
+                      "cacheCreationInputTokens": "cache_creation_input_tokens",
+                      "cacheReadInputTokens": "cache_read_input_tokens"}
+
+
+def _measured_model_fields(details):
+    """Only figures the host actually reported can enter a model roll-up."""
+    if not isinstance(details, dict):
+        return {}
+    fields: dict[str, int | float] = {
+        target: value for source, target in MODEL_USAGE_FIELDS.items()
+        if isinstance((value := details.get(source)), int)
+        and not isinstance(value, bool) and value >= 0}
+    cost = details.get("costUSD")
+    if (isinstance(cost, (int, float)) and not isinstance(cost, bool)
+            and cost >= 0 and (not isinstance(cost, float) or math.isfinite(cost))):
+        fields["cost_usd"] = cost
+    return fields
 # #1662: the two `status` values the interrupt's own rows carry -- `CANCELLED`
 # for an entry it cut before it completed, `ROLLED_BACK` for the marker beside
 # an entry that HAD completed and whose artifacts were then taken back. One
@@ -97,6 +117,9 @@ class Ledger:
                 "session_id": result.session_id, "denials": result.denials,
                 "rejected_file": rejected_file,
                 "error": refusal if refusal is not None else result.error}
+        models = getattr(result, "models", None)
+        if models:
+            line["models"] = models
         # Host errors and persistence refusals can quote credentials. Redact at
         # the single writer, preserving null when the row has no error (#1709).
         if line["error"] is not None:
@@ -203,6 +226,8 @@ class Ledger:
     def usage_document(self):
         by_phase = {p: 0 for p in ("scout", "review", "verify", "unattributed")}
         by_field = {k: 0 for k in USAGE_FIELDS}
+        by_model_tokens: dict[str, dict[str, int]] = {}
+        by_model_costs: dict[str, Decimal] = {}
         corrupt = 0
         for _line_no, row, reason in self._rows():
             # #1648: tokens are not dollars. A row whose MONEY is unreadable still
@@ -222,8 +247,26 @@ class Ledger:
             by_phase[row.get("phase") or "unattributed"] = by_phase.get(row.get("phase") or "unattributed", 0) + n
             for k in USAGE_FIELDS:
                 by_field[k] += int(usage.get(k, 0) or 0)
+            models = row.get("models")
+            if isinstance(models, dict):
+                for name, details in models.items():
+                    measured = _measured_model_fields(details)
+                    if not measured:
+                        continue
+                    totals = by_model_tokens.setdefault(name, {})
+                    for field, value in measured.items():
+                        if field == "cost_usd":
+                            by_model_costs[name] = (by_model_costs.get(name, Decimal(0))
+                                                    + Decimal(str(value)))
+                        else:
+                            totals[field] = totals.get(field, 0) + int(value)
+        by_model: dict[str, dict[str, int | float]] = {
+            name: dict(fields) for name, fields in by_model_tokens.items()}
+        for name, cost in by_model_costs.items():
+            by_model[name]["cost_usd"] = float(cost)
         return {"schema_version": 1, "total": sum(by_phase.values()), "by_phase": by_phase,
-                "by_field": by_field, "source": runners_base.LEDGER_FILE,
+                "by_field": by_field, "by_model": by_model,
+                "source": runners_base.LEDGER_FILE,
                 "corrupt_rows": corrupt,
                 "definition": "every token the host's envelope reported for each entry "
                               "launch, failed launches included, summed over the four "
