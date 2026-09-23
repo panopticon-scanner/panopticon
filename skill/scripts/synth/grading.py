@@ -1,7 +1,6 @@
 """Grades, gate verdict, certification and the health index."""
 from typing import Any
 from dataclasses import dataclass
-from contextlib import ExitStack
 import os
 import stat
 
@@ -205,39 +204,44 @@ def _read_loc_file(root_fd, parts, remaining):
     """Read one complete regular UTF-8 file, returning LOC and bytes consumed."""
     consumed = 0
     try:
-        with ExitStack() as opened:
-            directory_fd = os.dup(root_fd)
-            opened.callback(os.close, directory_fd)
+        directory_fd = os.dup(root_fd)
+        try:
             directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
             for component in parts[:-1]:
-                directory_fd = os.open(component, directory_flags, dir_fd=directory_fd)
-                opened.callback(os.close, directory_fd)
+                next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+                previous_fd = directory_fd
+                directory_fd = next_fd
+                os.close(previous_fd)
             flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
             fd = os.open(parts[-1], flags, dir_fd=directory_fd)
-            opened.callback(os.close, fd)
-            info = os.fstat(fd)
-            allowance = min(MAX_LOC_FILE_BYTES, remaining)
-            if not stat.S_ISREG(info.st_mode) or info.st_size > allowance:
-                return 0, 0
-            chunks = []
-            while consumed < allowance:
-                chunk = os.read(fd, min(64 * 1024, allowance - consumed))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                consumed += len(chunk)
-            # A growing file must not contribute a counted prefix. The second
-            # stat also handles a file exactly as large as the byte allowance.
-            if os.fstat(fd).st_size > consumed:
-                return 0, consumed
-            content = b"".join(chunks)
-            if b"\x00" in content:
-                return 0, consumed
             try:
-                text = content.decode("utf-8")
-            except UnicodeError:
-                return 0, consumed
-            return sum(bool(line.strip()) for line in text.splitlines()), consumed
+                info = os.fstat(fd)
+                allowance = min(MAX_LOC_FILE_BYTES, remaining)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > allowance:
+                    return 0, 0
+                chunks = []
+                while consumed < allowance:
+                    chunk = os.read(fd, min(64 * 1024, allowance - consumed))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    consumed += len(chunk)
+                # A growing file must not contribute a counted prefix. The second
+                # stat also handles a file exactly as large as the byte allowance.
+                if os.fstat(fd).st_size > consumed:
+                    return 0, consumed
+                content = b"".join(chunks)
+                if b"\x00" in content:
+                    return 0, consumed
+                try:
+                    text = content.decode("utf-8")
+                except UnicodeError:
+                    return 0, consumed
+                return sum(bool(line.strip()) for line in text.splitlines()), consumed
+            finally:
+                os.close(fd)
+        finally:
+            os.close(directory_fd)
     except (OSError, ValueError):
         # Reads count against the call budget even when a later read, stat,
         # or descriptor close makes this file unmeasurable.

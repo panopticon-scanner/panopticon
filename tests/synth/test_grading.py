@@ -8,6 +8,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+try:
+    import resource
+except ImportError:
+    resource = None
+
 import scripts.hosts as hosts_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.grading as grading_mod
@@ -258,6 +263,31 @@ class TestLocConfinement(unittest.TestCase):
                                     capture_output=True, text=True, timeout=2, env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "0")
+
+    @unittest.skipUnless(resource is not None and hasattr(resource, "RLIMIT_NOFILE"),
+                         "descriptor limits require resource.RLIMIT_NOFILE")
+    def test_deep_regular_file_counts_with_low_descriptor_limit(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "repo"
+            root.mkdir()
+            current = root
+            for _ in range(40):
+                current = current / "d"
+                current.mkdir()
+            (current / "good.py").write_text("one\n\n", encoding="utf-8")
+            relative = "/".join(["d"] * 40 + ["good.py"])
+            code = (
+                "import resource, sys\n"
+                "from scripts.synth.grading import nonblank_loc\n"
+                "_, hard = resource.getrlimit(resource.RLIMIT_NOFILE)\n"
+                "resource.setrlimit(resource.RLIMIT_NOFILE, (32, hard))\n"
+                "print(nonblank_loc(sys.argv[1], [{'files': [sys.argv[2]]}]))\n"
+            )
+            env = dict(os.environ, PYTHONPATH=str(Path(grading_mod.__file__).parents[2]))
+            result = subprocess.run([sys.executable, "-c", code, str(root), relative],
+                                    capture_output=True, text=True, timeout=2, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "1")
 
     def test_oversize_and_binary_files_are_unmeasurable(self):
         with tempfile.TemporaryDirectory() as d:
