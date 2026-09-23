@@ -6,7 +6,7 @@ import os
 import pytest
 
 from discovery_test_helpers import (
-    git_cmd, git_output, repo_with_matrix, repo_with_scalar_match_group,
+    _git_repo, git_cmd, git_output, repo_with_matrix, repo_with_scalar_match_group,
     repo_with_only_malformed_group, setup_flow, GIT_TIMEOUT,
 )
 
@@ -47,6 +47,89 @@ def test_repo_scan_scope_group_restricts_to_named_group(tmp_path):
     files = sorted(f for g in groups for f in g["files"])
     assert names == {"Checkout"}
     assert files == ["src/checkout/cart.py", "src/checkout/pay.py"]
+
+
+def test_scope_group_preserves_earlier_catalog_ownership_and_tests(tmp_path):
+    repo = _git_repo(tmp_path, ["src/shared.py", "src/owned.py", "tests/broad/test_owned.py"],
+                     "groups:\n"
+                     "  Narrow:\n    match: ['src/shared.py']\n"
+                     "  Broad:\n    match: ['src/**']\n    tests: ['tests/broad/**']\n")
+    out = repo / ".panopticon" / "groups.json"
+    assert discovery.main(["--repo-scan", "--scope-group", "Broad",
+                           str(repo), "--out", str(out)]) == 0
+    report = json.loads(out.read_text())
+    assert [(g["name"], g["files"]) for g in report["groups"]] == [
+        ("Broad", ["src/owned.py", "tests/broad/test_owned.py"])]
+    assert report["ungrouped_files"] == []
+
+    assert discovery.main(["--repo-scan", str(repo), "--out", str(out)]) == 0
+    report = json.loads(out.read_text())
+    by_name = {g["name"]: g["files"] for g in report["groups"]}
+    assert by_name["Narrow"] == ["src/shared.py"]
+    assert by_name["Broad"] == ["src/owned.py", "tests/broad/test_owned.py"]
+
+
+def test_scope_subgroup_preserves_earlier_sibling_ownership(tmp_path):
+    repo = _git_repo(tmp_path, ["src/shared.py", "src/owned.py"],
+                     "groups:\n  Product:\n"
+                     "    Narrow:\n      match: ['src/shared.py']\n"
+                     "    Broad:\n      match: ['src/**']\n")
+    out = repo / ".panopticon" / "groups.json"
+    assert discovery.main(["--repo-scan", "--scope-group", "Product:Broad",
+                           str(repo), "--out", str(out)]) == 0
+    assert [(g["name"], g["files"]) for g in json.loads(out.read_text())["groups"]] == [
+        ("Product:Broad", ["src/owned.py"])]
+
+
+def test_scope_group_with_only_earlier_owned_matches_is_empty(tmp_path, capsys):
+    repo = _git_repo(tmp_path, ["src/shared.py"],
+                     "groups:\n  Narrow:\n    match: ['src/shared.py']\n"
+                     "  Broad:\n    match: ['src/**']\n")
+    out = repo / ".panopticon" / "groups.json"
+    assert discovery.main(["--repo-scan", "--scope-group", "Broad",
+                           str(repo), "--out", str(out)]) == 2
+    assert "Broad' matched no tracked files" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("authored,expected_name,automatic", [
+    ("  docs:\n    match: ['src/**']\n", "docs", "Docs"),
+    ("  docs:\n    Core:\n      match: ['src/**']\n", "docs:Core", "Docs"),
+    ("  commons:\n    match: ['src/**']\n", "commons", "Commons"),
+    ("  commons:\n    Core:\n      match: ['src/**']\n", "commons:Core", "Commons"),
+])
+def test_authored_case_variant_suppresses_automatic_name(
+        tmp_path, authored, expected_name, automatic):
+    files = ["src/owned.py", "README.md", "Dockerfile"]
+    repo = _git_repo(tmp_path, files, "groups:\n" + authored)
+    out = repo / ".panopticon" / "groups.json"
+    assert discovery.main(["--repo-scan", str(repo), "--out", str(out)]) == 0
+    report = json.loads(out.read_text())
+    names = [g["name"] for g in report["groups"]]
+    assert expected_name in names
+    assert automatic not in names
+    assert len(names) == len({n.casefold() for n in names})
+    grouped = [f for g in report["groups"] for f in g["files"]]
+    assert sorted(grouped) == sorted(files + ["panopticon.yml"])
+    assert report["ungrouped_files"] == sorted(
+        f for f in grouped if any(f in g["files"] for g in report["groups"]
+                                if g["name"].startswith("Ungrouped_")))
+
+
+@pytest.mark.parametrize("groups,offender", [
+    ("  API:\n    match: ['src/a.py']\n  api:\n    match: ['src/b.py']\n", "api"),
+    ("  API:\n    match: ['src/a.py']\n  api_1:\n    match: ['src/b.py']\n", "api_1"),
+    ("  Product:\n    API:\n      match: ['src/a.py']\n"
+     "  product:\n    api_1:\n      match: ['src/b.py']\n", "product:api_1"),
+    ("  ungrouped_1:\n    match: ['src/a.py']\n", "ungrouped_1"),
+])
+def test_authored_case_variant_artifact_collision_fails_cli(tmp_path, capsys, groups, offender):
+    repo = _git_repo(tmp_path, ["src/a.py", "src/b.py"], "groups:\n" + groups)
+    out = repo / ".panopticon" / "groups.json"
+    assert discovery.main(["--repo-scan", str(repo), "--out", str(out)]) == 1
+    err = capsys.readouterr().err.casefold()
+    assert offender in err
+    assert "findings" in err or "artifact" in err
+    assert not out.exists()
 
 
 def test_repo_scan_scope_file_restricts_to_file_and_its_group(tmp_path):
