@@ -281,6 +281,20 @@ class TestPrepare(unittest.TestCase):
 
 
 class TestTomlEmission(unittest.TestCase):
+    def test_unicode_and_literal_keys_round_trip(self):
+        config = {
+            "模型.名": {"路径/🚀": {"quoted \"key\"": "emoji 😀 /tmp/雪\tline\nnext\x7f\x00"}},
+            "hooks": [{"event": "PreToolUse", "name.with.dot": "值"},
+                      {"event": "Stop", "空 表": {}}],
+            "nested": ["非拉丁", ["🚀", "\x00\x7f"]],
+        }
+        self.assertEqual(config, tomllib.loads(kimi_toml.dump_toml(config)))
+
+    def test_lone_surrogates_are_refused(self):
+        for config in ({"value": "bad \ud800"}, {"bad \ud800": "value"}):
+            with self.subTest(config=config), self.assertRaisesRegex(ValueError, "surrogate"):
+                kimi_toml.dump_toml(config)
+
     def test_dump_toml_round_trips_nested_tables_and_arrays(self):
         config = {"top": "value", "n": 3, "f": 1.5, "flag": True,
                   "arr": ["a", "b"],

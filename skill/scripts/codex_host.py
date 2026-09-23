@@ -24,6 +24,7 @@ import scripts.codex_read_tools as codex_read_tools
 import scripts.hosts as hosts
 import scripts.runners.base as runners_base
 import scripts.runners.schema as runners_schema
+import scripts.toml_values as toml_values
 
 
 ENV_KEYS = ("PANOPTICON_ENTRY_ID", "PANOPTICON_WRITE_ALLOWLIST", "PANOPTICON_READ_SCOPE")
@@ -171,13 +172,17 @@ def require_registered_shells(registration_dir=None):
 
 def _overrides(config, prefix=""):
     for key, value in config.items():
+        if not toml_values.bare_key(key):
+            # Codex's CLI splits -c paths on every dot, even inside quotes.
+            # A nested unusual key is emitted in its parent's inline table.
+            raise ValueError("Codex cannot override a non-bare top-level key: %r" % key)
         path = prefix + key
-        if isinstance(value, dict) and value:
+        if (isinstance(value, dict) and value
+                and all(toml_values.bare_key(child) for child in value)):
             yield from _overrides(value, path + ".")
         else:
-            # JSON scalar/list syntax is also TOML; an empty table is special.
             yield "-c"
-            yield path + "=" + ("{}" if value == {} else json.dumps(value))
+            yield path + "=" + toml_values.value(value, key)
 
 
 def _dump_catalog(runner, env=None):
