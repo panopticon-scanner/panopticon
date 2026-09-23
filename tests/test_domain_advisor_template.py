@@ -1,6 +1,32 @@
+import json
+import re
+from pathlib import Path
+
 import pytest
 
 import scripts.dispatch as dispatch
+
+
+@pytest.mark.parametrize("role_file", ["advisor.md", "domain-advisor.md"])
+def test_scoped_advisor_verdict_matches_published_schema(role_file):
+    values = {"claim_json": "{}"} if role_file == "advisor.md" else {
+        "domain": "SEC", "group": "app", "file_list": "- a.py",
+        "findings": "[]", "menu": "SEC-A1A n (HIGH)",
+        "criteria": "SEC-A1A n — qualifies when X", "run_id": "RID",
+        "stage": "primary", "out_file": "/abs/verdicts-app-SEC.json",
+    }
+    prompt = dispatch.render_prompt(role_file, values, "claude")
+    scope_fence = re.search(
+        r"Scope fence \(host-enforced\).*?(?=\n## |\Z)", prompt, re.DOTALL | re.IGNORECASE
+    )
+    assert scope_fence is not None
+    verdict = re.search(r"\bis `([A-Z_]+)`", scope_fence.group())
+    assert verdict is not None
+    schema_path = Path(__file__).resolve().parents[1] / "skill/reference/advisor-verdict-schema.json"
+    verdict_enum = json.loads(schema_path.read_text(encoding="utf-8"))["properties"]["verdict"]["enum"]
+    assert verdict.group(1) in verdict_enum
+    assert verdict.group(1) == "NEEDS_MORE_INFO"
+    assert "reasoning" in scope_fence.group()
 
 
 def test_domain_advisor_is_scoped_write():
