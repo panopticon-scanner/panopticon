@@ -964,3 +964,39 @@ def test_record_preserves_newer_rows_and_rejects_conflicting_key(tmp_path):
     with pytest.raises(RuntimeError, match="different URL"):
         file_issues.record({}, "existing", "conflict", path)
     assert Path(path).read_bytes() == before
+
+
+@pytest.mark.parametrize("keyword", [False, True])
+def test_legacy_find_existing_issue_signature_is_safe(keyword):
+    runner = mock.Mock(side_effect=AssertionError("title alone must not query or adopt"))
+    if keyword:
+        assert file_issues.find_existing_issue(title="same title", runner=runner) is None
+    else:
+        assert file_issues.find_existing_issue("same title", runner) is None
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize("matches", [True, False])
+def test_find_existing_issue_optional_intent_preserves_strict_probe(matches):
+    repo = "owner/project"
+    _, intent = file_issues._intent(repo, "finding", "key", "same title", "body", [])
+    row = {"title": "same title", "body": intent["body"] if matches else "different finding",
+           "html_url": "https://github.com/owner/project/issues/1"}
+    runner = mock.Mock(return_value=_completed(stdout=json.dumps({
+        "incomplete_results": False, "total_count": 1, "items": [row]})))
+    if matches:
+        assert file_issues.find_existing_issue(
+            title="same title", runner=runner, repo=repo, intent=intent) == row["html_url"]
+    else:
+        with pytest.raises(RuntimeError, match="pending create unresolved"):
+            file_issues.find_existing_issue("same title", runner, repo=repo, intent=intent)
+    assert runner.call_count == 1
+
+
+@pytest.mark.parametrize("title,repo", [("other title", "owner/project"), ("t", "other/project")])
+def test_find_existing_issue_refuses_mismatched_intent(title, repo):
+    _, intent = file_issues._intent("owner/project", "finding", "key", "t", "body", [])
+    runner = mock.Mock(side_effect=AssertionError("mismatched intent must not query"))
+    with pytest.raises(ValueError, match="bound intent"):
+        file_issues.find_existing_issue(title, runner, repo=repo, intent=intent)
+    runner.assert_not_called()

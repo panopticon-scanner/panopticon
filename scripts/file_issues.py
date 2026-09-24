@@ -477,13 +477,20 @@ def _preflight(repo, runner):
         raise RuntimeError("authenticated admin preflight failed for " + repo) from exc
 
 
-def find_existing_issue(intent, runner, repo=REPO_SLUG):
+def find_existing_issue(title, runner, repo=REPO_SLUG, *, intent=None):
     """Adopt one exact operation marker only from a complete bounded response.
 
+    Legacy title-only calls retain their positional/keyword interface and
+    return None without querying: a title cannot prove operation identity.
+    Explicit intent enables strict reconciliation and raises if unresolved.
     Search indexing may lag acceptance. Even an empty result cannot authorize
     replay. A full page, malformed row, or duplicate marker is inconclusive.
     """
+    if intent is None:
+        return None
     validate_repo(repo)
+    if intent["title"] != title or intent["repo"] != repo:
+        raise ValueError("probe title/repository does not match the bound intent")
     marker = intent["marker"]
     try:
         query = urlencode({"q": "repo:" + repo + " is:issue "
@@ -589,7 +596,7 @@ def create(title, body, labels, dry, throttle=0.0, env=None, repo=REPO_SLUG,
         except (OSError, subprocess.SubprocessError):
             pass  # Acceptance is unknown; the durable intent forbids retry.
     if url is None:
-        url = find_existing_issue(intent, runner, repo)
+        url = find_existing_issue(title, runner, repo, intent=intent)
     record({}, key, url, path)
     with _ledger_lock(path):
         pending = _load_pending(pending_path)
