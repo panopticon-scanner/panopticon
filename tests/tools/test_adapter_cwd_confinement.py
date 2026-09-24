@@ -43,6 +43,7 @@ egress.py's proxy sidecar, which is not part of any adapter's `invoke`), so
 patching `scripts.tools.base.subprocess.Popen` -- `run_tool`'s one call site
 -- is sufficient to observe every adapter's launch.
 """
+import json
 import os
 import shutil
 import tempfile
@@ -171,7 +172,7 @@ def _seed_fixture(name, root):
     # inside invoke() itself), so no fixture is needed to exercise them.
 
 
-def _record_popen_calls(adapter, target):
+def _record_popen_calls(name, adapter, target):
     """Run *adapter*.invoke(target) with its scanner subprocess faked, and
     return one record per launch: `{argv, cwd, existed, entries}`.
 
@@ -183,8 +184,12 @@ def _record_popen_calls(adapter, target):
     the scanner would have resolved its config against.
     """
     calls = []
+    # Missing-parser invoke decodes native ESLint output before returning it.
+    stdout = (json.dumps([{"filePath": os.path.join(target, "index.js"),
+                          "messages": []}]).encode()
+              if name == "eslint-security" else b"")
     with mock.patch("scripts.tools.base.subprocess.Popen",
-                    side_effect=scratch_cwd_recorder(calls, stdout=b"")):
+                    side_effect=scratch_cwd_recorder(calls, stdout=stdout)):
         adapter.invoke(target)
     return calls
 
@@ -216,7 +221,7 @@ class TestAdapterCwdConfinement(unittest.TestCase):
         root = tempfile.mkdtemp(prefix="cwd-confine-%s-" % name.replace("/", "_"))
         try:
             _seed_fixture(name, root)
-            return root, _record_popen_calls(adapter, root)
+            return root, _record_popen_calls(name, adapter, root)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

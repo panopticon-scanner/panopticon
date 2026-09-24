@@ -176,6 +176,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
                         adapter = es.EslintSecurityAdapter()
                         self.assertTrue(adapter.is_applicable(target))
                         rows = json.loads(ESLINT_SAMPLE)
+                        self.assertEqual(len(rows), 1)
                         rows[0]["filePath"] = "/src/exploit." + extension
                         with mock.patch.object(es, "_TS_PARSER_ENTRY", parser), \
                              mock.patch.object(es, "run_tool", return_value=(json.dumps(rows).encode(), 1)) as run:
@@ -183,6 +184,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
                         run.assert_called_once()
                         findings, coverage = adapter.parse_with_file_coverage(raw, "g1")
                         self.assertEqual(rc, 1)
+                        self.assertEqual(len(findings), 1)
                         self.assertEqual(findings[0]["location"]["file"], "exploit." + extension)
                         self.assertEqual(findings[0]["severity"], "HIGH")
                         self.assertEqual(coverage["unavailable_files"], int(adjacent_ts and not parser_present))

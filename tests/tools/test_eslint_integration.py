@@ -91,6 +91,7 @@ class TestEslintSecurityIntegration(unittest.TestCase):
                 self.assertTrue(any(f["severity"] == "HIGH" for f in findings))
                 self.assertEqual(facts["status"], "partial")
                 self.assertEqual(facts["unparsed_files"], 1)
+                self.assertEqual(len(facts["files"]), 1)
                 self.assertTrue(facts["files"][0]["file"].endswith("/nested/" + name))
 
     def test_inline_disable_directives_cannot_hide_eval(self):
