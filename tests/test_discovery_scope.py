@@ -619,3 +619,170 @@ def test_reviewed_set_and_hunk_map_agree_on_quoted_names(tmp_path):
     assert set(changed) == set(hunks)
     for name in changed:
         assert name == os.fsdecode(os.fsencode(name))
+
+
+# --------------------------------------------------------------------------
+# #2023 (external review, HIGH — confinement): `--scope-files` is confined
+# exactly as `-f/--scope-file` is.
+#
+# The singular refused any path that was not among the discovered files (`if sf
+# not in allf`). The plural only normalized each entry and pruned, so
+# `--files ../../../../private/tmp/x` was ACCEPTED and landed verbatim in
+# groups.json — and from there in the dispatch plan, the reviewed file set and
+# a report attached to a PR, naming a path that was never in the repository.
+# Both branches now route through `_confine_scope_path` and fail closed on the
+# FIRST bad entry instead of silently dropping it.
+# --------------------------------------------------------------------------
+
+
+def _outside_file(tmp_path, name="escapee.py"):
+    """A real file one directory ABOVE the repo root (`repo_with_matrix` makes
+    `tmp_path` itself the repo, so its parent is outside the tree)."""
+    outside = tmp_path.parent / ("pano-2023-%s-%s" % (tmp_path.name, name))
+    outside.write_text("x = 1\n", encoding="utf-8")
+    return outside
+
+
+def _scope_files_run(repo, *entries, extra=()):
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", *extra,
+                            "--scope-files", *entries, "--out", str(out)])
+    return rc, out
+
+
+def test_scope_files_refuses_a_relative_path_that_escapes_the_repo(tmp_path, capsys):
+    repo = repo_with_matrix(tmp_path)
+    rel = os.path.relpath(_outside_file(tmp_path), repo)     # ../pano-2023-…py
+    rc, out = _scope_files_run(repo, rel)
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert not out.exists()                  # no artifact can carry the path
+    assert "--scope-files" in err and rel in err
+
+
+def test_scope_files_refuses_an_absolute_path_outside_the_repo(tmp_path, capsys):
+    repo = repo_with_matrix(tmp_path)
+    outside = _outside_file(tmp_path)
+    rc, out = _scope_files_run(repo, str(outside))
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert not out.exists()
+    assert "--scope-files" in err
+
+
+def test_scope_files_refuses_a_symlink_that_leaves_the_repo(tmp_path, capsys):
+    # The realpath arm of the clamp, on the case a string check cannot see: a
+    # TRACKED path inside the tree whose target is outside it.
+    repo = repo_with_matrix(tmp_path)
+    outside = _outside_file(tmp_path)
+    (repo / "src" / "escape.py").symlink_to(outside)
+    git_cmd(repo, "add", "-A")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-qm", "a symlink out of the tree")
+    rc, out = _scope_files_run(repo, "src/escape.py")
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert not out.exists()
+    assert "outside the repository root" in err
+
+
+def test_scope_files_refuses_an_inside_but_undiscovered_path(tmp_path, capsys):
+    repo = repo_with_matrix(tmp_path)
+    rc, out = _scope_files_run(repo, "src/checkout/nope.py")
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert not out.exists()
+    assert "not found among discovered repo files" in err
+
+
+def test_scope_files_refuses_an_empty_entry(tmp_path):
+    repo = repo_with_matrix(tmp_path)
+    rc, out = _scope_files_run(repo, "")
+    assert rc == 2
+    assert not out.exists()
+
+
+def test_scope_files_fails_closed_on_the_first_bad_entry(tmp_path):
+    # Not a silent drop: one bad entry refuses the WHOLE run, so the operator
+    # never gets a narrower review than the one they asked for with no line
+    # saying which path went missing.
+    repo = repo_with_matrix(tmp_path)
+    rc, out = _scope_files_run(repo, "src/checkout/pay.py", "../escapee.py")
+    assert rc == 2
+    assert not out.exists()                 # not even the GOOD entry reviewed
+
+
+def test_scope_files_refuses_a_fixture_path_in_standard_mode(tmp_path, capsys):
+    # Parity with the singular, which has always refused one: in standard mode
+    # a fixture corpus is NOT among the discovered files, and accepting it used
+    # to hand back `groups: []` with rc 0 — the scope's own mistake wearing the
+    # face of a finished scan (#1643's lesson, on this flag).
+    repo = _repo_with_fixture_corpus(tmp_path, exclude_paths=False)
+    rc, out = _scope_files_run(repo, "tests/fixtures/vuln/app.py")
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert not out.exists()
+    assert "not found among discovered repo files" in err
+
+
+def test_scope_files_happy_path_groups_only_in_tree_paths(tmp_path):
+    # The happy path is untouched, including #5.0-17's './' and absolute
+    # spellings, and every path groups.json carries is repo-relative.
+    repo = repo_with_matrix(tmp_path)
+    rc, out = _scope_files_run(repo, "./src/checkout/pay.py",
+                               str(repo / "src" / "auth" / "login.py"))
+    assert rc == 0
+    files = _reviewed_files(out)
+    assert files == {"src/checkout/pay.py", "src/auth/login.py"}
+    for f in files:
+        assert not os.path.isabs(f)
+        assert ".." not in f.split("/")
+
+
+def test_both_scope_flags_route_through_one_confinement_helper(tmp_path):
+    # The pin: mutate the single helper and BOTH branches must refuse a path
+    # they otherwise accept. #2023 WAS the drift between these two branches.
+    repo = repo_with_matrix(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    good = "src/checkout/pay.py"
+    singular = ["--repo", str(repo), "--repo-scan", "--out", str(out),
+                "--scope-file", good]
+    plural = ["--repo", str(repo), "--repo-scan", "--out", str(out),
+              "--scope-files", good]
+    assert orchestrator.main(singular) == 0
+    assert orchestrator.main(plural) == 0
+    with mock.patch.object(orchestrator, "_confine_scope_path",
+                           return_value=None):
+        assert orchestrator.main(singular) == 2
+        assert orchestrator.main(plural) == 2
+
+
+def test_scope_file_refuses_an_empty_entry_instead_of_reviewing_everything(tmp_path):
+    # Review M6 on #2023: `-f "$FILE"` with FILE unset used to be falsy, skip
+    # the scope branch entirely, and review the WHOLE repository at rc 0 --
+    # the same #1643 failure in the other direction. The plural refused an
+    # empty entry; now the singular does too, through the same helper.
+    repo = repo_with_matrix(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan",
+                            "--scope-file", "", "--out", str(out)])
+    assert rc == 2
+    assert not out.exists()
+
+
+def test_scope_files_refusal_echoes_a_bounded_repr_of_the_entry(tmp_path, capsys):
+    # Review M1 on #2023: the refused entry is echoed as repr() of a bounded
+    # string, so a control character cannot break the stderr line and an
+    # absurd argv cannot make it unreadable. Both pinned here.
+    repo = repo_with_matrix(tmp_path)
+    long_entry = "x" * (orchestrator._SCOPE_ECHO_LIMIT + 50) + ".py"
+    rc, _out = _scope_files_run(repo, long_entry)
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "x" * orchestrator._SCOPE_ECHO_LIMIT + "…" in err
+    assert long_entry not in err
+    rc, _out = _scope_files_run(repo, "src/\nnot-a-line.py")
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "\\n" in err and "not-a-line" in err
+    assert err.count("\n") == 1                  # one line, the refusal

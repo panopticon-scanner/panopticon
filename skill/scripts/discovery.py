@@ -1574,6 +1574,52 @@ def _norm_scope_path(repo, p):
     return os.path.normpath(p).replace(os.sep, "/") if p else p
 
 
+_SCOPE_ECHO_LIMIT = 200
+
+
+def _echo_scope_path(raw):
+    """One operator-supplied path, bounded, for a one-line stderr refusal: the
+    value is argv, and an unbounded echo of argv is a diagnostic nobody reads."""
+    s = str(raw or "")
+    return repr(s[:_SCOPE_ECHO_LIMIT] + "…" if len(s) > _SCOPE_ECHO_LIMIT
+                else s)
+
+
+def _confine_scope_path(repo, raw, universe, flag):
+    """Normalize ONE operator-supplied scope path and refuse it unless it names
+    a file of the target tree. Returns the repo-relative spelling, or None
+    after printing the refusal -- the caller exits 2.
+
+    #2023: the singular `--scope-file` refused anything not among the discovered
+    files; the plural `--scope-files` only normalized and pruned, so
+    `--files ../../../../private/tmp/x` was accepted and landed verbatim in
+    groups.json -- and from there in the dispatch plan, the reviewed file set
+    and a report attached to a PR, naming a path that was never in the
+    repository. BOTH branches route through here so the two cannot drift apart
+    again; test_discovery_scope.py pins that by mutating this function and
+    requiring both to refuse.
+
+    Two conditions. ``_within`` is the confinement proper: it compares
+    realpaths, so neither a `..` walk nor a symlink whose target leaves the tree
+    resolves inside the root. Membership in ``universe`` -- the caller's
+    reviewed file set -- is the narrower one: a path can sit inside the repo and
+    still not be a file this scan reviews (untracked, gitignored, nonexistent,
+    or a fixture corpus in standard mode). An empty entry normalizes to "" and
+    fails the membership test, which is the true answer for it.
+    """
+    p = _norm_scope_path(repo, raw)
+    if not _within(repo, os.path.join(repo, p)):
+        print("%s %s resolves outside the repository root %s"
+              % (flag, _echo_scope_path(raw), _echo_scope_path(repo)),
+              file=sys.stderr)
+        return None
+    if p not in universe:
+        print("%s %s not found among discovered repo files"
+              % (flag, _echo_scope_path(raw)), file=sys.stderr)
+        return None
+    return p
+
+
 def main(argv=None):
     """The CLI entry point, and the ONE place a refused target tree becomes an
     operator-readable exit rather than a traceback (#2006 fix round 1).
@@ -1729,11 +1775,16 @@ def _repo_scan(argv=None):
             print("--scope-dir %r matched no tracked files"
                   % args.scope_dir, file=sys.stderr)
             return 2
-    elif args.scope_file:
-        sf = _norm_scope_path(repo, args.scope_file)   # #5.0-17
-        if sf not in allf:
-            print("--scope-file %r not found among discovered repo files"
-                  % args.scope_file, file=sys.stderr)
+    elif args.scope_file is not None:
+        # `is not None`, not truthiness: `-f ""` (an unset shell variable) used
+        # to skip this branch and review the WHOLE repository at rc 0; the
+        # helper refuses an empty entry, as it does for the plural (#2023).
+        # #5.0-17 normalization + the repo clamp, via the helper the plural
+        # shares (#2023). `allf` is this branch's whole universe: nothing prunes
+        # after it, so a path the committed `exclude_paths:` already dropped has
+        # to refuse here rather than be reviewed anyway.
+        sf = _confine_scope_path(repo, args.scope_file, allf, "--scope-file")
+        if sf is None:
             return 2
         scoped = [sf] + [t for t in related_tests(repo, [sf]) if t in allf]
     elif args.scope_changed:
@@ -1759,9 +1810,31 @@ def _repo_scan(argv=None):
         scoped, excluded_files = _apply_exclude(scoped)
         _delta = (base, source)
     elif args.scope_files:
-        scoped = prune_fixture_files(
-            [_norm_scope_path(repo, f) for f in args.scope_files],   # #5.0-17
-            args.security == "redteam")
+        # #2023: confine EVERY entry the way the singular confines its one --
+        # inside the repo root, and a file this scan discovered -- BEFORE any of
+        # them can reach groups.json and the artifacts downstream of it. Fail
+        # closed on the first bad entry: a silent drop would hand the operator a
+        # narrower review than the one they asked for, with no line saying so.
+        #
+        # The universe rejoins `excluded_files` because a committed
+        # `exclude_paths:` glob is review-scope policy, not confinement, and
+        # #1136 requires a named-but-excluded file to be PRUNED from the delta
+        # (rc 0, disclosed in `excluded_count`) rather than refuse the run.
+        # `_apply_exclude` below is what prunes it, so every entry that survives
+        # this branch is in `allf` -- the same invariant the singular gets from
+        # its own membership test. `prune_fixture_files` cannot fire on that
+        # universe any more (standard mode pruned the corpora from the listing
+        # before `excluded_files` was taken off it, and redteam keeps them); it
+        # stays because it is what would have to prune a fixture path if this
+        # universe ever widened to accept one.
+        universe = set(allf) | set(excluded_files)
+        entries: list[str] = []
+        for raw in args.scope_files:
+            p = _confine_scope_path(repo, raw, universe, "--scope-files")
+            if p is None:
+                return 2
+            entries.append(p)
+        scoped = prune_fixture_files(entries, args.security == "redteam")
         scoped, excluded_files = _apply_exclude(scoped)   # delta-path parity (#1136)
         _delta = None
         if args.base:
