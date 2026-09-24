@@ -750,8 +750,42 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
 
     Never mutates the caller's checkout — all work lands in the worktree (the
     blast radius). Raises RuntimeError (loud) on any step's failure.
+
+    #2012: the FETCH is the only git call here that keeps the operator's
+    environment (`gh pr view` does too, and needs to), because the credential helper lives in it and `safe_git`'s
+    fresh allowlisted environment strips `HOME` and every gitconfig. Every other
+    step — `worktree list`, `rev-parse`, `worktree add`, `update-ref -d` — runs
+    through `safe_git`, which this function used to be EXEMPT from. That
+    exemption was command execution: `worktree add` is a checkout, so it ran the
+    target's `filter.*.smudge` on the PR's content (whose output then replaced
+    the bytes under review) and its `post-checkout` hook out of whatever
+    `core.hooksPath` the repository asked for. The fetch keeps the operator's
+    environment but carries `core.fsmonitor=false` and the same pinned empty
+    `core.hooksPath` by hand, because a fetch is a ref transaction and
+    `reference-transaction` fires from the target's hooks directory on it (all
+    three measured; see `tests/test_diff_map.py::TestPrAcquisitionIsConfined`).
     """
+    # Every repository-configured command `safe_git` emptied on the way, and the
+    # pairs already printed. One list across every call, because each call
+    # preflights and would re-report the same keys.
+    suppressed: list = []
+    disclosed: set = set()
+
+    def _disclose():
+        """Print each `(repository, key)` safe_git neutralized, once.
+
+        The KEY only. The value is a command line the target authored (#2013),
+        and this is the one operator-facing print on the `--pr` path.
+        """
+        for where, key in suppressed:
+            if (where, key) in disclosed:
+                continue
+            disclosed.add((where, key))
+            print("panopticon --pr: suppressed %r in %r" % (key, where),
+                  file=sys.stderr)
+
     def _run(argv):
+        """One call that keeps the OPERATOR's environment: `gh`, and the fetch."""
         try:
             r = runner(argv, capture_output=True, text=True, timeout=_PR_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -760,6 +794,33 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
         if r.returncode != 0:
             raise RuntimeError("panopticon --pr: `%s` failed: %s"
                                % (" ".join(argv), (r.stderr or "").strip()))
+        return r.stdout
+
+    def _safe(root, args, mutating=False):
+        """One confined call on the TARGET, bounded and loud like `_run`.
+
+        `safe_git` raises where `_run` returns a non-zero result, so both shapes
+        become the same `panopticon --pr: ...` RuntimeError the driver's #5.0-14
+        handler already catches: a refusal (`RepositoryRefused`, an OSError, as
+        is "no trusted git on PATH") and a timeout must never leak a traceback
+        or, worse, fall through to a half-built worktree.
+        """
+        shown = "git -C %s %s" % (root, " ".join(args))
+        entry = safe_git.mutate if mutating else safe_git.probe
+        try:
+            r = entry(root, list(args), runner=runner, timeout=_PR_TIMEOUT,
+                      suppressed=suppressed)
+        except subprocess.TimeoutExpired:
+            _disclose()
+            raise RuntimeError("panopticon --pr: `%s` timed out after %ss"
+                               % (shown, _PR_TIMEOUT))
+        except OSError as exc:
+            _disclose()
+            raise RuntimeError("panopticon --pr: `%s` failed: %s" % (shown, exc)) from exc
+        _disclose()
+        if r.returncode != 0:
+            raise RuntimeError("panopticon --pr: `%s` failed: %s"
+                               % (shown, (r.stderr or "").strip()))
         return r.stdout
 
     view = _run(["gh", "pr", "view", str(pr_number), "--json", "baseRefName"])
@@ -782,27 +843,37 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # widths vary with the longest path, so match on the first whitespace-
     # split token rather than a fixed-width slice (verified against real
     # `git worktree list` output, not assumed from the porcelain format).
-    # #run7 QAL-C2D: route through _run so a stalled `git worktree list` raises
+    # #run7 QAL-C2D: route through _safe so a stalled `git worktree list` raises
     # RuntimeError (which driver.run's #5.0-14 handler catches) instead of leaking
     # a raw TimeoutExpired as an uncaught traceback, and so a non-zero listing
     # fails loud rather than silently falling through to the create path.
-    listing_out = _run(["git", "-C", repo, "worktree", "list"])
+    listing_out = _safe(repo, ["worktree", "list"])
     if any(line.split()[:1] == [wt]
            for line in listing_out.splitlines() if line.strip()):
-        head_sha = _run(["git", "-C", wt, "rev-parse", "HEAD"]).strip()
+        head_sha = _safe(wt, ["rev-parse", "HEAD"]).strip()
         for line in _sync_config(repo, wt):
             print("panopticon --pr: %s" % line, file=sys.stderr)
         return {"worktree": wt, "base": base, "head_sha": head_sha}   # reuse (resume)
 
     fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
-    _run(["git", "-C", repo, "fetch", "--no-write-fetch-head", "origin",
+    # THE ONE CALL WITH THE OPERATOR'S ENVIRONMENT (#2012), because a private
+    # repository's PR head is only fetchable through their credential helper,
+    # which lives in the `HOME` and gitconfig `safe_git` strips. It still carries
+    # the two pins that do not need a fresh environment: `core.fsmonitor=false`,
+    # and the same empty hooks directory every `safe_git` launch pins -- a fetch
+    # writes a ref, and `reference-transaction` fires from the target's
+    # `core.hooksPath` on it (measured). Nothing else here is exempt.
+    _run(["git", "-C", repo,
+          "-c", "core.fsmonitor=false",
+          "-c", "core.hooksPath=" + safe_git.no_hooks_path(),
+          "fetch", "--no-write-fetch-head", "origin",
           "refs/pull/%d/head:%s" % (pr_number, fetch_ref)])
-    head_sha = _run(["git", "-C", repo, "rev-parse", fetch_ref]).strip()
+    head_sha = _safe(repo, ["rev-parse", fetch_ref]).strip()
     try:
-        _run(["git", "-C", repo, "worktree", "add", "--detach", wt, head_sha])
+        _safe(repo, ["worktree", "add", "--detach", wt, head_sha], mutating=True)
     finally:
         try:
-            _run(["git", "-C", repo, "update-ref", "-d", fetch_ref])
+            _safe(repo, ["update-ref", "-d", fetch_ref], mutating=True)
         except RuntimeError:
             pass
     for line in _sync_config(repo, wt):
@@ -811,9 +882,29 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
 
 
 def release_worktree(path, repo=".", runner=subprocess.run):
-    """Remove a worktree; tolerant if it is already gone."""
+    """Remove a worktree; tolerant if it is already gone.
+
+    #2012: through `safe_git.mutate`, like the acquire half. This used to be the
+    second written exemption from the target-git guard, on the argument that a
+    refused teardown would leak the throwaway worktree the call exists to
+    delete. #2013 dissolved most of that: a repository-configured command is now
+    EMPTIED and disclosed rather than refused, so the ordinary hostile target
+    (git-lfs, git-crypt, a planted filter) tears down normally.
+
+    What survives is the narrow refusal #2013 kept — a config key whose override
+    cannot be proved effective — and there the tolerance below wins: a leaked
+    temporary directory, which the operator can delete, in exchange for never
+    running a command the target authored. The `except Exception` is unchanged
+    and deliberately total, including `TimeoutExpired` (#1082) and
+    `RepositoryRefused`: one call, one timeout, never a raise out of teardown.
+
+    Teardown passes no `suppressed` list on purpose: the worktree shares the
+    root's `.git/config`, so every key emptied here was already disclosed by
+    acquisition for the same repository (and re-collected by the run's own
+    provenance probe); printing it a third time would be noise.
+    """
     try:
-        runner(["git", "-C", repo, "worktree", "remove", "--force", path],
-               capture_output=True, text=True, timeout=_PR_TIMEOUT)
+        safe_git.mutate(repo, ["worktree", "remove", "--force", path],
+                        runner=runner, timeout=_PR_TIMEOUT)
     except Exception:      # incl. TimeoutExpired -> a hung teardown is tolerated (#1082)
         pass
