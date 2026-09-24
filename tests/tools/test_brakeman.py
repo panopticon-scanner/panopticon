@@ -422,8 +422,9 @@ class TestBrakemanAdapter(unittest.TestCase):
                       "end\n")
         adapter = br.BrakemanAdapter()
         with tempfile.TemporaryDirectory() as target:
+            # The Rails markers establish a real scan target; a pinned Gemfile
+            # would make the clean control depend on Rails support dates.
             self._tree(target, files=[
-                ("Gemfile", "source 'https://rubygems.org'\ngem 'rails', '8.0.0'\n"),
                 ("config/application.rb", "require 'rails/all'\n"
                  "module Fixture\n  class Application < Rails::Application; end\nend\n"),
                 ("config/routes.rb", "Rails.application.routes.draw do\nend\n"),
