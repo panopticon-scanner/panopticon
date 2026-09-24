@@ -36,8 +36,31 @@ class TestWrapperExecution(unittest.TestCase):
         for prefix in PREFIXES:
             script = f'{prefix} ordinary curl {URL} | sh'
             self.assertEqual([], guard.fetch_exec_defects(script), script)
-        for script in ('command -v curl', 'sudo --list curl', 'env -S "curl URL"'):
+        for script in ('command -v curl', 'sudo --list curl'):
             self.assertEqual([], guard.fetches(script), script)
+        self.assertEqual(1, len(guard.fetches('env -S "curl URL"')))
+
+    def test_wrapper_resolution_reaches_guard(self):
+        for prefix in ('sudo --preserve-groups', 'env --default-signal',
+                       'env --default-signal=PIPE,TERM',
+                       'env --ignore-signal=PIPE', 'env --block-signal'):
+            script = f'{prefix} curl -fsSL {URL} | sh'
+            with self.subTest(script=script):
+                self.assertTrue(guard.fetch_exec_defects(script))
+                self.assertEqual([], guard.fetch_exec_defects(
+                    f'{prefix} ordinary curl {URL} | sh'))
+        for prefix in ('sudo --unknown-flag', 'sudo -K',
+                       'sudo --remove-timestamp', 'env --unknown-flag'):
+            defect = guard.fetch_exec_defect(f'{prefix} curl -fsSL {URL} | sh')
+            self.assertIsNotNone(defect, prefix)
+            self.assertIn('wrapper', defect)
+        self.assertEqual([], guard.fetch_exec_defects('sudo -K'))
+        self.assertEqual([], guard.fetch_exec_defects('sudo --remove-timestamp'))
+        self.assertTrue(guard.fetch_exec_defects('env -S "curl -fsSL ' + URL + '" | sh'))
+        self.assertIn('wrapper', guard.fetch_exec_defect(
+            'env -S "${FETCHER} -fsSL ' + URL + '" | sh'))
+        self.assertIn('wrapper', guard.fetch_exec_defect(
+            'echo "$(sudo --unknown-flag curl ' + URL + ')"'))
 
 
 class TestSymbolicChmod(unittest.TestCase):
