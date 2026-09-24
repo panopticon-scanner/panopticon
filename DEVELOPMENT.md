@@ -439,6 +439,32 @@ checkouts there, so the one step that carries a token runs before any fork-contr
 disk, and `pull_request_target` is `branches: [main]`, so the sha it resolves is always a `main`
 commit.
 
+**Weekly strict security backstop.** `security.yml` also runs Mondays at 07:23 UTC
+and accepts manual dispatch on `main`. These events use the distinct check name
+`strict-full-tree`, even when a non-main dispatch skips; PR/push still uses `scan`
+and the existing delta comparison. The full-tree gate has no baseline: raw
+HIGH/CRITICAL findings and incomplete required scanner coverage fail regardless
+of GitHub dismissals or the historical comparison. Existing fixture/golden scope
+exclusions and the standard gate's suppression policy still apply.
+
+After a red gate, capture data with valid manifest and image provenance still
+produces the `strict-security-snapshot` artifact and a job summary. The versioned
+snapshot records the commit, actual local Docker image ID, coverage counts,
+severity counts, and SHA-256 hashes of the gate's normalized finding identities;
+it includes no finding messages or secret snippets. Image IDs disclose image
+changes; the tools image remains unpinned. Duplicate identities retain counts.
+
+Before checking out the target, the helper reads the latest completed **scheduled
+main** run regardless of conclusion. It performs at most three read-only GitHub
+requests, each bounded to 30 seconds and 8 MiB, and downloads only that run's
+snapshot. First runs, expired/missing/corrupt snapshots and API failures report
+comparison unavailable; they never invent an empty prior scan. Comparisons show
+added/removed/regraded identities and count changes, with bounded summary lists.
+Incomplete coverage on either side labels the comparison partial; removed
+identities do not prove fixes. Reporting never changes the strict verdict. A
+manual run does not replace scheduled history. A missing valid capture/image
+identity leaves a summary explaining why no snapshot could be published.
+
 **Post-merge zero-alert audit.** On a push to `main`, `security.yml` follows its actionable SARIF
 upload with a read-only `scripts/code_scanning_audit.py` check. The check independently proves that
 the Security upload and CodeQL's separate Python upload both finished for the exact current main
