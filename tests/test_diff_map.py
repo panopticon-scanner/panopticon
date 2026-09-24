@@ -929,11 +929,18 @@ class TestPrWorktree(unittest.TestCase):
         # #1081: every git/gh call in acquire_pr is time-bounded.
         # Real temp worktree for the same reason as the two tests above: the
         # create path ends in `_sync_config`, which refuses a missing tree.
+        #
+        # #2012: `_PR_TIMEOUT` is now the bound on a safe_git call rather than
+        # the timeout of each launch inside it -- the probe spends ONE deadline
+        # across its preflight and its command, so a confined call's launches
+        # carry the REMAINING budget. That is still "every call is bounded by
+        # _PR_TIMEOUT", which is what #1081 asked for, and a regression that
+        # dropped the bound (None, or a larger number) fails either branch.
         wt = tempfile.mkdtemp(prefix="panopticon-test-wt-")
         self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
         seen = []
         def runner(argv, **kw):
-            seen.append(kw.get("timeout"))
+            seen.append((list(argv), kw.get("timeout")))
             out = ""
             if argv[:3] == ["gh", "pr", "view"]:
                 out = '{"baseRefName": "main"}'
@@ -944,7 +951,16 @@ class TestPrWorktree(unittest.TestCase):
         with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
             diff_map.acquire_pr(7, repo=".", runner=runner)
         self.assertTrue(seen)
-        self.assertTrue(all(t == diff_map._PR_TIMEOUT for t in seen), seen)
+        for argv, timeout in seen:
+            self.assertIsNotNone(timeout, argv)
+            self.assertGreater(timeout, 0, argv)
+            self.assertLessEqual(timeout, diff_map._PR_TIMEOUT, argv)
+        # The two calls that keep the operator's environment are a single launch
+        # each, so they carry the whole bound exactly.
+        operator = [t for argv, t in seen
+                    if argv[:3] == ["gh", "pr", "view"] or "fetch" in argv]
+        self.assertEqual(len(operator), 2, seen)
+        self.assertTrue(all(t == diff_map._PR_TIMEOUT for t in operator), operator)
 
     def test_acquire_pr_timeout_raises_runtimeerror(self):
         def runner(argv, **kw):
@@ -967,13 +983,45 @@ class TestPrWorktree(unittest.TestCase):
             diff_map.acquire_pr(7, repo=".", runner=runner)
 
     def test_release_passes_timeout_and_tolerates_hang(self):
-        # #1082: release_worktree bounds the git call and a hung teardown is tolerated.
+        # #1082: release_worktree bounds the git call and a hung teardown is
+        # tolerated. #2012 routes it through `safe_git.mutate`, so the FIRST
+        # launch is the preflight's config read and it carries the shared
+        # deadline rather than the flat bound -- one launch, one bound, and the
+        # hang still swallowed.
         seen = []
         def runner(argv, **kw):
             seen.append(kw.get("timeout"))
             raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
         diff_map.release_worktree("/tmp/x", runner=runner)   # must not raise
-        self.assertEqual(seen, [diff_map._PR_TIMEOUT])
+        self.assertEqual(len(seen), 1, seen)
+        self.assertGreater(seen[0], 0)
+        self.assertLessEqual(seen[0], diff_map._PR_TIMEOUT)
+
+    def test_release_is_confined_and_still_tolerates_a_refusal(self):
+        # #2012: the teardown was the second written exemption from the
+        # target-git guard. It is a `safe_git.mutate` call now, and the tolerance
+        # that justified the exemption is unchanged -- a REFUSED teardown (the
+        # one case #2013 kept) leaks a temp directory rather than raising.
+        seen = []
+        def runner(argv, **kw):
+            seen.append(list(argv))
+            raise AssertionError("no launch expected after the refusal")
+        with mock.patch.object(diff_map.safe_git, "mutate",
+                               side_effect=diff_map.safe_git.RepositoryRefused("nope")):
+            diff_map.release_worktree("/tmp/x", runner=runner)   # must not raise
+        self.assertEqual(seen, [])
+
+    def test_release_goes_through_the_mutating_entry_point(self):
+        # The argv the confined teardown runs, and that it is `mutate` (which
+        # refuses every other write) rather than `probe`.
+        calls = []
+        def mutate(root, args, **kw):
+            calls.append((root, list(args), kw.get("timeout")))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch.object(diff_map.safe_git, "mutate", mutate):
+            diff_map.release_worktree("/tmp/x", repo="/repo")
+        self.assertEqual(calls, [("/repo", ["worktree", "remove", "--force", "/tmp/x"],
+                                 diff_map._PR_TIMEOUT)])
 
     def test_acquire_pr_prints_sync_notes_with_the_pr_prefix(self):
         # minor 7: acquire_pr's own print (not _sync_config's return value) must

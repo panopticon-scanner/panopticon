@@ -232,21 +232,18 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
     # true fails below as a stale entry.
     EXEMPT = {
         ("diff_map.py", "acquire_pr"):
-            "it BUILDS the review root rather than reading one, and its steps "
-            "are `gh pr view`, `git fetch`, `git worktree add` and "
-            "`git update-ref` -- network and mutating work that needs the "
-            "operator's own HOME, gitconfig and credential helper, which is "
-            "exactly what the probe's fresh allowlisted environment strips. "
-            "Its read-only `worktree list`/`rev-parse` steps could move, and "
-            "`worktree add` runs the target's SMUDGE filters, so this is a "
-            "known residual with a real trade-off, not a clean exemption",
-        ("diff_map.py", "release_worktree"):
-            "the teardown half of the same `--pr` worktree lifecycle, and it "
-            "has to stay paired with it. `git worktree remove --force` is a "
-            "MUTATION, not a probe: under the preflight a hostile target "
-            "config would refuse the teardown (the caller tolerates every "
-            "failure by design, #1082) and leak the throwaway worktree it was "
-            "there to delete -- a worse outcome than the read it never does",
+            "THE FETCH ONLY (#2012). A private repository's PR head is "
+            "fetchable only through the operator's credential helper, which "
+            "lives in the HOME and gitconfig the probe's fresh allowlisted "
+            "environment strips, so that one call keeps the operator's "
+            "environment -- with `core.fsmonitor=false` and the probe's own "
+            "pinned empty `core.hooksPath` carried by hand, because a fetch is "
+            "a ref transaction and `reference-transaction` fires from the "
+            "target's hooks directory on it. Every other step moved: "
+            "`worktree list` and `rev-parse` to `safe_git.probe`, "
+            "`worktree add --detach` and `update-ref -d` to `safe_git.mutate`. "
+            "`test_the_only_bare_git_argv_left_in_acquire_pr_is_the_fetch` "
+            "holds this exemption to its own words",
     }
 
     def _bare_git_argv(self, name):
@@ -293,6 +290,19 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
         # must report it even though the policy above exempts it.
         found = self._bare_git_argv("diff_map.py")
         self.assertTrue([f for f, _l, _s in found if f == "acquire_pr"], found)
+
+    def test_the_only_bare_git_argv_left_in_acquire_pr_is_the_fetch(self):
+        # #2012: the exemption above says "the fetch only", and an exemption
+        # scoped in prose is an exemption nothing checks. A second hand-built
+        # git argv in this function -- the shape the issue was about -- fails
+        # here even though the function name is still exempt above.
+        found = [(lineno, source) for function, lineno, source
+                 in self._bare_git_argv("diff_map.py") if function == "acquire_pr"]
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("'fetch'", found[0][1])
+        # And the two pins that survive the operator's environment are on it.
+        self.assertIn("core.fsmonitor=false", found[0][1])
+        self.assertIn("core.hooksPath", found[0][1])
 
 
 
