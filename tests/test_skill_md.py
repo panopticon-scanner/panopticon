@@ -13,10 +13,28 @@ _DOC_PATH = hosts.guide_path()
 # #1344 plan 5 T5: shared anchor for the dispatched-role template files.
 AGENTS_DIR = os.path.join(ROOT, "agents")
 
+# Owner ruling 2026-09-24 (first external review): 19,573 words in 210 lines,
+# 42 of them over 1,000 characters, is not readable source. The guide is an
+# index (front matter + Modes + Global flags + a Contents list) plus ONE FILE
+# PER H2 under `skill/docs/guide/`. The split MOVED prose and rewrote none of
+# it, so every phrase pinned below is still pinned -- the body tests read the
+# CONCATENATION of the index and its chapters, in order, the way a reader
+# reads the guide. `_section`'s H2 markers slice that concatenation exactly as
+# they sliced the single file.
+_GUIDE_CHAPTERS = ("driver-run-loop.md", "driver-setup.md", "output.md",
+                   "host-capabilities.md", "code-layout.md",
+                   "testing-scanner-fixtures.md", "evidence.md", "notes.md")
+_CHAPTER_DIR = os.path.join(os.path.dirname(_DOC_PATH), "guide")
+_GUIDE_DOCUMENTS = (_DOC_PATH,) + tuple(
+    os.path.join(_CHAPTER_DIR, name) for name in _GUIDE_CHAPTERS)
+
 
 def _read_doc():
-    with open(_DOC_PATH, encoding="utf-8") as fh:
-        return fh.read()
+    parts = []
+    for path in _GUIDE_DOCUMENTS:
+        with open(path, encoding="utf-8") as fh:
+            parts.append(fh.read())
+    return "\n".join(parts)
 
 
 def _read_skill_md():
@@ -1394,6 +1412,71 @@ class TestTheGuideResolvesInEveryInstallLayout(unittest.TestCase):
         self.assertEqual(os.path.realpath(hosts.guide_path()),
                          os.path.realpath(self.SKILL_DOC))
         self.assertTrue(os.path.isfile(hosts.guide_path()))
+
+
+class TestTheGuideIsAnIndexPlusChapters(unittest.TestCase):
+    """The 2026-09-24 split. Three facts hold the guide together, and each one
+    is a way the whole document silently loses a section if it stops holding:
+
+    * every chapter file opens with the ORIGINAL H2 line -- that heading is the
+      marker `_section` slices on, so a chapter that renames or drops it takes
+      a dozen content guards down with it (they would fail loudly, which is the
+      point of pinning it here, once, with the reason);
+    * the index's `## Contents` list names every chapter, in document order,
+      and each entry's LABEL is that chapter's heading -- so a reader's table
+      of contents cannot drift from what the chapters actually say;
+    * the index itself keeps only the front matter. A section that reappears
+      there is a section readers meet twice.
+    """
+
+    def _index(self):
+        with open(_DOC_PATH, encoding="utf-8") as fh:
+            return fh.read()
+
+    def _contents(self):
+        """[(chapter file name, entry label)] from the index's Contents list."""
+        block = self._index().split("\n## Contents\n", 1)
+        self.assertEqual(2, len(block), "the index lost its `## Contents` list")
+        return re.findall(r"(?m)^- \[([^\]]+)\]\(guide/([a-z0-9-]+\.md)\)", block[1])
+
+    def test_the_contents_list_names_every_chapter_in_document_order(self):
+        self.assertEqual(list(_GUIDE_CHAPTERS),
+                         [name for _label, name in self._contents()])
+
+    def test_every_chapter_opens_with_the_heading_its_contents_entry_names(self):
+        for label, name in self._contents():
+            with self.subTest(chapter=name):
+                with open(os.path.join(_CHAPTER_DIR, name), encoding="utf-8") as fh:
+                    lines = fh.read().split("\n")
+                self.assertEqual("## " + label, lines[0])
+                # One H2 per chapter: a second one means a section moved into
+                # the wrong file, where the Contents list cannot advertise it.
+                self.assertEqual(["## " + label],
+                                 [ln for ln in lines if ln.startswith("## ")])
+
+    def test_every_contents_entry_says_what_the_chapter_covers(self):
+        for line in self._index().split("\n## Contents\n", 1)[1].splitlines():
+            if line.strip():
+                with self.subTest(entry=line):
+                    self.assertRegex(line, r"\) — \S")
+
+    def test_the_index_keeps_the_front_matter_and_nothing_a_chapter_owns(self):
+        index = self._index()
+        self.assertTrue(index.startswith("# panopticon\n"))
+        self.assertEqual(["## Overview", "## Required sub-skills", "## Modes",
+                          "## Global flags", "## Contents"],
+                         [ln for ln in index.split("\n") if ln.startswith("## ")])
+
+    def test_the_concatenation_reads_as_one_document(self):
+        """What every content test in this file depends on: `_read_doc()` is
+        the whole guide, each moved heading present exactly once and in order."""
+        doc = _read_doc()
+        headings = [ln for ln in doc.split("\n") if ln.startswith("## ")]
+        self.assertEqual(
+            ["## Overview", "## Required sub-skills", "## Modes",
+             "## Global flags", "## Contents"]
+            + ["## " + label for label, _name in self._contents()],
+            headings)
 
 
 # #1637 P03: `superpowers:writing-plans` defaults to `docs/superpowers/plans/`,
