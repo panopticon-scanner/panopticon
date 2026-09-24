@@ -763,7 +763,9 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         # against the root this function already holds.
         token = target_root_cv.set(root)
         try:
-            parsed = adapter.parse(raw, group)
+            hook = getattr(adapter, "parse_with_coverage", None)
+            parsed, coverage_reason = (hook(raw, group) if hook is not None
+                                       else (adapter.parse(raw, group), None))
         except Exception as e:  # noqa: BLE001 - tolerant by design
             print("ingest error %s: %s" % (path, e), file=sys.stderr)
             dispositions[tool] = {"status": "failed", "findings": 0,
@@ -798,6 +800,8 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
             status, reason = "noscan", "scanned 0 files"
         else:
             status, reason = "empty", None
+        if coverage_reason:
+            status, reason = "failed", coverage_reason
         dispositions[tool] = {"status": status, "findings": raw_count}
         if truncated:
             # Disclosed, never silent: `findings` stays the RAW count, so a

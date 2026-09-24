@@ -633,15 +633,39 @@ class PipAuditAdapter:
         return DEFAULT_MANIFEST
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
+        findings, coverage_reason = self.parse_with_coverage(raw, group)
+        if coverage_reason:
+            raise ValueError(coverage_reason)
+        return findings
+
+    def parse_with_coverage(self, raw: bytes, group: str) -> tuple[list[dict], str | None]:
+        """Keep usable advisories while disclosing dependencies pip could not audit."""
         data = parse_json_bytes(raw)
+        if not isinstance(data, dict):
+            raise ValueError("pip-audit report is not an object")
+        dependencies = data.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            raise ValueError("pip-audit dependencies are malformed")
         # Resolved ONCE per parse, not per finding: it stats the target root.
         manifest = self._located_at()
-        out = []
+        out: list[dict] = []
         n = 1
-        for dep in data.get("dependencies", []):
+        skipped = 0
+        for dep in dependencies:
+            if not isinstance(dep, dict):
+                raise ValueError("pip-audit dependency is malformed")
+            # Presence is enough: null, empty and wrong-type reasons must never
+            # turn an unaudited dependency into a certified clean dependency.
+            if "skip_reason" in dep:
+                skipped += 1
             dep_name = dep.get("name") or "unknown"
             dep_version = dep.get("version") or ""
-            for vuln in dep.get("vulns", []):
+            vulns = dep.get("vulns", [])
+            if not isinstance(vulns, list):
+                raise ValueError("pip-audit vulnerabilities are malformed")
+            for vuln in vulns:
+                if not isinstance(vuln, dict):
+                    raise ValueError("pip-audit vulnerability is malformed")
                 out.append(make_finding(
                     self, n, group,
                     title=f"{dep_name} {dep_version}: {vuln.get('id', 'vulnerability')}".strip(),
@@ -660,4 +684,7 @@ class PipAuditAdapter:
                     }),
                 ))
                 n += 1
-        return out
+        if skipped:
+            noun = "dependency" if skipped == 1 else "dependencies"
+            return out, f"{skipped} {noun} could not be audited"
+        return out, None
