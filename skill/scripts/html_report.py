@@ -593,6 +593,8 @@ def _render_header(report):
     )
     parts.append(_render_scanner_context(meta))
     parts.append(_render_test_inventory(meta))
+    # #2013: what the TARGET's own git config would have run, and did not.
+    parts.append(_render_suppressed_git_drivers(meta))
     # #1701: the gated count first -- a suppression that moved this run's gate
     # outranks one that did not.
     parts.append(_render_suppressed_gated_tools(meta))
@@ -734,6 +736,38 @@ def _render_test_inventory(meta):
             % (" &middot; ".join("%s: %s" % (_escape(str(g)), _escape(str(st)))
                                  for g, st in flagged),
                "one of these groups" if len(flagged) > 1 else "this group"))
+
+
+def _render_suppressed_git_drivers(meta):
+    """#2013: the TARGET's own Git driver commands this scan ran with emptied.
+
+    #2006 refused such a target outright; #2013 scans it with each
+    `filter.*.clean/.process/.smudge`, `diff.external` and
+    `diff.*.command/.textconv` overridden to nothing, which is the only reason
+    a git-lfs or git-crypt checkout produces a report at all. That changes what
+    the reviewers were shown -- a git-lfs pointer file was read as a pointer
+    file, not as the content its clean filter would have produced -- so the
+    operator has to meet the fact here, beside the other "what this run did
+    not see" lines.
+
+    KEYS only, never values: a driver's value is a command line the target
+    authored. The key carries a target-authored subsection, so it is escaped.
+
+    Silent when nothing was suppressed, and on a report that never measured it
+    (pre-#2013, or a foreign report on the --compare path): "nobody looked"
+    must not render as "the target configured none".
+    """
+    rows = (meta.get("coverage") or {}).get("git_drivers_suppressed")
+    if not isinstance(rows, list) or not rows:
+        return ""
+    keys = sorted({str(row.get("key")) for row in rows if isinstance(row, dict)
+                   and isinstance(row.get("key"), str)})
+    if not keys:
+        return ""
+    return ("<div class='coverage'>Target git drivers suppressed: %d (%s) "
+            "&mdash; the reviewed tree configured these commands and this scan "
+            "ran with them emptied</div>"
+            % (len(rows), ", ".join(_escape(k) for k in keys)))
 
 
 def _render_suppressed_tools(meta):

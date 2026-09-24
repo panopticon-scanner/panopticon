@@ -1146,3 +1146,41 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         cov = self._run("standard", cwe=None)[1]["meta"]["coverage"]
         self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
         self.assertEqual(cov["tools_suppressed_not_gated"], {})
+
+
+class TestSuppressedGitDriversReachTheCoverageBlock(unittest.TestCase):
+    """#2013: `meta.coverage.git_drivers_suppressed` -- which of the TARGET's
+    own Git driver commands this scan ran with emptied.
+
+    The manifest is the disclosure of record and the stderr line is what an
+    operator sees live; this is where it survives into the artifact a reviewer
+    reads later. Always emitted, `[]` included: the absence of a suppression
+    has to mean "measured and did not happen".
+
+    The KEY half of each pair is repository-authored (git's subsection is
+    whatever the target wrote), so it is a target-carried input reaching a
+    published artifact and is bounded at this read like `tools_excluded`.
+    """
+
+    def _coverage(self, value):
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp="2026-01-01T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(git_drivers_suppressed=value)))
+        return report["meta"]["coverage"]
+
+    def test_the_pairs_are_published(self):
+        rows = self._coverage([{"repo": ".", "key": "filter.lfs.clean"}])
+        self.assertEqual(rows["git_drivers_suppressed"],
+                         [{"repo": ".", "key": "filter.lfs.clean"}])
+
+    def test_a_clean_target_publishes_an_empty_list(self):
+        self.assertEqual(self._coverage(None)["git_drivers_suppressed"], [])
+
+    def test_a_malformed_row_is_dropped_at_the_boundary(self):
+        rows = self._coverage([{"repo": ".", "key": "filter.lfs.clean"},
+                               {"repo": ".", "key": ["not", "a", "key"]},
+                               "not a row", {"key": "filter.x.clean"}])
+        self.assertEqual(rows["git_drivers_suppressed"],
+                         [{"repo": ".", "key": "filter.lfs.clean"}])

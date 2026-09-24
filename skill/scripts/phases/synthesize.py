@@ -1,6 +1,7 @@
 """Phase 6 -- synthesize: run synthesize.py as a child and collect host usage."""
 import glob as _glob
 import datetime
+import json
 import os
 import sys
 
@@ -171,6 +172,14 @@ def synthesize_execute(review_root, manifest):
     # direct `synthesize.py` invocation legitimately has no driver to ask.
     if run_manifest.tools_downgraded_mid_run(manifest):
         cmd += ["--tools-disabled-mid-run"]
+    # #2013: which of the TARGET's own Git driver commands the probe emptied for
+    # this scan, threaded rather than re-read for the reason above --
+    # run-manifest.json is a _TOP_LEVEL artifact, outside the `--run-dir` the
+    # child resolves against. Omitted when there is nothing to disclose, so a
+    # manifest predating the field and a clean target read alike (both `[]`).
+    drivers = manifest.get("git_drivers_suppressed")
+    if drivers:
+        cmd += ["--git-drivers-suppressed", json.dumps(drivers)]
     for flag, key in (("--fail-on", "fail_on"), ("--severity", "severity"),
                       ("--gate-scope", "gate_scope")):
         if flags.get(key):

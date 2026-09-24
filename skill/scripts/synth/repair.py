@@ -31,6 +31,7 @@ its first `FILES_MAX` entries (the group row cap says nothing about how many
 files ONE group may list), and an entry longer than `PATH_MAX` -- longer than
 any filesystem lets a path be, so a name for nothing -- is dropped whole.
 """
+import json
 import sys
 
 from . import validate_schema as schema
@@ -382,6 +383,57 @@ def repair_tools_excluded(value, warn=None):
         count = 0
     warn_repairs("tool ingest", changes, warn)
     return {"globs": globs, "count": count}
+
+
+def repair_git_drivers_suppressed(value, warn=None):
+    """The suppressed-Git-driver disclosure, normalized to what the schema pins
+    for `meta.coverage.git_drivers_suppressed` (#2013).
+
+    `[{"repo": str, "key": str}, ...]` -- which of the TARGET's own Git driver
+    commands the probe emptied for this scan, and in which repository. The KEY
+    half is repository-authored (git's subsection is whatever the target wrote
+    into `.git/config`) and the whole block arrives over an argv the driver
+    built from the run manifest, so it is repaired here like every other
+    target-carried block that reaches a published artifact.
+
+    Accepts the argv's JSON string as well as a parsed list, because the child
+    is handed the one and tests drive the other. A row that is not a
+    `{"repo": str, "key": str}` pair is DROPPED rather than coerced: a
+    disclosure that cannot be read is not a disclosure, and inventing a shape
+    for it would publish a claim nobody measured. Unparseable JSON is the same
+    answer as no rows -- `[]`, never a raise, because the disclosure must not
+    cost the report.
+
+    Always returns a list, `[]` included: the field's absence must never be
+    readable as "the target configured none".
+    """
+    changes = []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            changes.append(("git_drivers_suppressed", "dropped: not JSON"))
+            value = []
+    if value is None:
+        value = []
+    if not isinstance(value, list):
+        changes.append(("git_drivers_suppressed", "dropped: not a list"))
+        value = []
+    rows = []
+    for row in _bounded(value, "git_drivers_suppressed", changes):
+        repo = row.get("repo") if isinstance(row, dict) else None
+        key = row.get("key") if isinstance(row, dict) else None
+        if not isinstance(repo, str) or not isinstance(key, str) or not key:
+            changes.append(("git_drivers_suppressed[]",
+                            "dropped: not a {repo, key} pair of strings in"))
+            continue
+        if len(repo) > PATH_MAX or len(key) > NAME_MAX:
+            changes.append(("git_drivers_suppressed[]",
+                            "dropped: repo or key longer than the bound in"))
+            continue
+        rows.append({"repo": repo, "key": key})
+    warn_repairs("target git drivers", changes, warn)
+    return rows
 
 
 def repair_tools_suppressed(value, warn=None):

@@ -1433,6 +1433,48 @@ class TestAMidRunToolsDowngradeIsVisible(unittest.TestCase):
         self.assertNotIn("disabled mid-run", hr.render(report))
 
 
+class TestSuppressedGitDriversLine(unittest.TestCase):
+    """#2013: the target's own Git driver commands were EMPTIED for this scan.
+
+    The scan proceeded where #2006 refused it, so the operator reading the
+    report has to be told that the tree was read with the repository's own
+    clean/diff drivers off -- a git-lfs target's pointer files were compared as
+    pointer files, not as the content the filter would have produced. Beside
+    the coverage line with the other "what this run did not see" facts.
+
+    Keys only: a driver's value is a command line the target authored.
+    """
+
+    def _report(self, rows):
+        report = _minimal_report()
+        report["meta"].setdefault("coverage", {})["git_drivers_suppressed"] = rows
+        return report
+
+    def test_the_line_counts_and_names_the_keys(self):
+        out = hr.render(self._report([{"repo": ".", "key": "filter.lfs.clean"},
+                                      {"repo": "sub", "key": "diff.external"}]))
+        self.assertIn("Target git drivers suppressed: 2", out)
+        self.assertIn("filter.lfs.clean", out)
+        self.assertIn("diff.external", out)
+
+    def test_a_clean_target_renders_no_line(self):
+        self.assertNotIn("git drivers suppressed",
+                         hr.render(self._report([])))
+
+    def test_a_report_that_measured_nothing_renders_no_line(self):
+        # Absent (a pre-#2013 report, or one fed to --compare) is not the same
+        # claim as "the target configured none".
+        self.assertNotIn("git drivers suppressed",
+                         hr.render(_minimal_report()))
+
+    def test_a_hostile_key_is_escaped(self):
+        # A git subsection is whatever the target wrote into its own config.
+        out = hr.render(self._report(
+            [{"repo": ".", "key": "filter.<script>alert(1)</script>.clean"}]))
+        self.assertNotIn("<script>alert(1)</script>", out)
+        self.assertIn("&lt;script&gt;", out)
+
+
 class TestTestInventoryLine(unittest.TestCase):
     """#1638 P13: the groups whose test inventory was empty or split, printed
     next to coverage, so an operator meets the MATRIX defect before they meet

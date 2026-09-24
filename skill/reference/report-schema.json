@@ -358,6 +358,23 @@
               },
               "description": "#1638 P13: per REVIEW UNIT -- the root config's `groups:` entry, so a run-time `<name>_N` chunk answers as its parent -- whether the test inventory that unit's reviewers were shown could be believed: complete (it holds tests, or holds no code at all), empty (it holds code and no test, on either the `tests:` axis or in its own file list), or split (test files named after its modules are claimed by another unit). Recorded by the review phase as each prompt was rendered. An empty or split entry means a `TST` no-coverage claim from that unit may be a defect in the MATRIX, not in the target's test suite; run-13 published exactly that claim for a module whose 138 tests the same session had run green. No agent files a finding for it -- the state is driver-computed and published here. `{}` means this run did not measure it (a direct synthesize.py call), which is a different fact from every unit being complete."
             },
+            "git_drivers_suppressed": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "repo": {
+                    "type": "string",
+                    "description": "Which repository carried the setting: `.` for the review root, else the submodule's path relative to it."
+                  },
+                  "key": {
+                    "type": "string",
+                    "description": "The config key that was emptied, e.g. `filter.lfs.clean`. The VALUE is never published: it is a command line the reviewed tree authored."
+                  }
+                }
+              },
+              "description": "#2013: the TARGET's own Git driver commands this scan ran with EMPTIED. Every git call on a review target goes through a probe that refuses to run a command the reviewed tree configured (#1985/#2006); refusing such a target outright made a git-lfs (`git lfs install --local`) or git-crypt checkout unreviewable on every path that touches git, so the probe now overrides each `filter.*.clean/.process/.smudge`, `diff.external` and `diff.*.command/.textconv` it finds with `-c <key>=` (plus that driver's `required` flag, which would otherwise turn the emptied command into a hard error), proves each override took, and discloses the keys here. It changes what the reviewers were shown -- a git-lfs pointer file was read as a pointer file, not as the content its clean filter would have produced -- which is why this rides the artifact and not only the run manifest. Stated on every report, `[]` included: the field's absence must never be readable as `the target configured none`. Repaired at the read (`synth.repair.repair_git_drivers_suppressed`): the key half is repository-authored."
+            },
             "resume": {
               "type": [
                 "object",

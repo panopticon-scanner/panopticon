@@ -463,6 +463,17 @@ def reconcile(plan, tools, resolved):
         # no-coverage claim here may be about the MATRIX, not the target.
         # Driver-computed; no agent files a finding for it.
         "test_inventory": dict(plan.test_inventory or {}),
+        # #2013: which of the TARGET's own Git driver commands this scan ran
+        # with emptied -- `[{"repo": ".", "key": "filter.lfs.clean"}, ...]`.
+        # The probe SUPPRESSES these rather than refusing the target (a
+        # git-lfs or git-crypt checkout used to be unreviewable), so the report
+        # has to say that the tree was read with them off: a pointer file was
+        # compared as a pointer file. Always emitted, `[]` included -- the
+        # absence of a suppression must read as "measured and did not happen".
+        # Repaired at the read, like its `tools_*` siblings above: the key
+        # half is repository-authored.
+        "git_drivers_suppressed": repair_mod.repair_git_drivers_suppressed(
+            plan.git_drivers_suppressed),
         "resume": plan.resume,
         "delta": resolved.delta_meta,
     }

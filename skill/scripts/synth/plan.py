@@ -43,9 +43,17 @@ class PlanInputs:
     # run did not measure it (a direct synthesize.py call over hand-collected
     # findings had no driver to write the tally).
     test_inventory: dict | None = None
+    # #2013: the target's own Git driver commands this scan ran with emptied,
+    # as the driver threaded them -- the `--git-drivers-suppressed` JSON string,
+    # or the parsed list. Held RAW and repaired where it is read into the
+    # artifact (`tool_axis.reconcile`, via `repair.repair_git_drivers_suppressed`),
+    # like every other target-carried block. None when this run did not measure
+    # it: a direct synthesize.py call has no driver to ask.
+    git_drivers_suppressed: Any = None
 
     @classmethod
-    def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts):
+    def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts,
+             git_drivers_suppressed=None):
         """main()'s plan stage (WS-0 S3), in its original order: lane
         discipline (#441), fan-out accounting, resume stats, the integrity
         section, scout requests, coverage files. `plans` is the
@@ -77,7 +85,8 @@ class PlanInputs:
                    scout_requested=sorted(scout_requested),
                    scout_profiles_seen=scout_profiles_seen, out_of_scope=out_of_scope,
                    coverages=coverages, integrity=integrity, resume=resume,
-                   test_inventory=load_test_inventory(run_dir))
+                   test_inventory=load_test_inventory(run_dir),
+                   git_drivers_suppressed=git_drivers_suppressed)
 
 
 # One source for the per-group dispatch-plan filename glob (#681): synthesize
