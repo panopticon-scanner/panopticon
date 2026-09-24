@@ -267,3 +267,48 @@ def test_caller_timeout_and_bytes_contract_survive_the_preflight(tmp_path):
                        timeout=30, text=False)
     assert [call.kwargs["text"] for call in runner.call_args_list] == [True, True, False]
     assert [call.kwargs["timeout"] for call in runner.call_args_list] == [29, 28, 27]
+
+
+# --- #2006 fix round 1 --------------------------------------------------------
+
+@pytest.mark.parametrize("args,replies,fragment", [
+    (["status", "--porcelain", "-z"],
+     [subprocess.CompletedProcess([], 0, "filter.fixture.clean\ncmd\0", "")],
+     "command filter"),
+    (["status", "--porcelain", "-z"],
+     [subprocess.CompletedProcess([], 0, "", ""),
+      subprocess.CompletedProcess([], 0, "160000 " + "a" * 40 + " 0\t../escape\0", "")],
+     "unsafe submodule path"),
+])
+def test_every_target_refusal_is_one_named_class(tmp_path, args, replies, fragment):
+    # The callers need to tell "this tree is refused" apart from "git failed or
+    # is absent" (also an OSError), because only the first is a hostile-target
+    # finding the operator must SEE. Still an OSError, so every existing
+    # `except OSError` handler keeps catching it.
+    runner = mock.Mock(side_effect=replies)
+    with pytest.raises(safe_git.RepositoryRefused, match=fragment):
+        safe_git.probe(str(tmp_path), args, runner=runner)
+    assert issubclass(safe_git.RepositoryRefused, OSError)
+
+
+def test_a_failed_root_preflight_answers_in_the_callers_type(tmp_path):
+    # The preflight always reads text; a caller that asked for bytes must not
+    # be handed str on the failure path (#2006 concern 3).
+    failure = subprocess.CompletedProcess([], 128, "", "fatal: not a git repository")
+    runner = mock.Mock(return_value=failure)
+    proc = safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
+                          runner=runner, text=False)
+    assert proc.returncode == 128
+    assert proc.stdout == b""
+    assert proc.stderr == b"fatal: not a git repository"
+    # ... and a text caller still gets exactly the object the preflight saw.
+    assert safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
+                          runner=runner) is failure
+
+
+def test_a_failed_root_index_preflight_answers_in_the_callers_type(tmp_path):
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", ""),
+                                    subprocess.CompletedProcess([], 128, "", "bad index")])
+    proc = safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
+                          runner=runner, text=False)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (128, b"", b"bad index")

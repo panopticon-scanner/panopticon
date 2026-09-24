@@ -31,6 +31,18 @@ else:
 
 _MAX_REPOSITORIES = 64
 
+
+class RepositoryRefused(OSError):
+    """The TARGET's own configuration or repository shape was refused.
+
+    Distinct from "git failed" and from "no trusted git is available" (both
+    also OSError, and both legitimate reasons to fall back), because only this
+    one is a hostile-target finding the operator has to SEE: something in the
+    reviewed tree asked us to run its commands, or presented a submodule shape
+    we cannot bound, and we declined. Subclasses OSError so every existing
+    `except OSError` handler keeps catching it unchanged (#2006 fix round 1).
+    """
+
 # Git subcommands that cannot run a repository-configured command, mapped to
 # the flags that would make them able to. Anything NOT named here -- including
 # every spelling of `status`, every content-reading command (`diff`, `stash`,
@@ -103,6 +115,11 @@ def _subcommand(args):
     return rest[0] if rest else None
 
 
+def _encoded(value):
+    """`value` as bytes, losslessly, or unchanged when it already is."""
+    return value.encode("utf-8", "surrogateescape") if isinstance(value, str) else value
+
+
 def _needs_preflight(args):
     """Whether this argv may reach a repository-configured command."""
     name = _subcommand(args)
@@ -121,6 +138,18 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
     than disabling content normalization or hiding submodule dirt. Unsupported
     command filters fail closed; their values are never included in errors.
     """
+    def preflight_failure(proc):
+        """A failed ROOT preflight, in the type the CALLER asked for.
+
+        The preflight always reads text (it parses config and index records),
+        so a `text=False` caller handed this object straight back would get
+        `str` where its own contract says bytes (#2006 concern 3).
+        """
+        if text:
+            return proc
+        return subprocess.CompletedProcess(proc.args, proc.returncode,
+                                           _encoded(proc.stdout), _encoded(proc.stderr))
+
     resolved = executable.resolve("git", _checkout_boundary(root), os.environ.get("PATH", ""))
     env = {"PATH": resolved.path_env, "LC_ALL": "C",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
@@ -144,19 +173,19 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
     while pending:
         directory = pending.pop()
         if directory in seen:
-            raise OSError("safe Git status: cyclic submodule worktree")
+            raise RepositoryRefused("safe Git status: cyclic submodule worktree")
         seen.add(directory)
         if len(seen) > _MAX_REPOSITORIES:
-            raise OSError("safe Git status: submodule traversal exceeds 64 repositories")
+            raise RepositoryRefused("safe Git status: submodule traversal exceeds 64 repositories")
         if directory != root_real:
             top = run(directory, ["rev-parse", "--show-toplevel"])
             if top.returncode != 0 or os.path.realpath(top.stdout.strip()) != directory:
-                raise OSError("safe Git status: submodule worktree root cannot be verified")
+                raise RepositoryRefused("safe Git status: submodule worktree root cannot be verified")
         config = run(directory, ["config", "--null", "--list", "--includes"])
         if config.returncode != 0:
             if directory != root_real:
-                raise OSError("safe Git status: submodule config probe failed")
-            return config
+                raise RepositoryRefused("safe Git status: submodule config probe failed")
+            return preflight_failure(config)
         settings = {}
         for record in config.stdout.split("\0"):
             key, _, value = record.partition("\n")
@@ -165,29 +194,29 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
             if (key.startswith("filter.") and key.endswith((".clean", ".process"))
                     and value):
                 # The key is repository-authored too; repr escapes control bytes.
-                raise OSError("safe Git status: unsupported command filter setting %r" % key)
+                raise RepositoryRefused("safe Git status: unsupported command filter setting %r" % key)
         index = run(directory, ["ls-files", "--stage", "-z"])
         if index.returncode != 0:
             if directory != root_real:
-                raise OSError("safe Git status: submodule index probe failed")
-            return index
+                raise RepositoryRefused("safe Git status: submodule index probe failed")
+            return preflight_failure(index)
         for record in index.stdout.split("\0"):
             if not record.startswith("160000 "):
                 continue
             _metadata, separator, rel = record.partition("\t")
             if (not separator or os.path.isabs(rel)
                     or any(part in ("", ".", "..") for part in rel.split("/"))):
-                raise OSError("safe Git status: unsafe submodule path")
+                raise RepositoryRefused("safe Git status: unsafe submodule path")
             child = os.path.realpath(os.path.join(directory, rel))
             if os.path.commonpath([directory, child]) != directory or child == directory:
-                raise OSError("safe Git status: unsafe submodule path")
+                raise RepositoryRefused("safe Git status: unsafe submodule path")
             # An absent/uninitialized checkout has no local commands to invoke.
             if os.path.lexists(os.path.join(child, ".git")):
                 if child in pending or child in seen:
-                    raise OSError("safe Git status: cyclic or duplicate submodule worktree")
+                    raise RepositoryRefused("safe Git status: cyclic or duplicate submodule worktree")
                 pending.append(child)
                 if len(seen) + len(pending) > _MAX_REPOSITORIES:
-                    raise OSError("safe Git status: submodule traversal exceeds 64 repositories")
+                    raise RepositoryRefused("safe Git status: submodule traversal exceeds 64 repositories")
     final = list(args)
     if _subcommand(args) == "status":
         # A status that hides submodule dirt is not an integrity baseline; every
