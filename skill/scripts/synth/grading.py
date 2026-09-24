@@ -86,7 +86,7 @@ _SUPPRESSED_DRIVER_EFFECT = ("paths under a suppressed driver compare as "
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
             integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
             missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
-            delta_scope_suppressed_git_drivers=None):
+            delta_scope_suppressed_git_drivers=None, tools_file_partial=None):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -148,7 +148,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
 
     coverage_certified = not (gate_relevant_gap or any_incomplete
                               or tools_manifest_invalid
-                              or delta_scope_suppressed_git_drivers)
+                              or delta_scope_suppressed_git_drivers or tools_file_partial)
 
     note = None
     if tools_manifest_invalid:
@@ -172,6 +172,12 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         gap = ("delta scope inflated by suppressed git drivers — %s: %s"
                % (_SUPPRESSED_DRIVER_EFFECT,
                   ", ".join(sorted(delta_scope_suppressed_git_drivers))))
+        note = "%s; %s" % (note, gap) if note else gap
+
+    if tools_file_partial:
+        # Valid scanner captures retain their findings and delta eligibility.
+        # File gaps qualify coverage, independently of the finding-based gate.
+        gap = "partial scanner file coverage: %s" % ", ".join(sorted(tools_file_partial))
         note = "%s; %s" % (note, gap) if note else gap
 
     return {"gate": gate, "overall_grade": cert_grade,
@@ -580,7 +586,8 @@ def grade_report(run, resolved, reconciled):
                    tools_manifest_invalid=reconciled.tools_manifest_invalid,
                    tools_network_excluded=reconciled.tools_network_excluded,
                    delta_scope_suppressed_git_drivers=(
-                       reconciled.delta_scope_suppressed_git_drivers))
+                       reconciled.delta_scope_suppressed_git_drivers),
+                   tools_file_partial=reconciled.coverage.get("tools_file_partial"))
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],

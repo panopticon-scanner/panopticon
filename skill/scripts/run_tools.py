@@ -1006,11 +1006,27 @@ def _redact_capture(tool, data):
     try:
         parsed = json.loads(text)
     except ValueError:
+        if tool == "eslint-security":
+            # Broken scanner JSON can contain arbitrary source fragments too.
+            # Discard it without converting whole-capture failure into a clean scan.
+            return b"panopticon: unusable ESLint capture\n"
         masked = redact.redact(text)        # XML/plain-text captures
     else:
         # The parse is bounded by MAX_TOOL_OUTPUT_BYTES, and ingest already
         # parses this same file, so it adds no ceiling the pipeline lacked.
-        scrubbed = redact.redact_tree(parsed)
+        if tool == "eslint-security":
+            from scripts.tools.eslint_security import sanitize_capture
+            try:
+                # Work on a copy so changed source diagnostics force serialization.
+                cleaned = sanitize_capture(json.loads(text))
+            except ValueError:
+                # Invalid metadata or a malformed neighboring row must not
+                # disable parser-text sanitization. No trustworthy document
+                # can be retained; publish only an unparseable static marker.
+                return b"panopticon: unusable ESLint capture\n"
+        else:
+            cleaned = parsed
+        scrubbed = redact.redact_tree(cleaned)
         if scrubbed == parsed:
             return data
         style = {}
@@ -1024,8 +1040,10 @@ def _redact_capture(tool, data):
     # Disclosed, not silent: for most scanners a secret in the capture means the
     # scan surface was wrong. Only ever reached when a capture is being written,
     # so it cannot crowd out the driver's no-output failure note (#1317).
-    print("%s capture carried secret-shaped values; masked before writing"
-          % tool, file=sys.stderr)
+    note = ("capture diagnostics or secret-shaped values sanitized before writing"
+            if tool == "eslint-security" else
+            "capture carried secret-shaped values; masked before writing")
+    print("%s %s" % (tool, note), file=sys.stderr)
     return masked.encode("utf-8")
 
 
@@ -1252,6 +1270,10 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     can tell "no adapter was excluded" from "no policy was applied". Stated on
     every manifest, `[]` included, like `sanitized`.
 
+    `file_coverage` carries bounded scanner file facts derived from the exact
+    written capture. Partial source coverage leaves produced/missing unchanged;
+    ingestion independently derives the same facts for legacy raw arrays.
+
     `redacted` (#1639 P11) says whether every capture this run wrote went
     through the redaction choke point, read off the ledger `_redact_capture`
     keeps -- an observation, so replacing the choke point with identity makes
@@ -1281,7 +1303,19 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     excluded_scope = list(excluded_scope) + refused
     selected = list(dict.fromkeys(str(tool) for tool in selected))
     produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
+    file_coverage = {}
+    for capture_path in written:
+        if os.path.basename(capture_path) == "eslint-security.json":
+            from scripts.tools.eslint_security import file_coverage as eslint_coverage
+            try:
+                with open(capture_path, "rb") as capture:
+                    data = capture.read(MAX_TOOL_OUTPUT_BYTES + 1)
+                if len(data) <= MAX_TOOL_OUTPUT_BYTES:
+                    file_coverage["eslint-security"] = eslint_coverage(json.loads(data))
+            except (OSError, ValueError):
+                pass  # ingestion retains the whole-capture failure path
     payload = {"schema_version": 1, "run_id": run_id,
+               "file_coverage": file_coverage,
                "selected": selected, "produced": produced,
                "missing": sorted(set(selected) - set(produced)),
                # #1639 P11 F5: what the runner OBSERVED, not what it intends --

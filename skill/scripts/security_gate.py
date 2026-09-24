@@ -220,6 +220,17 @@ def finding_identity(finding):
             " ".join(str(finding.get("title") or "").split()))
 
 
+def disclose_file_coverage(dispositions, label):
+    """Usable findings do not assert complete per-file scanner coverage."""
+    for tool, disposition in dispositions.items():
+        facts = disposition.get("file_coverage") or {}
+        if facts.get("status") == "partial":
+            print("security-gate: %s %s partial file coverage: %d unparsed, "
+                  "%d unavailable; capabilities unavailable: %s"
+                  % (label, tool, facts["unparsed_files"], facts["unavailable_files"],
+                     ", ".join(facts["capabilities_unavailable"]) or "none"), file=sys.stderr)
+
+
 def load_baseline(baseline_dir, manifest_path, exclude_globs=None,
                   security_mode="standard"):
     """The base commit's gate population, or the reason there is none.
@@ -276,6 +287,7 @@ def load_baseline(baseline_dir, manifest_path, exclude_globs=None,
             suppressed_out=suppressed)
     except Exception as exc:  # noqa: BLE001 - a broken baseline is not a verdict
         return [], "cannot ingest %s: %r" % (baseline_dir, exc)
+    disclose_file_coverage(dispositions, "baseline")
     lost = ingest_tools.lost_required_coverage(manifest, dispositions)
     if lost:
         return [], ("%s did not deliver its own scan: %s"
@@ -367,12 +379,13 @@ def main(argv=None):
                      "together or not at all")
     excluded: list[dict[str, Any]] = []
     try:
-        findings, _dispositions, failures, high, suppressed = evaluate(
+        findings, dispositions, failures, high, suppressed = evaluate(
             args.tools_dir, args.manifest, args.exclude, args.security_mode,
             excluded_out=excluded)
     except ValueError as exc:
         print("security-gate: %s" % exc, file=sys.stderr)
         return 2
+    disclose_file_coverage(dispositions, "current")
     # No baseline named, or one that could not be read: `new` IS `high` and
     # every line below is the one this gate has always printed.
     new, pre_existing, delta = high, [], False

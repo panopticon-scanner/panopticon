@@ -649,7 +649,12 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
 
     Returns (findings, dispositions). dispositions maps each output file's
     adapter name (its filename stem) to {"status": ok|empty|noscan|failed,
-    "findings": int} plus a "reason" when failed. This is the single
+    "findings": int} plus a "reason" when failed and optional "file_coverage"
+    facts. ok/empty describes usable output, not complete per-file coverage;
+    file_coverage.status=partial discloses gaps without discarding findings.
+    The legacy parse_with_coverage hook still makes its nonempty reason a
+    whole-tool failure; parse_with_file_coverage returns (findings, facts).
+    This is the single
     authoritative walk — a file's disposition reflects exactly what parsing
     saw, so nothing downstream can classify it differently. `findings` is the
     adapter's raw yield BEFORE fixture exclusion, so an adapter whose findings
@@ -763,9 +768,15 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         # against the root this function already holds.
         token = target_root_cv.set(root)
         try:
+            file_coverage = None
+            file_hook = getattr(adapter, "parse_with_file_coverage", None)
             hook = getattr(adapter, "parse_with_coverage", None)
             parsed, coverage_reason = (hook(raw, group) if hook is not None
-                                       else (adapter.parse(raw, group), None))
+                                       else ([], None))
+            if file_hook is not None:
+                parsed, file_coverage = file_hook(raw, group)
+            elif hook is None:
+                parsed = adapter.parse(raw, group)
         except Exception as e:  # noqa: BLE001 - tolerant by design
             print("ingest error %s: %s" % (path, e), file=sys.stderr)
             dispositions[tool] = {"status": "failed", "findings": 0,
@@ -803,6 +814,8 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         if coverage_reason:
             status, reason = "failed", coverage_reason
         dispositions[tool] = {"status": status, "findings": raw_count}
+        if file_coverage is not None:
+            dispositions[tool]["file_coverage"] = file_coverage
         if truncated:
             # Disclosed, never silent: `findings` stays the RAW count, so a
             # report reads "N seen, M dropped" rather than looking like a

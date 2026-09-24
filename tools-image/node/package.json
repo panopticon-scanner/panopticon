@@ -6,7 +6,9 @@
   "license": "UNLICENSED",
   "dependencies": {
     "@microsoft/eslint-formatter-sarif": "3.1.0",
+    "@typescript-eslint/parser": "8.70.1",
     "eslint": "10.9.0",
-    "eslint-plugin-security": "4.0.1"
+    "eslint-plugin-security": "4.0.1",
+    "typescript": "6.0.3"
   }
 }

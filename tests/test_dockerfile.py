@@ -97,6 +97,22 @@ class TestDockerfilePhase1(unittest.TestCase):
             self.assertIn("eslint-plugin-security",
                           json.load(fh)["dependencies"])
 
+    def test_node_closure_pins_typescript_parser_and_compiler(self):
+        node_root = os.path.join(ROOT, "tools-image", "node")
+        with open(os.path.join(node_root, "package.json"), encoding="utf-8") as fh:
+            declared = json.load(fh)["dependencies"]
+        with open(os.path.join(node_root, "package-lock.json"), encoding="utf-8") as fh:
+            locked = json.load(fh)["packages"]
+        self.assertEqual(declared["@typescript-eslint/parser"], "8.70.1")
+        self.assertEqual(declared["typescript"], "6.0.3")
+        self.assertEqual(locked[""]["dependencies"], declared)
+        for package, version in (("@typescript-eslint/parser", "8.70.1"),
+                                 ("typescript", "6.0.3")):
+            item = locked["node_modules/" + package]
+            self.assertEqual(item["version"], version)
+            self.assertTrue(item["integrity"].startswith("sha512-"))
+        self.assertEqual(len(locked), 153)
+
 
 class TestFindSecBugsIntegrity(unittest.TestCase):
     """#539: the FindSecBugs plugin jar is loaded as unsandboxed analyzer

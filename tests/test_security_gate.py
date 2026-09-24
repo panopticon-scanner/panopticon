@@ -993,6 +993,66 @@ class TestTheDeltaAwareGate(unittest.TestCase):
             rc = gate.main(argv)
         return rc, out.getvalue(), err.getvalue()
 
+    def test_eslint_legacy_partial_baseline_keeps_matching_and_new_high_still_gates(self):
+        rows = [{"filePath": "/src/good.js", "messages": [{
+            "ruleId": "security/detect-eval-with-expression", "line": 1,
+            "message": "eval with expression"}]},
+            {"filePath": "/src/workflow.js", "fatalErrorCount": 1,
+             "messages": [{"ruleId": None, "fatal": True,
+                           "message": "Parsing error: private parser text"}]}]
+        for new in (False, True):
+            with self.subTest(new=new), tempfile.TemporaryDirectory() as root:
+                current = rows + ([{**rows[0], "filePath": "/src/new.js"}] if new else [])
+                head = self._capture(root, "head", {"eslint-security": current})
+                base = self._capture(root, "base", {"eslint-security": rows})
+                rc, out, err = self._run(head, base)
+            self.assertEqual(rc, int(new))
+            self.assertIn("%d HIGH/CRITICAL new" % int(new), out)
+            self.assertIn("1 HIGH/CRITICAL pre-existing", out)
+            self.assertIn("current eslint-security partial file coverage", err)
+            self.assertIn("baseline eslint-security partial file coverage", err)
+            self.assertNotIn("baseline unusable", err)
+            self.assertNotIn("private parser text", err)
+
+    def test_native_module_highs_match_legacy_baseline_and_new_modules_gate(self):
+        for extension in ("cjs", "mjs"):
+            for new in (False, True):
+                with self.subTest(extension=extension, new=new), tempfile.TemporaryDirectory() as root:
+                    rows = [{"filePath": "/src/exploit." + extension, "messages": [{
+                        "ruleId": "security/detect-eval-with-expression", "line": 1,
+                        "message": "eval with expression"}]}]
+                    current = rows + ([{**rows[0], "filePath": "/src/new." + extension}] if new else [])
+                    head = self._capture(root, "head", {"eslint-security": {
+                        "panopticon_eslint": {"version": 1, "typescript_parser": "unavailable",
+                                              "files_count": 1, "files": ["app.ts"]},
+                        "results": current}})
+                    base = self._capture(root, "base", {"eslint-security": rows})
+                    rc, out, err = self._run(head, base)
+                self.assertEqual(rc, int(new))
+                self.assertIn("%d HIGH/CRITICAL new" % int(new), out)
+                self.assertIn("1 HIGH/CRITICAL pre-existing", out)
+                self.assertIn("partial file coverage", err)
+                self.assertNotIn("baseline unusable", err)
+
+    def test_eslint_capture_corruption_and_missing_output_remain_fail_closed(self):
+        rows = [{"filePath": "/src/good.js", "messages": [{
+            "ruleId": "security/detect-eval-with-expression", "line": 1,
+            "message": "eval with expression"}]}]
+        for side in ("head", "base"):
+            for broken in (b"{", b"", None, b'[]\n/* panopticon: output truncated */'):
+                with self.subTest(side=side, broken=broken), tempfile.TemporaryDirectory() as root:
+                    head = self._capture(root, "head", {"eslint-security": rows})
+                    base = self._capture(root, "base", {"eslint-security": rows})
+                    path = os.path.join((head if side == "head" else base)[0], "eslint-security.sarif")
+                    if broken is None:
+                        os.unlink(path)
+                    else:
+                        with open(path, "wb") as fh:
+                            fh.write(broken)
+                    rc, out, err = self._run(head, base)
+                self.assertEqual(rc, 2 if side == "head" else 1)
+                self.assertIn("scanner coverage incomplete" if side == "head" else "baseline unusable", err)
+
     def test_a_finding_the_base_commit_already_had_does_not_gate(self):
         with tempfile.TemporaryDirectory() as root:
             same = _delta_sarif(_delta_result())

@@ -1375,3 +1375,90 @@ class TestTheManifestReportsTheRedactionPass(unittest.TestCase):
             payload = rt.write_manifest(os.path.join(d, "m.json"),
                                         ["gitleaks"], [])
         self.assertIs(payload["redacted"], False)
+
+
+class TestEslintFileCoverageCapture(unittest.TestCase):
+    def test_invalid_eslint_captures_discard_parser_text_and_still_fail_ingestion(self):
+        from scripts import ingest_tools, security_gate
+        sentinel = "PRIVATE_SOURCE_SENTINEL"
+        fatal = {"filePath": "/src/bad.js", "fatalErrorCount": 1,
+                 "source": sentinel, "output": sentinel,
+                 "messages": [{"ruleId": None, "fatal": True,
+                               "message": "Parsing error: " + sentinel}]}
+        documents = [
+            {"panopticon_eslint": {"version": 1, "typescript_parser": "unavailable",
+                                  "files": [], "files_count": -1}, "results": [fatal]},
+            [fatal, {"filePath": "/src/neighbor.js", "messages": "invalid"}],
+            [None, fatal],
+        ]
+        raw_cases = [json.dumps(doc).encode() for doc in documents]
+        raw_cases.append(json.dumps([fatal]).encode()[:-1])  # truncated native JSON
+        for raw in raw_cases:
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as target:
+                cleaned = rt._redact_capture("eslint-security", raw)
+                self.assertNotIn(sentinel.encode(), cleaned)
+                with self.assertRaises(ValueError):
+                    EslintSecurityAdapter().parse(cleaned, "g1")
+                capture = os.path.join(target, "eslint-security.json")
+                with open(capture, "wb") as fh:
+                    fh.write(cleaned)
+                findings, dispositions = ingest_tools.ingest_dir_detailed(target, "g1")
+                self.assertEqual(findings, [])
+                self.assertEqual(dispositions["eslint-security"]["status"], "failed")
+                self.assertNotIn(sentinel, json.dumps(dispositions))
+                # Use a separate subdirectory so the manifest is never scanner input.
+                tools = os.path.join(target, "tools")
+                os.mkdir(tools)
+                moved = os.path.join(tools, "eslint-security.json")
+                os.rename(capture, moved)
+                manifest = os.path.join(target, "manifest.json")
+                payload = rt.write_manifest(manifest, ["eslint-security"], [moved])
+                self.assertEqual(payload["file_coverage"], {})
+                _, _, failures, _, _ = security_gate.evaluate(tools, manifest)
+                self.assertTrue(failures)
+
+    def test_missing_parser_envelope_survives_runner_and_ingestion(self):
+        from scripts import ingest_tools, run_tools
+        document = {"panopticon_eslint": {"version": 1, "typescript_parser": "unavailable",
+                     "files_count": 1, "files": ["nested/app.ts"]}, "results": []}
+        raw = run_tools._redact_capture("eslint-security", json.dumps(document).encode())
+        with tempfile.TemporaryDirectory() as target:
+            capture = os.path.join(target, "eslint-security.json")
+            manifest = os.path.join(target, "manifest.json")
+            with open(capture, "wb") as fh:
+                fh.write(raw)
+            findings, dispositions = ingest_tools.ingest_dir_detailed(target, "g1")
+            run_tools.write_manifest(manifest, ["eslint-security"], [capture])
+            with open(manifest) as fh:
+                payload = json.load(fh)
+        facts = dispositions["eslint-security"]["file_coverage"]
+        self.assertEqual(findings, [])
+        self.assertEqual((facts["parsed_files"], facts["unavailable_files"]), (0, 1))
+        self.assertEqual(facts["files"], [{"file": "nested/app.ts", "reason": "typescript_parser_unavailable"}])
+        self.assertEqual(payload["file_coverage"]["eslint-security"], facts)
+
+    def test_manifest_and_redacted_capture_keep_only_safe_parser_facts(self):
+        from scripts import run_tools
+        from scripts.tools.eslint_security import EslintSecurityAdapter
+        payload = [
+            {"filePath": "/src/good.js", "messages": [{"ruleId": "security/detect-eval-with-expression",
+             "message": "eval with expression", "line": 1}]},
+            {"filePath": "/src/bad.js", "fatalErrorCount": 1,
+             "source": "private source text", "output": "private source text",
+             "messages": [{"ruleId": None, "fatal": True, "message": "Parsing error: private source text"}]},
+        ]
+        raw = run_tools._redact_capture("eslint-security", json.dumps(payload).encode())
+        self.assertNotIn(b"private source text", raw)
+        findings, facts = EslintSecurityAdapter().parse_with_file_coverage(raw, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(facts["unparsed_files"], 1)
+        with tempfile.TemporaryDirectory() as target:
+            capture = os.path.join(target, "eslint-security.json")
+            manifest = os.path.join(target, "manifest.json")
+            with open(capture, "wb") as fh:
+                fh.write(raw)
+            run_tools.write_manifest(manifest, ["eslint-security"], [capture])
+            with open(manifest) as fh:
+                result = json.load(fh)
+        self.assertEqual(result["file_coverage"]["eslint-security"], facts)
+        self.assertEqual(result["missing"], [])

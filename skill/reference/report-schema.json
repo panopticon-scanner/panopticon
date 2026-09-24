@@ -179,7 +179,11 @@
           "properties": {
             "adapters": {
               "type": "object",
-              "description": "Per output file: {status: ok|empty|noscan|failed, findings: int, reason?: str}. A failed file (0-byte, unparseable, or no registered adapter) is not counted as having run. noscan (#1335) = the adapter ran and produced a valid document but scanned zero files, so it gets no coverage credit."
+              "description": "Per output file: {status: ok|empty|noscan|failed, findings: int, reason?: str, file_coverage?: object}. file_coverage separates usable scanner output from complete file coverage: status complete|partial, parsed_files/unparsed_files/unavailable_files counts, bounded files [{file, reason}], files_omitted, and capabilities_unavailable. Partial captures keep their genuine findings and baseline eligibility; summary.coverage_certified is false with an explicit coverage_note. A failed file (0-byte, unparseable, or no registered adapter) is not counted as having run. noscan (#1335) = the adapter ran and produced a valid document but scanned zero files, so it gets no coverage credit."
+            },
+            "tools_file_partial": {
+              "type": "object",
+              "description": "Adapters with usable captures but incomplete file coverage, mapped to the same bounded file_coverage facts in adapters. Reasons: parse_error or typescript_parser_unavailable. Findings still gate; file gaps alone do not invalidate a baseline or change the finding-based gate. summary.coverage_certified is false."
             },
             "tools_ran": {
               "type": "array",

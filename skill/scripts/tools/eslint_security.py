@@ -1,6 +1,8 @@
 """eslint-plugin-security adapter for JS/TS security anti-patterns."""
 from __future__ import annotations
 import os
+import json
+import re
 from .base import make_finding, omit_none, parse_json_bytes, run_tool, scratch_cwd
 from .sarif_utils import norm_uri
 
@@ -11,6 +13,7 @@ from .sarif_utils import norm_uri
 # image -- which a pinned digest can still pull -- keeps resolving the plugin.
 _GLOBAL_NODE_DIRS = ("/opt/panopticon-node/node_modules",
                      "/usr/local/lib/node_modules", "/usr/lib/node_modules")
+_TS_PARSER_ENTRY = "/opt/panopticon-node/node_modules/@typescript-eslint/parser/dist/index.js"
 
 
 def _plugin_entry() -> str:
@@ -29,7 +32,7 @@ def _plugin_entry() -> str:
     return "eslint-plugin-security/index.js"   # last resort; still explicit .js for ESM
 
 
-def _flat_config() -> str:
+def _flat_config(ts_available: bool = True) -> str:
     """A minimal eslint flat config (ESM) that loads eslint-plugin-security and
     turns every mapped rule ON at error level. The eslint level is used only to
     ENABLE the rule; severity is derived in parse() from RULE_SEVERITY.
@@ -42,16 +45,127 @@ def _flat_config() -> str:
     The cwd is what decides eslint's scope, and `invoke` sets it.
     """
     rules = ",\n      ".join('"%s": "error"' % r for r in RULE_CWE)
+    # The parser package publishes a CommonJS ./dist/index.js entry, whose
+    # module.exports object is the default import in this ESM config. The path
+    # is image-owned: target node_modules and tsconfig cannot select a parser.
+    ts_import = 'import tsParser from "%s";\n' % _TS_PARSER_ENTRY if ts_available else ''
+    ts_block = (
+        '  { files: ["**/*.{ts,tsx}"],\n'
+        '    languageOptions: { parser: tsParser, '
+        'parserOptions: { project: false } },\n'
+        '    linterOptions: { noInlineConfig: true },\n'
+        '    plugins: { security }, rules },\n'
+    ) if ts_available else ''
+    # Leave sourceType unset: ESLint retains commonjs for .cjs and module
+    # for .mjs, while the same security rules cover both native extensions.
     return (
         'import security from "%s";\n'
+        '%s'
+        'const rules = {\n      %s\n};\n'
         'export default [\n'
-        '  {\n'
-        '    plugins: { security },\n'
-        '    languageOptions: { ecmaVersion: "latest" },\n'
-        '    rules: {\n      %s\n    }\n'
-        '  }\n'
-        '];\n' % (_plugin_entry(), rules)
+        '  { files: ["**/*.{js,jsx,cjs,mjs}"],\n'
+        '    languageOptions: { ecmaVersion: "latest", '
+        'parserOptions: { ecmaFeatures: { jsx: true } } },\n'
+        '    linterOptions: { noInlineConfig: true },\n'
+        '    plugins: { security }, rules },\n'
+        '%s'
+        '];\n' % (_plugin_entry(), ts_import, rules, ts_block)
     )
+
+
+# Scanner-owned envelope v1 exists only when the trusted TS parser is absent.
+# Native ESLint arrays remain valid; metadata never masquerades as ESLint rows.
+MAX_COVERAGE_FILES = 100
+MAX_COVERAGE_PATH = 240
+
+
+def _safe_path(path):
+    from scripts.redact import redact
+    path = norm_uri(path)
+    path = re.sub(r"[^a-zA-Z0-9_./@+ -]", "_", redact(path))
+    return path[:MAX_COVERAGE_PATH] or "<unknown>"
+
+
+def _fatal_message(msg):
+    return msg.get("fatal") is True or (
+        msg.get("ruleId") is None
+        and isinstance(msg.get("message"), str)
+        and msg["message"].startswith("Parsing error:"))
+
+
+def _capture(data):
+    """Validate native output and the optional, strictly typed adapter envelope."""
+    metadata = None
+    if isinstance(data, dict):
+        if set(data) != {"panopticon_eslint", "results"}:
+            raise ValueError("invalid ESLint capture envelope")
+        metadata = data["panopticon_eslint"]
+        if (not isinstance(metadata, dict)
+                or set(metadata) != {"version", "typescript_parser", "files", "files_count"}
+                or type(metadata["version"]) is not int or metadata["version"] != 1
+                or metadata["typescript_parser"] != "unavailable"
+                or type(metadata["files_count"]) is not int
+                or not 0 <= metadata["files_count"] <= 1_000_000_000
+                or not isinstance(metadata["files"], list)
+                or len(metadata["files"]) != min(metadata["files_count"], MAX_COVERAGE_FILES)
+                or any(not isinstance(p, str) or not p or len(p) > MAX_COVERAGE_PATH
+                       for p in metadata["files"])):
+            raise ValueError("invalid ESLint capture metadata")
+        data = data["results"]
+    if not isinstance(data, list):
+        raise ValueError("invalid ESLint results")
+    for row in data:
+        if (not isinstance(row, dict) or not isinstance(row.get("filePath"), str)
+                or not row["filePath"]
+                or not isinstance(row.get("messages"), list)
+                or type(row.get("fatalErrorCount", 0)) is not int
+                or row.get("fatalErrorCount", 0) < 0):
+            raise ValueError("invalid ESLint result")
+        for msg in row["messages"]:
+            if (not isinstance(msg, dict)
+                    or not isinstance(msg.get("message"), str)
+                    or (msg.get("ruleId") is not None and not isinstance(msg["ruleId"], str))
+                    or ("fatal" in msg and type(msg["fatal"]) is not bool)):
+                raise ValueError("invalid ESLint diagnostic")
+    return data, metadata
+
+
+def file_coverage(data):
+    """Bounded coverage facts, independent of findings and scanner success."""
+    rows, metadata = _capture(data)
+    failed = [r for r in rows if r.get("fatalErrorCount", 0)
+              or any(_fatal_message(m) for m in r["messages"])]
+    unavailable = metadata["files_count"] if metadata else 0
+    facts = [{"file": _safe_path(r["filePath"]), "reason": "parse_error"}
+             for r in failed[:MAX_COVERAGE_FILES]]
+    if metadata:
+        facts.extend({"file": _safe_path(p), "reason": "typescript_parser_unavailable"}
+                     for p in metadata["files"][:MAX_COVERAGE_FILES - len(facts)])
+    return {"status": "partial" if failed or metadata else "complete",
+            "parsed_files": len(rows) - len(failed), "unparsed_files": len(failed),
+            "unavailable_files": unavailable, "files": facts,
+            "files_omitted": len(failed) + unavailable - len(facts),
+            "capabilities_unavailable": ["typescript_parser"] if metadata else []}
+
+
+def sanitize_capture(data):
+    """Remove arbitrary parser text/source before raw artifacts are written.
+
+    Keep native fatal indicators, so re-ingesting a sanitized legacy array
+    yields the same file facts. Never repair malformed shapes into valid ones.
+    """
+    rows, _ = _capture(data)
+    for row in rows:
+        if row.get("fatalErrorCount", 0) or any(_fatal_message(m) for m in row["messages"]):
+            for key in ("source", "output", "suppressedMessages"):
+                row.pop(key, None)
+            for msg in row["messages"]:
+                if _fatal_message(msg) or msg.get("ruleId") is None:
+                    fatal = _fatal_message(msg)
+                    msg.clear()
+                    msg.update(ruleId=None, fatal=fatal, message=("Parsing error: source unavailable"
+                               if fatal else "ESLint diagnostic unavailable"))
+    return data
 
 
 # CWE mappings for eslint-plugin-security rules (best-effort).
@@ -98,11 +212,11 @@ _HEURISTIC_RULES = frozenset({
 
 
 def _iter_source_files(target):
-    """Yield JS/TS source files under *target*, pruning node_modules."""
+    """Yield JS/TS and native CJS/MJS source, pruning node_modules."""
     for root, dirs, files in os.walk(target):
         dirs[:] = [d for d in dirs if d != "node_modules"]
         for f in files:
-            if f.endswith((".js", ".ts", ".jsx", ".tsx")):
+            if f.endswith((".js", ".ts", ".jsx", ".tsx", ".cjs", ".mjs")):
                 yield os.path.join(root, f)
 
 
@@ -141,17 +255,20 @@ class EslintSecurityAdapter:
         # this counts as PRODUCED (disposition "empty"), not missing. A genuine
         # eslint failure (source present, tool errors) still exits non-zero and
         # is honestly skipped.
-        if not self._lintable_sources(target):
+        sources = self._lintable_sources(target)
+        if not sources:
             return b"[]", 0
         # #run7: generate an eslint 9/10 flat config that imports the plugin by
         # explicit path (see _plugin_entry) and run it. The config lives in a
         # container-writable temp dir -- the /src mount is read-only, and a
         # config inside the tree is one the target could collide with. Only
         # the WORKING DIRECTORY is the target, for the reason below.
+        ts_available = os.path.isfile(_TS_PARSER_ENTRY)
+        missing = [p for p in sources if p.endswith((".ts", ".tsx"))] if not ts_available else []
         with scratch_cwd("eslint-cfg-") as cfg_dir:
             cfg_path = os.path.join(cfg_dir, "eslint.config.mjs")
             with open(cfg_path, "w", encoding="utf-8") as fh:
-                fh.write(_flat_config())
+                fh.write(_flat_config(ts_available))
             # --config pins OUR generated config and --no-config-lookup stops
             # eslint from also discovering + EXECUTING the scanned target's own
             # eslint.config.js (arbitrary JS -> RCE). The plugin is imported by
@@ -180,10 +297,29 @@ class EslintSecurityAdapter:
             # cwd or not, the file sits at the scan root). Recorded again, with
             # the argument, in tests/tools/test_adapter_cwd_confinement.py and
             # run_tools.DISPATCH_KEEPS_TARGET_CWD.
-            return run_tool(cmd, timeout=300, ok_codes=(0, 1), cwd=abs_target)
+            if len(missing) == len(sources):
+                raw, rc = b"[]", 0  # No supported source; adapter metadata discloses every gap.
+            else:
+                raw, rc = run_tool(cmd, timeout=300, ok_codes=(0, 1), cwd=abs_target)
+            if not ts_available and rc in (0, 1):
+                # A broken import/config still fails normally; never reinterpret
+                # arbitrary initialization failure as a missing parser.
+                results = parse_json_bytes(raw)
+                _capture(results)
+                raw = json.dumps({"panopticon_eslint": {
+                    "version": 1, "typescript_parser": "unavailable",
+                    "files": [_safe_path(os.path.relpath(p, target))
+                              for p in sorted(missing)[:MAX_COVERAGE_FILES]],
+                    "files_count": len(missing)}, "results": results}).encode()
+            return raw, rc
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        data = parse_json_bytes(raw)
+        return self.parse_with_file_coverage(raw, group)[0]
+
+    def parse_with_file_coverage(self, raw: bytes, group: str) -> tuple[list[dict], dict]:
+        document = parse_json_bytes(raw)
+        data, _ = _capture(document)
+        coverage = file_coverage(document)
         out = []
         n = 1
         for f in data:
@@ -207,7 +343,7 @@ class EslintSecurityAdapter:
                     tool_evidence=omit_none({"rule_id": rule}),
                 ))
                 n += 1
-        return out
+        return out, coverage
 
     def _strip_prefix(self, path: str) -> str:
         return norm_uri(path)

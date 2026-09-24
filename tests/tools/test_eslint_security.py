@@ -8,6 +8,7 @@ from _test_helpers import FakePopen, first
 from conftest import REPO_ROOT
 import scripts.tools.eslint_security as es
 from scripts.tools import ADAPTERS
+from scripts.ingest_tools import ingest_dir_detailed
 
 
 ESLINT_SAMPLE = json.dumps([
@@ -87,6 +88,123 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         ]).encode()
         findings = es.EslintSecurityAdapter().parse(sample, "g1")
         self.assertEqual(len(findings), 0)
+
+    def test_native_parse_error_representations_retain_findings_and_file_facts(self):
+        for bad in (
+            {"fatalErrorCount": 1, "messages": []},
+            {"messages": [{"ruleId": None, "fatal": True, "message": "hostile text"}]},
+            {"messages": [{"ruleId": None, "message": "Parsing error: hostile text"}]},
+        ):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as d:
+                raw = json.dumps(json.loads(ESLINT_SAMPLE) + [
+                    {"filePath": "/src/nested/bad.tsx", **bad}]).encode()
+                findings, facts = es.EslintSecurityAdapter().parse_with_file_coverage(raw, "g1")
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(findings[0]["severity"], "HIGH")
+                self.assertEqual(facts["status"], "partial")
+                self.assertEqual((facts["parsed_files"], facts["unparsed_files"]), (1, 1))
+                self.assertEqual(facts["files"], [{"file": "nested/bad.tsx", "reason": "parse_error"}])
+                with open(os.path.join(d, "eslint-security.json"), "wb") as fh:
+                    fh.write(raw)
+                findings, disp = ingest_dir_detailed(d, "g1")
+                self.assertEqual(len(findings), 1)
+                self.assertEqual(disp["eslint-security"]["status"], "ok")
+                self.assertEqual(disp["eslint-security"]["file_coverage"], facts)
+                self.assertNotIn("hostile", json.dumps(disp))
+
+    def test_all_unparsed_is_disclosed_without_clean_file_claim(self):
+        findings, facts = es.EslintSecurityAdapter().parse_with_file_coverage(
+            b'[{"filePath":"/src/bad.js","fatalErrorCount":1,"messages":[]}]', "g1")
+        self.assertEqual(findings, [])
+        self.assertEqual((facts["status"], facts["parsed_files"], facts["unparsed_files"]),
+                         ("partial", 0, 1))
+
+    def test_coverage_paths_and_counts_are_bounded(self):
+        rows = [{"filePath": "/src/" + "x" * 400 + "\n.js", "fatalErrorCount": 1,
+                 "messages": []} for _ in range(125)]
+        facts = es.file_coverage(rows)
+        self.assertEqual(facts["unparsed_files"], 125)
+        self.assertEqual(len(facts["files"]), 100)
+        self.assertEqual(facts["files_omitted"], 25)
+        self.assertTrue(all(len(f["file"]) <= 240 and "\n" not in f["file"]
+                            for f in facts["files"]))
+
+    def test_malformed_envelopes_and_native_types_fail_closed(self):
+        metadata = {"version": 1, "typescript_parser": "unavailable", "files": [], "files_count": 0}
+        invalid = [None, {}, {"results": []}, [{"filePath": "x", "messages": "bad"}],
+                   [{"filePath": "x", "messages": [], "fatalErrorCount": True}],
+                   [{"filePath": "x", "messages": [{"fatal": "false"}]}]]
+        for key, value in (("version", True), ("typescript_parser", "present"),
+                           ("files_count", -1), ("files_count", True),
+                           ("files", ["x.ts"]), ("files_count", 1), ("extra", "hostile")):
+            invalid.append({"panopticon_eslint": {**metadata, key: value}, "results": []})
+        for document in invalid:
+            with self.subTest(document=document):
+                with self.assertRaisesRegex(ValueError, "invalid ESLint"):
+                    es.EslintSecurityAdapter().parse(json.dumps(document).encode(), "g1")
+
+    def test_old_image_keeps_js_findings_and_discloses_typescript(self):
+        for files in (["good.js", "bad.ts", "view.tsx"], ["good.jsx"], ["only.ts"]):
+            with self.subTest(files=files), tempfile.TemporaryDirectory() as target:
+                for name in files:
+                    open(os.path.join(target, name), "w").close()
+                with mock.patch.object(es, "_TS_PARSER_ENTRY", os.path.join(target, "absent")), \
+                     mock.patch.object(es, "run_tool", return_value=(ESLINT_SAMPLE, 1)) as run:
+                    raw, rc = es.EslintSecurityAdapter().invoke(target)
+                findings, facts = es.EslintSecurityAdapter().parse_with_file_coverage(raw, "g1")
+                self.assertEqual(facts["status"], "partial")
+                self.assertEqual(facts["capabilities_unavailable"], ["typescript_parser"])
+                self.assertEqual(facts["unavailable_files"], sum(p.endswith((".ts", ".tsx")) for p in files))
+                self.assertEqual(len(findings), int(files != ["only.ts"]))
+                self.assertEqual(run.call_count, int(files != ["only.ts"]))
+                self.assertIn(rc, (0, 1))
+        self.assertNotIn("tsParser", es._flat_config(False))
+        self.assertIn("noInlineConfig: true", es._flat_config(False))
+
+    def test_native_module_sources_invoke_eslint_with_or_without_ts_parser(self):
+        for extension in ("cjs", "mjs"):
+            for parser_present in (False, True):
+                for adjacent_ts in (False, True):
+                    with self.subTest(extension=extension, parser=parser_present, ts=adjacent_ts), \
+                         tempfile.TemporaryDirectory() as target:
+                        parser = os.path.join(target, "trusted-parser-entry")
+                        if parser_present:
+                            open(parser, "w").close()
+                        open(os.path.join(target, "exploit." + extension), "w").close()
+                        if adjacent_ts:
+                            open(os.path.join(target, "app.ts"), "w").close()
+                        adapter = es.EslintSecurityAdapter()
+                        self.assertTrue(adapter.is_applicable(target))
+                        rows = json.loads(ESLINT_SAMPLE)
+                        self.assertEqual(len(rows), 1)
+                        rows[0]["filePath"] = "/src/exploit." + extension
+                        with mock.patch.object(es, "_TS_PARSER_ENTRY", parser), \
+                             mock.patch.object(es, "run_tool", return_value=(json.dumps(rows).encode(), 1)) as run:
+                            raw, rc = adapter.invoke(target)
+                        run.assert_called_once()
+                        findings, coverage = adapter.parse_with_file_coverage(raw, "g1")
+                        self.assertEqual(rc, 1)
+                        self.assertEqual(len(findings), 1)
+                        self.assertEqual(findings[0]["location"]["file"], "exploit." + extension)
+                        self.assertEqual(findings[0]["severity"], "HIGH")
+                        self.assertEqual(coverage["unavailable_files"], int(adjacent_ts and not parser_present))
+                        self.assertEqual(coverage["status"], "complete" if parser_present else "partial")
+
+    def test_existing_parser_import_failure_is_not_suppressed(self):
+        with tempfile.TemporaryDirectory() as target:
+            parser = os.path.join(target, "parser-entry")
+            open(parser, "w").close()
+            open(os.path.join(target, "good.js"), "w").close()
+            with mock.patch.object(es, "_TS_PARSER_ENTRY", parser), \
+                 mock.patch.object(es, "run_tool", return_value=(b"", 2)):
+                self.assertEqual(es.EslintSecurityAdapter().invoke(target), (b"", 2))
+
+    def test_null_rule_inline_warning_is_not_fatal(self):
+        raw = json.dumps([{"filePath": "/src/good.js", "fatalErrorCount": 0,
+                           "messages": [{"ruleId": None, "fatal": False,
+                                         "severity": 1,
+                                         "message": "Unused eslint-disable directive"}]}]).encode()
+        self.assertEqual(es.EslintSecurityAdapter().parse(raw, "g1"), [])
 
     def _one(self, rule, eslint_severity):
         return json.dumps([{
@@ -172,7 +290,8 @@ class TestEslintSecurityAdapter(unittest.TestCase):
              mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
                                return_value=["x.js"]):
             stdout, rc = adapter.invoke("/tmp/fake")
-        self.assertEqual((stdout, rc), (b"[]", 0))
+        self.assertEqual(rc, 0)
+        self.assertEqual(es.EslintSecurityAdapter().parse(stdout, "g1"), [])
         cmd = popen_mock.call_args[0][0]
         self.assertEqual(cmd[0], "eslint")
         self.assertIn("--config", cmd)
@@ -206,6 +325,16 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertRegex(cfg, r'import security from "[^"]+\.js"')
         for rule in es.RULE_CWE:
             self.assertIn('"%s": "error"' % rule, cfg)   # every mapped rule ON
+
+    def test_flat_config_covers_all_formats_and_ignores_inline_directives(self):
+        cfg = es._flat_config()
+        self.assertIn("**/*.{js,jsx,cjs,mjs}", cfg)
+        self.assertIn("**/*.{ts,tsx}", cfg)
+        self.assertIn("ecmaFeatures: { jsx: true }", cfg)
+        self.assertIn("parser: tsParser", cfg)
+        self.assertIn("project: false", cfg)
+        self.assertEqual(cfg.count("noInlineConfig: true"), 2)
+        self.assertRegex(cfg, r'import tsParser from "/opt/panopticon-node/node_modules/@typescript-eslint/parser/dist/index.js"')
 
     def test_invoke_runs_from_the_target_and_keeps_the_config_outside_it(self):
         # #1877 round 2: eslint is the second documented cwd=target exception
