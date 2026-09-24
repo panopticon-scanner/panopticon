@@ -10,13 +10,22 @@ Usage:
   python3 scripts/reconcile_apply.py recover-linkage --out linkage.json
   python3 scripts/reconcile_apply.py plan diff.json --ledger linkage.json --out actions.json
   python3 scripts/reconcile_apply.py apply actions.json [--dry-run] [--confirm-close] [--throttle S]
+
+Live CLI apply saves acknowledgements beside the plan as actions.json.progress.json
+(override with --progress). A retry skips acknowledged operations. There is a
+small unavoidable window after GitHub accepts an operation but before its local
+receipt is saved; a crash then can repeat that operation. This is resume support,
+not an exactly-once protocol.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
+import stat
 import subprocess  # noqa: F401 -- patch target for the dry-run zero-subprocess guard test
 import sys
+import tempfile
 import time
 import warnings
 
@@ -24,6 +33,8 @@ import file_issues
 import triage
 
 LEDGER = ".panopticon/filed-issues.json"
+PROGRESS_VERSION = 1
+PROGRESS_MAX_BYTES = 4 * 1024 * 1024
 
 
 # Same machinery, same default path — file_issues owns the ledger read.
@@ -245,24 +256,103 @@ def preflight_authorized(owner, repo, runner=None):
     return (False, "authenticated gh user is not an admin of %s/%s" % (owner, repo))
 
 
+def _action_key(action, repo_slug):
+    """Bind an acknowledgement to the full exact action and target repository."""
+    canonical = json.dumps({"repo": repo_slug, "action": action}, sort_keys=True,
+                           separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _load_progress(path, repo_slug):
+    progress = {"version": PROGRESS_VERSION, "repo": repo_slug, "actions": {}}
+    directory = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(directory) or os.path.islink(directory):
+        raise ValueError("unsafe progress directory: %s" % directory)
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        return progress
+    if not stat.S_ISREG(mode):
+        raise ValueError("unsafe progress file (expected regular file): %s" % path)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                raise ValueError("unsafe progress file (expected regular file): %s" % path)
+            if os.fstat(fh.fileno()).st_size > PROGRESS_MAX_BYTES:
+                raise ValueError("progress file too large: %s" % path)
+            data = fh.read(PROGRESS_MAX_BYTES + 1)
+            if len(data.encode("utf-8")) > PROGRESS_MAX_BYTES:
+                raise ValueError("progress file too large: %s" % path)
+        loaded = json.loads(data)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid progress file %s: %s" % (path, exc)) from exc
+    if (not isinstance(loaded, dict) or set(loaded) != {"version", "repo", "actions"}
+            or type(loaded["version"]) is not int or loaded["version"] != PROGRESS_VERSION
+            or loaded["repo"] != repo_slug or not isinstance(loaded["actions"], dict)):
+        raise ValueError("invalid progress schema or repository: %s" % path)
+    for key, receipt in loaded["actions"].items():
+        if (not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None
+                or not isinstance(receipt, dict)
+                or set(receipt) != {"commented", "closed"}
+                or type(receipt["commented"]) is not bool
+                or type(receipt["closed"]) is not bool
+                or (receipt["closed"] and not receipt["commented"])):
+            raise ValueError("invalid progress acknowledgement: %s" % path)
+    return loaded
+
+
+def _save_progress(progress, path):
+    """Replace a receipt in its own directory after each successful gh call."""
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix=".reconcile-progress-", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(progress, fh, sort_keys=True, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        dir_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
 def apply(actions, dry=True, confirm_close=False, throttle=1.5,
-         runner=None, sleep=time.sleep):
+         runner=None, sleep=time.sleep, progress_path=None):
+    """Return counts of operations performed in this invocation.
+
+    With progress_path, live runs resume successful comments/closes. Dry runs
+    always display every planned action and never read or write progress.
+    A process death between remote success and receipt replacement can still
+    repeat the remote operation on retry.
+    """
     runner = runner or triage.default_gh_runner()
     commented = closed = 0
     repo_slug = None
+    progress = None
+    action_keys = []
     if not dry and actions:
         owner, repo = _owner_repo(actions[0]["issue"])
         if any(_owner_repo(a["issue"]) != (owner, repo) for a in actions):
             print("refusing: actions span multiple repos; expected all in %s/%s"
                   % (owner, repo))
             return (0, 0)
+        repo_slug = "%s/%s" % (owner, repo)
+        if progress_path is not None:
+            progress = _load_progress(progress_path, repo_slug)
+            action_keys = [_action_key(a, repo_slug) for a in actions]
         ok, reason = preflight_authorized(owner, repo, runner=runner)
         if not ok:
             print("refusing: authenticated gh user is not an owner/admin of %s/%s — %s"
                   % (owner, repo, reason))
             return (0, 0)
-        repo_slug = "%s/%s" % (owner, repo)
-    for a in actions:
+    for index, a in enumerate(actions):
         n = _issue_number(a["issue"])
         if dry:
             print("DRY comment #%s (%s): %s" % (n, a["cohort"], a["comment"][:60]))
@@ -270,13 +360,24 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
                 print("DRY close   #%s" % n)
             commented += 1
             continue
-        triage.gh(["gh", "issue", "comment", n, "--repo", repo_slug, "--body", a["comment"]],
-                  runner=runner, sleep=sleep)
-        sleep(throttle)
-        commented += 1
-        if a["close"] and confirm_close:
+        receipt = None
+        if progress is not None:
+            key = action_keys[index]
+            receipt = progress["actions"].setdefault(key, {"commented": False, "closed": False})
+        if receipt is None or not receipt["commented"]:
+            triage.gh(["gh", "issue", "comment", n, "--repo", repo_slug, "--body", a["comment"]],
+                      runner=runner, sleep=sleep)
+            if receipt is not None:
+                receipt["commented"] = True
+                _save_progress(progress, progress_path)
+            sleep(throttle)
+            commented += 1
+        if a["close"] and confirm_close and (receipt is None or not receipt["closed"]):
             triage.gh(["gh", "issue", "close", n, "--repo", repo_slug, "--reason", "not planned"],
                       runner=runner, sleep=sleep)
+            if receipt is not None:
+                receipt["closed"] = True
+                _save_progress(progress, progress_path)
             sleep(throttle)
             closed += 1
     return commented, closed
@@ -301,6 +402,7 @@ def main(argv=None):
     p_apply.add_argument("--no-dry-run", dest="dry_run", action="store_false")
     p_apply.add_argument("--confirm-close", action="store_true")
     p_apply.add_argument("--throttle", type=float, default=1.5)
+    p_apply.add_argument("--progress", help="receipt path (default: ACTIONS_JSON.progress.json)")
 
     a = ap.parse_args(argv)
 
@@ -329,7 +431,8 @@ def main(argv=None):
         with open(a.actions_json, encoding="utf-8") as fh:
             actions = json.load(fh)
         commented, closed = apply(actions, dry=a.dry_run, confirm_close=a.confirm_close,
-                                  throttle=a.throttle)
+                                  throttle=a.throttle,
+                                  progress_path=a.progress or a.actions_json + ".progress.json")
         print("%s: commented %d, closed %d"
              % ("DRY RUN" if a.dry_run else "LIVE", commented, closed))
         return 0
