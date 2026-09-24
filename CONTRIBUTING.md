@@ -10,8 +10,8 @@ Thanks for your interest in improving Panopticon.
 4. Add or update tests for changed behavior.
 5. Run the full test suite and lint locally:
    ```bash
-   python -m pytest tests/ -q
-   python -m ruff check skill/scripts/ tests/
+   python3 -m pytest tests/ -q
+   python3 -m ruff check skill/scripts/ tests/
    ```
 6. Open a pull request against `main`.
 
@@ -30,4 +30,8 @@ Thanks for your interest in improving Panopticon.
 
 ## Reporting security issues
 
-Please open a private security advisory rather than a public issue for vulnerabilities in the tool itself.
+See [SECURITY.md](SECURITY.md): open a private security advisory (Security tab, "Report a vulnerability") rather than a public issue for vulnerabilities in the tool itself.
+
+## Conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
