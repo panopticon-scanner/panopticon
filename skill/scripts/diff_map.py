@@ -878,9 +878,10 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
         return {"worktree": wt, "base": base, "head_sha": head_sha}   # reuse (resume)
 
     # #2041: the fetch below keeps the operator's environment, so the checkout's
-    # OWN `.git/config` can still make it run a command (measured: a repo-local
-    # `core.sshCommand` on an `ssh://` remote, `remote.<name>.uploadpack` on a
-    # local one, both under the two pins the fetch carries). The owner's ruling
+    # own config can still make it run a command (measured, all under the pins
+    # the fetch carries: a repo-local `core.sshCommand` on an `ssh://` remote,
+    # `remote.origin.uploadpack` on a local one, `core.askPass` on an http remote
+    # that answers 401). The owner's ruling
     # is REFUSE WITH REMEDY, not empty: `core.sshCommand` is how a private
     # repository is legitimately reached, which is the case this exemption
     # exists for, and the operator's GLOBAL config -- which the fetch still
