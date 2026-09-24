@@ -15,7 +15,7 @@ CATALOG = os.path.join(REPO_ROOT, ".github", "labels.yml")
 
 def _dry_run(catalog):
     # A private gh executable makes an accidental non-dry run harmless.
-    with tempfile.TemporaryDirectory(prefix="panopticon-labels-", dir="/private/tmp") as root:
+    with tempfile.TemporaryDirectory(prefix="panopticon-labels-") as root:
         bin_dir = os.path.join(root, "bin")
         os.mkdir(bin_dir)
         test_home = os.path.join(root, "test-home")
