@@ -454,6 +454,10 @@ def reconcile(plan, tools, resolved, run=None):
                 if isinstance(domain, str) and domain in groups_schema.DOMAINS})]
     coverage = {
         "adapters": tools.dispositions or {},
+        "tools_file_partial": {
+            name: d["file_coverage"] for name, d in (tools.dispositions or {}).items()
+            if isinstance(d, dict) and isinstance(d.get("file_coverage"), dict)
+            and d["file_coverage"].get("status") == "partial"},
         # #1578 (SEC-G2B), widened by #1740: the name-based drops, per
         # segment (vendored / virtualenv-by-name / fixture-corpus); schema has the
         # why. #1701 fix round 1 (F2): ONE tally, split in two. `gated` is what

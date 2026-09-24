@@ -54,6 +54,14 @@ class TestCertify(unittest.TestCase):
     def _crit(self):
         return [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
 
+    def test_partial_file_coverage_qualifies_certification_without_erasing_gate(self):
+        for findings, expected in (([], "PASS"), (self._crit(), "FAIL")):
+            result = grading_mod.certify("A", findings, "high", set(), [],
+                                        tools_file_partial={"eslint-security": {"status": "partial"}})
+            self.assertEqual(result["gate"], expected)
+            self.assertFalse(result["coverage_certified"])
+            self.assertIn("partial scanner file coverage: eslint-security", result["coverage_note"])
+
     def test_clean_complete_pass_real_grade(self):
         r = grading_mod.certify("A", [], "high", set(), [])
         self.assertEqual(r["gate"], "PASS")
@@ -574,7 +582,7 @@ reconciled = types.SimpleNamespace(
     groups_meta=[{"name": "App", "files": ["app.py"], "parent": "App"}],
     panels_incomplete=[], tools_absent=[], tools_network_excluded=[], integrity_ok=True,
     cell_audit={"missing_floor": []}, tools_manifest_invalid=None,
-    gated_suppressed=[], delta_scope_suppressed_git_drivers=None)
+    gated_suppressed=[], delta_scope_suppressed_git_drivers=None, coverage={})
 run = types.SimpleNamespace(target=sys.argv[1], fail_on=None, gate_unverified=False)
 
 graded = grading_mod.grade_report(run, resolved, reconciled)

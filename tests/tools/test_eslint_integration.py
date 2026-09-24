@@ -18,6 +18,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from _test_helpers import assert_adapter_finds, skip_or_fail
 from scripts.tools.eslint_security import EslintSecurityAdapter
@@ -77,7 +78,7 @@ class TestEslintSecurityIntegration(unittest.TestCase):
             self.assertFalse(os.path.isabs(path), path)
             self.assertEqual(finding["severity"], "HIGH")
 
-    def test_malformed_typescript_and_jsx_fail_parsing(self):
+    def test_malformed_sources_retain_native_findings_and_partial_coverage(self):
         for name, source in (("bad.ts", "const x: = 1;"),
                              ("bad.jsx", "const x = <div>;"),
                              ("bad.tsx", "const x: = <div/>;")):
@@ -85,8 +86,11 @@ class TestEslintSecurityIntegration(unittest.TestCase):
                 adapter, raw, _ = self._scan({"nested/" + name: source,
                                               "good.js": "eval(process.argv[2]);"})
                 self.assertTrue(any(row.get("fatalErrorCount") for row in json.loads(raw)))
-                with self.assertRaisesRegex(ValueError, "ESLint parsing failed"):
-                    adapter.parse(raw, "g1")
+                findings, facts = adapter.parse_with_file_coverage(raw, "g1")
+                self.assertTrue(any(f["severity"] == "HIGH" for f in findings))
+                self.assertEqual(facts["status"], "partial")
+                self.assertEqual(facts["unparsed_files"], 1)
+                self.assertTrue(facts["files"][0]["file"].endswith("/nested/" + name))
 
     def test_inline_disable_directives_cannot_hide_eval(self):
         source = 'const input = process.argv[2]; eval(input);'
@@ -118,6 +122,20 @@ class TestEslintSecurityIntegration(unittest.TestCase):
                                 "security/detect-eval-with-expression"
                                 for f in findings), findings)
             self.assertFalse(os.path.exists(marker))
+
+    def test_absent_trusted_parser_runs_real_js_jsx_and_discloses_ts_gaps(self):
+        with mock.patch("scripts.tools.eslint_security._TS_PARSER_ENTRY", "/nonexistent/trusted/parser.js"):
+            adapter, raw, _ = self._scan({
+                "app.js": "eval(process.argv[2]);",
+                "view.jsx": "const view = <div/>; eval(process.argv[2]);",
+                "app.ts": "const value: string = process.argv[2]; eval(value);",
+                "view.tsx": "const view: object = <div/>; eval(process.argv[2]);",
+            }, {"node_modules/@typescript-eslint/parser/dist/index.js": "throw Error('hostile');"})
+        findings, facts = adapter.parse_with_file_coverage(raw, "g1")
+        self.assertEqual(sum(f["severity"] == "HIGH" for f in findings), 2)
+        self.assertEqual(facts["unavailable_files"], 2)
+        self.assertEqual(facts["unparsed_files"], 0)
+        self.assertEqual(facts["capabilities_unavailable"], ["typescript_parser"])
 
     def test_package_only_tree_is_clean(self):
         adapter, raw, _ = self._scan({}, {"package.json": "{}"})

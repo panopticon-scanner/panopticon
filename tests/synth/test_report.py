@@ -2787,6 +2787,25 @@ class TestCoverageDivergence(unittest.TestCase):
         )
         self.assertNotIn("code", r["meta"]["coverage"]["divergence"]["panels"])
 
+    def test_partial_eslint_facts_reach_report_and_qualify_summary(self):
+        from scripts.ingest_tools import ingest_dir_detailed
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "eslint-security.json"), "w") as fh:
+                json.dump([{"filePath": "/src/bad.js", "fatalErrorCount": 1, "messages": []}], fh)
+            findings, dispositions = ingest_dir_detailed(directory, "g1")
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan_mod.PlanInputs(groups_meta=self.GROUPS, scout_requested=["eslint-security"]),
+            tools=tool_axis_mod.ToolAxis(
+                tools_ran=tool_axis_mod.tools_ran_from_dispositions(dispositions),
+                dispositions=dispositions),
+        ))
+        self.assertEqual(r["meta"]["coverage"]["tools_file_partial"]["eslint-security"]["unparsed_files"], 1)
+        self.assertFalse(r["summary"]["coverage_certified"])
+        self.assertIn("partial scanner file coverage", r["summary"]["coverage_note"])
+        self.assertEqual(r["summary"]["gate"], "PASS")
+
     def test_tool_noscan_is_disclosed_without_sinking_the_gate(self):
         # #1335: a semgrep that scanned 0 files gets no coverage credit (it is
         # absent from tools_ran), but it is NOT a coverage loss the operator can
