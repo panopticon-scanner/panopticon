@@ -352,8 +352,10 @@ def test_duplicate_or_missing_security_tool_fails():
     with pytest.raises(audit.AuditError, match="duplicate tool"):
         instance.run()
 
-    # A short set is the ingestion race, so it is polled (one attempt here)
-    # and then fails closed: waiting never invents the missing tool.
+    # A short set is the ingestion race, so it is polled before it fails;
+    # `attempts=1` makes this the bound's final read, so it fails closed at
+    # once (the polling itself is covered by the late-arrival and
+    # never-arrives cases below): waiting never invents the missing tool.
     missing = security_rows()[:-1]
     instance, _runner, _output, sleeps = run_with(
         [head(), status(), missing, head()], attempts=1)
@@ -573,3 +575,35 @@ def test_main_builds_only_the_hardened_default_runner(monkeypatch):
     ])
     assert rc == 0
     assert seen[0][1] is marker
+
+
+def test_the_polls_worst_case_sits_well_inside_the_audit_steps_ceiling():
+    """Review I1 on #2022: bind the poll arithmetic to the step's budget.
+
+    The audit step in `.github/workflows/security.yml` runs under
+    `timeout-minutes`; nothing else bounds this script. Two waits share
+    `POLL_ATTEMPTS` x `POLL_DELAY_SECONDS` (Security ingestion, then CodeQL),
+    so the pathological run sleeps `2 * (attempts - 1) * delay` before it
+    fails, plus one bounded `gh api` call per read. Inflating either constant
+    -- or sharing the bound with a third wait -- must fail HERE, not surface
+    as a killed step and a red required check. The bar is the same one
+    `tests/test_security_workflow.py` applies to the baseline fetch: "under
+    the ceiling" is not it, "nowhere near it" is (half the budget, so the
+    calls themselves have the other half).
+    """
+    import os
+    import yaml
+
+    workflow = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(audit.__file__))), ".github", "workflows", "security.yml")
+    with open(workflow, encoding="utf-8") as fh:
+        jobs = yaml.safe_load(fh)["jobs"]
+    steps = [step for job in jobs.values() for step in job.get("steps", [])
+             if "code_scanning_audit.py" in str(step.get("run", ""))]
+    assert len(steps) == 1, "exactly one step runs the audit: %r" % steps
+    ceiling = steps[0]["timeout-minutes"] * 60
+    waits = 2  # Security ingestion, then CodeQL -- both on the shared bound
+    worst_sleep = waits * (audit.POLL_ATTEMPTS - 1) * audit.POLL_DELAY_SECONDS
+    assert worst_sleep < ceiling // 2, (
+        "worst-case sleeping %ds vs audit step ceiling %ds (attempts=%d, delay=%ds)"
+        % (worst_sleep, ceiling, audit.POLL_ATTEMPTS, audit.POLL_DELAY_SECONDS))

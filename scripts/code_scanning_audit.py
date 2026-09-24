@@ -242,11 +242,12 @@ class MainAudit:
                 name = row["tool"].get("name")
                 if isinstance(name, str) and name in SECURITY_TOOLS:
                     present.add(name)
-        return ("Security upload must contain exactly %d analyses; saw %d "
-                "(present: %s; missing: %s)"
-                % (len(SECURITY_TOOLS), len(rows),
-                   ", ".join(sorted(present)) or "none",
-                   ", ".join(sorted(SECURITY_TOOLS - present)) or "none"))
+        missing = sorted(SECURITY_TOOLS - present)
+        detail = "present: %s" % (", ".join(sorted(present)) or "none")
+        if missing:  # a surplus has nothing missing; say only what is there
+            detail += "; missing: %s" % ", ".join(missing)
+        return ("Security upload must contain exactly %d analyses; saw %d (%s)"
+                % (len(SECURITY_TOOLS), len(rows), detail))
 
     def _security_analyses(self) -> None:
         """Prove the Security upload processed and produced its four analyses.
