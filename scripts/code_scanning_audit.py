@@ -26,8 +26,9 @@ SECURITY_ANALYSIS_KEY = ".github/workflows/security.yml:scan"
 SECURITY_TOOLS = frozenset({"Bandit", "Gitleaks", "Semgrep OSS", "Trivy"})
 CODEQL_ANALYSIS_KEY = ".github/workflows/codeql.yml:analyze"
 CODEQL_CATEGORY = "/language:python"
-# One bound for both asynchronous-ingestion waits (Security analyses,
-# CodeQL): the same GitHub pipeline is what either check is waiting on.
+# One bound for both asynchronous-ingestion waits -- the Security upload and
+# its analyses, then CodeQL's: the same GitHub pipeline is what either check
+# is waiting on.
 POLL_ATTEMPTS = 6
 POLL_DELAY_SECONDS = 10
 PER_PAGE = 100
@@ -229,8 +230,7 @@ class MainAudit:
         return row
 
     @staticmethod
-    def _analyses_shortfall(rows: list[object],
-                            attempts: int | None = None) -> str:
+    def _analyses_shortfall(rows: list[object]) -> str:
         """Say what the analyses list held against the four tools expected.
 
         Only names from SECURITY_TOOLS reach the message: an unrecognised row
@@ -242,43 +242,52 @@ class MainAudit:
                 name = row["tool"].get("name")
                 if isinstance(name, str) and name in SECURITY_TOOLS:
                     present.add(name)
-        counted = ("saw" if attempts is None
-                   else "after %d attempts saw" % attempts)
-        return ("Security upload must contain exactly %d analyses; %s %d "
+        return ("Security upload must contain exactly %d analyses; saw %d "
                 "(present: %s; missing: %s)"
-                % (len(SECURITY_TOOLS), counted, len(rows),
+                % (len(SECURITY_TOOLS), len(rows),
                    ", ".join(sorted(present)) or "none",
                    ", ".join(sorted(SECURITY_TOOLS - present)) or "none"))
 
     def _security_analyses(self) -> None:
-        """Prove the Security upload's four analyses, waiting out ingestion.
+        """Prove the Security upload processed and produced its four analyses.
 
         GitHub ingests a SARIF upload asynchronously, so right after a push
-        the list is routinely still short on a first read (#2022). A short
-        list is therefore polled on the same bound and seams as the CodeQL
-        wait below. Anything else is final on the spot: no wait removes a
-        surplus row or repairs one whose identity is wrong.
+        the upload is routinely still `pending` and the analyses list still
+        short (#2022). Both are one stage of one pipeline, so both are waited
+        out in one loop, on the same bound and the same injected seams as the
+        CodeQL wait below, and only the final attempt fails.
+
+        Everything else is a verdict rather than a stage, and is final on the
+        spot: a `failed` or malformed upload status, an upload reporting
+        processing errors, a surplus row, a row whose identity is wrong. No
+        amount of waiting repairs any of them.
         """
-        shortfall = self._analyses_shortfall([], self.poll_attempts)
+        last_pending = "Security SARIF upload is pending"
         for attempt in range(self.poll_attempts):
-            rows = self.api.get(
-                self.base + "/code-scanning/analyses",
-                "Security analyses",
-                (("sarif_id", self.target.security_sarif_id),
-                 ("per_page", PER_PAGE)),
-            )
-            if not isinstance(rows, list):
-                raise AuditError("GitHub API returned malformed Security analyses")
-            if len(rows) > len(SECURITY_TOOLS):
-                raise AuditError(self._analyses_shortfall(rows))
-            if len(rows) == len(SECURITY_TOOLS):
-                self._validate_security_rows(rows)
-                return
-            self._require_current_head("main ref during Security analyses wait")
-            shortfall = self._analyses_shortfall(rows, self.poll_attempts)
+            status = self._upload_status(self.target.security_sarif_id,
+                                         "Security", pending_ok=True)
+            if status != "complete":
+                last_pending = "Security SARIF upload is pending"
+            else:
+                rows = self.api.get(
+                    self.base + "/code-scanning/analyses",
+                    "Security analyses",
+                    (("sarif_id", self.target.security_sarif_id),
+                     ("per_page", PER_PAGE)),
+                )
+                if not isinstance(rows, list):
+                    raise AuditError("GitHub API returned malformed Security analyses")
+                if len(rows) > len(SECURITY_TOOLS):
+                    raise AuditError(self._analyses_shortfall(rows))
+                if len(rows) == len(SECURITY_TOOLS):
+                    self._validate_security_rows(rows)
+                    return
+                last_pending = self._analyses_shortfall(rows)
+            self._require_current_head("main ref during Security ingestion wait")
             if attempt + 1 < self.poll_attempts:
                 self.sleep(self.poll_delay)
-        raise AuditError(shortfall)
+        raise AuditError("%s after %d attempts" %
+                         (last_pending, self.poll_attempts))
 
     def _validate_security_rows(self, rows: list[object]) -> None:
         seen: set[str] = set()
@@ -409,7 +418,6 @@ class MainAudit:
 
     def run(self) -> dict[str, int]:
         self._require_current_head("initial main ref")
-        self._upload_status(self.target.security_sarif_id, "Security")
         self._security_analyses()
         self._codeql()
         alerts = self._alerts()

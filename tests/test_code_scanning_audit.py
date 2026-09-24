@@ -214,14 +214,53 @@ def test_failure_on_later_alert_page_cannot_become_a_short_clean_listing():
 
 @pytest.mark.parametrize("payload, message", [
     ({}, "malformed Security SARIF status"),
-    (status("pending"), "Security SARIF upload is pending"),
     (status("failed"), "Security SARIF upload is failed"),
     (status("complete", errors=["scanner secret"]), "processing errors"),
 ])
-def test_missing_pending_failed_or_errored_security_upload_fails(payload, message):
-    instance, _runner, output, _sleeps = run_with([head(), payload])
+def test_missing_failed_or_errored_security_upload_fails_immediately(payload, message):
+    # A *pending* upload is the ingestion race and is waited out instead; see
+    # test_a_pending_security_upload_is_waited_out_then_proven_complete. These
+    # three are verdicts, not a stage, so none of them costs a single sleep.
+    instance, _runner, output, sleeps = run_with([head(), payload])
     with pytest.raises(audit.AuditError, match=message):
         instance.run()
+    assert output == []
+    assert sleeps == []
+
+
+def test_a_pending_security_upload_is_waited_out_then_proven_complete():
+    # The upload status is the same asynchronous ingestion as the analyses
+    # rows, so it is re-read on every attempt of the one bounded wait, and
+    # a pending upload is not yet asked for its rows.
+    responses = [
+        head(),
+        status("pending"), head(),
+        status("pending"), head(),
+        status(), security_rows(),
+        [analysis_row("CodeQL")], status(), [], head(),
+    ]
+    instance, runner, output, sleeps = run_with(responses, attempts=3)
+
+    instance.run()
+
+    assert sleeps == [0.25, 0.25]
+    assert output[-1].endswith(": 0")
+    assert runner.responses == []
+    security_status = "repos/%s/code-scanning/sarifs/%s" % (REPOSITORY, SECURITY_ID)
+    assert endpoints(runner).count(security_status) == 3
+    assert endpoints(runner).count(
+        "repos/%s/code-scanning/analyses" % REPOSITORY) == 2
+
+
+def test_an_upload_that_stays_pending_fails_at_the_poll_bound():
+    responses = [head(), status("pending"), head(), status("pending"), head()]
+    instance, _runner, output, sleeps = run_with(responses, attempts=2)
+
+    with pytest.raises(audit.AuditError) as caught:
+        instance.run()
+
+    assert str(caught.value) == "Security SARIF upload is pending after 2 attempts"
+    assert sleeps == [0.25]
     assert output == []
 
 
@@ -327,10 +366,10 @@ def test_security_analyses_can_arrive_late_with_a_bounded_injected_clock():
     # GitHub ingests one upload's four analyses asynchronously, so the first
     # read of the list can see none of them and the next only some (#2022).
     responses = [
-        head(), status(),
-        [], head(),
-        security_rows()[:2], head(),
-        security_rows(),
+        head(),
+        status(), [], head(),
+        status(), security_rows()[:2], head(),
+        status(), security_rows(),
         [analysis_row("CodeQL")], status(), [], head(),
     ]
     instance, runner, output, sleeps = run_with(responses, attempts=3)
@@ -349,16 +388,17 @@ def test_analyses_that_never_complete_fail_saying_what_was_seen_and_expected():
     rogue["tool"]["name"] = "SECRET-SCANNER"
     partial = [analysis_row("Bandit"), rogue]
     instance, _runner, output, sleeps = run_with(
-        [head(), status(), partial, head(), partial, head()], attempts=2)
+        [head(), status(), partial, head(), status(), partial, head()],
+        attempts=2)
 
     with pytest.raises(audit.AuditError) as caught:
         instance.run()
 
     message = str(caught.value)
-    assert "must contain exactly 4 analyses" in message
-    assert "after 2 attempts saw 2" in message
+    assert "must contain exactly 4 analyses; saw 2" in message
     assert "present: Bandit" in message
     assert "missing: Gitleaks, Semgrep OSS, Trivy" in message
+    assert message.endswith("after 2 attempts")
     assert "SECRET-SCANNER" not in message
     assert sleeps == [0.25]
     assert output == []
