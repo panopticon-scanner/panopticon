@@ -653,8 +653,10 @@ def _wrapped(argv, head):
             if len(argv) == 2:
                 return [], None  # Timestamp removal has no command mode.
             return None, "combines timestamp removal with a command or option"
+        if head == "sudo" and argument == "-h" and len(argv) == 2:
+            return [], None  # Standalone -h requests help; -h HOST runs a command.
         if head == "sudo" and argument in ("-l", "--list", "-v", "--validate",
-                                           "-h", "--help", "-V", "--version"):
+                                           "--help", "-V", "--version"):
             noexec = True  # Explicit sudo query/maintenance modes.
             continue
         if head == "command" and argument in ("-v", "-V"):

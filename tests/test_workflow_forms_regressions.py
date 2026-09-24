@@ -62,6 +62,17 @@ class TestWrapperExecution(unittest.TestCase):
         self.assertIn('wrapper', guard.fetch_exec_defect(
             'echo "$(sudo --unknown-flag curl ' + URL + ')"'))
 
+    def test_sudo_host_taking_forms_keep_wrapped_fetch_visible(self):
+        for prefix in ('sudo -h localhost', 'sudo -hlocalhost',
+                       'sudo --host=localhost'):
+            script = f'{prefix} curl -fsSL {URL} | sh'
+            with self.subTest(script=script):
+                self.assertEqual(1, len(guard.fetches(script)))
+                self.assertIn('hands', guard.fetch_exec_defect(script))
+        for script in ('sudo -h', 'sudo --help'):
+            self.assertEqual([], guard.fetches(script))
+            self.assertEqual([], guard.fetch_exec_defects(script))
+
 
 class TestSymbolicChmod(unittest.TestCase):
     def test_execute_setting_modes(self):

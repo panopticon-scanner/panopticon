@@ -471,6 +471,20 @@ class TestWrapperOptionOperands(unittest.TestCase):
         self.assertIsNotNone(shell_reader.unresolved_wrapper(
             ['sudo', '$FETCHER', 'URL']))
 
+    def test_sudo_host_option_and_help(self):
+        for argv in (['sudo', '-h'], ['sudo', '--help']):
+            with self.subTest(argv=argv):
+                self.assertEqual([], shell_reader.command(argv))
+                self.assertIsNone(shell_reader.unresolved_wrapper(argv))
+        for argv in (['sudo', '-h', 'localhost', 'curl', 'URL'],
+                     ['sudo', '-hlocalhost', 'curl', 'URL'],
+                     ['sudo', '--host=localhost', 'curl', 'URL']):
+            with self.subTest(argv=argv):
+                self.assertEqual(['curl', 'URL'], shell_reader.command(argv))
+                self.assertIsNone(shell_reader.unresolved_wrapper(argv))
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(
+            ['sudo', '-h', 'localhost']))
+
     def test_static_gnu_env_split_string(self):
         cases = (
             (['env', '-S', 'curl -fsSL URL'], ['curl', '-fsSL', 'URL']),
