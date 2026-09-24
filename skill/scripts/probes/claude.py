@@ -11,7 +11,6 @@ What every family shares is reached by module attribute (`common.<name>`), so
 each of those names still has exactly one definition and one patch target.
 The probe-id -> function registry stays in `host_probes.py`.
 """
-from typing import Any
 import json
 import os
 import tempfile
@@ -19,7 +18,7 @@ import tempfile
 from scripts import (collect_usage, dispatch, executable, hosts, model_resolver,
                     read_guard_hook, write_guard_hook)
 
-from . import common
+from . import common, claude_read_guard
 
 
 ENTRY_MODEL_BOUND = "entry-model-bound"
@@ -341,115 +340,13 @@ def probe_write_guard_armed(host, session_root=None, settings_path=None):
 
 READ_GUARD_ARMED = "read-guard-armed"
 
-
+# Keep the historical probe/test call surfaces without re-exporting a sibling.
 def _fake_subagent(parent_transcript, agent_id, entry_id, layout="direct"):
-    """A subagent transcript with the dispatch prompt as its first user
-    record, marker on line 1, in one of the two layouts the read guard binds
-    through: the Agent-tool layout the plan-5 spike measured (`direct`,
-    `<stem>/subagents/agent-<id>.jsonl`) or the Workflow-tool layout the
-    shipped session-mode dispatch workflow relies on (`workflow`,
-    `<stem>/subagents/workflows/<run>/agent-<id>.jsonl`)."""
-    stem = parent_transcript[:-len(".jsonl")]
-    directory = os.path.join(stem, "subagents")
-    if layout == "workflow":
-        directory = os.path.join(directory, "workflows", "wf-probe")
-    os.makedirs(directory, exist_ok=True)
-    record = {"type": "user", "isSidechain": True, "agentId": agent_id,
-              "message": {"role": "user", "content": [
-                  {"type": "text", "text": read_guard_hook.marker_line(entry_id) + "\nDo the work."}]}}
-    with open(os.path.join(directory, "agent-%s.jsonl" % agent_id), "w", encoding="utf-8") as fh:
-        fh.write(json.dumps(record) + "\n")
+    return claude_read_guard._fake_subagent(parent_transcript, agent_id, entry_id, layout)
 
 
 def _round_trip_confines_reads():
-    """Arm the read guard in a throwaway sandbox, bind two fake subagents
-    through fake transcripts, and drive the ten payloads of design spec 5,
-    plus four env-binding payloads of spec 5.3 (plan 6), through
-    adjudicate(). Never touches the session's real settings, scope file or
-    transcripts. Returns (ok, detail)."""
-    try:
-        with tempfile.TemporaryDirectory() as sandbox:
-            settings = os.path.join(sandbox, "settings.json")
-            scope_file = os.path.join(sandbox, "read-scope.json")
-            inside = os.path.join(sandbox, "cell", "a.py")
-            outside = os.path.join(sandbox, "elsewhere", "b.py")
-            root = os.path.join(sandbox, "root")
-            for p in (inside, outside, os.path.join(root, "c.py")):
-                os.makedirs(os.path.dirname(p), exist_ok=True)
-                with open(p, "w", encoding="utf-8") as fh:
-                    fh.write("")
-            parent = os.path.join(sandbox, "session.jsonl")
-            with open(parent, "w", encoding="utf-8") as fh:
-                fh.write("")
-            _fake_subagent(parent, "agent-x", "probe-cell")
-            _fake_subagent(parent, "agent-z", "probe-scan")
-            _fake_subagent(parent, "agent-w", "probe-cell", layout="workflow")
-            read_guard_hook.install(
-                [{"id": "probe-cell", "scope": {"files": [inside], "dirs": [], "reads": []}},
-                 {"id": "probe-scan", "scope": {"files": [], "dirs": [root], "reads": []}}],
-                settings_path=settings, scope_path=scope_file)
-            if not read_guard_hook.guard_state(settings_path=settings, scope_path=scope_file)["armed"]:
-                return False, "install() did not register the PreToolUse hook"
-
-            def call(tool, agent, **tool_input):
-                payload = {"tool_name": tool, "tool_input": tool_input,
-                           "transcript_path": parent, "cwd": sandbox}
-                if agent:
-                    payload["agent_id"] = agent
-                # A stray PANOPTICON_ENTRY_ID in the operator's shell must
-                # never change this probe's verdict -- env is explicit here.
-                return read_guard_hook.adjudicate(payload, scope_file, env={})[0]
-
-            cell_dir = os.path.dirname(inside)
-            rows = (
-                ("bound Read inside scope", call("Read", "agent-x", file_path=inside), True),
-                ("bound Read outside scope", call("Read", "agent-x", file_path=outside), False),
-                ("bound Grep of an in-scope file", call("Grep", "agent-x", pattern="x", path=inside), True),
-                ("bound Grep over a directory", call("Grep", "agent-x", pattern="x", path=cell_dir), False),
-                ("bound Glob", call("Glob", "agent-x", pattern="*.py", path=cell_dir), False),
-                ("unbound subagent Read", call("Read", "agent-y", file_path=inside), False),
-                ("orchestrator Read outside any scope", call("Read", None, file_path=outside), True),
-                ("directory-scoped Grep inside its dir", call("Grep", "agent-z", pattern="x", path=root), True),
-                ("directory-scoped Glob inside its dir", call("Glob", "agent-z", pattern="*.py", path=root), True),
-                ("directory-scoped Read outside its dir", call("Read", "agent-z", file_path=outside), False),
-                # The Workflow-tool transcript layout (Claude family PR): the
-                # shipped dispatch workflow binds every entry through it.
-                ("workflow-layout Read inside scope", call("Read", "agent-w", file_path=inside), True),
-                ("workflow-layout Read outside scope", call("Read", "agent-w", file_path=outside), False),
-            )
-            for name, got, want in rows:
-                if got != want:
-                    return False, "the guard %s: %s" % ("ALLOWED" if got else "DENIED", name)
-
-            # Spec 5.3 (plan 6): the env binding the headless runner relies on.
-            env_rows: tuple[tuple[str, dict[str, Any], dict[str, str], bool], ...] = (
-                ("env-bound read inside its entry",
-                 {"tool_name": "Read", "tool_input": {"file_path": inside}},
-                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, True),
-                ("env-bound read outside its entry",
-                 {"tool_name": "Read", "tool_input": {"file_path": outside}},
-                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, False),
-                ("agent_type with no binding",
-                 {"tool_name": "Read", "tool_input": {"file_path": inside},
-                  "agent_type": "panopticon-scout"}, {}, False),
-                # The real headless payload shape: agent_type AND the env id
-                # both present. The env binding governs either way (#1344
-                # plan 6 review finding 1).
-                ("env-bound read inside its entry despite agent_type",
-                 {"tool_name": "Read", "tool_input": {"file_path": inside},
-                  "agent_type": "panopticon-domain-panel"},
-                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, True),
-            )
-            for name, env_payload, env, want in env_rows:
-                got = read_guard_hook.adjudicate(env_payload, scope_file, env=env)[0]
-                if got != want:
-                    return False, "env binding: the guard %s: %s" % (
-                        "ALLOWED" if got else "DENIED", name)
-            read_guard_hook.uninstall(settings_path=settings, scope_path=scope_file)
-    except OSError as exc:
-        return False, common.failure_detail(
-            exc, "the read-guard sandbox round-trip could not run")
-    return True, "arm/bind/deny round-trip ok (%d rows)" % (len(rows) + len(env_rows))
+    return claude_read_guard._round_trip_confines_reads()
 
 
 def probe_read_guard_armed(host, session_root=None, settings_path=None):

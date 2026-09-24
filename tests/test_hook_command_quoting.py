@@ -20,6 +20,8 @@ the shell created in the test's own temporary directory.
 import json
 import os
 import shlex
+import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -76,9 +78,22 @@ class TestReadGuardHookCommand(HookCommandCase):
     def test_a_hostile_scope_path_arrives_as_one_argument(self):
         with tempfile.TemporaryDirectory() as d:
             scope = os.path.join(d, HOSTILE_NAME)
-            command = rg._hook_entry(scope)["hooks"][0]["command"]
-            argv = argv_through_shell(command, cwd=d)
-            self.assertEqual([os.path.abspath(rg.__file__),
+            # This private stub stands in for the pinned absolute interpreter;
+            # never let the shared PATH-stub helper write to sys.executable.
+            stub = os.path.join(d, "trusted-python")
+            with open(stub, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexec %s -c 'import json, sys; "
+                         "print(json.dumps(sys.argv[1:]))' \"$@\"\n"
+                         % shlex.quote(sys.executable))
+            os.chmod(stub, 0o755)
+            with mock.patch.object(rg, "_trusted_hook_argv",
+                                   return_value=(stub, "-I", os.path.abspath(rg.__file__))):
+                command = rg._hook_entry(scope)["hooks"][0]["command"]
+            proc = subprocess.run(command, shell=True, cwd=d, capture_output=True,
+                                  text=True, timeout=5)  # noqa: S602
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            argv = json.loads(proc.stdout)
+            self.assertEqual(["-I", os.path.abspath(rg.__file__),
                               os.path.abspath(scope)], argv,
                              "the scope path did not survive the shell intact")
             self.assert_no_marker(d)
