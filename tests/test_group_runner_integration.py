@@ -117,7 +117,11 @@ class TestFanOutIntegration(unittest.TestCase):
                     proc = run_hook(tool, path)
                     self.assertEqual(proc.returncode, 0, proc.stderr)
                     if denied:
+                        denial = json.loads(proc.stdout)
+                        hook_output = denial["hookSpecificOutput"]
+                        self.assertEqual(hook_output["hookEventName"], "PreToolUse")
+                        self.assertEqual(hook_output["permissionDecision"], "deny")
                         self.assertIn("peer entry's artifact is not writable",
-                                      proc.stdout)
+                                      hook_output["permissionDecisionReason"])
                     else:
                         self.assertEqual(proc.stdout, "")

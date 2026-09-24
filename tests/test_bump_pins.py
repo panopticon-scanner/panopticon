@@ -239,12 +239,26 @@ RUSTUP_ARTIFACTS = {
 }
 RUSTUP_SHAS = {arch: hashlib.sha256(body).hexdigest()
                for arch, body in RUSTUP_ARTIFACTS.items()}
+# Independent upstream oracle: neither the fake server nor expected requests
+# may follow bump_pins.RUSTUP_TRIPLES/RUSTUP_ARCHIVE. A production mapping swap
+# must put the wrong digest into both the direct result and rewritten Dockerfile.
+EXPECTED_RUSTUP_TRIPLES = {
+    "AMD64": "x86_64-unknown-linux-gnu",
+    "ARM64": "aarch64-unknown-linux-gnu",
+}
+EXPECTED_RUSTUP_ARCHIVE = (
+    "https://static.rust-lang.org/rustup/archive/{version}/{triple}/rustup-init"
+)
+
+
+def _rustup_url(version, triple):
+    return EXPECTED_RUSTUP_ARCHIVE.format(version=version, triple=triple)
 
 
 def _rustup_responses(version, *, swapped=False, mismatched=False):
     responses = {}
-    for arch, triple in bp.RUSTUP_TRIPLES.items():
-        url = bp.RUSTUP_ARCHIVE.format(v=version, triple=triple)
+    for arch, triple in EXPECTED_RUSTUP_TRIPLES.items():
+        url = _rustup_url(version, triple)
         artifact_arch = {"AMD64": "ARM64", "ARM64": "AMD64"}[arch] if swapped else arch
         responses[url] = RUSTUP_ARTIFACTS[artifact_arch]
         responses[url + ".sha256"] = ("f" * 64 if mismatched and arch == "ARM64"
@@ -262,8 +276,8 @@ def _rustup_fetch(responses, requested):
 
 
 def _rustup_urls(version):
-    return [url + suffix for triple in bp.RUSTUP_TRIPLES.values()
-            for url in [bp.RUSTUP_ARCHIVE.format(v=version, triple=triple)]
+    return [_rustup_url(version, triple) + suffix
+            for triple in EXPECTED_RUSTUP_TRIPLES.values()
             for suffix in (".sha256", "")]
 
 
