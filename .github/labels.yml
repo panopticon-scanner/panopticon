@@ -51,7 +51,7 @@ evidence:
     description: "An advisor refuted the claim; kept for the audit trail"
   - name: "evidence:backup-scope-limited"
     color: "0b5394"
-    description: "The primary advisor confirmed it; the adversarial backup was not granted the files it needed to check"
+    description: "Primary advisor confirmed it; the adversarial backup was not granted the files it needed to check"
 
 panel:
   - name: "panel:code"
