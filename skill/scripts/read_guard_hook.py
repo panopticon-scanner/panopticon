@@ -1,18 +1,46 @@
-"""Standalone Claude PreToolUse guard for a dispatched entry's Read/Grep/Glob.
+"""PreToolUse read-guard hook: a dispatched subagent may Read/Grep/Glob only
+inside the scope its dispatch entry declares (#1070, first-class-hosts spec 7.2;
+design spec 2026-09-12-panopticon-5.2-claude-read-confinement-design.md).
 
-The hook is session-wide and receives an agent id, not an entry id. It binds
-the agent through its transcript's first user record, whose driver-rendered
-prompt begins ``panopticon-entry: <entry id>``. Claude writes the transcript
-under `<stem>/subagents/agent-<id>.jsonl` or, for Workflow dispatch, under
-`<stem>/subagents/workflows/<wf>/`. Tool results cannot rewrite that record.
+THE CRUX (design 1): a hook registered in `.claude/settings.local.json` is
+session-wide, so the payload identifies the AGENT (`agent_id`), never the
+dispatch ENTRY. The write guard sidesteps this with one union allowlist; a
+union of read scopes would approximate the whole repository. So this hook
+BINDS `agent_id` to an entry through the subagent's own transcript, which
+Claude Code writes beside the parent transcript the payload names
+(`<stem>/subagents/agent-<id>.jsonl`, or `<stem>/subagents/workflows/<wf>/`
+for a Workflow-dispatched agent) and whose FIRST user record is the dispatch
+prompt verbatim -- measured in the spike, both layouts, present at the first
+tool call. Every entry prompt therefore begins with ``panopticon-entry: <entry
+id>``, rendered by the driver (phases/requests.py) and never by a template.
+Only the orchestrator writes that first record, so hostile target content --
+which reaches an agent only through tool results -- cannot re-bind it.
 
-Only read tools are confined. The orchestrator (no agent id or type) remains
-unconfined; the headless `claude -p` reviewer binds through ENV_ENTRY_ID.
-An unbound subagent, unknown entry, unresolvable path, or bad scope file denies.
+SCOPE, STATED PLAINLY: this covers `_READ_TOOLS` only. No fan-out shell grants
+Bash (`registered-shell-tools` proves that), so Bash needs no adjudication here
+and gets none. The orchestrator -- no `agent_id` and no `agent_type` -- is
+never confined, exactly as the write guard trusts it: it runs the driver. Plan
+6 adds a second identity, `agent_type` with no `agent_id`: the headless
+runner's `claude -p` process IS the reviewer, so that payload shape is a
+session nothing bound, and ENV_ENTRY_ID binds it (spec 5.3).
 
-Claude runs a shell command with quoted arguments (#1633): the trusted absolute
-interpreter, -I, this standalone script, and the absolute scope path.
-No package import is available, so settings plumbing stays local.
+FAIL-CLOSED WHILE ARMED: a subagent that cannot be bound, an entry id the armed
+scope does not name, an unresolvable path, or a missing/malformed scope file all
+DENY, with a reason the agent can read. Never a crash, never a silent allow --
+which is why the trusted launch argv below is computed on ACCESS rather than at
+import (#2006). In the hook PROCESS a crash is fail-OPEN: Claude Code treats
+exit 2 as a block and any other non-zero as a non-blocking error, so the Read
+proceeds. `main()`'s `except Exception` is this module's only never-crash
+envelope, and nothing may raise outside it.
+
+CLAUDE-ONLY BY CONSTRUCTION, like the write guard; other families confine
+reads their own way (spec 7.2). Stdlib-only and self-locating: Claude Code
+runs this as ONE SHELL STRING with every element shell-quoted (#1633) -- the
+trusted absolute interpreter, ``-I``, this standalone script, and the absolute
+scope path, because PATH and PYTHONPATH must not choose the interpreter (or
+inject a `sitecustomize`) for a confinement decision (#1996) -- and with no
+package on sys.path, which is why the settings plumbing below copies
+write_guard_hook's (plan 5, R-P5-5).
 """
 import glob
 import json
@@ -423,10 +451,33 @@ def _trusted_hook_argv():
     return executable, "-I", os.path.abspath(__file__)
 
 
-_HOOK_ARGV = _trusted_hook_argv()
-_HOOK_CMD = hook_command(*_HOOK_ARGV)
-_HOOK_ENTRY = {"matcher": _MATCHER,
-               "hooks": [{"type": "command", "command": _HOOK_CMD}]}
+def __getattr__(name):
+    """`_HOOK_ARGV` / `_HOOK_CMD` / `_HOOK_ENTRY`, computed on ACCESS (#2006).
+
+    These were module constants, so `_trusted_hook_argv()` ran while the module
+    body executed and its RuntimeError escaped as an IMPORT-time raise --
+    outside `main()`'s `except Exception`, this module's only never-crash
+    envelope, and in the hook process a crash is fail-OPEN (any non-2 exit is a
+    non-blocking error, so the Read proceeds). Reproduced:
+    `python3 -c "import sys; sys.executable=''; import read_guard_hook"`.
+
+    PEP 562 keeps every existing consumer's spelling (`rg._HOOK_CMD`) while
+    moving the evaluation to the point of use. Every one of those uses is on
+    the DRIVER side -- `install`, the readiness probe, the tests -- where a
+    raise is a loud refusal to arm, which is the fail-closed direction. The
+    hook process reaches the same check through `main()`, where it denies.
+    Deliberately uncached: `_hook_entry` re-derives the argv per call for the
+    same reason, and three path calls are not worth a stale answer.
+    """
+    if name == "_HOOK_ARGV":
+        return _trusted_hook_argv()
+    if name == "_HOOK_CMD":
+        return hook_command(*_trusted_hook_argv())
+    if name == "_HOOK_ENTRY":
+        return {"matcher": _MATCHER,
+                "hooks": [{"type": "command",
+                           "command": hook_command(*_trusted_hook_argv())}]}
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 DEFAULT_SETTINGS_PATH = ".claude/settings.local.json"
 DEFAULT_SCOPE_PATH = ".panopticon/read-scope.json"
@@ -676,6 +727,11 @@ def main(argv=None):
     if payload.get("tool_name", "") not in _READ_TOOLS:
         return 0
     try:
+        # #2006: the trusted-interpreter check, INSIDE the envelope. It used to
+        # run at import, where its RuntimeError crashed the hook -- and a
+        # crashed hook is a permitted read. Here the same condition, with the
+        # same diagnostic, becomes the deny below.
+        _trusted_hook_argv()
         allow, reason = adjudicate(payload, _resolve_scope_path(args[0] if args else None))
     except Exception as exc:  # noqa: BLE001 -- fail CLOSED, never crash the hook
         # A non-2 exit is NON-blocking in Claude Code (the tool proceeds), so

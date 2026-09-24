@@ -1142,3 +1142,85 @@ class TestAtomicWriteRefusesASymlinkedTmp(unittest.TestCase):
                 self.assertEqual(fh.read(), "PRECIOUS")
             with open(settings, encoding="utf-8") as fh:
                 self.assertIn("PreToolUse", fh.read())
+
+
+class TestTheHookNeverCrashesAtImport(unittest.TestCase):
+    """#1996 finding 1: the one raise that sat OUTSIDE the fail-closed envelope.
+
+    `_HOOK_ARGV = _trusted_hook_argv()` ran at module IMPORT, and
+    `_trusted_hook_argv` raises when `sys.executable` is empty or relative.
+    `main()`'s `except Exception` is the module's never-crash contract and it
+    cannot cover an import-time raise -- and in the hook PROCESS a crash is
+    fail-OPEN, because Claude Code treats any non-2 exit as a non-blocking
+    error and lets the Read proceed. The evaluation is now lazy and happens
+    inside main()'s try, so the same condition DENIES.
+    """
+
+    SCRIPT = os.path.abspath(rg.__file__)
+
+    def _import_with(self, executable):
+        """Import the module in a FRESH interpreter with sys.executable set.
+
+        A fresh process, not `mock.patch`: the defect is what happens while the
+        module body runs, which an already-imported module can no longer show.
+        `-I` mirrors the registered hook's own launch; the explicit
+        `sys.path.insert` stands in for the script directory that `-I <script>`
+        puts on the path and `-I -c` does not.
+        """
+        program = ("import sys; sys.path.insert(0, %r); sys.executable = %r; "
+                   "import read_guard_hook; print('imported')"
+                   % (os.path.dirname(self.SCRIPT), executable))
+        return __import__("subprocess").run(
+            [os.path.realpath(os.sys.executable), "-I", "-c", program],
+            capture_output=True, text=True, timeout=60)
+
+    def test_importing_with_an_unusable_interpreter_does_not_raise(self):
+        for executable in ("", "python3", "/missing/panopticon-python"):
+            with self.subTest(executable=executable):
+                proc = self._import_with(executable)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("imported", proc.stdout)
+                self.assertNotIn("RuntimeError", proc.stderr)
+
+    def test_main_denies_instead_of_crashing_when_the_interpreter_is_unusable(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent = os.path.join(d, "s.jsonl"); open(parent, "w").close()
+            a = os.path.join(d, "a.py"); open(a, "w").close()
+            scope_path = os.path.join(d, "scope.json")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({"e": _scope(files=[a])}, fh)
+            _write_subagent_transcript(parent, "a", "panopticon-entry: e\n")
+            payload = json.dumps({"tool_name": "Read", "agent_id": "a",
+                                  "transcript_path": parent,
+                                  "tool_input": {"file_path": a}})   # an ALLOWED read
+            out = io.StringIO()
+            with mock.patch.object(rg.sys, "executable", ""), \
+                 mock.patch("sys.stdin", io.StringIO(payload)), \
+                 contextlib.redirect_stdout(out):
+                rc = rg.main([scope_path])
+            # The module's deny shape: exit 0 plus the deny JSON. A non-2,
+            # non-zero exit is exactly the non-blocking error this must not be.
+            self.assertEqual(rc, 0)
+            body = json.loads(out.getvalue())["hookSpecificOutput"]
+            self.assertEqual(body["permissionDecision"], "deny")
+            self.assertIn("interpreter", body["permissionDecisionReason"])
+
+    def test_the_lazy_constants_still_answer_as_module_attributes(self):
+        self.assertEqual(list(rg._HOOK_ARGV),
+                         [os.path.realpath(os.sys.executable), "-I", self.SCRIPT])
+        self.assertEqual(shlex.split(rg._HOOK_CMD), list(rg._HOOK_ARGV))
+        self.assertEqual(rg._HOOK_ENTRY["matcher"], rg._MATCHER)
+        self.assertEqual(rg._HOOK_ENTRY["hooks"][0]["command"], rg._HOOK_CMD)
+        with self.assertRaises(AttributeError):
+            rg._HOOK_NOT_A_REAL_NAME
+
+    def test_the_docstring_keeps_its_design_provenance(self):
+        # #1996 finding 2: the rewrite deleted the only in-tree pointer to the
+        # read-confinement design doc, and the fail-closed contract this class
+        # tests. Both are load-bearing prose, so pin them.
+        doc = rg.__doc__
+        for fragment in ("2026-09-12-panopticon-5.2-claude-read-confinement-design.md",
+                         "#1070", "first-class-hosts spec 7.2", "R-P5-5",
+                         "Never a crash, never a silent allow"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, doc)
