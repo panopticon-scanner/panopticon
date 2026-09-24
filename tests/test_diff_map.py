@@ -1,5 +1,5 @@
 # tests/test_diff_map.py
-import contextlib, io, json, os, unittest, subprocess, tempfile, shutil
+import contextlib, io, json, os, shlex, unittest, subprocess, tempfile, shutil
 from unittest import mock
 
 import scripts.diff_map as diff_map
@@ -1001,6 +1001,171 @@ class TestPrWorktree(unittest.TestCase):
                     diff_map.acquire_pr(7, repo=repo, runner=runner)
             self.assertIn("panopticon --pr: ", buf.getvalue())
             self.assertIn("overwrote", buf.getvalue())
+
+
+class TestPrAcquisitionIsConfined(unittest.TestCase):
+    """#2012: `--pr` acquisition must run no command the TARGET authored.
+
+    The end-to-end exercise the issue asked for, on real repositories: a bare
+    "origin", an operator clone configured the way a repository's own
+    CONTRIBUTING file asks people to configure it (`git config core.hooksPath
+    .githooks`, plus a content filter), and a PR head fetched into a throwaway
+    worktree. Nothing here is a mock: `acquire_pr` runs its real steps, and the
+    only call the injected runner answers itself is `gh pr view`, which needs a
+    GitHub API.
+
+    Three planted vectors, three mechanisms, each measured on git 2.50 and each
+    proved LIVE with plain git before its absence is asserted -- an absent
+    marker is also what an inert fixture produces:
+
+      - `reference-transaction` fires on the acquisition's FETCH (the one call
+        that keeps the operator's environment, for the credential helper, and
+        so carries the hooks pin by hand);
+      - `post-checkout` fires on `worktree add`, from the repository's own
+        `.githooks/` directory;
+      - `filter.evil.smudge` runs on `worktree add` and its output REPLACES the
+        committed bytes, so `payload.txt` reads `SMUDGED` rather than what the
+        PR actually committed. A review of the replaced bytes reviews the
+        filter's output, not the PR.
+    """
+
+    MARKERS = ("hook-ran", "ref-hook-ran", "smudge-ran")
+    PAYLOAD = b"COMMITTED PAYLOAD\n"
+
+    def _marker_script(self, base, marker):
+        return "#!/bin/sh\nprintf hit > %s\nexit 0\n" % shlex.quote(
+            os.path.join(base, marker))
+
+    def _write(self, path, text, mode=None):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        if mode is not None:
+            os.chmod(path, mode)
+
+    def _fixture(self):
+        """(base, clone, pr_sha): a hostile PR head fetchable from a bare remote.
+
+        The hooks live on MAIN as well as on the PR branch, because a relative
+        `core.hooksPath` resolves against the top of the CURRENT working tree
+        (measured: with the hook only on the PR head, `worktree add` looked in
+        the operator's own checkout and found nothing). That is the realistic
+        shape anyway -- the operator ran the repository's own setup line, and the
+        repository's committed `.githooks/` is what it points at.
+        """
+        base = self.enterContext(tempfile.TemporaryDirectory())
+        origin = os.path.join(base, "origin.git")
+        seed = os.path.join(base, "seed")
+        clone = os.path.join(base, "clone")
+        _git(base, "init", "-q", "--bare", "-b", "main", origin)
+        _git(base, "init", "-q", "-b", "main", seed)
+        _git(seed, "config", "user.email", "t@t")
+        _git(seed, "config", "user.name", "t")
+        os.makedirs(os.path.join(seed, ".githooks"))
+        for name, marker in (("post-checkout", "hook-ran"),
+                             ("reference-transaction", "ref-hook-ran")):
+            self._write(os.path.join(seed, ".githooks", name),
+                        self._marker_script(base, marker), 0o755)
+        self._write(os.path.join(seed, "README.md"), "base\n")
+        _git(seed, "add", "-A")
+        _git(seed, "commit", "-qm", "init")
+        _git(seed, "remote", "add", "origin", origin)
+        _git(seed, "push", "-q", "origin", "main")
+
+        _git(seed, "checkout", "-q", "-b", "pr")
+        self._write(os.path.join(seed, ".gitattributes"), "*.txt filter=evil\n")
+        # No `filter.evil` is configured HERE, so the blob is committed raw and
+        # the smudge output below is provably not what the PR authored.
+        self._write(os.path.join(seed, "evil.sh"),
+                    "printf hit > %s\nprintf 'SMUDGED\\n'\n"
+                    % shlex.quote(os.path.join(base, "smudge-ran")))
+        with open(os.path.join(seed, "payload.txt"), "wb") as fh:
+            fh.write(self.PAYLOAD)
+        _git(seed, "add", "-A")
+        _git(seed, "commit", "-qm", "hostile")
+        pr_sha = self._read(seed, "rev-parse", "HEAD")
+        _git(seed, "push", "-q", "origin", "pr")
+        # What GitHub exposes as the PR head, and what `acquire_pr` fetches.
+        _git(origin, "update-ref", "refs/pull/7/head", pr_sha)
+
+        _git(base, "clone", "-q", origin, clone)
+        # The operator's own repo-local config, set AFTER the clone so the clone
+        # itself runs nothing. Every one of these is a line a real repository
+        # asks for; none of them is fetched, which is why config is the vector.
+        _git(clone, "config", "core.hooksPath", ".githooks")
+        _git(clone, "config", "filter.evil.smudge", "sh ./evil.sh")
+        _git(clone, "config", "filter.evil.required", "true")
+        return base, clone, pr_sha
+
+    def _read(self, repo, *args):
+        return subprocess.run(["git", "-C", repo, *args], check=True,
+                              capture_output=True, text=True, timeout=30).stdout.strip()
+
+    def _marker(self, base, name):
+        return os.path.join(base, name)
+
+    def _prove_the_fixture_is_live(self, base, clone, pr_sha):
+        """Vacuity guard: plain git DOES run all three, then clean up."""
+        live = os.path.join(base, "live-wt")
+        _git(clone, "fetch", "-q", "--no-write-fetch-head", "origin",
+             "refs/pull/7/head:refs/panopticon/live")
+        self.assertTrue(os.path.exists(self._marker(base, "ref-hook-ran")),
+                        "fixture is inert: the fetch never ran reference-transaction")
+        _git(clone, "worktree", "add", "--detach", live, pr_sha)
+        self.assertTrue(os.path.exists(self._marker(base, "hook-ran")),
+                        "fixture is inert: worktree add never ran post-checkout")
+        self.assertTrue(os.path.exists(self._marker(base, "smudge-ran")),
+                        "fixture is inert: worktree add never ran the smudge filter")
+        with open(os.path.join(live, "payload.txt"), "rb") as fh:
+            self.assertEqual(fh.read(), b"SMUDGED\n",
+                             "fixture is inert: the filter did not replace the blob")
+        _git(clone, "worktree", "remove", "--force", live)
+        _git(clone, "update-ref", "-d", "refs/panopticon/live")
+        for name in self.MARKERS:            # after the cleanup, which re-fires
+            os.remove(self._marker(base, name))
+
+    def _runner(self):
+        """`gh pr view` answered here; every git call is the real thing."""
+        def runner(argv, **kwargs):
+            if list(argv[:3]) == ["gh", "pr", "view"]:
+                return subprocess.CompletedProcess(argv, 0, '{"baseRefName": "main"}', "")
+            return subprocess.run(argv, **kwargs)
+        return runner
+
+    def test_acquire_and_release_run_no_hook_and_no_smudge_filter(self):
+        base, clone, pr_sha = self._fixture()
+        self._prove_the_fixture_is_live(base, clone, pr_sha)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            info = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+
+        for name in self.MARKERS:
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code during acquisition" % name)
+        self.assertEqual(info["worktree"], wt)
+        self.assertEqual(info["base"], "main")
+        self.assertEqual(info["head_sha"], pr_sha)
+        self.assertTrue(os.path.isdir(wt))
+        self.assertEqual(self._read(wt, "rev-parse", "HEAD"), pr_sha)
+        # The reviewed bytes are the COMMITTED bytes: no filter rewrote them.
+        with open(os.path.join(wt, "payload.txt"), "rb") as fh:
+            self.assertEqual(fh.read(), self.PAYLOAD)
+        # The throwaway fetch ref is deleted even though the worktree survives.
+        self.assertEqual(self._read(clone, "for-each-ref", "--format=%(refname)",
+                                    "refs/panopticon/"), "")
+        # The neutralization is disclosed by key, never by value (#2013).
+        self.assertIn("suppressed filter.evil.smudge in .", err.getvalue())
+        self.assertIn("suppressed filter.evil.required in .", err.getvalue())
+        self.assertNotIn("evil.sh", err.getvalue())
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            diff_map.release_worktree(wt, repo=clone, runner=self._runner())
+        self.assertFalse(os.path.exists(wt))
+        for name in self.MARKERS:
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code during teardown" % name)
 
 
 class TestDiffMapFailures(unittest.TestCase):
