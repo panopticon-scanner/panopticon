@@ -1215,6 +1215,36 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
             self.assertFalse(os.path.exists(self._marker(base, name)),
                              "%s: the target ran code during teardown" % name)
 
+    def test_reacquiring_reuses_the_worktree_and_still_runs_nothing(self):
+        """The resume path, through real git rather than a fake runner.
+
+        `worktree list` is parsed for the deterministic path, and `rev-parse
+        HEAD` runs in the PR WORKTREE -- a second repository root, whose `.git`
+        is a file and whose tree is the attacker's. A fake runner cannot see
+        either of those refused, which is the whole reason this one is real
+        (#1877's lesson, in the small).
+        """
+        base, clone, pr_sha = self._fixture()
+        self._prove_the_fixture_is_live(base, clone, pr_sha)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            first = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+            second = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        self.assertEqual(first, second)
+        self.assertEqual(second["head_sha"], pr_sha)
+        # Reused, not re-created: the main worktree and exactly one throwaway.
+        listing = [line for line in self._read(clone, "worktree", "list").splitlines()
+                   if line.strip()]
+        self.assertEqual(len(listing), 2, listing)
+        self.assertTrue(any(line.split()[:1] == [wt] for line in listing), listing)
+        for name in self.MARKERS:
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code on the resume path" % name)
+        with contextlib.redirect_stderr(io.StringIO()):
+            diff_map.release_worktree(wt, repo=clone, runner=self._runner())
+        self.assertFalse(os.path.exists(wt))
+
 
 class TestDiffMapFailures(unittest.TestCase):
     def test_hunk_map_fallback_parser_and_failures(self):
