@@ -194,7 +194,14 @@ def redact_diagnostic(text, limit: int, *, tail: bool = False) -> str:
     if limit <= 0 or not text:
         return ""
     out = redact(str(text)[:_DIAGNOSTIC_SCAN_LIMIT])
-    dangling = _DIAGNOSTIC_PEM.search(out) or _DIAGNOSTIC_PARTIAL_PEM.search(out)
+    dangling = _DIAGNOSTIC_PEM.search(out)
+    if dangling is None:
+        # Search once for the last candidate, then validate only that suffix.
+        # A regex search restarts at every BEGIN in a near-match capture and
+        # repeatedly scans/backtracks across the remaining suffix (quadratic).
+        last_begin = out.rfind("-----BEGIN")
+        if last_begin >= 0:
+            dangling = _DIAGNOSTIC_PARTIAL_PEM.match(out, last_begin)
     if dangling:
         out = out[:dangling.start()] + "[REDACTED_PRIVATE_KEY]"
     return out[-limit:] if tail else out[:limit]

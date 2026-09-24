@@ -1,6 +1,8 @@
 """#run7 SEC-B2C: the single-source secret redaction shared by the driver
 (tool output) and synthesize (shareable report bodies)."""
 import os
+import subprocess
+import sys
 import unittest
 
 from conftest import REPO_ROOT
@@ -648,6 +650,26 @@ class TestDiagnosticRedaction(unittest.TestCase):
             self.assertNotIn("AAAA", out)
             self.assertNotIn("-----BEGIN", out)
             self.assertLessEqual(len(out), 400)
+
+    def test_repeated_partial_header_near_matches_do_not_stall(self):
+        # Isolate the regression so a quadratic regex cannot hang the test
+        # runner. Eight seconds is deliberately generous for this 220 KiB
+        # diagnostic, which takes only milliseconds with a single suffix check.
+        code = """
+from scripts.redact import redact_diagnostic
+for text in ('x' * 220001, '-----BEGIN ' * 20000 + '1'):
+    assert redact_diagnostic(text, 400, tail=True) == text[-400:]
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code], cwd=os.path.join(REPO_ROOT, "skill"),
+            capture_output=True, text=True, timeout=8, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_final_partial_header_is_removed_after_earlier_near_matches(self):
+        for suffix in ("-----BEGIN PRIVATE KE", "-----BEGIN RSA PRIVATE KEY---\n"):
+            text = "ordinary -----BEGIN invalid: " + suffix
+            self.assertEqual(redact.redact_diagnostic(text, 400, tail=True),
+                             "ordinary -----BEGIN invalid: [REDACTED_PRIVATE_KEY]")
 
     def test_general_and_tree_unterminated_contract_is_unchanged(self):
         text = "prefix " + pem_begin() + "\nAAAA KEEP THIS DIAGNOSTIC"
