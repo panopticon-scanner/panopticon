@@ -243,9 +243,11 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
             "`worktree list` and `rev-parse` to `safe_git.probe`, "
             "`worktree add --detach` and `update-ref -d` to `safe_git.mutate`. "
             "`test_the_only_bare_git_argv_left_in_acquire_pr_is_the_fetch` "
-            "holds this exemption to its own words. Residual #2041: the fetch still "
-            "honours the checkout's own `core.sshCommand` and "
-            "`remote.<name>.uploadpack`, operator config never PR content",
+            "holds this exemption to its own words. #2041: the fetch REFUSES, with "
+            "a remedy, when this checkout's own local config sets a transport "
+            "command key -- `core.sshCommand`, `remote.<name>.uploadpack` and "
+            "their class -- that a fetch would execute, so what the exemption "
+            "keeps is the operator's environment and nothing else",
     }
 
     def _bare_git_argv(self, name):
