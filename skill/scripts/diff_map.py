@@ -764,6 +764,16 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     `core.hooksPath` by hand, because a fetch is a ref transaction and
     `reference-transaction` fires from the target's hooks directory on it (all
     three measured; see `tests/test_diff_map.py::TestPrAcquisitionIsConfined`).
+
+    What those two pins do NOT close is the checkout's own transport
+    configuration: a repo-local `core.sshCommand` runs on that fetch for an
+    `ssh://` remote, and `remote.<name>.uploadpack` for a local one (both
+    measured). So acquisition reads this checkout's LOCAL config immediately
+    before the fetch and REFUSES when it sets a key a fetch would execute,
+    naming the key and the remedy -- move it to the global config, which the
+    fetch still honours (#2041). Emptying them instead, the way the probe
+    empties `filter.*`, would break the private repository this exemption
+    exists for.
     """
     # Every repository-configured command `safe_git` emptied on the way, and the
     # pairs already printed. One list across every call, because each call
@@ -854,6 +864,33 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
         for line in _sync_config(repo, wt):
             print("panopticon --pr: %s" % line, file=sys.stderr)
         return {"worktree": wt, "base": base, "head_sha": head_sha}   # reuse (resume)
+
+    # #2041: the fetch below keeps the operator's environment, so the checkout's
+    # OWN `.git/config` can still make it run a command (measured: a repo-local
+    # `core.sshCommand` on an `ssh://` remote, `remote.<name>.uploadpack` on a
+    # local one, both under the two pins the fetch carries). The owner's ruling
+    # is REFUSE WITH REMEDY, not empty: `core.sshCommand` is how a private
+    # repository is legitimately reached, which is the case this exemption
+    # exists for, and the operator's GLOBAL config -- which the fetch still
+    # honours -- is somewhere to put it that the target cannot write.
+    #
+    # Scope is LOCAL only, for the same reason. `--local` in a linked worktree
+    # reads the common `.git/config`, which is the file the fetch reads, and
+    # `--includes` follows this file's own `include.path`/`includeIf`, which is
+    # as repository-authored as the file itself. The reuse path above performs
+    # no fetch and therefore has nothing to refuse.
+    transport = safe_git.transport_command_keys(safe_git.settings(
+        _safe(repo, ["config", "--null", "--list", "--local", "--includes"])))
+    if transport:
+        _disclose()
+        # The KEYS only: the values are command lines (#2013).
+        raise RuntimeError(
+            "panopticon --pr: refusing to fetch: this checkout's own .git/config "
+            "sets %s, which a fetch would execute. The fetch runs with your "
+            "environment but never with a repository-configured command (#2041). "
+            "Move each setting to your global config (`git config --global <key> "
+            "<value>`, which the fetch still honours) and remove it here "
+            "(`git config --unset <key>`), then re-run." % ", ".join(transport))
 
     fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
     # THE ONE CALL WITH THE OPERATOR'S ENVIRONMENT (#2012), because a private

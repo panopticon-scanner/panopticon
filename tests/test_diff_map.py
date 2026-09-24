@@ -1075,6 +1075,14 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         committed bytes, so `payload.txt` reads `SMUDGED` rather than what the
         PR actually committed. A review of the replaced bytes reviews the
         filter's output, not the PR.
+
+    A fourth vector is the fetch's own, and it is REFUSED rather than confined
+    (#2041, owner ruling "refuse with remedy"): the fetch keeps the operator's
+    environment, so a repo-local `core.sshCommand` or `remote.<name>.uploadpack`
+    still runs on it under both of the pins it carries (measured in #2012's
+    review). Acquisition reads the checkout's LOCAL config immediately before
+    the fetch and refuses, naming the key and the remedy -- move the setting to
+    the global config, which the fetch still honours.
     """
 
     MARKERS = ("hook-ran", "ref-hook-ran", "smudge-ran")
@@ -1171,11 +1179,21 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         for name in self.MARKERS:            # after the cleanup, which re-fires
             os.remove(self._marker(base, name))
 
-    def _runner(self):
-        """`gh pr view` answered here; every git call is the real thing."""
+    def _runner(self, global_config=None):
+        """`gh pr view` answered here; every git call is the real thing.
+
+        `global_config` (#2041) points the calls that keep the OPERATOR's
+        environment at a throwaway `GIT_CONFIG_GLOBAL`, so the refusal's remedy
+        can be proved without writing a `remote.origin.uploadpack` into the
+        test HOME every other test in this process shares. It reaches the fetch
+        and nothing else: every confined call passes its own `env=`, which this
+        never overrides.
+        """
         def runner(argv, **kwargs):
             if list(argv[:3]) == ["gh", "pr", "view"]:
                 return subprocess.CompletedProcess(argv, 0, '{"baseRefName": "main"}', "")
+            if global_config is not None and "env" not in kwargs:
+                kwargs["env"] = dict(os.environ, GIT_CONFIG_GLOBAL=global_config)
             return subprocess.run(argv, **kwargs)
         return runner
 
@@ -1239,6 +1257,161 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         self.assertEqual(len(listing), 2, listing)
         self.assertTrue(any(line.split()[:1] == [wt] for line in listing), listing)
         for name in self.MARKERS:
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code on the resume path" % name)
+        with contextlib.redirect_stderr(io.StringIO()):
+            diff_map.release_worktree(wt, repo=clone, runner=self._runner())
+        self.assertFalse(os.path.exists(wt))
+
+
+    # --- #2041: the fetch refuses a transport command setting ----------------
+    TRANSPORT_MARKER = "transport-ran"
+
+    def _refusing_command(self, base):
+        """A transport command that records that it ran, and then FAILS.
+
+        Failing is the point: a command that succeeded would let the fetch
+        continue, and the test could not tell "never ran" from "ran and did no
+        harm". The marker is the evidence in both directions.
+        """
+        path = os.path.join(base, "transport.sh")
+        self._write(path, "#!/bin/sh\nprintf hit > %s\nexit 1\n"
+                    % shlex.quote(self._marker(base, self.TRANSPORT_MARKER)), 0o755)
+        return path
+
+    def _prove_the_transport_command_runs(self, base, clone):
+        """Vacuity guard: plain git, carrying the fetch's OWN pins, runs it.
+
+        Both pins applied, because those are exactly what the shipped fetch
+        carries -- the marker appearing under them is why #2041 is a residual of
+        #2012 rather than something its pins already closed.
+        """
+        marker = self._marker(base, self.TRANSPORT_MARKER)
+        proc = subprocess.run(
+            ["git", "-C", clone, "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=" + diff_map.safe_git.no_hooks_path(),
+             "fetch", "--no-write-fetch-head", "origin",
+             "refs/pull/7/head:refs/panopticon/live"],
+            capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(os.path.exists(marker),
+                        "fixture is inert: the fetch never ran the transport command")
+        os.remove(marker)
+        self.assertEqual(self._read(clone, "for-each-ref", "--format=%(refname)",
+                                    "refs/panopticon/"), "",
+                         "the proof fetch left a ref behind")
+
+    def _assert_refused_naming(self, key, base, clone, wt):
+        """`acquire_pr` refuses, names `key` and the remedy, and ran nothing."""
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(RuntimeError) as caught:
+                diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        # What it DID first: a refusal that still fetched would also raise.
+        for name in (*self.MARKERS, self.TRANSPORT_MARKER):
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the refused acquisition ran code" % name)
+        self.assertFalse(os.path.exists(wt), "a refused acquisition built a worktree")
+        self.assertEqual(self._read(clone, "for-each-ref", "--format=%(refname)",
+                                    "refs/panopticon/"), "",
+                         "a refused acquisition fetched a ref")
+        message = str(caught.exception)
+        self.assertIn("refusing to fetch", message)
+        self.assertIn(key, message)
+        self.assertIn("git config --global", message)
+        self.assertIn("git config --unset", message)
+        # The KEY, never the VALUE: these are command lines (#2013's rule).
+        self.assertNotIn("transport.sh", message)
+
+    def test_a_repo_local_ssh_command_refuses_the_fetch_with_a_remedy(self):
+        """(a) The measured shape: `core.sshCommand` on an `ssh://` remote."""
+        base, clone, _pr_sha = self._fixture()
+        _git(clone, "remote", "set-url", "origin", "ssh://git@example.invalid/x.git")
+        _git(clone, "config", "core.sshCommand", self._refusing_command(base))
+        self._prove_the_transport_command_runs(base, clone)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        # Lowercased section and variable: the case `config --list` prints.
+        self._assert_refused_naming("core.sshcommand", base, clone, wt)
+
+    def test_a_repo_local_uploadpack_refuses_the_fetch_with_a_remedy(self):
+        """(b) The other measured shape: `remote.<name>.uploadpack`, which the
+        local-path origin this fixture already clones from runs LOCALLY."""
+        base, clone, _pr_sha = self._fixture()
+        _git(clone, "config", "remote.origin.uploadpack", self._refusing_command(base))
+        self._prove_the_transport_command_runs(base, clone)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        self._assert_refused_naming("remote.origin.uploadpack", base, clone, wt)
+
+    def test_the_remedy_the_refusal_names_actually_works(self):
+        """(c) The SAME key in the operator's GLOBAL config is honoured.
+
+        Not a cosmetic difference: the refusal tells the operator to move the
+        line to `--global`, so acquisition has to succeed there -- and on this
+        local-path origin the moved `uploadpack` really does run (it execs the
+        real `git upload-pack`), which is the proof that the refusal is scoped
+        to the checkout's own file and the fetch is otherwise unchanged.
+        """
+        base, clone, pr_sha = self._fixture()
+        marker = self._marker(base, self.TRANSPORT_MARKER)
+        script = os.path.join(base, "global-uploadpack.sh")
+        self._write(script, '#!/bin/sh\nprintf hit > %s\nexec git upload-pack "$@"\n'
+                    % shlex.quote(marker), 0o755)
+        operator_config = os.path.join(base, "operator-gitconfig")
+        self._write(operator_config,
+                    '[remote "origin"]\n\tuploadpack = "%s"\n' % script)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            info = diff_map.acquire_pr(7, repo=clone,
+                                       runner=self._runner(global_config=operator_config))
+        self.assertEqual(info["head_sha"], pr_sha)
+        self.assertTrue(os.path.isdir(wt))
+        self.assertTrue(os.path.exists(marker),
+                        "the operator's own global config was not honoured by the fetch")
+        for name in self.MARKERS:
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code during acquisition" % name)
+
+    def test_a_transport_setting_that_was_emptied_is_not_refused(self):
+        """(d) The classifier tests VALUES: an emptied key executes nothing.
+
+        Non-vacuous by construction -- the same key, set, refuses first.
+        """
+        base, clone, pr_sha = self._fixture()
+        _git(clone, "config", "core.sshCommand", self._refusing_command(base))
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(RuntimeError):
+                diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        _git(clone, "config", "core.sshCommand", "")
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            info = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        self.assertEqual(info["head_sha"], pr_sha)
+        self.assertTrue(os.path.isdir(wt))
+        for name in (*self.MARKERS, self.TRANSPORT_MARKER):
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code during acquisition" % name)
+
+    def test_the_reuse_path_does_not_refuse_because_it_does_not_fetch(self):
+        """(e) A resume performs no fetch, so there is nothing to refuse.
+
+        Refusing here would strand a resumable run over a setting that cannot
+        be reached on this path: the worktree is already built and pinned, and
+        the two calls the reuse path makes are confined probes.
+        """
+        base, clone, pr_sha = self._fixture()
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            first = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        _git(clone, "config", "core.sshCommand", self._refusing_command(base))
+        with contextlib.redirect_stderr(io.StringIO()):
+            second = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        self.assertEqual(first, second)
+        self.assertEqual(second["head_sha"], pr_sha)
+        for name in (*self.MARKERS, self.TRANSPORT_MARKER):
             self.assertFalse(os.path.exists(self._marker(base, name)),
                              "%s: the target ran code on the resume path" % name)
         with contextlib.redirect_stderr(io.StringIO()):
