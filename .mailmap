@@ -1,0 +1,5 @@
+# One human, four git identities (first external review, 2026-09-24).
+# `git shortlog -sne` and GitHub's contributor view read this file.
+Michael Sylvester <psyberone@gmail.com> psyberone <psyberone@gmail.com>
+Michael Sylvester <psyberone@gmail.com> <founder@thebeamishsociety.com>
+Michael Sylvester <psyberone@gmail.com> <michaeljsylve@gmail.com>
