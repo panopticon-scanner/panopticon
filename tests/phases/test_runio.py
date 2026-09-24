@@ -23,6 +23,7 @@ import scripts.phases.review as review
 
 import scripts.driver as driver
 import scripts.run_manifest as run_manifest
+import scripts.safe_git as safe_git
 
 
 class TestForeignManifest(unittest.TestCase):
@@ -1056,21 +1057,37 @@ def test_normal_cleanup_preserves_unrelated_run_report_and_config(tmp_path):
 class TestManifestDiagnosticRedaction(unittest.TestCase):
     def test_manifest_git_stderr_is_redacted_and_bounded(self):
         key_type = "PRIVATE KEY"
-        for text in ("ordinary failure", "prefix " + f"-----BEGIN {key_type}-----\n" + "A" * 2000,
-                     "token " + "ghp_" + "B" * 36):
+        cases = (
+            ("ordinary failure", "ordinary failure"),
+            ("ordinary failure " + "x" * 400, ("ordinary failure " + "x" * 400)[:300]),
+            ("prefix " + f"-----BEGIN {key_type}-----\n" + "A" * 2000,
+             "prefix [REDACTED_PRIVATE_KEY]"),
+            ("token " + "ghp_" + "B" * 36, "token [REDACTED_TOKEN]"),
+        )
+        for text, expected in cases:
             with self.subTest(text=text[:20]), tempfile.TemporaryDirectory() as root:
                 manifest = os.path.join(root, "manifest.json")
                 with open(manifest, "w") as fh:
                     fh.write("{}")
+                fake_git = mock.Mock(return_value=mock.Mock(returncode=2, stderr=text))
+                # The feature branch launches directly; the coordinated Git
+                # confinement change uses safe_git.probe. Mock both boundaries
+                # so this excerpt test neither launches Git nor depends on which
+                # launch implementation is composed with it.
                 with mock.patch.object(runio.executable, "resolve", return_value=mock.Mock(
                         path="/trusted/git", path_env="/trusted")), \
-                     mock.patch.object(runio.subprocess, "run", return_value=mock.Mock(
-                         returncode=2, stderr=text)), \
+                     mock.patch.object(runio.subprocess, "run", fake_git), \
+                     mock.patch.object(safe_git, "probe", fake_git), \
                      self.assertRaises(runio.DriverError) as caught:
                     runio._manifest_committed(root, manifest)
+                fake_git.assert_called_once()
+                args = fake_git.call_args.args
+                command = args[0] if isinstance(args[0], list) else args[1]
+                self.assertEqual(command[-4:],
+                                 ["ls-files", "--error-unmatch", "--", "manifest.json"])
+                self.assertIn("git check failed (exit 2):", str(caught.exception))
                 diagnostic = str(caught.exception).split(": ", 1)[1]
+                self.assertEqual(diagnostic, expected)
                 self.assertNotIn("AAAA", diagnostic)
                 self.assertNotIn("BBBB", diagnostic)
                 self.assertLessEqual(len(diagnostic), 300)
-                if text == "ordinary failure":
-                    self.assertEqual(diagnostic, text)
