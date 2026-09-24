@@ -39,7 +39,7 @@ CAPABILITIES = (TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
 
 # The two capabilities that are OPERATIONAL rather than security (#1626 I1).
 # Spec 8.1's retirement bar excludes exactly these (D5), and
-# docs/PANOPTICON.md says of usage_ledger that it "gates nothing directly":
+# docs/guide/host-capabilities.md says of usage_ledger that it gates nothing:
 # a run whose token counter went quiet is a run with a worse cost report, not
 # a run whose reviewers were unconfined. The other three ARE the enforcement
 # story, and every consumer that refuses on a posture change must refuse on
@@ -132,7 +132,9 @@ GUIDE = "PANOPTICON.md"
 # the concatenation of these files, and `tests/test_skill_md.py` slices that
 # concatenation on the H2 lines each chapter opens with -- so reordering this
 # tuple reorders the guide, and dropping a name hides a chapter from
-# `driver readiness`.
+# `driver readiness`. The repo root carries `docs/guide` as a symlink onto the
+# directory, exactly as it carries `docs/PANOPTICON.md` onto the index, so a
+# link written from either copy resolves.
 GUIDE_CHAPTERS = ("driver-run-loop.md", "driver-setup.md", "output.md",
                   "host-capabilities.md", "code-layout.md",
                   "testing-scanner-fixtures.md", "evidence.md", "notes.md")

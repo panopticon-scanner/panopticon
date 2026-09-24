@@ -30,7 +30,8 @@ import scripts.runners.batch as batch_mod
 SETUP_NAMESPACE = "setup"
 
 # #1662: the two sentences a Ctrl-C ends a run with. Constants because
-# docs/PANOPTICON.md quotes the first one back and the guide test reads it off
+# docs/guide/driver-run-loop.md quotes the first one back and the guide test
+# reads it off
 # here. "had been HANDLED", not completed: the count is every entry the loop
 # got back, a failed launch included -- ledgered as the failure it was rather
 # than persisted (F2), and rolled back either way.

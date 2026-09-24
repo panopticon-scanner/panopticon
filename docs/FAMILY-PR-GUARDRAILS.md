@@ -26,7 +26,7 @@ part is a thin seam, and your PR fills in that seam for your family:
 | A shell emitter branch | `skill/scripts/dispatch.py` `emit_host_agents` (one `elif` for your `shell_format`) | the claude / kimi / codex branches already there |
 | Your registry row, and only yours | `skill/scripts/hosts.py` `HOSTS[<host>]` | any existing row |
 | Read and write confinement for your host | your own primitive: tool omission, sandbox policy, `--add-dir`, `disallowedTools`, a hook, whatever your host actually enforces | three different primitives for the same guarantee: `skill/scripts/read_guard_hook.py` + `write_guard_hook.py` (Claude), `skill/scripts/kimi_guard_hook.py` (Kimi), `skill/scripts/codex_read_tools.py` behind a read-only sandbox (Codex). Copy the *idea*, not the file |
-| Tests and docs for all of the above | `tests/`, `docs/PANOPTICON.md`, `skill/SKILL.md` | the guards in `tests/test_skill_md.py` |
+| Tests and docs for all of the above | `tests/`, `docs/guide/` (the user guide, one file per section), `skill/SKILL.md` | the guards in `tests/test_skill_md.py` |
 
 The seam's contract, in `skill/scripts/runners/base.py`:
 
@@ -227,7 +227,8 @@ Rules that follow from the registry:
   `{}` on this base because every host the bar examines -- claude, codex
   (#1619) and kimi (#1620) -- clears both. A PR that flips a row re-pins that
   assertion, alongside the `--host generic` paragraph in
-  `docs/PANOPTICON.md`, in the same commit as the probes that earn it.
+  `docs/guide/host-capabilities.md`, in the same commit as the probes that
+  earn it.
 - Populate `discovery_surface` for your host from the #1657 spike table:
   what the REVIEWED tree can ship that your CLI discovers from it, one row
   per cell, `OPEN` when nothing in your launch closes it and `CONTROLLED`
@@ -373,8 +374,8 @@ Repository:
   directory.
 - Do not weaken a test or a doc guard to make it pass. Update an expectation
   only when its own comment says your PR is the one that moves it — the
-  retirement-bar pin, the host table in `docs/PANOPTICON.md`, that
-  document's `gemini` sentence, and this document's own §2/§6 guards in
+  retirement-bar pin, the host table in `docs/guide/host-capabilities.md`,
+  that chapter's `gemini` sentence, and this document's own §2/§6 guards in
   `tests/test_family_guardrails_doc.py` (each names the PR that moves it:
   yours, when you add your host's §2 paragraph) — and nothing else. If a
   guard blocks you for
@@ -424,8 +425,9 @@ guardrails above bind every worker you spawn exactly as they bind you; how you
 split the work, review it, and pace it is your call. The only process rule is
 the one in the next section: the PR proves itself.
 
-Treat `docs/PANOPTICON.md` as the user guide (the "Driver run-loop" and "Host
-capabilities" sections are the ones that matter to you), `CONTRIBUTING.md` as
+Treat `docs/PANOPTICON.md` as the user guide -- an index plus one file per
+section under `docs/guide/`, of which `docs/guide/driver-run-loop.md` and
+`docs/guide/host-capabilities.md` are the ones that matter to you --, `CONTRIBUTING.md` as
 the repo's own rules, and the specs in the private docs repo (your operator
 will paste the relevant sections if you cannot reach it) as the authority when
 this file and the code disagree.

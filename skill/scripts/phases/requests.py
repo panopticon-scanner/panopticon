@@ -45,7 +45,8 @@ def bound_model(host, role):
     """The model this entry REQUESTS, as a string, from the one resolver.
 
     #1344 F4 (b). Every builder used to write the literal `"model": None`, which
-    docs/PANOPTICON.md defines as "inherit the session's model" -- so the
+    docs/guide/host-capabilities.md defines as "inherit the session's model" --
+    so the
     session's model, not the role's policy, was what an UNENFORCED dispatch
     ran on, and the registry's `model_binding` capability had nothing on the
     entry to be a claim about. `resolve_model` honours PANOPTICON_MODEL_*

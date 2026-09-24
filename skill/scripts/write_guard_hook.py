@@ -904,7 +904,8 @@ def is_armed(settings_path=None, allowlist_path=None, *, session_root=None):
     set of permitted writes -- so a guard left armed after a fan-out finishes
     denies EVERY subsequent Write/Edit in the session, including the operator's
     own, with only the hook's per-write reason to say why. Teardown is a host
-    duty (docs/PANOPTICON.md) that nothing previously verified; this makes the
+    duty (docs/guide/driver-run-loop.md) that nothing previously verified; this
+    makes the
     state checkable in one call so a host, a test, or CI can assert it.
     """
     settings_path, allowlist_path, _ = _resolve(

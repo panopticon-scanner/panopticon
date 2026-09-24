@@ -1425,6 +1425,7 @@ class TestTheGuideResolvesInEveryInstallLayout(unittest.TestCase):
 
     ROOT_DOC = os.path.join(ROOT, os.pardir, "docs", "PANOPTICON.md")
     SKILL_DOC = os.path.join(ROOT, "docs", "PANOPTICON.md")
+    ROOT_CHAPTERS = os.path.join(ROOT, os.pardir, "docs", "guide")
 
     def test_every_relative_link_in_skill_md_resolves_from_skill_mds_directory(self):
         skill_md = _read_skill_md()
@@ -1454,6 +1455,23 @@ class TestTheGuideResolvesInEveryInstallLayout(unittest.TestCase):
         self.assertEqual(os.path.realpath(hosts.guide_path()),
                          os.path.realpath(self.SKILL_DOC))
         self.assertTrue(os.path.isfile(hosts.guide_path()))
+
+    def test_the_chapters_have_a_root_symlink_of_their_own(self):
+        """The mirror of the `docs/PANOPTICON.md` link above, for the same
+        reason: README, SECURITY and FAMILY-PR-GUARDRAILS now link individual
+        chapters as `docs/guide/<name>.md`, and those references resolve only
+        while the root path exists. A directory symlink, not eight file ones,
+        so a new chapter needs no second step to be reachable."""
+        self.assertTrue(os.path.islink(self.ROOT_CHAPTERS),
+                        "%s must stay a symlink so root-level chapter links "
+                        "keep resolving" % self.ROOT_CHAPTERS)
+        self.assertEqual(os.readlink(self.ROOT_CHAPTERS),
+                         os.path.join(os.pardir, "skill", "docs", "guide"))
+        for path in hosts.guide_documents()[1:]:
+            with self.subTest(chapter=os.path.basename(path)):
+                through_root = os.path.join(self.ROOT_CHAPTERS,
+                                            os.path.basename(path))
+                self.assertTrue(os.path.samefile(through_root, path))
 
 
 class TestTheGuideIsAnIndexPlusChapters(unittest.TestCase):
