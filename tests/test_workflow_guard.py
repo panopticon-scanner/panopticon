@@ -771,6 +771,13 @@ class TestChecksumRescueStatus(unittest.TestCase):
             with self.subTest(rescue=rescue):
                 self.assertIsNotNone(self.checked(rescue))
 
+    def test_and_or_tail_can_rescue_failed_handlers(self):
+        for rescue in ("false", "(false)", "{ false; }", "(exit 1)"):
+            with self.subTest(rescue=rescue):
+                self.assertIsNotNone(self.checked(rescue + " && true || true"))
+        self.assertIsNone(self.checked("exit 1 && true || true"))
+        self.assertIsNone(self.checked("{ exit 1; } && true || true"))
+
     def test_known_nonzero_rescues_remain_gates(self):
         for rescue in ("exit 1", "return 2", "exit 257", "false", "exit",
                        "return", "exit $?", "return $?",
@@ -809,6 +816,36 @@ class TestPipelineStreamProvenance(unittest.TestCase):
                 self.assertFalse(wg.fetch_exec_defects(script))
         self.assertEqual("saved", wg.fetches(
             "curl -fsSL %s >saved >/dev/stdout | sh" % self.URL)[0].dest)
+
+    def test_stdin_aliases_and_saved_descriptors(self):
+        for suffix in ("cat /dev/stdin | sh", "cat /dev/fd/0 | sh",
+                       "sed s/x/x/ /dev/stdin | sh", "cat </dev/stdin | sh",
+                       "cat </dev/fd/0 | sh", "sh </dev/stdin", "sh </dev/fd/0",
+                       "sh 3<&0 <local </dev/fd/3",
+                       "cat 3<&0 <local </dev/fd/3 | sh",
+                       "cat 3<&0 <local /dev/fd/3 | sh",
+                       "sed s/x/x/ 3<&0 <local /dev/fd/3 | sh",
+                       "sed s/x/x/ local /dev/stdin | sh",
+                       "cat /dev/./stdin | sh", "cat /dev/fd/$FD | sh",
+                       "cat /proc/self/fd/0 | sh", "sh </dev/fd/$FD",
+                       "cat <local $INPUT | sh"):
+            with self.subTest(suffix=suffix):
+                self.assertTrue(wg.fetch_exec_defects(
+                    "curl -fsSL %s | %s" % (self.URL, suffix)))
+        for suffix in ("sh <local </dev/stdin", "sh </dev/stdin <local",
+                       "cat <local /dev/stdin | sh",
+                       "cat 3<local /dev/fd/3 | sh",
+                       "sed s/x/x/ <local /dev/fd/0 | sh"):
+            with self.subTest(suffix=suffix):
+                self.assertFalse(wg.fetch_exec_defects(
+                    "curl -fsSL %s | %s" % (self.URL, suffix)))
+
+    def test_custom_filter_forwarding_and_disconnection(self):
+        prefix = "curl -fsSL %s | ./custom-filter --mode decode" % self.URL
+        self.assertTrue(wg.fetch_exec_defects(prefix + " | sh"))
+        for suffix in ("", " <local | sh", " >saved | sh"):
+            with self.subTest(suffix=suffix):
+                self.assertFalse(wg.fetch_exec_defects(prefix + suffix))
 
     def test_forwarding_stages_reach_executors(self):
         for stages in ("cat | sh", "cat saved - | sh", "tee install.sh | sh",

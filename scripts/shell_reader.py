@@ -54,8 +54,8 @@ import shlex
 # for the checksum handler without exposing marker tokens as commands.
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
-             "group_open group_close stdin_from_pipe stdout_to_pipe",
-    defaults=(0, 0, True, True))
+             "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds",
+    defaults=(0, 0, True, True, ("0",)))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -428,6 +428,21 @@ def _fd_or_close(word):
     return word == "-" or (word.isascii() and word.isdigit())
 
 
+def input_alias_fd(word):
+    """Alias fd, ? for unresolved input, or None for a literal ordinary file."""
+    if "$" in word or has_substitution(word):
+        return "?"
+    word = os.path.normpath(word)
+    if word == "/dev/stdin":
+        return "0"
+    match = re.fullmatch(r"/dev/fd/([0-9]+)", word)
+    if match:
+        return match[1].lstrip("0") or "0"
+    if word.startswith("/dev/fd/") or re.match(r"/proc/.*/fd/", word):
+        return "?"
+    return None
+
+
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value."""
     try:
@@ -486,7 +501,8 @@ def _stage(text, context):
             if op == "<":
                 reads.append(word)
                 sinks[number] = None           # an input file is not an output sink
-                pipe_inputs[number] = False
+                source = input_alias_fd(word)
+                pipe_inputs[number] = source == "?" or pipe_inputs.get(source, False)
                 pipe_outputs[number] = False
             else:
                 writes.append(word)
@@ -512,7 +528,8 @@ def _stage(text, context):
     stdout = sinks.get("1")
     return Stage(argv, writes, reads, heredoc, substitutions,
                  [stdout] if stdout is not None else [], group_open, group_close,
-                 pipe_inputs["0"], pipe_outputs["1"])
+                 pipe_inputs["0"], pipe_outputs["1"],
+                 tuple(fd for fd, connected in pipe_inputs.items() if connected))
 
 
 def statements(script):

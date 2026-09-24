@@ -208,20 +208,25 @@ def parse_fetch(tool, args, stage, piped_to):
     return _parse_fetch(tool, args, stage, piped_to)[0]
 
 
-def _may_read_stdin(argv):
-    """Whether operands leave stdin available; unknown commands may forward."""
+def _may_read_pipe(argv, stage):
+    """Use final descriptor origins for stdin and file-alias operands."""
+    def connected(operand):
+        if operand == "-":
+            return stage.stdin_from_pipe
+        source = shell_reader.input_alias_fd(operand)
+        return source == "?" or source in stage.pipe_input_fds
+
     name = os.path.basename(argv[0])
     if name == "cat":
-        return "-" in argv[1:] or all(t.startswith("-") for t in argv[1:])
+        operands = [t for t in argv[1:] if t == "-" or not t.startswith("-")]
+        return any(map(connected, operands)) if operands else stage.stdin_from_pipe
     if name != "sed":
-        return True
+        # Unknown commands may consume either stdin or a named descriptor.
+        return stage.stdin_from_pipe or any(map(connected, argv[1:]))
     if any(t.startswith(("-i", "--in-place")) for t in argv[1:]):
         return False
-    # sed's first bare operand is the script unless -e/-f supplies it;
-    # further bare operands are input files, which disconnect standard input.
-    scripted, i = False, 1
-    if "-" in argv[1:]:
-        return True
+    # sed's first bare operand is the script unless -e/-f supplies it.
+    scripted, i, operands = False, 1, []
     while i < len(argv):
         token = argv[i]
         if token in ("-e", "-f", "--expression", "--file"):
@@ -229,12 +234,12 @@ def _may_read_stdin(argv):
             continue
         if token.startswith(("-e", "-f", "--expression=", "--file=")):
             scripted = True
-        elif not token.startswith("-"):
+        elif token == "-" or not token.startswith("-"):
             if scripted:
-                return False
+                operands.append(token)
             scripted = True
         i += 1
-    return scripted
+    return any(map(connected, operands)) if operands else stage.stdin_from_pipe
 
 
 def streamed_fetch(tool, args, stage, following, executors):
@@ -249,14 +254,12 @@ def streamed_fetch(tool, args, stage, following, executors):
         return None
     for next_stage in following:
         argv = command(next_stage.argv)
-        if not argv or not next_stage.stdin_from_pipe:
+        if not argv or not _may_read_pipe(argv, next_stage):
             break
         name = os.path.basename(argv[0])
         if name in executors:
             return fetch._replace(dest=None, piped_to=tuple(argv))
         if not next_stage.stdout_to_pipe:
-            break
-        if not _may_read_stdin(argv):
             break
     return None
 
@@ -611,7 +614,7 @@ def _stops_the_job(stmts, index):
             if exited_subshell is not None and subshell_depth < exited_subshell:
                 exited_subshell = None
         if not grouped or depth == 0:
-            if statement.separator == "||" and not stopped_job:
+            if statement.separator in ("&&", "||") and not stopped_job:
                 return False
             break
         if statement.separator in ("&&", "||"):

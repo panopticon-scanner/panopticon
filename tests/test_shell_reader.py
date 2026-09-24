@@ -346,6 +346,18 @@ class TestSubshellBoundaryMetadata(unittest.TestCase):
 
 
 class TestPipelineStdinProvenance(unittest.TestCase):
+    def test_input_aliases_copy_current_descriptor_origin(self):
+        for script, expected in (("sh </dev/stdin", True),
+                                 ("sh </dev/fd/0", True),
+                                 ("sh 3<&0 <local </dev/fd/3", True),
+                                 ("sh <local </dev/stdin", False),
+                                 ("sh </dev/stdin <local", False)):
+            with self.subTest(script=script):
+                self.assertEqual(expected, stage(script).stdin_from_pipe)
+        self.assertEqual(("3",), stage("cat 3<&0 <local /dev/fd/3").pipe_input_fds)
+        legacy = shell_reader.Stage([], [], [], None, [], [])
+        self.assertEqual(("0",), legacy.pipe_input_fds)
+
     def test_other_descriptor_reads_leave_stdin_connected(self):
         self.assertTrue(stage("cat 3<local").stdin_from_pipe)
         self.assertFalse(stage("cat <local").stdin_from_pipe)
