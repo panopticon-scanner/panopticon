@@ -114,15 +114,15 @@ def _parse_fetch(tool, args, stage, piped_to):
     directory = None
     unread, outputs, remote_all, header_name, globoff = False, 0, False, False, False
     while i < len(args):
-        token, i = args[i], i + 1
-        if token == "--":
+        argument, i = args[i], i + 1
+        if argument == "--":
             operands.extend(args[i:])
             break
-        if token in _INFORMATIONAL:
+        if argument in _INFORMATIONAL:
             return None, False
-        if token.startswith("--"):
-            name, sep, inline = token[2:].partition("=")
-            inline = shell_reader.derived(inline, token)
+        if argument.startswith("--"):
+            name, sep, inline = argument[2:].partition("=")
+            inline = shell_reader.derived(inline, argument)
             if name in value_long or name in dir_long:
                 value = inline if sep else (args[i] if i < len(args) else None)
                 i += 0 if sep else 1
@@ -157,16 +157,16 @@ def _parse_fetch(tool, args, stage, piped_to):
                     unread = True  # Includes --next and unknown option arities.
                 unread |= bool(sep)
             continue
-        if token.startswith("-") and len(token) > 1:
+        if argument.startswith("-") and len(argument) > 1:
             j = 1
-            while j < len(token):
-                ch, j = token[j], j + 1
+            while j < len(argument):
+                ch, j = argument[j], j + 1
                 if tool == "curl" and ch in "hMV":
                     return None, False
                 if ch in value_short or (dir_short and ch == dir_short):
-                    value = shell_reader.derived(token[j:], token) if token[j:] else (
+                    value = shell_reader.derived(argument[j:], argument) if argument[j:] else (
                         args[i] if i < len(args) else None)
-                    i += 0 if token[j:] else 1
+                    i += 0 if argument[j:] else 1
                     unread |= value is None
                     if ch == dest_short:
                         dest = value
@@ -187,7 +187,7 @@ def _parse_fetch(tool, args, stage, piped_to):
                     elif ch not in _CURL_FLAGS:
                         unread = True  # Includes -: / --next.
             continue
-        operands.append(token)
+        operands.append(argument)
     url = _pick_url(operands)
     if tool == "curl" and (unread or len(operands) > 1 or outputs > 1 or header_name
                            or (url and not globoff and _curl_glob(url))):

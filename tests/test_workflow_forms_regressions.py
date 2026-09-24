@@ -192,3 +192,39 @@ class TestFetchCompatibility(unittest.TestCase):
                             or shell_reader.has_substitution(fetch.dest))
         self.assertEqual([], guard.fetch_exec_defects(
             'curl -H "$(echo unused)" --remote-name ' + URL + '; ' + CHECK + ' && sh tool'))
+
+
+class TestReviewRoundOne(unittest.TestCase):
+    def test_sudo_shell_and_login_execute_supplied_commands(self):
+        for prefix in ('sudo -s', 'sudo -i', 'sudo --shell', 'sudo --login',
+                       'sudo -ns -u root', 'sudo --login --user=root --'):
+            for script in (f'{prefix} curl {URL} | sh',
+                           f'curl {URL} | {prefix} sh',
+                           f'curl -o tool {URL}; {prefix} sh tool'):
+                with self.subTest(script=script):
+                    self.assertTrue(guard.fetch_exec_defects(script))
+            self.assertEqual([], guard.fetch_exec_defects(
+                f'{prefix} curl -o tool {URL}; {CHECK} && {prefix} sh tool'))
+            self.assertEqual([], guard.fetch_exec_defects(
+                f'{prefix} curl -o tool {URL}; cat tool'))
+        argv = ['sudo', '--unknown', 'ordinary', 'curl', URL]
+        self.assertEqual(argv, shell_reader.command(argv))
+
+    def test_chmod_mode_is_not_a_target_filename(self):
+        for mode in ('u+x', 'a+x', 'u=rx,g+x', '+x', '755'):
+            for prefix in ('chmod', 'chmod -v', 'chmod --'):
+                with self.subTest(mode=mode, prefix=prefix):
+                    download = f'curl -o {mode} {URL}; '
+                    self.assertEqual([], guard.fetch_exec_defects(
+                        download + f'{prefix} {mode} other'))
+                    self.assertTrue(guard.fetch_exec_defects(
+                        download + f'{prefix} {mode} ./{mode}'))
+                    check = "echo '" + 'a' * 64 + f"  {mode}' | sha256sum -c -"
+                    self.assertEqual([], guard.fetch_exec_defects(
+                        download + check + f' && {prefix} {mode} ./{mode}'))
+        for command in ('chmod -R u+x .', 'find . -exec chmod u+x {} \\;',
+                        'echo u+x | xargs chmod u+x', 'chmod u+x u+?'):
+            self.assertTrue(guard.fetch_exec_defects(f'curl -o u+x {URL}; {command}'))
+        for command in ('find other -exec chmod u+x {} \\;',
+                        'echo other | xargs chmod u+x', 'chmod -R u+x other'):
+            self.assertEqual([], guard.fetch_exec_defects(f'curl -o u+x {URL}; {command}'))

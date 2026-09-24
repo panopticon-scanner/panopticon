@@ -552,7 +552,7 @@ def statements(script):
 # Supported wrapper options: short flags, short operands, long flags, long operands.
 # Unknown options retain the wrapper: never search arbitrary words for a command.
 _WRAPPER_OPTIONS = {
-    "sudo": ("AbEHknPS", "CDghpRTurt", "askpass background reset-timestamp preserve-env set-home non-interactive stdin",
+    "sudo": ("AbEHiknPSs", "CDghpRTurt", "askpass background reset-timestamp preserve-env set-home non-interactive stdin shell login",
              "close-from chdir group host prompt chroot command-timeout user role type"),
     "timeout": ("v", "ks", "foreground preserve-status verbose", "kill-after signal"),
     "nice": ("", "n", "", "adjustment"),
@@ -573,13 +573,13 @@ def _wrapped(argv, head):
     flags, values, long_flags, long_values = _WRAPPER_OPTIONS[head]
     i = 1
     while i < len(argv) and argv[i].startswith("-"):
-        token, i = argv[i], i + 1
-        if token == "--":
+        argument, i = argv[i], i + 1
+        if argument == "--":
             break
-        if head == "nice" and re.fullmatch(r"-\d+", token):
+        if head == "nice" and re.fullmatch(r"-\d+", argument):
             continue
-        if token.startswith("--"):
-            name, sep, _value = token[2:].partition("=")
+        if argument.startswith("--"):
+            name, sep, _value = argument[2:].partition("=")
             if ((head == "sudo" and name == "preserve-env") or
                     (head == "xargs" and name in ("replace", "eof", "max-lines"))):
                 continue  # Optional operands are accepted only after '='.
@@ -588,13 +588,13 @@ def _wrapped(argv, head):
             elif name not in long_flags.split() or sep:
                 return None
             continue
-        if token == "-":
+        if argument == "-":
             if head == "env":
                 break  # env's legacy ignore-environment flag ends option parsing
             return None
-        for j, ch in enumerate(token[1:], 2):
+        for j, ch in enumerate(argument[1:], 2):
             if ch in values:
-                i += j == len(token)
+                i += j == len(argument)
                 break
             if ch not in flags:
                 return None

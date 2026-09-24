@@ -47,25 +47,36 @@ from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fet
 
 # --- what an operand stands for ----------------------------------------------
 
-def chmod_executable(argv):
-    """Whether chmod's MODE operand can set an execute bit, including X.
-
-    Only the mode operand counts; a later filename called `u+x` is not a mode.
-    Reference-file modes are unresolved here, as before; they are not symbolic.
-    """
+def _chmod_operands(argv):
+    """Separate the mode from the file operands after chmod's leading options."""
     rest = iter(argv[1:])
     for mode in rest:
         if mode == "--":
             mode = next(rest, "")
             break
         if mode.startswith("--reference"):
-            return False
+            return "", []
         if mode in ("--recursive", "--verbose", "--changes", "--silent", "--quiet",
                     "--preserve-root", "--no-preserve-root") or re.fullmatch(r"-[Rvcf]+", mode):
             continue
         break
     else:
-        return False
+        return "", []
+    return mode, list(rest)
+
+
+def chmod_targets(argv):
+    """Files chmod changes; the mode itself must never count as a target."""
+    return _chmod_operands(argv)[1]
+
+
+def chmod_executable(argv):
+    """Whether chmod's MODE operand can set an execute bit, including X.
+
+    Only the mode operand counts; a later filename called `u+x` is not a mode.
+    Reference-file modes are unresolved here, as before; they are not symbolic.
+    """
+    mode, _targets = _chmod_operands(argv)
     if re.fullmatch(r"[0-7]{3,4}", mode):
         return any(int(digit) % 2 for digit in mode[-3:])
     if not re.fullmatch(r"[ugoa]*[+=-][rwxXstugo]*(?:[+=-][rwxXstugo]*)*"

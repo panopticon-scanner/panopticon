@@ -137,7 +137,7 @@ import sys
 
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (CONTAINERS, FETCHERS, STDOUT, chmod_executable, covers, described,
+from workflow_forms import (CONTAINERS, FETCHERS, STDOUT, chmod_executable, chmod_targets, covers, described,
                             in_container, names_file, parse_fetch, regions,
                             same_file, scripts, streamed_fetch, swallowed)
 
@@ -394,6 +394,8 @@ def _use(statement, position, stage, argv, dest):
         return None
     argv, handed, recursive = described(statement, position, stage, argv)
     name, rest = os.path.basename(argv[0]), argv[1:]
+    if name == "chmod":
+        rest = chmod_targets(argv)
     mentions = [t for t in rest + handed if covers(t, dest, recursive)]
     if name in CONTAINERS:
         interpreter = in_container(argv, dest, INTERPRETERS)
