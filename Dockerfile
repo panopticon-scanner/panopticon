@@ -57,10 +57,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #
 # Two installs are deliberately NOT covered, and this is therefore not a claim
 # that every registry input to this image is hash-verified: `cargo install
-# cargo-audit` and `dotnet tool install` still select a version without a
-# repository-owned lock of their graphs. Distro apt packages stay unpinned for
-# the reason given above. Direct binary downloads keep their own checksum
-# gates, above and below.
+# cargo-audit --locked` uses the crate's packaged lockfile, not a repository-owned
+# hash closure, and `dotnet tool install` also lacks a repository-owned lock.
+# Distro apt packages stay unpinned for the reason given above. Direct binary
+# downloads keep their own checksum gates, above and below.
 
 # Python tools: semgrep, bandit, pip-audit. Bandit's native SARIF support
 # dependencies remain explicit because pip installs this closure with --no-deps.
@@ -168,12 +168,18 @@ RUN arch="$(dpkg --print-architecture)" \
     && tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks \
     && rm /tmp/gitleaks.tar.gz
 
-# trivy (official apt repo — robust, arch-aware); apt package unpinned, see the base apt note above.
-# hadolint ignore=DL3008
-RUN curl -sfL --connect-timeout 5 --max-time 60 https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" > /etc/apt/sources.list.d/trivy.list \
-    && apt-get update && apt-get install -y --no-install-recommends trivy \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Trivy release archive: pin both supported architectures and verify before extraction.
+ARG TRIVY_VERSION=0.74.0
+ARG TRIVY_SHA256_AMD64=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+ARG TRIVY_SHA256_ARM64=b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in amd64) trivy_arch="64bit"; sha256="${TRIVY_SHA256_AMD64}" ;; arm64) trivy_arch="ARM64"; sha256="${TRIVY_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
+    && curl -sfL --connect-timeout 5 --max-time 120 "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${trivy_arch}.tar.gz" \
+        -o /tmp/trivy.tar.gz \
+    && echo "${sha256}  /tmp/trivy.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy \
+    && chmod +x /usr/local/bin/trivy \
+    && rm /tmp/trivy.tar.gz
 
 # Go toolchain -- REQUIRED BY GOSEC, not optional (#calibration-4, gotify).
 # gosec loads packages through go/packages, which shells out to `go`. Without it
@@ -306,15 +312,17 @@ ENV PATH="/usr/local/cargo/bin:${PATH}"
 ARG RUSTUP_VERSION=1.29.1
 ARG RUSTUP_INIT_SHA256_AMD64=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
 ARG RUSTUP_INIT_SHA256_ARM64=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433
+# The bootstrapper and compiler have separate release cycles; pin each explicitly.
+ARG RUST_TOOLCHAIN_VERSION=1.98.1
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in amd64) ru="x86_64-unknown-linux-gnu"; sha256="${RUSTUP_INIT_SHA256_AMD64}" ;; arm64) ru="aarch64-unknown-linux-gnu"; sha256="${RUSTUP_INIT_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
     && curl -sfL --connect-timeout 5 --max-time 60 "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${ru}/rustup-init" \
         -o /tmp/rustup-init \
     && echo "${sha256}  /tmp/rustup-init" | sha256sum -c - \
     && chmod +x /tmp/rustup-init \
-    && /tmp/rustup-init -y --default-toolchain stable \
+    && /tmp/rustup-init -y --default-toolchain ${RUST_TOOLCHAIN_VERSION} \
     && rm /tmp/rustup-init
-RUN timeout 600 cargo install cargo-audit --version ${CARGO_AUDIT_VERSION}
+RUN timeout 600 cargo install cargo-audit --version ${CARGO_AUDIT_VERSION} --locked
 
 # .NET SDK (system-wide so the scanner user can invoke dotnet)
 ARG DOTNET_INSTALL_SHA256=082f7685e156738a1b2e2ed8381a621870d4ce8e8c59278034556f05c186eb2e

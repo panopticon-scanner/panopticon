@@ -151,6 +151,55 @@ class TestFindSecBugsIntegrity(unittest.TestCase):
                          "dotnet tool install has no timeout wrapper")
 
 
+class TestPinnedRustAndTrivy(unittest.TestCase):
+    def setUp(self):
+        self.text = _read_dockerfile()
+
+    def _run_for(self, marker):
+        runs = [line for _n, line in _logical_lines(self.text)
+                if line.startswith("RUN ") and marker in line]
+        self.assertEqual(len(runs), 1, "expected one RUN command for %s" % marker)
+        return runs[0]
+
+    def test_rust_compiler_and_cargo_audit_are_pinned(self):
+        self.assertRegex(self.text, r"(?m)^ARG RUST_TOOLCHAIN_VERSION=1\.98\.1$")
+        self.assertRegex(self.text, r"(?m)^ARG CARGO_AUDIT_VERSION=0\.22\.2$")
+        rustup = self._run_for("/tmp/rustup-init -y")
+        self.assertIn("--default-toolchain ${RUST_TOOLCHAIN_VERSION}", rustup)
+        self.assertNotIn("--default-toolchain stable", rustup)
+        cargo = self._run_for("cargo install cargo-audit")
+        self.assertIn("--version ${CARGO_AUDIT_VERSION}", cargo)
+        self.assertIn("--locked", cargo)
+
+    def test_trivy_release_is_pinned_for_both_supported_architectures(self):
+        for pin in (
+                r"TRIVY_VERSION=0\.74\.0",
+                "TRIVY_SHA256_AMD64=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a",
+                "TRIVY_SHA256_ARM64=b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5"):
+            self.assertRegex(self.text, r"(?m)^ARG " + pin + r"$")
+        install = self._run_for("/tmp/trivy.tar.gz")
+        self.assertIn('arch="$(dpkg --print-architecture)"', install)
+        self.assertIn('amd64) trivy_arch="64bit"; sha256="${TRIVY_SHA256_AMD64}"', install)
+        self.assertIn('arm64) trivy_arch="ARM64"; sha256="${TRIVY_SHA256_ARM64}"', install)
+        self.assertIn('*) echo "unsupported arch: $arch" >&2; exit 1', install)
+        self.assertIn('trivy_${TRIVY_VERSION}_Linux-${trivy_arch}.tar.gz', install)
+
+    def test_trivy_archive_is_verified_before_extracting_only_the_binary(self):
+        install = self._run_for("/tmp/trivy.tar.gz")
+        fetch = install.index(' -o /tmp/trivy.tar.gz')
+        verify = install.index('echo "${sha256}  /tmp/trivy.tar.gz" | sha256sum -c -')
+        extract = install.index('tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy')
+        self.assertLess(fetch, verify)
+        self.assertLess(verify, extract)
+        self.assertIn('&& echo "${sha256}  /tmp/trivy.tar.gz" | sha256sum -c - && tar', install)
+        self.assertIn('&& rm /tmp/trivy.tar.gz', install)
+
+    def test_unverified_trivy_apt_feed_is_absent(self):
+        self.assertNotIn("aquasecurity.github.io/trivy-repo", self.text)
+        self.assertNotIn("/etc/apt/sources.list.d/trivy.list", self.text)
+        self.assertNotIn("apt-get install -y --no-install-recommends trivy", self.text)
+
+
 class TestOfflineAssets(unittest.TestCase):
     def setUp(self):
         self.text = _read_dockerfile()
