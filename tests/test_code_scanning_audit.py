@@ -104,7 +104,7 @@ def run_with(responses, *, attempts=3):
     sleeps = []
     instance = audit.MainAudit(
         target(), runner, sleep=sleeps.append, output=output.append,
-        codeql_attempts=attempts, codeql_delay=0.25,
+        poll_attempts=attempts, poll_delay=0.25,
     )
     return instance, runner, output, sleeps
 

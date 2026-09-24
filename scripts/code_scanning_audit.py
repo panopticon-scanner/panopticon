@@ -26,8 +26,10 @@ SECURITY_ANALYSIS_KEY = ".github/workflows/security.yml:scan"
 SECURITY_TOOLS = frozenset({"Bandit", "Gitleaks", "Semgrep OSS", "Trivy"})
 CODEQL_ANALYSIS_KEY = ".github/workflows/codeql.yml:analyze"
 CODEQL_CATEGORY = "/language:python"
-CODEQL_ATTEMPTS = 6
-CODEQL_DELAY_SECONDS = 10
+# One bound for both asynchronous-ingestion waits (Security analyses,
+# CodeQL): the same GitHub pipeline is what either check is waiting on.
+POLL_ATTEMPTS = 6
+POLL_DELAY_SECONDS = 10
 PER_PAGE = 100
 MAX_ALERT_PAGES = 1000
 MAX_RESPONSE_CHARS = 5 * 1024 * 1024
@@ -144,16 +146,16 @@ class MainAudit:
     def __init__(self, target: Target, runner: Callable[..., object],
                  sleep: Callable[[float], None] = time.sleep,
                  output: Callable[[str], None] = print,
-                 codeql_attempts: int = CODEQL_ATTEMPTS,
-                 codeql_delay: float = CODEQL_DELAY_SECONDS):
-        if codeql_attempts < 1 or codeql_delay < 0:
-            raise ValueError("invalid CodeQL polling bound")
+                 poll_attempts: int = POLL_ATTEMPTS,
+                 poll_delay: float = POLL_DELAY_SECONDS):
+        if poll_attempts < 1 or poll_delay < 0:
+            raise ValueError("invalid polling bound")
         self.target = target
         self.api = GitHubReader(target, runner)
         self.sleep = sleep
         self.output = output
-        self.codeql_attempts = codeql_attempts
-        self.codeql_delay = codeql_delay
+        self.poll_attempts = poll_attempts
+        self.poll_delay = poll_delay
         self.base = "repos/%s" % target.repository
 
     def _head_sha(self, label: str) -> str:
@@ -260,7 +262,7 @@ class MainAudit:
 
     def _codeql(self) -> None:
         last_pending = "CodeQL analysis is not available"
-        for attempt in range(self.codeql_attempts):
+        for attempt in range(self.poll_attempts):
             rows = self.api.get(
                 self.base + "/code-scanning/analyses",
                 "CodeQL analysis",
@@ -295,10 +297,10 @@ class MainAudit:
                         return
                     self._require_current_head("main ref during CodeQL wait")
                     last_pending = "CodeQL SARIF upload is pending"
-            if attempt + 1 < self.codeql_attempts:
-                self.sleep(self.codeql_delay)
+            if attempt + 1 < self.poll_attempts:
+                self.sleep(self.poll_delay)
         raise AuditError("%s after %d attempts" %
-                         (last_pending, self.codeql_attempts))
+                         (last_pending, self.poll_attempts))
 
     @staticmethod
     def _display(value: object, label: str, limit: int = 200) -> str:
