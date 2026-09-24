@@ -442,3 +442,69 @@ class TestWrapperOptionOperands(unittest.TestCase):
         argv = shell_reader.command(stage('sudo -u root curl "$(echo URL)"').argv)
         self.assertTrue(shell_reader.has_substitution(argv[1]))
         self.assertEqual('$(...)', shell_reader.readable(argv[1]))
+
+    def test_unresolved_wrappers_keep_their_argv(self):
+        for argv in (['sudo', '--unknown-flag', 'curl'],
+                     ['sudo', '-K', 'curl'],
+                     ['sudo', '--remove-timestamp', 'curl'],
+                     ['sudo', '-l', '-K'],
+                     ['sudo', '-u', 'curl'],
+                     ['env', '--default-signal=BOGUS', 'curl'],
+                     ['env', '-S', '"unterminated', 'curl']):
+            with self.subTest(argv=argv):
+                self.assertEqual(argv, shell_reader.command(argv))
+                self.assertIsNotNone(shell_reader.unresolved_wrapper(argv))
+        for argv in (['sudo', '-K'], ['sudo', '--remove-timestamp'],
+                     ['sudo', '--preserve-groups', 'curl'],
+                     ['sudo', '-l', 'curl'],
+                     ['env', '--default-signal', 'curl'],
+                     ['env', '--default-signal=PIPE,TERM', 'curl']):
+            self.assertIsNone(shell_reader.unresolved_wrapper(argv))
+        self.assertEqual(['ordinary', 'sh'], shell_reader.command(
+            ['sudo', '--user=curl', 'ordinary', 'sh']))
+        self.assertEqual(['sh', 'URL'], shell_reader.command(
+            ['sudo', '-u', 'curl', 'sh', 'URL']))
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(
+            ['env', '-i', 'sudo', '--unknown-flag', 'curl']))
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(
+            stage('sudo "$(echo curl)" URL').argv))
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(
+            ['sudo', '$FETCHER', 'URL']))
+
+    def test_sudo_host_option_and_help(self):
+        for argv in (['sudo', '-h'], ['sudo', '--help']):
+            with self.subTest(argv=argv):
+                self.assertEqual([], shell_reader.command(argv))
+                self.assertIsNone(shell_reader.unresolved_wrapper(argv))
+        for argv in (['sudo', '-h', 'localhost', 'curl', 'URL'],
+                     ['sudo', '-hlocalhost', 'curl', 'URL'],
+                     ['sudo', '--host=localhost', 'curl', 'URL']):
+            with self.subTest(argv=argv):
+                self.assertEqual(['curl', 'URL'], shell_reader.command(argv))
+                self.assertIsNone(shell_reader.unresolved_wrapper(argv))
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(
+            ['sudo', '-h', 'localhost']))
+
+    def test_static_gnu_env_split_string(self):
+        cases = (
+            (['env', '-S', 'curl -fsSL URL'], ['curl', '-fsSL', 'URL']),
+            (['env', '--split-string=-i FOO=bar curl URL'], ['curl', 'URL']),
+            (['env', '-S', "curl 'two words' URL"], ['curl', 'two words', 'URL']),
+            (['env', '-S', r'curl\_URL'], ['curl', 'URL']),
+            (['env', '-S', r'curl URL\c ignored'], ['curl', 'URL']),
+            (['env', '-S', "curl '#literal' URL"], ['curl', '#literal', 'URL']),
+        )
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                self.assertEqual(expected, shell_reader.command(argv))
+                self.assertIsNone(shell_reader.unresolved_wrapper(argv))
+        for value in ('"unterminated', 'curl \\', 'curl ${COMMAND}',
+                      r'curl \q URL', r'"curl\c"',
+                      '-S -S -S -S -S curl URL'):
+            argv = ['env', '-S', value]
+            with self.subTest(value=value):
+                self.assertEqual(argv, shell_reader.command(argv))
+                self.assertIsNotNone(shell_reader.unresolved_wrapper(argv))
+        dynamic = stage('env -S "$(echo curl) URL"').argv
+        self.assertEqual(dynamic, shell_reader.command(dynamic))
+        self.assertIsNotNone(shell_reader.unresolved_wrapper(dynamic))

@@ -1652,6 +1652,8 @@ class TestRedirectAndMarkerProvenance(unittest.TestCase):
     def test_literal_destination_stays_literal_beside_real_substitution(self):
         for marker in ('@@subst0@@', '@@heredoc0@@', '@@casearm@@',
                        '@@group-open@@', '@@group-close@@'):
+            # A second URL/operand after curl is an unread multiple-transfer
+            # case; the header operand tests substitution handling separately.
             fetch = 'curl ' + self.URL + ' -H "$(echo unused)" > "' + marker + '"'
             self.assertIsNone(wg.fetch_exec_defect(fetch))
             defect = wg.fetch_exec_defect(fetch + '; sh "' + marker + '"')
