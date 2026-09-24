@@ -330,7 +330,7 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
         proc = subprocess.run(  # nosec B603
             [sys.executable, "-c",
              "import scripts.phases.readiness_checks as r; print(repr(r.DOCKER_RUNNER))"],
-            capture_output=True, text=True, env=env, cwd=REPO_ROOT)
+            capture_output=True, text=True, timeout=30, env=env, cwd=REPO_ROOT)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "None")
 

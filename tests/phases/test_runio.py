@@ -43,7 +43,8 @@ class TestForeignManifest(unittest.TestCase):
 
     @staticmethod
     def _git(root, *a):
-        subprocess.run(["git", "-C", root, *a], check=True, capture_output=True)
+        subprocess.run(["git", "-C", root, *a], check=True,
+                       capture_output=True, timeout=30)
 
     def test_git_tracked_manifest_is_foreign_even_with_matching_stamp(self):
         # #run8 AGT-C1A: a target that force-commits its .panopticon/run-manifest
@@ -92,17 +93,18 @@ class TestResolveReviewRoot(unittest.TestCase):
     def _git_repo(self):
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
-        subprocess.run(["git", "init", "-q", d], check=True)
+        subprocess.run(["git", "init", "-q", d], check=True, timeout=30)
         return d
 
     def _assert_enclosing_checkout_git_is_not_executed(self, target_kind, linked=False):
         d = self._git_repo()
         if linked:
             subprocess.run(["git", "-C", d, "-c", "user.name=T", "-c", "user.email=t@t",
-                            "commit", "--allow-empty", "-qm", "initial"], check=True)
+                            "commit", "--allow-empty", "-qm", "initial"],
+                           check=True, timeout=30)
             checkout = os.path.join(d, "linked")
             subprocess.run(["git", "-C", d, "worktree", "add", "--detach", checkout],
-                           check=True, capture_output=True)
+                           check=True, capture_output=True, timeout=30)
         else:
             checkout = d
         source = os.path.join(checkout, "src")
@@ -145,10 +147,11 @@ class TestResolveReviewRoot(unittest.TestCase):
     def test_linked_worktree_keeps_its_own_root(self):
         d = self._git_repo()
         subprocess.run(["git", "-C", d, "-c", "user.name=T", "-c", "user.email=t@t",
-                        "commit", "--allow-empty", "-qm", "initial"], check=True)
+                        "commit", "--allow-empty", "-qm", "initial"],
+                       check=True, timeout=30)
         linked = os.path.join(d, "linked")
         subprocess.run(["git", "-C", d, "worktree", "add", "--detach", linked],
-                       check=True, capture_output=True)
+                       check=True, capture_output=True, timeout=30)
         sub = os.path.join(linked, "sub")
         os.makedirs(sub)
         self.assertEqual(runio.resolve_review_root(sub), (linked, None, None))
@@ -1018,9 +1021,9 @@ def test_foreign_manifest_cannot_authorize_existing_run_delete(tmp_path, tracked
     path = pano / "run-manifest.json"
     body = json.loads(path.read_text())
     if tracked:
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=30)
         subprocess.run(["git", "-C", str(root), "add", "-f",
-                        ".panopticon/run-manifest.json"], check=True)
+                        ".panopticon/run-manifest.json"], check=True, timeout=30)
     else:
         body["review_root"] = str(tmp_path / "foreign")
         path.write_text(json.dumps(body))
