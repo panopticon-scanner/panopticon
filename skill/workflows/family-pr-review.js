@@ -1,3 +1,11 @@
+// Workflow-tool script, not a standalone ES module or CommonJS script (#2024;
+// see dispatch.js's header and tests/workflows/dispatch_harness.mjs): the
+// Workflow host strips `export const meta = {...}` and runs what is left as
+// the body of an async function closing over `args`, `agent`, `parallel`,
+// `phase`, `log`, `pipeline` -- which is why the top-level `await
+// pipeline(...)` below and the top-level `return` at the end are both
+// expected and legal here, and why this stays `.js`.
+//
 // Review a family first-class-host branch against docs/FAMILY-PR-GUARDRAILS.md
 // (Panopticon #1344). Saved here so the review is a template, not an ad-hoc
 // fan-out: `Workflow({ scriptPath: "skill/workflows/family-pr-review.js",
