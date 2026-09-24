@@ -663,3 +663,63 @@ def test_the_public_hooks_path_is_the_one_every_launch_pins(tmp_path):
     # thing to keep empty.
     assert safe_git.no_hooks_path() == safe_git._no_hooks_path()
     assert os.listdir(safe_git.no_hooks_path()) == []
+
+
+# #2041: the keys a FETCH executes, or can be made to execute, from the
+# checkout's own config -- the one call that keeps the operator's environment.
+# `credential.<url>.helper` carries a URL, whose dots make it a multi-part
+# subsection; `protocol.<scheme>.allow` is what unlocks an `ext::` helper a
+# repo-local `remote.<name>.url` can name.
+TRANSPORT_KEYS = ("core.sshcommand", "core.gitproxy", "remote.origin.uploadpack",
+                  "remote.origin.vcs", "credential.helper",
+                  "credential.https://example.com.helper", "protocol.allow",
+                  "protocol.ext.allow")
+# Neighbours in the same sections that run nothing: a URL, a refspec, a key
+# whose variable merely starts the same way, a username, a number.
+NOT_TRANSPORT_KEYS = ("remote.origin.url", "remote.origin.fetch", "core.sshcommandx",
+                      "credential.username", "protocol.version")
+
+
+def test_every_transport_command_key_is_refused_and_its_neighbours_are_not():
+    for key in TRANSPORT_KEYS:
+        assert safe_git._is_transport_command_setting(key), key
+        assert safe_git.transport_command_keys({key: "cmd"}) == [key], key
+    for key in NOT_TRANSPORT_KEYS:
+        assert not safe_git._is_transport_command_setting(key), key
+        assert safe_git.transport_command_keys({key: "value"}) == [], key
+
+
+def test_transport_command_keys_are_sorted_and_only_the_set_values_count():
+    """Sorted, like every other list this module hands out, so the refusal
+    message is stable; a key set and then EMPTIED (`git config core.sshCommand
+    ""`) executes nothing and is not refused (#2041)."""
+    settings = {"remote.origin.uploadpack": "up.sh", "core.sshcommand": "ssh.sh",
+                "core.gitproxy": "", "remote.origin.url": "git@example.invalid:x"}
+    assert safe_git.transport_command_keys(settings) == ["core.sshcommand",
+                                                        "remote.origin.uploadpack"]
+    assert safe_git.transport_command_keys({"core.sshcommand": ""}) == []
+
+
+def test_a_transport_key_normalizes_the_way_git_compares_it():
+    """Section and variable case-insensitively, the SUBSECTION case-sensitively
+    -- `_canonical_key`'s semantics, because that is what git does. The key is
+    reported exactly as the config read printed it."""
+    assert safe_git._is_transport_command_setting("Core.sshCommand")
+    assert safe_git._is_transport_command_setting("REMOTE.Origin.UPLOADPACK")
+    assert safe_git.transport_command_keys({"remote.Origin.uploadpack": "up.sh"}) == [
+        "remote.Origin.uploadpack"]
+
+
+def test_a_transport_key_is_refused_never_emptied():
+    """These are NOT suppressible (#2041 owner ruling: refuse with a remedy).
+
+    The probe empties `filter.*`/`diff.*` commands on every launch, but the
+    fetch runs with the operator's environment and `core.sshCommand` is
+    legitimately how a private repository is reached -- emptying it would break
+    the case the fetch exemption exists for, so the refusal is the answer and
+    the remedy is the operator's own global config.
+    """
+    for key in TRANSPORT_KEYS:
+        assert not safe_git._is_command_setting(key), key
+        assert not safe_git._is_suppressible(key), key
+    assert safe_git._driver_keys({key: "cmd" for key in TRANSPORT_KEYS}) == []

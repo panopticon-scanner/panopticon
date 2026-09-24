@@ -328,6 +328,68 @@ def _is_command_setting(key):
         key.startswith("diff.") and key.endswith((".command", ".textconv")))
 
 
+def _is_transport_command_setting(key):
+    """Whether `key` makes a FETCH run a command the CHECKOUT's config named.
+
+    `diff_map.acquire_pr`'s fetch is the one git call that keeps the operator's
+    environment (a private repository's PR head is only fetchable through their
+    credential helper), so it is the one call a repo-local setting can still
+    reach. It is REFUSED there rather than emptied (#2041 owner ruling: "refuse
+    with remedy"), which is why these keys are deliberately absent from
+    `_is_command_setting`/`_driver_keys`: those are the keys the probe EMPTIES
+    on every launch, and emptying `core.sshCommand` would break the private
+    repository the fetch exemption exists for. The remedy is the operator's own
+    GLOBAL config, which the fetch still honours.
+
+    MEASURED on git 2.50 (#2012's review, with both of the fetch's pins
+    applied): a repo-local `core.sshCommand` ran on the fetch of an `ssh://`
+    remote, and `remote.<name>.uploadpack` ran on the fetch of a local-path
+    remote. The rest are the same class by git's own documentation rather than
+    by measurement -- `core.gitProxy` is the proxy command for `git://`,
+    `remote.<name>.vcs` selects the remote-helper program `git-remote-<vcs>`,
+    `credential.helper` and `credential.<url>.helper` are command lines (a
+    leading `!` makes one an outright shell line) run on an https auth
+    challenge, and `protocol.allow`/`protocol.<scheme>.allow` unlock the
+    `ext::` helper -- git's default for `ext` is `never` -- that a repo-local
+    `remote.<name>.url` is free to name.
+
+    Normalizes first, so a hand-written key answers the way git would compare
+    it (`_canonical_key`: section and variable lowered, subsection kept). The
+    keys the caller reads out of `config --list` are canonical already.
+    """
+    parts = _canonical_key(key).split(".")
+    if len(parts) < 2:
+        return False
+    section, variable = parts[0], parts[-1]
+    if section == "core":
+        return len(parts) == 2 and variable in ("sshcommand", "gitproxy")
+    if section == "remote":
+        # A subsection is mandatory: `remote.uploadpack` names no remote and
+        # git runs nothing for it.
+        return len(parts) > 2 and variable in ("uploadpack", "vcs")
+    if section == "credential":
+        return variable == "helper"        # bare, or per-URL (dots and all)
+    if section == "protocol":
+        return variable == "allow"         # bare, or per-scheme
+    return False
+
+
+def transport_command_keys(settings):
+    """The keys in `settings` a fetch would execute, sorted; empty ones ignored.
+
+    The public face of `_is_transport_command_setting`, for
+    `diff_map.acquire_pr`: it reads the checkout's LOCAL config immediately
+    before the one unconfined call and refuses when this is not empty (#2041).
+
+    A key set and then emptied (`git config core.sshCommand ""`) runs nothing,
+    so it does not refuse. A GLOBAL or system value never appears here at all,
+    because the caller's read is `--local`-scoped -- moving the setting there is
+    the remedy the refusal names, so refusing on it would refuse the fix.
+    """
+    return sorted(key for key, value in settings.items()
+                  if value and _is_transport_command_setting(key))
+
+
 def _filter_driver(key):
     """The driver name in a `filter.<driver>.<setting>` key, or None.
 
@@ -405,6 +467,18 @@ def _settings(stdout):
         key, _, value = record.partition("\n")
         settings[key] = value
     return settings
+
+
+def settings(stdout):
+    """`_settings` for the ONE caller that reads a config for itself.
+
+    `diff_map.acquire_pr` reads the checkout's local config through `probe` and
+    asks `transport_command_keys` about it (#2041), so it needs the same
+    last-value-wins parse every preflight in here uses rather than a second,
+    subtly different one on the far side of a module boundary. The public face
+    of `_settings`, exactly as `no_hooks_path` is of `_no_hooks_path`.
+    """
+    return _settings(stdout)
 
 
 def _with_options(args, options):
