@@ -17,6 +17,7 @@ class TestPyproject(unittest.TestCase):
         matches = [req for req in parsed
                    if canonicalize_name(req.name) == "setuptools"]
         self.assertEqual(len(matches), 1, requires)
+        self.assertIsNone(matches[0].marker, requires)
         specifiers = list(matches[0].specifier)
         self.assertEqual(len(specifiers), 1, requires)
         self.assertEqual(specifiers[0].operator, "==", requires)
@@ -32,7 +33,8 @@ class TestPyproject(unittest.TestCase):
         for invalid in ([], ["wheel>=0.40"],
                         [*requires, "setuptools==83.0.0"],
                         ["setuptools>=84.0.0"], ["setuptools==84.*"],
-                        ["setuptools>=84.0.0,<85"]):
+                        ["setuptools>=84.0.0,<85"],
+                        ["setuptools==84.0.0; python_version < '3.11'"]):
             with self.subTest(invalid=invalid), self.assertRaises(AssertionError):
                 self._assert_exact_setuptools_pin(invalid)
 
