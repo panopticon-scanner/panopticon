@@ -325,7 +325,8 @@ def cli_error(text):
 
 
 # #1623: the sentence a host-wide outage ends a run with. Two constants, the
-# way the interrupt's are, because `docs/PANOPTICON.md` quotes the clause back
+# way the interrupt's are, because `docs/guide/driver-run-loop.md` quotes the
+# clause back
 # and the guide test reads it off here rather than re-typing it.
 #
 # The clause says what is TRUE of the batch, which is not "nothing was

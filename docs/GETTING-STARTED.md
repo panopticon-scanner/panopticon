@@ -98,7 +98,7 @@ Read these lines before the findings:
 
 ## Where to go next
 
-- [`PANOPTICON.md`](PANOPTICON.md): every flag, the driver protocol, the output schema, the host-capability probes, and the security notes on how the target tree is treated as hostile.
+- [`PANOPTICON.md`](PANOPTICON.md): the modes, every global flag, and a table of contents for the rest of the guide, which lives one file per section in [`guide/`](guide/) — the driver protocol, the output schema, the host-capability probes, and the security notes on how the target tree is treated as hostile.
 - [`samples/`](samples/README.md): a real run's readout and screenshots.
 - [`../DEVELOPMENT.md`](../DEVELOPMENT.md): architecture and the design decisions that are not up for casual relitigation.
 - [`../SECURITY.md`](../SECURITY.md): how to report a vulnerability in the tool itself.

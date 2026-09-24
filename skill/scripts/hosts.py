@@ -39,7 +39,7 @@ CAPABILITIES = (TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
 
 # The two capabilities that are OPERATIONAL rather than security (#1626 I1).
 # Spec 8.1's retirement bar excludes exactly these (D5), and
-# docs/PANOPTICON.md says of usage_ledger that it "gates nothing directly":
+# docs/guide/host-capabilities.md says of usage_ledger that it gates nothing:
 # a run whose token counter went quiet is a run with a worse cost report, not
 # a run whose reviewers were unconfined. The other three ARE the enforcement
 # story, and every consumer that refuses on a posture change must refuse on
@@ -125,12 +125,35 @@ CODEX_AGENTS_DIR = os.path.join(CODEX_HOME, "agents")
 # the path and does not stat it. `driver readiness` reports whether it exists,
 # which is the one caller that has an answer to give when it does not.
 GUIDE = "PANOPTICON.md"
+# ...and, since 2026-09-24, the chapters it indexes. One document in nine
+# files: `GUIDE` keeps the front matter (Overview, Required sub-skills, Modes,
+# Global flags) plus a Contents list, and every other H2 lives in one file
+# under `docs/guide/`. The order below is DOCUMENT order -- the guide reads as
+# the concatenation of these files, and `tests/test_skill_md.py` slices that
+# concatenation on the H2 lines each chapter opens with -- so reordering this
+# tuple reorders the guide, and dropping a name hides a chapter from
+# `driver readiness`. The repo root carries `docs/guide` as a symlink onto the
+# directory, exactly as it carries `docs/PANOPTICON.md` onto the index, so a
+# link written from either copy resolves.
+GUIDE_CHAPTERS = ("driver-run-loop.md", "driver-setup.md", "output.md",
+                  "host-capabilities.md", "code-layout.md",
+                  "testing-scanner-fixtures.md", "evidence.md", "notes.md")
 _SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def guide_path():
     """The absolute path of the user guide inside THIS skill install."""
     return os.path.join(_SKILL_DIR, "docs", GUIDE)
+
+
+def guide_documents():
+    """Every file the guide is made of: the index first, then its chapters in
+    document order. PURE, like `guide_path()` -- it computes paths and stats
+    none of them; `driver readiness` is the one caller with an answer to give
+    when a file is not there."""
+    chapters = os.path.join(_SKILL_DIR, "docs", "guide")
+    return [guide_path()] + [os.path.join(chapters, name)
+                             for name in GUIDE_CHAPTERS]
 
 
 # --- the target's discovery surface (#1657 step 3) -------------------------

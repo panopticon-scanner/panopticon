@@ -159,7 +159,7 @@ def _open(path, *, directory=False, grant=DIR_GRANT):
     the orchestrator chose on purpose and stays readable whatever its link
     count. The cost is deliberate: ordinary hard-linked build output under a
     directory grant is unreadable, and shows in the transcript as this denial
-    (docs/PANOPTICON.md's Codex section says so).
+    (the Codex paragraphs of docs/guide/driver-run-loop.md say so).
 
     The link count is read off the OPEN DESCRIPTOR, after the same walk that
     refuses symlinks, so no rename or relink between the check and the read can

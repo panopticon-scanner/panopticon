@@ -540,6 +540,10 @@ def test_a_failed_root_preflight_names_the_command_the_caller_asked_for(tmp_path
     ["-c", "filter.lfs.required=true", "status", "--porcelain", "-z"],
     ["-c", "diff.external=x", "diff", "--name-only"],
     ["-c", "diff.d.textconv=x", "diff", "--name-only"],
+    # #2012 review M2: an included file's settings come after the pins and win.
+    ["-c", "include.path=/nowhere/evil.cfg", "status", "--porcelain", "-z"],
+    ["-c", "includeIf.gitdir:/.path=/nowhere/evil.cfg", "status", "--porcelain", "-z"],
+    ["-c", "INCLUDE.PATH=/nowhere/evil.cfg", "worktree", "add", "--detach", "x", "HEAD"],
 ])
 def test_a_caller_cannot_undo_what_the_probe_pins(tmp_path, args):
     """#2006 review N2: a caller's `-c` for a key the probe sets, or a flag
@@ -547,5 +551,115 @@ def test_a_caller_cannot_undo_what_the_probe_pins(tmp_path, args):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
+    entry = safe_git.mutate if "worktree" in args else safe_git.probe
     with pytest.raises(ValueError, match="override|re-enable"):
-        safe_git.probe(str(repo), args)
+        entry(str(repo), args)
+
+
+# --- #2012: `mutate`, the one entry point allowed to write -------------------
+
+@pytest.mark.parametrize("args", [
+    ["checkout", "main"],
+    ["reset", "--hard", "HEAD"],
+    ["worktree", "prune"],
+    ["clean", "-fdx"],
+    ["commit", "-am", "x"],
+    ["status", "--porcelain", "-z"],
+    # A write, but not the DELETE shape: the verb alone is not the permission.
+    ["update-ref", "refs/heads/x", "deadbeef"],
+    # Redirection and pin-undoing are refused here exactly as in `probe`, and
+    # before the shape is even considered, so the message names what is wrong.
+    ["-C", "/etc", "worktree", "add", "/tmp/wt", "deadbeef"],
+    ["-c", "core.hooksPath=/somewhere/else", "worktree", "add", "/tmp/wt", "x"],
+    ["-c", "filter.lfs.smudge=git-lfs smudge", "worktree", "add", "/tmp/wt", "x"],
+])
+def test_mutate_refuses_everything_but_the_pr_worktree_lifecycle(tmp_path, args):
+    """#2012: an allowlist of one lifecycle, not a write permit.
+
+    `worktree prune` and `checkout` are the near misses that matter -- both are
+    a token away from a shape this does run -- and no git runs before the
+    refusal.
+    """
+    runner = mock.Mock()
+    with pytest.raises(ValueError):
+        safe_git.mutate(str(tmp_path), args, runner=runner)
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize("args", [
+    ["worktree", "add", "--detach", "/tmp/wt", "deadbeef"],
+    ["worktree", "remove", "--force", "/tmp/wt"],
+    ["update-ref", "-d", "refs/panopticon/pr-7-abc"],
+])
+def test_mutate_runs_the_three_shapes_the_pr_lifecycle_needs(tmp_path, args):
+    runner = mock.Mock(side_effect=[_config(), _ok(), _ok()])
+    proc = safe_git.mutate(str(tmp_path), args, runner=runner)
+    assert proc.returncode == 0
+    assert runner.call_args.args[0][-len(args):] == args
+
+
+def test_a_mutating_call_preflights_even_if_its_subcommand_is_allowlisted(tmp_path):
+    """`_NO_CONFIGURED_COMMAND` answers "can this subcommand run a
+    repository-configured command?"; a WRITE does not get to ask. Pinned by
+    adding the entry a future classifier might, and requiring the preflight
+    anyway -- two saved launches are not worth the guarantee."""
+    runner = mock.Mock(side_effect=[_config(), _ok(), _ok()])
+    with mock.patch.dict(safe_git._NO_CONFIGURED_COMMAND, {"update-ref": ()}):
+        safe_git.mutate(str(tmp_path), ["update-ref", "-d", "refs/x"], runner=runner)
+    assert runner.call_count == 3          # config, index, then the command
+    # The same argv through `probe` is the one-launch fast path, unchanged.
+    fast = mock.Mock(side_effect=[_ok()])
+    with mock.patch.dict(safe_git._NO_CONFIGURED_COMMAND, {"update-ref": ()}):
+        safe_git.probe(str(tmp_path), ["update-ref", "-d", "refs/x"], runner=fast)
+    assert fast.call_count == 1
+
+
+def test_mutate_carries_the_hooks_pin_and_the_emptied_drivers(tmp_path):
+    """The whole point of #2012, at the argv level.
+
+    `worktree add` is a CHECKOUT, so the target's `filter.*.smudge` runs on its
+    content and its `post-checkout` hook runs from whatever `core.hooksPath` the
+    repository asked for. Both are closed by tokens in the GLOBAL position of
+    this launch; the target's command line never appears in the argv at all.
+    """
+    runner = mock.Mock(side_effect=[
+        _config("filter.evil.smudge\nsh ./evil.sh-must-not-appear",
+                "filter.evil.required\ntrue",
+                "core.hooksPath\n.githooks"),          # root config
+        _ok(),                                         # root index
+        _config("filter.evil.smudge\n", "filter.evil.required\n",
+                "core.hooksPath\n.githooks"),          # confirmation
+        _ok(),                                         # the worktree add
+    ])
+    suppressed = []
+    resolved = executable.ResolvedExecutable("/trusted/git", "/trusted/bin")
+    with mock.patch.object(executable, "resolve", return_value=resolved):
+        proc = safe_git.mutate(str(tmp_path),
+                               ["worktree", "add", "--detach", "/tmp/wt", "deadbeef"],
+                               runner=runner, timeout=180, suppressed=suppressed)
+    assert proc.returncode == 0
+    # Sorted, as every disclosure from this module is.
+    assert suppressed == [(".", "filter.evil.required"), (".", "filter.evil.smudge")]
+    argv, options = runner.call_args.args[0], runner.call_args.kwargs
+    assert argv[:3] == ["/trusted/git", "-C", str(tmp_path)]
+    assert argv[-5:] == ["worktree", "add", "--detach", "/tmp/wt", "deadbeef"]
+    assert "core.fsmonitor=false" in argv
+    # The pin wins over the target's `core.hooksPath = .githooks`, which points
+    # INTO the tree being checked out.
+    assert "core.hooksPath=" + safe_git._no_hooks_path() in argv
+    for key in ("filter.evil.smudge=", "filter.evil.required="):
+        assert argv[argv.index(key) - 1] == "-c"
+    assert "evil.sh-must-not-appear" not in " ".join(argv)
+    assert options["env"] == {"PATH": "/trusted/bin", "LC_ALL": "C",
+                              "GIT_CONFIG_NOSYSTEM": "1",
+                              "GIT_CONFIG_SYSTEM": os.devnull,
+                              "GIT_CONFIG_GLOBAL": os.devnull}
+    assert 0 < options["timeout"] <= 180        # the caller's shared deadline
+
+
+def test_the_public_hooks_path_is_the_one_every_launch_pins(tmp_path):
+    # `diff_map`'s fetch keeps the operator's environment and pins this same
+    # directory by hand; a second, unproved empty directory would be a second
+    # thing to keep empty.
+    assert safe_git.no_hooks_path() == safe_git._no_hooks_path()
+    assert os.listdir(safe_git.no_hooks_path()) == []

@@ -299,14 +299,30 @@ def _sub_skill_rows():
 
 def _guide_row():
     """Gating: SKILL.md's first instruction is to read this file, and a host
-    that cannot has no contract at all (#1637 P01)."""
-    path = hosts.guide_path()
-    exists = os.path.isfile(path)
-    return {"path": path, "exists": exists, "ok": exists,
-            "detail": path if exists else
-                      "the guide is missing from this install -- reinstall the "
-                      "skill; it ships at skill/docs/%s and %s is a symlink "
-                      "onto it" % (hosts.GUIDE, os.path.join("docs", hosts.GUIDE))}
+    that cannot has no contract at all (#1637 P01).
+
+    The guide is an index plus one chapter file per section since 2026-09-24,
+    so the row checks `hosts.guide_documents()` and not just the index: a
+    truncated install that kept `PANOPTICON.md` and lost `guide/output.md` has
+    exactly the hole in its contract this row exists to refuse, and the host
+    would otherwise meet it as a link that goes nowhere mid-review. The remedy
+    NAMES the files that are not there -- "the guide is missing" is not
+    actionable when eight of nine files are present."""
+    documents = hosts.guide_documents()
+    # Labelled off the paths themselves, never off GUIDE_CHAPTERS: a label that
+    # comes from a parallel list names the wrong file the moment the two differ.
+    missing = [os.path.join("docs", hosts.GUIDE) if position == 0
+               else os.path.join("docs", "guide", os.path.basename(path))
+               for position, path in enumerate(documents)
+               if not os.path.isfile(path)]
+    path = documents[0]
+    return {"path": path, "exists": not missing, "ok": not missing,
+            "detail": path if not missing else
+                      "missing from this install: %s -- reinstall the skill; "
+                      "the guide ships at skill/%s with one file per section "
+                      "under skill/docs/guide/, and %s is a symlink onto it"
+                      % (", ".join(missing), os.path.join("docs", hosts.GUIDE),
+                         os.path.join("docs", hosts.GUIDE))}
 
 
 def _matrix_row(review_root):

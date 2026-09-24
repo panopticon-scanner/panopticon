@@ -33,8 +33,8 @@
 #     unclaimed -- which is how eighteen of them accumulated unnoticed.
 #     THE MATRIX IS COMMITTED: the guard, `driver readiness` and every
 #     contributor's PR diff all need it in the checkout, and
-#     skill/docs/PANOPTICON.md tells every target repo to commit it. Back
-#     then it lived under `.panopticon/` and was force-added past
+#     skill/docs/guide/driver-setup.md tells every target repo to commit
+#     it. Back then it lived under `.panopticon/` and was force-added past
 #     `.gitignore`'s `.panopticon*/`, which exists for run ARTIFACTS.
 #   - 2026-09-18 (#1681 Plan 1): the matrix moved out of `.panopticon/` to
 #     this root file, where nothing ignores it and it is committed by

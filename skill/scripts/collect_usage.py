@@ -3,7 +3,8 @@
 
 The driver is a subprocess and cannot observe per-dispatch token usage, so
 `meta.cost.tokens` stays null unless the HOST supplies it (#run10 D4,
-docs/PANOPTICON.md "report your usage"). This is the Claude-host implementation
+docs/guide/host-capabilities.md on `usage_ledger`). This is the Claude-host
+implementation
 of that channel: it sums the usage records the host already writes to its
 session transcript and its subagent transcripts, and reports them verbatim.
 

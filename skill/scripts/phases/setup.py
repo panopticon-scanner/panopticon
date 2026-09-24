@@ -61,7 +61,8 @@ def _read_text(path):
 
 # #1683 fix round 1: the operator's fix when a target's hard links cost the
 # setup scan its directory Grep/Glob. ONE wording, named in the stderr line
-# and in PANOPTICON.md's paragraph, because a disclosure nobody can act on is
+# and in docs/guide/driver-run-loop.md's paragraph, because a disclosure nobody
+# can act on is
 # noise -- and the guard cannot tell a benign `git clone --local` store from a
 # planted link, so re-cloning is the answer to both.
 _HARD_LINK_REMEDY = ("re-clone the target without hard links (git clone "

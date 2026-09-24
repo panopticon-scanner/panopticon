@@ -29,6 +29,15 @@ may include them. Measured on the canonical git-lfs shape -- index blob
 `status` reporting ` M big.bin`. That is why the suppression is disclosed
 rather than silent, and why a DELTA-scoped run over a suppressed comparison
 cannot certify its coverage (`synth/tool_axis.reconcile`).
+
+`mutate` is the ONE entry point here allowed to WRITE to the target repository
+(#2012): the same fresh environment, hooks pin and driver neutralization as
+`probe`, an unskippable preflight, and an allowlist of exactly three subcommand
+shapes (`worktree add`, `worktree remove`, `update-ref -d`) -- the `--pr`
+worktree lifecycle and nothing else. It exists because `git worktree add` is a
+CHECKOUT: it runs the target's smudge filters and its `post-checkout` hook, so
+`diff_map.acquire_pr` used to execute target-authored code on the operator's
+machine on every `--pr` run.
 """
 from typing import TYPE_CHECKING
 import os
@@ -143,6 +152,21 @@ def _no_hooks_path():
     return _HOOKS_PATH
 
 
+def no_hooks_path():
+    """`_no_hooks_path()` for the ONE caller that cannot use `probe`/`mutate`.
+
+    `diff_map.acquire_pr`'s `git fetch` keeps the operator's environment,
+    because the credential helper lives there (#2012), so it cannot be a probe
+    launch -- but a fetch is a REF TRANSACTION, and `reference-transaction`
+    fires from the target's `core.hooksPath` on it (measured: a repository whose
+    contributing docs say `git config core.hooksPath .githooks`, which is the
+    common real shape, ran its own committed hook on the acquisition's fetch).
+    That caller pins the same directory this module pins on every launch, rather
+    than inventing a second empty directory nobody has proved is empty.
+    """
+    return _no_hooks_path()
+
+
 def _launch_argv(resolved, directory, command, drivers=()):
     """The argv for one probe launch: trusted git, cwd, every suppression.
 
@@ -200,6 +224,17 @@ def _subcommand(args):
 # review: `-c core.hooksPath=<evil>` ran the planted hook), so the probe
 # refuses them rather than trusting every future caller to know that.
 _PROBE_PINNED_CONFIG = ("core.fsmonitor", "core.hookspath")
+
+
+def _undoes_a_pin(key):
+    """A caller `-c` for a pinned key -- or for `include.path` / `includeIf.*`,
+    which pull in a file whose settings come AFTER the pins in argv and win
+    (#2012 review M2, measured: an included `core.hooksPath` ran the hook)."""
+    lowered = key.lower()
+    return (lowered in _PROBE_PINNED_CONFIG or lowered == "include.path"
+            or lowered.startswith("includeif."))
+
+
 # Likewise the flags that would re-enable the diff drivers `_NO_DRIVERS`
 # turns off (a later flag wins in git).
 _DRIVER_ENABLING_OPTIONS = ("--ext-diff", "--textconv")
@@ -216,7 +251,7 @@ def _reject_redirection(args):
                 "pass a different root instead" % token)
         if previous == "-c":
             key = token.split("=", 1)[0]
-            if key.lower() in _PROBE_PINNED_CONFIG:
+            if _undoes_a_pin(key):
                 raise ValueError(
                     "safe Git: %r would override a setting the probe pins itself" % token)
             if _is_suppressible(key):
@@ -264,10 +299,11 @@ def _is_command_setting(key):
     git's, so obeying one silently emptied the hunk map as well as running
     target code (#2006 fix round 2, C1).
 
-    `filter.<driver>.smudge` is here (#2013) although the probe never checks
-    out: neutralizing a driver means neutralizing the whole driver, and the
-    caller-refusal below reads the same predicate, where a smudge command a
-    caller re-enabled would be a real hole.
+    `filter.<driver>.smudge` was added by #2013 for completeness, when nothing
+    here checked out; #2012 made it load-bearing for a real caller. `mutate`'s
+    `worktree add` IS a checkout, so `.smudge` and `.process` (the long-running
+    filter protocol serves smudge too) are the ones in this set that the target
+    gets to run on the `--pr` route -- emptying them is what stops it.
 
     AVAILABILITY (#2006 fix round 2, M6, resolved by #2013): these are
     REPO-LOCAL keys, so global-config git-lfs is unaffected
@@ -278,11 +314,13 @@ def _is_command_setting(key):
     cost the module docstring names: paths under a suppressed driver compare as
     modified.
 
-    `merge.<driver>.driver` is deliberately absent: no subcommand the probe
-    runs performs a merge or a checkout, the one exempt path that does
-    (`diff_map.acquire_pr`'s `worktree add`) does not go through here, and
-    overriding it would claim a suppression for a command we never invoke.
-    Revisit if a probe ever merges.
+    `merge.<driver>.driver` is deliberately absent: no subcommand `probe` or
+    `mutate` runs performs a MERGE. `mutate`'s `worktree add --detach` is a
+    plain checkout of one commit -- filters yes, merge driver never -- and
+    overriding a key would claim a suppression for a command we never invoke.
+    Revisit if either entry point ever merges (`worktree add` of a branch that
+    needs one, `checkout -m`), which the mutating allowlist would have to admit
+    first.
     """
     if key.startswith("filter.") and key.endswith((".clean", ".process", ".smudge")):
         return True
@@ -393,25 +431,42 @@ def _needs_preflight(args):
     return any(token.split("=", 1)[0] in excluded for token in args)
 
 
-def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=None):
-    """Run a captured probe with one shared `timeout`-second deadline.
+# The only subcommand shapes `mutate` will run (#2012), matched as a prefix of
+# the argv from its subcommand onward: the verb is pinned, the flags and paths
+# after it stay the caller's business. This is an allowlist of one lifecycle --
+# `diff_map`'s `--pr` worktree acquire and release -- not a general write
+# permit, so `worktree prune`, `checkout`, `reset`, `clean`, `gc`, `commit` and
+# every other way to write to a repository fail CLOSED here rather than
+# depending on a reviewer noticing a new call site. None of them is in
+# `_NO_CONFIGURED_COMMAND`, and a mutating call never consults it anyway: a
+# write to the repository always takes the preflight.
+_MUTATING_SHAPES = (("worktree", "add"), ("worktree", "remove"), ("update-ref", "-d"))
 
-    `text` and `timeout` are the CALLER's contract for the command it asked
-    for; the preflight always reads text, because it parses config and index
-    records. Preflighting reads effective config and tracked submodules rather
-    than disabling content normalization or hiding submodule dirt.
 
-    `suppressed` (#2013) is the disclosure channel: an optional list the caller
-    passes, to which the probe appends one `(repository, key)` pair per
-    repository-configured command it emptied -- `"."` for the root, else the
-    submodule's path relative to it. A caller that passes nothing is suppressed
-    SILENTLY, because the run manifest is the disclosure of record and every
-    other caller only needs a working probe. Values are never disclosed and
-    never appear in an error: they are command lines the target authored.
+def _mutating_shape(args):
+    """The `_MUTATING_SHAPES` entry `args` matches, or None for "not one of them".
 
-    A caller that CARES what the answer means should pass the list: paths under
-    a suppressed driver compare as modified, so dirtiness for them is unknown
-    and a delta may include them (see the module docstring).
+    None is also the answer when the subcommand cannot be identified at all,
+    which is the same fail-closed reading `_needs_preflight` gives it.
+    """
+    index = _subcommand_index(args)
+    if index is None:
+        return None
+    for shape in _MUTATING_SHAPES:
+        if tuple(args[index:index + len(shape)]) == shape:
+            return shape
+    return None
+
+
+def _guarded(root, args, runner, timeout, text, suppressed, mutating):
+    """The shared body of `probe` and `mutate`; see both for the contract.
+
+    ONE implementation on purpose (#2012): a mutating call needs every
+    suppression a read-only one needs and one more besides (it checks out), so a
+    second copy of this machinery would be a second place to forget the
+    fsmonitor `-c`, the hooks pin, the redirection refusal or the confirmation
+    re-read. `mutating` changes exactly two things: the subcommand must match
+    `_MUTATING_SHAPES`, and the preflight is not optional.
     """
     def preflight_failure(proc):
         """A failed ROOT preflight, as a result for the command the caller asked for.
@@ -431,6 +486,13 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=N
             proc.stderr if text else _encoded(proc.stderr))
 
     _reject_redirection(args)
+    if mutating and _mutating_shape(args) is None:
+        # After `_reject_redirection`, so a `-C`/`--git-dir` argv is named as the
+        # redirection it is rather than as an unrecognized verb.
+        raise ValueError(
+            "safe Git: %r is not one of the mutating shapes this entry point "
+            "runs (%s); every other write to a repository is refused"
+            % (list(args), ", ".join(" ".join(s) for s in _MUTATING_SHAPES)))
     resolved = executable.resolve("git", _checkout_boundary(root), os.environ.get("PATH", ""))
     env = {"PATH": resolved.path_env, "LC_ALL": "C",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
@@ -439,7 +501,11 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=N
     prepared = list(args)
     if name in _DIFF_PRODUCING:
         prepared = _with_options(prepared, _NO_DRIVERS)
-    if not _needs_preflight(args):
+    # A MUTATING call never asks: writing to the repository is the one case
+    # where skipping the config read would be trading the whole guarantee for
+    # two saved launches, and `worktree add` reaches a smudge command that no
+    # read-only subcommand does.
+    if not mutating and not _needs_preflight(args):
         return runner(_launch_argv(resolved, root, prepared),
                       capture_output=True, text=text, timeout=timeout, env=env)
 
@@ -562,3 +628,62 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=N
         # command.
         prepared = _with_options(prepared, ["--ignore-submodules=none"])
     return run(root, prepared, as_text=text)
+
+
+def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=None):
+    """Run a captured, READ-ONLY probe with one shared `timeout`-second deadline.
+
+    `text` and `timeout` are the CALLER's contract for the command it asked
+    for; the preflight always reads text, because it parses config and index
+    records. Preflighting reads effective config and tracked submodules rather
+    than disabling content normalization or hiding submodule dirt.
+
+    `suppressed` (#2013) is the disclosure channel: an optional list the caller
+    passes, to which the probe appends one `(repository, key)` pair per
+    repository-configured command it emptied -- `"."` for the root, else the
+    submodule's path relative to it. A caller that passes nothing is suppressed
+    SILENTLY, because the run manifest is the disclosure of record and every
+    other caller only needs a working probe. Values are never disclosed and
+    never appear in an error: they are command lines the target authored.
+
+    A caller that CARES what the answer means should pass the list: paths under
+    a suppressed driver compare as modified, so dirtiness for them is unknown
+    and a delta may include them (see the module docstring).
+
+    Read-only is not enforced by argv here, because the allowlist that matters
+    is the other way round: a subcommand nobody classified takes the preflight,
+    and a caller that means to WRITE must say so by calling `mutate`.
+    """
+    return _guarded(root, args, runner, timeout, text, suppressed, mutating=False)
+
+
+def mutate(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=None):
+    """The ONLY call in this module allowed to WRITE to the target repository.
+
+    Same contract as `probe` -- fresh allowlisted environment, trusted git
+    resolved outside the checkout, `core.fsmonitor=false`, `core.hooksPath`
+    pinned to a directory this process owns and never writes to, every
+    repository-configured `filter.*`/`diff.*` command emptied and re-read to
+    prove the override took, caller redirection refused, one shared deadline --
+    plus two differences (#2012):
+
+    - The subcommand must be one of `_MUTATING_SHAPES`: `worktree add`,
+      `worktree remove`, `update-ref -d`. Anything else is a `ValueError`
+      before any git runs. This is the `--pr` worktree lifecycle, not a write
+      permit; a new mutation has to be argued for in that list.
+    - The preflight is never skipped.
+
+    WHY it exists rather than the caller keeping its own environment:
+    `git worktree add` CHECKS OUT the fetched tree, so on the old path the
+    target's `filter.*.smudge` command ran (against PR content, with the
+    operator's environment) and its `post-checkout` hook ran from whatever
+    `core.hooksPath` the repository asked for. Both measured; see
+    `tests/test_diff_map.py::TestPrAcquisitionIsConfined`.
+
+    What it does NOT promise: that the write itself is safe to lose. A target
+    whose config cannot be neutralized is still REFUSED
+    (`RepositoryRefused`), which for a teardown means the caller's tolerance
+    (#1082) leaves a worktree behind -- a leaked temporary directory, traded
+    for never running target code. `release_worktree` documents that choice.
+    """
+    return _guarded(root, args, runner, timeout, text, suppressed, mutating=True)

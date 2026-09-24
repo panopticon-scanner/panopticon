@@ -257,7 +257,7 @@ class Runner(base.HostRunner):
         the queue and terminated what was running, and a handler would strip
         BEFORE that -- the entries the interrupt catches mid-flight would
         finish against a home with no config.toml, i.e. no guard hooks. SIGKILL nobody
-        can catch: that residual is in docs/PANOPTICON.md."""
+        can catch: that residual is in docs/guide/driver-run-loop.md."""
         if self._crash_strip is not None:
             return
         self._crash_strip = self._strip_on_exit
