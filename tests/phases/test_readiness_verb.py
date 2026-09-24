@@ -490,6 +490,30 @@ class TestTheGuideRow(_VerbCase):
         self.assertIs(False, body["guide"]["exists"])
         self.assertIn("reinstall", body["guide"]["detail"].lower())
 
+    def test_a_missing_chapter_is_gating_too_and_the_remedy_names_it(self):
+        """2026-09-24: the guide is an index plus one file per section. An
+        install that kept the index and lost a chapter has the same hole in its
+        contract as one that lost the whole guide -- and "the guide is missing"
+        would be no help at all when eight of the nine files are right there,
+        so the remedy names the file."""
+        d = self._repo(groups_yml=GROUPS_YML)
+        documents = hosts.guide_documents()
+        self.assertGreater(len(documents), 1, documents)
+        with mock.patch.object(
+                hosts, "guide_documents",
+                return_value=documents[:-1] + ["/nowhere/guide/notes.md"]):
+            code, body = self._json(d, which=READY_CLI)
+        self.assertEqual(1, code)
+        self.assertEqual(["guide"], body["failed"])
+        self.assertIs(False, body["guide"]["exists"])
+        # The index is still where it was, and the row still reports it...
+        self.assertEqual(hosts.guide_path(), body["guide"]["path"])
+        # ...while the remedy names the one file that is gone, and nothing else.
+        detail = body["guide"]["detail"]
+        self.assertIn("docs/guide/notes.md", detail)
+        self.assertNotIn("output.md", detail)
+        self.assertIn("reinstall", detail.lower())
+
 
 class TestTheVerbIsWiredLikeRunAndLoop(_VerbCase):
 

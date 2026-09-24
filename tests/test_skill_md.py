@@ -22,12 +22,9 @@ AGENTS_DIR = os.path.join(ROOT, "agents")
 # CONCATENATION of the index and its chapters, in order, the way a reader
 # reads the guide. `_section`'s H2 markers slice that concatenation exactly as
 # they sliced the single file.
-_GUIDE_CHAPTERS = ("driver-run-loop.md", "driver-setup.md", "output.md",
-                   "host-capabilities.md", "code-layout.md",
-                   "testing-scanner-fixtures.md", "evidence.md", "notes.md")
+_GUIDE_CHAPTERS = hosts.GUIDE_CHAPTERS
 _CHAPTER_DIR = os.path.join(os.path.dirname(_DOC_PATH), "guide")
-_GUIDE_DOCUMENTS = (_DOC_PATH,) + tuple(
-    os.path.join(_CHAPTER_DIR, name) for name in _GUIDE_CHAPTERS)
+_GUIDE_DOCUMENTS = hosts.guide_documents()
 
 
 _FENCE = re.compile(r"^\s*(```|~~~)")
@@ -1498,8 +1495,17 @@ class TestTheGuideIsAnIndexPlusChapters(unittest.TestCase):
         return pairs
 
     def test_the_contents_list_names_every_chapter_in_document_order(self):
-        self.assertEqual(list(_GUIDE_CHAPTERS),
+        """Against `hosts.GUIDE_CHAPTERS`, which is what `driver readiness`
+        checks for on disk -- a chapter the reader's table of contents links
+        and readiness never looks for, or the reverse, is the drift this
+        catches."""
+        self.assertEqual(list(hosts.GUIDE_CHAPTERS),
                          [name for _label, name in self._contents()])
+
+    def test_every_chapter_hosts_names_is_a_file_that_exists(self):
+        for path in hosts.guide_documents():
+            with self.subTest(document=os.path.basename(path)):
+                self.assertTrue(os.path.isfile(path), path)
 
     def test_every_chapter_opens_with_the_heading_its_contents_entry_names(self):
         for label, name in self._contents():
