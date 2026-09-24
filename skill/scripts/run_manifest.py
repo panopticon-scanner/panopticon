@@ -120,8 +120,15 @@ def new_run_id():
     return uuid.uuid4().hex
 
 
-def _target_provenance(target, runner=subprocess.run):
+def _target_provenance(target, runner=subprocess.run, suppressed=None):
     """(commit, dirty) for the tree being scanned, or (None, None) if not git.
+
+    `suppressed` (#2013) is the probe's disclosure list, appended to in place:
+    one `(repository, key)` pair per repository-configured Git driver the probe
+    emptied for this scan. This is the DISCLOSURE OF RECORD -- the manifest
+    carries it, and one stderr line names the keys (never their values, which
+    are command lines the target authored) so an operator watching the run sees
+    that the tree was scanned with its own drivers off.
 
     #1492: nothing in the run record established WHICH code a run saw. `base`
     and `pr_base` are the delta-review base REF, not the scanned HEAD, and both
@@ -135,12 +142,26 @@ def _target_provenance(target, runner=subprocess.run):
     Recorded, never enforced: a resumed run must not be refused because the tree
     moved under it. This is provenance, not an anti-drift flag.
     """
+    drivers = [] if suppressed is None else suppressed
+    commit, dirty = _provenance_probes(target, runner, drivers)
+    if drivers:
+        # Keys only, and `%r` per key for the same reason the refusal used it:
+        # a config subsection is repository-authored and may carry control
+        # bytes. One line, printed whatever the probes concluded.
+        print("run manifest: target Git drivers SUPPRESSED for this scan: %s"
+              % ", ".join(sorted({repr(key) for _repo, key in drivers})),
+              file=sys.stderr, flush=True)
+    return commit, dirty
+
+
+def _provenance_probes(target, runner, suppressed):
+    """The two probes behind `_target_provenance`, without its disclosure."""
     # #2006: `target` is the reviewed tree, so both calls go through
     # `safe_git.probe` -- a trusted git resolved outside the target's outermost
     # checkout, a fresh allowlisted environment (these two ran with NO `env=`
     # at all, so an inherited `GIT_DIR`/`GIT_CONFIG_*` could redirect the very
     # provenance this records), `core.fsmonitor=false`, and a config preflight
-    # that refuses a `filter.*.clean` rather than running it.
+    # that EMPTIES a `filter.*.clean` rather than running it (#2013).
     try:
         head = safe_git.probe(target, ["rev-parse", "HEAD"], runner=runner)
         if head.returncode != 0:
@@ -151,7 +172,10 @@ def _target_provenance(target, runner=subprocess.run):
     try:
         # `-z`, the preflighted spelling: one probe for this and for validate's
         # baseline, rather than a second unpreflighted `--porcelain` shape.
-        status = safe_git.probe(target, ["status", "--porcelain", "-z"], runner=runner)
+        # The collecting call: `rev-parse` is allowlisted plumbing and reads no
+        # config, so this is the only one of the two that can suppress anything.
+        status = safe_git.probe(target, ["status", "--porcelain", "-z"], runner=runner,
+                                suppressed=suppressed)
         if status.returncode != 0:
             return commit, None
         # NUL-framed, like `_worktree_dirty` (#1989): any non-empty record is
@@ -164,6 +188,9 @@ def _target_provenance(target, runner=subprocess.run):
         # #2006 fix round 1: provenance is RECORDED, never enforced, so a
         # refused tree must not abort the run -- but it must not be silent
         # either. Same shape validate and discovery print, naming the setting.
+        # After #2013 a driver command no longer reaches here: what does is a
+        # target whose shape cannot be bounded, or whose override could not be
+        # proved effective.
         print("run manifest: target Git probe REFUSED (%s); the reviewed tree's "
               "own Git configuration is not trusted to run, so this run's "
               "dirtiness is recorded as unknown" % exc, file=sys.stderr, flush=True)
@@ -180,7 +207,8 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
     # place it is reachable from (#1344).
     validate_host(host)
     flags = flags or {}
-    _commit, _dirty = _target_provenance(os.path.abspath(target))
+    _suppressed: list = []
+    _commit, _dirty = _target_provenance(os.path.abspath(target), suppressed=_suppressed)
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id or new_run_id(),
@@ -217,6 +245,14 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
         # anti-drift key (see _target_provenance).
         "target_commit": _commit,
         "target_dirty": _dirty,
+        # #2013: which of the TARGET's own Git driver commands this scan ran
+        # with emptied -- `[{"repo": ".", "key": "filter.lfs.clean"}, ...]`,
+        # `[]` when there were none. Always present, because the absence of a
+        # suppression has to mean "measured and did not happen", not "this run
+        # had no opinion". Recorded, never enforced, like the two above; the
+        # values are not here, and never leave the target's own config.
+        "git_drivers_suppressed": [{"repo": repo, "key": key}
+                                   for repo, key in _suppressed],
     }
 
 

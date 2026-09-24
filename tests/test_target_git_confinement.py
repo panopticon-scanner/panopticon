@@ -171,7 +171,8 @@ class TargetProvenanceIsConfined(unittest.TestCase):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             commit, dirty = run_manifest._target_provenance(repo, suppressed=suppressed)
-        self.assertEqual((commit, dirty), (self._head(repo), True))
+        # An EMPTY `.panopticon` is invisible to git, so this tree is clean.
+        self.assertEqual((commit, dirty), (self._head(repo), False))
         self.assertEqual(suppressed, [])
         self.assertNotIn("SUPPRESSED", err.getvalue())
 
