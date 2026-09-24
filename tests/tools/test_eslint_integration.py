@@ -14,6 +14,7 @@ eslint's config discovery and plugin loading have drifted on upgrade before (the
 This runs the real thing.
 """
 import json
+import contextlib
 import os
 import shutil
 import tempfile
@@ -21,7 +22,7 @@ import unittest
 from unittest import mock
 
 from _test_helpers import assert_adapter_finds, skip_or_fail
-from scripts.tools.eslint_security import EslintSecurityAdapter
+from scripts.tools.eslint_security import EslintSecurityAdapter, _TS_PARSER_ENTRY
 from .conftest import OK_SCAN_EXIT_CODES, in_tools_image
 
 
@@ -136,6 +137,31 @@ class TestEslintSecurityIntegration(unittest.TestCase):
         self.assertEqual(facts["unavailable_files"], 2)
         self.assertEqual(facts["unparsed_files"], 0)
         self.assertEqual(facts["capabilities_unavailable"], ["typescript_parser"])
+
+    def test_native_module_findings_and_semantics_survive_old_and_rebuilt_images(self):
+        # Top-level return exercises CommonJS parsing; await/export exercise
+        # ESM parsing. Neither extension should inherit an incorrect sourceType.
+        sources = {
+            "cjs": "return eval(process.argv[2]);",
+            "mjs": "export const value = await Promise.resolve(process.argv[2]); eval(value);",
+        }
+        for extension, body in sources.items():
+            for missing_parser in (False, True):
+                context = (mock.patch("scripts.tools.eslint_security._TS_PARSER_ENTRY",
+                                      "/nonexistent/trusted/parser.js")
+                           if missing_parser else contextlib.nullcontext())
+                with self.subTest(extension=extension, missing_parser=missing_parser), context:
+                    adapter, raw, _ = self._scan({
+                        "exploit." + extension: body,
+                        "app.ts": "const value: string = 'typed';",
+                    })
+                findings, facts = adapter.parse_with_file_coverage(raw, "g1")
+                self.assertTrue(any(f["severity"] == "HIGH"
+                                    and f["location"]["file"].endswith("/exploit." + extension)
+                                    for f in findings), findings)
+                self.assertEqual(facts["unparsed_files"], 0)
+                self.assertEqual(facts["unavailable_files"],
+                                 int(missing_parser or not os.path.isfile(_TS_PARSER_ENTRY)))
 
     def test_package_only_tree_is_clean(self):
         adapter, raw, _ = self._scan({}, {"package.json": "{}"})

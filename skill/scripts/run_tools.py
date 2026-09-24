@@ -1006,6 +1006,10 @@ def _redact_capture(tool, data):
     try:
         parsed = json.loads(text)
     except ValueError:
+        if tool == "eslint-security":
+            # Broken scanner JSON can contain arbitrary source fragments too.
+            # Discard it without converting whole-capture failure into a clean scan.
+            return b"panopticon: unusable ESLint capture\n"
         masked = redact.redact(text)        # XML/plain-text captures
     else:
         # The parse is bounded by MAX_TOOL_OUTPUT_BYTES, and ingest already
@@ -1016,7 +1020,10 @@ def _redact_capture(tool, data):
                 # Work on a copy so changed source diagnostics force serialization.
                 cleaned = sanitize_capture(json.loads(text))
             except ValueError:
-                cleaned = parsed  # malformed output remains unusable at ingestion
+                # Invalid metadata or a malformed neighboring row must not
+                # disable parser-text sanitization. No trustworthy document
+                # can be retained; publish only an unparseable static marker.
+                return b"panopticon: unusable ESLint capture\n"
         else:
             cleaned = parsed
         scrubbed = redact.redact_tree(cleaned)

@@ -56,12 +56,14 @@ def _flat_config(ts_available: bool = True) -> str:
         '    linterOptions: { noInlineConfig: true },\n'
         '    plugins: { security }, rules },\n'
     ) if ts_available else ''
+    # Leave sourceType unset: ESLint retains commonjs for .cjs and module
+    # for .mjs, while the same security rules cover both native extensions.
     return (
         'import security from "%s";\n'
         '%s'
         'const rules = {\n      %s\n};\n'
         'export default [\n'
-        '  { files: ["**/*.{js,jsx}"],\n'
+        '  { files: ["**/*.{js,jsx,cjs,mjs}"],\n'
         '    languageOptions: { ecmaVersion: "latest", '
         'parserOptions: { ecmaFeatures: { jsx: true } } },\n'
         '    linterOptions: { noInlineConfig: true },\n'
@@ -210,11 +212,11 @@ _HEURISTIC_RULES = frozenset({
 
 
 def _iter_source_files(target):
-    """Yield JS/TS source files under *target*, pruning node_modules."""
+    """Yield JS/TS and native CJS/MJS source, pruning node_modules."""
     for root, dirs, files in os.walk(target):
         dirs[:] = [d for d in dirs if d != "node_modules"]
         for f in files:
-            if f.endswith((".js", ".ts", ".jsx", ".tsx")):
+            if f.endswith((".js", ".ts", ".jsx", ".tsx", ".cjs", ".mjs")):
                 yield os.path.join(root, f)
 
 

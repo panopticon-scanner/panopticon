@@ -1014,6 +1014,26 @@ class TestTheDeltaAwareGate(unittest.TestCase):
             self.assertNotIn("baseline unusable", err)
             self.assertNotIn("private parser text", err)
 
+    def test_native_module_highs_match_legacy_baseline_and_new_modules_gate(self):
+        for extension in ("cjs", "mjs"):
+            for new in (False, True):
+                with self.subTest(extension=extension, new=new), tempfile.TemporaryDirectory() as root:
+                    rows = [{"filePath": "/src/exploit." + extension, "messages": [{
+                        "ruleId": "security/detect-eval-with-expression", "line": 1,
+                        "message": "eval with expression"}]}]
+                    current = rows + ([{**rows[0], "filePath": "/src/new." + extension}] if new else [])
+                    head = self._capture(root, "head", {"eslint-security": {
+                        "panopticon_eslint": {"version": 1, "typescript_parser": "unavailable",
+                                              "files_count": 1, "files": ["app.ts"]},
+                        "results": current}})
+                    base = self._capture(root, "base", {"eslint-security": rows})
+                    rc, out, err = self._run(head, base)
+                self.assertEqual(rc, int(new))
+                self.assertIn("%d HIGH/CRITICAL new" % int(new), out)
+                self.assertIn("1 HIGH/CRITICAL pre-existing", out)
+                self.assertIn("partial file coverage", err)
+                self.assertNotIn("baseline unusable", err)
+
     def test_eslint_capture_corruption_and_missing_output_remain_fail_closed(self):
         rows = [{"filePath": "/src/good.js", "messages": [{
             "ruleId": "security/detect-eval-with-expression", "line": 1,

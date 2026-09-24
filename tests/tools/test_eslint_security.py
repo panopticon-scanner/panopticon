@@ -161,6 +161,33 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertNotIn("tsParser", es._flat_config(False))
         self.assertIn("noInlineConfig: true", es._flat_config(False))
 
+    def test_native_module_sources_invoke_eslint_with_or_without_ts_parser(self):
+        for extension in ("cjs", "mjs"):
+            for parser_present in (False, True):
+                for adjacent_ts in (False, True):
+                    with self.subTest(extension=extension, parser=parser_present, ts=adjacent_ts), \
+                         tempfile.TemporaryDirectory() as target:
+                        parser = os.path.join(target, "trusted-parser-entry")
+                        if parser_present:
+                            open(parser, "w").close()
+                        open(os.path.join(target, "exploit." + extension), "w").close()
+                        if adjacent_ts:
+                            open(os.path.join(target, "app.ts"), "w").close()
+                        adapter = es.EslintSecurityAdapter()
+                        self.assertTrue(adapter.is_applicable(target))
+                        rows = json.loads(ESLINT_SAMPLE)
+                        rows[0]["filePath"] = "/src/exploit." + extension
+                        with mock.patch.object(es, "_TS_PARSER_ENTRY", parser), \
+                             mock.patch.object(es, "run_tool", return_value=(json.dumps(rows).encode(), 1)) as run:
+                            raw, rc = adapter.invoke(target)
+                        run.assert_called_once()
+                        findings, coverage = adapter.parse_with_file_coverage(raw, "g1")
+                        self.assertEqual(rc, 1)
+                        self.assertEqual(findings[0]["location"]["file"], "exploit." + extension)
+                        self.assertEqual(findings[0]["severity"], "HIGH")
+                        self.assertEqual(coverage["unavailable_files"], int(adjacent_ts and not parser_present))
+                        self.assertEqual(coverage["status"], "complete" if parser_present else "partial")
+
     def test_existing_parser_import_failure_is_not_suppressed(self):
         with tempfile.TemporaryDirectory() as target:
             parser = os.path.join(target, "parser-entry")
@@ -299,7 +326,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
 
     def test_flat_config_covers_all_formats_and_ignores_inline_directives(self):
         cfg = es._flat_config()
-        self.assertIn("**/*.{js,jsx}", cfg)
+        self.assertIn("**/*.{js,jsx,cjs,mjs}", cfg)
         self.assertIn("**/*.{ts,tsx}", cfg)
         self.assertIn("ecmaFeatures: { jsx: true }", cfg)
         self.assertIn("parser: tsParser", cfg)
