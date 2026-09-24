@@ -260,9 +260,13 @@ class LayoutTest(unittest.TestCase):
                 if not f.endswith(".py") or f == "__init__.py":
                     continue
                 mod = "scripts.%s.%s" % (pkg, f[:-3])
-                r = subprocess.run(  # nosec B603
-                    [sys.executable, "-c", "import " + mod],
-                    capture_output=True, text=True, env=env, cwd=REPO_ROOT)
+                command = [sys.executable, "-c", "import " + mod]
+                try:
+                    r = subprocess.run(  # nosec B603
+                        command, capture_output=True, text=True, timeout=30,
+                        env=env, cwd=REPO_ROOT)
+                except subprocess.TimeoutExpired as exc:
+                    self.fail("module=%s command=%r timed out: %s" % (mod, command, exc))
                 if r.returncode != 0:
                     failures.append("%s: %s" % (mod, (r.stderr.strip().splitlines() or [""])[-1]))
         self.assertEqual(failures, [], "module does not import on its own (a `from .x "
@@ -306,9 +310,13 @@ class FlatImportModeTest(unittest.TestCase):
         env["PYTHONPATH"] = SCRIPTS         # deliberately NOT SKILL_ROOT
         failures = []
         for mod in self.FLAT_MODULES:
-            r = subprocess.run(  # nosec B603
-                [sys.executable, "-c", "import " + mod],
-                capture_output=True, text=True, env=env, cwd=SCRIPTS)
+            command = [sys.executable, "-c", "import " + mod]
+            try:
+                r = subprocess.run(  # nosec B603
+                    command, capture_output=True, text=True, timeout=30,
+                    env=env, cwd=SCRIPTS)
+            except subprocess.TimeoutExpired as exc:
+                self.fail("module=%s command=%r timed out: %s" % (mod, command, exc))
             if r.returncode != 0:
                 failures.append("%s: %s"
                                 % (mod, (r.stderr.strip().splitlines() or [""])[-1]))

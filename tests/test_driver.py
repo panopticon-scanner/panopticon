@@ -926,10 +926,10 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
                 "    exclude: [ARC, COD, DAT, TST]\n")
         # discovery_execute subprocesses the REAL discovery.py --repo-scan,
         # which discovers via `git ls-files` -- commit the fixture so it's seen.
-        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
-        subprocess.run(["git", "add", "-A"], cwd=d, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True, timeout=30)
+        subprocess.run(["git", "add", "-A"], cwd=d, check=True, timeout=30)
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                        "commit", "-qm", "x"], cwd=d, check=True)
+                        "commit", "-qm", "x"], cwd=d, check=True, timeout=30)
         return d
 
     def _manifest(self):
@@ -1086,13 +1086,13 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
                 "groups:\n"
                 "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
                 "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
-        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
-        subprocess.run(["git", "add", "-A"], cwd=d, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True, timeout=30)
+        subprocess.run(["git", "add", "-A"], cwd=d, check=True, timeout=30)
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                        "commit", "-qm", "x"], cwd=d, check=True)
+                        "commit", "-qm", "x"], cwd=d, check=True, timeout=30)
         base_sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d,
                                   capture_output=True, text=True,
-                                  check=True).stdout.strip()
+                                  check=True, timeout=30).stdout.strip()
         # Uncommitted edit -- the -c delta's live-tree change.
         pay_lines[1] = "    return amount * 2  # bumped"
         with open(pay_path, "w") as fh:
@@ -1254,7 +1254,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         it, using the real (un-mocked) `_worktree_dir` to compute the path."""
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
-        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True, timeout=30)
         wt = diff_map._worktree_dir(d, 7)
         self.addCleanup(lambda: shutil.rmtree(wt, ignore_errors=True))
         created = {"count": 0}
@@ -1290,7 +1290,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         level (test_run_finalizes_worktree_only_on_complete)."""
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
-        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=d, check=True, timeout=30)
         validate_phase.capture_tree_baseline(d)   # real git status --porcelain, clean
         wt = diff_map._worktree_dir(d, 7)
         manifest = {"run_id": self.RUN_ID, "worktree": wt}
@@ -1318,7 +1318,8 @@ class TestDriverEntrypoint(unittest.TestCase):
         driver_py = os.path.join(root, "skill", "scripts", "driver.py")
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         r = subprocess.run([sys.executable, driver_py, "run", "--help"],
-                           capture_output=True, text=True, env=env, cwd=root)
+                           capture_output=True, text=True, timeout=30,
+                           env=env, cwd=root)
         self.assertNotIn("ModuleNotFoundError", r.stderr,
                          "driver crashed at import as a fresh process:\n%s" % r.stderr)
         self.assertEqual(r.returncode, 0,

@@ -421,10 +421,6 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
         self.assertEqual(list(report), before)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestTwoPassFingerprintStability(unittest.TestCase):
     """#1634 F1: both synthesize passes must fingerprint the SAME text.
 
@@ -520,3 +516,7 @@ class TestTwoPassFingerprintStability(unittest.TestCase):
             # is only possible because the redaction now runs upstream of the
             # --emit-verify-queue branch.
             self.assertNotIn(self.MARKER, json.dumps(queue))
+
+
+if __name__ == "__main__":
+    unittest.main()

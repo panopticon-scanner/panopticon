@@ -262,8 +262,10 @@ class TestEveryActionReferenceIsPinned(unittest.TestCase):
     def test_the_fleet_is_actually_being_scanned(self):
         # Guards the guard: a regex that silently matched nothing would let
         # every workflow through while reporting a clean pass.
-        total = sum(len(scan_uses(open(p, encoding="utf-8").read()))
-                    for p in _workflow_files())
+        total = 0
+        for path in _workflow_files():
+            with open(path, encoding="utf-8") as fh:
+                total += len(scan_uses(fh.read()))
         self.assertGreater(total, 25, "workflow scan found almost no `uses:` "
                                       "lines; the scanner is broken, not the tree")
 
@@ -280,10 +282,6 @@ class TestEveryActionReferenceIsPinned(unittest.TestCase):
                 sorted(ref for _, ref, _ in scan_uses(text)),
                 "raw `uses:` scan disagrees with the parsed workflow in %s"
                 % os.path.basename(path))
-
-
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()
 
 
 # --- #1641 (SEC-E2A): what a privileged build INSTALLS ------------------------
@@ -1510,3 +1508,7 @@ class TestTheContainmentLaneIsLeastPrivilege(unittest.TestCase):
                     "logic; its trigger surface is scheduled and manual only "
                     "(#1655). Adding one is a decision about whose code runs, "
                     "not a workflow edit." % workflow)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()
