@@ -109,7 +109,9 @@ def has_code_surface(files):
 
 def _any_hint(files, hints):
     for f in files or ():
-        low = str(f).lower()
+        # Treat a repository-relative root like every nested directory boundary.
+        # Slash-delimited hints such as /tests/ still require both path separators.
+        low = "/" + str(f).lower().lstrip("/")
         if any(h in low for h in hints):
             return True
     return False
