@@ -1037,8 +1037,11 @@ class TestVirtualenvExclusion(unittest.TestCase):
             tools_dir = os.path.join(root, ".panopticon", "runs", "t", "tools")
             os.makedirs(tools_dir)
             sarif = _sarif_fixture("app/linked/auth.py")
+            in_root = _sarif_fixture("app/installed/auth.py")
+            self.assertEqual(len(sarif["runs"]), 1)
+            self.assertEqual(len(in_root["runs"]), 1)
             sarif["runs"][0]["results"].extend(
-                _sarif_fixture("app/installed/auth.py")["runs"][0]["results"])
+                in_root["runs"][0]["results"])
             with open(os.path.join(tools_dir, "semgrep.sarif"), "w",
                       encoding="utf-8") as fh:
                 json.dump(sarif, fh)
