@@ -185,14 +185,16 @@ def safe_text(value):
 
 def render_summary(current, previous, reason):
     coverage = current["coverage"]
+    coverage_summary = (
+        f"Coverage: {'complete' if coverage['complete'] else 'incomplete'}; "
+        f"{coverage['selected']} selected, {coverage['produced']} produced, "
+        f"{coverage['missing']} missing, {coverage['failure_count']} failures, "
+        f"{coverage['excluded_scope']} excluded by scope.")
     lines = ["## Strict full-tree security backstop", "",
              f"Commit: {safe_text(current['commit'])}",
              f"Image ID: {safe_text(current['image'])}",
              f"Raw strict verdict: **{current['strict_verdict']}** (comparison never changes it).",
-             f"Coverage: {'complete' if coverage['complete'] else 'incomplete'}; "
-             f"{coverage['selected']} selected, {coverage['produced']} produced, "
-             f"{coverage['missing']} missing, {coverage['failure_count']} failures, "
-             f"{coverage['excluded_scope']} excluded by scope.",
+             coverage_summary,
              "", "Severity | Current count | Change", "--- | ---: | ---:"]
     delta = compare(current, previous) if previous is not None else None
     for severity in SEVERITIES:

@@ -56,6 +56,19 @@ class TestSnapshot(unittest.TestCase):
         self.assertNotIn("app.py", encoded)
         self.assertEqual(backstop.validate_snapshot(json.loads(encoded)), data)
 
+    def test_exact_coverage_summary_preserves_every_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = snapshot(Path(tmp))
+        for complete in (True, False):
+            data["coverage"] = {"complete": complete, "selected": 15, "produced": 12,
+                                "missing": 3, "failure_count": 2, "excluded_scope": 4}
+            summary = backstop.render_summary(data, None, "no history")
+            expected = ("Coverage: %s; 15 selected, 12 produced, 3 missing, "
+                        "2 failures, 4 excluded by scope." %
+                        ("complete" if complete else "incomplete"))
+            self.assertEqual([line for line in summary.splitlines()
+                              if line.startswith("Coverage:")], [expected])
+
     def test_missing_coverage_is_red_even_without_findings(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = snapshot(Path(tmp), missing=True)
