@@ -2,6 +2,7 @@
 import os
 import sys
 
+import scripts.redact as redact
 from . import child
 from . import engine
 from . import runio
@@ -168,7 +169,7 @@ def tools_execute(review_root, manifest):
     # stop that a missing Docker image doesn't deserve.
     crashed = (not produced) and proc.returncode not in (0, None)
     raw_err = (proc.stderr or "").strip()
-    note = "" if produced else (runio._redact_output(raw_err)[:300]
+    note = "" if produced else (redact.redact_diagnostic(raw_err, 300)
                                 or ("tool scan crashed" if crashed
                                     else "no tool output produced"))
     runio._write_json(runio._pano(review_root, "tools-ran.json"),

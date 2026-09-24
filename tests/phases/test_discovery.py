@@ -66,6 +66,23 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertEqual(status["status"], "error")
         self.assertNotIn("-----BEGIN PRIVATE", str(status))
 
+    def test_missing_groups_redacts_dangling_key(self):
+        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
+        key_type = "PRIVATE KEY"
+        key = (f"-----BEGIN {key_type}-----\n" + "A" * 2000)
+        stderr = "x" * 360 + key + " trailing diagnostic"
+        with mock.patch("scripts.phases.child._run_child",
+                        return_value=mock.Mock(returncode=1, stdout="", stderr=stderr)):
+            with self.assertRaises(runio.DriverError) as caught:
+                discovery.discovery_execute(self.root, self.manifest)
+        error = str(caught.exception)
+        self.assertIn("[REDACTED_PRIVATE_KEY]", error)
+        self.assertNotIn("-----BEGIN PRIVATE", error)
+        self.assertNotIn("A" * 20, error)
+        status = runio._error_status(error)
+        self.assertEqual(status["status"], "error")
+        self.assertNotIn("-----BEGIN PRIVATE", str(status))
+
     def test_discovery_threads_scope_group_to_repo_scan(self):
         self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         manifest = dict(self.manifest, scope={"mode": "group", "target": "Auth"})

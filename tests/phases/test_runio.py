@@ -1051,3 +1051,26 @@ def test_normal_cleanup_preserves_unrelated_run_report_and_config(tmp_path):
     assert (other / "sentinel").read_text() == "keep"
     assert (pano / f"{tag}-report.json").read_text() == "keep report"
     assert (root / "panopticon.yaml").read_text() == "keep config"
+
+
+class TestManifestDiagnosticRedaction(unittest.TestCase):
+    def test_manifest_git_stderr_is_redacted_and_bounded(self):
+        key_type = "PRIVATE KEY"
+        for text in ("ordinary failure", "prefix " + f"-----BEGIN {key_type}-----\n" + "A" * 2000,
+                     "token " + "ghp_" + "B" * 36):
+            with self.subTest(text=text[:20]), tempfile.TemporaryDirectory() as root:
+                manifest = os.path.join(root, "manifest.json")
+                with open(manifest, "w") as fh:
+                    fh.write("{}")
+                with mock.patch.object(runio.executable, "resolve", return_value=mock.Mock(
+                        path="/trusted/git", path_env="/trusted")), \
+                     mock.patch.object(runio.subprocess, "run", return_value=mock.Mock(
+                         returncode=2, stderr=text)), \
+                     self.assertRaises(runio.DriverError) as caught:
+                    runio._manifest_committed(root, manifest)
+                diagnostic = str(caught.exception).split(": ", 1)[1]
+                self.assertNotIn("AAAA", diagnostic)
+                self.assertNotIn("BBBB", diagnostic)
+                self.assertLessEqual(len(diagnostic), 300)
+                if text == "ordinary failure":
+                    self.assertEqual(diagnostic, text)

@@ -615,7 +615,7 @@ def _manifest_committed(review_root, manifest_file):
     if r.returncode == 128 and "not a git repository" in (r.stderr or ""):
         return False
     raise DriverError("manifest provenance git check failed (exit %s): %s"
-                      % (r.returncode, (r.stderr or "").strip()[:300]))
+                      % (r.returncode, redact.redact_diagnostic((r.stderr or "").strip(), 300)))
 
 def _foreign_manifest(manifest, review_root, manifest_file=None):
     """#1093 / #run8 AGT-C1A: True if a loaded manifest was NOT written by a

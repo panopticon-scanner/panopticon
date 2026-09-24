@@ -10,6 +10,7 @@ import sys
 import scripts.diff_map as diff_map
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
+import scripts.redact as redact
 from . import engine
 from . import runio
 
@@ -131,7 +132,7 @@ def capture_tree_baseline(review_root, runner=subprocess.run):
             return None                              # non-git target: guard is N/A
         print("driver: clean-tree baseline probe exited %s (%s); the integrity guard "
               "will fail closed at validate"
-              % (proc.returncode, (proc.stderr or "").strip()[:200]),
+              % (proc.returncode, redact.redact_diagnostic((proc.stderr or "").strip(), 200)),
               file=sys.stderr, flush=True)
         return _write_probe_failed_baseline(baseline)
     entries = _content_entries(review_root, proc.stdout)

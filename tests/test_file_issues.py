@@ -316,6 +316,13 @@ class TestBodyDefang(unittest.TestCase):
         self.assertNotIn("@team", title)
         self.assertIn("@​team", title)
 
+    def test_title_residual_autolinks_are_defanged(self):
+        title = file_issues.title_for(self._f(short_title="GH-123 _www.example.test"))
+        self.assertNotIn("GH-123", title)
+        self.assertNotIn("_www.example.test", title)
+        self.assertIn("GH-\u200b123", title)
+        self.assertIn("_w\u200bww.example.test", title)
+
     def test_title_filename_suffix_is_defanged(self):
         f = {
             "title": "Some issue",
@@ -351,7 +358,7 @@ class TestBodyDefang(unittest.TestCase):
 
     def test_body_defangs_variants_but_keeps_trusted_report_url(self):
         untrusted = ("owner/repo#123 HTTPS://github.com/owner/repo/issues/123 "
-                     "Http://example.test/path www.example.test/path "
+                     "Http://example.test/path www.example.test/path GH-123 _www.example.test "
                      "#123 @team [link](https://example.test/path) "
                      "ordinary prose and `parse()` code span")
         trusted = "https://example.test/trusted-report.json"
@@ -362,6 +369,8 @@ class TestBodyDefang(unittest.TestCase):
         self.assertNotIn("HTTPS://github.com/owner/repo/issues/123", body)
         self.assertNotIn("Http://example.test/path", body)
         self.assertNotIn("www.example.test/path", body)
+        self.assertNotIn("GH-123", body)
+        self.assertNotIn("_www.example.test", body)
         self.assertIn("ordinary prose and `parse()` code span", body)
         self.assertIn("](%s)" % trusted, body)
 

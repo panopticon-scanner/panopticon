@@ -34,6 +34,20 @@ class TestSchemaErrors(unittest.TestCase):
     def test_a_conforming_report_produces_no_errors(self):
         self.assertEqual(validate_schema_mod.schema_errors(_minimal_report()), [])
 
+    def test_reviewed_cells_are_optional_exact_domain_pairs(self):
+        report = _minimal_report()
+        cells = report["meta"]["coverage"]["cells"]
+        self.assertNotIn("reviewed", cells)
+        for field in ("reviewed", "planned_pairs"):
+            for valid in ([], [["group_1", "SEC"], ["group_2", "OPS"]]):
+                cells[field] = valid
+                self.assertEqual(validate_schema_mod.schema_errors(report), [])
+            for invalid in (None, "SEC", [["g"]], [["g", "SEC", "extra"]],
+                            [[1, "SEC"]], [["g", "security"]], [["g", "ZZZ"]]):
+                cells[field] = invalid
+                self.assertTrue(validate_schema_mod.schema_errors(report), invalid)
+            cells.pop(field)
+
     def test_null_sections_are_rejected_with_their_json_path(self):
         # Codex's repro (#1639 P15): every top-level key present, three of them
         # null. The hand checks saw five keys and said nothing.
