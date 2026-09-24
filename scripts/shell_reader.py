@@ -53,8 +53,8 @@ import shlex
 # Parse-local subshell markers leave argv alone; counts retain their boundaries
 # for the checksum handler without exposing marker tokens as commands.
 Stage = collections.namedtuple(
-    "Stage", "argv writes reads heredoc substitutions stdout_writes group_open group_close",
-    defaults=(0, 0))
+    "Stage", "argv writes reads heredoc substitutions stdout_writes "
+             "group_open group_close stdin_from_pipe", defaults=(0, 0, True))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -80,7 +80,8 @@ _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _REDIRECT = re.compile(r"&>>|&>|>>|>\||>&|<&|>|<")
-_HEREDOC_OP = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
+_HEREDOC_OP = re.compile(
+    r"(?P<fd>(?<!\w)[0-9]+)?<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
 
 
 class _Token(str):
@@ -183,7 +184,8 @@ def _lift_heredocs(text, context):
             out.append(line)
             i += 1
             continue
-        marker = context.new("heredoc", ("\n".join(body), not m.group("q")))
+        marker = context.new("heredoc", ("\n".join(body), not m.group("q"),
+                                         m.group("fd") or "0"))
         out.append("%s %s %s" % (line[:m.start()], marker, line[m.end():]))
         i = j + 1
     return "\n".join(out)
@@ -437,6 +439,9 @@ def _stage(text, context):
     # Missing and closed fds have no known file sink. A dup copies the current
     # sink; later opens/closes of the original fd cannot change that snapshot.
     sinks: dict[str, str | None] = {}
+    # fd 0 initially receives the preceding pipeline stage. Like output
+    # sinks, input origins are copied in lexical redirect order.
+    pipe_inputs = {"0": True}
     pending = None
 
     def take(word):
@@ -462,23 +467,30 @@ def _stage(text, context):
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
             if op in (">&", "<&"):
                 if _fd_or_close(word):
-                    sinks[number] = None if word == "-" else sinks.get(word.lstrip("0") or "0")
+                    source = word.lstrip("0") or "0"
+                    sinks[number] = None if word == "-" else sinks.get(source)
+                    pipe_inputs[number] = word != "-" and pipe_inputs.get(source, False)
                     continue
                 if fd or op == "<&":
                     sinks[number] = None       # invalid/unresolved fd operand
+                    pipe_inputs[number] = False
                     continue
                 op = "&>"                     # unnumbered >&file
             if op == "<":
                 reads.append(word)
                 sinks[number] = None           # an input file is not an output sink
+                pipe_inputs[number] = False
             else:
                 writes.append(word)
                 sinks[number] = word
+                pipe_inputs[number] = False
                 if op.startswith("&"):
                     sinks["2"] = word
+                    pipe_inputs["2"] = False
             continue
         if entry and entry[0] == "heredoc":
-            heredoc, expands = entry[1]
+            heredoc, expands, fd = entry[1]
+            pipe_inputs[fd.lstrip("0") or "0"] = False
             if expands:
                 substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
             continue
@@ -486,7 +498,8 @@ def _stage(text, context):
         argv.append(word)
     stdout = sinks.get("1")
     return Stage(argv, writes, reads, heredoc, substitutions,
-                 [stdout] if stdout is not None else [], group_open, group_close)
+                 [stdout] if stdout is not None else [], group_open, group_close,
+                 pipe_inputs["0"])
 
 
 def statements(script):

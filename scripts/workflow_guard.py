@@ -187,8 +187,10 @@ def _fetch_records(stmts, stream_exec=False):
                                     stage, piped_to)
                 if fetch is not None:
                     if stream_exec:
-                        fetch = (streamed_fetch(os.path.basename(argv[0]), argv[1:],
-                                                stage, following, EXECUTORS) or fetch)
+                        stream = streamed_fetch(os.path.basename(argv[0]), argv[1:],
+                                                stage, following, EXECUTORS)
+                        fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None
+                                           else fetch)
                     found.append((index, fetch))
             found.extend((index, f) for f in _substituted(argv, stage, stream_exec))
     return found

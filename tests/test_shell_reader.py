@@ -343,3 +343,22 @@ class TestSubshellBoundaryMetadata(unittest.TestCase):
                 expected = 1 if script.startswith("(") else 0
                 self.assertEqual(expected, parsed.group_open)
                 self.assertEqual(expected, parsed.group_close)
+
+
+class TestPipelineStdinProvenance(unittest.TestCase):
+    def test_other_descriptor_reads_leave_stdin_connected(self):
+        self.assertTrue(stage("cat 3<local").stdin_from_pipe)
+        self.assertFalse(stage("cat <local").stdin_from_pipe)
+
+    def test_descriptor_copies_follow_redirect_order(self):
+        self.assertTrue(stage("cat 3<&0 0<local 0<&3").stdin_from_pipe)
+        self.assertFalse(stage("cat 3<&0 0<local").stdin_from_pipe)
+        self.assertFalse(stage("cat 0<&3 3<&0").stdin_from_pipe)
+
+    def test_heredoc_and_later_descriptor_copies_follow_order(self):
+        self.assertFalse(stage("sh <<EOF\necho safe\nEOF").stdin_from_pipe)
+        self.assertTrue(stage("sh 3<<EOF\necho safe\nEOF").stdin_from_pipe)
+        self.assertTrue(stage(
+            "sh 3<&0 <<EOF 0<&3\necho safe\nEOF").stdin_from_pipe)
+        self.assertFalse(stage(
+            "sh 3<&0 0<&3 <<EOF\necho safe\nEOF").stdin_from_pipe)

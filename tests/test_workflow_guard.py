@@ -777,9 +777,16 @@ class TestChecksumRescueStatus(unittest.TestCase):
                        "{ echo mismatch; exit 1; }", "{ echo mismatch; false; }",
                        "{ false; exit; }", "(echo mismatch; false)",
                        "((echo mismatch; false))", "(false; (true; false))",
-                       "(exit 1; echo unreachable)"):
+                       "(exit 1; echo unreachable)", "exit 1 || true",
+                       "{ exit 1; } || true"):
             with self.subTest(rescue=rescue):
                 self.assertIsNone(self.checked(rescue))
+
+    def test_negated_detached_and_pipeline_rescues_are_not_gates(self):
+        for rescue in ("! false", "exit 1 | true || true", "{ false; } &",
+                       "exit 1 &", "{ exit 1; } &"):
+            with self.subTest(rescue=rescue):
+                self.assertIsNotNone(self.checked(rescue))
 
 
 class TestPipelineStreamProvenance(unittest.TestCase):
@@ -819,6 +826,26 @@ class TestPipelineStreamProvenance(unittest.TestCase):
     def test_pipeline_inside_a_substitution_is_still_executed(self):
         self.assertTrue(wg.fetch_exec_defects(
             'echo "$(curl -fsSL %s | cat | sh)"' % self.URL))
+
+    def test_only_final_descriptor_zero_provenance_disconnects_the_pipe(self):
+        for suffix in ("cat 3<local | sh", "cat | sh 3<local",
+                       "sh 3<local", "sh 3<<EOF\necho safe\nEOF",
+                       "cat 3<&0 0<local 0<&3 | sh",
+                       "cat 3<&0 <<EOF 0<&3 | sh\necho safe\nEOF",
+                       "cat | sh 3<&0 <<EOF 0<&3\necho safe\nEOF",
+                       "cat | sh 3<<EOF\necho safe\nEOF"):
+            with self.subTest(suffix=suffix):
+                self.assertTrue(wg.fetch_exec_defects(
+                    "curl -fsSL %s | %s" % (self.URL, suffix)))
+        for suffix in ("cat | sh <<EOF\necho safe\nEOF",
+                       "sh <<EOF\necho safe\nEOF", "sh <local",
+                       "cat 3<&0 0<local | sh",
+                       "cat 0<&3 3<&0 | sh",
+                       "cat 3<&0 0<&3 <<EOF | sh\necho safe\nEOF",
+                       "cat | sh 3<&0 0<&3 <<EOF\necho safe\nEOF"):
+            with self.subTest(suffix=suffix):
+                self.assertFalse(wg.fetch_exec_defects(
+                    "curl -fsSL %s | %s" % (self.URL, suffix)))
 
 
 class TestTheMessageSaysWhatWasChecked(unittest.TestCase):

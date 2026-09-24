@@ -250,7 +250,7 @@ def streamed_fetch(tool, args, stage, following, executors):
         return None
     for next_stage in following:
         argv = command(next_stage.argv)
-        if not argv or next_stage.reads:
+        if not argv or not next_stage.stdin_from_pipe:
             break
         name = os.path.basename(argv[0])
         if name in executors:
@@ -580,11 +580,15 @@ def _stops_the_job(stmts, index):
     status = 1  # The rescue is entered only after the checksum fails.
     depth = subshell_depth = 0
     exited_subshell = None
+    stopped_job = False
     for statement in following:
+        if (statement.separator == "&" or len(statement.stages) != 1 or
+                any(negated(stage.argv) for stage in statement.stages)):
+            return False
         for stage in statement.stages:
             depth += stage.group_open + stage.argv.count("{")
             subshell_depth += stage.group_open
-            if exited_subshell is None:
+            if exited_subshell is None and not stopped_job:
                 # The bounded status walk does not evaluate conditional arms.
                 if any(t in ("if", "then", "elif", "else", "fi", "while",
                              "until", "do", "done", "case", "esac", "for")
@@ -600,7 +604,7 @@ def _stops_the_job(stmts, index):
                                 return False
                             exited_subshell = subshell_depth
                         else:
-                            return status is not None and status != 0
+                            stopped_job = True
             depth -= stage.group_close + stage.argv.count("}")
             subshell_depth -= stage.group_close
             if depth < 0 or subshell_depth < 0:
@@ -608,7 +612,7 @@ def _stops_the_job(stmts, index):
             if exited_subshell is not None and subshell_depth < exited_subshell:
                 exited_subshell = None
         if not grouped or depth == 0:
-            if statement.separator == "||":
+            if statement.separator == "||" and not stopped_job:
                 return False
             break
         if statement.separator in ("&&", "||"):
