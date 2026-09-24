@@ -10,9 +10,15 @@ into a single dict keyed by review-unit id: a leaf `Foo` -> id "Foo", and a
 subgroup `Bar` under parent `Baz` -> id "Baz:Bar". Every value carries an
 explicit `parent` field (self for a leaf, the parent's name for a subgroup).
 Subgroups cannot themselves be parents ("one nesting level only").
+
+Glob matching uses bounded bitset transitions, never backtracking regexes.
+Literal comparisons and anchored-prefix rejection avoid most corpus work;
+the general engine uses O(tokens * path length) bounded work and O(tokens)
+matching state. Discovery's total cost still multiplies files by patterns.
 """
 import re
 import sys
+from functools import lru_cache
 
 DOMAINS = frozenset(
     {"SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG"})
@@ -85,51 +91,90 @@ _warned_globs: set[tuple[str, str]] = set()
 
 
 class _GlobMatcher:
-    """Iterative glob DP: O(tokens * path length) time, O(tokens) memory.
+    """Bitset glob NFA with literal fast paths, without regex or recursion.
 
-    Each row records which token prefixes match the path prefix consumed so
-    far. A second row tracks a nonempty, not-yet-terminated segment for **/.
-    Every character visits each token once; no paths or wildcard allocations
-    are retried, and matching never calls a regex or recurses. ``pattern`` is
-    regex-shaped diagnostic text only. The supported match contract is a
-    truthy result on a full-path match and None otherwise, not re.Match data.
+    Bit i means the first i tokens match the consumed path prefix. A second
+    bitset tracks nonempty, unfinished segments for **/. Epsilon transitions
+    skip wildcards; precomputed doubling masks close whole runs in at most
+    five shifts under the star cap. Each bitset has at most 258 bits, including
+    the accepting state and the trailing-slash expansion. Work is bounded by
+    O(tokens * path length), with O(tokens) bits of per-match state.
+    ``pattern`` is diagnostic text; matching returns True or None.
     """
 
     def __init__(self, pattern: str, tokens: tuple[str, ...] | None = None,
                  anchored: bool = True):
         self.pattern = pattern
-        self._tokens = tokens
+        self._valid = tokens is not None
         self._anchored = anchored
+        self._literal: str | None = None
+        self._prefix = ""
+        self._basename_suffix = ""
+        self._letters: dict[str, int] = {}
+        self._star = self._globstar = self._directory = self._question = 0
+        self._closures: list[tuple[int, int]] = []
+        self._accept = 1 << len(tokens or ())
+        epsilon = 0
+        prefix: list[str] = []
+        for i, atom in enumerate(tokens or ()):
+            source, destination = 1 << i, 1 << (i + 1)
+            if atom in ("*", "**", "**/"):
+                epsilon |= source
+                if atom == "*":
+                    self._star |= destination
+                elif atom == "**":
+                    self._globstar |= destination
+                else:
+                    self._directory |= destination
+            elif atom == "?":
+                self._question |= source
+            else:
+                self._letters[atom] = self._letters.get(atom, 0) | source
+                if len(prefix) == i:
+                    prefix.append(atom)
+        self._prefix = "".join(prefix)
+        if tokens is not None and len(prefix) == len(tokens):
+            self._literal = self._prefix
+            self._basename_suffix = "/" + self._literal
+        shift = 1
+        while epsilon:
+            self._closures.append((epsilon, shift))
+            # Sources with a run of twice as many epsilon edges ahead.
+            epsilon &= epsilon >> shift
+            shift *= 2
+        self._start = 1
+        for mask, shift in self._closures:
+            self._start |= (self._start & mask) << shift
 
     def match(self, path: str) -> bool | None:
-        if self._tokens is None:
+        if not self._valid:
             return None
-        tokens = self._tokens
-        width = len(tokens) + 1
-        previous = [True] + [False] * len(tokens)
-        partial = [False] * width
-        for i, atom in enumerate(tokens, 1):
-            if atom in ("*", "**", "**/"):
-                previous[i] = previous[i - 1]
+        if self._literal is not None:
+            return True if (path == self._literal or (
+                not self._anchored and path.endswith(self._basename_suffix))) else None
+        if self._anchored and not path.startswith(self._prefix):
+            return None
+        previous, partial = self._start, 0
+        letters = self._letters
+        star, globstar = self._star, self._globstar
+        directory, question = self._directory, self._question
+        closures = self._closures
         for char in path:
-            current = [False] * width
-            next_partial = [False] * width
-            # An unanchored pattern can begin at any basename boundary.
-            current[0] = not self._anchored and char == "/"
-            for i, atom in enumerate(tokens, 1):
-                if atom == "*":
-                    current[i] = current[i - 1] or (previous[i] and char != "/")
-                elif atom == "**":
-                    current[i] = current[i - 1] or previous[i]
-                elif atom == "**/":
-                    current[i] = current[i - 1] or (partial[i] and char == "/")
-                    next_partial[i] = char != "/" and (previous[i] or partial[i])
-                elif atom == "?":
-                    current[i] = previous[i - 1] and char != "/"
-                else:
-                    current[i] = previous[i - 1] and char == atom
-            previous, partial = current, next_partial
-        return True if previous[-1] else None
+            if char == "/":
+                current = ((previous & letters.get(char, 0)) << 1) | (
+                    previous & globstar) | partial
+                # An unanchored pattern can restart at every basename boundary.
+                if not self._anchored:
+                    current |= 1
+                partial = 0
+            else:
+                current = ((previous & (letters.get(char, 0) | question)) << 1) | (
+                    previous & (star | globstar))
+                partial = (previous | partial) & directory
+            for mask, shift in closures:
+                current |= (current & mask) << shift
+            previous = current
+        return True if previous & self._accept else None
 
 
 def glob_to_re(pat, label="config"):
@@ -192,6 +237,16 @@ def glob_to_re(pat, label="config"):
     # as gitignore reads it.
     if pat.endswith("/"):
         pat += "**"
+    return _compile_glob(pat, anchored)
+
+
+@lru_cache(maxsize=512)
+def _compile_glob(pat: str, anchored: bool) -> _GlobMatcher:
+    """Cache only validated, normalized patterns; disclosures stay per caller.
+
+    Keys are at most 258 characters after trailing-slash expansion. Anchoring
+    is part of the key because it is decided before stripping a leading slash.
+    """
     out, tokens, i = [], [], 0
     while i < len(pat):
         c = pat[i]

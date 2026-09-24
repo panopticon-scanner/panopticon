@@ -602,10 +602,10 @@ class TestVirtualenvExclusion(unittest.TestCase):
             self.assertEqual(semgrep[-1], "/src")     # the scan target stays last
             self.assertIn("--skip-dirs=.venv", trivy)  # trivy matches root-relative
             self.assertEqual(trivy[-1], "/src")
-            # gitleaks exposes no path-exclusion flag (config-file allowlist
-            # only), so its argv is untouched -- the ingest filter covers it.
-            self.assertEqual(gitleaks[-len(rt.TOOL_CMD["gitleaks"]):],
-                             list(rt.TOOL_CMD["gitleaks"]))
+            # Gitleaks has no path-exclusion flag; the adapter owns its rule
+            # config and the ingest filter handles virtualenv paths.
+            self.assertEqual(gitleaks[-3:], ["python3",
+                             "/opt/panopticon/scripts/_run_adapter.py", "gitleaks"])
 
     def test_no_venv_means_no_added_flags(self):
         calls = []

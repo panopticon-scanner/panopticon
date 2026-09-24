@@ -196,6 +196,19 @@ def _fetch_records(stmts, stream_exec=False):
     return found
 
 
+def _wrapper_records(stmts):
+    """[(statement index, reason)] even when no fetch can be extracted."""
+    for index, statement in enumerate(stmts):
+        for stage in statement.stages:
+            reason = shell_reader.unresolved_wrapper(stage.argv)
+            if reason:
+                yield index, ("cannot read command behind wrapper: %s; "
+                              "the guard cannot determine what it runs" % reason)
+            for inner in stage.substitutions:
+                for _inner_index, nested in _wrapper_records(statements(inner)):
+                    yield index, nested
+
+
 def _substituted(argv, stage, stream_exec=False):
     """Every fetch inside this stage's command substitutions, credited to the
     command that CONSUMES it -- `eval`, `sh -c`, `bash <(...)` -- because that
@@ -538,7 +551,7 @@ def _defects(stmts, conditions=None, soft=()):
     """
     checks = _checks(stmts, soft)
     conditions = conditions or {}
-    found = []
+    found = list(_wrapper_records(stmts))
     for index, fetch in _fetch_records(stmts, stream_exec=True):
         why = _defect(fetch, index, stmts, checks, conditions)
         if why:

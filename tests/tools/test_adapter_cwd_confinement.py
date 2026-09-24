@@ -121,6 +121,7 @@ ALLOWED_TARGET_CWD = {
 # exactly, so "the scratch was empty" stays a real assertion rather than a
 # blanket tolerance for whatever happens to be there.
 _GENERATED_IN_CWD = {
+    "brakeman": ["brakeman.ignore", "brakeman.yml"],
     # The empty `--config` bundle-audit is pinned to, which must live inside
     # the scratch so the target's own .bundler-audit.yml is never the default
     # (#1742 finding 3).

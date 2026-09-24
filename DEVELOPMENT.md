@@ -86,6 +86,26 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/agents/` — host-neutral role prompt templates: `scout.md`, `setup-scan.md`,
   `domain-panel.md`, `domain-advisor.md`, `advisor.md`.
 
+## Bounded glob matching
+
+`groups_schema.glob_to_re` uses literal comparisons and a bitset NFA; its
+regex-shaped `.pattern` is diagnostic text, never an executable fallback.
+The general matcher takes O(tokens × path length) bounded work and O(tokens)
+bits of per-match state. Native integer operations process token states in
+parallel, and anchored literal prefixes reject unrelated paths early.
+Discovery still multiplies matching cost by files × configured patterns;
+wildcard-heavy configurations cost more than literal-heavy ones.
+
+Compilation caches at most 512 validated patterns, independently of caller
+labels. The existing limits reject patterns above 256 characters or 20 stars
+after redundant-star collapse; these validation limits are separate from the
+execution bound. Trailing-directory expansion permits at most 258 characters
+in a cache key and 258 bits per state. Character transition masks require up
+to O(tokens²) bits per compiled entry; the fixed cache and pattern caps bound
+retained compilation memory. Invalid-pattern warnings keep their existing
+caller-specific behavior outside the cache. Newlines remain ordinary filename
+characters, and matching consumes the whole path.
+
 ## Key design decisions (don't relitigate without reason)
 - **Fan out via rendered prompts** dispatched through the host runner (`scout`, `domain-panel`, `domain-advisor`, `advisor`).
   One cell per `(domain, group)`: the domain set is the committed floor widened by the
@@ -355,25 +375,30 @@ containment regression.
 
 ## Pinned dependencies
 
-Dependabot covers this repo's `pip` and `github-actions` dependencies. Three families sit outside it
-and are maintained by `scripts/bump_pins.py <family> [--write]`, which never writes a checksum it
-has not recomputed from the downloaded artifact:
+Dependabot covers this repo's `pip` and `github-actions` dependencies. The families below sit outside it
+and are maintained by `scripts/bump_pins.py <family> [--write]`. Families that write checksums
+verify the publisher's HTTPS checksum against the downloaded artifact before editing a pin:
 
 | Family | What it pins | Who bumps it |
 |---|---|---|
 | `rustup` | `Dockerfile`'s `ARG RUSTUP_VERSION` + its two init SHA256s | `pin-freshness.yml`, Mondays, opens a PR |
+| `trivy` | `Dockerfile`'s Trivy version + AMD64 and ARM64 archive SHA256s | `pin-freshness.yml`, Mondays, opens a PR |
+| `rust-toolchain` | `Dockerfile`'s `ARG RUST_TOOLCHAIN_VERSION` | `pin-freshness.yml`, Mondays, opens a PR |
 | `requirements` | the `--hash=sha256:` lines in `.github/requirements-gate.txt`, `requirements-fixtures.txt` and `requirements-tools.txt` | you, beside the version bump |
 | `gems` | `Dockerfile`'s `ARG <GEM>_VERSION` + `ARG <GEM>_GEM_SHA256` pairs | you; nothing schedules it yet |
 
-The `rustup` family pins only the bootstrap installer. `RUST_TOOLCHAIN_VERSION` pins the compiler
-separately; changing the rustup installer does not upgrade Rust. Keep `CARGO_AUDIT_VERSION` explicit
+The `rustup` family pins only the bootstrap installer. The `rust-toolchain` family reads Rust's
+stable channel manifest after checking its companion `.sha256` and requires both image Linux GNU
+targets to be available. Changing the rustup installer does not upgrade Rust. Keep `CARGO_AUDIT_VERSION` explicit
 as well. Its `cargo install --locked` uses the crate release's packaged `Cargo.lock`, so changing
 the cargo-audit version is a deliberate dependency-graph refresh: check that release's lockfile and
 build the image before accepting it. This is not a repository-owned hash closure.
 
 Trivy is installed from its official release archives, outside the apt mirror's update policy.
-When updating `TRIVY_VERSION`, download the Linux-64bit and Linux-ARM64 archives over verified HTTPS,
-compute their SHA256 digests, and update `TRIVY_SHA256_AMD64` and `TRIVY_SHA256_ARM64` together.
+Run `python3 scripts/bump_pins.py trivy` to check, then `python3 scripts/bump_pins.py trivy --write`
+to update `TRIVY_VERSION` and both architecture SHA256s together. The command reads the official
+release's `trivy_<version>_checksums.txt` over HTTPS and compares each entry with its downloaded
+Linux archive. This checks publisher data against the bytes; it does not verify a release signature.
 The Docker build checks the chosen archive's digest before extracting the `trivy` binary. Keep
 ordinary distro apt packages unpinned so they continue to receive security updates.
 
