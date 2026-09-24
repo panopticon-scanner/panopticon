@@ -182,3 +182,42 @@ def path_shim_git(directory, marker, stdout=""):
                  % (shlex.quote(marker), shlex.quote(stdout)))
     os.chmod(shim, 0o700)
     return shim
+
+
+def plant_hook(repo, name, marker=None):
+    """An executable `.git/hooks/<name>` that records having been run.
+
+    Needs no configuration at all: git looks in `.git/hooks` by default, so
+    this vector is reachable in any target checkout and no config refusal can
+    ever catch it (#2006 fix round 2, C2). Returns the marker.
+    """
+    marker = marker or hostile_marker(repo, "hook-marker")
+    hooks = os.path.join(repo, ".git", "hooks")
+    os.makedirs(hooks, exist_ok=True)
+    path = os.path.join(hooks, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\nprintf hit >> %s\nexit 0\n" % shlex.quote(marker))
+    os.chmod(path, 0o700)
+    return marker
+
+
+def add_plumbing_submodule(repo, child, name="sub"):
+    """Register `child` as a submodule of `repo` using PLUMBING only.
+
+    `git submodule add` is a shell script that shells out to `sed`, `basename`
+    and friends, so it cannot run in a bare PATH environment (the git-only CI
+    leg) -- the existing #1985 submodule tests fail there for exactly that
+    reason. `update-index --add --cacheinfo 160000` writes the same gitlink,
+    and a hand-written `.gitmodules` registers it, with no helper binaries.
+    Returns the submodule worktree path.
+    """
+    sha = subprocess.run(["git", "-C", child, "rev-parse", "HEAD"], check=True,
+                         capture_output=True, text=True, timeout=GIT_TIMEOUT).stdout.strip()
+    worktree = os.path.join(repo, name)
+    shutil.copytree(child, worktree, symlinks=True)
+    with open(os.path.join(repo, ".gitmodules"), "w", encoding="utf-8") as fh:
+        fh.write('[submodule "%s"]\n\tpath = %s\n\turl = %s\n' % (name, name, child))
+    _git(repo, "update-index", "--add", "--cacheinfo", "160000,%s,%s" % (sha, name))
+    _git(repo, "add", ".gitmodules")
+    _git(repo, "commit", "-qm", "register submodule")
+    return worktree

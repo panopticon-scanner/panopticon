@@ -21,7 +21,9 @@ def test_allowlisted_environment_and_injected_runner(tmp_path, monkeypatch):
     resolve.assert_called_once_with("git", str(tmp_path), os.environ.get("PATH", ""))
     assert result.stdout == "/root\n"
     args, options = runner.call_args
-    assert args[0] == ["/trusted/git", "-C", str(tmp_path), "-c", "core.fsmonitor=false",
+    assert args[0] == ["/trusted/git", "-C", str(tmp_path),
+                       "-c", "core.fsmonitor=false",
+                       "-c", "core.hooksPath=" + safe_git._no_hooks_path(),
                        "rev-parse", "--show-toplevel"]
     assert options == {"capture_output": True, "text": True, "timeout": 15,
                        "env": {"PATH": "/trusted/bin", "LC_ALL": "C",
@@ -34,7 +36,9 @@ def test_status_preflights_share_the_fifteen_second_budget(tmp_path):
     with mock.patch.object(safe_git.time, "monotonic", side_effect=[100, 102, 105, 109]):
         safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner)
     assert [call.kwargs["timeout"] for call in runner.call_args_list] == [13, 10, 6]
-    assert runner.call_args_list[-1].args[0][-4:] == ["status", "--porcelain", "-z", "--ignore-submodules=none"]
+    # The pin sits immediately after the subcommand, never after caller argv (I1).
+    assert runner.call_args_list[-1].args[0][-4:] == ["status", "--ignore-submodules=none",
+                                                     "--porcelain", "-z"]
 
 
 def test_expired_preflight_budget_never_runs_status(tmp_path):
@@ -244,7 +248,7 @@ def test_allowlisted_plumbing_runs_once_without_a_preflight(tmp_path, args):
     result = safe_git.probe(str(tmp_path), args, runner=runner)
     assert result.returncode == 0
     assert runner.call_count == 1
-    assert runner.call_args.args[0][5:] == args
+    assert runner.call_args.args[0][-len(args):] == args
 
 
 def test_only_status_is_pinned_to_report_submodule_dirt(tmp_path):
@@ -253,7 +257,10 @@ def test_only_status_is_pinned_to_report_submodule_dirt(tmp_path):
     # caller asked for.
     runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
     safe_git.probe(str(tmp_path), ["diff", "--name-only", "-z", "HEAD"], runner=runner)
-    assert runner.call_args.args[0][5:] == ["diff", "--name-only", "-z", "HEAD"]
+    # The driver flags are ours (C1); `--ignore-submodules=none` is status-only.
+    assert runner.call_args.args[0][-6:] == ["diff", "--no-ext-diff", "--no-textconv",
+                                            "--name-only", "-z", "HEAD"]
+    assert "--ignore-submodules=none" not in runner.call_args.args[0]
 
 
 def test_caller_timeout_and_bytes_contract_survive_the_preflight(tmp_path):
@@ -274,7 +281,7 @@ def test_caller_timeout_and_bytes_contract_survive_the_preflight(tmp_path):
 @pytest.mark.parametrize("args,replies,fragment", [
     (["status", "--porcelain", "-z"],
      [subprocess.CompletedProcess([], 0, "filter.fixture.clean\ncmd\0", "")],
-     "command filter"),
+     "command setting"),
     (["status", "--porcelain", "-z"],
      [subprocess.CompletedProcess([], 0, "", ""),
       subprocess.CompletedProcess([], 0, "160000 " + "a" * 40 + " 0\t../escape\0", "")],
@@ -312,3 +319,64 @@ def test_a_failed_root_index_preflight_answers_in_the_callers_type(tmp_path):
     proc = safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
                           runner=runner, text=False)
     assert (proc.returncode, proc.stdout, proc.stderr) == (128, b"", b"bad index")
+
+
+def test_every_launch_suppresses_hooks_and_the_fsmonitor(tmp_path):
+    # #2006 fix round 2, C2: `.git/hooks` is git's default, so no config
+    # refusal can reach it -- every launch, preflight included, must point git
+    # at a directory we own. One assertion over EVERY call, because a launch
+    # site that forgets is exactly the regression.
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
+    safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner)
+    assert runner.call_count == 3
+    for call in runner.call_args_list:
+        argv = call.args[0]
+        assert "core.fsmonitor=false" in argv
+        assert "core.hooksPath=" + safe_git._no_hooks_path() in argv
+
+
+def test_the_hooks_directory_is_ours_and_stays_empty(tmp_path):
+    path = safe_git._no_hooks_path()
+    assert os.path.isdir(path)
+    assert os.listdir(path) == []
+    assert safe_git._no_hooks_path() is path      # once per process, not per call
+
+
+@pytest.mark.parametrize("setting", ["diff.external", "diff.hostile.command",
+                                     "diff.hostile.textconv"])
+def test_diff_command_drivers_fail_closed_like_filters(tmp_path, setting):
+    # #2006 fix round 2, C1: this PR brought `git diff` under the probe, and
+    # the preflight only ever looked at `filter.*`. Every one of these is a
+    # repository-authored command line that `diff` will execute.
+    runner = mock.Mock(return_value=subprocess.CompletedProcess(
+        [], 0, setting + "\nfixture-command-value-must-not-appear\0", ""))
+    with pytest.raises(safe_git.RepositoryRefused, match="command") as error:
+        safe_git.probe(str(tmp_path), ["diff", "--name-only", "HEAD"], runner=runner)
+    assert setting in str(error.value)
+    assert "fixture-command-value-must-not-appear" not in str(error.value)
+    assert runner.call_count == 1
+
+
+@pytest.mark.parametrize("args,expected", [
+    (["diff", "--unified=0", "main"],
+     ["diff", "--no-ext-diff", "--no-textconv", "--unified=0", "main"]),
+    (["log", "-p", "-1"], ["log", "--no-ext-diff", "--no-textconv", "-p", "-1"]),
+    (["show", "--oneline"], ["show", "--no-ext-diff", "--no-textconv", "--oneline"]),
+    (["-c", "core.quotepath=false", "diff", "-z", "--", "a.py"],
+     ["-c", "core.quotepath=false", "diff", "--no-ext-diff", "--no-textconv",
+      "-z", "--", "a.py"]),
+])
+def test_every_diff_producing_launch_disables_the_drivers(tmp_path, args, expected):
+    # Belt and braces beside the refusal: inserted after the SUBCOMMAND, so a
+    # `--` pathspec cannot turn them into filenames, and `git status` -- which
+    # rejects both flags -- never sees them.
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
+    safe_git.probe(str(tmp_path), args, runner=runner)
+    assert runner.call_args.args[0][-len(expected):] == expected
+
+
+def test_status_never_receives_the_diff_flags(tmp_path):
+    # `git status --no-ext-diff` is rc=129, unknown option.
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
+    safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner)
+    assert "--no-ext-diff" not in runner.call_args.args[0]

@@ -14,6 +14,7 @@ unknown or unenumerated spelling fails CLOSED into the preflight.
 from typing import TYPE_CHECKING
 import os
 import subprocess
+import tempfile
 import time
 
 # Same dual-import seam as `diff_map`, on the same module: `discovery.py` runs
@@ -56,7 +57,16 @@ class RepositoryRefused(OSError):
 # - `ls-files`: reports index and worktree NAMES. `--eol` is the one mode that
 #   reads file content through the attribute machinery (and so through a
 #   configured filter), so it is excluded by flag rather than assumed absent.
-# - `symbolic-ref`: reads or writes one ref name; no worktree content.
+#   NOT unconditionally safe: it refreshes the index, and on a tree with
+#   `core.fsmonitor` set to a command it DID run that command (measured) --
+#   `_launch_argv`'s `-c core.fsmonitor=false` is what makes this entry true,
+#   so do not remove it (#2006 fix round 2, M2).
+# - `symbolic-ref`: reads or writes one ref name; no worktree content. The
+#   WRITE mode is a ref transaction, so it fires `reference-transaction` from
+#   the default `.git/hooks` -- measured, and reachable with no config at all.
+#   This entry is therefore true ONLY because `_launch_argv` suppresses hooks
+#   on every launch (#2006 fix round 2, C2); no caller writes a ref today, and
+#   one that did would depend on that suppression, not on this reason.
 # - `rev-list`: walks commit history. Its `--filter=` is an object filter, not
 #   a command, and no worktree file is opened.
 _NO_CONFIGURED_COMMAND = {
@@ -65,11 +75,56 @@ _NO_CONFIGURED_COMMAND = {
     "symbolic-ref": (),
     "rev-list": (),
 }
+# Subcommands that can produce a diff, and so can reach an external diff
+# driver or a textconv filter, and the flags that take those paths away. Belt
+# and braces beside the config refusal below: a driver reachable through a
+# config mechanism the `--includes` sweep cannot see still cannot run. `status`
+# is deliberately NOT here -- it rejects both flags (rc=129).
+_DIFF_PRODUCING = ("diff", "log", "show")
+_NO_DRIVERS = ("--no-ext-diff", "--no-textconv")
+
 # Global options that take a separate value, so the token after them is that
 # value and never the subcommand. Any OTHER leading option is unclassified,
 # which means the subcommand cannot be identified and the call preflights.
 _VALUED_GLOBAL_OPTIONS = ("-c", "-C", "--git-dir", "--work-tree", "--namespace",
                           "--exec-path", "--config-env")
+
+
+_HOOKS_PATH = None
+
+
+def _no_hooks_path():
+    """An empty directory THIS process owns, for `core.hooksPath`.
+
+    `.git/hooks` is git's default, so this vector needs no configuration at
+    all and no config refusal can ever reach it: a `post-index-change` hook
+    fires on the preflighted `status` (which is #1985's own baseline path) and
+    a `reference-transaction` hook on a `symbolic-ref` write. Pointing git at a
+    directory we create and never write to is what closes it (#2006 fix round
+    2, C2).
+
+    A real empty directory rather than `/dev/null` (which this git accepts, but
+    only via the ENOTDIR path) or a nonexistent path (which a future git could
+    reasonably call a configuration error). Created on first use, never at
+    import, and left for the OS temp sweep: it is empty, and removing it
+    mid-process would re-expose every later launch.
+    """
+    global _HOOKS_PATH
+    if _HOOKS_PATH is None:
+        _HOOKS_PATH = tempfile.mkdtemp(prefix="panopticon-no-hooks-")
+    return _HOOKS_PATH
+
+
+def _launch_argv(resolved, directory, command):
+    """The argv for one probe launch: trusted git, cwd, both suppressions.
+
+    ONE place, so a new launch site cannot forget one of them -- the fsmonitor
+    `-c` is what makes several allowlist entries safe (see the allowlist), and
+    the hooksPath `-c` is what makes all of them safe.
+    """
+    return [resolved.path, "-C", directory,
+            "-c", "core.fsmonitor=false",
+            "-c", "core.hooksPath=" + _no_hooks_path(), *command]
 
 
 def _checkout_boundary(start):
@@ -101,23 +156,67 @@ def _subcommand(args):
     how to consume could be hiding anything behind it, so the caller treats an
     unidentified subcommand exactly like an unenumerated one.
     """
-    rest = list(args)
-    while rest and rest[0].startswith("-"):
-        option = rest.pop(0)
+    index = _subcommand_index(args)
+    return None if index is None else args[index]
+
+
+def _subcommand_index(args):
+    """Where the subcommand sits in `args`, or None when it cannot be found."""
+    position = 0
+    while position < len(args) and args[position].startswith("-"):
+        option = args[position]
+        position += 1
         if option in _VALUED_GLOBAL_OPTIONS:
-            if not rest:
+            if position >= len(args):
                 return None
-            rest.pop(0)
+            position += 1
         elif "=" in option:
             continue                   # `--git-dir=x`: value attached, no token
         else:
             return None
-    return rest[0] if rest else None
+    return position if position < len(args) else None
 
 
 def _encoded(value):
     """`value` as bytes, losslessly, or unchanged when it already is."""
     return value.encode("utf-8", "surrogateescape") if isinstance(value, str) else value
+
+
+def _is_command_setting(key):
+    """Whether `key` names a COMMAND LINE the repository authored.
+
+    Each of these is executed by some subcommand the probe can run:
+    `filter.*.clean/.process` by `status` (and anything that compares worktree
+    content), `diff.external` and `diff.<driver>.command/.textconv` by every
+    diff-producing subcommand -- and an external driver's output REPLACES
+    git's, so obeying one silently emptied the hunk map as well as running
+    target code (#2006 fix round 2, C1).
+
+    `merge.<driver>.driver` is deliberately absent: no subcommand the probe
+    runs performs a merge or a checkout, the one exempt path that does
+    (`diff_map.acquire_pr`'s `worktree add`) does not go through here, and
+    refusing it would make targets that ship a merge driver unreviewable for a
+    command we never invoke. Revisit if a probe ever merges.
+    """
+    if key.startswith("filter.") and key.endswith((".clean", ".process")):
+        return True
+    return key == "diff.external" or (
+        key.startswith("diff.") and key.endswith((".command", ".textconv")))
+
+
+def _with_options(args, options):
+    """`args` with `options` inserted immediately AFTER its subcommand.
+
+    Never appended (#2006 fix round 2, I1): in `git status … -- <pathspec>` an
+    appended flag is parsed as a PATH, so `--ignore-submodules=none` after a
+    `--` silently became a filename -- rc=0, no error, and #1985's
+    submodule-dirt guarantee gone. Inserting after the subcommand is correct
+    for every spelling, since a global option can only precede it.
+    """
+    index = _subcommand_index(args)
+    if index is None:
+        raise ValueError("safe Git: no subcommand to place %s after" % (list(options),))
+    return [*args[:index + 1], *options, *args[index + 1:]]
 
 
 def _needs_preflight(args):
@@ -154,8 +253,12 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
     env = {"PATH": resolved.path_env, "LC_ALL": "C",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
            "GIT_CONFIG_GLOBAL": os.devnull}
+    name = _subcommand(args)
+    prepared = list(args)
+    if name in _DIFF_PRODUCING:
+        prepared = _with_options(prepared, _NO_DRIVERS)
     if not _needs_preflight(args):
-        return runner([resolved.path, "-C", root, "-c", "core.fsmonitor=false", *args],
+        return runner(_launch_argv(resolved, root, prepared),
                       capture_output=True, text=text, timeout=timeout, env=env)
 
     deadline = time.monotonic() + timeout
@@ -164,7 +267,7 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired("trusted git probe", timeout)
-        return runner([resolved.path, "-C", directory, "-c", "core.fsmonitor=false", *command],
+        return runner(_launch_argv(resolved, directory, command),
                       capture_output=True, text=as_text, timeout=remaining, env=env)
 
     root_real = os.path.realpath(root)
@@ -191,10 +294,10 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
             key, _, value = record.partition("\n")
             settings[key] = value
         for key, value in settings.items():
-            if (key.startswith("filter.") and key.endswith((".clean", ".process"))
-                    and value):
+            if value and _is_command_setting(key):
                 # The key is repository-authored too; repr escapes control bytes.
-                raise RepositoryRefused("safe Git status: unsupported command filter setting %r" % key)
+                raise RepositoryRefused(
+                    "safe Git probe: unsupported repository command setting %r" % key)
         index = run(directory, ["ls-files", "--stage", "-z"])
         if index.returncode != 0:
             if directory != root_real:
@@ -217,11 +320,10 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
                 pending.append(child)
                 if len(seen) + len(pending) > _MAX_REPOSITORIES:
                     raise RepositoryRefused("safe Git status: submodule traversal exceeds 64 repositories")
-    final = list(args)
-    if _subcommand(args) == "status":
+    if name == "status":
         # A status that hides submodule dirt is not an integrity baseline; every
         # OTHER subcommand keeps the argv the caller asked for, because this is
-        # a `status` flag and appending it elsewhere would change or break the
+        # a `status` flag and placing it elsewhere would change or break the
         # command.
-        final.append("--ignore-submodules=none")
-    return run(root, final, as_text=text)
+        prepared = _with_options(prepared, ["--ignore-submodules=none"])
+    return run(root, prepared, as_text=text)

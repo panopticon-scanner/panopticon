@@ -29,10 +29,13 @@ from unittest import mock
 from conftest import SKILL_ROOT
 import scripts.diff_map as diff_map
 import scripts.discovery as discovery
+import scripts.phases.validate as validate_phase
 import scripts.run_manifest as run_manifest
+import scripts.safe_git as safe_git
 
-from tools.git_repo import (hostile_marker, make_git_repo, path_shim_git,
-                            plant_clean_filter, plant_fsmonitor_command)
+from tools.git_repo import (add_plumbing_submodule, hostile_marker,
+                            make_git_repo, path_shim_git, plant_clean_filter,
+                            plant_fsmonitor_command, plant_hook)
 
 
 def _plain_status(repo):
@@ -264,9 +267,6 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
         self.assertTrue([f for f, _l, _s in found if f == "acquire_pr"], found)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class DeltaMapIsConfined(unittest.TestCase):
     """`diff_map._run_git` is the delta map's only git invocation.
@@ -359,4 +359,156 @@ class ARefusalIsAMessageNotATraceback(unittest.TestCase):
         self.assertTrue(commit)
         self.assertIsNone(dirty)
         self.assertIn("filter.fixture.clean", err.getvalue())
+        self.assertFalse(os.path.exists(marker))
+
+
+class RepositoryHooksNeverRun(unittest.TestCase):
+    """#2006 fix round 2, C2: `.git/hooks` needs no config, so no config
+    refusal can catch it. Every probe launch has to suppress hooks outright.
+
+    Two vectors the reviewer executed on the pre-fix tree: `post-index-change`
+    on the preflighted `status` (which is #1985's own baseline path), and
+    `reference-transaction` on an allowlisted `symbolic-ref` WRITE.
+    """
+
+    def _repo(self):
+        return make_git_repo(test_case=self, panopticon=True,
+                            files={"a.py": "value = 1\n"})
+
+    def test_a_planted_hook_runs_under_plain_git(self):
+        # Vacuity guard for both tests below.
+        repo = self._repo()
+        marker = plant_hook(repo, "post-index-change")
+        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("value = 2\n")
+        _plain_status(repo)
+        self.assertTrue(os.path.exists(marker),
+                        "fixture is inert: git never ran the hook")
+
+    def test_status_never_runs_the_targets_index_hook(self):
+        repo = self._repo()
+        marker = plant_hook(repo, "post-index-change")
+        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("value = 2\n")
+        self.assertIs(discovery._worktree_dirty(repo), True)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_an_allowlisted_symbolic_ref_write_never_runs_the_ref_hook(self):
+        repo = self._repo()
+        marker = plant_hook(repo, "reference-transaction")
+        proc = safe_git.probe(repo, ["symbolic-ref", "refs/heads/probe-zz",
+                                     "refs/heads/main"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_the_baseline_probe_never_runs_the_targets_index_hook(self):
+        repo = self._repo()
+        marker = plant_hook(repo, "post-index-change")
+        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("value = 2\n")
+        validate_phase.capture_tree_baseline(repo)
+        self.assertFalse(os.path.exists(marker))
+
+
+class SubmoduleDirtStaysVisibleWithAPathspec(unittest.TestCase):
+    """#2006 fix round 2, I1: the pin must survive a `--` in the caller's argv.
+
+    `--ignore-submodules=none` was APPENDED, so `status … -- <pathspec>` parsed
+    it as a FILENAME: rc=0, no error, and #1985's guarantee that a target
+    cannot hide submodule dirt from the integrity guard was silently gone.
+
+    The submodule is registered with plumbing (`update-index --cacheinfo`), not
+    `git submodule add`, so this test also runs where that shell script cannot.
+    """
+
+    def _parent_with_a_dirty_submodule(self):
+        child = make_git_repo(test_case=self, files={"f.txt": "x\n"}, branch=None)
+        parent = make_git_repo(test_case=self, panopticon=True,
+                               files={"a.py": "value = 1\n"})
+        worktree = add_plumbing_submodule(parent, child)
+        with open(os.path.join(worktree, "f.txt"), "a", encoding="utf-8") as fh:
+            fh.write("dirty\n")
+        # The target's own preference to hide it -- the case #1985 pinned.
+        subprocess.run(["git", "-C", parent, "config", "submodule.sub.ignore", "all"],
+                       check=True, capture_output=True, timeout=30)
+        return parent
+
+    def test_the_fixture_really_hides_the_dirt_without_the_pin(self):
+        # Vacuity guard: prove the hiding preference works, or the test below
+        # proves nothing about the pin.
+        parent = self._parent_with_a_dirty_submodule()
+        out = subprocess.run(["git", "-C", parent, "status", "--porcelain", "-z"],
+                             capture_output=True, text=True, timeout=30).stdout
+        self.assertNotIn("sub", out)
+
+    def test_a_pathspec_status_still_reports_submodule_dirt(self):
+        parent = self._parent_with_a_dirty_submodule()
+        proc = safe_git.probe(parent, ["status", "--porcelain", "-z", "--", "sub", "a.py"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("sub", proc.stdout)
+
+    def test_the_pin_is_placed_before_any_pathspec_separator(self):
+        seen = []
+
+        def runner(argv, **kwargs):
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        safe_git.probe(str(make_git_repo(test_case=self)),
+                       ["status", "--porcelain", "-z", "--", "a.py"], runner=runner)
+        argv = seen[-1]
+        self.assertIn("--ignore-submodules=none", argv)
+        self.assertLess(argv.index("--ignore-submodules=none"), argv.index("--"))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class DiffDriversAreRefused(unittest.TestCase):
+    """#2006 fix round 2, C1: the reviewer's `diff.external` reproduction.
+
+    An external diff driver's output REPLACES git's, so one repo-local line
+    (`diff.external = true`) made `diff_map.hunk_map` return `{}` -- the
+    on-diff gate scoped to nothing, which is the vacuous PASS `DiffMapError`
+    exists to prevent (#5.0-08) -- while executing target-authored code.
+    """
+
+    def _repo(self):
+        repo = make_git_repo(test_case=self, panopticon=True,
+                             files={"a.py": "value = 1\n"})
+        subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "feature"],
+                       check=True, capture_output=True, timeout=30)
+        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("value = 3\n")
+        subprocess.run(["git", "-C", repo, "commit", "-qam", "change"], check=True,
+                       capture_output=True, timeout=30)
+        return repo
+
+    def test_the_map_is_honest_without_a_driver(self):
+        # Vacuity guard: the same call DOES produce hunks when nothing is set.
+        self.assertIn("a.py", diff_map.hunk_map(self._repo(), "main"))
+
+    def test_diff_external_is_refused_not_silently_obeyed(self):
+        repo = self._repo()
+        marker = hostile_marker(repo, "diff-marker")
+        subprocess.run(["git", "-C", repo, "config", "diff.external",
+                        "sh -c 'printf hit > %s; exit 0'" % marker],
+                       check=True, capture_output=True, timeout=30)
+        with self.assertRaises(diff_map.DiffMapError) as caught:
+            diff_map.hunk_map(repo, "main")
+        self.assertIn("diff.external", str(caught.exception))
+        self.assertFalse(os.path.exists(marker))
+
+    def test_an_attribute_scoped_diff_command_is_refused(self):
+        repo = self._repo()
+        marker = hostile_marker(repo, "diff-marker")
+        with open(os.path.join(repo, ".gitattributes"), "w", encoding="utf-8") as fh:
+            fh.write("a.py diff=hostile\n")
+        subprocess.run(["git", "-C", repo, "config", "diff.hostile.command",
+                        "sh -c 'printf hit > %s; exit 0'" % marker],
+                       check=True, capture_output=True, timeout=30)
+        with self.assertRaises(diff_map.DiffMapError) as caught:
+            diff_map.hunk_map(repo, "main")
+        self.assertIn("diff.hostile.command", str(caught.exception))
         self.assertFalse(os.path.exists(marker))
