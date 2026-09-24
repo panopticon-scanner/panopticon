@@ -327,7 +327,7 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("heat-cell", out)  # a group x panel cell rendered
         self.assertIn("heat-total", out)
 
-    def test_heatmap_table_names_rows_columns_and_explicit_zeroes(self):
+    def test_heatmap_table_names_rows_columns_and_unknown_cells(self):
         report = _minimal_report()
         report["groups"] = [
             {"name": "Quiet <group>", "files": ["quiet.py"]},
@@ -348,7 +348,7 @@ class TestHtmlReport(unittest.TestCase):
                          ["App & API", "Quiet <group>"])
         rows = _nodes(_nodes(tables[0], "tbody")[0], "tr")
         self.assertEqual([[_text(cell).strip() for cell in row["children"]] for row in rows],
-                         [["App & API", "1", "1", "2"], ["Quiet <group>", "0", "0", "0"]])
+                         [["App & API", "1", "1", "2"], ["Quiet <group>", "—", "—", "0"]])
         self.assertIn("&lt;group&gt;", hr._render_heatmap(report))
         self.assertNotIn("<group>", hr._render_heatmap(report))
 
@@ -1715,3 +1715,90 @@ class TestExcludedToolFindingsInHtml(unittest.TestCase):
         self.assertNotIn("base/**", head_panel)
         out = hr.render(head, compare_report=base)
         self.assertEqual(out.count("Tool findings excluded by policy:"), 2)
+
+
+class TestMeasuredHeatmap(unittest.TestCase):
+    def _rows(self, report):
+        table = _parse(hr._render_heatmap(report))
+        return {_text(_nodes(row, "th")[0]): _nodes(row, "td")
+                for row in _nodes(_nodes(table, "tbody")[0], "tr")}
+
+    def test_reviewed_empty_never_dispatched_and_tool_counts(self):
+        report = _minimal_report()
+        report["groups"].append({"name": "Quiet", "files": ["quiet.py"]})
+        report["meta"]["coverage"] = {"cells": {
+            "reviewed": [["Quiet", "SEC"]],
+            "planned_pairs": [["Quiet", "SEC"], ["App", "COD"]]}}
+        rows = self._rows(report)
+        self.assertEqual([_text(c) for c in rows["Quiet"]], ["—", "0", "0"])
+        self.assertEqual(rows["Quiet"][0]["attrs"]["title"], "Not reviewed")
+        self.assertEqual(rows["Quiet"][1]["attrs"]["aria-label"],
+                         "0 findings; reviewed domains: SEC")
+        self.assertEqual([_text(c) for c in rows["App"]], ["—", "1", "1"])
+        self.assertIn("missing domains: COD", rows["App"][0]["attrs"]["title"])
+
+    def test_collapsed_panel_requires_every_planned_domain_and_exact_chunk(self):
+        report = _minimal_report(findings=[])
+        report["groups"] = [{"name": "App_1", "files": ["a.py"]},
+                            {"name": "App_2", "files": ["b.py"]}]
+        cells = {"reviewed": [["App_1", "COD"]],
+                 "planned_pairs": [["App_1", "COD"], ["App_1", "QAL"], ["App_2", "COD"]]}
+        report["meta"]["coverage"] = {"cells": cells}
+        rows = self._rows(report)
+        self.assertEqual(_text(rows["App_1"][0]), "—")
+        self.assertEqual(rows["App_1"][0]["attrs"]["title"],
+                         "Not reviewed; reviewed domains: COD; missing domains: QAL")
+        self.assertEqual(_text(rows["App_2"][0]), "—")
+        cells["reviewed"].append(["App_1", "QAL"])
+        rows = self._rows(report)
+        self.assertEqual(_text(rows["App_1"][0]), "0")
+        self.assertEqual(rows["App_1"][0]["attrs"]["title"],
+                         "0 findings; reviewed domains: COD, QAL")
+        self.assertEqual(_text(rows["App_2"][0]), "—")
+
+    def test_missing_measurements_mean_unknown_even_with_planned_counts(self):
+        for cells in ({}, {"reviewed": []}, {"planned_pairs": [["Quiet", "SEC"]]}):
+            report = _minimal_report()
+            report["groups"].append({"name": "Quiet", "files": ["quiet.py"]})
+            report["meta"]["coverage"] = {"cells": cells, "fan_out": {
+                "planned": {"security": 2}, "executed": {"security": 2}}}
+            cell = self._rows(report)["Quiet"][0]
+            self.assertEqual(_text(cell), "—")
+            self.assertEqual(cell["attrs"]["title"], "Coverage unknown")
+            self.assertEqual(cell["attrs"]["aria-label"], "Coverage unknown")
+
+    def test_assembled_report_schema_and_html_share_measured_cells(self):
+        import scripts.synth.findings as findings_mod
+        import scripts.synth.plan as plan_mod
+        import scripts.synth.report as report_mod
+        import scripts.synth.tool_axis as tool_axis_mod
+        import scripts.synth.validate_schema as schema_mod
+        from tests.synth.helpers import DEFAULT_TIMESTAMP, _make_finding
+
+        finding = _make_finding(id="SEC-001", panel="security",
+                                location={"file": "two.py", "line_start": 3})
+        finding["source"] = "tool:semgrep"
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[finding]),
+            plan=plan_mod.PlanInputs(
+                groups_meta=[{"name": "Unit_1", "files": ["one.py"]},
+                             {"name": "Unit_2", "files": ["two.py"]}],
+                coverages=[{"group": g, "effective": ["COD", "SEC"], "floor": ["COD"]}
+                           for g in ("Unit_1", "Unit_2")],
+                integrity={"malformed_findings_files": [{
+                    "file": "findings-Unit_1-COD.json", "cell": ["Unit_1", "COD"],
+                    "defects": [{"index": 0, "reason": "not an object"}]}]}),
+            tools=tool_axis_mod.ToolAxis(ingested_paths=[
+                "findings-Unit_2-COD.json", "findings-Unit_1-SEC.json",
+                "findings-Unit_1-COD.json"])))
+        self.assertEqual(schema_mod.schema_errors(report), [])
+        cells = report["meta"]["coverage"]["cells"]
+        self.assertEqual(cells["reviewed"], [["Unit_1", "SEC"], ["Unit_2", "COD"]])
+        self.assertEqual(cells["missing_floor"], [["Unit_1", "COD"]])
+        self.assertEqual(cells["planned_pairs"], [["Unit_1", "COD"], ["Unit_1", "SEC"],
+                                                 ["Unit_2", "COD"], ["Unit_2", "SEC"]])
+        rows = self._rows(report)
+        self.assertEqual([_text(c) for c in rows["Unit_1"]], ["—", "0", "0"])
+        self.assertEqual([_text(c) for c in rows["Unit_2"]], ["0", "1", "1"])
+        self.assertNotIn(["Unit_2", "SEC"], cells["reviewed"])

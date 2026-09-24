@@ -12,6 +12,8 @@ first 300 stderr characters and progress lines would crowd the real error out of
 that window. Both halves are asserted below against the real workflow file and
 the real command the driver builds, so "tidying up" the inconsistency fails.
 """
+import contextlib
+import io
 import os
 import tempfile
 import threading
@@ -270,19 +272,38 @@ class TestTheTwoCallSitesDisagreeOnPurpose(unittest.TestCase):
         self.assertNotIn(
             "--progress", cmd,
             "phases/tools.py builds its failure note from the child's first 300 "
-            "stderr characters (tools.py: `raw_err = (proc.stderr or '')"
-            ".strip()[:300]`). Progress lines would push the real error out of "
+            "stderr characters after redaction. Progress lines would push the real error out of "
             "that window, so the driver deliberately does not ask for them.")
 
     def test_the_reason_is_still_true(self):
-        # If that 300-char note ever stops being built from the child's stderr,
-        # the asymmetry above becomes cargo cult and should be revisited rather
-        # than kept out of habit.
-        path = os.path.join(REPO_ROOT, "skill", "scripts", "phases", "tools.py")
-        with open(path, encoding="utf-8") as fh:
-            source = fh.read()
-        self.assertIn("proc.stderr", source)
-        self.assertIn("[:300]", source)
+        # Exercise the stored and displayed note, not the source spelling of
+        # its clipping operation: progress would displace this leading error.
+        from scripts.phases import child as child_mod, runio, tools as tools_phase
+
+        head = "failure at start: " + "a" * (300 - len("failure at start: "))
+        suffix = " LATE STDERR MUST NOT REPLACE THE ERROR " + "z" * 600
+        for returncode in (0, 2):
+            with self.subTest(returncode=returncode), tempfile.TemporaryDirectory() as root:
+                captured = io.StringIO()
+                fake_child = mock.Mock(return_value=_FakeResult(
+                    returncode, "stdout must not supply the note", "\n " + head + suffix + " \n"))
+                with mock.patch.object(child_mod, "_run_child", fake_child), \
+                     contextlib.redirect_stderr(captured):
+                    result = tools_phase.tools_execute(
+                        root, {"run_id": "r1", "flags": {"tools": True}})
+                fake_child.assert_called_once()
+                marker = runio._load_json(runio._pano(root, "tools-ran.json"))
+                self.assertEqual(marker["note"], head)
+                self.assertEqual(len(marker["note"]), 300)
+                self.assertEqual(marker["crashed"], returncode != 0)
+                self.assertEqual(marker["returncode"], returncode)
+                self.assertFalse(marker["ran"])
+                self.assertEqual(result.kind, "advanced")
+                label = "CRASHED" if returncode else "SKIPPED"
+                self.assertEqual(result.message, "tools: " + label + " — " + head)
+                expected = ("driver: tool scan CRASHED (rc=2) — " if returncode
+                            else "driver: tool scan produced no output — ")
+                self.assertEqual(captured.getvalue(), expected + head + "\n")
 
 
 if __name__ == "__main__":  # pragma: no cover

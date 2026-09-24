@@ -191,10 +191,17 @@ class BrakemanAdapter:
         # default, stricter behaviour.
         if not self._is_canonical_rails_root(target):
             cmd.insert(1, "--force")
-        # #1877: brakeman consults cwd-relative configuration, so it runs
-        # from an empty scratch. The app path is the argv positional above,
-        # so argv is byte-unchanged.
+        # Brakeman also discovers config and ignored warnings from the app path.
+        # Explicit scanner-owned files take precedence over both target files.
         with scratch_cwd("brakeman-cwd-") as cwd:
+            config_path = os.path.join(cwd, "brakeman.yml")
+            ignore_path = os.path.join(cwd, "brakeman.ignore")
+            with open(config_path, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            with open(ignore_path, "w", encoding="utf-8") as fh:
+                fh.write('{"ignored_warnings": []}')
+            cmd += ["--config-file", config_path,
+                    "--ignore-config", ignore_path]
             stdout, rc = run_tool(cmd, timeout=300, ok_codes=(0, 1, 2, 3), cwd=cwd)
         # Brakeman exits 2 when warnings are found and 3 when warnings plus minor
         # parsing errors occur. Treat both as successful scans so the output is

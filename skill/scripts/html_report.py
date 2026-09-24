@@ -12,17 +12,20 @@ if TYPE_CHECKING:
     import scripts.evidence as evidence
     import scripts.host_disclosure as host_disclosure
     import scripts.hosts as hosts
+    import scripts.ocrdb as ocrdb
     import scripts.safe_write as safe_write
 else:
     try:
         import scripts.evidence as evidence
         import scripts.host_disclosure as host_disclosure
         import scripts.hosts as hosts
+        import scripts.ocrdb as ocrdb
         import scripts.safe_write as safe_write
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
         import evidence
         import host_disclosure
         import hosts
+        import ocrdb
         import safe_write
 
 _CSS = """
@@ -1256,19 +1259,41 @@ def _group_of(path, file_to_group, has_profile_groups):
     return "(root)"
 
 
+def _heatmap_domains(report, field):
+    """Measured planned/reviewed domains by exact group/panel, else None."""
+    coverage = (report.get("meta") or {}).get("coverage") or {}
+    cells = coverage.get("cells") or {}
+    pairs = cells.get(field)
+    if not isinstance(pairs, list):
+        return None
+    domains: dict[tuple[str, str], set[str]] = {}
+    for pair in pairs:
+        if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                or not all(isinstance(value, str) for value in pair)):
+            continue
+        group, domain = pair
+        panel = ocrdb.DOMAIN_TO_PANEL.get(domain)
+        if group and panel and domain != "ZZZ":
+            domains.setdefault((group, panel), set()).add(domain)
+    return domains
+
+
 def _heatmap_grid(report):
     """Build the group x panel heatmap: (active_panels, [(group, row), ...]).
 
     Each row is {"total": int, "cells": {panel: {"count", "worst"}}}. Rows cover
     every defined group (so a clean group still shows, all cells empty) plus any
     module fallback groups discovered from finding locations. Panels are the
-    canonical-order subset that carries at least one finding.
+    canonical-order subset carrying findings or measured review evidence.
     """
     findings = report.get("findings", [])
     file_to_group = _file_to_group(report)
     has_profile = len(file_to_group) > 0
 
-    panel_seen = set()
+    reviewed = _heatmap_domains(report, "reviewed")
+    planned = _heatmap_domains(report, "planned_pairs")
+    measured_keys = set(reviewed or {}) | set(planned or {})
+    panel_seen = {panel for _, panel in measured_keys}
     for f in findings:
         panel_seen.add(f.get("panel") if f.get("panel") in _PANEL_ORDER else "code")
     active_panels = [p for p in _PANEL_ORDER if p in panel_seen]
@@ -1277,6 +1302,10 @@ def _heatmap_grid(report):
     order = []
     for g in report.get("groups") or []:
         name = g.get("name", "")
+        if name not in grid:
+            grid[name] = {"total": 0, "cells": {}}
+            order.append(name)
+    for name, _panel in sorted(measured_keys):
         if name not in grid:
             grid[name] = {"total": 0, "cells": {}}
             order.append(name)
@@ -1306,6 +1335,8 @@ def _render_heatmap(report):
     if not rows or not active_panels:
         return ""
     labels = _group_display_labels(report)
+    reviewed = _heatmap_domains(report, "reviewed")
+    planned = _heatmap_domains(report, "planned_pairs")
     headers = ["<th scope='col' class='heat-head heat-label-head'>Group</th>"]
     for p in active_panels:
         headers.append(f"<th scope='col' class='heat-head'>{_escape(p)}</th>")
@@ -1325,7 +1356,22 @@ def _render_heatmap(report):
                     f"<td class='heat-cell' style='color:var(--sev-{sev});"
                     f"background:var(--sev-{sev}-tint)'>{c['count']}</td>")
             else:
-                cells.append("<td class='heat-cell empty'>0</td>")
+                have = (reviewed or {}).get((name, p), set())
+                expected = (planned or {}).get((name, p), set())
+                missing = expected - have
+                if reviewed is None or planned is None:
+                    status, value = "Coverage unknown", "&mdash;"
+                elif expected and not missing:
+                    status = "0 findings; reviewed domains: " + ", ".join(sorted(have))
+                    value = "0"
+                else:
+                    status, value = "Not reviewed", "&mdash;"
+                    if have:
+                        status += "; reviewed domains: " + ", ".join(sorted(have))
+                    if missing:
+                        status += "; missing domains: " + ", ".join(sorted(missing))
+                cells.append(f"<td class='heat-cell empty' title='{_escape(status)}' "
+                             f"aria-label='{_escape(status)}'>{value}</td>")
         cells.append(f"<td class='heat-total'>{row['total']}</td>")
         body_rows.append(f"<tr>{''.join(cells)}</tr>")
     return f"""

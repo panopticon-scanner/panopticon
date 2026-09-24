@@ -9,6 +9,7 @@ from scripts import hosts
 import scripts.config_schema as config_schema
 import scripts.run_manifest as run_manifest
 import scripts.synth.validate_schema as validate_schema_mod
+import scripts.redact as redact
 from . import child
 from . import engine
 from . import runio
@@ -207,7 +208,7 @@ def synthesize_execute(review_root, manifest):
     # with the reason.
     if not synthesize_done(review_root, manifest):
         raise runio.DriverError("synthesize produced no usable report.json (rc=%s): %s"
-                          % (proc.returncode, runio._redact_output(proc.stderr or proc.stdout)[:400]))
+                          % (proc.returncode, redact.redact_diagnostic(proc.stderr or proc.stdout, 400)))
     # §5.1: point the flat compat paths at the latest tag-named report, so every
     # existing reader of report.json / report.json.html resolves it unchanged, and
     # refresh runs/latest. The tag-named files are the durable top-level outputs;
@@ -243,5 +244,5 @@ def synthesize_execute(review_root, manifest):
         raise runio.DriverError(
             "synthesize wrote an artifact that fails its own published schema "
             "(rc=%s): %s" % (proc.returncode,
-                             runio._redact_output(proc.stderr or proc.stdout)[-400:]))
+                             redact.redact_diagnostic(proc.stderr or proc.stdout, 400, tail=True)))
     return engine.PhaseResult(kind="advanced", message="synthesize: report.json written")

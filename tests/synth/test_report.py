@@ -2885,6 +2885,34 @@ class TestFloorCellCoverageWiring(unittest.TestCase):
         self.assertEqual(r["summary"]["gate"], "PASS")
         self.assertTrue(r["summary"]["coverage_certified"])
 
+    def test_measured_pairs_filter_invalid_plan_values_and_keep_chunk_identity(self):
+        r = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(coverages=[
+                {"group": "g_1", "effective": ["SEC", "COD", "SEC", 2, [], "bad"]},
+                {"group": "g_2", "effective": ["QAL"]},
+                {"group": [], "effective": ["SEC"]},
+                {"group": "bad", "effective": "SEC"}, None]),
+            tools=tool_axis_mod.ToolAxis(ingested_paths=[
+                "findings-g_2-QAL.json", "findings-g_1-SEC.json", "findings-g_1-SEC.json",
+                "findings-g_1-security.json", "semgrep.json"])))
+        cells = r["meta"]["coverage"]["cells"]
+        self.assertEqual(cells["reviewed"], [["g_1", "SEC"], ["g_2", "QAL"]])
+        self.assertEqual(cells["planned_pairs"], [["g_1", "COD"], ["g_1", "SEC"], ["g_2", "QAL"]])
+        self.assertEqual(cells["missing_floor"], [])
+
+    def test_measured_empty_and_unknown_plan_are_distinct(self):
+        for coverages in (None, []):
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+                findings=findings_mod.FindingSet(findings=[]),
+                plan=plan_mod.PlanInputs(coverages=coverages),
+                tools=tool_axis_mod.ToolAxis(ingested_paths=[])))
+            cells = r["meta"]["coverage"]["cells"]
+            self.assertEqual(cells["reviewed"], [])
+            self.assertEqual("planned_pairs" in cells, coverages is not None)
+
     def test_backward_compat_no_coverages_no_regression(self):
         r = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),

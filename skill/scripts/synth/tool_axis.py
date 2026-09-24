@@ -21,6 +21,7 @@ import json
 import os
 import sys
 
+import scripts.groups_schema as groups_schema
 import scripts.ingest_tools as ingest_tools
 from scripts.tools import EXECUTES_TARGET_BUILD
 from . import coverage_io as coverage_io
@@ -432,9 +433,25 @@ def reconcile(plan, tools, resolved, run=None):
     present = coverage_io.present_cells(tools.ingested_paths)
     for entry in (integrity.get("malformed_findings_files") or []):
         cell = entry.get("cell") if isinstance(entry, dict) else None
-        if cell and cell[0] in present:
+        if (isinstance(cell, (list, tuple)) and len(cell) == 2
+                and all(isinstance(value, str) for value in cell) and cell[0] in present):
             present[cell[0]].discard(cell[1])
     cell_audit = coverage_io.audit_floor_cells(plan.coverages or [], present)
+    if tools.ingested_paths is not None:
+        # Measurement exists even when empty. Publish only completed cells,
+        # after malformed findings were removed; legacy omission means unknown.
+        cell_audit["reviewed"] = sorted(
+            [group, domain] for group, domains in present.items()
+            if isinstance(group, str) and group
+            for domain in domains
+            if isinstance(domain, str) and domain in groups_schema.DOMAINS)
+        if plan.coverages is not None:
+            cell_audit["planned_pairs"] = [list(pair) for pair in sorted({
+                (cov["group"], domain) for cov in plan.coverages
+                if isinstance(cov, dict) and isinstance(cov.get("group"), str)
+                and cov["group"] and isinstance(cov.get("effective"), list)
+                for domain in cov["effective"]
+                if isinstance(domain, str) and domain in groups_schema.DOMAINS})]
     coverage = {
         "adapters": tools.dispositions or {},
         # #1578 (SEC-G2B), widened by #1740: the name-based drops, per

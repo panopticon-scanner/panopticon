@@ -307,6 +307,34 @@
               "type": "object",
               "description": "5.0 (matrix Sec5.1) certifiable-coverage audit of the FLOOR cells: `{\"missing_floor\": [[group, domain], ...]}`. A floor (group, domain) cell that produced no findings file is lost required coverage, and a non-empty list is what forces the gate to INCONCLUSIVE. Scout-WIDENED domains are never audited here -- the floor is the contract -- and a floor domain the group explicitly excluded is netted out first.",
               "properties": {
+                "reviewed": {
+                  "type": "array",
+                  "description": "Optional measured completed review cells as sorted [group, DOMAIN] pairs, preserving exact group/chunk identity. Derived from ingested agent findings paths after malformed cells are removed; empty means measured with none completed, omission means unknown. Tool findings never establish agent-cell review. Disclosure only; missing_floor remains the coverage gate.",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": [
+                      {"type": "string", "minLength": 1},
+                      {"enum": ["ACC", "AGT", "ARC", "COD", "DAT", "LNG", "OPS", "QAL", "SEC", "TST"]}
+                    ]
+                  }
+                },
+                "planned_pairs": {
+                  "type": "array",
+                  "description": "Optional measured planned review cells as sorted [group, DOMAIN] pairs from coverage records' effective domains, preserving exact group/chunk identity. Published with reviewed when ingested-path and plan measurement exist; omission means unknown. An empty panel cell has zero findings with complete review only when every nonempty planned domain for that group/panel is reviewed. Disclosure only; coverage gates are unchanged.",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": [
+                      {"type": "string", "minLength": 1},
+                      {"enum": ["ACC", "AGT", "ARC", "COD", "DAT", "LNG", "OPS", "QAL", "SEC", "TST"]}
+                    ]
+                  }
+                },
                 "missing_floor": {
                   "type": "array",
                   "items": {
