@@ -233,6 +233,39 @@ ARG RUSTUP_INIT_SHA256_ARM64=%s
 RUN curl -sfL "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${ru}/rustup-init"
 """ % ("a" * 64, "b" * 64)
 
+RUSTUP_ARTIFACTS = {
+    "AMD64": b"rustup-init x86_64 fixture bytes",
+    "ARM64": b"rustup-init aarch64 fixture bytes",
+}
+RUSTUP_SHAS = {arch: hashlib.sha256(body).hexdigest()
+               for arch, body in RUSTUP_ARTIFACTS.items()}
+
+
+def _rustup_responses(version, *, swapped=False, mismatched=False):
+    responses = {}
+    for arch, triple in bp.RUSTUP_TRIPLES.items():
+        url = bp.RUSTUP_ARCHIVE.format(v=version, triple=triple)
+        artifact_arch = {"AMD64": "ARM64", "ARM64": "AMD64"}[arch] if swapped else arch
+        responses[url] = RUSTUP_ARTIFACTS[artifact_arch]
+        responses[url + ".sha256"] = ("f" * 64 if mismatched and arch == "ARM64"
+                                       else RUSTUP_SHAS[arch]).encode()
+    return responses
+
+
+def _rustup_fetch(responses, requested):
+    def get(url):
+        requested.append(url)
+        if url not in responses:
+            raise AssertionError("unexpected rustup URL: " + url)
+        return responses[url]
+    return get
+
+
+def _rustup_urls(version):
+    return [url + suffix for triple in bp.RUSTUP_TRIPLES.values()
+            for url in [bp.RUSTUP_ARCHIVE.format(v=version, triple=triple)]
+            for suffix in (".sha256", "")]
+
 
 class TestParse(unittest.TestCase):
     def test_reads_the_current_pin(self):
@@ -340,34 +373,44 @@ class TestVerification(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "invalid rustup version"):
                     bp.rewrite_rustup_pin(DOCKERFILE, version, {})
 
-    def _fake_get(self, artifact, published):
-        def get(url):
-            return published.encode() if url.endswith(".sha256") else artifact
-        return get
-
     def test_sha_is_verified_against_the_artifact(self):
-        art = b"rustup-init bytes"
-        good = hashlib.sha256(art).hexdigest()
-        with mock.patch.object(bp, "_get", self._fake_get(art, good)):
+        requested = []
+        with mock.patch.object(bp, "_get", _rustup_fetch(
+                _rustup_responses("1.30.0"), requested)):
             shas = bp.verified_rustup_shas("1.30.0")
-        self.assertEqual(set(shas), {"AMD64", "ARM64"})
-        self.assertEqual(shas["AMD64"], good)
+        self.assertEqual(requested, _rustup_urls("1.30.0"))
+        self.assertEqual(shas, RUSTUP_SHAS)
+        self.assertNotEqual(shas["AMD64"], shas["ARM64"])
 
     def test_a_published_sha_that_does_not_match_is_refused(self):
         # Reading upstream's .sha256 alone only proves upstream is
         # self-consistent. If the served artifact disagrees with the served
         # digest, that is exactly when a pin must NOT be written.
-        art = b"rustup-init bytes"
-        with mock.patch.object(bp, "_get", self._fake_get(art, "f" * 64)):
+        requested = []
+        with mock.patch.object(bp, "_get", _rustup_fetch(
+                _rustup_responses("1.30.0", mismatched=True), requested)):
             with self.assertRaises(RuntimeError) as cm:
                 bp.verified_rustup_shas("1.30.0")
         self.assertIn("refusing to pin", str(cm.exception))
+        self.assertEqual(requested, _rustup_urls("1.30.0"))
+
+    def test_swapped_architecture_artifacts_are_refused(self):
+        requested = []
+        with mock.patch.object(bp, "_get", _rustup_fetch(
+                _rustup_responses("1.30.0", swapped=True), requested)):
+            with self.assertRaisesRegex(RuntimeError, "refusing to pin"):
+                bp.verified_rustup_shas("1.30.0")
+        self.assertEqual(requested, _rustup_urls("1.30.0")[:2])
 
     def test_a_non_sha_response_is_refused(self):
         # A 404 page or an HTML error body must not be pinned as a checksum.
-        with mock.patch.object(bp, "_get", self._fake_get(b"x", "<html>404</html>")):
+        requested = []
+        responses = _rustup_responses("1.30.0")
+        responses[_rustup_urls("1.30.0")[0]] = b"<html>404</html>"
+        with mock.patch.object(bp, "_get", _rustup_fetch(responses, requested)):
             with self.assertRaises(RuntimeError):
                 bp.verified_rustup_shas("1.30.0")
+        self.assertEqual(requested, _rustup_urls("1.30.0")[:1])
 
 
 class TestMain(unittest.TestCase):
@@ -377,41 +420,43 @@ class TestMain(unittest.TestCase):
         p = os.path.join(tmp, "Dockerfile")
         with open(p, "w", encoding="utf-8") as fh:
             fh.write(DOCKERFILE)
-        art = b"bytes"
-        sha = hashlib.sha256(art).hexdigest()
-        def get(url):
-            return sha.encode() if url.endswith(".sha256") else art
+        requested = []
+        get = _rustup_fetch(_rustup_responses(latest), requested)
         buf = io.StringIO()
         with mock.patch.object(bp, "latest_rustup_version", return_value=latest), \
              mock.patch.object(bp, "_get", get), \
              mock.patch("sys.stdout", buf):
             rc = bp.main(["rustup", "--dockerfile", p] + (["--write"] if write else []))
         with open(p, encoding="utf-8") as fh:
-            return rc, buf.getvalue(), fh.read()
+            return rc, buf.getvalue(), fh.read(), requested
 
     def test_up_to_date_is_a_no_op(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
-            rc, out, text = self._run(d, "1.29.1", write=True)
+            rc, out, text, requested = self._run(d, "1.29.1", write=True)
         self.assertEqual(rc, 0)
         self.assertIn("up to date", out)
         self.assertEqual(text, DOCKERFILE, "an up-to-date pin must not be rewritten")
+        self.assertEqual(requested, [])
 
     def test_report_only_by_default(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
-            rc, out, text = self._run(d, "1.30.0")
+            rc, out, text, requested = self._run(d, "1.30.0")
         self.assertEqual(rc, 0)
         self.assertIn("re-run with --write", out)
         self.assertEqual(text, DOCKERFILE, "no --write must mean no edit")
+        self.assertEqual(requested, _rustup_urls("1.30.0"))
 
     def test_write_applies_the_bump(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
-            rc, _out, text = self._run(d, "1.30.0", write=True)
+            rc, _out, text, requested = self._run(d, "1.30.0", write=True)
         self.assertEqual(rc, 0)
-        v, _ = bp.current_rustup_pin(text)
+        self.assertEqual(requested, _rustup_urls("1.30.0"))
+        v, shas = bp.current_rustup_pin(text)
         self.assertEqual(v, "1.30.0")
+        self.assertEqual(shas, RUSTUP_SHAS)
 
 
 # --- family: requirements (#1641) --------------------------------------------

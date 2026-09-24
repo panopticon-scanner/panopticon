@@ -445,17 +445,25 @@ class TestCreateEmptyStdout(unittest.TestCase):
             url = file_issues.create("t", "b", ["self-scan"], dry=False)
         self.assertIsNone(url)  # gave up after retries; run continues, no exception
 
-    def test_create_passes_timeout_to_gh(self):
-        # #1104: the network `gh issue create` call must be bounded.
-        captured = {}
+    def test_create_uses_exact_trusted_argv_env_and_timeout(self):
+        # #1104: the create call is bounded; bind all operands to the command.
+        captured = []
+        gh_env = {"GH_TOKEN": "fixture-token"}
         def _run(cmd, **kw):
-            captured.update(kw)
+            captured.append((cmd, kw))
             return _completed(0, "https://gh/issues/1")
         with mock.patch.object(file_issues.subprocess, "run", side_effect=_run), \
              mock.patch.object(file_issues.time, "sleep"):
-            url = file_issues.create("t", "b", ["self-scan"], dry=False)
+            url = file_issues.create("exact title", "exact body",
+                                     ["self-scan", "security"], dry=False,
+                                     env=gh_env)
         self.assertEqual(url, "https://gh/issues/1")
-        self.assertEqual(captured.get("timeout"), file_issues.GH_CREATE_TIMEOUT)
+        self.assertEqual(captured, [
+            ([os.path.join(triage.TRUSTED_PATH, "gh"), "issue", "create",
+              "--title", "exact title",
+              "--body", "exact body", "--label", "self-scan,security"],
+             {"env": gh_env, "timeout": file_issues.GH_CREATE_TIMEOUT,
+              "capture_output": True, "text": True})])
 
     def test_persistent_timeout_returns_none_without_hanging(self):
         # A hung gh is retried, then abandoned (un-ledgered, resumable) -- bounded,
