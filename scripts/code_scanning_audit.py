@@ -26,8 +26,11 @@ SECURITY_ANALYSIS_KEY = ".github/workflows/security.yml:scan"
 SECURITY_TOOLS = frozenset({"Bandit", "Gitleaks", "Semgrep OSS", "Trivy"})
 CODEQL_ANALYSIS_KEY = ".github/workflows/codeql.yml:analyze"
 CODEQL_CATEGORY = "/language:python"
-CODEQL_ATTEMPTS = 6
-CODEQL_DELAY_SECONDS = 10
+# One bound for both asynchronous-ingestion waits -- the Security upload and
+# its analyses, then CodeQL's: the same GitHub pipeline is what either check
+# is waiting on.
+POLL_ATTEMPTS = 6
+POLL_DELAY_SECONDS = 10
 PER_PAGE = 100
 MAX_ALERT_PAGES = 1000
 MAX_RESPONSE_CHARS = 5 * 1024 * 1024
@@ -144,16 +147,16 @@ class MainAudit:
     def __init__(self, target: Target, runner: Callable[..., object],
                  sleep: Callable[[float], None] = time.sleep,
                  output: Callable[[str], None] = print,
-                 codeql_attempts: int = CODEQL_ATTEMPTS,
-                 codeql_delay: float = CODEQL_DELAY_SECONDS):
-        if codeql_attempts < 1 or codeql_delay < 0:
-            raise ValueError("invalid CodeQL polling bound")
+                 poll_attempts: int = POLL_ATTEMPTS,
+                 poll_delay: float = POLL_DELAY_SECONDS):
+        if poll_attempts < 1 or poll_delay < 0:
+            raise ValueError("invalid polling bound")
         self.target = target
         self.api = GitHubReader(target, runner)
         self.sleep = sleep
         self.output = output
-        self.codeql_attempts = codeql_attempts
-        self.codeql_delay = codeql_delay
+        self.poll_attempts = poll_attempts
+        self.poll_delay = poll_delay
         self.base = "repos/%s" % target.repository
 
     def _head_sha(self, label: str) -> str:
@@ -226,18 +229,68 @@ class MainAudit:
             raise AuditError("%s analysis environment is wrong" % label)
         return row
 
+    @staticmethod
+    def _analyses_shortfall(rows: list[object]) -> str:
+        """Say what the analyses list held against the four tools expected.
+
+        Only names from SECURITY_TOOLS reach the message: an unrecognised row
+        raises the row count, never a response-controlled string.
+        """
+        present: set[str] = set()
+        for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("tool"), dict):
+                name = row["tool"].get("name")
+                if isinstance(name, str) and name in SECURITY_TOOLS:
+                    present.add(name)
+        missing = sorted(SECURITY_TOOLS - present)
+        detail = "present: %s" % (", ".join(sorted(present)) or "none")
+        if missing:  # a surplus has nothing missing; say only what is there
+            detail += "; missing: %s" % ", ".join(missing)
+        return ("Security upload must contain exactly %d analyses; saw %d (%s)"
+                % (len(SECURITY_TOOLS), len(rows), detail))
+
     def _security_analyses(self) -> None:
-        rows = self.api.get(
-            self.base + "/code-scanning/analyses",
-            "Security analyses",
-            (("sarif_id", self.target.security_sarif_id),
-             ("per_page", PER_PAGE)),
-        )
-        if not isinstance(rows, list):
-            raise AuditError("GitHub API returned malformed Security analyses")
-        if len(rows) != len(SECURITY_TOOLS):
-            raise AuditError(
-                "Security upload must contain exactly %d analyses" % len(SECURITY_TOOLS))
+        """Prove the Security upload processed and produced its four analyses.
+
+        GitHub ingests a SARIF upload asynchronously, so right after a push
+        the upload is routinely still `pending` and the analyses list still
+        short (#2022). Both are one stage of one pipeline, so both are waited
+        out in one loop, on the same bound and the same injected seams as the
+        CodeQL wait below, and only the final attempt fails.
+
+        Everything else is a verdict rather than a stage, and is final on the
+        spot: a `failed` or malformed upload status, an upload reporting
+        processing errors, a surplus row, a row whose identity is wrong. No
+        amount of waiting repairs any of them.
+        """
+        last_pending = "Security SARIF upload is pending"
+        for attempt in range(self.poll_attempts):
+            status = self._upload_status(self.target.security_sarif_id,
+                                         "Security", pending_ok=True)
+            if status != "complete":
+                last_pending = "Security SARIF upload is pending"
+            else:
+                rows = self.api.get(
+                    self.base + "/code-scanning/analyses",
+                    "Security analyses",
+                    (("sarif_id", self.target.security_sarif_id),
+                     ("per_page", PER_PAGE)),
+                )
+                if not isinstance(rows, list):
+                    raise AuditError("GitHub API returned malformed Security analyses")
+                if len(rows) > len(SECURITY_TOOLS):
+                    raise AuditError(self._analyses_shortfall(rows))
+                if len(rows) == len(SECURITY_TOOLS):
+                    self._validate_security_rows(rows)
+                    return
+                last_pending = self._analyses_shortfall(rows)
+            self._require_current_head("main ref during Security ingestion wait")
+            if attempt + 1 < self.poll_attempts:
+                self.sleep(self.poll_delay)
+        raise AuditError("%s after %d attempts" %
+                         (last_pending, self.poll_attempts))
+
+    def _validate_security_rows(self, rows: list[object]) -> None:
         seen: set[str] = set()
         for row in rows:
             if not isinstance(row, dict) or not isinstance(row.get("tool"), dict):
@@ -260,7 +313,7 @@ class MainAudit:
 
     def _codeql(self) -> None:
         last_pending = "CodeQL analysis is not available"
-        for attempt in range(self.codeql_attempts):
+        for attempt in range(self.poll_attempts):
             rows = self.api.get(
                 self.base + "/code-scanning/analyses",
                 "CodeQL analysis",
@@ -295,10 +348,10 @@ class MainAudit:
                         return
                     self._require_current_head("main ref during CodeQL wait")
                     last_pending = "CodeQL SARIF upload is pending"
-            if attempt + 1 < self.codeql_attempts:
-                self.sleep(self.codeql_delay)
+            if attempt + 1 < self.poll_attempts:
+                self.sleep(self.poll_delay)
         raise AuditError("%s after %d attempts" %
-                         (last_pending, self.codeql_attempts))
+                         (last_pending, self.poll_attempts))
 
     @staticmethod
     def _display(value: object, label: str, limit: int = 200) -> str:
@@ -366,7 +419,6 @@ class MainAudit:
 
     def run(self) -> dict[str, int]:
         self._require_current_head("initial main ref")
-        self._upload_status(self.target.security_sarif_id, "Security")
         self._security_analyses()
         self._codeql()
         alerts = self._alerts()

@@ -104,7 +104,7 @@ def run_with(responses, *, attempts=3):
     sleeps = []
     instance = audit.MainAudit(
         target(), runner, sleep=sleeps.append, output=output.append,
-        codeql_attempts=attempts, codeql_delay=0.25,
+        poll_attempts=attempts, poll_delay=0.25,
     )
     return instance, runner, output, sleeps
 
@@ -214,14 +214,53 @@ def test_failure_on_later_alert_page_cannot_become_a_short_clean_listing():
 
 @pytest.mark.parametrize("payload, message", [
     ({}, "malformed Security SARIF status"),
-    (status("pending"), "Security SARIF upload is pending"),
     (status("failed"), "Security SARIF upload is failed"),
     (status("complete", errors=["scanner secret"]), "processing errors"),
 ])
-def test_missing_pending_failed_or_errored_security_upload_fails(payload, message):
-    instance, _runner, output, _sleeps = run_with([head(), payload])
+def test_missing_failed_or_errored_security_upload_fails_immediately(payload, message):
+    # A *pending* upload is the ingestion race and is waited out instead; see
+    # test_a_pending_security_upload_is_waited_out_then_proven_complete. These
+    # three are verdicts, not a stage, so none of them costs a single sleep.
+    instance, _runner, output, sleeps = run_with([head(), payload])
     with pytest.raises(audit.AuditError, match=message):
         instance.run()
+    assert output == []
+    assert sleeps == []
+
+
+def test_a_pending_security_upload_is_waited_out_then_proven_complete():
+    # The upload status is the same asynchronous ingestion as the analyses
+    # rows, so it is re-read on every attempt of the one bounded wait, and
+    # a pending upload is not yet asked for its rows.
+    responses = [
+        head(),
+        status("pending"), head(),
+        status("pending"), head(),
+        status(), security_rows(),
+        [analysis_row("CodeQL")], status(), [], head(),
+    ]
+    instance, runner, output, sleeps = run_with(responses, attempts=3)
+
+    instance.run()
+
+    assert sleeps == [0.25, 0.25]
+    assert output[-1].endswith(": 0")
+    assert runner.responses == []
+    security_status = "repos/%s/code-scanning/sarifs/%s" % (REPOSITORY, SECURITY_ID)
+    assert endpoints(runner).count(security_status) == 3
+    assert endpoints(runner).count(
+        "repos/%s/code-scanning/analyses" % REPOSITORY) == 2
+
+
+def test_an_upload_that_stays_pending_fails_at_the_poll_bound():
+    responses = [head(), status("pending"), head(), status("pending"), head()]
+    instance, _runner, output, sleeps = run_with(responses, attempts=2)
+
+    with pytest.raises(audit.AuditError) as caught:
+        instance.run()
+
+    assert str(caught.value) == "Security SARIF upload is pending after 2 attempts"
+    assert sleeps == [0.25]
     assert output == []
 
 
@@ -313,11 +352,89 @@ def test_duplicate_or_missing_security_tool_fails():
     with pytest.raises(audit.AuditError, match="duplicate tool"):
         instance.run()
 
+    # A short set is the ingestion race, so it is polled before it fails;
+    # `attempts=1` makes this the bound's final read, so it fails closed at
+    # once (the polling itself is covered by the late-arrival and
+    # never-arrives cases below): waiting never invents the missing tool.
     missing = security_rows()[:-1]
-    instance, _runner, _output, _sleeps = run_with(
-        [head(), status(), missing])
+    instance, _runner, _output, sleeps = run_with(
+        [head(), status(), missing, head()], attempts=1)
     with pytest.raises(audit.AuditError, match="exactly 4"):
         instance.run()
+    assert sleeps == []
+
+
+def test_security_analyses_can_arrive_late_with_a_bounded_injected_clock():
+    # GitHub ingests one upload's four analyses asynchronously, so the first
+    # read of the list can see none of them and the next only some (#2022).
+    responses = [
+        head(),
+        status(), [], head(),
+        status(), security_rows()[:2], head(),
+        status(), security_rows(),
+        [analysis_row("CodeQL")], status(), [], head(),
+    ]
+    instance, runner, output, sleeps = run_with(responses, attempts=3)
+
+    instance.run()
+
+    assert sleeps == [0.25, 0.25]
+    assert output[-1].endswith(": 0")
+    assert runner.responses == []
+
+
+def test_analyses_that_never_complete_fail_saying_what_was_seen_and_expected():
+    # One expected tool plus a row this audit does not expect: the message
+    # names tools from SECURITY_TOOLS only, never a string from the response.
+    rogue = analysis_row("Bandit")
+    rogue["tool"]["name"] = "SECRET-SCANNER"
+    partial = [analysis_row("Bandit"), rogue]
+    instance, _runner, output, sleeps = run_with(
+        [head(), status(), partial, head(), status(), partial, head()],
+        attempts=2)
+
+    with pytest.raises(audit.AuditError) as caught:
+        instance.run()
+
+    message = str(caught.value)
+    assert "must contain exactly 4 analyses; saw 2" in message
+    assert "present: Bandit" in message
+    assert "missing: Gitleaks, Semgrep OSS, Trivy" in message
+    assert message.endswith("after 2 attempts")
+    assert "SECRET-SCANNER" not in message
+    assert sleeps == [0.25]
+    assert output == []
+
+
+def test_a_surplus_analysis_row_fails_closed_without_burning_the_poll():
+    # Waiting can only add rows, so a count above the expected four is final.
+    instance, _runner, output, sleeps = run_with(
+        [head(), status(), security_rows() + [analysis_row("Bandit")]])
+
+    with pytest.raises(audit.AuditError, match="exactly 4 analyses; saw 5"):
+        instance.run()
+
+    assert sleeps == []
+    assert output == []
+
+
+def test_main_moving_during_the_analyses_wait_stops_the_poll():
+    instance, _runner, output, sleeps = run_with(
+        [head(), status(), [], head(NEW_SHA)])
+    with pytest.raises(audit.AuditError, match="superseded"):
+        instance.run()
+    assert sleeps == []
+    assert output == []
+
+
+@pytest.mark.parametrize("overrides", [
+    {"poll_attempts": 0}, {"poll_attempts": -1}, {"poll_delay": -0.25},
+])
+def test_an_unusable_poll_bound_is_rejected_before_any_request(overrides):
+    runner = FakeRunner([])
+    with pytest.raises(ValueError, match="invalid polling bound"):
+        audit.MainAudit(target(), runner, **overrides)
+    assert runner.calls == []
 
 
 @pytest.mark.parametrize("field, value", [
@@ -458,3 +575,35 @@ def test_main_builds_only_the_hardened_default_runner(monkeypatch):
     ])
     assert rc == 0
     assert seen[0][1] is marker
+
+
+def test_the_polls_worst_case_sits_well_inside_the_audit_steps_ceiling():
+    """Review I1 on #2022: bind the poll arithmetic to the step's budget.
+
+    The audit step in `.github/workflows/security.yml` runs under
+    `timeout-minutes`; nothing else bounds this script. Two waits share
+    `POLL_ATTEMPTS` x `POLL_DELAY_SECONDS` (Security ingestion, then CodeQL),
+    so the pathological run sleeps `2 * (attempts - 1) * delay` before it
+    fails, plus one bounded `gh api` call per read. Inflating either constant
+    -- or sharing the bound with a third wait -- must fail HERE, not surface
+    as a killed step and a red required check. The bar is the same one
+    `tests/test_security_workflow.py` applies to the baseline fetch: "under
+    the ceiling" is not it, "nowhere near it" is (half the budget, so the
+    calls themselves have the other half).
+    """
+    import os
+    import yaml
+
+    workflow = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(audit.__file__))), ".github", "workflows", "security.yml")
+    with open(workflow, encoding="utf-8") as fh:
+        jobs = yaml.safe_load(fh)["jobs"]
+    steps = [step for job in jobs.values() for step in job.get("steps", [])
+             if "code_scanning_audit.py" in str(step.get("run", ""))]
+    assert len(steps) == 1, "exactly one step runs the audit: %r" % steps
+    ceiling = steps[0]["timeout-minutes"] * 60
+    waits = 2  # Security ingestion, then CodeQL -- both on the shared bound
+    worst_sleep = waits * (audit.POLL_ATTEMPTS - 1) * audit.POLL_DELAY_SECONDS
+    assert worst_sleep < ceiling // 2, (
+        "worst-case sleeping %ds vs audit step ceiling %ds (attempts=%d, delay=%ds)"
+        % (worst_sleep, ceiling, audit.POLL_ATTEMPTS, audit.POLL_DELAY_SECONDS))
