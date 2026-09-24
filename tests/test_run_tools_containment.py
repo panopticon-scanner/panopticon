@@ -32,7 +32,9 @@ class TestContainment(unittest.TestCase):
         return calls
 
     def test_every_dispatch_has_network_none(self):
-        for cmd in self._calls(["semgrep", "cargo-audit"]):
+        calls = self._calls(["semgrep", "cargo-audit"])
+        self.assertEqual(len(calls), 2, "both selected scanners must dispatch")
+        for cmd in calls:
             self.assertIn("--network", cmd)          # clear failure, not ValueError (#780)
             i = cmd.index("--network")
             self.assertLess(i + 1, len(cmd), "--network has no value argument")
@@ -44,7 +46,9 @@ class TestContainment(unittest.TestCase):
         # inside the reviewed repo and reads whatever cwd-relative config the
         # target planted. Same iteration and the same "clear failure, not
         # ValueError" care as the network pin above.
-        for cmd in self._calls(["semgrep", "cargo-audit"]):
+        calls = self._calls(["semgrep", "cargo-audit"])
+        self.assertEqual(len(calls), 2, "both selected scanners must dispatch")
+        for cmd in calls:
             self.assertIn("-w", cmd)                # clear failure, not ValueError
             i = cmd.index("-w")
             self.assertLess(i + 1, len(cmd), "-w has no value argument")
@@ -61,7 +65,9 @@ class TestContainment(unittest.TestCase):
         # Dockerfile line. Named literally, not read off the tuple, so this
         # cannot rubber-stamp a third entry.
         for tool in ("gosec", "eslint-security"):
-            for cmd in self._calls([tool]):
+            calls = self._calls([tool])
+            self.assertEqual(len(calls), 1, "%s must dispatch" % tool)
+            for cmd in calls:
                 self.assertIn("-w", cmd)            # clear failure, not ValueError
                 i = cmd.index("-w")
                 self.assertLess(i + 1, len(cmd), "-w has no value argument")
@@ -80,10 +86,21 @@ class TestContainment(unittest.TestCase):
                          ("gosec", "eslint-security"))
 
     def test_nvd_api_key_never_forwarded(self):
-        for cmd in self._calls(["dependency-check"],
-                               env={"NVD_API_KEY": "dummy"}):
+        calls = self._calls(["dependency-check"],
+                            env={"NVD_API_KEY": "dummy"})
+        self.assertEqual(len(calls), 1, "dependency-check must dispatch")
+        for cmd in calls:
             self.assertNotIn("-e", cmd)
             self.assertNotIn("NVD_API_KEY", cmd)
+
+    def test_empty_dispatch_cannot_pass_containment_checks(self):
+        with mock.patch.object(rt, "run_tools", return_value=[]):
+            for check in (self.test_every_dispatch_has_network_none,
+                          self.test_every_dispatch_has_an_empty_working_directory,
+                          self.test_the_two_mount_cwd_dispatches_say_so_explicitly,
+                          self.test_nvd_api_key_never_forwarded):
+                with self.subTest(check=check.__name__), self.assertRaises(AssertionError):
+                    check()
 
     def test_online_only_adapters_skipped_offline(self):
         calls = self._calls(["pip-audit", "npm-audit", "cargo-audit"])

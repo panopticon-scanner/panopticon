@@ -18,10 +18,13 @@ and the non-survivor's id simply disappears, so the verdict that echoed it has
 nothing left to bind to.
 """
 import unittest
+from pathlib import Path
 
 import scripts.evidence as evidence_mod
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
+
+SCHEMA_PATH = Path(__file__).resolve().parents[1] / "skill" / "reference" / "report-schema.json"
 
 
 def _finding(**kw):
@@ -129,7 +132,7 @@ class LocationContractTest(unittest.TestCase):
     def _validate(self, finding):
         import json
         import jsonschema
-        with open("skill/reference/report-schema.json", encoding="utf-8") as fh:
+        with SCHEMA_PATH.open(encoding="utf-8") as fh:
             schema = json.load(fh)
         loc_schema = schema["properties"]["findings"]["items"]["properties"]["location"]
         jsonschema.validate(finding["location"], loc_schema)
@@ -175,7 +178,7 @@ class LocationContractTest(unittest.TestCase):
                      "code": "COD-A1A", "category": "coverage"}))]),
             plan=plan_mod.PlanInputs(groups_meta=[{"name": "g", "files": []}]),
         ))
-        with open("skill/reference/report-schema.json", encoding="utf-8") as fh:
+        with SCHEMA_PATH.open(encoding="utf-8") as fh:
             jsonschema.validate(r, json.load(fh))
 
 

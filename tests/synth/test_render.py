@@ -392,11 +392,13 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
             disc = os.path.join(d, "report-discarded.json")
             self.assertIn(disc, written)
             self.assertTrue(os.path.isfile(disc))
-            main = json.load(open(out))
+            with open(out, encoding="utf-8") as fh:
+                main = json.load(fh)
             self.assertEqual(main.get("discarded_claims"), [])
             self.assertEqual(main["meta"]["discarded_claims_count"], 200)
             self.assertEqual(main["meta"]["discarded_claims_file"], "report-discarded.json")
-            self.assertEqual(len(json.load(open(disc))["discarded_claims"]), 200)
+            with open(disc, encoding="utf-8") as fh:
+                self.assertEqual(len(json.load(fh)["discarded_claims"]), 200)
             parts = [p for p in written if "_part" in p]
             self.assertGreater(len(parts), 0)     # findings still needed splitting
             self.assertLess(len(parts), 30)       # bounded — old bug: ~60 parts

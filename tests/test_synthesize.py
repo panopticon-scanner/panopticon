@@ -2,6 +2,7 @@
 tests/synth/test_<module>.py (WS-0 S4).
 """
 import contextlib
+import html
 import inspect
 import io
 import os
@@ -153,6 +154,11 @@ class TestToolsDirIntegration(unittest.TestCase):
             self.assertIn("cwe", secs[0].get("citations", {}))  # tool CWE-89 carried onto survivor
 
 class TestHtmlOut(unittest.TestCase):
+    def _assert_escaped_fields(self, content, fields):
+        for raw in fields:
+            self.assertIn(html.escape(raw), content)
+            self.assertNotIn(raw, content)
+
     def test_html_out_writes_file(self):
         with tempfile.TemporaryDirectory() as d:
             out_json = os.path.join(d, "report.json")
@@ -185,18 +191,21 @@ class TestHtmlOut(unittest.TestCase):
             out_json = os.path.join(d, "report.json")
             out_html = os.path.join(d, "report.html")
             finding = os.path.join(d, "findings-x-code.json")
+            title = "<script>alert('title')</script>"
+            description = "<b>Description with <img src=x onerror=alert(1)></b>"
+            location_file = "<script>a.py</script>"
             with open(finding, "w", encoding="utf-8") as fh:
                 json.dump(
                     {
                         "findings": [
                             {
                                 "id": "CODE-001",
-                                "title": "<script>alert('title')</script>",
-                                "description": "<b>Description with <img src=x onerror=alert(1)></b>",
+                                "title": title,
+                                "description": description,
                                 "severity": "LOW",
                                 "panel": "code",
                                 "category": "style",
-                                "location": {"file": "<script>a.py</script>", "line_start": 1},
+                                "location": {"file": location_file, "line_start": 1},
                             }
                         ]
                     },
@@ -206,8 +215,11 @@ class TestHtmlOut(unittest.TestCase):
             self.assertEqual(rc, 0)
             with open(out_html, encoding="utf-8") as fh:
                 content = fh.read()
-            self.assertNotIn("<script>alert('title')</script>", content)
-            self.assertNotIn("<img src=x onerror=alert(1)>", content)
+            fields = (title, description, location_file)
+            self._assert_escaped_fields(content, fields)
+            # An empty renderer used to pass the old absence-only assertions.
+            with self.assertRaises(AssertionError):
+                self._assert_escaped_fields("", fields)
 
     def test_compare_mode_writes_html(self):
         with tempfile.TemporaryDirectory() as d:
