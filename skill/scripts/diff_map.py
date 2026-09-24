@@ -595,6 +595,11 @@ def _worktree_dir(repo, pr_number):
     return os.path.join(root, "panopticon-pr-%d-%s" % (pr_number, key))
 
 
+# The ONE remote acquisition fetches from. Named here rather than twice, because
+# the refusal below has to ask about exactly the remote the fetch names (#2041
+# M3): a `remote.<other>.uploadpack` is a key this fetch never reads.
+_PR_REMOTE = "origin"
+
 # Hard bound on the --pr worktree git/gh calls so a hung fetch/API/teardown
 # (network partition, stalled TLS, a held git lock) cannot block the run
 # indefinitely (#1081, #1082). Generous -- a shallow PR fetch is the slowest.
@@ -890,8 +895,10 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # reaches the filter -- moving the setting there is the remedy this refusal
     # names, so refusing on it would refuse the fix. The reuse path above
     # performs no fetch and therefore has nothing to refuse.
-    transport = safe_git.transport_command_keys(safe_git.repository_settings(
-        _safe(repo, ["config", "--null", "--list", "--show-scope", "--includes"])))
+    transport = safe_git.transport_command_keys(
+        safe_git.repository_settings(
+            _safe(repo, ["config", "--null", "--list", "--show-scope", "--includes"])),
+        _PR_REMOTE)
     if transport:
         _disclose()      # already disclosed by _safe; kept so a reordering cannot
                          # drop the disclosure
@@ -934,7 +941,7 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     _run(["git", "-C", repo,
           "-c", "core.fsmonitor=false",
           "-c", "core.hooksPath=" + safe_git.no_hooks_path(),
-          "fetch", "--no-recurse-submodules", "--no-write-fetch-head", "origin",
+          "fetch", "--no-recurse-submodules", "--no-write-fetch-head", _PR_REMOTE,
           "refs/pull/%d/head:%s" % (pr_number, fetch_ref)])
     head_sha = _safe(repo, ["rev-parse", fetch_ref]).strip()
     try:

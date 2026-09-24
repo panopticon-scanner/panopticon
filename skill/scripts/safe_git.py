@@ -328,8 +328,9 @@ def _is_command_setting(key):
         key.startswith("diff.") and key.endswith((".command", ".textconv")))
 
 
-def _is_transport_command_setting(key):
-    """Whether `key` makes a FETCH run a command the CHECKOUT's config named.
+def _is_transport_command_setting(key, remote):
+    """Whether `key` makes a FETCH of `remote` run a command the CHECKOUT's
+    config named.
 
     `diff_map.acquire_pr`'s fetch is the one git call that keeps the operator's
     environment (a private repository's PR head is only fetchable through their
@@ -361,6 +362,11 @@ def _is_transport_command_setting(key):
     local-path submodules working since git 2.38.1, and no other scheme hands
     a command line to git.
 
+    `remote` is the ONE remote name the caller's fetch names (#2041 M3), so a
+    `remote.<other>.*` key is not a key THIS fetch would execute and the
+    operator keeps it. Required rather than defaulted: a call site that does not
+    know which remote it fetches cannot answer this question.
+
     Normalizes first, so a hand-written key answers the way git would compare
     it (`_canonical_key`: section and variable lowered, subsection kept). The
     keys the caller reads out of `config --list` are canonical already.
@@ -372,9 +378,12 @@ def _is_transport_command_setting(key):
     if section == "core":
         return len(parts) == 2 and variable in ("sshcommand", "gitproxy", "askpass")
     if section == "remote":
-        # A subsection is mandatory: `remote.uploadpack` names no remote and
-        # git runs nothing for it.
-        return len(parts) > 2 and variable in ("uploadpack", "vcs")
+        # A subsection is mandatory (`remote.uploadpack` names no remote and git
+        # runs nothing for it) and it must be the remote the fetch NAMES, which
+        # git compares case-sensitively -- `[remote "Origin"]` is a different
+        # remote, and `_canonical_key` keeps that half's case for exactly this.
+        return (len(parts) > 2 and variable in ("uploadpack", "vcs")
+                and ".".join(parts[1:-1]) == remote)
     if section == "credential":
         return variable == "helper"        # bare, or per-URL (dots and all)
     if section == "protocol":
@@ -383,20 +392,40 @@ def _is_transport_command_setting(key):
     return False
 
 
-def transport_command_keys(settings):
-    """The keys in `settings` a fetch would execute, sorted; empty ones ignored.
+def _transport_value_arms_the_key(key, value):
+    """Whether `value` actually arms transport `key` (#2041 M3).
+
+    Empty never arms: a key set and then emptied (`git config core.sshCommand
+    ""`) runs nothing. `protocol.*` is a PERMISSION rather than a command line
+    and `never` is its HARDENING value, so refusing on it would refuse the
+    operator who closed the hole. Everything else arms it, including a value git
+    will die on: git parses these case-sensitively (`always`/`never`/`user`), so
+    `Never` is a configuration error rather than a lock.
+    """
+    if not value:
+        return False
+    if _canonical_key(key).split(".", 1)[0] == "protocol":
+        return value != "never"
+    return True
+
+
+def transport_command_keys(settings, remote):
+    """The keys in `settings` a fetch of `remote` would execute, sorted.
 
     The public face of `_is_transport_command_setting`, for
-    `diff_map.acquire_pr`: it reads the checkout's LOCAL config immediately
-    before the one unconfined call and refuses when this is not empty (#2041).
+    `diff_map.acquire_pr`: it reads the checkout's own config (every scope the
+    fetch reads -- see `repository_settings`) immediately before the one
+    unconfined call and refuses when this is not empty (#2041).
 
-    A key set and then emptied (`git config core.sshCommand ""`) runs nothing,
-    so it does not refuse. A GLOBAL or system value never appears here at all,
-    because the caller's read is `--local`-scoped -- moving the setting there is
-    the remedy the refusal names, so refusing on it would refuse the fix.
+    An emptied value, and a `protocol.*` value of `never`, arm nothing and do
+    not refuse (`_transport_value_arms_the_key`). A GLOBAL or system value never
+    appears here at all, because the caller's read keeps only the repository's
+    own scopes -- moving the setting there is the remedy the refusal names, so
+    refusing on it would refuse the fix.
     """
     return sorted(key for key, value in settings.items()
-                  if value and _is_transport_command_setting(key))
+                  if _transport_value_arms_the_key(key, value)
+                  and _is_transport_command_setting(key, remote))
 
 
 def _filter_driver(key):

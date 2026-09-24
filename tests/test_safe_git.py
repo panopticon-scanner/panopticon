@@ -682,19 +682,23 @@ TRANSPORT_KEYS = ("core.sshcommand", "core.gitproxy", "core.askpass",
 # pins: the script ran).
 #
 # Neighbours in the same sections that run nothing: a URL, a refspec, a key
-# whose variable merely starts the same way, a username, a number.
+# whose variable merely starts the same way, a username, a number -- and a key
+# for a remote THIS fetch never names (#2041 M3: the fetch argv names `origin`
+# and nothing else, so `remote.upstream.*` is the operator's business).
 NOT_TRANSPORT_KEYS = ("remote.origin.url", "remote.origin.fetch", "core.sshcommandx",
                       "credential.username", "protocol.version",
-                      "protocol.file.allow", "protocol.https.allow")
+                      "protocol.file.allow", "protocol.https.allow",
+                      "remote.upstream.uploadpack", "remote.upstream.vcs")
+REMOTE = "origin"                      # the remote `diff_map`'s fetch names
 
 
 def test_every_transport_command_key_is_refused_and_its_neighbours_are_not():
     for key in TRANSPORT_KEYS:
-        assert safe_git._is_transport_command_setting(key), key
-        assert safe_git.transport_command_keys({key: "cmd"}) == [key], key
+        assert safe_git._is_transport_command_setting(key, REMOTE), key
+        assert safe_git.transport_command_keys({key: "cmd"}, REMOTE) == [key], key
     for key in NOT_TRANSPORT_KEYS:
-        assert not safe_git._is_transport_command_setting(key), key
-        assert safe_git.transport_command_keys({key: "value"}) == [], key
+        assert not safe_git._is_transport_command_setting(key, REMOTE), key
+        assert safe_git.transport_command_keys({key: "value"}, REMOTE) == [], key
 
 
 def test_transport_command_keys_are_sorted_and_only_the_set_values_count():
@@ -703,19 +707,39 @@ def test_transport_command_keys_are_sorted_and_only_the_set_values_count():
     ""`) executes nothing and is not refused (#2041)."""
     settings = {"remote.origin.uploadpack": "up.sh", "core.sshcommand": "ssh.sh",
                 "core.gitproxy": "", "remote.origin.url": "git@example.invalid:x"}
-    assert safe_git.transport_command_keys(settings) == ["core.sshcommand",
-                                                        "remote.origin.uploadpack"]
-    assert safe_git.transport_command_keys({"core.sshcommand": ""}) == []
+    assert safe_git.transport_command_keys(settings, REMOTE) == [
+        "core.sshcommand", "remote.origin.uploadpack"]
+    assert safe_git.transport_command_keys({"core.sshcommand": ""}, REMOTE) == []
+
+
+def test_a_protocol_allow_of_never_is_hardening_and_does_not_refuse():
+    """#2041 M3: `protocol.*` is a PERMISSION, not a command line, and `never`
+    is the value that LOCKS `ext::` down -- refusing on it would refuse the
+    operator who closed the hole. `always` and `user` both let git proceed, and
+    a value git will die on (its parse is case-sensitive) is a configuration
+    error rather than a lock, so it stays refused."""
+    for key in ("protocol.allow", "protocol.ext.allow"):
+        assert safe_git.transport_command_keys({key: "never"}, REMOTE) == [], key
+        for value in ("always", "user", "Never"):
+            assert safe_git.transport_command_keys({key: value}, REMOTE) == [key], (
+                key, value)
+    # Not a protocol key: `never` is just a command line git would run.
+    assert safe_git.transport_command_keys({"core.sshcommand": "never"}, REMOTE) == [
+        "core.sshcommand"]
 
 
 def test_a_transport_key_normalizes_the_way_git_compares_it():
     """Section and variable case-insensitively, the SUBSECTION case-sensitively
     -- `_canonical_key`'s semantics, because that is what git does. The key is
     reported exactly as the config read printed it."""
-    assert safe_git._is_transport_command_setting("Core.sshCommand")
-    assert safe_git._is_transport_command_setting("REMOTE.Origin.UPLOADPACK")
-    assert safe_git.transport_command_keys({"remote.Origin.uploadpack": "up.sh"}) == [
-        "remote.Origin.uploadpack"]
+    assert safe_git._is_transport_command_setting("Core.sshCommand", REMOTE)
+    assert safe_git._is_transport_command_setting("REMOTE.origin.UPLOADPACK", REMOTE)
+    # `[remote "Origin"]` is a DIFFERENT remote to git, and the fetch names
+    # `origin`, so it is not a key this fetch would execute.
+    assert not safe_git._is_transport_command_setting("remote.Origin.uploadpack", REMOTE)
+    assert safe_git._is_transport_command_setting("remote.Origin.uploadpack", "Origin")
+    assert safe_git.transport_command_keys({"remote.origin.uploadpack": "up.sh"},
+                                          REMOTE) == ["remote.origin.uploadpack"]
 
 
 def test_a_transport_key_is_refused_never_emptied():
