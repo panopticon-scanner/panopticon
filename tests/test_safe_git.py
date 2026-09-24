@@ -726,3 +726,46 @@ def test_a_transport_key_is_refused_never_emptied():
         assert not safe_git._is_command_setting(key), key
         assert not safe_git._is_suppressible(key), key
     assert safe_git._driver_keys({key: "cmd" for key in TRANSPORT_KEYS}) == []
+
+
+def _scoped(*records):
+    """`config --null --list --show-scope` output: (scope, key, value) triples."""
+    return "".join("%s\0%s\n%s\0" % triple for triple in records)
+
+
+def test_repository_settings_keeps_only_the_repositorys_own_scopes():
+    """#2041 C1: `local` (its `.git/config` and every file that includes into
+    it) and `worktree` (`$GIT_DIR/config.worktree`) are the repository's; the
+    operator's `global`/`system` -- the remedy the refusal points at -- and this
+    probe's own `command` pins are not."""
+    stdout = _scoped(
+        ("local", "core.sshcommand", "/repo/ssh.sh"),
+        ("worktree", "remote.origin.uploadpack", "/repo/up.sh"),
+        ("global", "core.sshcommand", "/home/me/ssh.sh"),
+        ("system", "credential.helper", "osxkeychain"),
+        ("command", "core.hookspath", "/tmp/none"),
+        ("unknown", "credential.helper", "osxkeychain"))
+    assert safe_git.repository_settings(stdout) == {
+        "core.sshcommand": "/repo/ssh.sh",
+        "remote.origin.uploadpack": "/repo/up.sh"}
+
+
+def test_repository_settings_survives_newline_values_and_a_ragged_tail():
+    """The pairing is positional over NUL-terminated records, so a value
+    containing a NEWLINE cannot shift it (that is why `--null` is passed), and
+    a later scope wins for the same key, as git's own precedence does."""
+    stdout = _scoped(("local", "core.sshcommand", "ssh\nsecond line"),
+                     ("worktree", "core.sshcommand", "wins"))
+    assert safe_git.repository_settings(stdout) == {"core.sshcommand": "wins"}
+    assert safe_git.repository_settings("") == {}
+    # A valueless key (`[extensions]\n\tworktreeConfig`) prints with no value and
+    # reads as empty, which `transport_command_keys` treats as "runs nothing".
+    assert safe_git.repository_settings("local\0core.sshcommand\0") == {
+        "core.sshcommand": ""}
+    # A record with no partner is dropped rather than guessed at. A scope whose
+    # key arrived but whose trailing NUL did not is indistinguishable from a
+    # valueless key, and reads as one -- empty, so it refuses nothing, and a
+    # read truncated that way failed its rc in `_safe` first.
+    assert safe_git.repository_settings(
+        _scoped(("local", "core.gitproxy", "proxy.sh")) + "local") == {
+            "core.gitproxy": "proxy.sh"}

@@ -874,13 +874,20 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # exists for, and the operator's GLOBAL config -- which the fetch still
     # honours -- is somewhere to put it that the target cannot write.
     #
-    # Scope is LOCAL only, for the same reason. `--local` in a linked worktree
-    # reads the common `.git/config`, which is the file the fetch reads, and
-    # `--includes` follows this file's own `include.path`/`includeIf`, which is
-    # as repository-authored as the file itself. The reuse path above performs
-    # no fetch and therefore has nothing to refuse.
-    transport = safe_git.transport_command_keys(safe_git.settings(
-        _safe(repo, ["config", "--null", "--list", "--local", "--includes"])))
+    # Scope is the REPOSITORY's own config and nothing else: `.git/config`, the
+    # files it includes (`--includes`; as repository-authored as the file
+    # itself), and `$GIT_DIR/config.worktree` -- which the fetch reads too once
+    # `extensions.worktreeConfig` is set, and which a `--local` read cannot see
+    # at all (#2041 fix round 1, C1: measured, the command ran). The read is
+    # `--show-scope` + a filter rather than a scope flag because `--worktree`
+    # both HIDES `.git/config` when the extension is on and DIES in a checkout
+    # that has a second worktree; `safe_git.repository_settings` carries both
+    # measurements. A GLOBAL or system value is the operator's own and never
+    # reaches the filter -- moving the setting there is the remedy this refusal
+    # names, so refusing on it would refuse the fix. The reuse path above
+    # performs no fetch and therefore has nothing to refuse.
+    transport = safe_git.transport_command_keys(safe_git.repository_settings(
+        _safe(repo, ["config", "--null", "--list", "--show-scope", "--includes"])))
     if transport:
         _disclose()
         # The KEYS only: the values are command lines (#2013).

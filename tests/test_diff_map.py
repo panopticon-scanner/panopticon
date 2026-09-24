@@ -1373,6 +1373,76 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
             self.assertFalse(os.path.exists(self._marker(base, name)),
                              "%s: the target ran code during acquisition" % name)
 
+    def _write_worktree_config(self, clone, text):
+        """`$GIT_DIR/config.worktree` for the main worktree of `clone`."""
+        with open(os.path.join(clone, ".git", "config.worktree"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_a_worktree_scoped_transport_setting_refuses_the_fetch(self):
+        """C1: the same key, moved into `$GIT_DIR/config.worktree`.
+
+        `extensions.worktreeConfig = true` in `.git/config` makes git read that
+        second file, and the fetch obeys it -- both files are written with the
+        one capability the threat model already grants (a `.git/config` written
+        by something hostile), so a read that cannot see it is bypassable by the
+        attacker it exists for.
+        """
+        base, clone, _pr_sha = self._fixture()
+        _git(clone, "config", "extensions.worktreeConfig", "true")
+        self._write_worktree_config(
+            clone, '[remote "origin"]\n\tuploadpack = "%s"\n'
+            % self._refusing_command(base))
+        self._prove_the_transport_command_runs(base, clone)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        self._assert_refused_naming("remote.origin.uploadpack", base, clone, wt)
+
+    def test_a_local_transport_setting_still_refuses_with_worktree_config_on(self):
+        """The mirror of C1, and why the read is scope-FILTERED, not `--worktree`.
+
+        Measured on git 2.50.1: with `extensions.worktreeConfig` ON,
+        `git config --list --worktree --includes` lists the worktree file ALONE
+        -- the `.git/config` keys are not in it. A read scoped that way would
+        stop seeing the ordinary repo-local key, so the attacker would only have
+        to enable the extension, leave `config.worktree` empty, and keep the
+        payload exactly where it already was.
+        """
+        base, clone, _pr_sha = self._fixture()
+        _git(clone, "config", "extensions.worktreeConfig", "true")
+        self._write_worktree_config(clone, "")
+        _git(clone, "config", "remote.origin.uploadpack", self._refusing_command(base))
+        self._prove_the_transport_command_runs(base, clone)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        self._assert_refused_naming("remote.origin.uploadpack", base, clone, wt)
+
+    def test_acquisition_still_works_in_a_checkout_that_has_another_worktree(self):
+        """No transport key, a second worktree, no `worktreeConfig`: acquire.
+
+        Measured on git 2.50.1: `git config --list --worktree --includes` DIES
+        there (`rc=128`, "cannot be used with multiple working trees unless the
+        config extension worktreeConfig is enabled"). That is an ordinary
+        operator setup -- this project's own -- so a read spelled with that flag
+        would turn every `--pr` run in such a checkout into a refusal to
+        resolve the review root.
+        """
+        base, clone, pr_sha = self._fixture()
+        _git(clone, "worktree", "add", "-q", "--detach",
+             os.path.join(base, "operator-wt"), "HEAD")
+        for name in self.MARKERS:      # the operator's own add fires their hook
+            if os.path.exists(self._marker(base, name)):
+                os.remove(self._marker(base, name))
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            info = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        self.assertEqual(info["head_sha"], pr_sha)
+        self.assertTrue(os.path.isdir(wt))
+        for name in (*self.MARKERS, self.TRANSPORT_MARKER):
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code during acquisition" % name)
+
     def test_a_transport_setting_that_was_emptied_is_not_refused(self):
         """(d) The classifier tests VALUES: an emptied key executes nothing.
 

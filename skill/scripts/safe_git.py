@@ -473,16 +473,53 @@ def _settings(stdout):
     return settings
 
 
-def settings(stdout):
-    """`_settings` for the ONE caller that reads a config for itself.
+# The `--show-scope` labels for config the REPOSITORY carries: `.git/config`
+# and every file it includes (`local`, measured -- an `include.path` key is
+# labelled with the including file's scope), plus `$GIT_DIR/config.worktree`
+# (`worktree`). `global`/`system` are the OPERATOR's, which is the remedy the
+# `--pr` refusal points at, and `command` is the probe's own `-c` pins.
+_REPOSITORY_SCOPES = ("local", "worktree")
 
-    `diff_map.acquire_pr` reads the checkout's local config through `probe` and
-    asks `transport_command_keys` about it (#2041), so it needs the same
-    last-value-wins parse every preflight in here uses rather than a second,
-    subtly different one on the far side of a module boundary. The public face
-    of `_settings`, exactly as `no_hooks_path` is of `_no_hooks_path`.
+
+def repository_settings(stdout):
+    """`config --null --list --show-scope --includes` as {key: value}, for the
+    settings the REPOSITORY itself carries. Last value wins, like `_settings`.
+
+    For `diff_map.acquire_pr`, which must see every transport command setting
+    its fetch would obey from this checkout -- and only those (#2041). Why
+    `--show-scope` and a filter rather than a scope FLAG, all measured on git
+    2.50.1:
+
+    - `--local` is `.git/config` plus its includes, but NOT
+      `$GIT_DIR/config.worktree`, which the fetch DOES read once
+      `extensions.worktreeConfig` is set. Two more lines in the same hostile
+      `.git/config` and a `--local` read sees nothing (C1: measured through
+      `acquire_pr`, the command ran).
+    - `--worktree` is not the fix. With the extension ON it lists the worktree
+      file ALONE -- the `.git/config` keys drop out of the read, so the payload
+      simply stays where it was. With the extension OFF it DIES (`rc=128`,
+      "--worktree cannot be used with multiple working trees unless the config
+      extension worktreeConfig is enabled") in any checkout that has a second
+      worktree, which is an ordinary operator setup. Both measured through
+      `acquire_pr`: the first as the command running, the second as a refusal
+      to resolve the review root.
+    - `--show-scope` takes no scope flag, so it reads exactly what the fetch
+      reads and labels each entry's file class. Keeping `local` and `worktree`
+      is the repository's own config, whichever of its files carries the key.
+
+    Records alternate `scope` and `key\nvalue`, each NUL-terminated (measured),
+    so a value containing a newline cannot shift the pairing; an unpaired
+    trailing record -- git's output ends with a NUL, and a truncated read could
+    leave one -- is ignored rather than guessed at.
     """
-    return _settings(stdout)
+    settings = {}
+    records = stdout.split("\0")
+    for index in range(0, len(records) - 1, 2):
+        if records[index] not in _REPOSITORY_SCOPES:
+            continue
+        key, _, value = records[index + 1].partition("\n")
+        settings[key] = value
+    return settings
 
 
 def _with_options(args, options):
