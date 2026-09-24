@@ -755,3 +755,34 @@ def test_both_scope_flags_route_through_one_confinement_helper(tmp_path):
                            return_value=None):
         assert orchestrator.main(singular) == 2
         assert orchestrator.main(plural) == 2
+
+
+def test_scope_file_refuses_an_empty_entry_instead_of_reviewing_everything(tmp_path):
+    # Review M6 on #2023: `-f "$FILE"` with FILE unset used to be falsy, skip
+    # the scope branch entirely, and review the WHOLE repository at rc 0 --
+    # the same #1643 failure in the other direction. The plural refused an
+    # empty entry; now the singular does too, through the same helper.
+    repo = repo_with_matrix(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan",
+                            "--scope-file", "", "--out", str(out)])
+    assert rc == 2
+    assert not out.exists()
+
+
+def test_scope_files_refusal_echoes_a_bounded_repr_of_the_entry(tmp_path, capsys):
+    # Review M1 on #2023: the refused entry is echoed as repr() of a bounded
+    # string, so a control character cannot break the stderr line and an
+    # absurd argv cannot make it unreadable. Both pinned here.
+    repo = repo_with_matrix(tmp_path)
+    long_entry = "x" * (orchestrator._SCOPE_ECHO_LIMIT + 50) + ".py"
+    rc, _out = _scope_files_run(repo, long_entry)
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "x" * orchestrator._SCOPE_ECHO_LIMIT + "…" in err
+    assert long_entry not in err
+    rc, _out = _scope_files_run(repo, "src/\nnot-a-line.py")
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "\\n" in err and "not-a-line" in err
+    assert err.count("\n") == 1                  # one line, the refusal

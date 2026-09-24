@@ -1775,7 +1775,10 @@ def _repo_scan(argv=None):
             print("--scope-dir %r matched no tracked files"
                   % args.scope_dir, file=sys.stderr)
             return 2
-    elif args.scope_file:
+    elif args.scope_file is not None:
+        # `is not None`, not truthiness: `-f ""` (an unset shell variable) used
+        # to skip this branch and review the WHOLE repository at rc 0; the
+        # helper refuses an empty entry, as it does for the plural (#2023).
         # #5.0-17 normalization + the repo clamp, via the helper the plural
         # shares (#2023). `allf` is this branch's whole universe: nothing prunes
         # after it, so a path the committed `exclude_paths:` already dropped has
