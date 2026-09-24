@@ -82,3 +82,47 @@ def test_below_primary_floor_does_not_engage():
     f = _f("MEDIUM", conf="POSSIBLE", status="needs_more_info")
     if not (sg.finding_score(f) == 0.8): raise AssertionError()
     if sg.should_engage_primary([f]) is not False: raise AssertionError()
+
+
+def test_every_evidence_status_has_its_expected_numeric_weight():
+    # HIGH/CERTAIN has weight 5. These are contract values, independent of
+    # EVIDENCE_FACTOR, so a changed status cannot rewrite the oracle.
+    expected = (
+        ("rejected", 0.0),
+        ("needs_more_info", 2.5),
+        ("unverified", 5.0),
+        ("tool_reported", 5.0),
+        ("corroborated", 7.5),
+        ("advisor_confirmed", 7.5),
+        ("tool_confirmed", 7.5),
+        ("backup_scope_limited", 7.5),
+    )
+    for status, value in expected:
+        assert sg.finding_score(_f("HIGH", "CERTAIN", status)) == value, status
+
+
+def test_every_confidence_multiplier_and_material_severity_weight():
+    for confidence, expected in (("CERTAIN", 5.0), ("LIKELY", 4.5),
+                                 ("POSSIBLE", 4.0), ("NOTE", 2.0)):
+        assert sg.finding_score(_f("HIGH", confidence)) == expected, confidence
+    for severity, expected in (("CRITICAL", 20.0), ("HIGH", 5.0),
+                               ("MEDIUM", 2.0), ("LOW", 0.0), ("INFO", 0.0)):
+        assert sg.finding_score(_f(severity, "CERTAIN")) == expected, severity
+
+
+def test_primary_and_backup_boundaries_use_scores_even_for_confirmed_statuses():
+    # Confirmation is a score factor, not a bypass around either floor.
+    below_primary = _f("MEDIUM", "NOTE", "corroborated")  # 2 * .4 * 1.5
+    above_primary = _f("MEDIUM", "POSSIBLE", "tool_reported")
+    below_backup = _f("HIGH", "CERTAIN", "backup_scope_limited")
+    at_backup = [_f("MEDIUM", "CERTAIN", "unverified")] * 4
+    assert sg.finding_score(below_primary) == 1.2
+    assert sg.should_engage_primary([below_primary]) is False
+    assert sg.finding_score(above_primary) == 1.6
+    assert sg.should_engage_primary([above_primary]) is True
+    assert sg.finding_score(below_backup) == 7.5
+    assert sg.should_engage_primary([below_backup]) is True
+    assert sg.should_summon_backup([below_backup]) is False
+    assert sg.score(at_backup) == 8.0
+    assert sg.should_summon_backup(at_backup) is True
+    assert sg.should_summon_backup([_f("CRITICAL", "CERTAIN", "needs_more_info")]) is True

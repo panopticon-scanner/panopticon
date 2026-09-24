@@ -1024,6 +1024,35 @@ class TestVirtualenvExclusion(unittest.TestCase):
             # cache's only entry is the resolved root itself).
             self.assertEqual([k for k in cache if isinstance(k, str)], [])
 
+    def test_external_symlink_marker_cannot_prune_apparent_project_source(self):
+        # Both URIs look root-relative. Only the marker reached through the
+        # symlink resolves outside the scanned root; the real in-root marker
+        # must still prune its finding during the public ingest operation.
+        with tempfile.TemporaryDirectory() as root, \
+                tempfile.TemporaryDirectory() as outside:
+            os.makedirs(os.path.join(root, "app", "installed"))
+            self._venv(root, "app/installed")
+            self._venv(outside, ".")
+            os.symlink(outside, os.path.join(root, "app", "linked"))
+            tools_dir = os.path.join(root, ".panopticon", "runs", "t", "tools")
+            os.makedirs(tools_dir)
+            sarif = _sarif_fixture("app/linked/auth.py")
+            sarif["runs"][0]["results"].extend(
+                _sarif_fixture("app/installed/auth.py")["runs"][0]["results"])
+            with open(os.path.join(tools_dir, "semgrep.sarif"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(sarif, fh)
+            suppressed = []
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                findings, dispositions = it.ingest_dir_detailed(
+                    tools_dir, "g1", target_root=root, suppressed_out=suppressed)
+        self.assertEqual(dispositions["semgrep"], {"status": "ok", "findings": 2})
+        self.assertEqual([f["location"]["file"] for f in findings],
+                         ["app/linked/auth.py"])
+        self.assertEqual(suppressed, [])
+        self.assertIn("marker-confirmed virtualenvs", err.getvalue())
+
     def test_marker_lookups_are_cached_per_directory(self):
         with tempfile.TemporaryDirectory() as root:
             cache = {"lib": True}          # seeded; nothing on disk
