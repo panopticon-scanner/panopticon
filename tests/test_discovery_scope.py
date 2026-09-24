@@ -7,6 +7,7 @@ import types
 import unittest
 from unittest import mock
 
+from scripts import executable
 from discovery_test_helpers import (
     orchestrator, FakeRun, repo_with_matrix, repo_with_exclude,
     git_cmd, git_output,
@@ -61,6 +62,15 @@ class TestResolveBaseOriginFallback(unittest.TestCase):
         # refuses every ref and these three tests would assert nothing.
         self.repo = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+        # #2006 fix round 2, M4: stub the RESOLVER too, or `runner=` no longer
+        # isolates these from the host. Under an empty PATH the real resolver
+        # refused everything: two of the three failed and the third
+        # (explicit-never-falls-through) passed VACUOUSLY, for the wrong reason.
+        resolver = mock.patch.object(
+            executable, "resolve",
+            return_value=executable.ResolvedExecutable("/trusted/git", "/trusted/bin"))
+        resolver.start()
+        self.addCleanup(resolver.stop)
 
     def _runner_resolving(self, *refs):
         def run(argv, *args, **kwargs):

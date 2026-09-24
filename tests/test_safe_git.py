@@ -62,7 +62,13 @@ def test_filter_commands_fail_closed_before_status(tmp_path, setting):
 def test_preflight_failure_is_returned_without_status(tmp_path):
     failure = subprocess.CompletedProcess([], 128, "", "fatal: not a git repository")
     runner = mock.Mock(return_value=failure)
-    assert safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner) is failure
+    proc = safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner)
+    # The preflight's returncode and stderr, verbatim -- that is the real cause.
+    # No longer the same OBJECT: it now carries the argv the caller asked for,
+    # so a `check=True` caller's error names `status` and not the preflight's
+    # own `config --null --list` (#2006 fix round 2, M5).
+    assert (proc.returncode, proc.stdout, proc.stderr) == (128, "", "fatal: not a git repository")
+    assert proc.args[-3:] == ["status", "--porcelain", "-z"]
     assert runner.call_count == 1
 
 
@@ -308,9 +314,10 @@ def test_a_failed_root_preflight_answers_in_the_callers_type(tmp_path):
     assert proc.returncode == 128
     assert proc.stdout == b""
     assert proc.stderr == b"fatal: not a git repository"
-    # ... and a text caller still gets exactly the object the preflight saw.
-    assert safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
-                          runner=runner) is failure
+    # ... and a text caller gets the same values, as str.
+    text_proc = safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
+                               runner=runner)
+    assert (text_proc.stdout, text_proc.stderr) == ("", "fatal: not a git repository")
 
 
 def test_a_failed_root_index_preflight_answers_in_the_callers_type(tmp_path):
@@ -380,3 +387,45 @@ def test_status_never_receives_the_diff_flags(tmp_path):
     runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
     safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner)
     assert "--no-ext-diff" not in runner.call_args.args[0]
+
+
+@pytest.mark.parametrize("args", [
+    ["-C", "/etc", "rev-parse", "HEAD"],
+    ["--git-dir=/tmp/elsewhere", "status", "--porcelain", "-z"],
+    ["--git-dir", "/tmp/elsewhere", "status"],
+    ["--work-tree=/tmp/elsewhere", "status"],
+    ["--exec-path=/tmp", "status"],
+    ["--namespace=x", "rev-parse", "HEAD"],
+    ["--config-env=core.fsmonitor=EVIL", "status"],
+])
+def test_a_repo_redirecting_global_option_is_rejected_not_parsed_past(tmp_path, args):
+    # #2006 fix round 2, M3: the preflight validates `root`, so an argv that
+    # sends the FINAL call somewhere else would be preflighted against one
+    # repository and run against another. No caller does this; a probe whose
+    # whole point is failing closed should refuse rather than parse past it.
+    runner = mock.Mock()
+    with pytest.raises(ValueError, match="redirect"):
+        safe_git.probe(str(tmp_path), args, runner=runner)
+    runner.assert_not_called()
+
+
+def test_our_own_dash_c_settings_are_still_allowed(tmp_path):
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
+    safe_git.probe(str(tmp_path), ["-c", "core.quotepath=false", "diff", "--name-only"],
+                   runner=runner)
+    assert runner.call_count == 3
+
+
+def test_a_failed_root_preflight_names_the_command_the_caller_asked_for(tmp_path):
+    # #2006 fix round 2, M5: the failure was returned as the caller's own
+    # result, so `discovery._git` raised CalledProcessError naming
+    # `config --null --list --includes` and the operator read
+    # "git diff failed: ... config ...".
+    failure = subprocess.CompletedProcess(
+        ["/trusted/git", "-C", str(tmp_path), "config", "--null", "--list", "--includes"],
+        128, "", "fatal: not a git repository")
+    runner = mock.Mock(return_value=failure)
+    proc = safe_git.probe(str(tmp_path), ["diff", "--name-only", "HEAD"], runner=runner)
+    assert proc.returncode == 128
+    assert proc.stderr == "fatal: not a git repository"
+    assert "diff" in proc.args and "config" not in proc.args

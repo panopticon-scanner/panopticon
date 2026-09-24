@@ -83,11 +83,18 @@ _NO_CONFIGURED_COMMAND = {
 _DIFF_PRODUCING = ("diff", "log", "show")
 _NO_DRIVERS = ("--no-ext-diff", "--no-textconv")
 
-# Global options that take a separate value, so the token after them is that
-# value and never the subcommand. Any OTHER leading option is unclassified,
-# which means the subcommand cannot be identified and the call preflights.
-_VALUED_GLOBAL_OPTIONS = ("-c", "-C", "--git-dir", "--work-tree", "--namespace",
-                          "--exec-path", "--config-env")
+# Global options that would send the FINAL call at a different repository, or
+# at different code, than the one the preflight just validated. REFUSED rather
+# than parsed past (#2006 fix round 2, M3): the preflight checks `root`, so an
+# argv carrying one of these would be cleared against one repository and run
+# against another, which is the one failure mode this module exists to prevent.
+# No caller passes them; a caller that needs a different repository passes a
+# different `root`.
+_REDIRECTING_GLOBAL_OPTIONS = ("-C", "--git-dir", "--work-tree", "--namespace",
+                               "--exec-path", "--config-env", "--super-prefix")
+# `-c <key>=<value>` is the one global option with a separate value that the
+# probe itself uses, so it stays legal and its value is never a subcommand.
+_VALUED_GLOBAL_OPTIONS = ("-c",)
 
 
 _HOOKS_PATH = None
@@ -160,6 +167,15 @@ def _subcommand(args):
     return None if index is None else args[index]
 
 
+def _reject_redirection(args):
+    """Refuse an argv that could move the final call off the validated root."""
+    for token in args:
+        if token.split("=", 1)[0] in _REDIRECTING_GLOBAL_OPTIONS:
+            raise ValueError(
+                "safe Git: %r would redirect the probe off the root it validated; "
+                "pass a different root instead" % token)
+
+
 def _subcommand_index(args):
     """Where the subcommand sits in `args`, or None when it cannot be found."""
     position = 0
@@ -191,6 +207,13 @@ def _is_command_setting(key):
     diff-producing subcommand -- and an external driver's output REPLACES
     git's, so obeying one silently emptied the hunk map as well as running
     target code (#2006 fix round 2, C1).
+
+    AVAILABILITY, known and unresolved (#2006 fix round 2, M6): these are
+    REPO-LOCAL keys, so global-config git-lfs is unaffected
+    (`GIT_CONFIG_GLOBAL=/dev/null`), but `git-crypt init` and
+    `git lfs install --local` write `filter.*.clean` into `.git/config` -- and
+    such a target is then unreviewable, with no override flag. That is a
+    product decision, not a bug to paper over here.
 
     `merge.<driver>.driver` is deliberately absent: no subcommand the probe
     runs performs a merge or a checkout, the one exempt path that does
@@ -238,17 +261,23 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
     command filters fail closed; their values are never included in errors.
     """
     def preflight_failure(proc):
-        """A failed ROOT preflight, in the type the CALLER asked for.
+        """A failed ROOT preflight, as a result for the command the caller asked for.
 
-        The preflight always reads text (it parses config and index records),
-        so a `text=False` caller handed this object straight back would get
-        `str` where its own contract says bytes (#2006 concern 3).
+        Two things the raw preflight result got wrong. The preflight always
+        reads text (it parses config and index records), so a `text=False`
+        caller handed this object straight back got `str` where its own contract
+        says bytes (#2006 concern 3). And its `args` were the PREFLIGHT's argv,
+        so `discovery._git` raised `CalledProcessError` naming `config --null
+        --list --includes` and the operator read "git diff failed: ... config"
+        for a command they never issued (#2006 fix round 2, M5). The
+        returncode and stderr stay the preflight's: that is the real cause.
         """
-        if text:
-            return proc
-        return subprocess.CompletedProcess(proc.args, proc.returncode,
-                                           _encoded(proc.stdout), _encoded(proc.stderr))
+        return subprocess.CompletedProcess(
+            _launch_argv(resolved, root, prepared), proc.returncode,
+            proc.stdout if text else _encoded(proc.stdout),
+            proc.stderr if text else _encoded(proc.stderr))
 
+    _reject_redirection(args)
     resolved = executable.resolve("git", _checkout_boundary(root), os.environ.get("PATH", ""))
     env = {"PATH": resolved.path_env, "LC_ALL": "C",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,

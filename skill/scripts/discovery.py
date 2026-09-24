@@ -965,11 +965,12 @@ def _git_listed_files(repo):
     try:
         out = _git(repo, ["ls-files", "--cached", "--others",
                           "--exclude-standard", "-z"], timeout=60, text=False)
-    except safe_git.RepositoryRefused:
-        # Falling back to a raw walk would be a SILENT downgrade on a tree we
-        # just refused; the one named handler in main() reports it instead.
-        raise
     except Exception:
+        # No `RepositoryRefused` arm: `ls-files` is on the probe's allowlist, so
+        # this call never preflights and never refuses (#2006 fix round 2, M7 --
+        # the arm that used to be here was dead code). If `ls-files` ever leaves
+        # that allowlist, add one: falling back to a raw walk on a tree we just
+        # refused would be a silent downgrade.
         return None
     return [os.fsdecode(path) for path in out.stdout.split(b"\0") if path]
 
