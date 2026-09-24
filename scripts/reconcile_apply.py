@@ -29,6 +29,7 @@ This is resume support, not an exactly-once protocol.
 """
 import argparse
 import contextlib
+import errno
 import fcntl
 import hashlib
 import json
@@ -78,6 +79,31 @@ LOC_RE = re.compile(r"\*\*Location:\*\* `([^`]+?)(?::\d+)?`")
 
 class IncompleteRecovery(RuntimeError):
     """The fetched evidence cannot establish a complete, lossless ledger."""
+
+
+_DARWIN_SYSTEM_ALIASES = {"var": "private/var", "tmp": "private/tmp",
+                          "etc": "private/etc"}
+
+
+def _validated_system_alias(path):
+    """Use only root-owned macOS system aliases; never resolve user path components."""
+    absolute = os.path.abspath(path)
+    if sys.platform != "darwin":
+        return absolute
+    first, separator, rest = absolute.lstrip("/").partition("/")
+    destination = _DARWIN_SYSTEM_ALIASES.get(first)
+    if destination is None:
+        return absolute
+    alias = "/" + first
+    try:
+        entry = os.lstat(alias)
+        target = os.readlink(alias)
+    except OSError:
+        return absolute
+    if (not stat.S_ISLNK(entry.st_mode) or entry.st_uid != 0
+            or target not in (destination, "/" + destination)):
+        return absolute
+    return "/" + destination + (separator + rest if separator else "")
 
 
 def _repo_slug(repo):
@@ -196,8 +222,8 @@ def recover_linkage_from_github(label="self-scan", runner=None, *,
 
 @contextlib.contextmanager
 def _exclusive_path(path, create_directory=False):
-    """Stable sibling lock; open every directory component without symlinks."""
-    absolute = os.path.abspath(path)
+    """Stable sibling lock; walk pinned directories without user symlinks."""
+    absolute = _validated_system_alias(path)
     directory, name = os.path.split(absolute)
     directory_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -207,8 +233,14 @@ def _exclusive_path(path, create_directory=False):
                     os.mkdir(component, dir_fd=directory_fd)
                 except FileExistsError:
                     pass
-            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                            dir_fd=directory_fd)
+            try:
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=directory_fd)
+            except OSError as exc:
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise NotADirectoryError(errno.ENOTDIR,
+                                             "unsafe directory component: " + component) from exc
+                raise
             os.close(directory_fd)
             directory_fd = child
         fd = os.open(name + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
@@ -605,6 +637,7 @@ def _apply(actions, dry=True, confirm_close=False, throttle=1.5,
     # Serialize receipt read, intent, mutation and acknowledgement as one unit.
     # Empty plans and dry runs retain their existing no-I/O behavior.
     if not dry and actions and progress_path is not None:
+        progress_path = _validated_system_alias(progress_path)
         _load_progress(progress_path, "%s/%s" % _owner_repo(actions[0].get("issue", "")))
         with _exclusive_path(progress_path):
             return _apply_locked(actions, dry, confirm_close, throttle, runner, sleep,

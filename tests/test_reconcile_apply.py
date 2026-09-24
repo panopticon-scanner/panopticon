@@ -2,6 +2,8 @@ import contextlib
 import io
 import json
 import os
+import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,6 +36,36 @@ class TestLedger(unittest.TestCase):
         record = {"stored_fingerprint": None, "id": "F-1",
                  "location_file": "x.py", "kind": "rejected"}
         self.assertEqual(reconcile_apply.ledger_key(record), "|F-1|x.py|rejected")
+
+
+class TestSystemAliasValidation(unittest.TestCase):
+    def test_only_exact_root_owned_darwin_aliases_are_rewritten(self):
+        entry = mock.Mock(st_mode=stat.S_IFLNK, st_uid=0)
+        for alias in ("var", "tmp", "etc"):
+            with self.subTest(alias=alias), mock.patch.object(reconcile_apply.sys, "platform", "darwin"), \
+                    mock.patch.object(reconcile_apply.os, "lstat", return_value=entry) as lstat, \
+                    mock.patch.object(reconcile_apply.os, "readlink", return_value="private/" + alias):
+                self.assertEqual(reconcile_apply._validated_system_alias("/" + alias + "/a/file"),
+                                 "/private/" + alias + "/a/file")
+                lstat.assert_called_with("/" + alias)
+        for mode, uid, target in ((stat.S_IFDIR, 0, "private/var"),
+                                  (stat.S_IFLNK, 501, "private/var"),
+                                  (stat.S_IFLNK, 0, "elsewhere"),
+                                  (stat.S_IFLNK, 0, "private/var/../tmp")):
+            with self.subTest(mode=mode, uid=uid, target=target), \
+                    mock.patch.object(reconcile_apply.sys, "platform", "darwin"), \
+                    mock.patch.object(reconcile_apply.os, "lstat",
+                                      return_value=mock.Mock(st_mode=mode, st_uid=uid)), \
+                    mock.patch.object(reconcile_apply.os, "readlink", return_value=target):
+                self.assertEqual(reconcile_apply._validated_system_alias("/var/a/file"),
+                                 "/var/a/file")
+        with mock.patch.object(reconcile_apply.sys, "platform", "linux"), \
+                mock.patch.object(reconcile_apply.os, "lstat", side_effect=AssertionError("lstat")):
+            self.assertEqual(reconcile_apply._validated_system_alias("/var/a/file"), "/var/a/file")
+        with mock.patch.object(reconcile_apply.sys, "platform", "darwin"), \
+                mock.patch.object(reconcile_apply.os, "lstat", side_effect=AssertionError("lstat")):
+            self.assertEqual(reconcile_apply._validated_system_alias("/variable/a/file"),
+                             "/variable/a/file")
 
 
 class TestSaveRecoveredLedger(unittest.TestCase):
@@ -69,6 +101,19 @@ class TestSaveRecoveredLedger(unittest.TestCase):
             self.assertLess(text.index('"a|A|f|finding"'),
                             text.index('"b|B|f|finding"'))  # sort_keys
             self.assertIn("\n ", text)                       # indent=1
+
+    def test_native_temp_alias_saves_and_replaces_with_exact_backup(self):
+        with tempfile.TemporaryDirectory() as d:
+            if sys.platform == "darwin":
+                self.assertTrue(d.startswith("/var/"), d)
+            output = Path(d) / "nested" / "ledger.json"
+            first = {"fp|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
+            second = {"fp|F-2|b.py|finding": "https://github.com/o/r/issues/2"}
+            reconcile_apply.save_recovered_ledger(first, output)
+            original = output.read_bytes()
+            reconcile_apply.save_recovered_ledger(second, output, replace=True)
+            self.assertEqual(file_issues.load_ledger(output), second)
+            self.assertEqual(next(output.parent.glob("ledger.json.*.bak")).read_bytes(), original)
 
 
 class FakeCompleted:
@@ -495,6 +540,36 @@ class TestApply(unittest.TestCase):
                 return FakeCompleted(json.dumps({"admin": True}))
             return FakeCompleted("")
         return runner
+
+    def test_native_temp_alias_live_apply_and_leaf_lock_refusal(self):
+        with tempfile.TemporaryDirectory() as d:
+            if sys.platform == "darwin":
+                self.assertTrue(d.startswith("/var/"), d)
+            action = self._actions()[:1]
+            calls = []
+            receipt = Path(d) / "progress.json"
+            self.assertEqual(reconcile_apply.apply(action, dry=False,
+                runner=self._admin_runner(calls), sleep=lambda _: None,
+                progress_path=receipt), (1, 0))
+            self.assertTrue(receipt.is_file())
+            self.assertEqual(reconcile_apply.apply(action, dry=False,
+                runner=self._admin_runner(calls), sleep=lambda _: None,
+                progress_path=receipt), (0, 0))
+            sentinel = Path(d) / "sentinel"
+            sentinel.write_bytes(b"unchanged")
+            for leaf in ("progress.json", "progress.json.lock"):
+                with self.subTest(leaf=leaf):
+                    path = Path(d) / leaf
+                    path.unlink()
+                    path.symlink_to(sentinel)
+                    before = len(calls)
+                    with self.assertRaises((ValueError, OSError)):
+                        reconcile_apply.apply(action, dry=False,
+                            runner=self._admin_runner(calls), sleep=lambda _: None,
+                            progress_path=receipt)
+                    self.assertEqual(len(calls), before)
+                    self.assertEqual(sentinel.read_bytes(), b"unchanged")
+                    path.unlink()
 
     def test_duplicates_collapse_in_all_modes_and_preserve_distinct_content(self):
         original = self._actions()[0]
@@ -1005,6 +1080,22 @@ class TestApply(unittest.TestCase):
                 self.assertEqual(calls, [])
                 self.assertEqual(list(target.iterdir()), [])
 
+    def test_user_symlink_below_native_alias_is_rejected_before_mutation(self):
+        with tempfile.TemporaryDirectory() as d:
+            if sys.platform == "darwin":
+                self.assertTrue(d.startswith("/var/"), d)
+            target = Path(d) / "target"
+            target.mkdir()
+            alias = Path(d) / "alias"
+            alias.symlink_to(target, target_is_directory=True)
+            calls = []
+            with self.assertRaisesRegex(ValueError, "unsafe progress directory"):
+                reconcile_apply.apply(self._actions(), dry=False,
+                    runner=self._admin_runner(calls), sleep=lambda _: None,
+                    progress_path=alias / "receipt.json")
+            self.assertEqual(calls, [])
+            self.assertEqual(list(target.iterdir()), [])
+
     def test_missing_progress_directory_fails_before_issue_mutation(self):
         calls = []
         with tempfile.TemporaryDirectory() as d:
@@ -1017,6 +1108,24 @@ class TestApply(unittest.TestCase):
 
 
 class TestCliWiring(unittest.TestCase):
+    def test_unsupported_directory_alias_has_named_cli_refusal(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "target"
+            target.mkdir()
+            alias = Path(d) / "alias"
+            alias.symlink_to(target, target_is_directory=True)
+            errors = io.StringIO()
+            def runner(*args, **kwargs):
+                return FakeCompleted("[]")
+            with mock.patch.object(triage, "default_gh_runner", return_value=runner), \
+                    contextlib.redirect_stderr(errors):
+                result = reconcile_apply.main(["recover-linkage", "--repo", "o/r",
+                                               "--out", str(alias / "ledger.json")])
+            self.assertEqual(result, 1)
+            self.assertIn("refusing:", errors.getvalue())
+            self.assertIn("unsafe directory component", errors.getvalue())
+            self.assertEqual(list(target.iterdir()), [])
+
     def test_apply_uses_plan_adjacent_receipt_and_accepts_override(self):
         with tempfile.TemporaryDirectory() as d:
             actions_path = os.path.join(d, "actions.json")
