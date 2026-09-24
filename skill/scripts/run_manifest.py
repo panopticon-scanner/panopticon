@@ -160,6 +160,14 @@ def _target_provenance(target, runner=subprocess.run):
         # a fact obtained by running the target's own command would be worse
         # than no fact at all.
         return commit, any(record.strip() for record in status.stdout.split("\0"))
+    except safe_git.RepositoryRefused as exc:
+        # #2006 fix round 1: provenance is RECORDED, never enforced, so a
+        # refused tree must not abort the run -- but it must not be silent
+        # either. Same shape validate and discovery print, naming the setting.
+        print("run manifest: target Git probe REFUSED (%s); the reviewed tree's "
+              "own Git configuration is not trusted to run, so this run's "
+              "dirtiness is recorded as unknown" % exc, file=sys.stderr, flush=True)
+        return commit, None
     except (subprocess.SubprocessError, OSError):
         return commit, None
 

@@ -255,6 +255,20 @@ def _git(repo, args, timeout=30, text=True):
                                             proc.stdout, proc.stderr)
     return proc
 
+def _refused(exc):
+    """The operator-facing line for a REFUSED target-git probe (#2006).
+
+    Deliberately the same shape `validate.capture_tree_baseline` prints for the
+    same refusal -- prefix, what was refused, the cause in parentheses (which
+    names the setting), the consequence -- because an operator who meets this
+    at two phases should not have to learn two messages. The cause is the only
+    place the refused key appears, so it is never trimmed away.
+    """
+    return ("discovery: target Git probe REFUSED (%s); the reviewed tree's own "
+            "Git configuration is not trusted to run, so discovery fails closed"
+            % exc)
+
+
 def _nul_separated_paths(raw):
     """The non-empty paths in `git ... -z` output, decoded like os.fsdecode.
 
@@ -346,6 +360,8 @@ def collect_changed_files(repo, base=None, exclude=()):
     if base is not None:
         try:
             mb = _git(repo, ["merge-base", "HEAD", base]).stdout.strip()
+        except safe_git.RepositoryRefused:
+            raise            # a refused tree is not "no history" (#2006)
         except Exception:
             return None
         if not mb:
@@ -357,11 +373,15 @@ def collect_changed_files(repo, base=None, exclude=()):
                 mb = _git(repo, ["merge-base", "HEAD", branch]).stdout.strip()
                 if mb:
                     break
+            except safe_git.RepositoryRefused:
+                raise        # (#2006) never "try the next branch" on a refusal
             except Exception:
                 continue
         if not mb:
             try:
                 mb = _git(repo, ["rev-parse", "HEAD~1"]).stdout.strip()
+            except safe_git.RepositoryRefused:
+                raise
             except Exception:
                 return None
     changed = set()
@@ -383,6 +403,8 @@ def collect_changed_files(repo, base=None, exclude=()):
                           "--diff-filter=d", "--find-renames", "-z", mb],
                    text=False)
         changed.update(_nul_separated_paths(out.stdout))
+    except safe_git.RepositoryRefused:
+        raise
     except Exception as e:
         print(f"Warning: git diff failed: {e}", file=sys.stderr)
         return None
@@ -392,6 +414,8 @@ def collect_changed_files(repo, base=None, exclude=()):
                           "--exclude-standard", "-z"], text=False)
         untracked.update(_nul_separated_paths(out.stdout))
         changed.update(untracked)
+    except safe_git.RepositoryRefused:
+        raise
     except Exception:
         pass
     for name in exclude:
@@ -941,6 +965,10 @@ def _git_listed_files(repo):
     try:
         out = _git(repo, ["ls-files", "--cached", "--others",
                           "--exclude-standard", "-z"], timeout=60, text=False)
+    except safe_git.RepositoryRefused:
+        # Falling back to a raw walk would be a SILENT downgrade on a tree we
+        # just refused; the one named handler in main() reports it instead.
+        raise
     except Exception:
         return None
     return [os.fsdecode(path) for path in out.stdout.split(b"\0") if path]
@@ -1546,6 +1574,23 @@ def _norm_scope_path(repo, p):
 
 
 def main(argv=None):
+    """The CLI entry point, and the ONE place a refused target tree becomes an
+    operator-readable exit rather than a traceback (#2006 fix round 1).
+
+    Discovery touches the target's git from several depths -- the changed-file
+    diff, the repo listing, the uncommitted-work probe -- and a `RepositoryRefused`
+    from any of them means the same thing and deserves the same sentence. An
+    unhandled OSError out of here is a stack trace the operator has to decode,
+    and it never says which setting was refused.
+    """
+    try:
+        return _repo_scan(argv)
+    except safe_git.RepositoryRefused as exc:
+        print(_refused(exc), file=sys.stderr)
+        return 2
+
+
+def _repo_scan(argv=None):
     """Resolve --repo-scan discovery/matrix targets to grouped file lists and
     emit as JSON. The sole mode the 5.0 driver invokes."""
     ap = argparse.ArgumentParser(description="panopticon repo-scan discovery/matrix resolver",

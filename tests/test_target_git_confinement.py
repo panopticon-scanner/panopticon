@@ -19,6 +19,8 @@ under the session temp root, which `tests/conftest.py` already refuses to place
 inside any checkout.
 """
 import ast
+import contextlib
+import io
 import os
 import subprocess
 import unittest
@@ -315,4 +317,46 @@ class DeltaMapIsConfined(unittest.TestCase):
         with mock.patch.dict(os.environ,
                              {"PATH": os.path.join(repo, "bin") + os.pathsep + os.environ["PATH"]}):
             self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
+        self.assertFalse(os.path.exists(marker))
+
+
+class ARefusalIsAMessageNotATraceback(unittest.TestCase):
+    """#2006 fix round 1, ruling 2: fail closed, but never as a traceback.
+
+    `validate.capture_tree_baseline` already turns this exact refusal into a
+    named line on stderr naming the cause, and fails closed. Discovery's CLI is
+    the other operator-facing entry point and must do the same: an unhandled
+    OSError out of `main()` is a stack trace the operator has to decode, and it
+    does not say which config key was refused.
+    """
+
+    def _hostile_repo(self):
+        # groups_yml is committed by the helper, so the scan has a matrix and
+        # reaches the delta computation rather than refusing earlier.
+        repo = make_git_repo(test_case=self, panopticon=True,
+                             groups_yml="groups:\n  App:\n    match:\n    - '**/*.py'\n")
+        return repo, plant_clean_filter(repo)
+
+    def test_discovery_refuses_with_a_named_message_and_a_non_zero_exit(self):
+        repo, marker = self._hostile_repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = discovery.main(["--repo", repo, "--repo-scan", "--scope-changed"])
+        self.assertEqual(rc, 2)
+        message = err.getvalue()
+        self.assertIn("filter.fixture.clean", message)   # WHICH key was refused
+        self.assertIn("fails closed", message)
+        self.assertNotIn("Traceback", message)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_the_run_manifest_says_so_without_failing_the_run(self):
+        # Provenance is recorded, never enforced (#1492), so a refusal must not
+        # abort a run -- but it must not be silent either.
+        repo, marker = self._hostile_repo()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            commit, dirty = run_manifest._target_provenance(repo)
+        self.assertTrue(commit)
+        self.assertIsNone(dirty)
+        self.assertIn("filter.fixture.clean", err.getvalue())
         self.assertFalse(os.path.exists(marker))
