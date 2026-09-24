@@ -847,8 +847,9 @@ History:
 ### Known limitations that are still true
 Two notes from the 2.x self-scans that later releases did not change, kept because a reader
 would otherwise have to rediscover them:
-- SARIF-derived paths are rendered into the markdown summary and the HTML report without
-  escaping (`synth/render.py`; display-only, the path is never opened from there).
+- SARIF-derived paths are interpolated into the terminal markdown summary without escaping
+  (`synth/render.py`; display-only, the path is never opened from there). The HTML report
+  escapes them (`html_report.py`).
 - `gosec` is invoked with `./...` against the `/src` mount and relies on the container cwd
   (`tools/legacy_sarif.py`).
 Everything else the 2.x rounds listed here has either shipped (see the version history above) or

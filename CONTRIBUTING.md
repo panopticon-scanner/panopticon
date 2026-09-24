@@ -10,8 +10,8 @@ Thanks for your interest in improving Panopticon.
 4. Add or update tests for changed behavior.
 5. Run the full test suite and lint locally:
    ```bash
-   python -m pytest tests/ -q
-   python -m ruff check skill/scripts/ tests/
+   python3 -m pytest tests/ -q
+   python3 -m ruff check skill/scripts/ tests/
    ```
 6. Open a pull request against `main`.
 
