@@ -56,6 +56,15 @@ else:
         from scripts import safe_write     # noqa: E402
     except ModuleNotFoundError:
         import safe_write                  # noqa: E402
+# #2006: every git call in this module runs against the TARGET, so all of them
+# go through the trusted, bounded, preflighted probe. Same fallback arm.
+if TYPE_CHECKING:
+    from scripts import safe_git
+else:
+    try:
+        from scripts import safe_git       # noqa: E402
+    except ModuleNotFoundError:
+        import safe_git                    # noqa: E402
 
 # Files per review group before it splits into `<name>_<i>` chunks.
 #
@@ -224,11 +233,27 @@ def compute_group_panels(files, security_mode="standard"):
     return panels_in_priority_order(panels)
 
 def _git(repo, args, timeout=30, text=True):
-    """Run git -C repo with check=True — the shared invocation for this
-    module's six git call sites; each caller's try/except owns failures."""
-    return subprocess.run(["git", "-C", repo, *args],  # nosec
-                          capture_output=True, text=text, check=True,
-                          timeout=timeout, env={"PATH": os.environ.get("PATH", "")})
+    """Run a trusted, bounded git probe in repo with check=True -- the shared
+    invocation for this module's six git call sites; each caller's try/except
+    owns failures.
+
+    #2006: `repo` is the TARGET. This used to launch bare `git` off the
+    inherited PATH with the target's own config live, so a target that set
+    `core.fsmonitor` (or a `filter.*.clean` on a file `status` must compare)
+    got its command RUN during discovery -- reproduced through
+    `_worktree_dirty`, which runs before dispatch. `safe_git.probe` resolves
+    git outside the target's outermost checkout, launches it with a fresh
+    allowlisted environment and `core.fsmonitor=false`, and preflights the
+    target's effective config so a command filter is refused rather than
+    executed. That refusal arrives as OSError, which every caller's
+    `except Exception` already treats as "git failed" -- loud, never an
+    empty answer that reads as clean.
+    """
+    proc = safe_git.probe(repo, list(args), timeout=timeout, text=text)
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args,
+                                            proc.stdout, proc.stderr)
+    return proc
 
 def _nul_separated_paths(raw):
     """The non-empty paths in `git ... -z` output, decoded like os.fsdecode.
@@ -741,9 +766,12 @@ def resolve_base(repo, explicit=None, pr_base=None, runner=subprocess.run):
     that does NOT resolve returns (None,'unresolved') without falling through -
     a bad --base is a loud failure, not a silent downgrade to a branch tip."""
     def _resolves(ref):
+        # #2006: the target's git, on the target's config, choosing this run's
+        # delta base -- through the same probe as every other call here.
+        # `runner` stays the injection seam the tests use; the probe takes it.
         try:
-            r = runner(["git", "-C", repo, "rev-parse", "--verify", "-q", ref + "^{commit}"],
-                       capture_output=True, text=True, timeout=15)
+            r = safe_git.probe(repo, ["rev-parse", "--verify", "-q", ref + "^{commit}"],
+                               runner=runner)
             return r.returncode == 0
         except (subprocess.SubprocessError, OSError):
             return False

@@ -38,6 +38,9 @@ from scripts import hosts
 # `phases/*` imports `run_manifest`, and layout rule 3 keeps that arrow
 # pointing one way.
 from scripts import safe_write
+# #2006: the target-facing git probe. A leaf module like `safe_write` above, so
+# this import crosses no layout boundary.
+from scripts import safe_git
 
 MANIFEST_NAME = "run-manifest.json"
 SETUP_MANIFEST_NAME = "setup-manifest.json"
@@ -132,18 +135,33 @@ def _target_provenance(target, runner=subprocess.run):
     Recorded, never enforced: a resumed run must not be refused because the tree
     moved under it. This is provenance, not an anti-drift flag.
     """
+    #2006: `target` is the reviewed tree, so both calls go through
+    # `safe_git.probe` -- a trusted git resolved outside the target's outermost
+    # checkout, a fresh allowlisted environment (these two ran with NO `env=`
+    # at all, so an inherited `GIT_DIR`/`GIT_CONFIG_*` could redirect the very
+    # provenance this records), `core.fsmonitor=false`, and a config preflight
+    # that refuses a `filter.*.clean` rather than running it.
     try:
-        head = runner(["git", "-C", target, "rev-parse", "HEAD"],
-                      capture_output=True, text=True, timeout=15)
+        head = safe_git.probe(target, ["rev-parse", "HEAD"], runner=runner)
         if head.returncode != 0:
             return None, None
-        status = runner(["git", "-C", target, "status", "--porcelain"],
-                        capture_output=True, text=True, timeout=15)
-        if status.returncode != 0:
-            return head.stdout.strip() or None, None
-        return head.stdout.strip() or None, bool(status.stdout.strip())
+        commit = head.stdout.strip() or None
     except (subprocess.SubprocessError, OSError):
         return None, None
+    try:
+        # `-z`, the preflighted spelling: one probe for this and for validate's
+        # baseline, rather than a second unpreflighted `--porcelain` shape.
+        status = safe_git.probe(target, ["status", "--porcelain", "-z"], runner=runner)
+        if status.returncode != 0:
+            return commit, None
+        # NUL-framed, like `_worktree_dirty` (#1989): any non-empty record is
+        # dirt. Dirtiness is recorded, never enforced, so a REFUSED status
+        # leaves it unknown (None) and keeps the commit we did establish --
+        # a fact obtained by running the target's own command would be worse
+        # than no fact at all.
+        return commit, any(record.strip() for record in status.stdout.split("\0"))
+    except (subprocess.SubprocessError, OSError):
+        return commit, None
 
 
 def build_manifest(*, target, review_root, host, security_mode, base=None,
