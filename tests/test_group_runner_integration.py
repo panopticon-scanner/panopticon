@@ -1,12 +1,11 @@
-# NOTE: this exercises the guard's DECISION function (`decide`) in-process. The
-# LIVE hook wall — the harness actually denying an out-of-scope reviewer Write —
-# cannot be asserted deterministically here (it needs a real dispatch + hook
-# install). It was verified manually during SP-A: with the guard installed from a
-# real plan, a dispatched reviewer's in-allowlist write succeeded and its
-# out-of-scope write was denied by the harness. Re-run that live smoke test if
-# the hook plumbing or its paths change.
+"""Private hook/decision integration, not a live host dispatch.
+
+The harness's live hook wall was verified manually during SP-A. These tests
+exercise current domain cells, batch install, and a private hook subprocess.
+"""
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,96 +14,114 @@ import scripts.group_runner as gr
 import scripts.write_guard_hook as wg
 
 
-def _plan(d):
-    entries = []
-    for group in ("g1", "g2"):
-        for panel in ("code", "security"):
-            entries.append({
-                "role": "panel_review", "group": group, "panel": panel,
-                "out_file": os.path.join(
-                    d, "findings-%s-%s-panel_review.json" % (group, panel))})
-    return entries
+def _plan(root):
+    run_dir = os.path.join(root, ".panopticon", "runs", "wave5-test")
+    os.makedirs(run_dir)
+    return [{
+        "id": "review-%s-%s" % (group, domain),
+        "role": "domain_panel", "run_id": "wave5-test",
+        "group": group, "domain": domain,
+        "out_file": os.path.join(run_dir, "findings-%s-%s.json" % (group, domain)),
+    } for group in ("Auth", "Billing") for domain in ("SEC", "COD")]
+
+
+def _write_cell(entry, *, run_id=None, stamp=True):
+    body = {"findings": []}
+    if stamp:
+        body["_panopticon"] = {
+            "run_id": entry["run_id"] if run_id is None else run_id,
+            "role": entry["role"], "group": entry["group"],
+            "domain": entry["domain"],
+        }
+    with open(entry["out_file"], "w", encoding="utf-8") as fh:
+        json.dump(body, fh)
 
 
 class TestFanOutIntegration(unittest.TestCase):
-    def test_full_coverage_when_all_written(self):
-        with tempfile.TemporaryDirectory() as d:
-            plan = _plan(d)
-            for e in plan:  # simulate every reviewer writing its out_file
-                with open(e["out_file"], "w") as fh:
-                    json.dump({"findings": []}, fh)
+    def test_full_domain_coverage_when_all_written(self):
+        with tempfile.TemporaryDirectory() as root:
+            plan = _plan(root)
+            for entry in plan:
+                _write_cell(entry)
             self.assertEqual(gr.pending_entries(plan), [])
-            cov = gr.fan_out_coverage(plan)
-            self.assertEqual(cov["groups_partial"], [])
-            self.assertEqual(sorted(cov["groups_complete"]), ["g1", "g2"])
-            self.assertEqual(cov["executed"], {"code": 2, "security": 2})
+            self.assertEqual(gr.fan_out_coverage(plan), {
+                "planned": {"SEC": 2, "COD": 2},
+                "executed": {"SEC": 2, "COD": 2},
+                "groups_complete": ["Auth", "Billing"],
+                "groups_partial": [],
+            })
 
-    def test_out_of_scope_write_is_blocked(self):
-        with tempfile.TemporaryDirectory() as d:
-            plan = _plan(d)
-            allow = wg.union_paths(wg.allowlist_from_plan(plan))
-            ok_self, _ = wg.decide("Write", plan[0]["out_file"], allow)
-            ok_repo, reason = wg.decide("Write", "skill/scripts/synthesize.py", allow)
-            self.assertTrue(ok_self)
-            self.assertFalse(ok_repo)
+    def test_cell_a_decision_denies_cell_b_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            cell_a, cell_b = _plan(root)[:2]
+            grants = wg.allowlist_from_plan([cell_a])
+            self.assertEqual(grants, {
+                cell_a["id"]: [os.path.realpath(cell_a["out_file"])]})
+            allow = wg.union_paths(grants)
+            self.assertTrue(wg.decide("Write", cell_a["out_file"], allow)[0])
+            allowed, reason = wg.decide("Write", cell_b["out_file"], allow)
+            self.assertFalse(allowed)
             self.assertIn("allowlist", reason)
 
-    def test_resume_reruns_only_incomplete(self):
-        with tempfile.TemporaryDirectory() as d:
-            plan = _plan(d)
-            # all but the last entry completed; the last is truncated (crash)
-            for e in plan[:-1]:
-                with open(e["out_file"], "w") as fh:
-                    json.dump({"findings": []}, fh)
-            with open(plan[-1]["out_file"], "w") as fh:
-                fh.write('{"findings": [')  # truncated -> not done
-            pending = gr.pending_entries(plan)
-            self.assertEqual(pending, [plan[-1]])
-            cov = gr.fan_out_coverage(plan)
-            self.assertEqual(cov["groups_partial"], ["g2"])
+    def test_resume_reruns_truncated_wrong_and_missing_stamp(self):
+        with tempfile.TemporaryDirectory() as root:
+            plan = _plan(root)
+            for entry in plan:
+                _write_cell(entry)
+            self.assertEqual(gr.pending_entries(plan), [])
 
-    def test_e2e_write_guard_hook(self):
-        import subprocess
-        with tempfile.TemporaryDirectory() as d:
-            plan = _plan(d)
-            allowlist_path = os.path.join(d, ".panopticon", "write-allowlist.json")
-            settings_path = os.path.join(d, ".claude", "settings.local.json")
+            with open(plan[2]["out_file"], "w", encoding="utf-8") as fh:
+                fh.write('{"findings": [')
+            _write_cell(plan[3], run_id="old-run")
+            self.assertEqual(gr.pending_entries(plan), plan[2:])
+            self.assertEqual(gr.fan_out_coverage(plan), {
+                "planned": {"SEC": 2, "COD": 2},
+                "executed": {"SEC": 1, "COD": 1},
+                "groups_complete": ["Auth"],
+                "groups_partial": ["Billing"],
+            })
+            _write_cell(plan[3], stamp=False)
+            self.assertEqual(gr.pending_entries(plan), plan[2:])
 
-            # Install the hook to set up the allowlist
+    def test_batch_install_and_private_hook_subprocess(self):
+        with tempfile.TemporaryDirectory() as root:
+            plan = _plan(root)
+            allowlist_path = os.path.join(root, ".panopticon", "write-allowlist.json")
+            settings_path = os.path.join(root, ".claude", "settings.local.json")
             wg.install(plan, settings_path=settings_path, allowlist_path=allowlist_path)
+            with open(allowlist_path, encoding="utf-8") as fh:
+                document = json.load(fh)
+            self.assertEqual(set(document["entries"]), {e["id"] for e in plan})
+            self.assertEqual(set(document["paths"]),
+                             {os.path.realpath(e["out_file"]) for e in plan})
+            self.assertEqual(wg.is_armed(settings_path, allowlist_path), (True, 4))
 
-            hook_script = os.path.abspath(wg.__file__)
-
-            # Helper to run the hook with a payload
             def run_hook(tool_name, file_path):
-                payload = {
-                    "tool_name": tool_name,
-                    "tool_input": {"file_path": file_path} if file_path else {}
-                }
+                payload = {"tool_name": tool_name,
+                           "tool_input": {"file_path": file_path}}
                 env = os.environ.copy()
                 env["PANOPTICON_WRITE_ALLOWLIST"] = allowlist_path
-                proc = subprocess.run(
-                    [sys.executable, hook_script],
-                    input=json.dumps(payload),
-                    text=True,
-                    capture_output=True,
-                    env=env,
-                    # #1575 (OPS-A1A): the hook reads a JSON payload off stdin
-                    # and answers; a wedged one would hang the whole CI run,
-                    # with no output to say which of the three cases stalled.
-                    timeout=30,
+                env[wg.ENV_ENTRY_ID] = plan[0]["id"]
+                return subprocess.run(
+                    [sys.executable, os.path.abspath(wg.__file__)],
+                    input=json.dumps(payload), text=True, capture_output=True,
+                    env=env, cwd=root, timeout=30,
                 )
-                return proc.stdout.strip()
 
-            # Test 1: In-scope write
-            stdout = run_hook("Write", plan[0]["out_file"])
-            self.assertEqual(stdout, "")  # No output means allowed
-
-            # Test 2: Out-of-scope write
-            stdout = run_hook("Write", os.path.join(d, "skill/scripts/synthesize.py"))
-            self.assertIn("deny", stdout)
-            self.assertIn("outside the fan-out allowlist", stdout)
-
-            # Test 3: Non-write tool
-            stdout = run_hook("Read", plan[0]["out_file"])
-            self.assertEqual(stdout, "")
+            for tool, path, denied in (
+                ("Write", plan[0]["out_file"], False),
+                ("Write", plan[1]["out_file"], True),
+                ("Read", plan[1]["out_file"], False),
+            ):
+                with self.subTest(tool=tool, path=path):
+                    proc = run_hook(tool, path)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    if denied:
+                        denial = json.loads(proc.stdout)
+                        hook_output = denial["hookSpecificOutput"]
+                        self.assertEqual(hook_output["hookEventName"], "PreToolUse")
+                        self.assertEqual(hook_output["permissionDecision"], "deny")
+                        self.assertIn("peer entry's artifact is not writable",
+                                      hook_output["permissionDecisionReason"])
+                    else:
+                        self.assertEqual(proc.stdout, "")

@@ -33,6 +33,40 @@ class TestCargoAuditAdapter(unittest.TestCase):
         self.assertEqual(f["tool_evidence"]["package_name"], "foo")
         self.assertEqual(f["severity"], "LOW")
 
+    def test_advisory_ids_and_mixed_aliases_emit_exact_citations(self):
+        payload = {"vulnerabilities": {"list": [
+            {"advisory": {
+                "id": "RUSTSEC-2026-0123", "title": "Memory safety fault",
+                "aliases": ["GHSA-abcd-1234", "CVE-2026-4321", "OSV-2026-9",
+                            "cve-2026-9876"],
+                "url": "https://rustsec.org/advisories/RUSTSEC-2026-0123",
+                "cvss": {"score": 8.1}},
+             "package": {"name": "vulnerable-crate", "version": "1.4.2"},
+             "versions": {"patched": ["1.4.3"]}},
+            {"advisory": {
+                "id": "GHSA-wxyz-5678", "title": "Other advisory",
+                "aliases": ["RUSTSEC-2026-0999", "CVE-2026-1111"]},
+             "package": {"name": "other-crate", "version": "2.0.0"},
+             "versions": {"patched": ["2.0.1"]}},
+        ]}}
+        findings = ca.CargoAuditAdapter().parse(json.dumps(payload).encode(), "g1")
+        self.assertEqual(len(findings), 2)
+        rustsec, other = findings
+        self.assertEqual(rustsec["citations"], {
+            "rustsec": ["RUSTSEC-2026-0123"],
+            "cve": ["CVE-2026-4321", "CVE-2026-9876"],
+        })
+        self.assertEqual(rustsec["title"],
+                         "vulnerable-crate 1.4.2: RUSTSEC-2026-0123")
+        self.assertEqual(rustsec["severity"], "HIGH")
+        self.assertEqual(rustsec["description"], "Memory safety fault")
+        self.assertEqual(rustsec["tool_evidence"]["package_name"],
+                         "vulnerable-crate")
+        self.assertEqual(rustsec["remediation"], "Upgrade to a fixed version: 1.4.3")
+        self.assertEqual(other["citations"], {"cve": ["CVE-2026-1111"]})
+        self.assertEqual(other["tool_evidence"]["rule_id"], "GHSA-wxyz-5678")
+        self.assertEqual(other["title"], "other-crate 2.0.0: GHSA-wxyz-5678")
+
     def test_parse_missing_cvss_defaults_to_low(self):
         # #run7 review: an unscored (no-CVSS) cargo advisory floors at LOW, not
         # INFO -- a real vuln stays a visible finding the agent can downgrade,
@@ -235,4 +269,3 @@ class TestCargoAuditAdapter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -429,19 +429,46 @@ def test_write_diff_hunks_schema_version_and_atomic(tmp_path):
 
 
 
-def test_collect_changed_files_default_branch_fallback():
-    from unittest.mock import patch, MagicMock
-    with patch('scripts.discovery._git') as mock_git:
-        mock_git.side_effect = [
-            Exception("not main"),  # fails on main
-            MagicMock(stdout="fake_master_hash\n"), # succeeds on master
-            # #1739: the two file listings are read with -z/text=False, so
-            # they hand back NUL-separated BYTES, not newline-separated text.
-            MagicMock(stdout=b"file1.py\0"), MagicMock(stdout=b"")
-        ]
-        with patch('scripts.discovery._on_allowed_dotdir_path', return_value=True), patch('os.path.isfile', return_value=True):
-            res = discovery.collect_changed_files("/tmp/x", base=None)
-        assert res == ["file1.py"]
+@pytest.mark.parametrize("available, selected, refs", [
+    ({"main": "main-base"}, "main-base", ["main"]),
+    ({"master": "master-base"}, "master-base", ["main", "master"]),
+    ({}, "parent-base", ["main", "master", "HEAD~1"]),
+])
+def test_collect_changed_files_default_branch_fallback(available, selected, refs):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    calls = []
+
+    def git(repo, argv, **kwargs):
+        assert repo == "/tmp/x"
+        calls.append((argv, kwargs))
+        if argv[:2] == ["merge-base", "HEAD"]:
+            ref = argv[2]
+            if ref not in available:
+                raise RuntimeError("missing ref: " + ref)
+            return SimpleNamespace(stdout=available[ref] + "\n")
+        if argv == ["rev-parse", "HEAD~1"]:
+            return SimpleNamespace(stdout="parent-base\n")
+        if argv == ["-c", "core.quotepath=false", "diff", "--name-only",
+                    "--diff-filter=d", "--find-renames", "-z", selected]:
+            assert kwargs == {"text": False}
+            return SimpleNamespace(stdout=b"file1.py\0")
+        if argv == ["-c", "core.quotepath=false", "ls-files", "--others",
+                    "--exclude-standard", "-z"]:
+            assert kwargs == {"text": False}
+            return SimpleNamespace(stdout=b"")
+        raise AssertionError("unexpected git argv: %r" % argv)
+
+    with patch("scripts.discovery._git", side_effect=git), \
+         patch("scripts.discovery._on_allowed_dotdir_path", return_value=True), \
+         patch("os.path.isfile", return_value=True):
+        assert discovery.collect_changed_files("/tmp/x", base=None) == ["file1.py"]
+    actual_refs = [argv[2] for argv, _ in calls if argv[:2] == ["merge-base", "HEAD"]]
+    if "HEAD~1" in refs:
+        actual_refs.append(next(argv[1] for argv, _ in calls if argv[0] == "rev-parse"))
+    assert actual_refs == refs
+    assert calls[-2][0][-1] == selected
 
 
 def test_matrix_catalog_fails_loud_on_broken_yaml(tmp_path):
