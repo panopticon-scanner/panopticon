@@ -429,3 +429,20 @@ def test_a_failed_root_preflight_names_the_command_the_caller_asked_for(tmp_path
     assert proc.returncode == 128
     assert proc.stderr == "fatal: not a git repository"
     assert "diff" in proc.args and "config" not in proc.args
+
+
+@pytest.mark.parametrize("args", [
+    ["-c", "core.hooksPath=/somewhere/else", "status", "--porcelain", "-z"],
+    ["-c", "core.fsmonitor=printf hit", "status", "--porcelain", "-z"],
+    ["-c", "CORE.HOOKSPATH=/x", "rev-parse", "HEAD"],
+    ["diff", "--ext-diff", "HEAD"],
+    ["diff", "--textconv", "HEAD"],
+])
+def test_a_caller_cannot_undo_what_the_probe_pins(tmp_path, args):
+    """#2006 review N2: a caller's `-c` for a key the probe sets, or a flag
+    re-enabling a diff driver, comes later in argv and would win. Refused."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
+    with pytest.raises(ValueError, match="override|re-enable"):
+        safe_git.probe(str(repo), args)

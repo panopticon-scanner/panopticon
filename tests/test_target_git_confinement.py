@@ -524,9 +524,6 @@ class SetupAndRunioAreConfined(unittest.TestCase):
         self.assertIs(runio._foreign_manifest({"review_root": repo}, repo, manifest), True)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class DiffDriversAreRefused(unittest.TestCase):
     """#2006 fix round 2, C1: the reviewer's `diff.external` reproduction.
@@ -575,3 +572,7 @@ class DiffDriversAreRefused(unittest.TestCase):
             diff_map.hunk_map(repo, "main")
         self.assertIn("diff.hostile.command", str(caught.exception))
         self.assertFalse(os.path.exists(marker))
+
+
+if __name__ == "__main__":
+    unittest.main()

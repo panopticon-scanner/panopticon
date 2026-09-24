@@ -113,8 +113,10 @@ def _no_hooks_path():
     A real empty directory rather than `/dev/null` (which this git accepts, but
     only via the ENOTDIR path) or a nonexistent path (which a future git could
     reasonably call a configuration error). Created on first use, never at
-    import, and left for the OS temp sweep: it is empty, and removing it
-    mid-process would re-expose every later launch.
+    import, and left for the OS temp sweep. Deleting it mid-process does NOT
+    re-expose hooks -- git treats a missing `core.hooksPath` as "no hooks"
+    (measured in the #2006 review) -- so keeping it is only about never
+    handing a future git a path it might call a configuration error.
     """
     global _HOOKS_PATH
     if _HOOKS_PATH is None:
@@ -167,13 +169,32 @@ def _subcommand(args):
     return None if index is None else args[index]
 
 
+# Settings `_launch_argv` pins on every launch. A caller's own `-c key=...`
+# comes AFTER the probe's in argv and would win (measured in the #2006
+# review: `-c core.hooksPath=<evil>` ran the planted hook), so the probe
+# refuses them rather than trusting every future caller to know that.
+_PROBE_PINNED_CONFIG = ("core.fsmonitor", "core.hookspath")
+# Likewise the flags that would re-enable the diff drivers `_NO_DRIVERS`
+# turns off (a later flag wins in git).
+_DRIVER_ENABLING_OPTIONS = ("--ext-diff", "--textconv")
+
+
 def _reject_redirection(args):
-    """Refuse an argv that could move the final call off the validated root."""
+    """Refuse an argv that could move the final call off the validated root,
+    or undo a setting the probe pins on every launch."""
+    previous = None
     for token in args:
         if token.split("=", 1)[0] in _REDIRECTING_GLOBAL_OPTIONS:
             raise ValueError(
                 "safe Git: %r would redirect the probe off the root it validated; "
                 "pass a different root instead" % token)
+        if previous == "-c" and token.split("=", 1)[0].lower() in _PROBE_PINNED_CONFIG:
+            raise ValueError(
+                "safe Git: %r would override a setting the probe pins itself" % token)
+        if token in _DRIVER_ENABLING_OPTIONS:
+            raise ValueError(
+                "safe Git: %r would re-enable a diff driver the probe disables" % token)
+        previous = token
 
 
 def _subcommand_index(args):
