@@ -286,6 +286,7 @@ groups:
     - tests/test_matrix_coverage.py
     - tests/test_catalog_data.py
     - tests/test_plan_contract.py
+    - tests/test_tracked_paths.py
     panels:
     - ARC
     - SEC
