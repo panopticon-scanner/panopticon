@@ -107,10 +107,9 @@ def body_for(f, doc=DOC, doc_url=DOC_URL, run_label=RUN_LABEL, run_date=RUN_DATE
     ])
 
 
-# The gh-issue-create retry loop and the resumable ledger live in
-# file_issues.py — this filer used to carry byte-for-byte copies, which had
-# already diverged (file_issues.create gained the rc=0/empty-stdout backoff
-# this copy lacked). Delegate instead.
+# Durable creation intent and the resumable ledger live in
+# file_issues.py. Keep one implementation for finding and FIXME creation,
+# including repository binding and reconciliation after ambiguous acceptance.
 create = file_issues.create
 
 
@@ -122,6 +121,7 @@ def key_for(run_label, section_id):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--repo", type=file_issues.validate_repo, default=file_issues.REPO_SLUG)
     ap.add_argument("--limit", type=int)
     ap.add_argument("--throttle", type=float, default=8.0)
     ap.add_argument("--doc", default=DOC, help="path to the run's FIXME doc")
@@ -133,7 +133,7 @@ def main():
     a = ap.parse_args()
 
     fixmes = parse(a.doc)
-    ledger = {} if a.dry_run else file_issues.load_ledger(LEDGER)
+    ledger = {} if a.dry_run else file_issues.load_filing_ledger(LEDGER, a.repo)
     # Only the original default run-2 source may inherit historical bare keys.
     # Keep those rows untouched; recording a later section writes the v2 map.
     legacy_default = a.run_label == RUN_LABEL and a.doc == DOC
@@ -156,7 +156,9 @@ def main():
         url = create(file_issues.scrub(title),
                      file_issues.scrub(body),
                      f["labels"] or ["self-scan"],
-                     a.dry_run, a.throttle, env=env)
+                     a.dry_run, a.throttle, env=env, repo=a.repo,
+                     operation_id=key_for(a.run_label, f["id"]),
+                     ledger_path=LEDGER, kind="fixme")
         if url:
             file_issues.record(ledger, key_for(a.run_label, f["id"]), url, LEDGER)
             created += 1
