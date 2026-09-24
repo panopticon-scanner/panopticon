@@ -302,14 +302,32 @@ def _load_progress(path, repo_slug):
     return loaded
 
 
+def _progress_bytes(progress):
+    data = (json.dumps(progress, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    if len(data) > PROGRESS_MAX_BYTES:
+        raise ValueError("progress file too large for pending acknowledgements")
+    return data
+
+
+def _reserve_progress(progress, action_keys):
+    # Reserve the largest possible intermediate state before any remote call.
+    # Each new entry first records a comment with closed=false; closing later
+    # changes false to true and shrinks JSON by one byte. Existing false flags
+    # likewise can only shrink, and duplicate action keys need one entry.
+    reserved = dict(progress["actions"])
+    for key in action_keys:
+        reserved.setdefault(key, {"commented": True, "closed": False})
+    _progress_bytes(dict(progress, actions=reserved))
+
+
 def _save_progress(progress, path):
     """Replace a receipt in its own directory after each successful gh call."""
+    data = _progress_bytes(progress)
     directory = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix=".reconcile-progress-", dir=directory)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(progress, fh, sort_keys=True, indent=2)
-            fh.write("\n")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
@@ -347,6 +365,7 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
         if progress_path is not None:
             progress = _load_progress(progress_path, repo_slug)
             action_keys = [_action_key(a, repo_slug) for a in actions]
+            _reserve_progress(progress, action_keys)
         ok, reason = preflight_authorized(owner, repo, runner=runner)
         if not ok:
             print("refusing: authenticated gh user is not an owner/admin of %s/%s — %s"

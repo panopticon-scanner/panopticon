@@ -703,6 +703,61 @@ class TestApply(unittest.TestCase):
                                       sleep=lambda s: None, progress_path=progress)
         self.assertEqual([c for c in calls if c[:2] == ["gh", "issue"]], [])
 
+    def test_receipt_capacity_reserved_before_mutation_and_close_resume(self):
+        action = self._actions()[1]
+        key = reconcile_apply._action_key(action, "o/r")
+        receipt = {"version": 1, "repo": "o/r", "actions": {}}
+        def encoded():
+            return (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode()
+        # Fill the actual 4 MiB format to the largest whole-entry state.
+        entry_size = 128  # one 64-character key, commented=true, closed=false
+        count = (reconcile_apply.PROGRESS_MAX_BYTES - len(encoded())) // entry_size
+        receipt["actions"] = {"%064x" % i: {"commented": True, "closed": False}
+                              for i in range(count)}
+        while len(encoded()) <= reconcile_apply.PROGRESS_MAX_BYTES:
+            receipt["actions"]["%064x" % len(receipt["actions"])] = {
+                "commented": True, "closed": False}
+        receipt["actions"].popitem()
+        # false is one byte longer than true: fill the remaining byte capacity
+        # with valid historical entries, exercising exactly the reader's cap.
+        spare = reconcile_apply.PROGRESS_MAX_BYTES - len(encoded())
+        for old_key in list(receipt["actions"])[:spare]:
+            receipt["actions"][old_key]["commented"] = False
+        self.assertEqual(len(encoded()), reconcile_apply.PROGRESS_MAX_BYTES)
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "progress.json")
+            with open(path, "wb") as fh:
+                fh.write(encoded())
+            original = encoded()
+            with self.assertRaisesRegex(ValueError, "too large"):
+                reconcile_apply.apply([action], dry=False, confirm_close=True,
+                                      runner=self._admin_runner(calls), sleep=lambda s: None,
+                                      progress_path=path)
+            self.assertEqual(calls, [])
+            with open(path, "rb") as fh:
+                self.assertEqual(fh.read(), original)
+            # One freed entry admits this action's comment acknowledgement.
+            receipt["actions"].popitem()
+            with open(path, "wb") as fh:
+                fh.write(encoded())
+            with self.assertRaisesRegex(ValueError, "too large"):
+                reconcile_apply.apply(self._actions(), dry=False,
+                                      runner=self._admin_runner(calls), sleep=lambda s: None,
+                                      progress_path=path)
+            self.assertEqual(calls, [])
+            self.assertEqual((1, 0), reconcile_apply.apply(
+                [action], dry=False, runner=self._admin_runner(calls),
+                sleep=lambda s: None, progress_path=path))
+            self.assertEqual(os.path.getsize(path), reconcile_apply.PROGRESS_MAX_BYTES)
+            self.assertTrue(reconcile_apply._load_progress(path, "o/r")["actions"][key]["commented"])
+            calls.clear()
+            self.assertEqual((0, 1), reconcile_apply.apply(
+                [action], dry=False, confirm_close=True, runner=self._admin_runner(calls),
+                sleep=lambda s: None, progress_path=path))
+            self.assertEqual([c[2] for c in calls if c[:2] == ["gh", "issue"]], ["close"])
+            self.assertTrue(reconcile_apply._load_progress(path, "o/r")["actions"][key]["closed"])
+
     def test_missing_progress_directory_fails_before_issue_mutation(self):
         calls = []
         with tempfile.TemporaryDirectory() as d:
