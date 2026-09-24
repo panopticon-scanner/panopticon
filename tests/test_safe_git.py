@@ -183,3 +183,87 @@ def test_unreadable_checkout_boundary_does_not_launch_git(tmp_path):
         with pytest.raises(OSError):
             safe_git.probe(str(tmp_path), ["rev-parse", "--show-toplevel"], runner=runner)
     runner.assert_not_called()
+
+
+# --- #2006: the preflight gate is a CAPABILITY check, not argv equality -------
+# #1985 gated the preflight on `args != ["status", "--porcelain", "-z"]`, so
+# every other spelling of the same command -- a reordered flag, a pathspec,
+# `--porcelain=v1` -- took the single unpreflighted call and skipped both the
+# filter refusal and the submodule bound. These pin the direction the gate
+# fails in: a spelling nobody enumerated preflights.
+
+_PLANTED_FILTER = "filter.fixture.clean\nfixture-command-value-must-not-appear\0"
+
+
+def _preflight_refusing_runner():
+    """A runner whose first (config) reply plants a command filter.
+
+    The refusal is raised from the preflight and nowhere else, so
+    "did this argv preflight?" is exactly "did this raise on call 1?".
+    """
+    return mock.Mock(return_value=subprocess.CompletedProcess([], 0, _PLANTED_FILTER, ""))
+
+
+@pytest.mark.parametrize("args", [
+    ["status", "-z", "--porcelain"],                     # flag order reversed
+    ["status", "--porcelain=v1", "-z"],                  # equals-form spelling
+    ["status", "--porcelain", "-z", "--", "src"],        # a pathspec
+    ["status"],                                          # the bare subcommand
+])
+def test_every_spelling_of_status_preflights(tmp_path, args):
+    runner = _preflight_refusing_runner()
+    with pytest.raises(OSError, match="filter"):
+        safe_git.probe(str(tmp_path), args, runner=runner)
+    assert runner.call_count == 1
+
+
+@pytest.mark.parametrize("args", [
+    ["fsck"],                                            # never enumerated
+    ["diff", "--name-only", "-z", "HEAD"],               # runs diff/textconv drivers
+    ["merge-base", "HEAD", "main"],
+    ["ls-files", "--eol"],                               # the one filtered ls-files mode
+    ["-c", "core.quotepath=false", "diff", "--name-only"],   # a global option first
+    ["--no-pager", "rev-parse", "HEAD"],                 # an option we cannot classify
+])
+def test_unknown_and_content_reading_spellings_preflight(tmp_path, args):
+    runner = _preflight_refusing_runner()
+    with pytest.raises(OSError, match="filter"):
+        safe_git.probe(str(tmp_path), args, runner=runner)
+    assert runner.call_count == 1
+
+
+@pytest.mark.parametrize("args", [
+    ["rev-parse", "--show-toplevel"],
+    ["rev-parse", "--verify", "-q", "main^{commit}"],
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    ["symbolic-ref", "--short", "HEAD"],
+    ["rev-list", "-1", "HEAD"],
+])
+def test_allowlisted_plumbing_runs_once_without_a_preflight(tmp_path, args):
+    runner = _preflight_refusing_runner()
+    result = safe_git.probe(str(tmp_path), args, runner=runner)
+    assert result.returncode == 0
+    assert runner.call_count == 1
+    assert runner.call_args.args[0][5:] == args
+
+
+def test_only_status_is_pinned_to_report_submodule_dirt(tmp_path):
+    # `--ignore-submodules=none` is a status flag; appending it to any other
+    # preflighted subcommand would either be rejected by git or change what the
+    # caller asked for.
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
+    safe_git.probe(str(tmp_path), ["diff", "--name-only", "-z", "HEAD"], runner=runner)
+    assert runner.call_args.args[0][5:] == ["diff", "--name-only", "-z", "HEAD"]
+
+
+def test_caller_timeout_and_bytes_contract_survive_the_preflight(tmp_path):
+    # discovery's `_git` asks for 30 s and bytes; the preflight parses text and
+    # must keep doing so, so only the FINAL call carries the caller's contract.
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", ""),
+                                    subprocess.CompletedProcess([], 0, "", ""),
+                                    subprocess.CompletedProcess([], 0, b"", b"")])
+    with mock.patch.object(safe_git.time, "monotonic", side_effect=[100, 101, 102, 103]):
+        safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner,
+                       timeout=30, text=False)
+    assert [call.kwargs["text"] for call in runner.call_args_list] == [True, True, False]
+    assert [call.kwargs["timeout"] for call in runner.call_args_list] == [29, 28, 27]

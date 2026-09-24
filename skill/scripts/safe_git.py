@@ -1,15 +1,63 @@
-"""Trusted, bounded Git probes for validation and initial root resolution.
+"""Trusted, bounded Git probes for every git call made against the TARGET.
 
 This prevents the known status fsmonitor/filter command paths, not arbitrary Git
 sandboxing. Config/index files must remain stable during preflight and status.
+
+The preflight is the DEFAULT, not a special case for one argv (#2006). #1985
+gated it on `args == ["status", "--porcelain", "-z"]`, so a reordered flag, a
+pathspec or `--porcelain=v1` -- any spelling a later caller happened to use --
+silently skipped the filter refusal and the submodule bound. The gate is now a
+capability question ("can this subcommand run a repository-configured
+command?") answered from an explicit allowlist of plumbing that cannot, so an
+unknown or unenumerated spelling fails CLOSED into the preflight.
 """
+from typing import TYPE_CHECKING
 import os
 import subprocess
 import time
 
-from scripts import executable
+# Same dual-import seam as `diff_map`, on the same module: `discovery.py` runs
+# as a standalone CLI with only skill/scripts on sys.path, where `scripts` does
+# not resolve as a package. Under pytest (conftest) and under driver.py's own
+# bootstrap the try arm wins and binds the SAME module object every other
+# caller patches.
+if TYPE_CHECKING:
+    from scripts import executable
+else:
+    try:
+        from scripts import executable
+    except ImportError:
+        import executable
 
 _MAX_REPOSITORIES = 64
+
+# Git subcommands that cannot run a repository-configured command, mapped to
+# the flags that would make them able to. Anything NOT named here -- including
+# every spelling of `status`, every content-reading command (`diff`, `stash`,
+# `archive`, `checkout`), and any subcommand nobody has classified yet -- takes
+# the preflight. The value is the exclusion list: a listed flag sends that
+# spelling back to the preflight.
+#
+# - `rev-parse`: parses revisions and prints paths/SHAs. It opens no worktree
+#   content, so no clean/textconv filter, no diff or merge driver and no
+#   fsmonitor query is reachable from it.
+# - `ls-files`: reports index and worktree NAMES. `--eol` is the one mode that
+#   reads file content through the attribute machinery (and so through a
+#   configured filter), so it is excluded by flag rather than assumed absent.
+# - `symbolic-ref`: reads or writes one ref name; no worktree content.
+# - `rev-list`: walks commit history. Its `--filter=` is an object filter, not
+#   a command, and no worktree file is opened.
+_NO_CONFIGURED_COMMAND = {
+    "rev-parse": (),
+    "ls-files": ("--eol",),
+    "symbolic-ref": (),
+    "rev-list": (),
+}
+# Global options that take a separate value, so the token after them is that
+# value and never the subcommand. Any OTHER leading option is unclassified,
+# which means the subcommand cannot be identified and the call preflights.
+_VALUED_GLOBAL_OPTIONS = ("-c", "-C", "--git-dir", "--work-tree", "--namespace",
+                          "--exec-path", "--config-env")
 
 
 def _checkout_boundary(start):
@@ -34,29 +82,61 @@ def _checkout_boundary(start):
         directory = parent
 
 
-def probe(root, args, runner=subprocess.run):
-    """Run a captured text probe with one 15-second subprocess deadline.
+def subcommand(args):
+    """The git subcommand in `args`, or None when it cannot be identified.
 
-    Status preflights effective config and tracked submodules rather than
-    disabling content normalization or hiding submodule dirt. Unsupported
+    None is the fail-closed answer: a leading global option this does not know
+    how to consume could be hiding anything behind it, so the caller treats an
+    unidentified subcommand exactly like an unenumerated one.
+    """
+    rest = list(args)
+    while rest and rest[0].startswith("-"):
+        option = rest.pop(0)
+        if option in _VALUED_GLOBAL_OPTIONS:
+            if not rest:
+                return None
+            rest.pop(0)
+        elif "=" in option:
+            continue                   # `--git-dir=x`: value attached, no token
+        else:
+            return None
+    return rest[0] if rest else None
+
+
+def _needs_preflight(args):
+    """Whether this argv may reach a repository-configured command."""
+    name = subcommand(args)
+    if name not in _NO_CONFIGURED_COMMAND:
+        return True
+    excluded = _NO_CONFIGURED_COMMAND[name]
+    return any(token.split("=", 1)[0] in excluded for token in args)
+
+
+def probe(root, args, runner=subprocess.run, timeout=15, text=True):
+    """Run a captured probe with one shared `timeout`-second deadline.
+
+    `text` and `timeout` are the CALLER's contract for the command it asked
+    for; the preflight always reads text, because it parses config and index
+    records. Preflighting reads effective config and tracked submodules rather
+    than disabling content normalization or hiding submodule dirt. Unsupported
     command filters fail closed; their values are never included in errors.
     """
     resolved = executable.resolve("git", _checkout_boundary(root), os.environ.get("PATH", ""))
     env = {"PATH": resolved.path_env, "LC_ALL": "C",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
            "GIT_CONFIG_GLOBAL": os.devnull}
-    if args != ["status", "--porcelain", "-z"]:
+    if not _needs_preflight(args):
         return runner([resolved.path, "-C", root, "-c", "core.fsmonitor=false", *args],
-                      capture_output=True, text=True, timeout=15, env=env)
+                      capture_output=True, text=text, timeout=timeout, env=env)
 
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + timeout
 
-    def run(directory, command):
+    def run(directory, command, as_text=True):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise subprocess.TimeoutExpired("trusted git status probe", 15)
+            raise subprocess.TimeoutExpired("trusted git probe", timeout)
         return runner([resolved.path, "-C", directory, "-c", "core.fsmonitor=false", *command],
-                      capture_output=True, text=True, timeout=remaining, env=env)
+                      capture_output=True, text=as_text, timeout=remaining, env=env)
 
     root_real = os.path.realpath(root)
     pending = [root_real]
@@ -108,4 +188,11 @@ def probe(root, args, runner=subprocess.run):
                 pending.append(child)
                 if len(seen) + len(pending) > _MAX_REPOSITORIES:
                     raise OSError("safe Git status: submodule traversal exceeds 64 repositories")
-    return run(root, [*args, "--ignore-submodules=none"])
+    final = list(args)
+    if subcommand(args) == "status":
+        # A status that hides submodule dirt is not an integrity baseline; every
+        # OTHER subcommand keeps the argv the caller asked for, because this is
+        # a `status` flag and appending it elsewhere would change or break the
+        # command.
+        final.append("--ignore-submodules=none")
+    return run(root, final, as_text=text)
