@@ -109,6 +109,10 @@ def _minimal_report():
 
 
 class TestReportSchema(unittest.TestCase):
+    def _assert_required_top_level_keys(self, report):
+        for key in ("meta", "summary", "groups", "findings", "cross_panel"):
+            self.assertIn(key, report)
+
     def test_schema_is_valid_json(self):
         with open(SCHEMA_PATH, encoding="utf-8") as fh:
             schema = json.load(fh)
@@ -149,9 +153,19 @@ class TestReportSchema(unittest.TestCase):
         jsonschema.validate(legacy, schema)                      # absent -> still valid
 
     def test_minimal_report_has_required_top_level_keys(self):
-        report = _minimal_report()
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high",
+                                     timestamp="2026-01-01T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
+        ))
+        self._assert_required_top_level_keys(report)
         for key in ("meta", "summary", "groups", "findings", "cross_panel"):
-            self.assertIn(key, report)
+            # Drop one field from the actual builder result to prove that the
+            # assertion detects a contract regression, not a fixture typo.
+            broken = {k: v for k, v in report.items() if k != key}
+            with self.assertRaises(AssertionError):
+                self._assert_required_top_level_keys(broken)
         self.assertNotIn("recommendations", report)
         self.assertIn("models_used", report["meta"])
         self.assertNotIn("discarded_claims_count", report["summary"])

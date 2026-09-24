@@ -15,19 +15,27 @@ import scripts.write_guard_hook as wg
 
 class TestDecide(unittest.TestCase):
     def setUp(self):
-        self.allow = {os.path.realpath(".panopticon/findings-g1-code-panel_review.json")}
+        private = tempfile.TemporaryDirectory()
+        self.addCleanup(private.cleanup)
+        self.target = os.path.join(private.name, ".panopticon",
+                                   "findings-g1-code-panel_review.json")
+        os.makedirs(os.path.dirname(self.target))
+        self.allow = {os.path.realpath(self.target)}
 
     def test_write_to_allowed_out_file_is_permitted(self):
-        ok, _ = wg.decide("Write", ".panopticon/findings-g1-code-panel_review.json", self.allow)
+        ok, _ = wg.decide("Write", self.target, self.allow)
         self.assertTrue(ok)
 
     def test_write_outside_allowlist_is_blocked(self):
-        ok, reason = wg.decide("Write", "skill/scripts/synthesize.py", self.allow)
+        outside = os.path.join(os.path.dirname(self.target), "other.json")
+        ok, reason = wg.decide("Write", outside, self.allow)
         self.assertFalse(ok)
         self.assertIn("outside", reason.lower())
 
     def test_write_to_sibling_findings_not_in_plan_is_blocked(self):
-        ok, _ = wg.decide("Edit", ".panopticon/findings-g9-code-panel_review.json", self.allow)
+        sibling = os.path.join(os.path.dirname(self.target),
+                               "findings-g9-code-panel_review.json")
+        ok, _ = wg.decide("Edit", sibling, self.allow)
         self.assertFalse(ok)
 
     def test_non_write_tool_is_permitted(self):
@@ -39,7 +47,7 @@ class TestDecide(unittest.TestCase):
         # out of scope by construction (session-wide hook can't distinguish the
         # orchestrator's own shell use). This test pins the STATED behavior so
         # a future reader doesn't mistake the allow for a covered case.
-        ok, reason = wg.decide("Bash", "skill/scripts/synthesize.py", self.allow)
+        ok, reason = wg.decide("Bash", self.target, self.allow)
         self.assertTrue(ok)
         self.assertEqual(reason, "")
 

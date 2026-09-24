@@ -247,7 +247,10 @@ class TestRedactBeforeWrite(unittest.TestCase):
              contextlib.redirect_stdout(out):
             cg.main()
         path = os.path.join(out_dir, "t.raw")
-        written = open(path, "rb").read() if os.path.exists(path) else None
+        written = None
+        if os.path.exists(path):
+            with open(path, "rb") as fh:
+                written = fh.read()
         return json.loads(out.getvalue())["t"], written
 
     def test_a_captured_secret_never_reaches_the_golden(self):
