@@ -29,9 +29,11 @@ from unittest import mock
 from conftest import SKILL_ROOT
 import scripts.diff_map as diff_map
 import scripts.discovery as discovery
+import scripts.phases.runio as runio
 import scripts.phases.validate as validate_phase
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
+import scripts.setup_flow as setup_flow
 
 from tools.git_repo import (add_plumbing_submodule, hostile_marker,
                             make_git_repo, path_shim_git, plant_clean_filter,
@@ -193,11 +195,13 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
 
     #1989 rewrote `_worktree_dirty` in the same batch as #1985 and left it on
     the raw path, so the rule has to be checkable by a test rather than
-    remembered. It covers every module that runs git against the target:
-    discovery, the run manifest, and the delta map.
+    remembered. `MODULES` is exactly what it claims: this guard covers those
+    five files and nothing else, so a sixth module that starts running git
+    against the target is NOT protected until it is named here.
     """
 
-    MODULES = ("discovery.py", "run_manifest.py", "diff_map.py")
+    MODULES = ("discovery.py", "run_manifest.py", "diff_map.py", "setup_flow.py",
+               os.path.join("phases", "runio.py"))
 
     # Functions that genuinely cannot use the probe. Small and explicit (never
     # a pattern): each entry is a decision, and a decision that stops being
@@ -459,6 +463,65 @@ class SubmoduleDirtStaysVisibleWithAPathspec(unittest.TestCase):
         argv = seen[-1]
         self.assertIn("--ignore-submodules=none", argv)
         self.assertLess(argv.index("--ignore-submodules=none"), argv.index("--"))
+
+
+class SetupAndRunioAreConfined(unittest.TestCase):
+    """#2006 fix round 2, I2: the two callers "every target-facing git call" missed.
+
+    `setup_flow._git_blanket_pattern` ran bare `["git", "-C", repo,
+    "check-ignore", ...]` with NO `env=` at all -- the same shape this PR calls
+    a defect in `run_manifest` -- against the reviewed repo during setup.
+    `runio._foreign_manifest` resolved a trusted git but launched it without the
+    `GIT_CONFIG_*` suppression and without `core.fsmonitor=false`, the exact
+    shape ruling 1 fixed in `diff_map`.
+    """
+
+    def _repo(self, **kwargs):
+        return make_git_repo(test_case=self, panopticon=True,
+                             files={"a.py": "value = 1\n", ".gitignore": ".panopticon/\n"},
+                             **kwargs)
+
+    def test_the_blanket_pattern_probe_never_runs_the_targets_fsmonitor(self):
+        repo = self._repo()
+        marker = plant_fsmonitor_command(repo)
+        self.assertEqual(setup_flow._git_blanket_pattern(repo), ".panopticon/")
+        self.assertFalse(os.path.exists(marker))
+
+    def test_an_inherited_git_environment_cannot_redirect_the_blanket_probe(self):
+        # The reviewer's case: with GIT_DIR pointing at another repo, the answer
+        # came from that repo, not from the one asked about.
+        asked = make_git_repo(test_case=self, panopticon=True,
+                              files={"a.py": "value = 1\n"})     # NOTHING ignored here
+        other = self._repo()                                      # ignores .panopticon/
+        with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(other, ".git"),
+                                          "GIT_WORK_TREE": other}):
+            self.assertEqual(setup_flow._git_blanket_pattern(asked), "")
+        self.assertEqual(setup_flow._git_blanket_pattern(other), ".panopticon/")
+
+    def test_the_foreign_manifest_check_never_runs_the_targets_fsmonitor(self):
+        repo = self._repo()
+        marker = plant_fsmonitor_command(repo)
+        manifest = os.path.join(repo, ".panopticon", "run-manifest.json")
+        os.makedirs(os.path.dirname(manifest), exist_ok=True)
+        with open(manifest, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        # Untracked (gitignored) manifest: not committed into the target.
+        self.assertIs(runio._foreign_manifest({"review_root": repo}, repo, manifest), False)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_a_committed_manifest_is_still_detected_as_foreign(self):
+        # The signal itself must keep working through the probe.
+        repo = self._repo()
+        manifest = os.path.join(repo, ".panopticon", "run-manifest.json")
+        os.makedirs(os.path.dirname(manifest), exist_ok=True)
+        with open(manifest, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        subprocess.run(["git", "-C", repo, "add", "-f",
+                        os.path.relpath(manifest, repo)], check=True,
+                       capture_output=True, timeout=30)
+        subprocess.run(["git", "-C", repo, "commit", "-qm", "smuggle"], check=True,
+                       capture_output=True, timeout=30)
+        self.assertIs(runio._foreign_manifest({"review_root": repo}, repo, manifest), True)
 
 
 if __name__ == "__main__":
