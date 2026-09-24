@@ -46,7 +46,7 @@ class TestSaveRecoveredLedger(unittest.TestCase):
             path = os.path.join(d, "nested", "dir", "ledger.json")
             reconcile_apply.save_recovered_ledger(linkage, path=path)
             with open(path, encoding="utf-8") as fh:
-                self.assertEqual(json.load(fh), linkage)
+                self.assertEqual(json.load(fh), {"schema_version": 2, "entries": linkage})
             self.assertFalse(os.path.exists(path + ".tmp"))  # temp replaced, not left
 
     def test_overwrites_existing_ledger_atomically(self):
@@ -55,9 +55,9 @@ class TestSaveRecoveredLedger(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("{\"stale\": true}")
             new = {"fp|F-2|b.py|finding": "https://github.com/o/r/issues/2"}
-            reconcile_apply.save_recovered_ledger(new, path=path)
+            reconcile_apply.save_recovered_ledger(new, path=path, replace=True)
             with open(path, encoding="utf-8") as fh:
-                self.assertEqual(json.load(fh), new)   # fully replaced, no merge
+                self.assertEqual(json.load(fh), {"schema_version": 2, "entries": new})   # fully replaced, no merge
 
     def test_output_is_sorted_and_indented_for_stable_diffs(self):
         linkage = {"b|B|f|finding": "u2", "a|A|f|finding": "u1"}
@@ -82,7 +82,7 @@ class TestRecoverLinkage(unittest.TestCase):
     def test_parses_fingerprint_id_location_kind_from_issue_bodies(self):
         issues = [
             {"number": 305, "labels": [{"name": "self-scan"}],
-             "body": "**Location:** `tests/test_verdict_ingest.py:12`\n\n"
+             "body": "**Location:** `tests/test_verdict_ingest.py`\n\n"
                      "---\n\n**Fingerprint:** `008bafabf583e494` — stable.\n"
                      "**Finding id in report:** `NOV-003`\n"},
             {"number": 399, "labels": [{"name": "self-scan"}, {"name": "false-positive"}],
@@ -102,13 +102,14 @@ class TestRecoverLinkage(unittest.TestCase):
             linkage["029bc5414dc2a077|NOV-008|skill/scripts/tools/npm_audit.py|rejected"],
             "https://github.com/panopticon-scanner/panopticon/issues/399")
 
-    def test_skips_issues_missing_the_expected_footer(self):
+    def test_refuses_issues_missing_the_expected_footer(self):
         issues = [{"number": 1, "labels": [], "body": "no footer here"}]
 
         def runner(argv, capture_output, text):
             return FakeCompleted(json.dumps(issues))
 
-        self.assertEqual(reconcile_apply.recover_linkage_from_github(runner=runner), {})
+        with self.assertRaises(reconcile_apply.IncompleteRecovery):
+            reconcile_apply.recover_linkage_from_github(runner=runner)
 
     def test_recovers_empty_location_for_no_file_sentinel(self):
         # file_issues.body_for() writes the "(no file)" sentinel when
@@ -122,7 +123,11 @@ class TestRecoverLinkage(unittest.TestCase):
         def runner(argv, capture_output, text):
             return FakeCompleted(json.dumps(issues))
 
-        linkage = reconcile_apply.recover_linkage_from_github(runner=runner)
+        with tempfile.TemporaryDirectory() as d:
+            report = Path(d) / "source.json"
+            report.write_text(json.dumps({"findings": [f]}))
+            linkage = reconcile_apply.recover_linkage_from_github(
+                runner=runner, reports={file_issues.REPORT: report})
         expected_key = file_issues.key_for(f, rejected=False)
         self.assertEqual(expected_key, "abc123|F-42||finding")
         self.assertIn(expected_key, linkage)
@@ -146,7 +151,11 @@ class TestRecoverLinkage(unittest.TestCase):
         def runner(argv, capture_output, text):
             return FakeCompleted(json.dumps(issues))
 
-        linkage = reconcile_apply.recover_linkage_from_github(runner=runner)
+        with tempfile.TemporaryDirectory() as d:
+            report = Path(d) / "source.json"
+            report.write_text(json.dumps({"findings": [f]}))
+            linkage = reconcile_apply.recover_linkage_from_github(
+                runner=runner, reports={file_issues.REPORT: report})
         expected_key = file_issues.key_for(f, rejected=False)
         self.assertEqual(expected_key, "deadbeef|NOV-008|%s|finding" % rel)
         self.assertIn(expected_key, linkage)          # recovered, not lost
@@ -171,7 +180,7 @@ class TestRecoverLinkage(unittest.TestCase):
         self.assertIn("--limit", calls[0])
         self.assertEqual(calls[0][calls[0].index("--limit") + 1], "1000")
 
-    def test_processes_up_to_1000_issues(self):
+    def test_refuses_1000_issue_cap(self):
         issues = [
             {"number": i, "labels": [{"name": "self-scan"}],
              "body": "**Location:** `f%d.py`\n\n---\n\n"
@@ -183,13 +192,10 @@ class TestRecoverLinkage(unittest.TestCase):
         def runner(argv, capture_output, text):
             return FakeCompleted(json.dumps(issues))
 
-        with self.assertWarns(UserWarning):
-            linkage = reconcile_apply.recover_linkage_from_github(runner=runner)
-        self.assertEqual(len(linkage), 1000)
-        self.assertIn("0000000000000000|F-0|f0.py|finding", linkage)
-        self.assertIn("00000000000003e7|F-999|f999.py|finding", linkage)
+        with self.assertRaises(reconcile_apply.IncompleteRecovery):
+            reconcile_apply.recover_linkage_from_github(runner=runner)
 
-    def test_warns_when_results_may_be_truncated(self):
+    def test_refuses_when_results_may_be_truncated(self):
         """A full 1000-result page equals the request limit and may be truncated."""
         issues = [
             {"number": i, "labels": [{"name": "self-scan"}],
@@ -202,13 +208,13 @@ class TestRecoverLinkage(unittest.TestCase):
         def runner(argv, capture_output, text):
             return FakeCompleted(json.dumps(issues))
 
-        with self.assertWarns(UserWarning):
+        with self.assertRaises(reconcile_apply.IncompleteRecovery):
             reconcile_apply.recover_linkage_from_github(runner=runner)
 
     def test_recovers_path_containing_colon(self):
         issues = [
             {"number": 505, "labels": [{"name": "self-scan"}],
-             "body": "**Location:** `src/Foo:Bar.cs:42`\n\n"
+             "body": "**Location:** `src/Foo:Bar.cs`\n\n"
                      "---\n\n"
                      "**Fingerprint:** `abc123defabc1234` — stable.\n"
                      "**Finding id in report:** `NOV-COLON`\n"},
@@ -470,6 +476,11 @@ class TestPreflightAuthorized(unittest.TestCase):
 
 
 class TestApply(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.progress_path = Path(directory.name) / "progress.json"
+
     def _actions(self):
         return [{"cohort": "recurring", "fingerprint": "fp1",
                 "issue": "https://github.com/o/r/issues/1", "comment": "c1", "close": False},
@@ -496,6 +507,11 @@ class TestApply(unittest.TestCase):
                     calls = []
                     path = os.path.join(d, "progress.json") if with_progress else None
                     out = io.StringIO()
+                    if not dry and not with_progress:
+                        with self.assertRaisesRegex(ValueError, "progress_path"):
+                            reconcile_apply.apply(actions, dry=False, runner=self._admin_runner(calls))
+                        self.assertEqual(calls, [])
+                        continue
                     with contextlib.redirect_stdout(out):
                         result = reconcile_apply.apply(actions, dry=dry, confirm_close=True,
                                                        runner=self._admin_runner(calls),
@@ -506,7 +522,7 @@ class TestApply(unittest.TestCase):
                         self.assertEqual(out.getvalue().count("DRY comment"), 3)
                     else:
                         comments = [c for c in calls if c[:3] == ["gh", "issue", "comment"]]
-                        self.assertEqual([c[-1] for c in comments], [a["comment"] for a in unique])
+                        self.assertEqual([c[-1] for c in comments], [reconcile_apply._comment_body(a, "o/r") for a in unique])
                         if with_progress:
                             self.assertEqual(reconcile_apply.apply(unique, dry=False,
                                 confirm_close=True, runner=self._admin_runner(calls),
@@ -623,7 +639,7 @@ class TestApply(unittest.TestCase):
         commented, closed = reconcile_apply.apply(self._actions(), dry=False,
                                                    confirm_close=False,
                                                    runner=self._admin_runner(calls),
-                                                   sleep=lambda s: None)
+                                                   sleep=lambda s: None, progress_path=self.progress_path)
         self.assertEqual(commented, 2)
         self.assertEqual(closed, 0)
         issue_calls = [c for c in calls if c[:2] == ["gh", "issue"]]
@@ -638,14 +654,14 @@ class TestApply(unittest.TestCase):
         # body were dropped or swapped.
         bodies = [c[c.index("--body") + 1] for c in issue_calls]
         self.assertEqual(bodies,
-                         [a["comment"] for a in self._actions()])
+                         [reconcile_apply._comment_body(a, "o/r") for a in self._actions()])
 
     def test_live_run_closes_when_confirmed(self):
         calls = []
         commented, closed = reconcile_apply.apply(self._actions(), dry=False,
                                                    confirm_close=True,
                                                    runner=self._admin_runner(calls),
-                                                   sleep=lambda s: None)
+                                                   sleep=lambda s: None, progress_path=self.progress_path)
         self.assertEqual(closed, 1)
         close_calls = [c for c in calls if "close" in c]
         self.assertEqual(len(close_calls), 1)
@@ -664,7 +680,7 @@ class TestApply(unittest.TestCase):
 
         commented, closed = reconcile_apply.apply(self._actions(), dry=False,
                                                    confirm_close=True, runner=runner,
-                                                   sleep=lambda s: None)
+                                                   sleep=lambda s: None, progress_path=self.progress_path)
         self.assertEqual((commented, closed), (0, 0))
         writes = [c for c in calls if c[:2] == ["gh", "issue"]]
         self.assertEqual(writes, [])           # zero comment/close calls
@@ -677,7 +693,7 @@ class TestApply(unittest.TestCase):
                    "issue": "https://github.com/o/other/issues/2", "comment": "c2", "close": True}]
         commented, closed = reconcile_apply.apply(actions, dry=False, confirm_close=True,
                                                    runner=self._admin_runner(calls),
-                                                   sleep=lambda s: None)
+                                                   sleep=lambda s: None, progress_path=self.progress_path)
         self.assertEqual((commented, closed), (0, 0))
         issue_calls = [c for c in calls if c[:2] == ["gh", "issue"]]
         self.assertEqual(issue_calls, [])      # multi-repo guard fires before any writes
@@ -691,7 +707,7 @@ class TestApply(unittest.TestCase):
             return FakeCompleted("")
 
         commented, closed = reconcile_apply.apply([], dry=False, confirm_close=True,
-                                                   runner=runner, sleep=lambda s: None)
+                                                   runner=runner, sleep=lambda s: None, progress_path=self.progress_path)
         self.assertEqual((commented, closed), (0, 0))
         self.assertEqual(calls, [])            # not dry and actions guard is falsy on []
 
@@ -699,12 +715,16 @@ class TestApply(unittest.TestCase):
         actions = self._actions()
         calls = []
         fail = [True]
+        posted = []
 
         def runner(argv, capture_output, text):
             calls.append(argv)
+            if argv[:2] == ["gh", "api"] and "/comments" in argv[2]:
+                return FakeCompleted(json.dumps([] if fail[0] else [{"body": posted[-1]}]))
             if argv[:2] == ["gh", "api"]:
                 return FakeCompleted('{"admin": true}')
             if argv[:3] == ["gh", "issue", "comment"] and argv[3] == "2" and fail[0]:
+                posted.append(argv[-1])
                 return FakeCompleted("", returncode=1, stderr="temporary failure")
             return FakeCompleted("")
 
@@ -718,9 +738,9 @@ class TestApply(unittest.TestCase):
             calls.clear()
             self.assertEqual(reconcile_apply.apply(actions, dry=False, runner=runner,
                                                    sleep=lambda s: None,
-                                                   progress_path=progress), (1, 0))
+                                                   progress_path=progress), (0, 0))
         comments = [c for c in calls if c[:3] == ["gh", "issue", "comment"]]
-        self.assertEqual([c[3] for c in comments], ["2"])
+        self.assertEqual(comments, [])
 
     def test_close_failure_resumes_only_close(self):
         actions = [self._actions()[1]]
@@ -837,7 +857,9 @@ class TestApply(unittest.TestCase):
             runner = self._admin_runner(calls)
             reconcile_apply.apply([action], False, runner=runner, sleep=lambda _: None,
                                   progress_path=path)
-            capacity = path.stat().st_size
+            pending = json.loads(path.read_text())
+            pending["actions"][key] = {"commented": False, "closed": False, "comment_pending": True}
+            capacity = len(reconcile_apply._progress_bytes(pending))
             path.unlink()
             calls.clear()
             with mock.patch.object(reconcile_apply, "PROGRESS_MAX_BYTES", capacity - 1):
@@ -877,7 +899,8 @@ class TestApply(unittest.TestCase):
                         self.assertEqual(receipt["version"], 2)
                         # Before first mutation, persisted receipt has no acks.
                         if len(calls) == 2:
-                            self.assertEqual(receipt["actions"], {})
+                            self.assertEqual(list(receipt["actions"].values()),
+                                [{"commented": False, "closed": False, "comment_pending": True}])
                         return FakeCompleted("")
                     kwargs = dict(dry=False, runner=runner, sleep=lambda _: None,
                                   progress_path=path, reset_progress=mode == "reset")
@@ -1129,7 +1152,9 @@ class TestCliWiring(unittest.TestCase):
                 self.assertEqual(reconcile_apply.main(["apply", str(path), "--no-dry-run"]), 1)
             self.assertIn("mutation failed", err.getvalue())
             self.assertNotIn("LIVE:", out.getvalue())
-            self.assertEqual(json.loads(Path(str(path) + ".progress.json").read_text())["actions"], {})
+            receipts = json.loads(Path(str(path) + ".progress.json").read_text())["actions"]
+            self.assertEqual(list(receipts.values()),
+                             [{"commented": False, "closed": False, "comment_pending": True}])
 
     def test_plan_then_dry_apply_end_to_end(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1177,3 +1202,396 @@ class TestCliWiring(unittest.TestCase):
             ledger = file_issues.load_ledger(p)
             self.assertIn("old1|F-1|%s|finding" % rel_path, ledger)
             self.assertEqual(ledger["old1|F-1|%s|finding" % rel_path], "https://github.com/o/r/issues/1")
+
+
+class TestSafeRecovery(unittest.TestCase):
+    def finding(self, path):
+        return {"fingerprint": "abc123", "id": "F-1", "location": {"file": path}}
+
+    def issue(self, finding, report="source.json", rejected=False):
+        return {"number": 1, "url": "https://github.com/o/r/issues/1",
+                "labels": [{"name": "false-positive"}] if rejected else [],
+                "body": file_issues.scrub(file_issues.body_for(
+                    finding, rejected, report=report))}
+
+    def recover(self, issues, **kwargs):
+        def runner(argv, **kw):
+            self.assertIn("--repo", argv)
+            self.assertEqual(argv[argv.index("--repo") + 1], "o/r")
+            return FakeCompleted(json.dumps(issues))
+        return reconcile_apply.recover_linkage_from_github(repo="o/r", runner=runner, **kwargs)
+
+    def test_producer_source_roundtrip(self):
+        for name in ("@name", "#123", "](", "https://example/a", "Foo:Bar", "a\u200bb", "@\u200bname"):
+            for rejected in (False, True):
+                with self.subTest(name=name, rejected=rejected), tempfile.TemporaryDirectory() as d:
+                    finding = self.finding("src/" + name)
+                    finding["location"]["line_start"] = 12
+                    report = Path(d) / "source.json"
+                    report.write_text(json.dumps({"findings": [] if rejected else [finding],
+                        "discarded_claims": [finding] if rejected else []}))
+                    recovered = self.recover([self.issue(finding, rejected=rejected)],
+                                             reports={"source.json": str(report)})
+                    self.assertEqual(recovered, {file_issues.key_for(finding, rejected):
+                                                 "https://github.com/o/r/issues/1"})
+
+    def test_producer_numeric_suffix_has_two_distinct_originals(self):
+        file_with_line = self.finding("file.py")
+        file_with_line["location"]["line_start"] = 12
+        numeric_path = self.finding("file.py:12")
+        self.assertEqual(self.issue(file_with_line)["body"], self.issue(numeric_path)["body"])
+        keys = []
+        for record in (file_with_line, numeric_path):
+            with self.subTest(record=record), tempfile.TemporaryDirectory() as d:
+                with self.assertRaisesRegex(reconcile_apply.IncompleteRecovery, "source report"):
+                    self.recover([self.issue(record)])
+                source = Path(d) / "source.json"
+                source.write_text(json.dumps({"findings": [record]}))
+                recovered = self.recover([self.issue(record)], reports={"source.json": source})
+                key = file_issues.key_for(record, False)
+                self.assertIn(key, recovered)
+                keys.append(key)
+        self.assertNotEqual(*keys)
+
+    def test_producer_placeholder_and_quote_collisions_require_sources(self):
+        pairs = [(self.finding(""), self.finding("(no file)")),
+                 (self.finding("a`b"), self.finding("a'b"))]
+        for first, second in pairs:
+            self.assertEqual(self.issue(first)["body"], self.issue(second)["body"])
+            keys = []
+            for record in (first, second):
+                with self.subTest(record=record), tempfile.TemporaryDirectory() as d:
+                    with self.assertRaises(reconcile_apply.IncompleteRecovery):
+                        self.recover([self.issue(record)])
+                    source = Path(d) / "source.json"
+                    source.write_text(json.dumps({"findings": [record]}))
+                    recovered = self.recover([self.issue(record)], reports={"source.json": source})
+                    key = file_issues.key_for(record, False)
+                    self.assertIn(key, recovered)
+                    keys.append(key)
+            self.assertNotEqual(*keys)
+
+    def test_ambiguous_location_requires_source(self):
+        for name in ("@name", "a\u200bb", "file:123", "has'quote", "(no file)"):
+            with self.subTest(name=name), self.assertRaisesRegex(RuntimeError, "source report"):
+                self.recover([self.issue(self.finding(name))])
+
+    def test_incomplete_recovery_preserves_existing_cli_output(self):
+        valid = self.issue(self.finding("a.py"))
+        for payload in ({}, [None], [valid] * 1000, [valid, valid],
+                        [dict(valid, url="https://github.com/other/repo/issues/1")],
+                        [dict(valid, body="missing identity")],
+                        [self.issue(self.finding("@name"))],
+                        [valid, dict(valid, number=2, url="https://github.com/o/r/issues/2")]):
+            with self.subTest(payload=str(payload)[:60]), tempfile.TemporaryDirectory() as d:
+                output = Path(d) / "ledger.json"
+                original = b'{"original": "bytes"}\n'
+                output.write_bytes(original)
+                with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+                        FakeCompleted(json.dumps(payload))):
+                    self.assertEqual(reconcile_apply.main(["recover-linkage", "--repo", "o/r",
+                        "--out", str(output), "--replace-ledger"]), 1)
+                self.assertEqual(output.read_bytes(), original)
+                self.assertEqual(list(Path(d).glob("*.bak*")), [])
+
+    def test_replace_requires_flag_and_backs_up_exact_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d) / "ledger.json"
+            original = b'legacy or corrupt evidence\n'
+            output.write_bytes(original)
+            linkage = self.recover([self.issue(self.finding("a.py"))])
+            with self.assertRaises(FileExistsError):
+                reconcile_apply.save_recovered_ledger(linkage, output)
+            self.assertEqual(output.read_bytes(), original)
+            reconcile_apply.save_recovered_ledger(linkage, output, replace=True)
+            self.assertEqual(file_issues.load_ledger(output), linkage)
+            backups = list(Path(d).glob("ledger.json.*.bak"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_bytes(), original)
+            reconcile_apply.save_recovered_ledger(linkage, output, replace=True)
+            self.assertEqual(len(list(Path(d).glob("ledger.json.*.bak"))), 2)
+
+    def test_refuse_symlink_output_and_lock(self):
+        for target_name in ("ledger.json", "ledger.json.lock"):
+            with self.subTest(target=target_name), tempfile.TemporaryDirectory() as d:
+                target = Path(d) / "original"
+                target.write_bytes(b'original')
+                (Path(d) / target_name).symlink_to(target)
+                with self.assertRaises((ValueError, OSError)):
+                    reconcile_apply.save_recovered_ledger({}, Path(d) / "ledger.json", replace=True)
+                self.assertEqual(target.read_bytes(), b'original')
+
+
+    def test_cli_report_mapping_source_root_and_backup(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "copy.json"
+            original = self.finding("/original/checkout/src/@name")
+            source.write_text(json.dumps({"findings": [original]}))
+            posted = self.finding("src/@name")
+            issue = self.issue(posted, report="reports/run.json")
+            output = Path(d) / "ledger.json"
+            output.write_bytes(b'old bytes\n')
+            args = ["recover-linkage", "--repo", "o/r", "--out", str(output),
+                    "--report", "reports/run.json=" + str(source), "--replace-ledger"]
+            with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+                    FakeCompleted(json.dumps([issue]))):
+                self.assertEqual(reconcile_apply.main(args), 1)
+                self.assertEqual(output.read_bytes(), b'old bytes\n')
+                self.assertEqual(reconcile_apply.main(args + ["--source-root", "/original/checkout"]), 0)
+            self.assertEqual(file_issues.load_ledger(output),
+                             {file_issues.key_for(posted, False): issue["url"]})
+            self.assertEqual(next(Path(d).glob("*.bak")).read_bytes(), b'old bytes\n')
+
+    def test_source_identity_and_pointer_conflicts_refuse(self):
+        finding = self.finding("@name")
+        wrong_id = dict(finding, id="F-other")
+        wrong_fp = dict(finding, fingerprint="fff")
+        wrong_path = self.finding("other")
+        cases = [{"findings": [wrong_id]}, {"findings": [wrong_fp]},
+                 {"findings": [wrong_path]}, {"discarded_claims": [finding]},
+                 {"findings": [finding, finding]}]
+        for document in cases:
+            with self.subTest(document=document), tempfile.TemporaryDirectory() as d:
+                source = Path(d) / "copy.json"
+                source.write_text(json.dumps(document))
+                with self.assertRaises(reconcile_apply.IncompleteRecovery):
+                    self.recover([self.issue(finding)], reports={"source.json": source})
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "copy.json"
+            source.write_text(json.dumps({"findings": [finding]}))
+            with self.assertRaises(reconcile_apply.IncompleteRecovery):
+                self.recover([self.issue(finding)], reports={"wrong-pointer.json": source})
+
+    def test_confined_split_and_spill_reports(self):
+        with tempfile.TemporaryDirectory() as d:
+            directory = Path(d) / "reports"
+            directory.mkdir()
+            source = directory / "copy.json"
+            finding = self.finding("src/@name")
+            (directory / "part.json").write_text(json.dumps({"findings": [finding]}))
+            rejected = dict(finding, id="REJECTED")
+            (directory / "discarded.json").write_text(json.dumps({"discarded_claims": [rejected]}))
+            document = {"meta": {"parts": ["part.json"], "discarded_claims_file": "discarded.json"}}
+            source.write_text(json.dumps(document))
+            rejected_issue = dict(self.issue(rejected, rejected=True), number=2,
+                                  url="https://github.com/o/r/issues/2")
+            recovered = self.recover([self.issue(finding), rejected_issue],
+                                     reports={"source.json": source})
+            self.assertEqual(set(recovered), {file_issues.key_for(finding, False),
+                                             file_issues.key_for(rejected, True)})
+            outside = Path(d) / "outside.json"
+            outside.write_text(json.dumps({"findings": [finding]}))
+            (directory / "escape.json").symlink_to(outside)
+            for continuation in ("../outside.json", "escape.json"):
+                for field in ("parts", "discarded_claims_file"):
+                    source.write_text(json.dumps({"meta": {field:
+                        [continuation] if field == "parts" else continuation}}))
+                    with self.subTest(field=field, continuation=continuation), \
+                            self.assertRaises(reconcile_apply.IncompleteRecovery):
+                        self.recover([self.issue(finding)], reports={"source.json": source})
+
+    def test_failed_fetch_and_malformed_json_leave_output_untouched(self):
+        import subprocess
+        cases = [FakeCompleted("not json"), FakeCompleted("[]", returncode=1, stderr="offline"),
+                 subprocess.TimeoutExpired("gh", 120), OSError("offline")]
+        for response in cases:
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as d:
+                output = Path(d) / "ledger.json"
+                output.write_bytes(b'original')
+                def runner(*args, **kwargs):
+                    if isinstance(response, Exception):
+                        raise response
+                    return response
+                with mock.patch.object(triage, "default_gh_runner", return_value=runner):
+                    self.assertEqual(reconcile_apply.main(["recover-linkage", "--repo", "o/r",
+                        "--out", str(output), "--replace-ledger"]), 1)
+                self.assertEqual(output.read_bytes(), b'original')
+                self.assertEqual(list(Path(d).iterdir()), [output])
+
+    def test_cli_create_only_and_invalid_repo(self):
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d) / "ledger.json"
+            runner = mock.Mock(return_value=FakeCompleted(json.dumps([self.issue(self.finding("safe.py"))])))
+            with mock.patch.object(triage, "default_gh_runner", return_value=runner):
+                args = ["recover-linkage", "--repo", "o/r", "--out", str(output)]
+                self.assertEqual(reconcile_apply.main(args), 0)
+                before = output.read_bytes()
+                self.assertEqual(reconcile_apply.main(args), 1)
+                self.assertEqual(output.read_bytes(), before)
+                for invalid in ("--evil", "o/r/more", "../r", "https://github.com/o/r"):
+                    runner.reset_mock()
+                    with self.assertRaises(SystemExit):
+                        reconcile_apply.main(["recover-linkage", "--repo=" + invalid, "--out", str(output)])
+                    runner.assert_not_called()
+                    self.assertEqual(output.read_bytes(), before)
+
+    def test_replace_failure_preserves_old_ledger_and_backup(self):
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d) / "ledger.json"
+            output.write_bytes(b'old bytes\n')
+            with mock.patch.object(reconcile_apply.os, "replace", side_effect=OSError("disk full")), \
+                    self.assertRaises(OSError):
+                reconcile_apply.save_recovered_ledger({}, output, replace=True)
+            self.assertEqual(output.read_bytes(), b'old bytes\n')
+            self.assertEqual(next(Path(d).glob("*.bak")).read_bytes(), b'old bytes\n')
+            self.assertEqual(list(Path(d).glob(".reconcile-ledger-*")), [])
+
+    def test_backup_collision_and_symlink_ancestor_refuse(self):
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d) / "ledger.json"
+            output.write_bytes(b'old')
+            with mock.patch.object(reconcile_apply, "datetime") as clock, \
+                    mock.patch.object(reconcile_apply.os, "urandom", return_value=b'constant'):
+                clock.now.return_value.strftime.return_value = "timestamp"
+                reconcile_apply.save_recovered_ledger({}, output, replace=True)
+                current = output.read_bytes()
+                backup = next(Path(d).glob("*.bak"))
+                with self.assertRaises(FileExistsError):
+                    reconcile_apply.save_recovered_ledger({}, output, replace=True)
+                self.assertEqual(output.read_bytes(), current)
+                self.assertEqual(backup.read_bytes(), b'old')
+            alias = Path(d) / "alias"
+            alias.symlink_to(d, target_is_directory=True)
+            with self.assertRaises(OSError):
+                reconcile_apply.save_recovered_ledger({}, alias / "ledger.json", replace=True)
+            self.assertEqual(output.read_bytes(), current)
+
+
+class TestPendingComment(unittest.TestCase):
+    def test_timeout_pending_resume_posts_only_once(self):
+        import subprocess
+        action = {"issue": "https://github.com/o/r/issues/1", "comment": "hello",
+                  "cohort": "recurring", "close": False}
+        posted = []
+        probe = []
+        with tempfile.TemporaryDirectory() as d:
+            progress = Path(d) / "progress.json"
+
+            def runner(argv, **kwargs):
+                if argv[:3] == ["gh", "issue", "comment"]:
+                    receipt = json.loads(progress.read_text())
+                    self.assertTrue(next(iter(receipt["actions"].values()))["comment_pending"])
+                    posted.append(argv[argv.index("--body") + 1])
+                    raise subprocess.TimeoutExpired(argv, 120)
+                if argv[:2] == ["gh", "api"] and "/comments" in argv[2]:
+                    self.assertIn("repos/o/r/issues/1/comments", argv[2])
+                    return FakeCompleted(json.dumps(probe))
+                return FakeCompleted('{"admin": true}')
+
+            for _ in range(2):
+                with self.assertRaisesRegex(RuntimeError, "pending"):
+                    reconcile_apply.apply([action], dry=False, runner=runner,
+                        sleep=lambda _: None, progress_path=progress)
+            self.assertEqual(len(posted), 1)
+            probe[:] = [{"body": posted[0]}]
+            self.assertEqual(reconcile_apply.apply([action], dry=False, runner=runner,
+                sleep=lambda _: None, progress_path=progress), (0, 0))
+            self.assertEqual(len(posted), 1)
+            receipt = next(iter(json.loads(progress.read_text())["actions"].values()))
+            self.assertTrue(receipt["commented"])
+            self.assertNotIn("comment_pending", receipt)
+
+    def test_crash_and_ack_write_failure_reconcile_without_reposting(self):
+        action = {"issue": "https://github.com/o/r/issues/1", "comment": "hello",
+                  "cohort": "recurring", "close": False}
+        for failure in ("crash", "ack-write"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as d:
+                progress = Path(d) / "progress.json"
+                posted = []
+                def runner(argv, **kwargs):
+                    if argv[:3] == ["gh", "issue", "comment"]:
+                        posted.append(argv[-1])
+                        if failure == "crash":
+                            raise SystemExit("process died after acceptance")
+                        return FakeCompleted("")
+                    if "/comments" in argv[2]:
+                        return FakeCompleted(json.dumps([{"body": posted[0]}]))
+                    return FakeCompleted('{"admin": true}')
+                save = reconcile_apply._save_progress
+                def save_receipt(receipt, path):
+                    if failure == "ack-write" and any(r["commented"] for r in receipt["actions"].values()):
+                        raise OSError("disk full after acceptance")
+                    save(receipt, path)
+                with mock.patch.object(reconcile_apply, "_save_progress", side_effect=save_receipt), \
+                        self.assertRaises((SystemExit, OSError)):
+                    reconcile_apply.apply([action], False, runner=runner,
+                        sleep=lambda _: None, progress_path=progress)
+                self.assertTrue(next(iter(json.loads(progress.read_text())["actions"].values()))["comment_pending"])
+                self.assertEqual(reconcile_apply.apply([action], False, runner=runner,
+                    sleep=lambda _: None, progress_path=progress), (0, 0))
+                self.assertEqual(len(posted), 1)
+
+    def test_only_complete_exact_comment_probe_can_clear_pending(self):
+        action = {"issue": "https://github.com/o/r/issues/1", "comment": "hello",
+                  "cohort": "recurring", "close": False}
+        body = reconcile_apply._comment_body(action, "o/r")
+        cases = [FakeCompleted("bad json"), FakeCompleted("[]", returncode=1),
+                 FakeCompleted(json.dumps({"comments": []})),
+                 FakeCompleted(json.dumps([{"body": body}] * 100)),
+                 FakeCompleted(json.dumps([{"body": body}] * 2)),
+                 FakeCompleted(json.dumps([{"body": "changed " + body}])),
+                 FakeCompleted(json.dumps([{"body": action["comment"]}])),
+                 FakeCompleted(json.dumps([{"body": body}, {"missing": "body"}]))]
+        for response in cases:
+            with self.subTest(response=response.stdout[:60]), tempfile.TemporaryDirectory() as d:
+                progress = Path(d) / "progress.json"
+                key = reconcile_apply._action_key(action, "o/r")
+                receipt = reconcile_apply._bind_progress(None, "o/r", [key], False)
+                receipt["actions"][key] = {"commented": False, "closed": False, "comment_pending": True}
+                reconcile_apply._save_progress(receipt, progress)
+                before = progress.read_bytes()
+                def runner(argv, **kwargs):
+                    self.assertNotEqual(argv[:3], ["gh", "issue", "comment"])
+                    return response if "/comments" in argv[2] else FakeCompleted('{"admin": true}')
+                with self.assertRaisesRegex(RuntimeError, "pending"):
+                    reconcile_apply.apply([action], False, runner=runner,
+                        sleep=lambda _: None, progress_path=progress)
+                self.assertEqual(progress.read_bytes(), before)
+
+    def test_cli_timeout_resume_has_one_mutation(self):
+        import subprocess
+        action = {"issue": "https://github.com/o/r/issues/1", "comment": "hello",
+                  "cohort": "recurring", "close": False}
+        posted = []
+        ready = False
+        def runner(argv, **kwargs):
+            if argv[:3] == ["gh", "issue", "comment"]:
+                posted.append(argv[-1])
+                raise subprocess.TimeoutExpired(argv, 120)
+            if "/comments" in argv[2]:
+                return FakeCompleted(json.dumps([{"body": posted[0]}] if ready else []))
+            return FakeCompleted('{"admin": true}')
+        with tempfile.TemporaryDirectory() as d:
+            plan = Path(d) / "plan.json"
+            plan.write_text(json.dumps([action]))
+            with mock.patch.object(triage, "default_gh_runner", return_value=runner):
+                args = ["apply", str(plan), "--no-dry-run", "--throttle", "0"]
+                self.assertEqual(reconcile_apply.main(args), 1)
+                self.assertEqual(reconcile_apply.main(args), 1)
+                ready = True
+                self.assertEqual(reconcile_apply.main(args), 0)
+                self.assertEqual(len(posted), 1)
+
+    def test_accepted_timeout_can_be_acknowledged_immediately(self):
+        import subprocess
+        action = {"issue": "https://github.com/o/r/issues/1", "comment": "hello",
+                  "cohort": "recurring", "close": True}
+        posted, closed = [], []
+        def runner(argv, **kwargs):
+            if argv[:3] == ["gh", "issue", "comment"]:
+                posted.append(argv[-1])
+                raise subprocess.TimeoutExpired(argv, 120)
+            if argv[:3] == ["gh", "issue", "close"]:
+                closed.append(argv)
+                return FakeCompleted("")
+            if "/comments" in argv[2]:
+                return FakeCompleted(json.dumps([{"body": posted[0]}]))
+            return FakeCompleted('{"admin": true}')
+        with tempfile.TemporaryDirectory() as d:
+            progress = Path(d) / "progress.json"
+            self.assertEqual(reconcile_apply.apply([action], False, True, runner=runner,
+                sleep=lambda _: None, progress_path=progress), (1, 1))
+            self.assertEqual(reconcile_apply.apply([action], False, True, runner=runner,
+                sleep=lambda _: None, progress_path=progress), (0, 0))
+            self.assertEqual(len(posted), 1)
+            self.assertEqual(len(closed), 1)

@@ -19,11 +19,14 @@ Valid v1 receipts migrate by keeping only exact acknowledgements in this plan.
 Dry runs preview unique requested actions without receipt I/O (including resets).
 Empty live plans are no-ops; explicit live reset requires a nonempty plan to
 identify the repository and replacement binding.
-There is a small unavoidable window after GitHub accepts an operation but before its local
-receipt is saved; a crash then can repeat that operation. This is resume support,
-not an exactly-once protocol.
+Comment intent is durable before one bounded mutation attempt. Unacknowledged
+comments require a complete exact remote marker match; inconclusive probes block
+replay. Direct live callers must supply progress_path. Close remains idempotent.
+This is resume support, not an exactly-once protocol.
 """
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -33,7 +36,7 @@ import subprocess  # noqa: F401 -- patch target for the dry-run zero-subprocess 
 import sys
 import tempfile
 import time
-import warnings
+from datetime import datetime, timezone
 
 import file_issues
 import triage
@@ -70,64 +73,208 @@ ID_RE = re.compile(r"\*\*Finding id in report:\*\* `([^`]+)`")
 LOC_RE = re.compile(r"\*\*Location:\*\* `([^`]+?)(?::\d+)?`")
 
 
-def recover_linkage_from_github(label="self-scan", runner=None):
+class IncompleteRecovery(RuntimeError):
+    """The fetched evidence cannot establish a complete, lossless ledger."""
+
+
+def _repo_slug(repo):
+    if not isinstance(repo, str) or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) is None:
+        raise ValueError("repo must be an explicit OWNER/REPO slug")
+    if any(part in (".", "..") for part in repo.split("/")):
+        raise ValueError("invalid repository slug")
+    return repo
+
+
+def _source_records(reports, source_roots):
+    # A mapping binds a relocated copy to the exact original artifact pointer.
+    items = list(reports.items()) if isinstance(reports, dict) else [(str(p), p) for p in reports]
+    roots = list(source_roots or [])
+    if roots and len(roots) != len(items):
+        raise ValueError("--source-root must be paired with every --report, in order")
+    indexed = {}
+    for index, (artifact, path) in enumerate(items):
+        root = roots[index] if roots else None
+        if root is not None and not os.path.isabs(root):
+            raise ValueError("source root must be absolute")
+        report = file_issues._reconcile.load_report(path)
+        pointer = file_issues.scrub(str(artifact))
+        if pointer in indexed:
+            raise IncompleteRecovery("conflicting source report artifact: " + pointer)
+        records = {}
+        for rejected, field in ((False, "findings"), (True, "discarded_claims")):
+            for original in report[field]:
+                if not isinstance(original, dict):
+                    raise IncompleteRecovery("malformed source report record")
+                record = dict(original)
+                location = dict(record.get("location") or {})
+                location_file = location.get("file") or ""
+                if not isinstance(location_file, str):
+                    raise IncompleteRecovery("malformed source location")
+                if os.path.isabs(location_file):
+                    prefix = (root or file_issues.repo_root()).rstrip("/") + "/"
+                    if not location_file.startswith(prefix):
+                        raise IncompleteRecovery("absolute source path requires its original --source-root")
+                    location["file"] = location_file[len(prefix):]
+                    record["location"] = location
+                identity = (record.get("fingerprint"), record.get("id"), rejected)
+                if (not all(isinstance(v, str) and v for v in identity[:2])
+                        or identity in records):
+                    raise IncompleteRecovery("missing or conflicting source report identity")
+                records[identity] = record
+        indexed[pointer] = records
+    return indexed
+
+
+_ARTIFACT_RE = re.compile(r"^\*\*Report artifact:\*\* \[(.*?)\]\(", re.MULTILINE)
+_LOCATION_RE = re.compile(r"^\*\*Location:\*\* `([^`]+)`$", re.MULTILINE)
+
+
+def _recovered_key(body, rejected, sources):
+    captures = [pattern.findall(body) for pattern in (FP_RE, ID_RE, _LOCATION_RE)]
+    if any(len(values) != 1 for values in captures):
+        raise IncompleteRecovery("missing or conflicting issue identity/location")
+    fp, finding_id, presented = (values[0] for values in captures)
+    pointers = _ARTIFACT_RE.findall(body)
+    if len(pointers) > 1:
+        raise IncompleteRecovery("conflicting report artifact pointers")
+    records = sources.get(pointers[0]) if pointers else None
+    if records is not None:
+        record = records.get((fp, finding_id, rejected))
+        if record is None:
+            raise IncompleteRecovery("issue identity missing from source report")
+        expected = _LOCATION_RE.findall(file_issues.scrub(file_issues.body_for(record, rejected)))
+        if expected != [presented]:
+            raise IncompleteRecovery("source report location conflicts with issue presentation")
+        return file_issues.key_for(record, rejected)
+    # U+200B may be literal or inserted: stripping it is never lossless. Quotes,
+    # redaction and numeric colon suffixes likewise have multiple preimages.
+    if ("\u200b" in presented or "'" in presented or "[REDACTED" in presented
+            or re.search(r":\d+$", presented) or presented == "(no file)"
+            or file_issues.defang(presented) != presented):
+        raise IncompleteRecovery("ambiguous location requires an authoritative source report")
+    return file_issues.key_for({"fingerprint": fp, "id": finding_id,
+        "location": {"file": presented}}, rejected)
+
+
+def recover_linkage_from_github(label="self-scan", runner=None, *,
+                                repo=file_issues.REPO_SLUG, reports=(), source_roots=()):
+    """Return complete linkage or refuse; issue locations are presentation text."""
+    repo = _repo_slug(repo)
     runner = runner or triage.default_gh_runner()
-    """Rebuild the filed-issues ledger from issue bodies when
-    .panopticon/filed-issues.json is unavailable. Every field this needs was
-    deliberately embedded in the issue body by scripts/file_issues.py.
-
-    Path consistency (#607/#488, resolved): issue bodies are scrubbed to
-    repo-RELATIVE paths, and file_issues.key_for / this module's ledger_key
-    now key on the repo-RELATIVE location too (file_issues.repo_relative). So
-    the key reconstructed here from a scrubbed body matches the ledger key
-    even for findings whose original location.file was absolute — recovery is
-    lossless for anything filed by the fixed key_for. (Ledgers filed BEFORE
-    the fix that stored a raw absolute-path key for such a finding are still
-    unrecoverable via this fallback; those resolve on the primary path where
-    the real ledger is present.) Recovery stays fail-safe regardless — an
-    unmatched issue is simply left open, never mis-acted-on.
-    .panopticon/filed-issues.json remains the source of truth; preserve it.
-    """
-    r = runner(["gh", "issue", "list", "--label", label, "--state", "all",
-               "--json", "number,url,body,labels", "--limit", "1000"],
-              capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError("gh issue list failed (exit %d): %s" % (
-            r.returncode, (r.stderr or "").strip()))
-    issues = json.loads(r.stdout)
-    if len(issues) >= 1000:
-        warnings.warn(
-            "recover_linkage_from_github: gh issue list returned %d issues, "
-            "which equals the --limit cap; results may be truncated. "
-            "Increase --limit or narrow labels to ensure complete recovery." % len(issues),
-            UserWarning,
-            stacklevel=2,
-        )
-    linkage = {}
-    for issue in issues:
-        body = issue.get("body") or ""
-        fp_m, id_m, loc_m = FP_RE.search(body), ID_RE.search(body), LOC_RE.search(body)
-        if not (fp_m and id_m and loc_m):
-            continue
-        labels = {lbl.get("name") for lbl in issue.get("labels") or []}
-        kind = "rejected" if "false-positive" in labels else "finding"
-        # body_for() writes the "(no file)" sentinel when location.file is
-        # absent, but key_for() keys on an EMPTY location component for that
-        # same case — map the sentinel back to "" so the recovered key is
-        # byte-identical to the one file_issues.py originally filed under.
-        loc = loc_m.group(1)
-        loc = "" if loc == "(no file)" else loc
-        key = "%s|%s|%s|%s" % (fp_m.group(1), id_m.group(1), loc, kind)
-        linkage[key] = issue.get("url") or (ISSUE_REPO_URL % issue["number"])
-    return linkage
+    try:
+        sources = _source_records(reports, source_roots)
+        result = runner(["gh", "issue", "list", "--repo", repo, "--label", label,
+                         "--state", "all", "--json", "number,url,body,labels", "--limit", "1000"],
+                        capture_output=True, text=True)
+        if result.returncode != 0:
+            raise IncompleteRecovery("gh issue list failed: " + (result.stderr or ""))
+        # Ordinary issue-list pagination (no --search) has no search envelope;
+        # a full requested cap cannot establish completeness.
+        issues = json.loads(result.stdout)
+        if not isinstance(issues, list) or len(issues) >= 1000:
+            raise IncompleteRecovery("malformed or incomplete issue list (1000-item cap)")
+        linkage = {}
+        seen_urls = set()
+        for issue in issues:
+            if (not isinstance(issue, dict) or not isinstance(issue.get("body"), str)
+                    or type(issue.get("number")) is not int or issue["number"] < 1
+                    or not isinstance(issue.get("labels"), list)
+                    or any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
+                           for label in issue["labels"])):
+                raise IncompleteRecovery("malformed issue response")
+            url = "https://github.com/%s/issues/%d" % (repo, issue["number"])
+            if issue.get("url", url) != url or url in seen_urls:
+                raise IncompleteRecovery("conflicting issue URL or repository")
+            rejected = any(label["name"] == "false-positive" for label in issue["labels"])
+            key = _recovered_key(issue["body"], rejected, sources)
+            if key in linkage:
+                raise IncompleteRecovery("conflicting recovered identity")
+            linkage[key] = url
+            seen_urls.add(url)
+        return linkage
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError) as exc:
+        raise IncompleteRecovery("incomplete recovery: %s" % exc) from exc
 
 
-def save_recovered_ledger(linkage, path=LEDGER):
-    tmp = path + ".tmp"
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(linkage, fh, indent=1, sort_keys=True)
-    os.replace(tmp, path)
+@contextlib.contextmanager
+def _exclusive_path(path, create_directory=False):
+    """Stable sibling lock; open every directory component without symlinks."""
+    absolute = os.path.abspath(path)
+    directory, name = os.path.split(absolute)
+    directory_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for component in filter(None, directory.split("/")):
+            if create_directory:
+                try:
+                    os.mkdir(component, dir_fd=directory_fd)
+                except FileExistsError:
+                    pass
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = child
+        fd = os.open(name + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                     0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, "a") as lock:
+            if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+                raise ValueError("unsafe lock file")
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield directory_fd, name
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    finally:
+        os.close(directory_fd)
+
+
+def save_recovered_ledger(linkage, path=LEDGER, *, replace=False):
+    """Create v2 output, or explicitly replace under lock after exact backup."""
+    envelope = {"schema_version": file_issues.LEDGER_SCHEMA_VERSION, "entries": linkage}
+    file_issues._unwrap_ledger(envelope, str(path))
+    data = (json.dumps(envelope, indent=1, sort_keys=True) + "\n").encode("utf-8")
+    with _exclusive_path(path, create_directory=True) as (directory, name):
+        old = None
+        try:
+            mode = os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISREG(mode):
+                raise ValueError("unsafe ledger output: expected regular file")
+            if not replace:
+                raise FileExistsError("ledger exists; use --replace-ledger for backed-up replacement")
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+            with os.fdopen(fd, "rb") as existing:
+                old = existing.read()
+        token = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + "-" + os.urandom(8).hex()
+        if old is not None:
+            backup = name + "." + token + ".bak"
+            fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=directory)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(old)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.fsync(directory)
+        temporary = ".reconcile-ledger-" + token
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            if replace:
+                os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            else:
+                os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory,
+                        follow_symlinks=False)
+            os.fsync(directory)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
 
 
 def resolve_issue(record, ledger):
@@ -340,7 +487,10 @@ def _load_progress(path, repo_slug):
     for key, receipt in loaded["actions"].items():
         if (not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None
                 or not isinstance(receipt, dict)
-                or set(receipt) != {"commented", "closed"}
+                or set(receipt) not in ({"commented", "closed"},
+                                        {"commented", "closed", "comment_pending"})
+                or ("comment_pending" in receipt and (receipt["comment_pending"] is not True
+                                                     or receipt.get("commented") is not False))
                 or type(receipt["commented"]) is not bool
                 or type(receipt["closed"]) is not bool
                 or (receipt["closed"] and not receipt["commented"])):
@@ -373,12 +523,12 @@ def _progress_bytes(progress):
 
 def _reserve_progress(progress, action_keys):
     # Reserve the largest possible intermediate state before any remote call.
-    # Each new entry first records a comment with closed=false; closing later
-    # changes false to true and shrinks JSON by one byte. Existing false flags
-    # likewise can only shrink, and duplicate action keys need one entry.
+    # Pending intent is larger than acknowledgement; reserve it for every
+    # unacknowledged comment before auth or mutation. Duplicate keys collapse.
     reserved = dict(progress["actions"])
     for key in action_keys:
-        reserved.setdefault(key, {"commented": True, "closed": False})
+        if key not in reserved or not reserved[key]["commented"]:
+            reserved[key] = {"commented": False, "closed": False, "comment_pending": True}
     _progress_bytes(dict(progress, actions=reserved))
 
 
@@ -415,8 +565,8 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
     unique ordered plan. reset_progress clears acknowledgements for deliberate
     replay/rebinding, after validating the existing receipt and authorization.
     Dry runs display unique requested actions and never read or write progress.
-    A process death between remote success and receipt replacement can still
-    repeat the remote operation on retry.
+    Pending comments require positive remote reconciliation before continuing;
+    no automatic replay occurs after a timeout or process death.
 
     For compatibility, authorization/mixed-repository refusals print a diagnostic
     and return (0, 0). The CLI uses _apply directly to distinguish these refusals
@@ -430,7 +580,42 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
         return (0, 0)
 
 
+def _comment_body(action, repo):
+    return action["comment"] + "\n\n<!-- panopticon-reconcile:" + _action_key(action, repo) + " -->"
+
+
+def _comment_present(runner, repo, number, body):
+    """A full page or any malformed/conflicting result is inconclusive."""
+    try:
+        result = runner(["gh", "api", "repos/%s/issues/%s/comments?per_page=100" % (repo, number)],
+                        capture_output=True, text=True)
+        comments = json.loads(result.stdout) if result.returncode == 0 else None
+        if (not isinstance(comments, list) or len(comments) >= 100
+                or any(not isinstance(c, dict) or not isinstance(c.get("body"), str)
+                       for c in comments)):
+            return False
+        marker = body.rsplit("\n\n", 1)[1]
+        matching = [c["body"] for c in comments if marker in c["body"]]
+        return matching == [body]
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        return False
+
+
 def _apply(actions, dry=True, confirm_close=False, throttle=1.5,
+           runner=None, sleep=time.sleep, progress_path=None, reset_progress=False):
+    actions = _unique_actions(actions)
+    # Serialize receipt read, intent, mutation and acknowledgement as one unit.
+    # Empty plans and dry runs retain their existing no-I/O behavior.
+    if not dry and actions and progress_path is not None:
+        _load_progress(progress_path, "%s/%s" % _owner_repo(actions[0].get("issue", "")))
+        with _exclusive_path(progress_path):
+            return _apply_locked(actions, dry, confirm_close, throttle, runner, sleep,
+                                 progress_path, reset_progress)
+    return _apply_locked(actions, dry, confirm_close, throttle, runner, sleep,
+                         progress_path, reset_progress)
+
+
+def _apply_locked(actions, dry=True, confirm_close=False, throttle=1.5,
            runner=None, sleep=time.sleep, progress_path=None, reset_progress=False):
     """Execute once, raising on refusal so callers can choose their interface."""
     actions = _unique_actions(actions)
@@ -440,6 +625,8 @@ def _apply(actions, dry=True, confirm_close=False, throttle=1.5,
         raise ValueError("--reset-progress requires a nonempty plan to identify the repository")
     if reset_progress and dry:
         print("DRY reset-progress: previewing replay; receipt unchanged")
+    if not dry and actions and progress_path is None:
+        raise ValueError("live comments require progress_path for durable intent and recovery")
     runner = runner or triage.default_gh_runner()
     commented = closed = 0
     repo_slug = None
@@ -478,14 +665,32 @@ def _apply(actions, dry=True, confirm_close=False, throttle=1.5,
         if progress is not None:
             key = action_keys[index]
             receipt = progress["actions"].setdefault(key, {"commented": False, "closed": False})
-        if receipt is None or not receipt["commented"]:
-            triage.gh(["gh", "issue", "comment", n, "--repo", repo_slug, "--body", a["comment"]],
-                      runner=runner, sleep=sleep)
-            if receipt is not None:
+        if receipt is not None and not receipt["commented"]:
+            body = _comment_body(a, repo_slug)
+            if receipt.get("comment_pending"):
+                if not _comment_present(runner, repo_slug, n, body):
+                    raise RuntimeError("comment pending; complete exact remote reconciliation required")
+                receipt.pop("comment_pending")
                 receipt["commented"] = True
                 _save_progress(progress, progress_path)
-            sleep(throttle)
-            commented += 1
+            else:
+                receipt["comment_pending"] = True
+                _save_progress(progress, progress_path)
+                failure = None
+                try:
+                    result = runner(["gh", "issue", "comment", n, "--repo", repo_slug,
+                                     "--body", body], capture_output=True, text=True)
+                    if result.returncode != 0:
+                        failure = result.stderr or "comment failed"
+                except (OSError, subprocess.SubprocessError) as exc:
+                    failure = str(exc)
+                if failure is not None and not _comment_present(runner, repo_slug, n, body):
+                    raise RuntimeError("comment pending; refusing replay: %s" % failure)
+                receipt.pop("comment_pending")
+                receipt["commented"] = True
+                _save_progress(progress, progress_path)
+                sleep(throttle)
+                commented += 1
         if a["close"] and confirm_close and (receipt is None or not receipt["closed"]):
             triage.gh(["gh", "issue", "close", n, "--repo", repo_slug, "--reason", "not planned"],
                       runner=runner, sleep=sleep)
@@ -504,6 +709,12 @@ def main(argv=None):
     p_rec = sub.add_parser("recover-linkage")
     p_rec.add_argument("--out", required=True)
     p_rec.add_argument("--label", default="self-scan")
+    p_rec.add_argument("--repo", type=_repo_slug, default=file_issues.REPO_SLUG)
+    p_rec.add_argument("--report", action="append", default=[], metavar="[ARTIFACT=]PATH",
+                       help="authoritative report; bind a relocated copy with ARTIFACT=PATH")
+    p_rec.add_argument("--source-root", action="append", default=[],
+                       help="original absolute root, paired with each --report in order")
+    p_rec.add_argument("--replace-ledger", action="store_true")
 
     p_plan = sub.add_parser("plan")
     p_plan.add_argument("diff_json")
@@ -524,8 +735,19 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     if a.cmd == "recover-linkage":
-        linkage = recover_linkage_from_github(label=a.label)
-        save_recovered_ledger(linkage, path=a.out)
+        try:
+            reports = {}
+            for value in a.report:
+                artifact, separator, local = value.partition("=")
+                if artifact in reports:
+                    raise ValueError("duplicate report artifact")
+                reports[artifact] = local if separator else artifact
+            linkage = recover_linkage_from_github(label=a.label, repo=a.repo,
+                                                  reports=reports, source_roots=a.source_root)
+            save_recovered_ledger(linkage, path=a.out, replace=a.replace_ledger)
+        except (ValueError, OSError, RuntimeError) as exc:
+            print("refusing: %s" % exc, file=sys.stderr)
+            return 1
         print("recovered %d linkage entries -> %s" % (len(linkage), a.out))
         return 0
 
