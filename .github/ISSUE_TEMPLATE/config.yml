@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability in the tool
+    url: https://github.com/panopticon-scanner/panopticon/security/advisories/new
+    about: Private report for a security issue in Panopticon itself. See SECURITY.md.
+  - name: Read the guide first
+    url: https://github.com/panopticon-scanner/panopticon/blob/main/docs/GETTING-STARTED.md
+    about: What it does, what it costs, how to run it.

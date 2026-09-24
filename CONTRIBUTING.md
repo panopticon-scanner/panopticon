@@ -30,4 +30,8 @@ Thanks for your interest in improving Panopticon.
 
 ## Reporting security issues
 
-Please open a private security advisory rather than a public issue for vulnerabilities in the tool itself.
+See [SECURITY.md](SECURITY.md): open a private security advisory (Security tab, "Report a vulnerability") rather than a public issue for vulnerabilities in the tool itself.
+
+## Conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
