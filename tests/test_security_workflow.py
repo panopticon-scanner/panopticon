@@ -128,7 +128,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         self.assertTrue(                                # push always runs, OR-joined first
             compact.startswith("github.event_name == 'push' || ("))
         self.assertEqual(                               # and there is no third route
-            compact.count("github.event_name"), 2)
+            compact.count("github.event_name"), 4)
 
     def test_the_pull_request_types_are_the_defaults(self):
         # M3: the same-repo scan only fires on the actions `pull_request`
@@ -730,7 +730,9 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
         for path, name in self.ROUTES:
             with self.subTest(workflow=path):
                 step = self._step(self._job(path, name), self.BASELINE)
-                self.assertIsNone(step.get("if"))
+                expected = ("github.event_name == 'push' || github.event_name == 'pull_request'"
+                            if path == WORKFLOW else None)
+                self.assertEqual(step.get("if"), expected)
 
     def test_the_gate_receives_the_flags_only_when_the_download_succeeded(self):
         for path, name in self.PR_ROUTES:
@@ -782,7 +784,7 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
         run = _without_comments(gate["run"])
         self.assertIn('if [ "$BASELINE_FOUND" = "true" ]; then', run)
         self.assertNotIn('"$BASELINE_FOUND" !=', run)
-        self.assertIsNone(gate.get("if"))
+        self.assertEqual(gate.get("if"), "github.event_name == 'push' || github.event_name == 'pull_request'")
 
     def test_actions_read_is_the_only_permission_either_file_gained(self):
         # Pinned as whole blocks: `actions: read` is what reads another run's
@@ -800,6 +802,49 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
         with open(FORK_WORKFLOW, encoding="utf-8") as fh:
             self.assertEqual(yaml.safe_load(fh)["permissions"],
                              {"contents": "read", "packages": "read"})
+
+
+class TestStrictScheduledBackstop(unittest.TestCase):
+    def setUp(self):
+        with open(WORKFLOW, encoding="utf-8") as fh:
+            self.workflow = yaml.safe_load(fh)
+        self.job = self.workflow["jobs"]["scan"]
+        self.steps = {s.get("name"): s for s in self.job["steps"]}
+
+    def test_full_events_have_a_distinct_name_even_when_skipped(self):
+        self.assertEqual(self.workflow[True]["schedule"], [{"cron": "23 7 * * 1"}])
+        self.assertIn("workflow_dispatch", self.workflow[True])
+        self.assertEqual(self.job["name"],
+                         "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'strict-full-tree' || 'scan' }}")
+        self.assertIn("(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'",
+                      " ".join(self.job["if"].split()))
+
+    def test_full_gate_has_no_baseline_and_reporting_survives_red(self):
+        gate = self.steps["Strict full-tree gate"]
+        self.assertEqual(gate["if"], "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'")
+        self.assertIn("python controller/skill/scripts/security_gate.py", gate["run"])
+        self.assertNotIn("baseline", gate["run"])
+        self.assertEqual(gate["run"].count("--exclude"), 2)
+        for name in ("Publish strict security snapshot and summary", "Upload strict security snapshot"):
+            self.assertIn("always()", self.steps[name]["if"])
+            self.assertIn("github.event_name == 'schedule'", self.steps[name]["if"])
+        self.assertEqual(self.steps["Upload strict security snapshot"]["with"]["name"],
+                         "strict-security-snapshot")
+
+    def test_history_lookup_precedes_target_and_has_the_only_new_token(self):
+        names = list(self.steps)
+        step = self.steps["Download previous scheduled main snapshot"]
+        self.assertLess(names.index(step["name"]), names.index("Checkout scan target"))
+        self.assertEqual(step["env"]["GH_TOKEN"], "${{ github.token }}")
+        self.assertIn("security-backstop.py retrieve", step["run"])
+        self.assertNotIn("GH_TOKEN", self.steps["Publish strict security snapshot and summary"].get("env", {}))
+        self.assertIn("docker image inspect", self.steps["Record actual scanner image identity"]["run"])
+
+    def test_delta_steps_are_only_for_pr_and_push(self):
+        for name in ("Download the base commit's scanner captures",
+                     "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"):
+            self.assertEqual(self.steps[name]["if"],
+                             "github.event_name == 'push' || github.event_name == 'pull_request'")
 
 
 if __name__ == "__main__":

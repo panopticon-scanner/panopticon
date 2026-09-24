@@ -1,8 +1,8 @@
 name: Security Scan
 
 on:
-  # TRUSTED routes only: a push to main, and a same-repo branch PR (write
-  # access + required review). This file deliberately carries NO
+  # TRUSTED routes: main pushes, same-repo PRs, and main-only full scans.
+  # Same-repo branch PRs carry write access + required review. This file has NO
   # `pull_request_target`; fork PRs are scanned by `security-fork.yml`, behind
   # a maintainer's `safe-to-scan` label, and report under the name `fork-scan`.
   #
@@ -10,8 +10,8 @@ on:
   # posts a check run under its own name, and GitHub reports a skipped job as
   # Success. Any second trigger that could reach this file and skip `scan`
   # would therefore be a way to post a green `scan` NEWER than a real failure
-  # -- on same-repo PRs as much as on fork ones. One trigger set, one job, and
-  # no skip that can speak for a scan that did not happen.
+  # -- on same-repo PRs as much as on fork ones. Full events therefore use
+  # a conditional job NAME, including when a non-main dispatch skips.
   #
   # A fork PR does reach the `pull_request` route, where this job's same-repo
   # test is false and it skips: nothing is scanned, and no scanner ever sees
@@ -27,6 +27,10 @@ on:
   # new head from inheriting the previous head's verdict.
   pull_request:
     branches: [main]
+
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}-tools:latest
@@ -51,15 +55,18 @@ env:
   GOLDEN_GLOB: tests/goldens/tool-raw/**
 jobs:
   scan:
+    name: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'strict-full-tree' || 'scan' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # push always runs; a PR runs only from a SAME-REPO head. A fork PR skips
     # here by design -- see the trigger comment -- and is scanned by
-    # security-fork.yml instead.
+    # security-fork.yml instead. Full events run only on main and carry their
+    # own check name even when skipped.
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository)
+      github.event.pull_request.head.repo.full_name == github.repository) ||
+      ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main')
     permissions:
       contents: read
       packages: read
@@ -132,6 +139,7 @@ jobs:
       # reads main's previous head), so nothing a fork controls chooses which
       # baseline is fetched.
       - name: Download the base commit's scanner captures
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         id: baseline
         env:
           GH_TOKEN: ${{ github.token }}
@@ -223,6 +231,17 @@ jobs:
           fi
           echo "found=$found" >> "$GITHUB_OUTPUT"
 
+      # Read-only history is fetched before any scan target is on disk. The
+      # helper has no third-party imports on this path; deps are installed later.
+      - name: Download previous scheduled main snapshot
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 controller/.github/scripts/security-backstop.py retrieve \
+            --repository "$GITHUB_REPOSITORY" \
+            --output "$RUNNER_TEMP/strict-history.json"
+
       # The target is untrusted data and is only mounted read-only into scanners.
       - name: Checkout scan target
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -287,6 +306,11 @@ jobs:
             docker build -t panopticon-tools controller
           fi
 
+      - name: Record actual scanner image identity
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          docker image inspect panopticon-tools --format '{{.Id}}' > "$RUNNER_TEMP/strict-image-id.txt"
+
       # --progress (#1317): this step can sit inside a single `docker run` for
       # many minutes. Without it the Actions log shows nothing between the
       # image pull and the gate, so a working scan and a hung one look
@@ -321,6 +345,7 @@ jobs:
       # The advisor/evidence pipeline is the authority for the *reported* grade;
       # this is a conservative merge guard, not that grade.
       - name: Gate on HIGH/CRITICAL tool findings (unverified-strict policy)
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         env:
           BASELINE_FOUND: ${{ steps.baseline.outputs.found }}
         run: |
@@ -347,6 +372,38 @@ jobs:
             --exclude '${{ env.FIXTURE_GLOB }}' \
             --exclude '${{ env.GOLDEN_GLOB }}' \
             ${baseline[@]+"${baseline[@]}"}
+
+      - name: Strict full-tree gate
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          python controller/skill/scripts/security_gate.py \
+            --tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
+            --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
+            --exclude '${{ env.FIXTURE_GLOB }}' \
+            --exclude '${{ env.GOLDEN_GLOB }}'
+
+      - name: Publish strict security snapshot and summary
+        id: strict-report
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        run: |
+          python controller/.github/scripts/security-backstop.py report \
+            --tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
+            --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
+            --commit "$GITHUB_SHA" \
+            --image-file "$RUNNER_TEMP/strict-image-id.txt" \
+            --history "$RUNNER_TEMP/strict-history.json" \
+            --output "$RUNNER_TEMP/snapshot.json" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --exclude '${{ env.FIXTURE_GLOB }}' \
+            --exclude '${{ env.GOLDEN_GLOB }}'
+
+      - name: Upload strict security snapshot
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.strict-report.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: strict-security-snapshot
+          path: ${{ runner.temp }}/snapshot.json
+          if-no-files-found: error
 
       # Reporting runs after the gate under `always()`: a red vulnerability
       # gate must not hide either the raw evidence or the current Security

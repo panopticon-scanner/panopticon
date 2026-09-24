@@ -372,6 +372,7 @@ groups:
     tests:
     - tests/test_apply_labels.py
     - tests/test_security_workflow.py
+    - tests/test_security_backstop.py
     - tests/test_security_fork_workflow.py
     - tests/test_image_freshness.py
     - tests/test_nvd_cache_decision.py
