@@ -237,6 +237,26 @@ summary + JSON artifact) with standards citations and CI gating.
   target build logic inside the no-egress, no-secret, read-only-mount
   container — the report records it in `meta.coverage.build_executing_tools`.
   pip-audit/npm-audit run only under `run_tools.py --online`.
+- **Every git call on the TARGET goes through `safe_git.probe`, and the target's
+  own git drivers are suppressed, not obeyed (#1985/#2006/#2013).** The probe
+  resolves a trusted git outside the target's outermost checkout, launches it
+  with a fresh allowlisted environment, pins `core.fsmonitor=false` and an empty
+  `core.hooksPath`, and preflights the effective repo-local config. A key that
+  names a command the reviewed tree authored — `filter.*.clean/.process/.smudge`,
+  `diff.external`, `diff.*.command/.textconv`, plus that filter driver's
+  `required` flag — is EMPTIED with a `-c <key>=` override on every launch that
+  follows, the override is proved effective by re-reading the config, and the
+  keys are disclosed in `run-manifest.json` (`git_drivers_suppressed`), on one
+  stderr line, and in the report (`meta.coverage.git_drivers_suppressed` plus a
+  line beside the coverage line). Values are never printed: they are command
+  lines the target wrote. `git lfs install --local` and `git-crypt init` are the
+  concrete cases — both write `filter.*.clean` into `.git/config`, and #2006
+  refused such a target outright, which made those projects unreviewable on
+  every path that touches git. They are now scanned with those drivers off,
+  which does change what the reviewers saw (a pointer file is read as a pointer
+  file), and that is exactly what the disclosure says. Refusal survives only
+  where an override cannot be SHOWN effective, and for repository shapes the
+  probe cannot bound.
 - **Tolerant by design**: `load_findings` and `enrich_citations` skip/log malformed input,
   never abort the run (a bad finding must not lose a real CRITICAL or skip the CI gate).
 - **Fan-out resumes from artifacts, not an orchestrator's memory (P2 SP-A, #435,
