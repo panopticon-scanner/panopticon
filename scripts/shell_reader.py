@@ -50,7 +50,12 @@ import shlex
 # bash's `>word 2>&1` shorthand, a real file whatever `word` looks like. A
 # target beginning with `&` whose remainder IS a duplication or close (`&1`,
 # `&-`) -- `2>&1`, `>&2`, `>&-` -- lands in neither list.
-Stage = collections.namedtuple("Stage", "argv writes reads heredoc substitutions stdout_writes")
+# Parse-local subshell markers leave argv alone; counts retain their boundaries
+# for the checksum handler without exposing marker tokens as commands.
+Stage = collections.namedtuple(
+    "Stage", "argv writes reads heredoc substitutions stdout_writes "
+             "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds",
+    defaults=(0, 0, True, True, ("0",)))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -76,7 +81,9 @@ _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 _REDIRECT = re.compile(r"&>>|&>|>>|>\||>&|<&|>|<")
-_HEREDOC_OP = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
+_STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
+_HEREDOC_OP = re.compile(
+    r"(?P<fd>(?<!\w)[0-9]+)?<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
 
 
 class _Token(str):
@@ -179,7 +186,8 @@ def _lift_heredocs(text, context):
             out.append(line)
             i += 1
             continue
-        marker = context.new("heredoc", ("\n".join(body), not m.group("q")))
+        marker = context.new("heredoc", ("\n".join(body), not m.group("q"),
+                                         m.group("fd") or "0"))
         out.append("%s %s %s" % (line[:m.start()], marker, line[m.end():]))
         i = j + 1
     return "\n".join(out)
@@ -262,7 +270,7 @@ def _split(text, context):
     buf: list[str] = []
     quote, at_token_start, i, n = None, True, 0, len(text)
     cases: list[str] = []
-    groups = (context.new("group"), context.new("group"))
+    groups = (context.new("group", "("), context.new("group", ")"))
     word_start, redirect_target = 0, False
     # A `case` header is exactly three words (`case`, the word, `in`), so the
     # shlex probe below only has to run while the buffer can still BE one --
@@ -420,6 +428,21 @@ def _fd_or_close(word):
     return word == "-" or (word.isascii() and word.isdigit())
 
 
+def input_alias_fd(word):
+    """Alias fd, ? for unresolved input, or None for a literal ordinary file."""
+    if "$" in word or has_substitution(word):
+        return "?"
+    word = os.path.normpath(word)
+    if word == "/dev/stdin":
+        return "0"
+    match = re.fullmatch(r"/dev/fd/([0-9]+)", word)
+    if match:
+        return match[1].lstrip("0") or "0"
+    if word.startswith("/dev/fd/") or re.match(r"/proc/.*/fd/", word):
+        return "?"
+    return None
+
+
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value."""
     try:
@@ -427,11 +450,18 @@ def _stage(text, context):
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
     argv, writes, reads = [], [], []
+    group_open = group_close = 0
     substitutions: list[str] = []
     heredoc = None
     # Missing and closed fds have no known file sink. A dup copies the current
     # sink; later opens/closes of the original fd cannot change that snapshot.
     sinks: dict[str, str | None] = {}
+    # fd 0 initially receives the preceding pipeline stage. Like output
+    # sinks, input origins are copied in lexical redirect order.
+    pipe_inputs = {"0": True}
+    # fd 1 initially feeds the next pipeline stage. Opening its aliases copies
+    # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
+    pipe_outputs = {"1": True}
     pending = None
 
     def take(word):
@@ -442,6 +472,10 @@ def _stage(text, context):
         word = context.token(raw)
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
+            if entry[1] == "(":
+                group_open += 1
+            else:
+                group_close += 1
             continue
         if entry and entry[0] == "redirect":
             pending = entry[1]
@@ -453,23 +487,39 @@ def _stage(text, context):
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
             if op in (">&", "<&"):
                 if _fd_or_close(word):
-                    sinks[number] = None if word == "-" else sinks.get(word.lstrip("0") or "0")
+                    source = word.lstrip("0") or "0"
+                    sinks[number] = None if word == "-" else sinks.get(source)
+                    pipe_inputs[number] = word != "-" and pipe_inputs.get(source, False)
+                    pipe_outputs[number] = word != "-" and pipe_outputs.get(source, False)
                     continue
                 if fd or op == "<&":
                     sinks[number] = None       # invalid/unresolved fd operand
+                    pipe_inputs[number] = False
+                    pipe_outputs[number] = False
                     continue
                 op = "&>"                     # unnumbered >&file
             if op == "<":
                 reads.append(word)
                 sinks[number] = None           # an input file is not an output sink
+                source = input_alias_fd(word)
+                pipe_inputs[number] = source == "?" or pipe_inputs.get(source, False)
+                pipe_outputs[number] = False
             else:
                 writes.append(word)
-                sinks[number] = word
+                sinks[number] = sinks.get("1") if word in _STDOUT_ALIASES else word
+                pipe_inputs[number] = False
+                pipe_outputs[number] = (pipe_outputs.get("1", False)
+                                        if word in _STDOUT_ALIASES else False)
                 if op.startswith("&"):
-                    sinks["2"] = word
+                    sinks["2"] = sinks[number]
+                    pipe_inputs["2"] = False
+                    pipe_outputs["2"] = pipe_outputs[number]
             continue
         if entry and entry[0] == "heredoc":
-            heredoc, expands = entry[1]
+            heredoc, expands, fd = entry[1]
+            number = fd.lstrip("0") or "0"
+            pipe_inputs[number] = False
+            pipe_outputs[number] = False
             if expands:
                 substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
             continue
@@ -477,7 +527,9 @@ def _stage(text, context):
         argv.append(word)
     stdout = sinks.get("1")
     return Stage(argv, writes, reads, heredoc, substitutions,
-                 [stdout] if stdout is not None else [])
+                 [stdout] if stdout is not None else [], group_open, group_close,
+                 pipe_inputs["0"], pipe_outputs["1"],
+                 tuple(fd for fd, connected in pipe_inputs.items() if connected))
 
 
 def statements(script):

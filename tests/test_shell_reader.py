@@ -313,3 +313,76 @@ class TestGroupRedirectBoundaries(unittest.TestCase):
                 self.assertEqual(['curl', 'URL'], parsed.argv)
                 self.assertEqual(writes, parsed.writes)
                 self.assertEqual(stdout, parsed.stdout_writes)
+
+
+class TestSubshellBoundaryMetadata(unittest.TestCase):
+    def test_existing_stage_constructor_keeps_its_six_fields(self):
+        parsed = stage("echo ready")
+        self.assertEqual(0, parsed.group_open)
+        self.assertEqual(0, parsed.group_close)
+        self.assertEqual(['echo', 'ready'], parsed.argv)
+        legacy = shell_reader.Stage([], [], [], None, [], [])
+        self.assertEqual((0, 0), (legacy.group_open, legacy.group_close))
+
+    def test_nested_and_tight_subshells_count_boundaries(self):
+        for script, opens, closes in (
+            ('(false; true)', (1, 0), (0, 1)),
+            ('((false;true))', (2, 0), (0, 2)),
+            ('(false; (true; false))', (1, 1, 0), (0, 0, 2)),
+        ):
+            with self.subTest(script=script):
+                parsed = shell_reader.statements(script)
+                self.assertEqual(opens, tuple(s.stages[0].group_open for s in parsed))
+                self.assertEqual(closes, tuple(s.stages[0].group_close for s in parsed))
+
+    def test_quoted_and_escaped_parentheses_remain_literals(self):
+        for script in ('echo "(" ")"', r'echo \( \)', "echo '(literal)'",
+                       "echo '@@group-open@@' '@@group-close@@'", "(echo '(')"):
+            with self.subTest(script=script):
+                parsed = stage(script)
+                expected = 1 if script.startswith("(") else 0
+                self.assertEqual(expected, parsed.group_open)
+                self.assertEqual(expected, parsed.group_close)
+
+
+class TestPipelineStdinProvenance(unittest.TestCase):
+    def test_input_aliases_copy_current_descriptor_origin(self):
+        for script, expected in (("sh </dev/stdin", True),
+                                 ("sh </dev/fd/0", True),
+                                 ("sh 3<&0 <local </dev/fd/3", True),
+                                 ("sh <local </dev/stdin", False),
+                                 ("sh </dev/stdin <local", False)):
+            with self.subTest(script=script):
+                self.assertEqual(expected, stage(script).stdin_from_pipe)
+        self.assertEqual(("3",), stage("cat 3<&0 <local /dev/fd/3").pipe_input_fds)
+        legacy = shell_reader.Stage([], [], [], None, [], [])
+        self.assertEqual(("0",), legacy.pipe_input_fds)
+
+    def test_other_descriptor_reads_leave_stdin_connected(self):
+        self.assertTrue(stage("cat 3<local").stdin_from_pipe)
+        self.assertFalse(stage("cat <local").stdin_from_pipe)
+
+    def test_descriptor_copies_follow_redirect_order(self):
+        self.assertTrue(stage("cat 3<&0 0<local 0<&3").stdin_from_pipe)
+        self.assertFalse(stage("cat 3<&0 0<local").stdin_from_pipe)
+        self.assertFalse(stage("cat 0<&3 3<&0").stdin_from_pipe)
+
+    def test_heredoc_and_later_descriptor_copies_follow_order(self):
+        self.assertFalse(stage("sh <<EOF\necho safe\nEOF").stdin_from_pipe)
+        self.assertTrue(stage("sh 3<<EOF\necho safe\nEOF").stdin_from_pipe)
+        self.assertTrue(stage(
+            "sh 3<&0 <<EOF 0<&3\necho safe\nEOF").stdin_from_pipe)
+        self.assertFalse(stage(
+            "sh 3<&0 0<&3 <<EOF\necho safe\nEOF").stdin_from_pipe)
+
+
+class TestPipelineStdoutProvenance(unittest.TestCase):
+    def test_stdout_aliases_and_redirect_order(self):
+        self.assertTrue(stage("cat >/dev/stdout").stdout_to_pipe)
+        self.assertTrue(stage("cat >/dev/fd/1").stdout_to_pipe)
+        self.assertFalse(stage("cat >/dev/stdout >saved").stdout_to_pipe)
+        self.assertFalse(stage("cat >saved >/dev/stdout").stdout_to_pipe)
+        self.assertFalse(stage("cat >saved >/dev/fd/1").stdout_to_pipe)
+        self.assertTrue(stage("cat 3>&1 >saved 1>&3").stdout_to_pipe)
+        self.assertTrue(stage("cat 3>&1 >/dev/null >&3").stdout_to_pipe)
+        self.assertEqual(["saved"], stage("cat >saved >/dev/stdout").stdout_writes)
