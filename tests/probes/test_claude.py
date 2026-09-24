@@ -1186,6 +1186,57 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertIn("subprocess", detail)
             self.assertFalse(os.path.exists(marker))
 
+    def test_emitted_command_must_match_isolated_trusted_tuple(self):
+        from scripts import read_guard_hook
+        trusted = read_guard_hook._trusted_hook_argv()
+        candidates = (trusted[:1] + trusted[2:],
+                      ("/bin/echo", *trusted[1:]),
+                      (*trusted[:2], trusted[2] + ".other"))
+        for candidate in candidates:
+            with self.subTest(candidate=candidate), \
+                 mock.patch.object(read_guard_hook, "_trusted_hook_argv", return_value=candidate):
+                ok, detail = claude_probes._round_trip_confines_reads()
+            self.assertFalse(ok, detail)
+            self.assertTrue("trusted" in detail or "did not register" in detail, detail)
+        original = read_guard_hook._hook_entry
+        def wrong_scope(scope):
+            return original(scope + ".wrong")
+        with mock.patch.object(read_guard_hook, "_hook_entry", side_effect=wrong_scope):
+            ok, detail = claude_probes._round_trip_confines_reads()
+        self.assertFalse(ok, detail)
+        self.assertIn("trusted", detail)
+
+    def test_private_launch_boundary_rejects_untrusted_operands_before_launch(self):
+        from scripts.probes import claude_read_guard
+        with tempfile.TemporaryDirectory() as d:
+            scope = os.path.join(d, "scope.json")
+            process = claude_read_guard._ReadHookProcess(scope, d)
+            expected = process.expected
+            candidates = (expected[:1] + expected[2:],
+                          ("/bin/echo", *expected[1:]),
+                          (*expected[:2], os.path.join(d, "other.py"), scope),
+                          (*expected[:3], scope + ".other"))
+            with mock.patch.object(claude_read_guard.children.ChildProcesses, "launch") as launch:
+                for candidate in candidates:
+                    with self.subTest(candidate=candidate), self.assertRaisesRegex(
+                            ValueError, "trusted isolated tuple"):
+                        process.launch(candidate, env={})
+                launch.assert_not_called()
+
+    def test_resolution_must_preserve_emitted_interpreter(self):
+        from scripts import executable
+        with mock.patch.object(executable, "resolve", return_value=
+                               executable.ResolvedExecutable("/bin/echo", "/bin")):
+            ok, detail = claude_probes._round_trip_confines_reads()
+        self.assertFalse(ok, detail)
+        self.assertIn("identity", detail)
+
+    def test_subprocess_with_absent_path(self):
+        with mock.patch.dict(os.environ, clear=False):
+            os.environ.pop("PATH", None)
+            ok, detail = claude_probes._round_trip_confines_reads()
+        self.assertTrue(ok, detail)
+
     def test_broken_interpreter_refutes_the_probe(self):
         from scripts import read_guard_hook
         with tempfile.TemporaryDirectory() as session_root:
@@ -1203,7 +1254,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             with open(settings, "w", encoding="utf-8") as fh:
                 json.dump({"hooks": {"PreToolUse": [{"matcher": "Read|Grep|Glob",
                     "hooks": [{"type": "command", "command": "touch planted-marker"}]}]}}, fh)
-            with mock.patch.object(claude_read_guard.subprocess, "run") as run:
+            with mock.patch.object(claude_read_guard.children.ChildProcesses, "launch") as run:
                 ok, detail = claude_read_guard._measure_installed_hook(
                     settings, os.path.join(d, "scope.json"), os.path.join(d, "s.jsonl"),
                     os.path.join(d, "a.py"), os.path.join(d, "b.py"), d)
@@ -1228,7 +1279,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             if not isinstance(outcomes, list):
                 outcomes = [outcomes]
             with self.subTest(label=label), \
-                 mock.patch.object(claude_read_guard.subprocess, "run", side_effect=outcomes):
+                 mock.patch.object(claude_read_guard.children.ChildProcesses, "launch", side_effect=outcomes):
                 ok, detail = claude_probes._round_trip_confines_reads()
             self.assertFalse(ok, detail)
             self.assertIn("subprocess", detail)

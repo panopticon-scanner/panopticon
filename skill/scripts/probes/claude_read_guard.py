@@ -2,10 +2,13 @@
 from typing import Any
 import json
 import os
+import shlex
+import sys
 import subprocess
 import tempfile
 
-from scripts import read_guard_hook
+from scripts import executable, read_guard_hook
+import scripts.runners.children as children
 from . import common
 
 
@@ -125,6 +128,30 @@ def _round_trip_confines_reads():
         len(rows) + len(env_rows))
 
 
+class _ReadHookProcess(children.ChildProcesses):
+    """Private Python proof: enforce the driver's precise isolated command.
+
+    The shared launcher supplies executable provenance, startup environment
+    filtering and bounded process-group cleanup; this boundary additionally
+    binds the only interpreter, script and scope this proof may execute.
+    """
+
+    def __init__(self, scope_file, sandbox):
+        self.review_root = sandbox
+        self.expected = (os.path.realpath(sys.executable), "-I",
+                         os.path.abspath(read_guard_hook.__file__),
+                         os.path.abspath(scope_file))
+
+    def launch(self, argv, **kwargs):
+        if tuple(argv) != self.expected:
+            raise ValueError("read-guard command differs from the trusted isolated tuple")
+        resolved = executable.resolve(argv[0], self.review_root,
+                                      kwargs["env"].get("PATH", ""))
+        if resolved.path != argv[0]:
+            raise ValueError("read-guard executable resolution changed emitted identity")
+        return super().launch(argv, **kwargs)
+
+
 def _measure_installed_hook(settings, scope_file, parent, inside, outside, sandbox):
     """Compare settings with the driver's command, then execute trusted argv.
 
@@ -139,7 +166,8 @@ def _measure_installed_hook(settings, scope_file, parent, inside, outside, sandb
     expected = read_guard_hook._hook_entry(scope_file)
     if entries != [expected]:
         return False, "installed read-guard command differs from the driver's emitted command"
-    argv = [*read_guard_hook._trusted_hook_argv(), os.path.abspath(scope_file)]
+    argv = shlex.split(expected["hooks"][0]["command"])
+    process = _ReadHookProcess(scope_file, sandbox)
     payload = {"tool_name": "Read", "agent_id": "agent-x",
                "transcript_path": parent, "cwd": sandbox,
                "tool_input": {"file_path": inside}}
@@ -150,10 +178,10 @@ def _measure_installed_hook(settings, scope_file, parent, inside, outside, sandb
         env.pop(read_guard_hook.ENV_ENTRY_ID, None)
         env.pop("PANOPTICON_READ_SCOPE", None)
         try:
-            result = subprocess.run(argv, input=json.dumps(payload), text=True,
+            result = process.launch(argv, input=json.dumps(payload), text=True,
                                     capture_output=True, cwd=sandbox, env=env,
-                                    timeout=5, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
+                                    timeout=5)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
             return False, "read-guard subprocess %s failed: %s" % (label, exc)
         if result.returncode != 0 or result.stderr:
             return False, "read-guard subprocess %s failed (exit %s): %s" % (
