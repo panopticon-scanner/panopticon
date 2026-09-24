@@ -1139,9 +1139,10 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             progress.note("[%d/%d] %s skipped: online egress unavailable"
                           % (index, total, tool))
             continue
-        # Legacy SARIF path (kept for backward compatibility).
+        # Legacy SARIF path (kept for backward compatibility). Gitleaks uses
+        # its adapter so the scanner-owned rule config reaches production.
         cmd = TOOL_CMD.get(tool)
-        if cmd:
+        if cmd and tool != "gitleaks":
             cmd = list(cmd)   # never mutate the shared TOOL_CMD entry
             # #run7: bandit AUTO-DISCOVERS .bandit config files by walking the
             # scanned tree. A nested checkout (a git worktree, a vendored repo)
