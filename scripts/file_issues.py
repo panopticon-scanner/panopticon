@@ -12,12 +12,15 @@ Usage:  python3 .panopticon/file_issues.py [--dry-run] [--limit N]
 import argparse
 import contextlib
 import functools
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from types import ModuleType
+from urllib.parse import urlencode
 
 try:
     import fcntl as _fcntl     # POSIX only; the ledger lock degrades without it
@@ -305,13 +308,11 @@ def record(ledger, key, url, path=LEDGER):
             raise RuntimeError(
                 "ledger %s is present but unreadable/corrupt (%s); refusing to "
                 "overwrite it. Restore or repair it before filing." % (path, e)) from e
-        merged.update(ledger)
+        merged = {**ledger, **merged}
+        if key in merged and merged[key] != url:
+            raise RuntimeError("ledger key already has a different URL; reconcile before filing")
         merged[key] = url
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"schema_version": LEDGER_SCHEMA_VERSION,
-                       "entries": merged}, fh, indent=1, sort_keys=True)
-        os.replace(tmp, path)
+        _atomic_json(path, {"schema_version": LEDGER_SCHEMA_VERSION, "entries": merged})
     ledger.update(merged)
 
 
@@ -344,7 +345,7 @@ def key_for(f, rejected):
 
 # Hard bound on the network `gh issue create` call so a hung gh (network
 # partition, GitHub slowness, auth prompt) cannot block the filing run
-# indefinitely (#1104). A timeout is treated as a retryable failed attempt.
+# indefinitely (#1104). Ambiguous acceptance must only be reconciled.
 GH_CREATE_TIMEOUT = 60
 
 
@@ -359,42 +360,180 @@ def _gh_bin():
     return triage.gh_bin()
 
 
-def find_existing_issue(title, runner):
-    """URL of an issue that already carries EXACTLY this title, or None.
+def validate_repo(repo):
+    if not isinstance(repo, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*", repo):
+        raise ValueError("repository must be an explicit owner/name slug")
+    return repo
 
-    #1212: `gh issue create` exiting 0 with empty stdout is ambiguous -- it has
-    been observed under GitHub secondary rate limits, and the retry that
-    followed assumed the issue had not been created. Whenever it HAD been, the
-    retry filed a duplicate permanent public issue. So ask.
 
-    None means "no match, or could not tell". Both keep the pre-existing retry
-    behaviour rather than inventing a new failure mode: an unanswerable probe
-    must not turn a filable finding into a silent skip.
+def _issue_url(url, repo):
+    return isinstance(url, str) and re.fullmatch(
+        r"https://github\.com/" + re.escape(repo) + r"/issues/[1-9][0-9]*", url) is not None
+
+
+def _digest(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
+def _atomic_json(path, value):
+    # Every caller holds the stable ledger lock, including pending writes.
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=1, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+    fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _intent(repo, kind, key, title, body, labels):
+    identity = _digest([repo, kind, key])
+    marker = "<!-- panopticon-create:%s -->" % _digest(
+        [repo, kind, key, title, body, labels])
+    return identity, dict(repo=repo, kind=kind, key=key, title=title,
+                          content=body, body=body + "\n\n" + marker,
+                          labels=labels, marker=marker, state="pending", url=None)
+
+
+def _load_pending(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("pending ledger unreadable; restore or reconcile " + path) from exc
+    try:
+        if (not isinstance(data, dict) or type(data.get("schema_version")) is not int
+                or data["schema_version"] != 1 or not isinstance(data.get("entries"), dict)):
+            raise ValueError("invalid envelope")
+        for identity, entry in data["entries"].items():
+            if not isinstance(entry, dict):
+                raise ValueError("invalid entry")
+            for field in ("repo", "kind", "key", "title", "content", "body", "marker"):
+                if not isinstance(entry.get(field), str):
+                    raise ValueError("invalid " + field)
+            validate_repo(entry["repo"])
+            if (entry["kind"] not in ("finding", "fixme") or not entry["key"]
+                    or not isinstance(entry.get("labels"), list)
+                    or not all(isinstance(label, str) for label in entry["labels"])):
+                raise ValueError("invalid identity or labels")
+            expected_id, expected = _intent(entry["repo"], entry["kind"], entry["key"],
+                                            entry["title"], entry["content"], entry["labels"])
+            if identity != expected_id or any(entry.get(k) != v for k, v in expected.items()
+                                               if k not in ("state", "url")):
+                raise ValueError("intent content or identity mismatch")
+            if entry.get("state") == "complete":
+                if not _issue_url(entry.get("url"), entry["repo"]):
+                    raise ValueError("invalid completion URL")
+            elif entry.get("state") != "pending" or entry.get("url") is not None:
+                raise ValueError("invalid pending state")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("malformed pending ledger; restore or reconcile " + path) from exc
+    return data["entries"]
+
+
+def load_filing_ledger(path, repo):
+    """Validate both files and the target before CLI filtering can skip a key."""
+    ledger = load_ledger(path)
+    pending = _load_pending(path + ".pending.json")
+    if any(not _issue_url(url, repo) for url in ledger.values()):
+        raise RuntimeError("ledger contains a URL outside the selected repository; reconcile ledger")
+    # Complete a receipt whose primary write survived a previous process crash.
+    if any(entry["state"] == "pending" and entry["key"] in ledger
+           and entry["repo"] == repo for entry in pending.values()):
+        with _ledger_lock(path):
+            ledger = load_ledger(path)
+            pending = _load_pending(path + ".pending.json")
+            for entry in pending.values():
+                url = ledger.get(entry["key"])
+                if entry["state"] == "pending" and entry["repo"] == repo and url:
+                    if not _issue_url(url, repo):
+                        raise RuntimeError("ledger changed repository during completion")
+                    entry.update(state="complete", url=url)
+            _save_pending(path + ".pending.json", pending)
+    return ledger
+
+
+def _save_pending(path, entries):
+    _atomic_json(path, {"schema_version": 1, "entries": entries})
+
+
+def _preflight(repo, runner):
+    try:
+        result = runner([_gh_bin(), "api", "repos/" + repo], capture_output=True, text=True)
+        data = json.loads(result.stdout)
+        if (result.returncode != 0 or not isinstance(data, dict)
+                or data.get("full_name") != repo or not isinstance(data.get("permissions"), dict)
+                or data["permissions"].get("admin") is not True):
+            raise ValueError("missing admin permission or wrong repository")
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+        raise RuntimeError("authenticated admin preflight failed for " + repo) from exc
+
+
+def find_existing_issue(title, runner, repo=REPO_SLUG, *, intent=None):
+    """Adopt one exact operation marker only from a complete bounded response.
+
+    Legacy title-only calls retain their positional/keyword interface and
+    return None without querying: a title cannot prove operation identity.
+    Explicit intent enables strict reconciliation and raises if unresolved.
+    Search indexing may lag acceptance. Even an empty result cannot authorize
+    replay. A full page, malformed row, or duplicate marker is inconclusive.
     """
+    if intent is None:
+        return None
+    validate_repo(repo)
+    if intent["title"] != title or intent["repo"] != repo:
+        raise ValueError("probe title/repository does not match the bound intent")
+    marker = intent["marker"]
     try:
-        r = runner([_gh_bin(), "issue", "list",
-                    "--search", '"%s" in:title' % title,
-                    "--state", "all", "--limit", "50", "--json", "title,url"],
-                   capture_output=True, text=True)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if r.returncode != 0:
-        return None
-    try:
-        rows = json.loads(r.stdout or "[]")
-    except ValueError:
-        return None
-    if not isinstance(rows, list):
-        return None
-    for row in rows:
-        # Exact title only: `--search` is fuzzy, and adopting a NEAR match would
-        # silently drop a real finding.
-        if isinstance(row, dict) and row.get("title") == title and row.get("url"):
-            return row["url"]
-    return None
+        query = urlencode({"q": "repo:" + repo + " is:issue "
+                           + marker.split(":")[1].split()[0] + " in:body", "per_page": 100})
+        result = runner([_gh_bin(), "api", "search/issues?" + query],
+                        capture_output=True, text=True)
+        data = json.loads(result.stdout)
+        if (result.returncode != 0 or not isinstance(data, dict)
+                or data.get("incomplete_results") is not False
+                or type(data.get("total_count")) is not int
+                or not isinstance(data.get("items"), list)):
+            raise ValueError("invalid marker query envelope")
+        rows = data["items"]
+        if data["total_count"] != len(rows) or len(rows) >= 100:
+            raise ValueError("incomplete marker query")
+        matches = []
+        for row in rows:
+            if (not isinstance(row, dict) or not isinstance(row.get("body"), str)
+                    or not isinstance(row.get("title"), str) or "pull_request" in row
+                    or not _issue_url(row.get("html_url"), repo)):
+                raise ValueError("invalid marker query row")
+            if marker in row["body"].splitlines():
+                if row["body"] != intent["body"] or row["title"] != intent["title"]:
+                    raise ValueError("marker content changed")
+                matches.append(row["html_url"])
+        if len(matches) == 1:
+            return matches[0]
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+        raise RuntimeError("pending create marker query inconclusive; reconcile before replay") from exc
+    raise RuntimeError("pending create unresolved; rerun to reconcile its marker; do not delete intent")
 
 
-def create(title, body, labels, dry, throttle=0.0, env=None):
+def create(title, body, labels, dry, throttle=0.0, env=None, repo=REPO_SLUG,
+           operation_id=None, ledger_path=None, kind="finding"):
+    """One durable create attempt; subsequent calls can only adopt its marker.
+
+    A direct caller without a canonical key gets a content-derived key. Primary
+    ledger keys stay unchanged, so selecting a different repo with the same
+    ledger/key refuses instead of adopting a foreign URL.
+    """
+    validate_repo(repo)
+    if kind not in ("finding", "fixme"):
+        raise ValueError("unknown filing kind")
     if dry:
         print("\n" + "=" * 78)
         print("TITLE : %s" % title)
@@ -402,42 +541,77 @@ def create(title, body, labels, dry, throttle=0.0, env=None):
         print("-" * 78)
         print(body[:900])
         return None
+    path = LEDGER if ledger_path is None else os.fspath(ledger_path)
+    key = operation_id if operation_id is not None else _digest([repo, kind, title, body, labels])
+    if not isinstance(key, str) or not key:
+        raise ValueError("operation identity must be a nonempty string")
+    identity, intent = _intent(repo, kind, key, title, body, labels)
+    pending_path = path + ".pending.json"
+    # Refuse corruption before permission queries, parent creation, or mutation.
+    load_ledger(path)
+    _load_pending(pending_path)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    if fcntl is None:  # pragma: no cover - fail closed without ownership locking
+        raise RuntimeError("durable issue creation requires a ledger lock")
+    with _ledger_lock(path):
+        ledger = load_ledger(path)
+        pending = _load_pending(pending_path)
+        if key in ledger:
+            if not _issue_url(ledger[key], repo):
+                raise RuntimeError("recorded key belongs to a different repository; reconcile ledger")
+            # Resume a crash after the primary write and before completion.
+            if identity in pending:
+                pending[identity].update(state="complete", url=ledger[key])
+                _save_pending(pending_path, pending)
+            return ledger[key]
     if env is None:
         env = triage.gh_env()
-    # Built here, not at import: tests patch subprocess.run, and the hard
-    # timeout keeps a hung gh from blocking the unattended run (#1104).
     runner = functools.partial(subprocess.run, env=env, timeout=GH_CREATE_TIMEOUT)
-    outcome, payload = triage.attempt_gh(
-        [_gh_bin(), "issue", "create", "--title", title,
-         "--body", body, "--label", ",".join(labels)],
-        runner, time.sleep, retry_empty_stdout=True,
-        on_empty=lambda: find_existing_issue(title, runner),
-        what="gh issue create")
-    if outcome == "adopted":
-        print("%s  %s  (already filed; adopted, not re-created)"
-              % (payload, title[:70]), flush=True)
-        return payload
-    if outcome == "ok":
-        url = payload.strip().splitlines()[-1]
-        print("%s  %s" % (url, title[:70]), flush=True)
-        if throttle:
-            time.sleep(throttle)
-        return url
-    # Exhaustion leaves the finding UN-LEDGERED so a later run re-files it,
-    # rather than halting the whole run. triage.gh() raises instead; the two
-    # policies differ deliberately, which is why the ladder returns an outcome.
-    if outcome == "timeout":
-        print("FAILED (gh create timed out): %s" % title, file=sys.stderr, flush=True)
-    elif outcome == "empty":
-        print("FAILED (rc=0, no url returned): %s" % title, file=sys.stderr, flush=True)
-    else:
-        print("FAILED: %s\n%s" % (title, payload), file=sys.stderr, flush=True)
-    return None
+    _preflight(repo, runner)
+    with _ledger_lock(path):
+        ledger = load_ledger(path)
+        pending = _load_pending(pending_path)
+        if key in ledger:
+            if not _issue_url(ledger[key], repo):
+                raise RuntimeError("recorded key belongs to a different repository")
+            return ledger[key]
+        owner = identity not in pending
+        if owner:
+            pending[identity] = intent
+            _save_pending(pending_path, pending)
+        else:
+            existing = pending[identity]
+            if any(existing[k] != v for k, v in intent.items() if k not in ("state", "url")):
+                raise RuntimeError("pending operation content changed; reconcile original intent")
+            intent = existing
+    url = None
+    if owner:
+        try:
+            result = runner([_gh_bin(), "issue", "create", "--repo", repo,
+                             "--title", title, "--body", intent["body"],
+                             "--label", ",".join(labels)], capture_output=True, text=True)
+            candidate = result.stdout.strip()
+            if result.returncode == 0 and _issue_url(candidate, repo):
+                url = candidate
+        except (OSError, subprocess.SubprocessError):
+            pass  # Acceptance is unknown; the durable intent forbids retry.
+    if url is None:
+        url = find_existing_issue(title, runner, repo, intent=intent)
+    record({}, key, url, path)
+    with _ledger_lock(path):
+        pending = _load_pending(pending_path)
+        pending[identity].update(state="complete", url=url)
+        _save_pending(pending_path, pending)
+    print("%s  %s" % (url, title[:70]), flush=True)
+    if throttle:
+        time.sleep(throttle)
+    return url
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--repo", type=validate_repo, default=REPO_SLUG)
     ap.add_argument("--limit", type=int)
     ap.add_argument("--only", choices=["findings", "rejected"])
     ap.add_argument("--throttle", type=float, default=1.5,
@@ -471,7 +645,7 @@ def main():
     if a.limit:
         work = work[:a.limit]
 
-    ledger = {} if a.dry_run else load_ledger()
+    ledger = {} if a.dry_run else load_filing_ledger(LEDGER, a.repo)
     todo = [(f, rej) for f, rej in work if key_for(f, rej) not in ledger]
     skipped = len(work) - len(todo)
     print("filing %d issue(s)%s%s" % (
@@ -485,7 +659,8 @@ def main():
                         run_label=a.run_label, run_date=a.run_date,
                         run_state_doc=a.run_state_doc)
         url = create(scrub(title_for(f)), scrub(body),
-                     labels_for(f, rej), a.dry_run, a.throttle, env=env)
+                     labels_for(f, rej), a.dry_run, a.throttle, env=env, repo=a.repo,
+                     operation_id=key_for(f, rej), ledger_path=LEDGER, kind="finding")
         if url:
             record(ledger, key_for(f, rej), url)
             created += 1

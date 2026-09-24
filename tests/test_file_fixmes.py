@@ -120,7 +120,7 @@ def test_run_scoped_keys_resume_and_preserve_legacy_default(tmp_path):
 
     def file_once(*args, **kwargs):
         created.append(args)
-        return "https://example.test/%d" % len(created)
+        return "https://github.com/panopticon-scanner/panopticon/issues/%d" % len(created)
 
     def run(*flags):
         with mock.patch.object(file_fixmes, "LEDGER", str(ledger)), \
@@ -140,7 +140,7 @@ def test_run_scoped_keys_resume_and_preserve_legacy_default(tmp_path):
     assert set(entries) == {json.dumps(["run-3", "FIXME-1"], separators=(",", ":")),
                             json.dumps(["run-3", "FIXME-2"], separators=(",", ":"))}
 
-    ledger.write_text(json.dumps({"FIXME-1": "https://example.test/old"}), encoding="utf-8")
+    ledger.write_text(json.dumps({"FIXME-1": "https://github.com/panopticon-scanner/panopticon/issues/99"}), encoding="utf-8")
     created.clear()
     with mock.patch.object(file_fixmes, "LEDGER", str(ledger)), \
             mock.patch.object(file_fixmes, "DOC", str(doc)), \
@@ -159,3 +159,47 @@ def test_run_scoped_keys_resume_and_preserve_legacy_default(tmp_path):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_delegated_create_keeps_finding_and_fixme_intents_separate(tmp_path, monkeypatch):
+    assert file_fixmes.create is file_fixmes.file_issues.create
+    module = file_fixmes.file_issues
+    posted = []
+    def run(cmd, **kwargs):
+        if cmd[1] == "api":
+            return mock.Mock(returncode=0, stdout=json.dumps({
+                "full_name": module.REPO_SLUG, "permissions": {"admin": True}}))
+        assert cmd[2] == "create"
+        posted.append(cmd[cmd.index("--body") + 1])
+        return mock.Mock(returncode=0, stdout="https://github.com/" + module.REPO_SLUG + "/issues/%d" % len(posted))
+    monkeypatch.setattr(module, "_gh_bin", lambda: "/fake/gh")
+    monkeypatch.setattr(module.subprocess, "run", run)
+    # Even equal caller keys/content get distinct operation markers by kind.
+    for kind in ("finding", "fixme"):
+        file_fixmes.create("t", "b", [], False, env={}, operation_id="same-key",
+                           ledger_path=str(tmp_path / kind), kind=kind)
+    assert len(posted) == 2 and posted[0] != posted[1]
+    for kind in ("finding", "fixme"):
+        pending = json.loads((tmp_path / (kind + ".pending.json")).read_text())
+        assert next(iter(pending["entries"].values()))["kind"] == kind
+
+
+def test_main_passes_run_key_and_repo_to_delegated_create(tmp_path, monkeypatch):
+    doc = tmp_path / "fixmes.md"
+    doc.write_text(FIXME_DOC)
+    ledger = str(tmp_path / "ledger")
+    monkeypatch.setattr(file_fixmes, "LEDGER", ledger)
+    monkeypatch.setattr(file_fixmes.file_issues.sys, "argv", [
+        "file_fixmes.py", "--doc", str(doc), "--repo", "owner/project",
+        "--run-label", "run-8", "--dry-run"])
+    create = mock.Mock(return_value=None)
+    monkeypatch.setattr(file_fixmes, "create", create)
+    file_fixmes.main()
+    assert create.call_count == 2
+    for index, call in enumerate(create.call_args_list, 1):
+        assert call.kwargs["repo"] == "owner/project"
+        assert call.kwargs["kind"] == "fixme"
+        assert call.kwargs["ledger_path"] == ledger
+        assert call.kwargs["operation_id"] == file_fixmes.key_for("run-8", "FIXME-%d" % index)
+    assert not (tmp_path / "ledger").exists()
+    assert not (tmp_path / "ledger.pending.json").exists()

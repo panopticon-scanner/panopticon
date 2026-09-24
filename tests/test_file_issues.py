@@ -1,5 +1,7 @@
 import json
 import os
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 import shutil
 import tempfile
 import types
@@ -109,7 +111,7 @@ def _run_split_main(monkeypatch, report, *options, ledger=None):
 def test_main_files_selected_split_records_in_order(tmp_path, monkeypatch, options, expected):
     report, records = _split_report(tmp_path)
     load, create, record, gh_env = _run_split_main(monkeypatch, report, *options)
-    load.assert_called_once_with()
+    load.assert_called_once_with(file_issues.LEDGER)
     gh_env.assert_called_once_with()
     assert create.call_count == record.call_count == len(expected)
     for name, created, saved in zip(expected, create.call_args_list, record.call_args_list):
@@ -134,7 +136,7 @@ def test_main_skips_existing_split_record(tmp_path, monkeypatch):
     report, records = _split_report(tmp_path)
     existing = file_issues.key_for(records["rejected-part"], True)
     _, create, record, _ = _run_split_main(
-        monkeypatch, report, "--only", "rejected", ledger={existing: "existing-url"})
+        monkeypatch, report, "--only", "rejected", ledger={existing: "https://github.com/panopticon-scanner/panopticon/issues/1"})
     assert [call.args[0] for call in create.call_args_list] == [
         file_issues.title_for(records[name]) for name in ("rejected-inline", "rejected-spill")]
     assert [call.args[1] for call in record.call_args_list] == [
@@ -427,65 +429,6 @@ class TestKeyForNormalization(unittest.TestCase):
                          "fp1|X||rejected")
 
 
-class TestCreateEmptyStdout(unittest.TestCase):
-    """GitHub secondary rate limits make `gh issue create` exit 0 with empty
-    stdout. create() must back off and retry, never crash on splitlines()[-1]."""
-
-    def test_empty_stdout_then_url_retries_and_returns(self):
-        # #1212 changed what happens BETWEEN the empty response and the retry:
-        # the ambiguous rc=0 is now probed (`gh issue list`) before re-creating,
-        # so a create that actually landed is adopted instead of duplicated.
-        # Here the probe reports nothing filed, so the retry proceeds as before.
-        calls = [_completed(0, ""),                        # create: rc=0, no url
-                 _completed(0, "[]"),                      # probe: nothing filed
-                 _completed(0, "https://gh/issues/900")]   # retry: the real url
-        with mock.patch.object(file_issues.subprocess, "run",
-                               side_effect=calls) as run, \
-             mock.patch.object(file_issues.time, "sleep") as slept:
-            url = file_issues.create("t", "b", ["self-scan"], dry=False)
-        self.assertEqual(url, "https://gh/issues/900")
-        self.assertEqual(run.call_count, 3)
-        slept.assert_called()  # backed off between the empty response and retry
-
-    def test_persistent_empty_stdout_returns_none_without_crashing(self):
-        with mock.patch.object(file_issues.subprocess, "run",
-                               return_value=_completed(0, "")), \
-             mock.patch.object(file_issues.time, "sleep"):
-            url = file_issues.create("t", "b", ["self-scan"], dry=False)
-        self.assertIsNone(url)  # gave up after retries; run continues, no exception
-
-    def test_create_uses_exact_trusted_argv_env_and_timeout(self):
-        # #1104: the create call is bounded; bind all operands to the command.
-        captured = []
-        gh_env = {"GH_TOKEN": "fixture-token"}
-        def _run(cmd, **kw):
-            captured.append((cmd, kw))
-            return _completed(0, "https://gh/issues/1")
-        with mock.patch.object(file_issues.subprocess, "run", side_effect=_run), \
-             mock.patch.object(file_issues.time, "sleep"):
-            url = file_issues.create("exact title", "exact body",
-                                     ["self-scan", "security"], dry=False,
-                                     env=gh_env)
-        self.assertEqual(url, "https://gh/issues/1")
-        self.assertEqual(captured, [
-            ([os.path.join(triage.TRUSTED_PATH, "gh"), "issue", "create",
-              "--title", "exact title",
-              "--body", "exact body", "--label", "self-scan,security"],
-             {"env": gh_env, "timeout": file_issues.GH_CREATE_TIMEOUT,
-              "capture_output": True, "text": True})])
-
-    def test_persistent_timeout_returns_none_without_hanging(self):
-        # A hung gh is retried, then abandoned (un-ledgered, resumable) -- bounded,
-        # never an infinite block (#1104).
-        def _run(cmd, **kw):
-            raise file_issues.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
-        with mock.patch.object(file_issues.subprocess, "run", side_effect=_run), \
-             mock.patch.object(file_issues.time, "sleep") as slept:
-            url = file_issues.create("t", "b", ["self-scan"], dry=False)
-        self.assertIsNone(url)
-        slept.assert_called()
-
-
 def test_body_fingerprint_and_id_are_backtick_safe():
     f = {
         "title": "x",
@@ -774,80 +717,286 @@ class TestLedgerSchemaVersion(unittest.TestCase):
         self.assertIn("newer", str(caught.exception).lower())
 
 
-class TestCreateIdempotence(unittest.TestCase):
-    """#1212: `gh issue create` has been seen exiting 0 with EMPTY stdout under
-    GitHub secondary rate limits. The old code assumed that meant the issue was
-    not created and retried blind -- so whenever it HAD been created, the retry
-    filed a duplicate permanent public issue. Ask before re-creating."""
+# Create is a non-idempotent mutation: ambiguous acceptance never retries.
+@pytest.mark.parametrize("response", ["timeout", "empty", "transport", "nonzero", "invalid-url"])
+def test_durable_create_adopts_exact_marker(tmp_path, monkeypatch, response):
+    path = str(tmp_path / "ledger.json")
+    calls = []
+    posted = []
+    url = "https://github.com/owner/project/issues/42"
 
-    def _run_returning(self, *results):
-        it = iter(results)
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        assert kwargs["timeout"] == file_issues.GH_CREATE_TIMEOUT
+        assert kwargs["env"] == {"TOKEN": "fake"}
+        if cmd[1] == "api" and cmd[2].startswith("repos/"):
+            assert cmd[2] == "repos/owner/project"
+            return _completed(stdout='{"full_name":"owner/project","permissions":{"admin":true}}')
+        if cmd[2] == "create":
+            assert cmd[cmd.index("--repo") + 1] == "owner/project"
+            posted.append(cmd[cmd.index("--body") + 1])
+            pending = json.loads((tmp_path / "ledger.json.pending.json").read_text())
+            assert next(iter(pending["entries"].values()))["body"] == posted[0]
+            if response == "timeout":
+                raise file_issues.subprocess.TimeoutExpired(cmd, 60)
+            if response == "transport":
+                raise OSError("connection lost")
+            if response == "nonzero":
+                return _completed(1, stderr="remote response lost")
+            if response == "invalid-url":
+                return _completed(stdout="https://github.com/other/project/issues/1")
+            return _completed()
+        assert "repo:owner/project is:issue " in parse_qs(urlsplit(cmd[2]).query)["q"][0]
+        return _completed(stdout=json.dumps({"incomplete_results": False, "total_count": 1,
+                                             "items": [{"title": "same title", "body": posted[0], "html_url": url}]}))
 
-        def _run(cmd, **kw):
-            return next(it)
-        return _run
-
-    def test_empty_stdout_adopts_an_existing_issue_instead_of_refiling(self):
-        listing = '[{"title": "t", "url": "https://gh/issues/42"}]'
-        run = self._run_returning(_completed(0, ""), _completed(0, listing))
-        with mock.patch.object(file_issues.subprocess, "run", side_effect=run) as r, \
-             mock.patch.object(file_issues.time, "sleep"):
-            url = file_issues.create("t", "b", ["self-scan"], dry=False)
-        self.assertEqual(url, "https://gh/issues/42")
-        self.assertEqual(r.call_count, 2)          # probe, then STOP -- no re-create
-        self.assertIn("issue", r.call_args_list[1].args[0])
-        self.assertIn("list", r.call_args_list[1].args[0])
-
-    def test_a_different_title_is_not_adopted(self):
-        listing = '[{"title": "some other issue", "url": "https://gh/issues/9"}]'
-        run = self._run_returning(_completed(0, ""), _completed(0, listing),
-                                  _completed(0, "https://gh/issues/10"))
-        with mock.patch.object(file_issues.subprocess, "run", side_effect=run), \
-             mock.patch.object(file_issues.time, "sleep"):
-            url = file_issues.create("t", "b", ["self-scan"], dry=False)
-        self.assertEqual(url, "https://gh/issues/10")
-
-    def test_an_unreadable_probe_keeps_the_old_retry_behaviour(self):
-        # If we cannot tell whether the issue exists, the safe fallback is the
-        # behaviour that was already shipping, not a silent give-up.
-        run = self._run_returning(_completed(0, ""), _completed(1, "", "boom"),
-                                  _completed(0, "https://gh/issues/11"))
-        with mock.patch.object(file_issues.subprocess, "run", side_effect=run), \
-             mock.patch.object(file_issues.time, "sleep"):
-            url = file_issues.create("t", "b", ["self-scan"], dry=False)
-        self.assertEqual(url, "https://gh/issues/11")
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    kwargs = dict(env={"TOKEN": "fake"}, repo="owner/project",
+                  operation_id="fp|id|p.py|finding", ledger_path=path)
+    assert file_issues.create("same title", "body", ["self-scan"], False, **kwargs) == url
+    assert file_issues.load_ledger(path) == {kwargs["operation_id"]: url}
+    count = len(calls)
+    assert file_issues.create("same title", "body", ["self-scan"], False, **kwargs) == url
+    assert len(calls) == count
+    assert len(posted) == 1
 
 
-class TestRetryLadderHasOneOwner(unittest.TestCase):
-    """#run11 ARC-A3A / QAL-D1A: triage.gh() and file_issues.create() each had
-    their own 5-attempt, 60*attempt ladder with their own rate-limit check. They
-    had already diverged once. One ladder, two exhaustion policies."""
+@pytest.mark.parametrize("probe", ["failed", "invalid", "empty", "same-title", "full", "duplicate", "wrong-repo", "incomplete", "count-mismatch", "wrong-content", "pull-request"])
+def test_pending_probe_refuses_replay(tmp_path, monkeypatch, probe):
+    path = str(tmp_path / "ledger.json")
+    creates = []
+    def run(cmd, **kwargs):
+        if cmd[1] == "api" and cmd[2].startswith("repos/"):
+            return _completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+                                                "permissions": {"admin": True}}))
+        if cmd[2] == "create":
+            creates.append(cmd[cmd.index("--body") + 1])
+            raise file_issues.subprocess.TimeoutExpired(cmd, 60)
+        row = {"title": "same title", "body": creates[0],
+               "html_url": "https://github.com/" + file_issues.REPO_SLUG + "/issues/1"}
+        if probe == "failed":
+            return _completed(1)
+        if probe == "invalid":
+            return _completed(stdout="{}")
+        if probe == "same-title":
+            row["body"] = "another finding"
+        if probe == "wrong-repo":
+            row["html_url"] = "https://github.com/other/project/issues/1"
+        if probe == "wrong-content":
+            row["body"] = "edited\n" + row["body"]
+        if probe == "pull-request":
+            row["pull_request"] = {}
+        rows = [] if probe == "empty" else [row] * (100 if probe == "full" else 2 if probe == "duplicate" else 1)
+        return _completed(stdout=json.dumps({"incomplete_results": probe == "incomplete",
+                                            "total_count": len(rows) + (probe == "count-mismatch"),
+                                            "items": rows}))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="pending|reconcil"):
+            file_issues.create("same title", "body", [], False, env={},
+                               operation_id="k", ledger_path=path)
+    assert len(creates) == 1
+    assert not Path(path).exists()
+    assert (tmp_path / "ledger.json.pending.json").exists()
 
-    def _file_issues_backoffs(self):
-        with mock.patch.object(file_issues.subprocess, "run",
-                               return_value=_completed(1, "", "API rate limit exceeded")), \
-             mock.patch.object(file_issues.time, "sleep") as slept:
-            file_issues.create("t", "b", ["self-scan"], dry=False)
-        return [c.args[0] for c in slept.call_args_list]
 
-    def _triage_backoffs(self):
-        slept = []
-        runner = mock.Mock(return_value=_completed(1, "", "API rate limit exceeded"))
-        with self.assertRaises(RuntimeError):
-            triage.gh(["gh", "x"], runner=runner, sleep=slept.append)
-        return slept
+@pytest.mark.parametrize("permissions", [None, {}, {"admin": False}, {"admin": 1}])
+def test_create_requires_authenticated_admin(tmp_path, monkeypatch, permissions):
+    calls = []
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return _completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+                                            "permissions": permissions}))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="admin preflight"):
+        file_issues.create("t", "b", [], False, env={}, ledger_path=str(tmp_path / "l"))
+    assert len(calls) == 1 and calls[0][1] == "api"
+    assert not (tmp_path / "l.pending.json").exists()
 
-    def test_both_callers_walk_the_same_backoff_schedule(self):
-        self.assertEqual(self._file_issues_backoffs(), self._triage_backoffs())
 
-    def test_the_schedule_is_the_shared_one(self):
-        self.assertEqual(self._triage_backoffs(),
-                         [triage.backoff_seconds(a) for a in range(1, triage.GH_ATTEMPTS)])
+@pytest.mark.parametrize("data", ["{}", "[]", "null", "bad json",
+                                    '{"full_name":"other/repo","permissions":{"admin":true}}'])
+def test_preflight_rejects_malformed_or_wrong_repo(tmp_path, monkeypatch, data):
+    run = mock.Mock(return_value=_completed(stdout=data))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="admin preflight"):
+        file_issues.create("t", "b", [], False, env={}, ledger_path=str(tmp_path / "l"))
+    assert run.call_count == 1
 
-    def test_exhaustion_policies_stay_different(self):
-        # triage.gh() raises so a caller cannot silently continue; create()
-        # returns None so the finding is left un-ledgered for a resumed run.
-        with mock.patch.object(file_issues.subprocess, "run",
-                               return_value=_completed(1, "", "API rate limit exceeded")), \
-             mock.patch.object(file_issues.time, "sleep"):
-            self.assertIsNone(file_issues.create("t", "b", ["s"], dry=False))
+
+@pytest.mark.parametrize("suffix,content", [('', '[]'), ('.pending.json', '[]'),
+    ('.pending.json', '{"schema_version":true,"entries":{}}'),
+    ('.pending.json', '{"schema_version":1,"entries":{"bad":{}}}')])
+def test_create_refuses_corrupt_state_before_any_call(tmp_path, monkeypatch, suffix, content):
+    path = tmp_path / "ledger"
+    corrupt = tmp_path / ("ledger" + suffix)
+    corrupt.write_text(content)
+    run = mock.Mock(side_effect=AssertionError("no network"))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="ledger"):
+        file_issues.create("t", "b", [], False, env={}, ledger_path=str(path))
+    run.assert_not_called()
+    assert corrupt.read_text() == content
+
+
+def test_dry_create_writes_nothing_and_never_calls_network(tmp_path, monkeypatch):
+    run = mock.Mock(side_effect=AssertionError("no network"))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    assert file_issues.create("t", "b", [], True, ledger_path=str(tmp_path / "nested/l")) is None
+    assert list(tmp_path.iterdir()) == []
+    run.assert_not_called()
+
+
+def test_completed_key_cannot_be_adopted_in_another_repository(tmp_path, monkeypatch):
+    path = str(tmp_path / "l")
+    file_issues.record({}, "key", "https://github.com/other/repo/issues/1", path)
+    run = mock.Mock(side_effect=AssertionError("no network"))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="different repository"):
+        file_issues.create("t", "b", [], False, env={}, operation_id="key", ledger_path=path)
+    with pytest.raises(RuntimeError, match="selected repository"):
+        file_issues.load_filing_ledger(path, file_issues.REPO_SLUG)
+    run.assert_not_called()
+
+
+def test_crash_after_acceptance_recovers_without_second_create(tmp_path, monkeypatch):
+    path = str(tmp_path / "l")
+    url = "https://github.com/" + file_issues.REPO_SLUG + "/issues/1"
+    posted = []
+    def run(cmd, **kwargs):
+        if cmd[1] == "api" and cmd[2].startswith("repos/"):
+            return _completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+                                                "permissions": {"admin": True}}))
+        if cmd[2] == "create":
+            posted.append(cmd[cmd.index("--body") + 1])
+            return _completed(stdout=url)
+        return _completed(stdout=json.dumps({"incomplete_results": False, "total_count": 1,
+                                             "items": [{"title": "t", "body": posted[0], "html_url": url}]}))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    args = dict(env={}, operation_id="key", ledger_path=path)
+    with mock.patch.object(file_issues, "record", side_effect=OSError("disk full")):
+        with pytest.raises(OSError, match="disk full"):
+            file_issues.create("t", "b", [], False, **args)
+    assert file_issues.create("t", "b", [], False, **args) == url
+    assert len(posted) == 1
+
+
+def test_crash_after_primary_write_completes_without_network(tmp_path, monkeypatch):
+    path = str(tmp_path / "l")
+    url = "https://github.com/" + file_issues.REPO_SLUG + "/issues/1"
+    identity, intent = file_issues._intent(file_issues.REPO_SLUG, "finding", "key", "t", "b", [])
+    (tmp_path / "l.pending.json").write_text(json.dumps({"schema_version": 1, "entries": {identity: intent}}))
+    file_issues.record({}, "key", url, path)
+    run = mock.Mock(side_effect=AssertionError("no network"))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    assert file_issues.load_filing_ledger(path, file_issues.REPO_SLUG) == {"key": url}
+    assert json.loads((tmp_path / "l.pending.json").read_text())["entries"][identity]["state"] == "complete"
+    run.assert_not_called()
+
+
+def test_concurrent_observer_cannot_create_inflight_intent(tmp_path, monkeypatch):
+    # Reentrant observer runs precisely while the owner is inside its network
+    # create, also proving the product lock is not held around that I/O.
+    path = str(tmp_path / "l")
+    creates = []
+    args = dict(env={}, operation_id="key", ledger_path=path)
+    url = "https://github.com/" + file_issues.REPO_SLUG + "/issues/1"
+    def run(cmd, **kwargs):
+        if cmd[1] == "api" and cmd[2].startswith("repos/"):
+            return _completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+                                                "permissions": {"admin": True}}))
+        if cmd[2] == "create":
+            creates.append(cmd)
+            with pytest.raises(RuntimeError, match="pending"):
+                file_issues.create("t", "b", [], False, **args)
+            return _completed(stdout=url)
+        return _completed(stdout='{"incomplete_results":false,"total_count":0,"items":[]}')
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    assert file_issues.create("t", "b", [], False, **args) == url
+    assert len(creates) == 1
+
+
+def test_pending_content_change_refuses_mutation(tmp_path, monkeypatch):
+    path = str(tmp_path / "l")
+    identity, intent = file_issues._intent(file_issues.REPO_SLUG, "finding", "key", "t", "old", [])
+    (tmp_path / "l.pending.json").write_text(json.dumps({"schema_version": 1, "entries": {identity: intent}}))
+    run = mock.Mock(return_value=_completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+                                                              "permissions": {"admin": True}})))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="content changed"):
+        file_issues.create("t", "new", [], False, env={}, operation_id="key", ledger_path=path)
+    assert run.call_count == 1 and run.call_args.args[0][1] == "api"
+
+
+@pytest.mark.parametrize("repo", ["", "owner", "../repo", "owner/repo/extra", "-o/repo", "owner/repo?x"])
+def test_invalid_repo_rejected_before_runner(tmp_path, monkeypatch, repo):
+    run = mock.Mock(side_effect=AssertionError("no network"))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    with pytest.raises(ValueError, match="slug"):
+        file_issues.create("t", "b", [], False, repo=repo, ledger_path=str(tmp_path / "l"))
+    run.assert_not_called()
+
+
+def test_same_title_distinct_keys_create_distinct_operations(tmp_path, monkeypatch):
+    posted = []
+    def run(cmd, **kwargs):
+        if cmd[1] == "api":
+            return _completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+                                                "permissions": {"admin": True}}))
+        posted.append(cmd[cmd.index("--body") + 1])
+        return _completed(stdout="https://github.com/" + file_issues.REPO_SLUG + "/issues/%d" % len(posted))
+    monkeypatch.setattr(file_issues.subprocess, "run", run)
+    path = str(tmp_path / "l")
+    for key in ("fp1|id|a.py|finding", "fp2|id|b.py|finding"):
+        file_issues.create("same title", "body", [], False, env={},
+                           operation_id=key, ledger_path=path)
+    assert len(posted) == 2 and posted[0] != posted[1]
+    assert len(file_issues.load_ledger(path)) == 2
+
+
+def test_record_preserves_newer_rows_and_rejects_conflicting_key(tmp_path):
+    path = str(tmp_path / "l")
+    file_issues.record({}, "existing", "new-url", path)
+    stale = {"existing": "old-url"}
+    file_issues.record(stale, "new-key", "new-key-url", path)
+    assert stale["existing"] == "new-url"
+    before = Path(path).read_bytes()
+    with pytest.raises(RuntimeError, match="different URL"):
+        file_issues.record({}, "existing", "conflict", path)
+    assert Path(path).read_bytes() == before
+
+
+@pytest.mark.parametrize("keyword", [False, True])
+def test_legacy_find_existing_issue_signature_is_safe(keyword):
+    runner = mock.Mock(side_effect=AssertionError("title alone must not query or adopt"))
+    if keyword:
+        assert file_issues.find_existing_issue(title="same title", runner=runner) is None
+    else:
+        assert file_issues.find_existing_issue("same title", runner) is None
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize("matches", [True, False])
+def test_find_existing_issue_optional_intent_preserves_strict_probe(matches):
+    repo = "owner/project"
+    _, intent = file_issues._intent(repo, "finding", "key", "same title", "body", [])
+    row = {"title": "same title", "body": intent["body"] if matches else "different finding",
+           "html_url": "https://github.com/owner/project/issues/1"}
+    runner = mock.Mock(return_value=_completed(stdout=json.dumps({
+        "incomplete_results": False, "total_count": 1, "items": [row]})))
+    if matches:
+        assert file_issues.find_existing_issue(
+            title="same title", runner=runner, repo=repo, intent=intent) == row["html_url"]
+    else:
+        with pytest.raises(RuntimeError, match="pending create unresolved"):
+            file_issues.find_existing_issue("same title", runner, repo=repo, intent=intent)
+    assert runner.call_count == 1
+
+
+@pytest.mark.parametrize("title,repo", [("other title", "owner/project"), ("t", "other/project")])
+def test_find_existing_issue_refuses_mismatched_intent(title, repo):
+    _, intent = file_issues._intent("owner/project", "finding", "key", "t", "body", [])
+    runner = mock.Mock(side_effect=AssertionError("mismatched intent must not query"))
+    with pytest.raises(ValueError, match="bound intent"):
+        file_issues.find_existing_issue(title, runner, repo=repo, intent=intent)
+    runner.assert_not_called()
