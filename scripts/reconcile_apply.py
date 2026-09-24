@@ -12,8 +12,14 @@ Usage:
   python3 scripts/reconcile_apply.py apply actions.json [--dry-run] [--confirm-close] [--throttle S]
 
 Live CLI apply saves acknowledgements beside the plan as actions.json.progress.json
-(override with --progress). A retry skips acknowledged operations. There is a
-small unavoidable window after GitHub accepts an operation but before its local
+(override with --progress). Receipts bind to the unique, ordered, exact-content
+plan: retries skip acknowledged operations, including completed plans. Use
+--reset-progress to intentionally replay a plan or bind a changed/reordered plan.
+Valid v1 receipts migrate by keeping only exact acknowledgements in this plan.
+Dry runs preview unique requested actions without receipt I/O (including resets).
+Empty live plans are no-ops; explicit live reset requires a nonempty plan to
+identify the repository and replacement binding.
+There is a small unavoidable window after GitHub accepts an operation but before its local
 receipt is saved; a crash then can repeat that operation. This is resume support,
 not an exactly-once protocol.
 """
@@ -33,7 +39,7 @@ import file_issues
 import triage
 
 LEDGER = ".panopticon/filed-issues.json"
-PROGRESS_VERSION = 1
+PROGRESS_VERSION = 2
 PROGRESS_MAX_BYTES = 4 * 1024 * 1024
 
 
@@ -263,15 +269,41 @@ def _action_key(action, repo_slug):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _unique_actions(actions):
+    """Validate the whole plan and collapse exact duplicates in original order."""
+    if not isinstance(actions, list):
+        raise ValueError("actions must be a list")
+    unique: dict[str, dict] = {}
+    for action in actions:
+        if (not isinstance(action, dict)
+                or not all(isinstance(action.get(k), str) for k in ("issue", "comment", "cohort"))
+                or type(action.get("close")) is not bool
+                or re.fullmatch(r"https?://github\.com/[^/]+/[^/]+/issues/[1-9][0-9]*/?",
+                                action["issue"]) is None):
+            raise ValueError("invalid plan action (expected issue URL, comment, cohort and close)")
+        try:
+            key = _action_key(action, "")
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise ValueError("invalid plan action: %s" % exc) from exc
+        unique.setdefault(key, action)
+    return list(unique.values())
+
+
+def _plan_hash(repo_slug, action_keys):
+    """Hash ordered exact-action identities; duplicates have already collapsed."""
+    canonical = json.dumps({"repo": repo_slug, "actions": action_keys}, sort_keys=True,
+                           separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _load_progress(path, repo_slug):
-    progress = {"version": PROGRESS_VERSION, "repo": repo_slug, "actions": {}}
     directory = os.path.dirname(os.path.abspath(path))
     if not os.path.isdir(directory) or os.path.islink(directory):
         raise ValueError("unsafe progress directory: %s" % directory)
     try:
         mode = os.lstat(path).st_mode
     except FileNotFoundError:
-        return progress
+        return None
     if not stat.S_ISREG(mode):
         raise ValueError("unsafe progress file (expected regular file): %s" % path)
     try:
@@ -287,10 +319,24 @@ def _load_progress(path, repo_slug):
         loaded = json.loads(data)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid progress file %s: %s" % (path, exc)) from exc
-    if (not isinstance(loaded, dict) or set(loaded) != {"version", "repo", "actions"}
-            or type(loaded["version"]) is not int or loaded["version"] != PROGRESS_VERSION
-            or loaded["repo"] != repo_slug or not isinstance(loaded["actions"], dict)):
+    if (not isinstance(loaded, dict) or type(loaded.get("version")) is not int
+            or loaded["version"] not in (1, PROGRESS_VERSION)
+            or loaded.get("repo") != repo_slug or not isinstance(loaded.get("actions"), dict)):
         raise ValueError("invalid progress schema or repository: %s" % path)
+    fields = {"version", "repo", "actions"}
+    if loaded["version"] == PROGRESS_VERSION:
+        fields |= {"plan", "plan_hash"}
+    if set(loaded) != fields:
+        raise ValueError("invalid progress schema: %s" % path)
+    if loaded["version"] == PROGRESS_VERSION:
+        plan = loaded["plan"]
+        if (not isinstance(plan, list)
+                or any(not isinstance(k, str) or re.fullmatch(r"[0-9a-f]{64}", k) is None
+                       for k in plan)
+                or len(set(plan)) != len(plan)
+                or loaded["plan_hash"] != _plan_hash(repo_slug, plan)
+                or not set(loaded["actions"]).issubset(plan)):
+            raise ValueError("invalid progress plan or extra action keys: %s" % path)
     for key, receipt in loaded["actions"].items():
         if (not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None
                 or not isinstance(receipt, dict)
@@ -300,6 +346,22 @@ def _load_progress(path, repo_slug):
                 or (receipt["closed"] and not receipt["commented"])):
             raise ValueError("invalid progress acknowledgement: %s" % path)
     return loaded
+
+
+def _bind_progress(loaded, repo_slug, action_keys, reset):
+    """Validate old binding before reset; prune history only at migration/reset."""
+    plan_hash = _plan_hash(repo_slug, action_keys)
+    if loaded is not None and loaded["version"] == PROGRESS_VERSION:
+        if not reset:
+            if loaded["plan_hash"] != plan_hash:
+                raise ValueError("progress belongs to a changed/reordered plan; use --reset-progress")
+            return loaded
+    acknowledgements = {}
+    if loaded is not None and not reset:
+        acknowledgements = {key: loaded["actions"][key] for key in action_keys
+                            if key in loaded["actions"]}
+    return {"version": PROGRESS_VERSION, "repo": repo_slug, "plan": action_keys,
+            "plan_hash": plan_hash, "actions": acknowledgements}
 
 
 def _progress_bytes(progress):
@@ -342,14 +404,23 @@ def _save_progress(progress, path):
 
 
 def apply(actions, dry=True, confirm_close=False, throttle=1.5,
-         runner=None, sleep=time.sleep, progress_path=None):
+         runner=None, sleep=time.sleep, progress_path=None, reset_progress=False):
     """Return counts of operations performed in this invocation.
 
-    With progress_path, live runs resume successful comments/closes. Dry runs
-    always display every planned action and never read or write progress.
+    With progress_path, live runs resume successful comments/closes for one
+    unique ordered plan. reset_progress clears acknowledgements for deliberate
+    replay/rebinding, after validating the existing receipt and authorization.
+    Dry runs display unique requested actions and never read or write progress.
     A process death between remote success and receipt replacement can still
     repeat the remote operation on retry.
     """
+    actions = _unique_actions(actions)
+    if reset_progress and not dry and progress_path is None:
+        raise ValueError("--reset-progress requires a receipt path for live apply")
+    if reset_progress and not dry and not actions:
+        raise ValueError("--reset-progress requires a nonempty plan to identify the repository")
+    if reset_progress and dry:
+        print("DRY reset-progress: previewing replay; receipt unchanged")
     runner = runner or triage.default_gh_runner()
     commented = closed = 0
     repo_slug = None
@@ -363,14 +434,21 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
             return (0, 0)
         repo_slug = "%s/%s" % (owner, repo)
         if progress_path is not None:
-            progress = _load_progress(progress_path, repo_slug)
+            loaded = _load_progress(progress_path, repo_slug)
             action_keys = [_action_key(a, repo_slug) for a in actions]
+            progress = _bind_progress(loaded, repo_slug, action_keys, reset_progress)
             _reserve_progress(progress, action_keys)
         ok, reason = preflight_authorized(owner, repo, runner=runner)
         if not ok:
             print("refusing: authenticated gh user is not an owner/admin of %s/%s — %s"
                   % (owner, repo, reason))
             return (0, 0)
+        if progress is not None:
+            # Persist initial binding, migration or reset only after read-only auth,
+            # and before any GitHub mutation. Failure leaves remote state untouched.
+            _save_progress(progress, progress_path)
+            if loaded is not None and loaded["version"] == 1:
+                print("migrated progress receipt v1 -> v2; bound to selected plan")
     for index, a in enumerate(actions):
         n = _issue_number(a["issue"])
         if dry:
@@ -422,6 +500,9 @@ def main(argv=None):
     p_apply.add_argument("--confirm-close", action="store_true")
     p_apply.add_argument("--throttle", type=float, default=1.5)
     p_apply.add_argument("--progress", help="receipt path (default: ACTIONS_JSON.progress.json)")
+    p_apply.add_argument("--reset-progress", action="store_true",
+                         help="intentionally replay/rebind the plan after receipt validation; "
+                              "dry runs preview replay without receipt I/O")
 
     a = ap.parse_args(argv)
 
@@ -447,11 +528,15 @@ def main(argv=None):
         return 0
 
     if a.cmd == "apply":
-        with open(a.actions_json, encoding="utf-8") as fh:
-            actions = json.load(fh)
-        commented, closed = apply(actions, dry=a.dry_run, confirm_close=a.confirm_close,
-                                  throttle=a.throttle,
-                                  progress_path=a.progress or a.actions_json + ".progress.json")
+        try:
+            with open(a.actions_json, encoding="utf-8") as fh:
+                actions = json.load(fh)
+            commented, closed = apply(actions, dry=a.dry_run, confirm_close=a.confirm_close,
+                                      throttle=a.throttle, reset_progress=a.reset_progress,
+                                      progress_path=a.progress or a.actions_json + ".progress.json")
+        except (ValueError, OSError, RuntimeError) as exc:
+            print("refusing: %s" % exc, file=sys.stderr)
+            return 1
         print("%s: commented %d, closed %d"
              % ("DRY RUN" if a.dry_run else "LIVE", commented, closed))
         return 0

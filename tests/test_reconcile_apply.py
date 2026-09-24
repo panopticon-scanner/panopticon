@@ -4,10 +4,12 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import file_issues
 import reconcile_apply
+import triage
 
 
 class TestLedger(unittest.TestCase):
@@ -483,6 +485,127 @@ class TestApply(unittest.TestCase):
             return FakeCompleted("")
         return runner
 
+    def test_duplicates_collapse_in_all_modes_and_preserve_distinct_content(self):
+        original = self._actions()[0]
+        unique = [original, dict(original, comment="different"), dict(original, close=True)]
+        actions = [unique[0], dict(reversed(list(unique[0].items()))),
+                   unique[1], unique[0], unique[2], unique[1]]
+        for dry in (True, False):
+            for with_progress in (True, False):
+                with self.subTest(dry=dry, with_progress=with_progress), tempfile.TemporaryDirectory() as d:
+                    calls = []
+                    path = os.path.join(d, "progress.json") if with_progress else None
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        result = reconcile_apply.apply(actions, dry=dry, confirm_close=True,
+                                                       runner=self._admin_runner(calls),
+                                                       sleep=lambda _: None, progress_path=path)
+                    self.assertEqual(result, (3, 0 if dry else 1))
+                    if dry:
+                        self.assertEqual(calls, [])
+                        self.assertEqual(out.getvalue().count("DRY comment"), 3)
+                    else:
+                        comments = [c for c in calls if c[:3] == ["gh", "issue", "comment"]]
+                        self.assertEqual([c[-1] for c in comments], [a["comment"] for a in unique])
+                        if with_progress:
+                            self.assertEqual(reconcile_apply.apply(unique, dry=False,
+                                confirm_close=True, runner=self._admin_runner(calls),
+                                sleep=lambda _: None, progress_path=path), (0, 0))
+
+    def test_changed_or_reordered_plan_requires_reset_before_auth(self):
+        original = self._actions()
+        for changed in (list(reversed(original)), original[:1],
+                        [dict(original[0], comment="new"), original[1]]):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "progress.json")
+                calls = []
+                runner = self._admin_runner(calls)
+                reconcile_apply.apply(original, False, runner=runner, sleep=lambda _: None,
+                                      progress_path=path)
+                before = Path(path).read_bytes()
+                calls.clear()
+                with self.assertRaisesRegex(ValueError, "reset-progress"):
+                    reconcile_apply.apply(changed, False, runner=runner, sleep=lambda _: None,
+                                          progress_path=path)
+                self.assertEqual(calls, [])
+                self.assertEqual(Path(path).read_bytes(), before)
+                self.assertEqual(reconcile_apply.apply(changed, False, runner=runner,
+                    sleep=lambda _: None, progress_path=path, reset_progress=True), (len(changed), 0))
+                receipt = json.loads(Path(path).read_text())
+                self.assertEqual(set(receipt["actions"]),
+                                 {reconcile_apply._action_key(a, "o/r") for a in changed})
+
+    def test_reset_replays_identical_plan_and_requires_live_path(self):
+        actions = self._actions()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "progress.json")
+            calls = []
+            runner = self._admin_runner(calls)
+            for reset in (False, True):
+                self.assertEqual(reconcile_apply.apply(actions, False, True, runner=runner,
+                    sleep=lambda _: None, progress_path=path, reset_progress=reset), (2, 1))
+            self.assertEqual(reconcile_apply.apply(actions, False, True, runner=runner,
+                sleep=lambda _: None, progress_path=path), (0, 0))
+            calls.clear()
+            for plan in (actions, []):
+                with self.assertRaisesRegex(ValueError, "receipt path"):
+                    reconcile_apply.apply(plan, False, runner=runner, reset_progress=True)
+            self.assertEqual(calls, [])
+
+    def test_empty_plan_is_noop_but_live_reset_requires_nonempty_plan(self):
+        with mock.patch.object(reconcile_apply, "_load_progress", side_effect=AssertionError("read")), \
+             mock.patch.object(reconcile_apply, "_save_progress", side_effect=AssertionError("write")):
+            def runner(*a, **k):
+                self.fail("gh called")
+            self.assertEqual(reconcile_apply.apply([], False, progress_path="/missing/receipt",
+                                                   runner=runner), (0, 0))
+            with self.assertRaisesRegex(ValueError, "nonempty plan"):
+                reconcile_apply.apply([], False, reset_progress=True,
+                                      progress_path="/missing/receipt", runner=runner)
+            self.assertEqual(reconcile_apply.apply([], True, reset_progress=True,
+                progress_path="/missing/receipt", runner=runner), (0, 0))
+
+    def test_v1_migration_retains_exact_acknowledgements_and_prunes_history(self):
+        actions = self._actions()
+        active = reconcile_apply._action_key(actions[0], "o/r")
+        unrelated = reconcile_apply._action_key(dict(actions[1], comment="old"), "o/r")
+        for reset in (False, True):
+            with self.subTest(reset=reset), tempfile.TemporaryDirectory() as d:
+                path = Path(d) / "progress.json"
+                path.write_text(json.dumps({"version": 1, "repo": "o/r", "actions": {
+                    active: {"commented": True, "closed": False},
+                    unrelated: {"commented": True, "closed": True}}}))
+                calls = []
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    result = reconcile_apply.apply(actions, False, runner=self._admin_runner(calls),
+                        sleep=lambda _: None, progress_path=path, reset_progress=reset)
+                self.assertEqual(result, (2 if reset else 1, 0))
+                receipt = json.loads(path.read_text())
+                self.assertEqual(receipt["version"], 2)
+                self.assertNotIn(unrelated, receipt["actions"])
+                self.assertEqual(set(receipt["actions"]),
+                                 {reconcile_apply._action_key(a, "o/r") for a in actions})
+                self.assertIn("migrat", out.getvalue().lower())
+
+    def test_v1_migration_preserves_completed_and_partial_close(self):
+        action = self._actions()[1]
+        key = reconcile_apply._action_key(action, "o/r")
+        for closed in (False, True):
+            with self.subTest(closed=closed), tempfile.TemporaryDirectory() as d:
+                path = Path(d) / "progress.json"
+                path.write_text(json.dumps({"version": 1, "repo": "o/r", "actions": {
+                    key: {"commented": True, "closed": closed}}}))
+                calls = []
+                self.assertEqual(reconcile_apply.apply([action], False, True,
+                    runner=self._admin_runner(calls), sleep=lambda _: None, progress_path=path),
+                    (0, 0 if closed else 1))
+                self.assertEqual([c[2] for c in calls if c[:2] == ["gh", "issue"]],
+                                 [] if closed else ["close"])
+                receipt = json.loads(path.read_text())
+                self.assertEqual(receipt["version"], 2)
+                self.assertEqual(receipt["actions"][key], {"commented": True, "closed": True})
+
     def test_dry_run_makes_no_gh_calls(self):
         calls = []
 
@@ -636,7 +759,7 @@ class TestApply(unittest.TestCase):
                                                    progress_path=progress), (1, 0))
             with open(progress, encoding="utf-8") as fh:
                 receipt = json.load(fh)
-            self.assertEqual(receipt["version"], 1)
+            self.assertEqual(receipt["version"], 2)
             self.assertEqual(receipt["repo"], "o/r")
             self.assertEqual(list(receipt["actions"].values()),
                              [{"commented": True, "closed": False}])
@@ -656,7 +779,7 @@ class TestApply(unittest.TestCase):
             for action in (original, dict(original, comment="revised"),
                            dict(original, close=True)):
                 reconcile_apply.apply([action], dry=False, runner=runner,
-                                      sleep=lambda s: None, progress_path=progress)
+                                      sleep=lambda s: None, progress_path=progress, reset_progress=True)
         self.assertEqual(len([c for c in calls if c[:3] == ["gh", "issue", "comment"]]), 3)
 
     def test_dry_run_shows_all_actions_and_creates_no_progress(self):
@@ -703,60 +826,161 @@ class TestApply(unittest.TestCase):
                                       sleep=lambda s: None, progress_path=progress)
         self.assertEqual([c for c in calls if c[:2] == ["gh", "issue"]], [])
 
-    def test_receipt_capacity_reserved_before_mutation_and_close_resume(self):
+    def test_receipt_capacity_reserved_before_auth_and_close_resume(self):
         action = self._actions()[1]
         key = reconcile_apply._action_key(action, "o/r")
-        receipt = {"version": 1, "repo": "o/r", "actions": {}}
-        def encoded():
-            return (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode()
-        # Fill the actual 4 MiB format to the largest whole-entry state.
-        entry_size = 128  # one 64-character key, commented=true, closed=false
-        count = (reconcile_apply.PROGRESS_MAX_BYTES - len(encoded())) // entry_size
-        receipt["actions"] = {"%064x" % i: {"commented": True, "closed": False}
-                              for i in range(count)}
-        while len(encoded()) <= reconcile_apply.PROGRESS_MAX_BYTES:
-            receipt["actions"]["%064x" % len(receipt["actions"])] = {
-                "commented": True, "closed": False}
-        receipt["actions"].popitem()
-        # false is one byte longer than true: fill the remaining byte capacity
-        # with valid historical entries, exercising exactly the reader's cap.
-        spare = reconcile_apply.PROGRESS_MAX_BYTES - len(encoded())
-        for old_key in list(receipt["actions"])[:spare]:
-            receipt["actions"][old_key]["commented"] = False
-        self.assertEqual(len(encoded()), reconcile_apply.PROGRESS_MAX_BYTES)
         calls = []
         with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "progress.json")
-            with open(path, "wb") as fh:
-                fh.write(encoded())
-            original = encoded()
-            with self.assertRaisesRegex(ValueError, "too large"):
-                reconcile_apply.apply([action], dry=False, confirm_close=True,
-                                      runner=self._admin_runner(calls), sleep=lambda s: None,
-                                      progress_path=path)
-            self.assertEqual(calls, [])
-            with open(path, "rb") as fh:
-                self.assertEqual(fh.read(), original)
-            # One freed entry admits this action's comment acknowledgement.
-            receipt["actions"].popitem()
-            with open(path, "wb") as fh:
-                fh.write(encoded())
-            with self.assertRaisesRegex(ValueError, "too large"):
-                reconcile_apply.apply(self._actions(), dry=False,
-                                      runner=self._admin_runner(calls), sleep=lambda s: None,
-                                      progress_path=path)
-            self.assertEqual(calls, [])
-            self.assertEqual((1, 0), reconcile_apply.apply(
-                [action], dry=False, runner=self._admin_runner(calls),
-                sleep=lambda s: None, progress_path=path))
-            self.assertEqual(os.path.getsize(path), reconcile_apply.PROGRESS_MAX_BYTES)
-            self.assertTrue(reconcile_apply._load_progress(path, "o/r")["actions"][key]["commented"])
+            path = Path(d) / "progress.json"
+            # Measure a real completed comment receipt, then reproduce its exact
+            # boundary from a missing receipt: reservation must precede auth.
+            runner = self._admin_runner(calls)
+            reconcile_apply.apply([action], False, runner=runner, sleep=lambda _: None,
+                                  progress_path=path)
+            capacity = path.stat().st_size
+            path.unlink()
             calls.clear()
-            self.assertEqual((0, 1), reconcile_apply.apply(
-                [action], dry=False, confirm_close=True, runner=self._admin_runner(calls),
-                sleep=lambda s: None, progress_path=path))
+            with mock.patch.object(reconcile_apply, "PROGRESS_MAX_BYTES", capacity - 1):
+                with self.assertRaisesRegex(ValueError, "too large"):
+                    reconcile_apply.apply([action], False, runner=runner, sleep=lambda _: None,
+                                          progress_path=path)
+            self.assertEqual(calls, [])
+            self.assertFalse(path.exists())
+            with mock.patch.object(reconcile_apply, "PROGRESS_MAX_BYTES", capacity):
+                self.assertEqual(reconcile_apply.apply([action], False, runner=runner,
+                    sleep=lambda _: None, progress_path=path), (1, 0))
+                calls.clear()
+                self.assertEqual(reconcile_apply.apply([action], False, True, runner=runner,
+                    sleep=lambda _: None, progress_path=path), (0, 1))
             self.assertEqual([c[2] for c in calls if c[:2] == ["gh", "issue"]], ["close"])
-            self.assertTrue(reconcile_apply._load_progress(path, "o/r")["actions"][key]["closed"])
+            self.assertTrue(json.loads(path.read_text())["actions"][key]["closed"])
+
+    def test_binding_reset_and_migration_save_before_mutation_after_auth(self):
+        actions = self._actions()
+        for mode in ("new", "reset", "migration"):
+            for failure in ("none", "auth", "save"):
+                with self.subTest(mode=mode, failure=failure), tempfile.TemporaryDirectory() as d:
+                    path = Path(d) / "progress.json"
+                    if mode == "reset":
+                        reconcile_apply.apply(actions, False, runner=self._admin_runner([]),
+                                              sleep=lambda _: None, progress_path=path)
+                    elif mode == "migration":
+                        path.write_text(json.dumps({"version": 1, "repo": "o/r", "actions": {}}))
+                    original = path.read_bytes() if path.exists() else None
+                    calls = []
+                    def runner(argv, **kwargs):
+                        calls.append(argv)
+                        if argv[:2] == ["gh", "api"]:
+                            self.assertEqual(path.read_bytes() if path.exists() else None, original)
+                            return FakeCompleted(json.dumps({"admin": failure != "auth"}))
+                        receipt = json.loads(path.read_text())
+                        self.assertEqual(receipt["version"], 2)
+                        # Before first mutation, persisted receipt has no acks.
+                        if len(calls) == 2:
+                            self.assertEqual(receipt["actions"], {})
+                        return FakeCompleted("")
+                    kwargs = dict(dry=False, runner=runner, sleep=lambda _: None,
+                                  progress_path=path, reset_progress=mode == "reset")
+                    if failure == "save":
+                        with mock.patch.object(reconcile_apply, "_save_progress", side_effect=OSError("disk full")):
+                            with self.assertRaisesRegex(OSError, "disk full"):
+                                reconcile_apply.apply(actions, **kwargs)
+                    else:
+                        self.assertEqual(reconcile_apply.apply(actions, **kwargs),
+                                         (0, 0) if failure == "auth" else (2, 0))
+                    if failure != "none":
+                        self.assertEqual(len(calls), 1)
+                        self.assertEqual(path.read_bytes() if path.exists() else None, original)
+
+    def test_reset_does_not_bypass_unsafe_oversize_or_foreign_receipts(self):
+        action = self._actions()[0]
+        for reset in (False, True):
+            for invalid in ("symlink", "fifo", "directory", "oversize", "foreign", "corrupt"):
+                with self.subTest(reset=reset, invalid=invalid), tempfile.TemporaryDirectory() as d:
+                    path = Path(d) / "progress.json"
+                    if invalid == "symlink":
+                        path.symlink_to(Path(d) / "missing")
+                    elif invalid == "fifo":
+                        os.mkfifo(path)
+                    elif invalid == "directory":
+                        path.mkdir()
+                    elif invalid == "oversize":
+                        path.write_bytes(b" " * (reconcile_apply.PROGRESS_MAX_BYTES + 1))
+                    elif invalid == "foreign":
+                        path.write_text(json.dumps({"version": 1, "repo": "other/repo", "actions": {}}))
+                    else:
+                        path.write_text("{bad json")
+                    calls = []
+                    with self.assertRaises(ValueError):
+                        reconcile_apply.apply([action], False, runner=self._admin_runner(calls),
+                            sleep=lambda _: None, progress_path=path, reset_progress=reset)
+                    self.assertEqual(calls, [])
+
+    def test_v2_corrupt_binding_and_extra_acknowledgements_rejected_even_on_reset(self):
+        for reset in (False, True):
+            for invalid in ("hash", "extra", "duplicate", "ack", "plan_type", "plan_entry"):
+                with self.subTest(reset=reset, invalid=invalid), tempfile.TemporaryDirectory() as d:
+                    path = Path(d) / "progress.json"
+                    actions = self._actions()
+                    reconcile_apply.apply(actions, False, runner=self._admin_runner([]),
+                                          sleep=lambda _: None, progress_path=path)
+                    receipt = json.loads(path.read_text())
+                    if invalid == "hash":
+                        receipt["plan_hash"] = "0" * 64
+                    elif invalid == "extra":
+                        receipt["actions"]["0" * 64] = {"commented": True, "closed": False}
+                    elif invalid == "duplicate":
+                        receipt["plan"].append(receipt["plan"][0])
+                    elif invalid == "ack":
+                        receipt["actions"][receipt["plan"][0]] = {"commented": False, "closed": True}
+                    elif invalid == "plan_type":
+                        receipt["plan"] = {}
+                    else:
+                        receipt["plan"] = [[]]
+                    path.write_text(json.dumps(receipt))
+                    calls = []
+                    with self.assertRaises(ValueError):
+                        reconcile_apply.apply(actions, False, runner=self._admin_runner(calls),
+                            sleep=lambda _: None, progress_path=path, reset_progress=reset)
+                    self.assertEqual(calls, [])
+
+    def test_dry_reset_performs_no_receipt_io(self):
+        with mock.patch.object(reconcile_apply, "_load_progress", side_effect=AssertionError("read")), \
+             mock.patch.object(reconcile_apply, "_save_progress", side_effect=AssertionError("write")):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = reconcile_apply.apply(self._actions(), reset_progress=True,
+                    progress_path="/missing/receipt.json", runner=lambda *a, **k: self.fail("gh called"))
+            self.assertEqual(result, (2, 0))
+            self.assertIn("previewing replay", out.getvalue())
+
+    def test_migration_prunes_a_full_legacy_history(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "progress.json"
+            # Valid obsolete history at the old read cap must not block migration.
+            legacy = {"version": 1, "repo": "o/r", "actions": {
+                "%064x" % i: {"commented": True, "closed": False} for i in range(20)}}
+            data = json.dumps(legacy).encode()
+            path.write_bytes(data)
+            with mock.patch.object(reconcile_apply, "PROGRESS_MAX_BYTES", len(data)):
+                self.assertEqual(reconcile_apply.apply(self._actions(), False,
+                    runner=self._admin_runner([]), sleep=lambda _: None, progress_path=path), (2, 0))
+            self.assertLess(path.stat().st_size, len(data))
+            self.assertEqual(len(json.loads(path.read_text())["actions"]), 2)
+
+    def test_symlink_progress_directory_is_rejected_even_on_reset(self):
+        for reset in (False, True):
+            with self.subTest(reset=reset), tempfile.TemporaryDirectory() as d:
+                target = Path(d) / "target"
+                target.mkdir()
+                link = Path(d) / "link"
+                link.symlink_to(target, target_is_directory=True)
+                calls = []
+                with self.assertRaisesRegex(ValueError, "unsafe progress directory"):
+                    reconcile_apply.apply(self._actions(), False, runner=self._admin_runner(calls),
+                        sleep=lambda _: None, progress_path=link / "receipt.json", reset_progress=reset)
+                self.assertEqual(calls, [])
+                self.assertEqual(list(target.iterdir()), [])
 
     def test_missing_progress_directory_fails_before_issue_mutation(self):
         calls = []
@@ -784,6 +1008,70 @@ class TestCliWiring(unittest.TestCase):
                 self.assertEqual(reconcile_apply.main(["apply", actions_path,
                                                        "--progress", custom]), 0)
                 self.assertEqual(apply_mock.call_args.kwargs["progress_path"], custom)
+
+    def test_cli_reset_flag_is_forwarded(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "actions.json"
+            path.write_text("[]")
+            with mock.patch.object(reconcile_apply, "apply", return_value=(0, 0)) as run:
+                self.assertEqual(reconcile_apply.main(["apply", str(path), "--reset-progress"]), 0)
+                self.assertTrue(run.call_args.kwargs["reset_progress"])
+
+    def test_cli_refuses_invalid_plan_receipt_and_io_without_traceback(self):
+        valid = TestApply()._actions()
+        cases = ["{bad", {}, [None], [dict(valid[0], close="yes")],
+                 [dict(valid[0], issue="not a URL")],
+                 [dict(valid[0], comment=42)], [dict(valid[0], extra=float("nan"))]]
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as d:
+                path = Path(d) / "actions.json"
+                path.write_text(case if isinstance(case, str) else json.dumps(case))
+                err = io.StringIO()
+                with mock.patch.object(triage, "default_gh_runner", side_effect=AssertionError("gh")), \
+                     contextlib.redirect_stderr(err):
+                    self.assertEqual(reconcile_apply.main(["apply", str(path), "--no-dry-run"]), 1)
+                self.assertIn("refusing:", err.getvalue())
+                self.assertNotIn("Traceback", err.getvalue())
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "actions.json"
+            path.write_text(json.dumps(valid))
+            receipt = Path(str(path) + ".progress.json")
+            receipt.write_text("{corrupt")
+            calls = []
+            with mock.patch.object(triage, "default_gh_runner", return_value=TestApply()._admin_runner(calls)):
+                for reset in ([], ["--reset-progress"]):
+                    err = io.StringIO()
+                    with contextlib.redirect_stderr(err):
+                        self.assertEqual(reconcile_apply.main(["apply", str(path), "--no-dry-run"] + reset), 1)
+                    self.assertIn("refusing:", err.getvalue())
+                    self.assertNotIn("Traceback", err.getvalue())
+                self.assertEqual(calls, [])
+                receipt.unlink()
+                with mock.patch.object(reconcile_apply, "_save_progress", side_effect=OSError("disk full")), \
+                     contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(reconcile_apply.main(["apply", str(path), "--no-dry-run"]), 1)
+                self.assertIn("refusing: disk full", err.getvalue())
+                self.assertEqual([c[2] for c in calls if c[:2] == ["gh", "issue"]], [])
+                path.unlink()
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(reconcile_apply.main(["apply", str(path)]), 1)
+                self.assertIn("refusing:", err.getvalue())
+
+    def test_cli_remote_failure_returns_nonzero_and_keeps_bound_receipt(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "actions.json"
+            path.write_text(json.dumps(TestApply()._actions()))
+            def runner(argv, **kwargs):
+                if argv[:2] == ["gh", "api"]:
+                    return FakeCompleted('{"admin": true}')
+                return FakeCompleted("", returncode=1, stderr="mutation failed")
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.object(triage, "default_gh_runner", return_value=runner), \
+                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(reconcile_apply.main(["apply", str(path), "--no-dry-run"]), 1)
+            self.assertIn("mutation failed", err.getvalue())
+            self.assertNotIn("LIVE:", out.getvalue())
+            self.assertEqual(json.loads(Path(str(path) + ".progress.json").read_text())["actions"], {})
 
     def test_plan_then_dry_apply_end_to_end(self):
         with tempfile.TemporaryDirectory() as d:
