@@ -845,8 +845,6 @@ History:
 ### B-floor residuals (LOW/INFO from self-scan round 4 — future minors)
 - Schema validation is advisory-only: an invalid report still writes + prints (by design; revisit if a
   strict mode is wanted). `gosec` is invoked with `./...` against a `/src` mount (relies on container cwd).
-- `--file`/`--files` echo explicit paths verbatim and bypass the `_within` repo-confinement clamp that
-  glob-derived scope gets (still 2.2.x backlog; low real risk on a local dev CLI over a trusted repo).
 - SARIF-derived paths are rendered into the markdown summary without escaping (display-only; not opened).
 - `test_related_tests_found` doesn't assert the nested-match it names. Bandit `B404`/`B110`/`B112`
   (subprocess import + tolerant loops) are noise-floor and are now suppressed via
