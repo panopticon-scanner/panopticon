@@ -9,8 +9,7 @@ from unittest import mock
 
 from _test_helpers import FakePopen, first, only, skip_or_fail
 import scripts.tools.brakeman as br
-from tests.tools.conftest import (FIXTURE_ROOT, assert_scratch_cwd,
-                                  scratch_cwd_recorder)
+from tests.tools.conftest import FIXTURE_ROOT
 
 # Hand-built sample used for unit-level parse-shape assertions. It is NOT a
 # real Brakeman scan; for integration coverage see test_railsgoat_fixture_shape.
@@ -228,20 +227,60 @@ class TestBrakemanAdapter(unittest.TestCase):
     def test_invoke_runs_brakeman_json(self):
         adapter = br.BrakemanAdapter()
         calls = []
-        with mock.patch("scripts.tools.base.subprocess.Popen",
-                        side_effect=scratch_cwd_recorder(calls)):
-            stdout, rc = adapter.invoke("/tmp/fake")
+        with tempfile.TemporaryDirectory() as target:
+            self._tree(target, files=[
+                ("config/brakeman.yml", "skip_checks: [CheckSQL]\n"),
+                ("config/brakeman.ignore", '{"ignored_warnings":[{"fingerprint":"x"}]}')])
+
+            def record(cmd, **kwargs):
+                cwd = kwargs["cwd"]
+                config = cmd[cmd.index("--config-file") + 1]
+                ignore = cmd[cmd.index("--ignore-config") + 1]
+                with open(config, encoding="utf-8") as fh:
+                    yaml = fh.read()
+                with open(ignore, encoding="utf-8") as fh:
+                    policy = fh.read()
+                calls.append({"argv": cmd, "cwd": cwd,
+                              "entries": sorted(os.listdir(cwd)),
+                              "config": config, "ignore": ignore,
+                              "yaml": yaml, "policy": policy})
+                return FakePopen(stdout=b"{}", stderr=b"", returncode=0)
+
+            with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=record):
+                stdout, rc = adapter.invoke(target)
         self.assertEqual(rc, 0)
-        # /tmp/fake carries no config/routes.rb, so it is not a canonical Rails
-        # root and picks up --force -- see
-        # test_force_is_added_only_for_a_non_canonical_rails_root.
+        self.assertEqual(stdout, b"{}")
+        call = only(calls, "brakeman launch")
+        cmd = call["argv"]
+        self.assertEqual(cmd.count("--config-file"), 1)
+        self.assertEqual(cmd.count("--ignore-config"), 1)
         self.assertEqual(
-            only(calls, "brakeman launch")["argv"],
+            cmd[:7],
             ["brakeman", "--force", "--format", "json", "--quiet",
-             "--run-all-checks", "/tmp/fake"])
-        # #1877: brakeman reads cwd-relative config, so the app path on argv
-        # is the ONLY thing that may point at the target.
-        assert_scratch_cwd(self, only(calls, "brakeman launch"), "/tmp/fake")
+             "--run-all-checks", target])
+        self.assertEqual(call["entries"], ["brakeman.ignore", "brakeman.yml"])
+        self.assertEqual(call["yaml"], "{}")
+        self.assertEqual(call["policy"], '{"ignored_warnings": []}')
+        for path in (call["config"], call["ignore"]):
+            self.assertTrue(os.path.isabs(path))
+            self.assertEqual(os.path.dirname(path), call["cwd"])
+            self.assertFalse(path.startswith(target + os.sep))
+            self.assertFalse(os.path.exists(path))
+        self.assertFalse(os.path.exists(call["cwd"]))
+
+    def test_owned_config_is_cleaned_after_launch_failure(self):
+        observed = {}
+
+        def fail(cmd, **kwargs):
+            observed["cwd"] = kwargs["cwd"]
+            observed["entries"] = sorted(os.listdir(kwargs["cwd"]))
+            raise OSError("cannot launch")
+
+        with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=fail):
+            with self.assertRaisesRegex(OSError, "cannot launch"):
+                br.BrakemanAdapter().invoke("/tmp/fake")
+        self.assertEqual(observed["entries"], ["brakeman.ignore", "brakeman.yml"])
+        self.assertFalse(os.path.exists(observed["cwd"]))
 
     def test_invoke_remaps_rc_2_and_3_to_success(self):
         adapter = br.BrakemanAdapter()
@@ -372,6 +411,90 @@ class TestBrakemanAdapter(unittest.TestCase):
             self.assertIn(f["confidence"], ("CERTAIN", "LIKELY", "POSSIBLE"))
             self.assertTrue(f.get("citations", {}).get("cwe"),
                             "expected at least one CWE citation")
+
+    def test_real_target_config_and_ignore_cannot_suppress_sql_warning(self):
+        if not shutil.which("brakeman"):
+            skip_or_fail(self, "brakeman not installed on this host")
+        controller = ("class UsersController < ApplicationController\n"
+                      "  def index\n"
+                      "    User.where(\"name = '#{params[:name]}'\")\n"
+                      "  end\n"
+                      "end\n")
+        adapter = br.BrakemanAdapter()
+        with tempfile.TemporaryDirectory() as target:
+            self._tree(target, files=[
+                ("Gemfile", "source 'https://rubygems.org'\ngem 'rails', '8.0.0'\n"),
+                ("config/application.rb", "require 'rails/all'\n"
+                 "module Fixture\n  class Application < Rails::Application; end\nend\n"),
+                ("config/routes.rb", "Rails.application.routes.draw do\nend\n"),
+                ("app/controllers/users_controller.rb", controller)])
+            config_dir = os.path.join(target, "config")
+            yaml_path = os.path.join(config_dir, "brakeman.yml")
+            ignore_path = os.path.join(config_dir, "brakeman.ignore")
+
+            def warnings(owned=True):
+                if owned:
+                    raw, rc = adapter.invoke(target)
+                else:
+                    with tempfile.TemporaryDirectory() as cwd:
+                        raw, rc = br.run_tool(
+                            ["brakeman", "--format", "json", "--quiet",
+                             "--run-all-checks", target], timeout=300,
+                            ok_codes=(0, 1, 2, 3), cwd=cwd)
+                self.assertIn(rc, (0, 1, 2, 3), (rc, raw[:300]))
+                return json.loads(raw)["warnings"]
+
+            def sql_warning(found):
+                matches = [w for w in found
+                           if w.get("warning_type") == "SQL Injection"
+                           and w.get("file", "").endswith(
+                               "app/controllers/users_controller.rb")]
+                self.assertEqual(len(matches), 1, found)
+                return matches[0]
+
+            baseline = sql_warning(warnings())
+            fingerprint = baseline["fingerprint"]
+            self.assertTrue(fingerprint)
+
+            with open(yaml_path, "w", encoding="utf-8") as fh:
+                fh.write("skip_checks: [CheckSQL]\n")
+            self.assertFalse(any(w.get("fingerprint") == fingerprint
+                                 for w in warnings(owned=False)),
+                             "target YAML must be an active suppression control")
+            self.assertEqual(sql_warning(warnings())["fingerprint"], fingerprint)
+
+            os.remove(yaml_path)
+            with open(ignore_path, "w", encoding="utf-8") as fh:
+                json.dump({"ignored_warnings": [{"fingerprint": fingerprint}]}, fh)
+            self.assertFalse(any(w.get("fingerprint") == fingerprint
+                                 for w in warnings(owned=False)),
+                             "target ignore must be an active suppression control")
+            self.assertEqual(sql_warning(warnings())["fingerprint"], fingerprint)
+
+            with open(yaml_path, "w", encoding="utf-8") as fh:
+                fh.write("skip_checks: [CheckSQL]\n")
+            self.assertEqual(sql_warning(warnings())["fingerprint"], fingerprint)
+            with open(yaml_path, "w", encoding="utf-8") as fh:
+                fh.write("[invalid yaml\n")
+            with open(ignore_path, "w", encoding="utf-8") as fh:
+                fh.write("{invalid json")
+            self.assertEqual(sql_warning(warnings())["fingerprint"], fingerprint)
+
+            os.remove(yaml_path)
+            os.remove(ignore_path)
+            with open(os.path.join(target, "app/controllers/users_controller.rb"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("class UsersController < ApplicationController\n"
+                         "  def index; User.all; end\nend\n")
+            self.assertEqual(warnings(), [], "clean Rails control reported warnings")
+
+            with open(os.path.join(target, "app/controllers/users_controller.rb"),
+                      "w", encoding="utf-8") as fh:
+                fh.write(controller)
+            os.remove(os.path.join(config_dir, "routes.rb"))
+            os.remove(os.path.join(config_dir, "application.rb"))
+            self.assertTrue(adapter.is_applicable(target))
+            self.assertEqual(sql_warning(warnings())["warning_type"], "SQL Injection")
 
 
 if __name__ == "__main__":
