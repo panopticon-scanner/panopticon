@@ -94,6 +94,47 @@ PIP_AUDIT_SAMPLE = json.dumps({
 
 
 class TestPipAuditAdapter(unittest.TestCase):
+    def test_skipped_dependencies_disclose_coverage_without_losing_findings(self):
+        payload = {"dependencies": [
+            {"name": "unavailable", "version": "1", "skip_reason": "secret=" + "x" * 10000},
+            {"name": "vulnerable", "version": "1", "vulns": [{
+                "id": "CVE-2099-0001", "description": "fixture", "fix_versions": ["2"]}]},
+        ]}
+        raw = json.dumps(payload).encode()
+        findings, reason = pa.PipAuditAdapter().parse_with_coverage(raw, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "CVE-2099-0001")
+        self.assertEqual(reason, "1 dependency could not be audited")
+        with self.assertRaisesRegex(ValueError, "1 dependency could not be audited"):
+            pa.PipAuditAdapter().parse(raw, "g1")
+
+    def test_present_skip_field_never_certifies_coverage(self):
+        for value in (None, "", [], {}, 17, "not on PyPI"):
+            with self.subTest(value=value):
+                raw = json.dumps({"dependencies": [{"name": "x", "version": "1",
+                                                     "skip_reason": value}]}).encode()
+                self.assertEqual(pa.PipAuditAdapter().parse_with_coverage(raw, "g1"),
+                                 ([], "1 dependency could not be audited"))
+        raw = json.dumps({"dependencies": [
+            {"name": "x", "skip_reason": "one"},
+            {"name": "y", "skip_reason": "two"}]}).encode()
+        self.assertEqual(pa.PipAuditAdapter().parse_with_coverage(raw, "g1"),
+                         ([], "2 dependencies could not be audited"))
+
+    def test_normal_empty_and_vulnerable_reports_have_full_coverage(self):
+        adapter = pa.PipAuditAdapter()
+        self.assertEqual(adapter.parse_with_coverage(b'{"dependencies": []}', "g1"),
+                         ([], None))
+        findings, reason = adapter.parse_with_coverage(PIP_AUDIT_SAMPLE, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertIsNone(reason)
+
+    def test_invalid_dependency_shape_fails_with_bounded_reason(self):
+        for payload in ({"dependencies": [None]}, {"dependencies": {}},
+                        {"dependencies": [{"name": "x", "vulns": [None]}]}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                pa.PipAuditAdapter().parse_with_coverage(json.dumps(payload).encode(), "g1")
+
     def test_parse_produces_finding(self):
         adapter = pa.PipAuditAdapter()
         findings = adapter.parse(PIP_AUDIT_SAMPLE, "g1")

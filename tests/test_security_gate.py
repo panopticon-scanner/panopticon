@@ -27,6 +27,48 @@ def _sarif(level=None):
 
 
 class TestSecurityGate(unittest.TestCase):
+    def test_selected_pip_partial_audit_fails_gate_and_keeps_cve(self):
+        manifest_data = {"selected": ["pip-audit"], "produced": ["pip-audit"],
+                         "missing": []}
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(root, manifest_data)
+            with open(os.path.join(tools, "pip-audit.json"), "w") as fh:
+                json.dump({"dependencies": [
+                    {"name": "unavailable", "version": "1", "skip_reason": "not on PyPI"},
+                    {"name": "vulnerable", "version": "1", "vulns": [{
+                        "id": "CVE-2099-0001", "description": "fixture", "fix_versions": ["2"]}]},
+                ]}, fh)
+            findings, dispositions, failures, high, _ = gate.evaluate(tools, manifest)
+            rc, _, err = self._main_result(tools, manifest)
+        self.assertEqual(dispositions["pip-audit"]["status"], "failed")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "CVE-2099-0001")
+        self.assertEqual(high, [])
+        self.assertEqual(failures, ["pip-audit: 1 dependency could not be audited"])
+        self.assertEqual(rc, 2)
+        self.assertIn("scanner coverage incomplete", err)
+
+    def test_selected_pip_skipped_only_and_complete_controls(self):
+        cases = [
+            ([{"name": "x", "skip_reason": None}], "failed",
+             ["pip-audit: 1 dependency could not be audited"], 2),
+            ([], "empty", [], 0),
+            ([{"name": "x", "version": "1", "vulns": [{
+                "id": "CVE-2099-0002", "fix_versions": []}]}], "ok", [], 0),
+        ]
+        for dependencies, expected_status, expected_failures, expected_rc in cases:
+            with self.subTest(status=expected_status), tempfile.TemporaryDirectory() as root:
+                tools, manifest = self._write(root, {
+                    "selected": ["pip-audit"], "produced": ["pip-audit"], "missing": []})
+                with open(os.path.join(tools, "pip-audit.json"), "w") as fh:
+                    json.dump({"dependencies": dependencies}, fh)
+                findings, dispositions, failures, _, _ = gate.evaluate(tools, manifest)
+                rc, _, _ = self._main_result(tools, manifest)
+            self.assertEqual(dispositions["pip-audit"]["status"], expected_status)
+            self.assertEqual(failures, expected_failures)
+            self.assertEqual(rc, expected_rc)
+            self.assertEqual(len(findings), int(expected_status == "ok"))
+
     def _write(self, root, manifest, sarif=None):
         tools = os.path.join(root, "tools")
         os.makedirs(tools)
