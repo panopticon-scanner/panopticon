@@ -65,8 +65,8 @@ const results = await parallel(entries.map(e => () => {
   } else if (e.model) {
     opts.model = e.model              // unenforced: the entry's model, no shell
   }
-  // Marker line FIRST (the binding), the pointer second -- docs/PANOPTICON.md,
-  // "Driver run-loop", session mode. The prompt file is granted through the
+  // Marker line FIRST (the binding), the pointer second --
+  // docs/guide/driver-run-loop.md, session mode. The prompt file is granted through the
   // entry's `scope.reads`, alongside whatever else the builder granted there
   // (a SEC cell's security checklist); everything else the agent may read is
   // listed inside the file.

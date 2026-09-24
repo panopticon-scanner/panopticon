@@ -86,7 +86,8 @@ def run_engine(review_root, manifest, phases, max_steps=None):
                     # left armed denies EVERY later Write/Edit in the session --
                     # the operator's included -- with only the hook's per-write
                     # reason to say why. Teardown was a host duty stated in
-                    # prose (docs/PANOPTICON.md) that nothing signalled at the
+                    # prose (docs/guide/driver-run-loop.md) that nothing
+                    # signalled at the
                     # one moment it becomes unambiguously safe. Say it here, in
                     # the status the host already parses.
                     "teardown": TEARDOWN_DIRECTIVE}

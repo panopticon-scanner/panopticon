@@ -1,0 +1,138 @@
+## Driver setup (5.2)
+
+`driver setup [target]` runs the one-time bootstrap that proposes the capability matrix for the root
+`panopticon.yml`, as a separate two-phase flow on the same status protocol as `driver run` (it never
+runs during a review). Setup is where the token spend is front-loaded: the groups it proposes are
+reused by every later run.
+1. **scan** — scaffolds the `.gitignore` entries (the run-artifact directory and the draft),
+   computes the **spine** (`setup-spine.json`: depth-2 tree, languages, manifests/frameworks, what
+   the committed `panopticon.yml` and the Commons classifier already claim, the test trees, and the
+   size arithmetic — cap, ceiling, code-file count), renders the setup-scan brief (the spine, the
+   full-prose capability and layer catalogs, the profile surfaces), and emits a `scan`
+   **checkpoint** naming the read-only `setup-scan` agent. That agent has a **registered enforcement
+   shell** like every other dispatched role (#1737, `panopticon-setup-scan`, tools
+   `Read, Grep, Glob`, no bound model — the session's own model runs it), and the entry's `enforced`
+   flag is derived from this invocation's own capability evidence, exactly as a review run's entries
+   are. On a host that cannot enforce, or a machine that has not run `--emit-host-agents`, the
+   dispatch falls back to a shell-less one — and `driver setup` **refuses** it unless the operator
+   passes `--allow-unenforced`, which is recorded in `.panopticon/setup-unenforced-ack.json`
+   (`--reset` discards that acceptance). This is the same acknowledgement every other unenforced
+   dispatch has required since #1519; the one agent that reads the whole untrusted tree used to be
+   the exception. `driver loop --setup` runs it on rails: the scan entry goes through the runner
+   under the same read guard as scout (`read_guard_hook.install`/`read_guard_hook.uninstall` around
+   the dispatch, scope `dirs=[review root]` since a setup scan surveys the whole tree) — or, in
+   session mode, is printed for you to run and `driver persist setup-scan --setup` to persist — the
+   proposal lands at `.panopticon/setup-proposal.json`, ingest runs, and the loop stops at the one
+   genuinely human step — reviewing `panopticon.yml.draft` — printing the report path and the
+   promotion command. The proposal names a catalog capability (or alias, or `custom:<Name>`) per
+   group with `match`, scoped `tests`, optional `layers` for a vertical over the cap, and a
+   `profile` (purpose, surfaces, entry points, trust boundaries).
+2. **ingest** — on re-invoke, the driver validates and assembles the proposal (aliases normalized to
+   catalog names; deterministic affinity floors, or the profile's surfaces mapped to domains for
+   `custom:` groups), then applies the **size policy** over the whole repo: layers under 6 files
+   merge back into their parent, a vertical over the cap is split by its layers (the residual is
+   `Core`), and over the ceiling the smallest layers collapse first — verticals are never merged.
+   Unit tests ride each vertical's `tests`; the cross-cutting test trees form a `Tests` group last;
+   docs/CI/build/config/deps form `Commons`. It additive-merges the result against any committed
+   `panopticon.yml` (committed groups always win) and writes `panopticon.yml.draft` at the repo root
+   plus `.panopticon/setup-report.md` / `setup-report.json` (what was proposed, kept, layered,
+   collapsed, dropped and why) → `complete`. **Readiness runs on every setup**, not only on the
+   vocab-absent fallback (#1603): it is taken here, after the scan has come back and before the
+   report and the draft are written, on the host the setup was invoked for, and its rows are written
+   into `setup-report.json` (`readiness` / `gaps` / `limitations`) with a `## Readiness` section in
+   `setup-report.md` and a `readiness OK` / `readiness gaps: … (fix before running a review)` clause
+   on the completion line. It never fails setup — `driver setup` is a disclosure surface, and the
+   run-time readiness phase is the one that fails closed — so a gap is disclosed three ways rather
+   than refusing the bootstrap whose own report says how to fix it.
+
+**Sizes.** The cap (files per review group) and the ceiling (**code** review groups the repo
+affords) resolve CLI > `settings:` in `panopticon.yml` > default: `--max-per-group N` /
+`"max_per_group"` (default 48) and `--max-groups N` / `"max_groups"` (default
+`max(4, 2 * ceil(code_files / cap))`). Both accept only positive integers and both are resolved
+(CLI, else `settings:`) and pinned in `setup-manifest.json` at scan time, so the arithmetic the
+agent planned against is what ingest applies even if the config changes in between. `driver run`
+resolves `max_per_group` the same way at run time (CLI, else the committed `settings:`, clamped),
+and the effective value is what the run manifest records. `max_verify` is a GATE key, not a size
+knob — see the trust classes below. The ceiling budgets the leaves that hold **code** — committed
+groups, verticals and layers. `Tests` and the Commons categories are formed by the engine after the
+proposal, hold exactly the files the ceiling's own numerator subtracts, and are not counted against
+it (#1506); they still appear in the leaf total and in the estimated cell count. A group that
+outgrows the cap splits into exactly `ceil(files / cap)` dispatch chunks of near-equal size,
+whatever its directory shape (#1503).
+
+**What a target may set: the `settings:` trust classes.** `panopticon.yml` is authored by the
+repository being reviewed, and it is read before any reviewer is dispatched, so each key under
+`settings:` is worth exactly what its class says. **Grain** keys change how the review is cut and
+are honoured when well-typed, but the two size knobs are clamped to a band — `max_per_group` to 8-48
+and `max_groups` to 4-64 — so a committed value cannot collapse the matrix into one unreadable cell
+or starve it to a handful; an out-of-band value is clamped to the nearest bound and disclosed, and a
+value too large to be an integer setting at all (beyond 53 bits) is refused as out of range rather
+than clamped. **Gate (ratchet)** keys — `security`, `fail_on`, `severity`, `gate_scope`, `tools`,
+`max_verify` — change how the review judges, and are honoured only when the value is at least as
+strict as panopticon's own default: a repository may tighten its own review and may never loosen it,
+so `security: redteam` is honoured and `tools: false` is refused. Two of them are already at their
+strictest by default, so any value that moves them is refused: `severity` (default `all` — every
+severity is reported) and `max_verify` (default uncapped — every queued finding is verified); the
+refusal says so. A value equal to the default is neither honoured nor refused — it is disclosed as a
+no-op and leaves no opinion behind, so committing `security: standard` can never conflict with a run
+already under way. **Operator-only** keys — `allow_unenforced`, `diff_context`, the
+host/base/pr/reset selectors and every per-invocation bound — are refused on sight: they belong to
+the person running the review. The command line beats all three classes in both directions and is
+never clamped. Nothing here changes posture — a refused line never refutes `tool_policy_enforced` —
+but nothing is silent either: every refusal and clamp is printed at run start, recorded in
+`run-manifest.json` (`config_requested` / `config_effective` / `config_refused` / `config_clamped` /
+`config_disclosures`), published as `meta.config` in the report, and summarised on a
+`**Target config:**` line of the terminal summary.
+
+**Upgrading from 5.1.** The matrix schema is unchanged and a 5.1 proposal still validates (it moves
+under `groups:` in the root config); re-running setup is optional and never overwrites a committed
+`panopticon.yml`. What changes at run time without re-running setup: a wildcard `tests:` glob is
+scoped to the vertical's own directories and files that name it (the files it no longer credits are
+reported to stderr and in `scoped_tests_warnings`), leftover test-tree files sweep into a `Tests`
+group, and a committed `Tests` / `Tests:*` suppresses that sweep. If the old, unscoped crediting was
+intended, move the glob from `tests:` to `match:`. `version: 1` is mandatory in the root config: a
+5.1 `groups.yml` moved over by hand is refused (by setup, by readiness and by every run) until that
+line is added — `driver migrate-config` adds it for you.
+
+Setup writes a **draft**: read `.panopticon/setup-report.md`, review `panopticon.yml.draft`, move it
+to `panopticon.yml`, and commit it (setup never overwrites a committed file).
+
+**Upgrading from a `.panopticon/groups.yml` tree.** Nothing reads that file any more.
+`python3 skill/scripts/driver.py migrate-config .` writes `panopticon.yml` from it (order preserved,
+`version: 1` added); commit the new file and delete the old one. A tree that still carries only the
+old file is refused by setup, readiness and every run with the same remedy.
+
+A repo with no capability vocabulary falls back to a flat top-dir seed + a readiness gate and
+completes without a checkpoint. `driver setup --reset` clears the setup artifacts (brief, spine,
+proposal, draft, report, manifest) and starts over.
+
+**Glob semantics.** `match:`, `tests:` and `exclude_paths:` take gitignore-flavored globs: `*` and
+`?` stay inside a path segment, `**` crosses segments, a pattern with no `/` matches the basename at
+any depth, a leading `/` anchors to the repo root, a trailing `/` claims a directory and everything
+under it (`docs/` == `docs/**`), and `!` re-excludes with last-match-wins in `match:`/`tests:` (a
+committed `exclude_paths:` entry may not start with `!`; it is reported and dropped). Character
+classes (`*.[ch]`, `file[0-9].txt`) are **not** supported — write each spelling as its own glob, or
+use `?` for a single character. One in a setup proposal fails the proposal outright; one in a
+committed `panopticon.yml` is reported to stderr like any other schema error (committed-file errors
+are disclosed, not blocking) and the pattern then matches nothing, loudly, instead of matching the
+wrong files (#1501).
+
+**Two ways to narrow scope in `panopticon.yml` — pick the right one.** A per-group
+`exclude: [DOMAIN, …]` is a *domain* filter: it drops named review domains for that group, but **SEC
+is non-excludable** (#1084) — `exclude: [SEC]` on a group is *overridden* so a target can't opt its
+own code out of security review (the override is disclosed as `exclude_rejected` in that group's
+`coverage-<group>.json` and printed loudly to stderr). To drop *paths* entirely — e.g. a
+deliberately-vulnerable test-fixture corpus that redteam mode would otherwise keep in scope — use
+the **top-level `exclude_paths:`** list of gitignore-flavored globs (sibling to `groups:`).
+`exclude_paths` prunes matching files *before* grouping, so they land in **no** review cell of
+**any** domain (SEC included). It prunes *discovery* only — the tool scanners read the tree
+themselves, and their own findings are dropped with `--tools-exclude GLOB`. Prefer it over an
+`exclude:`-everything sink group:
+
+```yaml
+groups:
+  Auth:
+    match: ['src/auth/**']
+exclude_paths:
+  - tests/fixtures/**   # deliberately-vulnerable corpora: reviewed by nobody
+```

@@ -53,7 +53,7 @@ const DIMENSIONS = [
       'Is every probe id in PROBE_IDS and PROBE_CAPABILITY and mapped on the HostSpec row? Does driver_selectable move only with the security probes? Is anything decided by host name inside phases/?' },
   { key: 'correctness', prompt: COMMON + ' Dimension: correctness of the code the diff adds or changes (Python and JavaScript). Logic errors, fail-open paths, exceptions that escape a never-raise contract, ' +
       'path handling that can leave a run folder, shell/JS that cannot run as written, stale names left behind by a rename.' },
-  { key: 'docs-parity', prompt: COMMON + ' Dimension: do docs/PANOPTICON.md, skill/SKILL.md and CHANGELOG.md say what the code now does, and does every claim in the diff\'s docstrings and comments hold? ' +
+  { key: 'docs-parity', prompt: COMMON + ' Dimension: do docs/PANOPTICON.md and its chapters under docs/guide/, skill/SKILL.md and CHANGELOG.md say what the code now does, and does every claim in the diff\'s docstrings and comments hold? ' +
       'Name any sentence that is now false, any expectation the branch moved without quoting the comment that authorised it, and any behaviour the docs promise that the code does not deliver.' },
 ]
 

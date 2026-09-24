@@ -71,7 +71,8 @@ def _profiles():
 # context, silently.
 # #1737 R-F4-2: `setup_scan` is an EXPLICIT inherit row in all three tables and
 # in model-profiles.yml, never an omission and never an exemption from the
-# parity test below. `model: None` is what docs/PANOPTICON.md defines as
+# parity test below. `model: None` is what docs/guide/host-capabilities.md
+# defines as
 # "inherit the session's model": `driver setup` is a one-off, judgement-heavy
 # classification and the operator's own session model is the policy. Registering
 # the shell (#1737) must not quietly move it onto a role tier, so the emitters

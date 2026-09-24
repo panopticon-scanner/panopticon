@@ -27,7 +27,7 @@ The skill uses the open `SKILL.md` format. Hosts are listed in the order we reco
 - `codex` — enforced headless runner (`driver loop --host codex`); scoped read tools and JSON-returning roles. Codex does not prove the write guard, so write-capable roles require the operator's explicit `--allow-unenforced`.
 - `generic` — the sequential session-mode fallback for any host that reads `SKILL.md` and has no headless runner. Unenforced and disclosed as such. `gemini` is registered but retired as a selectable host; use `--host generic`.
 
-The write guard is the control worth understanding before you adopt: on hosts that cannot mediate a reviewer's writes, a compromised or confused reviewer could write outside its output file. Panopticon measures this per host, refuses write-capable roles where it is unproven unless you accept that explicitly, and prints the posture on every report. See "Host capabilities" in [`docs/PANOPTICON.md`](docs/PANOPTICON.md).
+The write guard is the control worth understanding before you adopt: on hosts that cannot mediate a reviewer's writes, a compromised or confused reviewer could write outside its output file. Panopticon measures this per host, refuses write-capable roles where it is unproven unless you accept that explicitly, and prints the posture on every report. See [`docs/guide/host-capabilities.md`](docs/guide/host-capabilities.md).
 
 ## Installation
 
@@ -79,7 +79,7 @@ ln -s "$(pwd)/skill" ~/.kimi/skills/panopticon
 python3 skill/scripts/dispatch.py --emit-host-agents kimi   # --agents-dir only for a non-default agents directory
 ```
 
-Invoke with `kimi /panopticon`, or `python3 skill/scripts/driver.py loop <target> --host kimi`. The guide's "Driver run-loop" section describes Kimi's headless contract (per-run credential home, read and write guards, MCP disabled in that home).
+Invoke with `kimi /panopticon`, or `python3 skill/scripts/driver.py loop <target> --host kimi`. [`docs/guide/driver-run-loop.md`](docs/guide/driver-run-loop.md) describes Kimi's headless contract (per-run credential home, read and write guards, MCP disabled in that home).
 
 ### OpenAI Codex CLI
 
@@ -158,7 +158,8 @@ The HTML report is a single file with no sibling assets. Attach it to a message,
 | `skill/` | The installable skill surface — symlink THIS directory into your agent's skills dir |
 | `skill/SKILL.md` | Skill entry point (frontmatter + quick reference) |
 | `docs/GETTING-STARTED.md` | Two-page introduction: what it does, what it costs, how to run it |
-| `docs/PANOPTICON.md` | Full user guide, driver run-loop spec, and schema contracts |
+| `docs/PANOPTICON.md` | The user guide's front matter (modes, global flags) and its table of contents |
+| `docs/guide/` | One file per section of the guide: the driver run-loop spec, setup, output and schema contracts, host capabilities, evidence, security notes |
 | `docs/samples/` | A real report's readout and screenshots |
 | `skill/scripts/` | Runnable Python modules (driver, discovery, synthesizer, dispatch, tools) |
 | `skill/agents/` | Custom agent definitions (`advisor`, `domain-advisor`, `domain-panel`, `scout`, `setup-scan`) |
