@@ -2,8 +2,10 @@
 
 Ruthless, standards-cited code review skill; first-class support for the native
 Agent-tool host, plus portable support for other SKILL.md-compatible agents. This file is the durable
-design record that travels with the skill (installed dir / OneDrive), so future
-work has context without the original spec/plan docs.
+design record that travels with the skill, so future work has context without the original
+spec/plan docs. It records architecture, the design decisions that are settled, and the version
+history. The live backlog is the issue tracker: every self-scan finding is filed with `severity:*`,
+`evidence:*` and `panel:*` labels (`.github/labels.yml`), and nothing in this file is a to-do list.
 
 **Current version: 5.1.0** (semver — see Versioning below).
 
@@ -842,66 +844,19 @@ History:
 - **2.0.0** — static-analysis upgrade: standards citations (CWE/OWASP/SSVC/EPSS) + the Docker
   tool container.
 
-### B-floor residuals (LOW/INFO from self-scan round 4 — future minors)
-- Schema validation is advisory-only: an invalid report still writes + prints (by design; revisit if a
-  strict mode is wanted). `gosec` is invoked with `./...` against a `/src` mount (relies on container cwd).
-- SARIF-derived paths are rendered into the markdown summary without escaping (display-only; not opened).
-- `test_related_tests_found` doesn't assert the nested-match it names. Bandit `B404`/`B110`/`B112`
-  (subprocess import + tolerant loops) are noise-floor and are now suppressed via
-  `sarif_utils.NOISE_RULES`; `B603`/`B607` are kept as a tool-layer backstop for panel-less runs.
+### Known limitations that are still true
+Two notes from the 2.x self-scans that later releases did not change, kept because a reader
+would otherwise have to rediscover them:
+- SARIF-derived paths are interpolated into the terminal markdown summary without escaping
+  (`synth/render.py`; display-only, the path is never opened from there). The HTML report
+  escapes them (`html_report.py`).
+- `gosec` is invoked with `./...` against the `/src` mount and relies on the container cwd
+  (`tools/legacy_sarif.py`).
+Everything else the 2.x rounds listed here has either shipped (see the version history above) or
+lives as an issue with its evidence attached; the round-by-round remediation notes for 2.2.x were
+removed from this file in the 5.2 docs pass.
 
-## Shipped in 2.2.0 (delivered this round)
-Deferred to a 2.2.1 sweep (minors flagged during this cycle): clamp `--file`/`--files` explicit
-paths to the repo root (T1 only covered glob-derived scope); stderr log on a per-result SARIF
-skip; annotate `reinforced` on same-category same-locus corroboration; and a few test-isolation
-gaps (cross-tool noise-filter negative case, stdlib-fallback malformed-catalog path, multi-tool
-timeout continue).
-- Add CWE-95 (+ catalog completeness); log the finding id in the enrich backstop; set an EPSS
-  HTTP User-Agent; restore the panel label in the summary line; add docstrings.
-- Test coverage: EPSS-enabled attach path; `run_tools` argv (`:ro`); citation transfer to a
-  non-tool survivor.
-
-### Self-scan round 2 (2026-07-23) — validated 2.2.1 residuals
-Re-ran Panopticon on itself at 2.2.0: **D / HIGH / 19 findings, zero CRITICAL** (was F/CRITICAL/24).
-The round-1 criticals are resolved; these narrower residuals were hand-verified as real and lead 2.2.1:
-- **`dedupe` silent-drop, no-line + same-category** (HIGH, `synthesize.py`): two distinct same-file
-  findings that both omit `line_start` cluster to `(file, None)`; the `by_cat` branch then keeps one
-  per category, silently dropping the other. Residual of the T6 silent-loss class. Fix: don't collapse
-  same-category findings that lack a line (or fall back to a title/description discriminator).
-- **`load_cwe_catalog()` unguarded** (MEDIUM, `citations.py:24` ← `synthesize.py:419`): bare
-  `open()`+`json.load` with no try/except; a missing/corrupt bundled catalog crashes the whole
-  synthesis run and drops the CI gate — violates the "tolerant by design, never abort a run" invariant.
-  Fix: wrap catalog load, degrade to an empty catalog + stderr warning.
-- **`ingest_tools` non-SARIF JSON silently dropped** (MEDIUM): module doc implies "simple native JSON"
-  ingestion but only SARIF is implemented; unrecognized JSON is dropped with no diagnostic. Fix: log a
-  skip, or align the docstring to SARIF-only.
-
-### From an internal-app dogfood run (2026-07-23) — tool↔fleet integration (2.2.0)
-- **Tool noise floor**: bandit emitted 579 `B101` "assert used" findings from `tests/` on one run.
-  Add a noise filter — skip `tests/` for SAST, drop `B101`, and/or a LOW-severity floor for tool findings.
-- **Normalize SARIF paths**: `ingest_tools` keeps the raw `artifactLocation.uri` (`file:///src/...`);
-  strip the `file://` scheme and the `/src/` container-mount prefix so tool paths match the agents'
-  package-relative paths.
-- **Cross-source reinforce is effectively dead**: `dedupe` keys on `(file, line_start, category)`,
-  but tool rule-ids ≠ agent lens categories and tool paths carry `/src/` — so an identical tool+agent
-  finding (observed: the CSRF finding whose tool path carried the `/src/` prefix) never merges. Fix the path
-  normalization above AND match on `(file, line)` with looser/optional category (or map ruleId→lens).
-
-### From Panopticon's self-review (2026-07-23) — graded itself F/CRITICAL, 24 findings
-Correctness/security (do first):
-- **Path-traversal / scope escape** (code+security both flagged, CWE-22): `expand_patterns` + catalog globs can escape the repo root via `..` or absolute paths (originally `orchestrator.py:154`; the module is retired — see `discovery.py`'s equivalent). Clamp resolved paths under the repo root.
-- **No docker-run subprocess timeout** (`run_tools.py:60`): a hung/slow tool blocks the pipeline forever. Add a per-run timeout.
-- **`load_catalog` only catches `ImportError`** (originally `orchestrator.py:135`; the module is retired — see `discovery.py`'s equivalent): a malformed `groups.yml` crashes with a raw traceback when PyYAML is installed. Catch parse errors too.
-- **`sarif_to_findings` tolerance is per-file, not per-result** (`ingest_tools.py:20`): one malformed entry drops every result in that file. Guard per-result.
-- **Untrusted-input DoS hardening** (`ingest_tools.py`/`citations.py`): cap EPSS response size (CWE-400), bound JSON nesting (RecursionError), sanitize SARIF `uri`/`message` before rendering (CWE-117).
-- **`dedupe` cluster key is type/path-sensitive on `line_start`+file** (`synthesize.py:125`): normalize `line_start` to int and paths — ties directly to the `/src` path-prefix + dead-reinforce items above.
-- Minor: enforce finding-`id` uniqueness (`synthesize.py:258`); make CWE/CVE regex case-insensitive (`citations.py:33`); `--max-per-group` lower-bound guard.
-Test coverage (the non-determinism challenge — this is the headline):
-- **`run_tools.run_tools()` has zero coverage** (CRITICAL): add tests asserting the real `docker run` argv (`:ro`, image, per-tool cmd) + continue-on-failure.
-- **Ingest fixtures don't match real tool SARIF** (no `file:///src/` uri, no `taxa` CWE): replace with golden real-tool SARIF — would have caught the `/src/` bug.
-- **`TOOL_CMD` argv asserted nowhere**: lock the semgrep-`--config` fix with a regression test. Cover the EPSS-enabled / empty-EPSS / CVE-tag branches. The scout+fleet orchestration (SKILL.md prose) has no automated test.
-
-## Later — features (a future minor, or major if breaking)
+## Ideas not scheduled (a future minor, or major if breaking)
 - SonarQube per-axis A–E ratings; ISO 25010 mapping; **SARIF export** of our own report;
   OWASP Risk Rating scoring.
 - SARIF `taxa`/relationships CWE extraction (for CodeQL-style tools).
