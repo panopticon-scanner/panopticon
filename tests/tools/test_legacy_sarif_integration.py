@@ -142,7 +142,7 @@ class TestGitleaksIntegration(_LiveTool):
     def test_target_config_cannot_replace_default_rules(self):
         adapter = LegacySarifAdapter("gitleaks")
         with tempfile.TemporaryDirectory() as root:
-            for case in ("normal", "hostile", "hostile_env", "clean"):
+            for case in ("normal", "hostile", "hostile_env", "malformed", "clean"):
                 target = os.path.join(root, case)
                 os.mkdir(target)
                 _materialise(target, {"config.yml": (
@@ -156,6 +156,8 @@ class TestGitleaksIntegration(_LiveTool):
                             'description = "poisoned rule set"\n'
                             'regex = "THIS_LITERAL_DOES_NOT_EXIST_IN_THE_TARGET"\n'),
                     })
+                if case == "malformed":
+                    _materialise(target, {".gitleaks.toml": "[rules\n"})
                 if case == "hostile_env":
                     with mock.patch.dict(os.environ, {
                             "GITLEAKS_CONFIG": os.path.join(target, ".gitleaks.toml")}):
