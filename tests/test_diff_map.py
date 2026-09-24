@@ -1204,8 +1204,8 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         self.assertEqual(self._read(clone, "for-each-ref", "--format=%(refname)",
                                     "refs/panopticon/"), "")
         # The neutralization is disclosed by key, never by value (#2013).
-        self.assertIn("suppressed filter.evil.smudge in .", err.getvalue())
-        self.assertIn("suppressed filter.evil.required in .", err.getvalue())
+        self.assertIn("suppressed 'filter.evil.smudge' in '.'", err.getvalue())
+        self.assertIn("suppressed 'filter.evil.required' in '.'", err.getvalue())
         self.assertNotIn("evil.sh", err.getvalue())
 
         with contextlib.redirect_stderr(io.StringIO()):

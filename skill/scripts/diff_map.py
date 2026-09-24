@@ -751,8 +751,8 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     Never mutates the caller's checkout — all work lands in the worktree (the
     blast radius). Raises RuntimeError (loud) on any step's failure.
 
-    #2012: the FETCH is the only call here that keeps the operator's
-    environment, because the credential helper lives in it and `safe_git`'s
+    #2012: the FETCH is the only git call here that keeps the operator's
+    environment (`gh pr view` does too, and needs to), because the credential helper lives in it and `safe_git`'s
     fresh allowlisted environment strips `HOME` and every gitconfig. Every other
     step — `worktree list`, `rev-parse`, `worktree add`, `update-ref -d` — runs
     through `safe_git`, which this function used to be EXEMPT from. That
@@ -781,7 +781,7 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
             if (where, key) in disclosed:
                 continue
             disclosed.add((where, key))
-            print("panopticon --pr: suppressed %s in %s" % (key, where),
+            print("panopticon --pr: suppressed %r in %r" % (key, where),
                   file=sys.stderr)
 
     def _run(argv):
@@ -897,6 +897,11 @@ def release_worktree(path, repo=".", runner=subprocess.run):
     running a command the target authored. The `except Exception` is unchanged
     and deliberately total, including `TimeoutExpired` (#1082) and
     `RepositoryRefused`: one call, one timeout, never a raise out of teardown.
+
+    Teardown passes no `suppressed` list on purpose: the worktree shares the
+    root's `.git/config`, so every key emptied here was already disclosed by
+    acquisition for the same repository (and re-collected by the run's own
+    provenance probe); printing it a third time would be noise.
     """
     try:
         safe_git.mutate(repo, ["worktree", "remove", "--force", path],

@@ -224,6 +224,17 @@ def _subcommand(args):
 # review: `-c core.hooksPath=<evil>` ran the planted hook), so the probe
 # refuses them rather than trusting every future caller to know that.
 _PROBE_PINNED_CONFIG = ("core.fsmonitor", "core.hookspath")
+
+
+def _undoes_a_pin(key):
+    """A caller `-c` for a pinned key -- or for `include.path` / `includeIf.*`,
+    which pull in a file whose settings come AFTER the pins in argv and win
+    (#2012 review M2, measured: an included `core.hooksPath` ran the hook)."""
+    lowered = key.lower()
+    return (lowered in _PROBE_PINNED_CONFIG or lowered == "include.path"
+            or lowered.startswith("includeif."))
+
+
 # Likewise the flags that would re-enable the diff drivers `_NO_DRIVERS`
 # turns off (a later flag wins in git).
 _DRIVER_ENABLING_OPTIONS = ("--ext-diff", "--textconv")
@@ -240,7 +251,7 @@ def _reject_redirection(args):
                 "pass a different root instead" % token)
         if previous == "-c":
             key = token.split("=", 1)[0]
-            if key.lower() in _PROBE_PINNED_CONFIG:
+            if _undoes_a_pin(key):
                 raise ValueError(
                     "safe Git: %r would override a setting the probe pins itself" % token)
             if _is_suppressible(key):
@@ -290,9 +301,9 @@ def _is_command_setting(key):
 
     `filter.<driver>.smudge` was added by #2013 for completeness, when nothing
     here checked out; #2012 made it load-bearing for a real caller. `mutate`'s
-    `worktree add` IS a checkout, so the smudge command is the one in this set
-    that the target gets to run on the `--pr` route -- emptying it is what stops
-    it.
+    `worktree add` IS a checkout, so `.smudge` and `.process` (the long-running
+    filter protocol serves smudge too) are the ones in this set that the target
+    gets to run on the `--pr` route -- emptying them is what stops it.
 
     AVAILABILITY (#2006 fix round 2, M6, resolved by #2013): these are
     REPO-LOCAL keys, so global-config git-lfs is unaffected

@@ -540,6 +540,10 @@ def test_a_failed_root_preflight_names_the_command_the_caller_asked_for(tmp_path
     ["-c", "filter.lfs.required=true", "status", "--porcelain", "-z"],
     ["-c", "diff.external=x", "diff", "--name-only"],
     ["-c", "diff.d.textconv=x", "diff", "--name-only"],
+    # #2012 review M2: an included file's settings come after the pins and win.
+    ["-c", "include.path=/nowhere/evil.cfg", "status", "--porcelain", "-z"],
+    ["-c", "includeIf.gitdir:/.path=/nowhere/evil.cfg", "status", "--porcelain", "-z"],
+    ["-c", "INCLUDE.PATH=/nowhere/evil.cfg", "worktree", "add", "--detach", "x", "HEAD"],
 ])
 def test_a_caller_cannot_undo_what_the_probe_pins(tmp_path, args):
     """#2006 review N2: a caller's `-c` for a key the probe sets, or a flag
@@ -547,8 +551,9 @@ def test_a_caller_cannot_undo_what_the_probe_pins(tmp_path, args):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
+    entry = safe_git.mutate if "worktree" in args else safe_git.probe
     with pytest.raises(ValueError, match="override|re-enable"):
-        safe_git.probe(str(repo), args)
+        entry(str(repo), args)
 
 
 # --- #2012: `mutate`, the one entry point allowed to write -------------------
