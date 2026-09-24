@@ -68,6 +68,8 @@ class TestGlobSemantics(unittest.TestCase):
 import sys
 sys.path.insert(0, sys.argv[1])
 from scripts import discovery, groups_schema
+assert groups_schema.glob_to_re('a*' * 20 + 'b').match('a' * 2000 + 'c') is None
+assert groups_schema.glob_to_re('a*' * 20 + 'b').match('a' * 2000 + 'b')
 pattern = "a*" * 20 + "Z"
 matcher = discovery._glob_to_re(pattern)
 assert matcher.match("a" * 200 + "Y") is None
@@ -100,6 +102,14 @@ assert discovery._glob_to_re("root/**/end").match("root/" + "dir/" * 2000 + "end
     def test_question_mark_single_segment_char(self):
         self.assertTrue(self._m("a/v1.py", ["a/v?.py"]))
         self.assertFalse(self._m("a/v12.py", ["a/v?.py"]))
+
+    def test_complex_negation_preserves_newlines_and_last_match(self):
+        patterns = ["src/**/a?.py", "!src/private/", "src/private/allow.py"]
+        self.assertTrue(self._m("src/deep/a\n.py", patterns))
+        self.assertFalse(self._m("src/private/a\n.py", patterns))
+        self.assertTrue(self._m("src/private/allow.py", patterns))
+        self.assertFalse(self._m("src/private/allow.py", patterns + ["!allow.py"]))
+        self.assertFalse(self._m("src/deep/a\n.py\n", patterns))
 
 
 def _write_config(d, body):

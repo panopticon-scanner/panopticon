@@ -86,6 +86,26 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/agents/` — host-neutral role prompt templates: `scout.md`, `setup-scan.md`,
   `domain-panel.md`, `domain-advisor.md`, `advisor.md`.
 
+## Bounded glob matching
+
+`groups_schema.glob_to_re` uses literal comparisons and a bitset NFA; its
+regex-shaped `.pattern` is diagnostic text, never an executable fallback.
+The general matcher takes O(tokens × path length) bounded work and O(tokens)
+bits of per-match state. Native integer operations process token states in
+parallel, and anchored literal prefixes reject unrelated paths early.
+Discovery still multiplies matching cost by files × configured patterns;
+wildcard-heavy configurations cost more than literal-heavy ones.
+
+Compilation caches at most 512 validated patterns, independently of caller
+labels. The existing limits reject patterns above 256 characters or 20 stars
+after redundant-star collapse; these validation limits are separate from the
+execution bound. Trailing-directory expansion permits at most 258 characters
+in a cache key and 258 bits per state. Character transition masks require up
+to O(tokens²) bits per compiled entry; the fixed cache and pattern caps bound
+retained compilation memory. Invalid-pattern warnings keep their existing
+caller-specific behavior outside the cache. Newlines remain ordinary filename
+characters, and matching consumes the whole path.
+
 ## Key design decisions (don't relitigate without reason)
 - **Fan out via rendered prompts** dispatched through the host runner (`scout`, `domain-panel`, `domain-advisor`, `advisor`).
   One cell per `(domain, group)`: the domain set is the committed floor widened by the
