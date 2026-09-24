@@ -151,6 +151,48 @@ class TestDefaultSelectionBranch(unittest.TestCase):
 
 
 class TestAdapterSelection(unittest.TestCase):
+    def test_gitleaks_uses_owned_config_adapter_in_production(self):
+        calls = []
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return _FakeResult(returncode=1, stdout=b'{"runs":[]}')
+
+        with tempfile.TemporaryDirectory() as target:
+            out_dir = os.path.join(target, "out")
+            written = rt.run_tools(target, ["gitleaks"], out_dir,
+                                   runner=runner, venv_dirs=[])
+            self.assertEqual(len(calls), 1)
+            scan_argv = calls[0]
+            self.assertEqual(scan_argv[-3:], ["python3",
+                             "/opt/panopticon/scripts/_run_adapter.py", "gitleaks"])
+            self.assertEqual(scan_argv[scan_argv.index("--network") + 1], "none")
+            self.assertIn("%s:/src:ro" % os.path.abspath(target), scan_argv)
+            scripts_dir = os.path.dirname(os.path.abspath(rt.__file__))
+            self.assertIn("%s:/opt/panopticon/scripts:ro" % scripts_dir, scan_argv)
+            self.assertEqual(scan_argv[scan_argv.index("-w") + 1],
+                             rt.ADAPTER_EMPTY_CWD)
+            for flag in ("--memory", "--memory-swap", "--cpus", "--pids-limit",
+                         "--cap-drop=ALL", "--security-opt=no-new-privileges"):
+                self.assertIn(flag, scan_argv)
+            self.assertEqual(len(written), 1)
+            self.assertEqual(os.path.basename(written[0]), "gitleaks.sarif")
+            self.assertTrue(os.path.isfile(written[0]))
+
+    def test_gitleaks_abnormal_exit_remains_missing(self):
+        with tempfile.TemporaryDirectory() as target:
+            out_dir = os.path.join(target, "out")
+            written = rt.run_tools(
+                target, ["gitleaks"], out_dir, venv_dirs=[],
+                runner=lambda cmd, **kw: _FakeResult(
+                    returncode=7, stdout=b'{"runs":[]}', stderr=b'failed'))
+            payload = rt.write_manifest(os.path.join(target, "manifest.json"),
+                                        ["gitleaks"], written)
+            self.assertEqual(written, [])
+            self.assertEqual(payload["produced"], [])
+            self.assertEqual(payload["missing"], ["gitleaks"])
+            self.assertFalse(os.path.exists(os.path.join(out_dir, "gitleaks.sarif")))
+
     def test_select_adapters_by_ecosystem(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "requirements.txt"), "w").close()
