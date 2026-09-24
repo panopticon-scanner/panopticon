@@ -82,7 +82,7 @@ def _checkout_boundary(start):
         directory = parent
 
 
-def subcommand(args):
+def _subcommand(args):
     """The git subcommand in `args`, or None when it cannot be identified.
 
     None is the fail-closed answer: a leading global option this does not know
@@ -105,7 +105,7 @@ def subcommand(args):
 
 def _needs_preflight(args):
     """Whether this argv may reach a repository-configured command."""
-    name = subcommand(args)
+    name = _subcommand(args)
     if name not in _NO_CONFIGURED_COMMAND:
         return True
     excluded = _NO_CONFIGURED_COMMAND[name]
@@ -189,7 +189,7 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
                 if len(seen) + len(pending) > _MAX_REPOSITORIES:
                     raise OSError("safe Git status: submodule traversal exceeds 64 repositories")
     final = list(args)
-    if subcommand(args) == "status":
+    if _subcommand(args) == "status":
         # A status that hides submodule dirt is not an integrity baseline; every
         # OTHER subcommand keeps the argv the caller asked for, because this is
         # a `status` flag and appending it elsewhere would change or break the

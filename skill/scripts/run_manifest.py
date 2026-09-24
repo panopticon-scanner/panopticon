@@ -135,7 +135,7 @@ def _target_provenance(target, runner=subprocess.run):
     Recorded, never enforced: a resumed run must not be refused because the tree
     moved under it. This is provenance, not an anti-drift flag.
     """
-    #2006: `target` is the reviewed tree, so both calls go through
+    # #2006: `target` is the reviewed tree, so both calls go through
     # `safe_git.probe` -- a trusted git resolved outside the target's outermost
     # checkout, a fresh allowlisted environment (these two ran with NO `env=`
     # at all, so an inherited `GIT_DIR`/`GIT_CONFIG_*` could redirect the very
