@@ -403,6 +403,10 @@ def _save_progress(progress, path):
             os.unlink(tmp)
 
 
+class _ApplyRefused(ValueError):
+    """Execution refusal distinguished from a successful zero-operation apply."""
+
+
 def apply(actions, dry=True, confirm_close=False, throttle=1.5,
          runner=None, sleep=time.sleep, progress_path=None, reset_progress=False):
     """Return counts of operations performed in this invocation.
@@ -413,7 +417,22 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
     Dry runs display unique requested actions and never read or write progress.
     A process death between remote success and receipt replacement can still
     repeat the remote operation on retry.
+
+    For compatibility, authorization/mixed-repository refusals print a diagnostic
+    and return (0, 0). The CLI uses _apply directly to distinguish these refusals
+    from completed resumes and empty no-ops.
     """
+    try:
+        return _apply(actions, dry, confirm_close, throttle, runner, sleep,
+                      progress_path, reset_progress)
+    except _ApplyRefused as exc:
+        print("refusing: %s" % exc)
+        return (0, 0)
+
+
+def _apply(actions, dry=True, confirm_close=False, throttle=1.5,
+           runner=None, sleep=time.sleep, progress_path=None, reset_progress=False):
+    """Execute once, raising on refusal so callers can choose their interface."""
     actions = _unique_actions(actions)
     if reset_progress and not dry and progress_path is None:
         raise ValueError("--reset-progress requires a receipt path for live apply")
@@ -429,9 +448,8 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
     if not dry and actions:
         owner, repo = _owner_repo(actions[0]["issue"])
         if any(_owner_repo(a["issue"]) != (owner, repo) for a in actions):
-            print("refusing: actions span multiple repos; expected all in %s/%s"
-                  % (owner, repo))
-            return (0, 0)
+            raise _ApplyRefused("actions span multiple repos; expected all in %s/%s"
+                                % (owner, repo))
         repo_slug = "%s/%s" % (owner, repo)
         if progress_path is not None:
             loaded = _load_progress(progress_path, repo_slug)
@@ -440,9 +458,8 @@ def apply(actions, dry=True, confirm_close=False, throttle=1.5,
             _reserve_progress(progress, action_keys)
         ok, reason = preflight_authorized(owner, repo, runner=runner)
         if not ok:
-            print("refusing: authenticated gh user is not an owner/admin of %s/%s — %s"
-                  % (owner, repo, reason))
-            return (0, 0)
+            raise _ApplyRefused("authenticated gh user is not an owner/admin of %s/%s — %s"
+                                % (owner, repo, reason))
         if progress is not None:
             # Persist initial binding, migration or reset only after read-only auth,
             # and before any GitHub mutation. Failure leaves remote state untouched.
@@ -531,7 +548,7 @@ def main(argv=None):
         try:
             with open(a.actions_json, encoding="utf-8") as fh:
                 actions = json.load(fh)
-            commented, closed = apply(actions, dry=a.dry_run, confirm_close=a.confirm_close,
+            commented, closed = _apply(actions, dry=a.dry_run, confirm_close=a.confirm_close,
                                       throttle=a.throttle, reset_progress=a.reset_progress,
                                       progress_path=a.progress or a.actions_json + ".progress.json")
         except (ValueError, OSError, RuntimeError) as exc:

@@ -999,7 +999,7 @@ class TestCliWiring(unittest.TestCase):
             actions_path = os.path.join(d, "actions.json")
             with open(actions_path, "w", encoding="utf-8") as fh:
                 json.dump([], fh)
-            with mock.patch("reconcile_apply.apply", return_value=(0, 0)) as apply_mock:
+            with mock.patch("reconcile_apply._apply", return_value=(0, 0)) as apply_mock:
                 self.assertEqual(reconcile_apply.main(["apply", actions_path,
                                                        "--no-dry-run"]), 0)
                 self.assertEqual(apply_mock.call_args.kwargs["progress_path"],
@@ -1013,7 +1013,7 @@ class TestCliWiring(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "actions.json"
             path.write_text("[]")
-            with mock.patch.object(reconcile_apply, "apply", return_value=(0, 0)) as run:
+            with mock.patch.object(reconcile_apply, "_apply", return_value=(0, 0)) as run:
                 self.assertEqual(reconcile_apply.main(["apply", str(path), "--reset-progress"]), 0)
                 self.assertTrue(run.call_args.kwargs["reset_progress"])
 
@@ -1056,6 +1056,64 @@ class TestCliWiring(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()) as err:
                     self.assertEqual(reconcile_apply.main(["apply", str(path)]), 1)
                 self.assertIn("refusing:", err.getvalue())
+
+    def test_cli_auth_and_mixed_repo_refusals_are_failures_with_unchanged_receipts(self):
+        original = TestApply()._actions()
+        for refusal in ("authorization", "mixed repos"):
+            for reset in (False, True):
+                with self.subTest(refusal=refusal, reset=reset), tempfile.TemporaryDirectory() as d:
+                    path = Path(d) / "actions.json"
+                    receipt = Path(str(path) + ".progress.json")
+                    reconcile_apply.apply(original, False, runner=TestApply()._admin_runner([]),
+                                          sleep=lambda _: None, progress_path=receipt)
+                    before = receipt.read_bytes()
+                    actions = original if refusal == "authorization" else [
+                        original[0], dict(original[1], issue="https://github.com/other/repo/issues/2")]
+                    path.write_text(json.dumps(actions))
+                    calls = []
+                    def runner(argv, **kwargs):
+                        calls.append(argv)
+                        if argv[:2] == ["gh", "api"]:
+                            return FakeCompleted('{"admin": false}')
+                        self.fail("refusal must not mutate issues")
+                    out, err = io.StringIO(), io.StringIO()
+                    args = ["apply", str(path), "--no-dry-run"]
+                    if reset:
+                        args.append("--reset-progress")
+                    with mock.patch.object(triage, "default_gh_runner", return_value=runner), \
+                         contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        rc = reconcile_apply.main(args)
+                    self.assertNotEqual(rc, 0)
+                    self.assertIn("refusing:", err.getvalue())
+                    self.assertIn("owner/admin" if refusal == "authorization" else "multiple repos",
+                                  err.getvalue())
+                    self.assertNotIn("LIVE:", out.getvalue())
+                    self.assertNotIn("Traceback", err.getvalue())
+                    self.assertEqual(len(calls), 1 if refusal == "authorization" else 0)
+                    self.assertEqual(receipt.read_bytes(), before)
+
+    def test_cli_completed_resume_and_empty_noop_remain_successful(self):
+        for empty in (False, True):
+            with self.subTest(empty=empty), tempfile.TemporaryDirectory() as d:
+                actions = TestApply()._actions()
+                path = Path(d) / "actions.json"
+                receipt = Path(str(path) + ".progress.json")
+                reconcile_apply.apply(actions, False, runner=TestApply()._admin_runner([]),
+                                      sleep=lambda _: None, progress_path=receipt)
+                before = receipt.read_bytes()
+                path.write_text(json.dumps([] if empty else actions))
+                calls = []
+                out, err = io.StringIO(), io.StringIO()
+                with mock.patch.object(triage, "default_gh_runner",
+                                       return_value=TestApply()._admin_runner(calls)), \
+                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc = reconcile_apply.main(["apply", str(path), "--no-dry-run"])
+                self.assertEqual(rc, 0)
+                self.assertIn("LIVE: commented 0, closed 0", out.getvalue())
+                self.assertEqual(err.getvalue(), "")
+                self.assertEqual(len(calls), 0 if empty else 1)
+                self.assertTrue(all(c[:2] == ["gh", "api"] for c in calls))
+                self.assertEqual(receipt.read_bytes(), before)
 
     def test_cli_remote_failure_returns_nonzero_and_keeps_bound_receipt(self):
         with tempfile.TemporaryDirectory() as d:
