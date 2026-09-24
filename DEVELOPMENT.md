@@ -365,6 +365,18 @@ has not recomputed from the downloaded artifact:
 | `requirements` | the `--hash=sha256:` lines in `.github/requirements-gate.txt`, `requirements-fixtures.txt` and `requirements-tools.txt` | you, beside the version bump |
 | `gems` | `Dockerfile`'s `ARG <GEM>_VERSION` + `ARG <GEM>_GEM_SHA256` pairs | you; nothing schedules it yet |
 
+The `rustup` family pins only the bootstrap installer. `RUST_TOOLCHAIN_VERSION` pins the compiler
+separately; changing the rustup installer does not upgrade Rust. Keep `CARGO_AUDIT_VERSION` explicit
+as well. Its `cargo install --locked` uses the crate release's packaged `Cargo.lock`, so changing
+the cargo-audit version is a deliberate dependency-graph refresh: check that release's lockfile and
+build the image before accepting it. This is not a repository-owned hash closure.
+
+Trivy is installed from its official release archives, outside the apt mirror's update policy.
+When updating `TRIVY_VERSION`, download the Linux-64bit and Linux-ARM64 archives over verified HTTPS,
+compute their SHA256 digests, and update `TRIVY_SHA256_AMD64` and `TRIVY_SHA256_ARM64` together.
+The Docker build checks the chosen archive's digest before extracting the `trivy` binary. Keep
+ordinary distro apt packages unpinned so they continue to receive security updates.
+
 The `gems` family also refuses to pin a release whose RUNTIME closure has grown past what the image
 installs. The tools image installs each `.gem` with `--ignore-dependencies` (#1734), so the closure
 is something this repo asserts rather than something RubyGems works out — and a release that
