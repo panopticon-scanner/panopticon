@@ -228,15 +228,15 @@ def _may_read_pipe(argv, stage):
     # sed's first bare operand is the script unless -e/-f supplies it.
     scripted, i, operands = False, 1, []
     while i < len(argv):
-        token = argv[i]
-        if token in ("-e", "-f", "--expression", "--file"):
+        argument = argv[i]
+        if argument in ("-e", "-f", "--expression", "--file"):
             scripted, i = True, i + 2
             continue
-        if token.startswith(("-e", "-f", "--expression=", "--file=")):
+        if argument.startswith(("-e", "-f", "--expression=", "--file=")):
             scripted = True
-        elif token == "-" or not token.startswith("-"):
+        elif argument == "-" or not argument.startswith("-"):
             if scripted:
-                operands.append(token)
+                operands.append(argument)
             scripted = True
         i += 1
     return any(map(connected, operands)) if operands else stage.stdin_from_pipe
