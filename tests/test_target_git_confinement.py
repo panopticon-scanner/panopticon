@@ -25,6 +25,7 @@ import unittest
 from unittest import mock
 
 from conftest import SKILL_ROOT
+import scripts.diff_map as diff_map
 import scripts.discovery as discovery
 import scripts.run_manifest as run_manifest
 
@@ -187,32 +188,131 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
 
     #1989 rewrote `_worktree_dirty` in the same batch as #1985 and left it on
     the raw path, so the rule has to be checkable by a test rather than
-    remembered. Scoped to the two modules this issue closes: `diff_map._run_git`
-    resolves a trusted git but still runs without the config suppression or the
-    preflight, and is a separate residual, not something this guard may claim.
+    remembered. It covers every module that runs git against the target:
+    discovery, the run manifest, and the delta map.
     """
 
-    MODULES = ("discovery.py", "run_manifest.py")
+    MODULES = ("discovery.py", "run_manifest.py", "diff_map.py")
 
-    def test_neither_module_builds_a_bare_git_argv(self):
-        offenders = []
-        for name in self.MODULES:
-            path = os.path.join(SKILL_ROOT, "scripts", name)
-            with open(path, encoding="utf-8") as fh:
-                tree = ast.parse(fh.read(), path)
-            for node in ast.walk(tree):
+    # Functions that genuinely cannot use the probe. Small and explicit (never
+    # a pattern): each entry is a decision, and a decision that stops being
+    # true fails below as a stale entry.
+    EXEMPT = {
+        ("diff_map.py", "acquire_pr"):
+            "it BUILDS the review root rather than reading one, and its steps "
+            "are `gh pr view`, `git fetch`, `git worktree add` and "
+            "`git update-ref` -- network and mutating work that needs the "
+            "operator's own HOME, gitconfig and credential helper, which is "
+            "exactly what the probe's fresh allowlisted environment strips. "
+            "Its read-only `worktree list`/`rev-parse` steps could move, and "
+            "`worktree add` runs the target's SMUDGE filters, so this is a "
+            "known residual with a real trade-off, not a clean exemption",
+        ("diff_map.py", "release_worktree"):
+            "the teardown half of the same `--pr` worktree lifecycle, and it "
+            "has to stay paired with it. `git worktree remove --force` is a "
+            "MUTATION, not a probe: under the preflight a hostile target "
+            "config would refuse the teardown (the caller tolerates every "
+            "failure by design, #1082) and leak the throwaway worktree it was "
+            "there to delete -- a worse outcome than the read it never does",
+    }
+
+    def _bare_git_argv(self, name):
+        """Every `["git", ...]` literal in one module, with its function."""
+        path = os.path.join(SKILL_ROOT, "scripts", name)
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), path)
+        found = []
+        for top in ast.walk(tree):
+            if not isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(top):
                 if not isinstance(node, (ast.List, ast.Tuple)) or not node.elts:
                     continue
                 first = node.elts[0]
                 if isinstance(first, ast.Constant) and first.value == "git":
-                    offenders.append("%s:%d: %s" % (name, node.lineno,
-                                                    ast.unparse(node)))
+                    found.append((top.name, node.lineno, ast.unparse(node)))
+        return found
+
+    def test_no_module_builds_a_bare_git_argv(self):
+        offenders = []
+        for name in self.MODULES:
+            for function, lineno, source in self._bare_git_argv(name):
+                if (name, function) in self.EXEMPT:
+                    continue
+                offenders.append("%s:%d (%s): %s" % (name, lineno, function, source))
         self.assertEqual(
             offenders, [],
             "a git argv built by hand runs the TARGET's git off the inherited "
             "PATH with the target's config live; route it through "
             "safe_git.probe:\n  %s" % "\n  ".join(offenders))
 
+    def test_no_exemption_outlives_its_reason(self):
+        stale = [entry for entry in self.EXEMPT
+                 if not any(function == entry[1]
+                            for function, _l, _s in self._bare_git_argv(entry[0]))]
+        self.assertEqual(stale, [],
+                         "exempted functions that no longer build a bare git "
+                         "argv -- drop the entry: %s" % stale)
+
+    def test_the_guard_can_actually_see_an_offender(self):
+        # Vacuity guard: an empty offender list is also what a guard that reads
+        # nothing produces. `acquire_pr` is the known offender, so the finder
+        # must report it even though the policy above exempts it.
+        found = self._bare_git_argv("diff_map.py")
+        self.assertTrue([f for f, _l, _s in found if f == "acquire_pr"], found)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeltaMapIsConfined(unittest.TestCase):
+    """`diff_map._run_git` is the delta map's only git invocation.
+
+    #2006 fix round 1: it resolved a trusted git (so the target could never BE
+    the git that runs) but launched it with `PATH` alone -- no
+    `GIT_CONFIG_NOSYSTEM`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL`, no
+    `core.fsmonitor=false`, no preflight -- for `merge-base`, `diff` and
+    `ls-files` on the reviewed tree during every delta review.
+    """
+
+    def _repo(self):
+        repo = make_git_repo(test_case=self, panopticon=True,
+                             files={"a.py": "value = 1\n"})
+        subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "feature"],
+                       check=True, capture_output=True, timeout=30)
+        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("value = 3\n")
+        subprocess.run(["git", "-C", repo, "commit", "-qam", "change"], check=True,
+                       capture_output=True, timeout=30)
+        return repo
+
+    def test_the_hunk_map_never_runs_the_targets_fsmonitor(self):
+        repo = self._repo()
+        marker = plant_fsmonitor_command(repo)
+        self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
+        self.assertFalse(os.path.exists(marker))
+
+    def test_the_hunk_map_fails_loud_on_a_command_filter_without_running_it(self):
+        repo = self._repo()
+        marker = plant_clean_filter(repo)
+        with self.assertRaises(diff_map.DiffMapError) as caught:
+            diff_map.hunk_map(repo, "main")
+        self.assertIn("filter", str(caught.exception))
+        self.assertFalse(os.path.exists(marker))
+
+    def test_the_anchors_never_run_the_targets_fsmonitor(self):
+        repo = self._repo()
+        marker = plant_fsmonitor_command(repo)
+        anchors = diff_map.diff_anchors(repo, "main")
+        self.assertTrue(anchors["delta_end"])
+        self.assertFalse(os.path.exists(marker))
+
+    def test_the_delta_map_cannot_be_the_targets_own_git(self):
+        repo = self._repo()
+        marker = hostile_marker(repo, "shim-marker")
+        path_shim_git(os.path.join(repo, "bin"), marker)
+        with mock.patch.dict(os.environ,
+                             {"PATH": os.path.join(repo, "bin") + os.pathsep + os.environ["PATH"]}):
+            self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
+        self.assertFalse(os.path.exists(marker))
