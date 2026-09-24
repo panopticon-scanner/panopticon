@@ -525,6 +525,12 @@ identity leaves a summary explaining why no snapshot could be published.
 upload with a read-only `scripts/code_scanning_audit.py` check. The check independently proves that
 the Security upload and CodeQL's separate Python upload both finished for the exact current main
 SHA, then reads every page of `state=open` code-scanning alerts without a severity or tool filter.
+GitHub ingests a SARIF upload asynchronously, so each of those two proofs waits on the same
+bound — six reads, ten seconds apart, so at most about a minute per wait — for the upload to
+finish processing and for its analyses to appear; a Security upload still pending, or short of its
+four analyses, is a stage rather than a verdict, and the failure at the bound names the tools it
+did see against the four it expects (#2022). A `failed` upload, or a row whose identity is wrong,
+fails at once.
 Any open note, warning, or error fails. There is no alert-number baseline or allowlist: fixed and
 dismissed findings pass because GitHub omits them from `state=open`, while a reopened or newly
 fingerprinted alert is open again and fails.
