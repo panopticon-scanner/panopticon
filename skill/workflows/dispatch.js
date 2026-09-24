@@ -1,10 +1,11 @@
 // Workflow-tool script, not a standalone ES module or CommonJS script (#2024):
-// the Workflow host strips `export const meta = {...}` and runs what is left
-// as the body of an async function closing over `args`, `agent`, `parallel`,
-// `phase`, `log` -- tests/workflows/dispatch_harness.mjs evaluates it the
-// same way. That is why the file's top-level `return` is expected and legal
-// here, and why this stays `.js`: neither a real ES module (top-level
-// `return` is a SyntaxError there) nor a plain script parses this file whole.
+// the Workflow host strips the `meta` object below off the front (see the
+// `export const` line a few lines down) and runs what is left as the body of
+// an async function closing over `args`, `agent`, `parallel`, `phase`, `log`
+// -- tests/workflows/dispatch_harness.mjs evaluates it the same way. That is
+// why the file's top-level `return` is expected and legal here, and why this
+// stays `.js`: neither a real ES module (top-level `return` is a SyntaxError
+// there) nor a plain script parses this file whole.
 //
 // Panopticon session-mode dispatch on Claude Code (the Claude family PR, #1344).
 //
