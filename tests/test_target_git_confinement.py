@@ -243,11 +243,15 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
             "`worktree list` and `rev-parse` to `safe_git.probe`, "
             "`worktree add --detach` and `update-ref -d` to `safe_git.mutate`. "
             "`test_the_only_bare_git_argv_left_in_acquire_pr_is_the_fetch` "
-            "holds this exemption to its own words. #2041: the fetch REFUSES, with "
-            "a remedy, when this checkout's own local config sets a transport "
-            "command key -- `core.sshCommand`, `remote.<name>.uploadpack` and "
-            "their class -- that a fetch would execute, so what the exemption "
-            "keeps is the operator's environment and nothing else",
+            "holds this exemption to its own words, and "
+            "`test_the_fetch_does_not_recurse_into_submodules` holds the flag "
+            "that keeps a SUBMODULE's own config out of it. #2041: the fetch "
+            "REFUSES, with a remedy, when this checkout's own config -- its "
+            "`.git/config`, a file it includes, or its worktree config -- sets a "
+            "transport command key (`core.sshCommand`, `core.askPass`, "
+            "`remote.origin.uploadpack` and their class) that a fetch of the one "
+            "remote it names would execute, so what this exemption keeps is the "
+            "operator's ENVIRONMENT and not a command the repository configured",
     }
 
     def _bare_git_argv(self, name):

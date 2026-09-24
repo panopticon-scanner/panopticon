@@ -774,15 +774,18 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     obey `.git/modules/<name>/config`, which no read of the superproject's
     config can see (measured).
 
-    What those two pins do NOT close is the checkout's own transport
-    configuration: a repo-local `core.sshCommand` runs on that fetch for an
-    `ssh://` remote, and `remote.<name>.uploadpack` for a local one (both
-    measured). So acquisition reads this checkout's LOCAL config immediately
-    before the fetch and REFUSES when it sets a key a fetch would execute,
-    naming the key and the remedy -- move it to the global config, which the
-    fetch still honours (#2041). Emptying them instead, the way the probe
-    empties `filter.*`, would break the private repository this exemption
-    exists for.
+    What the pins do NOT close is the checkout's own transport configuration: a
+    repo-local `core.sshCommand` runs on that fetch for an `ssh://` remote,
+    `remote.origin.uploadpack` for a local one, and `core.askPass` for an http
+    remote that answers 401 (all measured). So acquisition reads this checkout's
+    own config immediately before the fetch -- every scope the fetch reads, which
+    is `.git/config`, the files it includes and `$GIT_DIR/config.worktree`, not
+    just `--local` (`safe_git.repository_settings` carries the measurements) --
+    and REFUSES when it sets a key a fetch of `_PR_REMOTE` would execute. The
+    refusal names the keys and a remedy that keeps the setting per-repository
+    from the operator's OWN global config, which the fetch still honours
+    (#2041). Emptying them instead, the way the probe empties `filter.*`, would
+    break the private repository this exemption exists for.
     """
     # Every repository-configured command `safe_git` emptied on the way, and the
     # pairs already printed. One list across every call, because each call
