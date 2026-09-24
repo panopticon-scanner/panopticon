@@ -764,6 +764,10 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     `core.hooksPath` by hand, because a fetch is a ref transaction and
     `reference-transaction` fires from the target's hooks directory on it (all
     three measured; see `tests/test_diff_map.py::TestPrAcquisitionIsConfined`).
+    It also carries `--no-recurse-submodules`, because git's default
+    `fetch.recurseSubmodules = on-demand` would fetch inside a submodule and
+    obey `.git/modules/<name>/config`, which no read of the superproject's
+    config can see (measured).
 
     What those two pins do NOT close is the checkout's own transport
     configuration: a repo-local `core.sshCommand` runs on that fetch for an
@@ -907,10 +911,18 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # and the same empty hooks directory every `safe_git` launch pins -- a fetch
     # writes a ref, and `reference-transaction` fires from the target's
     # `core.hooksPath` on it (measured). Nothing else here is exempt.
+    # `--no-recurse-submodules` because `fetch.recurseSubmodules` DEFAULTS to
+    # on-demand: when the fetched commits move a populated submodule's gitlink,
+    # git fetches inside the submodule and reads `.git/modules/<name>/config` --
+    # a file under the same `.git` this refusal treats as attacker-written, and
+    # one no read of the SUPERPROJECT's config can see (measured on this
+    # refspec: the submodule's own transport command ran). Acquisition needs one
+    # commit object, and `worktree add --detach` initialises no submodule, so
+    # nothing legitimate is lost (#2041 I2).
     _run(["git", "-C", repo,
           "-c", "core.fsmonitor=false",
           "-c", "core.hooksPath=" + safe_git.no_hooks_path(),
-          "fetch", "--no-write-fetch-head", "origin",
+          "fetch", "--no-recurse-submodules", "--no-write-fetch-head", "origin",
           "refs/pull/%d/head:%s" % (pr_number, fetch_ref)])
     head_sha = _safe(repo, ["rev-parse", fetch_ref]).strip()
     try:

@@ -308,6 +308,20 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
         self.assertIn("core.fsmonitor=false", found[0][1])
         self.assertIn("core.hooksPath", found[0][1])
 
+    def test_the_fetch_does_not_recurse_into_submodules(self):
+        # #2041 I2: `fetch.recurseSubmodules` DEFAULTS to on-demand, so a fetch
+        # that moves a populated submodule's gitlink fetches inside the
+        # submodule -- reading `.git/modules/<name>/config`, a file under the
+        # same `.git` the threat model treats as attacker-written and one that
+        # NO read of the superproject's config can see. Measured on git 2.50.1
+        # with this function's own refspec shape: the submodule's
+        # `core.sshCommand` ran; with the flag below it did not. Read from the
+        # AST, like its neighbour, so the flag cannot be dropped silently.
+        found = [(lineno, source) for function, lineno, source
+                 in self._bare_git_argv("diff_map.py") if function == "acquire_pr"]
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("--no-recurse-submodules", found[0][1])
+
 
 
 class DeltaMapIsConfined(unittest.TestCase):
