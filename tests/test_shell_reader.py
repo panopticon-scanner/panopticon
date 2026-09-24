@@ -362,3 +362,15 @@ class TestPipelineStdinProvenance(unittest.TestCase):
             "sh 3<&0 <<EOF 0<&3\necho safe\nEOF").stdin_from_pipe)
         self.assertFalse(stage(
             "sh 3<&0 0<&3 <<EOF\necho safe\nEOF").stdin_from_pipe)
+
+
+class TestPipelineStdoutProvenance(unittest.TestCase):
+    def test_stdout_aliases_and_redirect_order(self):
+        self.assertTrue(stage("cat >/dev/stdout").stdout_to_pipe)
+        self.assertTrue(stage("cat >/dev/fd/1").stdout_to_pipe)
+        self.assertFalse(stage("cat >/dev/stdout >saved").stdout_to_pipe)
+        self.assertFalse(stage("cat >saved >/dev/stdout").stdout_to_pipe)
+        self.assertFalse(stage("cat >saved >/dev/fd/1").stdout_to_pipe)
+        self.assertTrue(stage("cat 3>&1 >saved 1>&3").stdout_to_pipe)
+        self.assertTrue(stage("cat 3>&1 >/dev/null >&3").stdout_to_pipe)
+        self.assertEqual(["saved"], stage("cat >saved >/dev/stdout").stdout_writes)

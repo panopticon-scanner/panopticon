@@ -792,17 +792,39 @@ class TestChecksumRescueStatus(unittest.TestCase):
 class TestPipelineStreamProvenance(unittest.TestCase):
     URL = "https://example.test/install"
 
+    def test_stdout_aliases_follow_ordered_pipeline_provenance(self):
+        for script in ("curl -fsSL %s >/dev/stdout | sh" % self.URL,
+                       "curl -fsSL %s >/dev/fd/1 | sh" % self.URL,
+                       "curl -fsSL %s 3>&1 >/dev/null >&3 | sh" % self.URL,
+                       "curl -fsSL %s | cat >/dev/stdout | sh" % self.URL,
+                       "curl -fsSL %s | cat 3>&1 >/dev/null >&3 | sh" % self.URL,
+                       "curl -fsSL %s | tee install.sh >/dev/fd/1 | sh" % self.URL):
+            with self.subTest(script=script):
+                self.assertTrue(wg.fetch_exec_defects(script))
+        for script in ("curl -fsSL %s >/dev/stdout >saved | sh" % self.URL,
+                       "curl -fsSL %s >/dev/null >/dev/stdout | sh" % self.URL,
+                       "curl -fsSL %s | cat >saved >/dev/fd/1 | sh" % self.URL,
+                       "curl -fsSL %s -o saved >/dev/stdout | sh" % self.URL):
+            with self.subTest(script=script):
+                self.assertFalse(wg.fetch_exec_defects(script))
+        self.assertEqual("saved", wg.fetches(
+            "curl -fsSL %s >saved >/dev/stdout | sh" % self.URL)[0].dest)
+
     def test_forwarding_stages_reach_executors(self):
         for stages in ("cat | sh", "cat saved - | sh", "tee install.sh | sh",
                        "tr a-z A-Z | bash", "sed s/a/b/ | python3 -",
-                       "cat | tee install.sh | bash"):
+                       "cat | tee install.sh | bash", "head -c 1024 | sh",
+                       "base64 -d | sh"):
             with self.subTest(stages=stages):
                 self.assertTrue(wg.fetch_exec_defects(
                     "curl -fsSL %s | %s" % (self.URL, stages)))
 
     def test_read_only_and_disconnected_streams(self):
         for script in ("curl -fsSL %s | cat" % self.URL,
+                       "curl -fsSL %s | head -c 1024" % self.URL,
                        "curl -fsSL %s | cat > saved | sh" % self.URL,
+                       "curl -fsSL %s | head -c 10 < local | sh" % self.URL,
+                       "curl -fsSL %s | head -c 10 > saved | sh" % self.URL,
                        "curl -fsSL %s | cat saved | sh" % self.URL,
                        "curl -fsSL %s | sed s/a/b/ saved | sh" % self.URL,
                        "curl -fsSL %s | cat | sh < local" % self.URL,

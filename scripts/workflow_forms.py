@@ -175,7 +175,7 @@ def _parse_fetch(tool, args, stage, piped_to):
     # A remote basename of "-" is a filename, not the explicit output
     # option that requests stdout. Keep that origin through directory joining.
     to_stdout = dest is None or (named and dest in _STDOUT_DESTINATIONS)
-    streams = to_stdout and not stage.stdout_writes
+    streams = to_stdout and stage.stdout_to_pipe
     if not to_stdout and directory and dest and not os.path.isabs(dest) and (
             tool == "curl" or not named):
         dest = shell_reader.derived(os.path.join(directory, dest), directory, dest)
@@ -208,15 +208,14 @@ def parse_fetch(tool, args, stage, piped_to):
     return _parse_fetch(tool, args, stage, piped_to)[0]
 
 
-def _reads_stdin(argv):
-    """Whether a forwarding stage consumes its pipeline input."""
+def _may_read_stdin(argv):
+    """Whether operands leave stdin available; unknown commands may forward."""
     name = os.path.basename(argv[0])
     if name == "cat":
         return "-" in argv[1:] or all(t.startswith("-") for t in argv[1:])
-    if name == "tr":
+    if name != "sed":
         return True
-    if name != "sed" or any(t.startswith(("-i", "--in-place"))
-                            for t in argv[1:]):
+    if any(t.startswith(("-i", "--in-place")) for t in argv[1:]):
         return False
     # sed's first bare operand is the script unless -e/-f supplies it;
     # further bare operands are input files, which disconnect standard input.
@@ -255,9 +254,9 @@ def streamed_fetch(tool, args, stage, following, executors):
         name = os.path.basename(argv[0])
         if name in executors:
             return fetch._replace(dest=None, piped_to=tuple(argv))
-        if next_stage.stdout_writes or name not in ("cat", "tr", "sed", "tee"):
+        if not next_stage.stdout_to_pipe:
             break
-        if name != "tee" and not _reads_stdin(argv):
+        if not _may_read_stdin(argv):
             break
     return None
 
