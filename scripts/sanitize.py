@@ -70,9 +70,12 @@ _MENTION_RE = re.compile(r"@(?=[A-Za-z0-9._-])")
 _ISSUEREF_RE = re.compile(r"(?<![\w])#(?=\d)")
 _REPO_ISSUEREF_RE = re.compile(
     r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?=\d)")
+# Keep ordinary identifiers and path components intact; punctuation may end a reference.
+_GH_ISSUEREF_RE = re.compile(r"(?<![\w/.-])GH-(?=[0-9]+(?![\w/-]|\.[A-Za-z0-9]))")
 _AUTOLINK_RE = re.compile(r"<([a-zA-Z][a-zA-Z0-9+.-]*://[^>]+)>")
 _HTTP_RE = re.compile(r"\bhttps?://", re.IGNORECASE)
-_WWW_RE = re.compile(r"\bwww\.(?=[A-Za-z0-9])", re.IGNORECASE)
+# GFM explicitly accepts underscore before www, although it is a word character.
+_WWW_RE = re.compile(r"(?:\b|(?<=_))www\.(?=[A-Za-z0-9])", re.IGNORECASE)
 
 
 def defang(text):
@@ -81,6 +84,7 @@ def defang(text):
     s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", s)
     s = _MENTION_RE.sub("@\u200b", s)
     s = _ISSUEREF_RE.sub("#\u200b", s)
+    s = _GH_ISSUEREF_RE.sub("GH-\u200b", s)
     s = _REPO_ISSUEREF_RE.sub(lambda m: m.group(1) + "#\u200b", s)
     s = s.replace("](", "]\u200b(")
     s = s.replace("][", "]\u200b[")

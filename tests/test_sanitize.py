@@ -65,5 +65,24 @@ class TestScrubRedactsSecrets(unittest.TestCase):
             self.assertEqual(sanitize.scrub(prose), prose, prose)
 
 
+class TestResidualAutolinks(unittest.TestCase):
+    def test_github_issue_form_and_documented_www_delimiters(self):
+        for delimiter in ("", " ", "\n", "\t", "*", "_", "~", "("):
+            text = delimiter + "www.example.test"
+            self.assertEqual(sanitize.defang(text), delimiter + "w\u200bww.example.test")
+        for text in ("GH-123", "(GH-123)", "See GH-123."):
+            out = sanitize.defang(text)
+            self.assertNotIn("GH-123", out)
+            self.assertIn("GH-\u200b123", out)
+            self.assertEqual(sanitize.defang(out), out)
+        text = "GH-123 _www.example.test"
+        self.assertEqual(sanitize.defang(sanitize.defang(text)), sanitize.defang(text))
+
+    def test_ordinary_identifiers_and_paths_are_unchanged(self):
+        for text in ("myGH-123", "MY_GH-123", "GH-123suffix", "src/GH-123/file.py",
+                     "GH-123.py", "prefix-GH-123", "GH-123/notes", "www", "mywww.example.test"):
+            self.assertEqual(sanitize.defang(text), text)
+
+
 if __name__ == "__main__":
     unittest.main()

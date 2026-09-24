@@ -308,3 +308,22 @@ class TestFinalizeWorktree(unittest.TestCase):
             self.assertTrue(
                 os.path.isfile(os.path.join(target, ".panopticon", f"{tag}-{part}")),
                 "%s not surfaced" % part)
+
+
+class TestBaselineDiagnosticRedaction(unittest.TestCase):
+    def test_failed_git_stderr_is_redacted_before_200_character_cut(self):
+        key_type = "PRIVATE KEY"
+        for text in ("ordinary failure", "x" * 160 + f"-----BEGIN {key_type}-----\n" + "A" * 2000,
+                     "token " + "ghp_" + "B" * 36):
+            with self.subTest(text=text[:20]), tempfile.TemporaryDirectory() as root:
+                captured = io.StringIO()
+                runner = mock.Mock(return_value=mock.Mock(returncode=2, stderr=text))
+                with contextlib.redirect_stderr(captured):
+                    baseline = validate_phase.capture_tree_baseline(root, runner=runner)
+                self.assertIsNotNone(baseline)
+                out = captured.getvalue()
+                self.assertNotIn("AAAA", out)
+                self.assertNotIn("BBBB", out)
+                self.assertIn("will fail closed", out)
+                if text == "ordinary failure":
+                    self.assertIn(text, out)

@@ -175,6 +175,38 @@ def redact(text):
     return out
 
 
+# Operator excerpts may discard the remainder of a capture; structured/general
+# redaction above must preserve it. Bound work before scanning, never start at
+# the tail: a key's opening delimiter may be far before the displayed suffix.
+_DIAGNOSTIC_SCAN_LIMIT = 4 * 1024 * 1024
+_DIAGNOSTIC_PEM = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
+_DIAGNOSTIC_PARTIAL_PEM = re.compile(r"-----BEGIN[A-Z -]*$")
+
+
+def redact_diagnostic(text, limit: int, *, tail: bool = False) -> str:
+    """Redact a bounded operator excerpt, then select its head or tail.
+
+    Scan at most the first 4 MiB of characters, even for tail excerpts. A
+    private-key header surviving complete-token redaction denotes an incomplete
+    or overlong key: discard everything from it onward. Partial headers at the
+    scan horizon are discarded too; no unscanned suffix is ever published.
+    """
+    if limit <= 0 or not text:
+        return ""
+    out = redact(str(text)[:_DIAGNOSTIC_SCAN_LIMIT])
+    dangling = _DIAGNOSTIC_PEM.search(out)
+    if dangling is None:
+        # Search once for the last candidate, then validate only that suffix.
+        # A regex search restarts at every BEGIN in a near-match capture and
+        # repeatedly scans/backtracks across the remaining suffix (quadratic).
+        last_begin = out.rfind("-----BEGIN")
+        if last_begin >= 0:
+            dangling = _DIAGNOSTIC_PARTIAL_PEM.match(out, last_begin)
+    if dangling:
+        out = out[:dangling.start()] + "[REDACTED_PRIVATE_KEY]"
+    return out[-limit:] if tail else out[:limit]
+
+
 def redact_tree(obj, _key=None):
     """Return a copy of a JSON-ish structure with every string LEAF redacted.
 
