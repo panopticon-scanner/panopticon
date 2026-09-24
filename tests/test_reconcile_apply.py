@@ -79,28 +79,27 @@ class FakeCompleted:
 
 
 class TestRecoverLinkage(unittest.TestCase):
-    def test_parses_fingerprint_id_location_kind_from_issue_bodies(self):
-        issues = [
-            {"number": 305, "labels": [{"name": "self-scan"}],
-             "body": "**Location:** `tests/test_verdict_ingest.py`\n\n"
-                     "---\n\n**Fingerprint:** `008bafabf583e494` — stable.\n"
-                     "**Finding id in report:** `NOV-003`\n"},
-            {"number": 399, "labels": [{"name": "self-scan"}, {"name": "false-positive"}],
-             "body": "**Location:** `skill/scripts/tools/npm_audit.py`\n\n"
-                     "---\n\n**Fingerprint:** `029bc5414dc2a077` — stable.\n"
-                     "**Finding id in report:** `NOV-008`\n"},
-        ]
+    def test_matches_fingerprint_id_location_kind_with_source_report(self):
+        finding = {"fingerprint": "008bafabf583e494", "id": "NOV-003",
+                   "location": {"file": "tests/test_verdict_ingest.py"}}
+        rejected = {"fingerprint": "029bc5414dc2a077", "id": "NOV-008",
+                    "location": {"file": "skill/scripts/tools/npm_audit.py"}}
+        issues = [{"number": 305, "labels": [{"name": "self-scan"}],
+                   "body": file_issues.body_for(finding)},
+                  {"number": 399, "labels": [{"name": "false-positive"}],
+                   "body": file_issues.body_for(rejected, rejected=True)}]
 
         def runner(argv, capture_output, text):
             return FakeCompleted(json.dumps(issues))
 
-        linkage = reconcile_apply.recover_linkage_from_github(runner=runner)
-        self.assertEqual(
-            linkage["008bafabf583e494|NOV-003|tests/test_verdict_ingest.py|finding"],
-            "https://github.com/panopticon-scanner/panopticon/issues/305")
-        self.assertEqual(
-            linkage["029bc5414dc2a077|NOV-008|skill/scripts/tools/npm_audit.py|rejected"],
-            "https://github.com/panopticon-scanner/panopticon/issues/399")
+        with tempfile.TemporaryDirectory() as d:
+            report = Path(d) / "source.json"
+            report.write_text(json.dumps({"findings": [finding], "discarded_claims": [rejected]}))
+            linkage = reconcile_apply.recover_linkage_from_github(
+                runner=runner, reports={file_issues.REPORT: report})
+        self.assertEqual(linkage, {
+            file_issues.key_for(finding, False): "https://github.com/panopticon-scanner/panopticon/issues/305",
+            file_issues.key_for(rejected, True): "https://github.com/panopticon-scanner/panopticon/issues/399"})
 
     def test_refuses_issues_missing_the_expected_footer(self):
         issues = [{"number": 1, "labels": [], "body": "no footer here"}]
@@ -212,18 +211,19 @@ class TestRecoverLinkage(unittest.TestCase):
             reconcile_apply.recover_linkage_from_github(runner=runner)
 
     def test_recovers_path_containing_colon(self):
-        issues = [
-            {"number": 505, "labels": [{"name": "self-scan"}],
-             "body": "**Location:** `src/Foo:Bar.cs`\n\n"
-                     "---\n\n"
-                     "**Fingerprint:** `abc123defabc1234` — stable.\n"
-                     "**Finding id in report:** `NOV-COLON`\n"},
-        ]
+        finding = {"fingerprint": "abc123defabc1234", "id": "NOV-COLON",
+                   "location": {"file": "src/Foo:Bar.cs"}}
+        issues = [{"number": 505, "labels": [{"name": "self-scan"}],
+                   "body": file_issues.body_for(finding)}]
 
         def runner(argv, capture_output, text):
             return FakeCompleted(json.dumps(issues))
 
-        linkage = reconcile_apply.recover_linkage_from_github(runner=runner)
+        with tempfile.TemporaryDirectory() as d:
+            report = Path(d) / "source.json"
+            report.write_text(json.dumps({"findings": [finding]}))
+            linkage = reconcile_apply.recover_linkage_from_github(
+                runner=runner, reports={file_issues.REPORT: report})
         self.assertIn("abc123defabc1234|NOV-COLON|src/Foo:Bar.cs|finding", linkage)
 
 
@@ -1221,6 +1221,53 @@ class TestSafeRecovery(unittest.TestCase):
             return FakeCompleted(json.dumps(issues))
         return reconcile_apply.recover_linkage_from_github(repo="o/r", runner=runner, **kwargs)
 
+    def test_control_and_root_scrubbing_collisions_require_sources(self):
+        pairs = [("a\u0001b.py", "ab.py"),
+                 ("prefix" + file_issues.repo_root() + "suffix.py", "prefixsuffix.py")]
+        for first, second in pairs:
+            originals = [self.finding(first), self.finding(second)]
+            self.assertEqual(self.issue(originals[0])["body"], self.issue(originals[1])["body"])
+            self.assertNotEqual(*(file_issues.key_for(r, False) for r in originals))
+            for record in originals:
+                with self.subTest(record=record), tempfile.TemporaryDirectory() as d:
+                    with self.assertRaisesRegex(reconcile_apply.IncompleteRecovery, "source report"):
+                        self.recover([self.issue(record)])
+                    source = Path(d) / "source.json"
+                    source.write_text(json.dumps({"findings": [record]}))
+                    recovered = self.recover([self.issue(record)], reports={"source.json": source})
+                    key = file_issues.key_for(record, False)
+                    self.assertEqual(recovered, {key: "https://github.com/o/r/issues/1"})
+
+    def test_plain_issue_requires_matching_source_and_preserves_output(self):
+        finding = self.finding("plain.py")
+        issue = self.issue(finding)
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "source.json"
+            source.write_text(json.dumps({"findings": [finding]}))
+            for reports in ({}, {"wrong-artifact.json": source}):
+                with self.subTest(reports=reports), \
+                        self.assertRaisesRegex(reconcile_apply.IncompleteRecovery, "source report"):
+                    self.recover([issue], reports=reports)
+            output = Path(d) / "ledger.json"
+            before = b'unchanged original ledger bytes\n'
+            output.write_bytes(before)
+            with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+                    FakeCompleted(json.dumps([issue]))):
+                self.assertEqual(reconcile_apply.main(["recover-linkage", "--repo", "o/r",
+                    "--out", str(output), "--replace-ledger"]), 1)
+            self.assertEqual(output.read_bytes(), before)
+            self.assertEqual(set(Path(d).iterdir()), {source, output})
+
+    def test_empty_recovery_without_reports_is_valid(self):
+        self.assertEqual(self.recover([]), {})
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d) / "ledger.json"
+            with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+                    FakeCompleted("[]")):
+                self.assertEqual(reconcile_apply.main(["recover-linkage", "--repo", "o/r",
+                    "--out", str(output)]), 0)
+            self.assertEqual(file_issues.load_ledger(output), {})
+
     def test_producer_source_roundtrip(self):
         for name in ("@name", "#123", "](", "https://example/a", "Foo:Bar", "a\u200bb", "@\u200bname"):
             for rejected in (False, True):
@@ -1287,10 +1334,13 @@ class TestSafeRecovery(unittest.TestCase):
                 output = Path(d) / "ledger.json"
                 original = b'{"original": "bytes"}\n'
                 output.write_bytes(original)
+                report = Path(d) / "source.json"
+                report.write_text(json.dumps({"findings": [self.finding("a.py")]}))
                 with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
                         FakeCompleted(json.dumps(payload))):
                     self.assertEqual(reconcile_apply.main(["recover-linkage", "--repo", "o/r",
-                        "--out", str(output), "--replace-ledger"]), 1)
+                        "--out", str(output), "--replace-ledger",
+                        "--report", "source.json=" + str(report)]), 1)
                 self.assertEqual(output.read_bytes(), original)
                 self.assertEqual(list(Path(d).glob("*.bak*")), [])
 
@@ -1299,7 +1349,10 @@ class TestSafeRecovery(unittest.TestCase):
             output = Path(d) / "ledger.json"
             original = b'legacy or corrupt evidence\n'
             output.write_bytes(original)
-            linkage = self.recover([self.issue(self.finding("a.py"))])
+            finding = self.finding("a.py")
+            report = Path(d) / "source.json"
+            report.write_text(json.dumps({"findings": [finding]}))
+            linkage = self.recover([self.issue(finding)], reports={"source.json": report})
             with self.assertRaises(FileExistsError):
                 reconcile_apply.save_recovered_ledger(linkage, output)
             self.assertEqual(output.read_bytes(), original)
@@ -1411,9 +1464,13 @@ class TestSafeRecovery(unittest.TestCase):
     def test_cli_create_only_and_invalid_repo(self):
         with tempfile.TemporaryDirectory() as d:
             output = Path(d) / "ledger.json"
-            runner = mock.Mock(return_value=FakeCompleted(json.dumps([self.issue(self.finding("safe.py"))])))
+            finding = self.finding("safe.py")
+            report = Path(d) / "source.json"
+            report.write_text(json.dumps({"findings": [finding]}))
+            runner = mock.Mock(return_value=FakeCompleted(json.dumps([self.issue(finding)])))
             with mock.patch.object(triage, "default_gh_runner", return_value=runner):
-                args = ["recover-linkage", "--repo", "o/r", "--out", str(output)]
+                args = ["recover-linkage", "--repo", "o/r", "--out", str(output),
+                        "--report", "source.json=" + str(report)]
                 self.assertEqual(reconcile_apply.main(args), 0)
                 before = output.read_bytes()
                 self.assertEqual(reconcile_apply.main(args), 1)

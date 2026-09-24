@@ -7,9 +7,12 @@ injectable runner/sleep for testability, throttle+backoff on gh calls
 (reused from triage.gh directly), validate-before-mutate.
 
 Usage:
-  python3 scripts/reconcile_apply.py recover-linkage --out linkage.json
+  python3 scripts/reconcile_apply.py recover-linkage --report report.json --out linkage.json
   python3 scripts/reconcile_apply.py plan diff.json --ledger linkage.json --out actions.json
   python3 scripts/reconcile_apply.py apply actions.json [--dry-run] [--confirm-close] [--throttle S]
+
+Every recovered issue requires an authoritative matching source report; posted
+locations alone cannot establish original identity. Empty query results remain valid.
 
 Live CLI apply saves acknowledgements beside the plan as actions.json.progress.json
 (override with --progress). Receipts bind to the unique, ordered, exact-content
@@ -138,27 +141,22 @@ def _recovered_key(body, rejected, sources):
     if len(pointers) > 1:
         raise IncompleteRecovery("conflicting report artifact pointers")
     records = sources.get(pointers[0]) if pointers else None
-    if records is not None:
-        record = records.get((fp, finding_id, rejected))
-        if record is None:
-            raise IncompleteRecovery("issue identity missing from source report")
-        expected = _LOCATION_RE.findall(file_issues.scrub(file_issues.body_for(record, rejected)))
-        if expected != [presented]:
-            raise IncompleteRecovery("source report location conflicts with issue presentation")
-        return file_issues.key_for(record, rejected)
-    # U+200B may be literal or inserted: stripping it is never lossless. Quotes,
-    # redaction and numeric colon suffixes likewise have multiple preimages.
-    if ("\u200b" in presented or "'" in presented or "[REDACTED" in presented
-            or re.search(r":\d+$", presented) or presented == "(no file)"
-            or file_issues.defang(presented) != presented):
-        raise IncompleteRecovery("ambiguous location requires an authoritative source report")
-    return file_issues.key_for({"fingerprint": fp, "id": finding_id,
-        "location": {"file": presented}}, rejected)
+    if records is None:
+        # Even plain text can hide deleted controls or scrubbed root literals.
+        # Only the authoritative artifact can establish the original identity.
+        raise IncompleteRecovery("every recovered issue requires an authoritative matching source report")
+    record = records.get((fp, finding_id, rejected))
+    if record is None:
+        raise IncompleteRecovery("issue identity missing from source report")
+    expected = _LOCATION_RE.findall(file_issues.scrub(file_issues.body_for(record, rejected)))
+    if expected != [presented]:
+        raise IncompleteRecovery("source report location conflicts with issue presentation")
+    return file_issues.key_for(record, rejected)
 
 
 def recover_linkage_from_github(label="self-scan", runner=None, *,
                                 repo=file_issues.REPO_SLUG, reports=(), source_roots=()):
-    """Return complete linkage or refuse; issue locations are presentation text."""
+    """Recover only from matching source reports; an empty query needs none."""
     repo = _repo_slug(repo)
     runner = runner or triage.default_gh_runner()
     try:
@@ -711,7 +709,8 @@ def main(argv=None):
     p_rec.add_argument("--label", default="self-scan")
     p_rec.add_argument("--repo", type=_repo_slug, default=file_issues.REPO_SLUG)
     p_rec.add_argument("--report", action="append", default=[], metavar="[ARTIFACT=]PATH",
-                       help="authoritative report; bind a relocated copy with ARTIFACT=PATH")
+                       help="required for every recovered issue; bind a relocated authoritative "
+                            "report with ARTIFACT=PATH (empty results need no report)")
     p_rec.add_argument("--source-root", action="append", default=[],
                        help="original absolute root, paired with each --report in order")
     p_rec.add_argument("--replace-ledger", action="store_true")
