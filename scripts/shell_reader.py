@@ -383,8 +383,12 @@ def _split(text, context):
                 buf.append(ch)  # case alternatives are one pattern, not a pipeline
                 at_token_start, i = False, i + 1
                 continue
+            combined = text[i:i + 2] == "|&"
+            if combined:
+                # Bash applies the implicit stderr copy AFTER explicit redirects.
+                buf.append(" " + context.new("redirect", ("2", ">&")) + " 1 ")
             end_stage()
-            at_token_start, i = True, i + 1
+            at_token_start, i = True, i + (2 if combined else 1)
             continue
         if ch in ";\n&|":
             pair = text[i:i + 2]
@@ -545,6 +549,62 @@ def statements(script):
     return out
 
 
+# Supported wrapper options: short flags, short operands, long flags, long operands.
+# Unknown options retain the wrapper: never search arbitrary words for a command.
+_WRAPPER_OPTIONS = {
+    "sudo": ("AbEHknPS", "CDghpRTurt", "askpass background reset-timestamp preserve-env set-home non-interactive stdin",
+             "close-from chdir group host prompt chroot command-timeout user role type"),
+    "timeout": ("v", "ks", "foreground preserve-status verbose", "kill-after signal"),
+    "nice": ("", "n", "", "adjustment"),
+    "env": ("iv", "uCP", "ignore-environment debug", "unset chdir"),
+    "stdbuf": ("", "ioe", "", "input output error"),
+    "xargs": ("0prtx", "EILPnds", "null no-run-if-empty interactive verbose exit",
+              "eof replace max-lines max-procs max-args delimiter max-chars"),
+    "exec": ("cl", "a", "", ""),
+    "command": ("p", "", "", ""),
+    "nohup": ("", "", "", ""),
+    "time": ("pav", "fo", "portability append verbose", "format output"),
+    "doas": ("ns", "u", "", ""),
+}
+
+
+def _wrapped(argv, head):
+    """Return the supported wrapper's command suffix, or None if unresolved."""
+    flags, values, long_flags, long_values = _WRAPPER_OPTIONS[head]
+    i = 1
+    while i < len(argv) and argv[i].startswith("-"):
+        token, i = argv[i], i + 1
+        if token == "--":
+            break
+        if head == "nice" and re.fullmatch(r"-\d+", token):
+            continue
+        if token.startswith("--"):
+            name, sep, _value = token[2:].partition("=")
+            if ((head == "sudo" and name == "preserve-env") or
+                    (head == "xargs" and name in ("replace", "eof", "max-lines"))):
+                continue  # Optional operands are accepted only after '='.
+            if name in long_values.split():
+                i += not sep
+            elif name not in long_flags.split() or sep:
+                return None
+            continue
+        if token == "-":
+            if head == "env":
+                break  # env's legacy ignore-environment flag ends option parsing
+            return None
+        for j, ch in enumerate(token[1:], 2):
+            if ch in values:
+                i += j == len(token)
+                break
+            if ch not in flags:
+                return None
+    if head == "timeout":
+        if i >= len(argv) or not _DURATION.fullmatch(argv[i]):
+            return None
+        i += 1
+    return argv[i:]
+
+
 def command(argv):
     """`argv` with the wrappers stripped: `sudo mv x y` -> `mv x y`."""
     argv = list(argv)
@@ -570,11 +630,10 @@ def command(argv):
         head = os.path.basename(argv[0])
         if head not in WRAPPERS:
             break
-        argv.pop(0)
-        while argv and argv[0].startswith("-"):
-            argv.pop(0)
-        if head == "timeout" and argv and _DURATION.match(argv[0]):
-            argv.pop(0)
+        inner = _wrapped(argv, head)
+        if inner is None:
+            break
+        argv = inner
     return argv
 
 

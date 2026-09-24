@@ -137,7 +137,7 @@ import sys
 
 import shell_reader
 from shell_reader import command, statements
-from workflow_forms import (CONTAINERS, FETCHERS, STDOUT, covers, described,
+from workflow_forms import (CONTAINERS, FETCHERS, STDOUT, chmod_executable, covers, described,
                             in_container, names_file, parse_fetch, regions,
                             same_file, scripts, streamed_fetch, swallowed)
 
@@ -403,11 +403,8 @@ def _use(statement, position, stage, argv, dest):
         # `bash < payload`, `sh -s -- --yes < payload`: the file is never an
         # argument, so argv alone shows an interpreter with nothing after it.
         return "running it under `%s` from standard input" % name
-    if name == "chmod" and mentions:
-        modes = [t for t in rest if re.fullmatch(r"[0-7]{3,4}", t)]
-        if any(t.startswith("+") and "x" in t for t in rest) or any(
-                int(digit) % 2 for mode in modes for digit in mode[-3:]):
-            return "making it executable"
+    if name == "chmod" and mentions and chmod_executable(argv):
+        return "making it executable"
     if same_file(argv[0], dest):
         return "running it"
     if not mentions:
@@ -469,10 +466,10 @@ def _defect(fetch, index, stmts, checks, conditions=None):
         # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`:
         # a download whose target this guard cannot name is not a clean step,
         # it is an unread one.
-        return ("runs `%s` with no URL and no destination this guard could "
-                "parse, so it cannot say what arrived or whether anything "
-                "checked it -- name the file (`-o <path>`) and `sha256sum -c` "
-                "it, or exempt the step with a reason" % fetch.tool)
+        return ("runs `%s` with unresolved transfers: no URL and no destination "
+                "this guard could parse, so it cannot say what arrived or whether "
+                "anything checked it -- use explicit single-download commands "
+                "with named files (`-o <path>`) and `sha256sum -c` checks" % fetch.tool)
     if fetch.dest is None:
         if not fetch.piped_to:
             return None
