@@ -181,7 +181,7 @@ if __name__ == "__main__":
 
 class TestOrderedRedirects(unittest.TestCase):
     def test_descriptor_snapshots_and_opened_files(self):
-        cases = (
+        cases: tuple[tuple[str, list[str], list[str]], ...] = (
             ('3>f 1>&3', ['f'], ['f']),
             ('1>&3 3>f', ['f'], []),
             ('3>f 1>&3 3>g', ['f', 'g'], ['f']),
@@ -386,3 +386,59 @@ class TestPipelineStdoutProvenance(unittest.TestCase):
         self.assertTrue(stage("cat 3>&1 >saved 1>&3").stdout_to_pipe)
         self.assertTrue(stage("cat 3>&1 >/dev/null >&3").stdout_to_pipe)
         self.assertEqual(["saved"], stage("cat >saved >/dev/stdout").stdout_writes)
+
+
+class TestCombinedPipelineOperator(unittest.TestCase):
+    def test_operator_retains_two_stages_and_ordered_copies(self):
+        for redirects, streaming, sinks in (
+            ('', True, []), ('2>err', True, []), ('>saved', False, ['saved']),
+            ('2>&1 >saved', False, ['saved']), ('3>&1 >saved 1>&3', True, []),
+            ('2>&-', True, []),
+        ):
+            with self.subTest(redirects=redirects):
+                statements = shell_reader.statements(f'curl URL {redirects} |& sh')
+                self.assertEqual(1, len(statements))
+                self.assertEqual(2, len(statements[0].stages))
+                left, right = statements[0].stages
+                self.assertEqual(['curl', 'URL'], left.argv)
+                self.assertEqual(['sh'], right.argv)
+                self.assertEqual(streaming, left.stdout_to_pipe)
+                self.assertEqual(sinks, left.stdout_writes)
+        # The implicit 2>&1 itself must be authentic, not just skipped text:
+        # stderr's old file sink must not remain the source of fd 1 here.
+        left = shell_reader.statements('curl URL 2>err 1>&2 |& sh')[0].stages[0]
+        self.assertEqual(['err'], left.stdout_writes)
+        # Copying an input origin onto stdout exposes whether the implicit
+        # stderr copy really reached the descriptor engine (Stage is unchanged).
+        left = shell_reader.statements('cat 1<&0 |& sh')[0].stages[0]
+        self.assertEqual(('0', '1', '2'), left.pipe_input_fds)
+
+    def test_quoted_escaped_case_and_other_operators(self):
+        for literal in ('"|&"', "'|&'", r'\|\&'):
+            self.assertEqual(['echo', '|&'], stage('echo ' + literal).argv)
+        parsed = shell_reader.statements('false || echo ready & echo done')
+        self.assertEqual(['||', '&', ''], [stmt.separator for stmt in parsed])
+        parsed = shell_reader.statements('case x in a|b) echo "|&";; esac')
+        self.assertTrue(all(len(stmt.stages) == 1 for stmt in parsed))
+
+
+class TestWrapperOptionOperands(unittest.TestCase):
+    def test_supported_option_arities(self):
+        for prefix in ('sudo -u root', 'sudo -uroot', 'sudo --user=root --',
+                       'timeout -k 5 300', 'timeout -k5 300',
+                       'timeout --kill-after=5 -- 300', 'nice -n 10', 'nice -n10',
+                       'nice --adjustment=10', 'env -u VAR', 'env -uVAR',
+                       'env --unset=VAR --', 'sudo -nE -g wheel -u root',
+                       'env -i NAME=value nice -n 10', 'stdbuf -o L -e0',
+                       'xargs -n 1 -P2', 'xargs --replace', 'xargs --replace={}',
+                       'xargs --max-lines=2', 'exec -a alias', 'command -p', 'nohup'):
+            with self.subTest(prefix=prefix):
+                argv = stage(prefix + ' curl URL').argv
+                self.assertEqual(['curl', 'URL'], shell_reader.command(argv))
+                self.assertEqual(['ordinary', 'curl', 'URL'], shell_reader.command(
+                    stage(prefix + ' ordinary curl URL').argv))
+
+    def test_token_provenance_survives_unwrapping(self):
+        argv = shell_reader.command(stage('sudo -u root curl "$(echo URL)"').argv)
+        self.assertTrue(shell_reader.has_substitution(argv[1]))
+        self.assertEqual('$(...)', shell_reader.readable(argv[1]))

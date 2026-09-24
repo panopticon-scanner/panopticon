@@ -1587,7 +1587,7 @@ class TestCli(unittest.TestCase):
             path = os.path.join(tmp, "bad.yml")
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(self.WORKFLOW)
-            lines = []
+            lines: list[str] = []
             self.assertEqual(1, wg.main([path], out=lines.append))
             self.assertTrue(any("install" in ln for ln in lines), lines)
 
@@ -1652,7 +1652,7 @@ class TestRedirectAndMarkerProvenance(unittest.TestCase):
     def test_literal_destination_stays_literal_beside_real_substitution(self):
         for marker in ('@@subst0@@', '@@heredoc0@@', '@@casearm@@',
                        '@@group-open@@', '@@group-close@@'):
-            fetch = 'curl ' + self.URL + ' > "' + marker + '" "$(echo unused)"'
+            fetch = 'curl ' + self.URL + ' -H "$(echo unused)" > "' + marker + '"'
             self.assertIsNone(wg.fetch_exec_defect(fetch))
             defect = wg.fetch_exec_defect(fetch + '; sh "' + marker + '"')
             self.assertIsNotNone(defect)

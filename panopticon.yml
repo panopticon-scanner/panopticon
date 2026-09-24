@@ -369,6 +369,7 @@ groups:
     - scripts/workflow_guard.py
     - scripts/shell_reader.py
     - scripts/workflow_forms.py
+    - scripts/workflow_fetch.py
     tests:
     - tests/test_apply_labels.py
     - tests/test_security_workflow.py
@@ -379,6 +380,7 @@ groups:
     - tests/test_workflow_pins.py
     - tests/test_workflow_guard.py
     - tests/test_shell_reader.py
+    - tests/test_workflow_forms_regressions.py
     - tests/test_pyproject.py
     - tests/test_pyproject_metadata.py
     panels:
