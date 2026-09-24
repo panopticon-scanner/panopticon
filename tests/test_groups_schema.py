@@ -347,6 +347,30 @@ class TestGlobsAreRefusedRatherThanMiscompiled(unittest.TestCase):
     ("**/x", "/x", False),
     ("x", "/x", True),
     ("x", "a//x", True),
+    ("src/**/a?.py", "src/deep/ab.py", True),
+    ("src/**/a?.py", "src/deep/a/b.py", False),
+    ("/src/*.py", "nested/src/a.py", False),
+    ("literal", "deep/literal", True),
+    ("literal", "deep/notliteral", False),
+    ("/literal", "deep/literal", False),
+    ("literal", "literal\n", False),
+    ("x?y", "x\ny", True),
+    ("x?y", "x/y", False),
+    ("/", "a/", True),
+    ("/", "a", False),
+    ("**/*?*", "a/b", True),
+    ("**/*?*", "a/", False),
+    ("a**/*/**/z", "a/b/c/z", True),
+    ("a**/*/**/z", "a//b/z", False),
+    ("**/?**/?", "ac/b", True),
+    ("**/?**/?", "a/b", False),
+    ("**/?**/?", "a//b", False),
+    ("/docs/", "nested/docs/file", False),
+    ("/docs/", "docs/file", True),
+    ("?" * 256, "a" * 256, True),
+    ("?" * 256, "a" * 255, False),
+    ("a" * 230 + "?" * 25 + "/", "a" * 230 + "b" * 25 + "/deep", True),
+    ("a" * 230 + "?" * 25 + "/", "a" * 230 + "b" * 24 + "/deep", False),
 ])
 def test_bounded_glob_semantics(pattern, path, matches):
     assert bool(gs.glob_to_re(pattern).match(path)) is matches
@@ -380,3 +404,31 @@ def test_invalid_glob_warning_is_still_once_per_caller(capsys):
     stderr = capsys.readouterr().err
     assert stderr.count("matches nothing") == 2
     assert "test-one" in stderr and "test-two" in stderr
+
+
+def test_compiled_glob_cache_is_bounded_and_independent_of_caller():
+    gs._compile_glob.cache_clear()
+    first = gs.glob_to_re("src/**/a?.py", "one")
+    second = gs.glob_to_re("src/**/a?.py", "two")
+    assert first.match("src/deep/ab.py") and second.match("src/deep/ab.py")
+    assert gs._compile_glob.cache_info().hits == 1
+    for index in range(600):
+        gs.glob_to_re(f"literal-{index}")
+    info = gs._compile_glob.cache_info()
+    assert info.currsize == info.maxsize == 512
+    # Eviction cannot change results or diagnostic text on recompilation.
+    rebuilt = gs.glob_to_re("src/**/a?.py")
+    assert rebuilt.pattern == first.pattern
+    assert rebuilt.match("src/deep/ab.py")
+    assert rebuilt.match("nested/src/deep/ab.py") is None
+    gs._compile_glob.cache_clear()
+
+
+def test_over_complex_glob_warning_repeats_with_each_caller(capsys):
+    for label in ("first", "first", "second"):
+        for pattern in ("a*" * 21, "a" * 257):
+            assert gs.glob_to_re(pattern, label).match("a") is None
+    stderr = capsys.readouterr().err
+    assert stderr.count("ignoring over-complex") == 6
+    assert stderr.count("first:") == 4
+    assert stderr.count("second:") == 2
