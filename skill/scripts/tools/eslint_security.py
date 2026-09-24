@@ -11,6 +11,7 @@ from .sarif_utils import norm_uri
 # image -- which a pinned digest can still pull -- keeps resolving the plugin.
 _GLOBAL_NODE_DIRS = ("/opt/panopticon-node/node_modules",
                      "/usr/local/lib/node_modules", "/usr/lib/node_modules")
+_TS_PARSER_ENTRY = "/opt/panopticon-node/node_modules/@typescript-eslint/parser/dist/index.js"
 
 
 def _plugin_entry() -> str:
@@ -42,15 +43,25 @@ def _flat_config() -> str:
     The cwd is what decides eslint's scope, and `invoke` sets it.
     """
     rules = ",\n      ".join('"%s": "error"' % r for r in RULE_CWE)
+    # The parser package publishes a CommonJS ./dist/index.js entry, whose
+    # module.exports object is the default import in this ESM config. The path
+    # is image-owned: target node_modules and tsconfig cannot select a parser.
     return (
         'import security from "%s";\n'
+        'import tsParser from "%s";\n'
+        'const rules = {\n      %s\n};\n'
         'export default [\n'
-        '  {\n'
-        '    plugins: { security },\n'
-        '    languageOptions: { ecmaVersion: "latest" },\n'
-        '    rules: {\n      %s\n    }\n'
-        '  }\n'
-        '];\n' % (_plugin_entry(), rules)
+        '  { files: ["**/*.{js,jsx}"],\n'
+        '    languageOptions: { ecmaVersion: "latest", '
+        'parserOptions: { ecmaFeatures: { jsx: true } } },\n'
+        '    linterOptions: { noInlineConfig: true },\n'
+        '    plugins: { security }, rules },\n'
+        '  { files: ["**/*.{ts,tsx}"],\n'
+        '    languageOptions: { parser: tsParser, '
+        'parserOptions: { project: false } },\n'
+        '    linterOptions: { noInlineConfig: true },\n'
+        '    plugins: { security }, rules },\n'
+        '];\n' % (_plugin_entry(), _TS_PARSER_ENTRY, rules)
     )
 
 
@@ -184,6 +195,19 @@ class EslintSecurityAdapter:
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
         data = parse_json_bytes(raw)
+        # A parser failure anywhere makes this capture incomplete. Check the
+        # entire document before emitting findings so ingest cannot certify a
+        # mixed valid/fatal scan as successful. Never echo target parser text.
+        for result in data:
+            if result.get("fatalErrorCount", 0):
+                raise ValueError("ESLint parsing failed")
+            for msg in result.get("messages", []):
+                if msg.get("fatal") or (
+                    msg.get("ruleId") is None
+                    and isinstance(msg.get("message"), str)
+                    and msg["message"].startswith("Parsing error:")
+                ):
+                    raise ValueError("ESLint parsing failed")
         out = []
         n = 1
         for f in data:

@@ -8,6 +8,7 @@ from _test_helpers import FakePopen, first
 from conftest import REPO_ROOT
 import scripts.tools.eslint_security as es
 from scripts.tools import ADAPTERS
+from scripts.ingest_tools import ingest_dir_detailed
 
 
 ESLINT_SAMPLE = json.dumps([
@@ -87,6 +88,45 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         ]).encode()
         findings = es.EslintSecurityAdapter().parse(sample, "g1")
         self.assertEqual(len(findings), 0)
+
+    def test_fatal_parsing_fails_closed_without_source_text(self):
+        for message in (
+            {"ruleId": None, "fatal": True,
+             "message": "Parsing error: attacker-authored text"},
+            {"ruleId": None, "message": "Parsing error: attacker-authored text"},
+        ):
+            with self.subTest(message=message):
+                raw = json.dumps([{"filePath": "/src/nested/bad.tsx",
+                                   "messages": [message]}]).encode()
+                with self.assertRaisesRegex(ValueError, "ESLint parsing failed") as caught:
+                    es.EslintSecurityAdapter().parse(raw, "g1")
+                self.assertNotIn("attacker-authored", str(caught.exception))
+
+    def test_fatal_count_fails_closed_even_with_security_finding(self):
+        raw = json.dumps([
+            {"filePath": "/src/good.js", "messages": [{
+                "ruleId": "security/detect-eval-with-expression", "line": 1,
+                "message": "eval with expression"}]},
+            {"filePath": "/src/bad.ts", "fatalErrorCount": 1,
+             "messages": [{"ruleId": None, "fatal": True,
+                           "message": "untrusted parser message"}]},
+        ]).encode()
+        with self.assertRaisesRegex(ValueError, "ESLint parsing failed"):
+            es.EslintSecurityAdapter().parse(raw, "g1")
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "eslint-security.json"), "wb") as fh:
+                fh.write(raw)
+            findings, disp = ingest_dir_detailed(d, "g1")
+        self.assertEqual(findings, [])
+        self.assertEqual(disp["eslint-security"]["status"], "failed")
+        self.assertNotIn("untrusted parser message", disp["eslint-security"]["reason"])
+
+    def test_null_rule_inline_warning_is_not_fatal(self):
+        raw = json.dumps([{"filePath": "/src/good.js", "fatalErrorCount": 0,
+                           "messages": [{"ruleId": None, "fatal": False,
+                                         "severity": 1,
+                                         "message": "Unused eslint-disable directive"}]}]).encode()
+        self.assertEqual(es.EslintSecurityAdapter().parse(raw, "g1"), [])
 
     def _one(self, rule, eslint_severity):
         return json.dumps([{
@@ -206,6 +246,16 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertRegex(cfg, r'import security from "[^"]+\.js"')
         for rule in es.RULE_CWE:
             self.assertIn('"%s": "error"' % rule, cfg)   # every mapped rule ON
+
+    def test_flat_config_covers_all_formats_and_ignores_inline_directives(self):
+        cfg = es._flat_config()
+        self.assertIn("**/*.{js,jsx}", cfg)
+        self.assertIn("**/*.{ts,tsx}", cfg)
+        self.assertIn("ecmaFeatures: { jsx: true }", cfg)
+        self.assertIn("parser: tsParser", cfg)
+        self.assertIn("project: false", cfg)
+        self.assertEqual(cfg.count("noInlineConfig: true"), 2)
+        self.assertRegex(cfg, r'import tsParser from "/opt/panopticon-node/node_modules/@typescript-eslint/parser/dist/index.js"')
 
     def test_invoke_runs_from_the_target_and_keeps_the_config_outside_it(self):
         # #1877 round 2: eslint is the second documented cwd=target exception
