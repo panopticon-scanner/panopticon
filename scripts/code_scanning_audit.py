@@ -228,18 +228,59 @@ class MainAudit:
             raise AuditError("%s analysis environment is wrong" % label)
         return row
 
+    @staticmethod
+    def _analyses_shortfall(rows: list[object],
+                            attempts: int | None = None) -> str:
+        """Say what the analyses list held against the four tools expected.
+
+        Only names from SECURITY_TOOLS reach the message: an unrecognised row
+        raises the row count, never a response-controlled string.
+        """
+        present: set[str] = set()
+        for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("tool"), dict):
+                name = row["tool"].get("name")
+                if isinstance(name, str) and name in SECURITY_TOOLS:
+                    present.add(name)
+        counted = ("saw" if attempts is None
+                   else "after %d attempts saw" % attempts)
+        return ("Security upload must contain exactly %d analyses; %s %d "
+                "(present: %s; missing: %s)"
+                % (len(SECURITY_TOOLS), counted, len(rows),
+                   ", ".join(sorted(present)) or "none",
+                   ", ".join(sorted(SECURITY_TOOLS - present)) or "none"))
+
     def _security_analyses(self) -> None:
-        rows = self.api.get(
-            self.base + "/code-scanning/analyses",
-            "Security analyses",
-            (("sarif_id", self.target.security_sarif_id),
-             ("per_page", PER_PAGE)),
-        )
-        if not isinstance(rows, list):
-            raise AuditError("GitHub API returned malformed Security analyses")
-        if len(rows) != len(SECURITY_TOOLS):
-            raise AuditError(
-                "Security upload must contain exactly %d analyses" % len(SECURITY_TOOLS))
+        """Prove the Security upload's four analyses, waiting out ingestion.
+
+        GitHub ingests a SARIF upload asynchronously, so right after a push
+        the list is routinely still short on a first read (#2022). A short
+        list is therefore polled on the same bound and seams as the CodeQL
+        wait below. Anything else is final on the spot: no wait removes a
+        surplus row or repairs one whose identity is wrong.
+        """
+        shortfall = self._analyses_shortfall([], self.poll_attempts)
+        for attempt in range(self.poll_attempts):
+            rows = self.api.get(
+                self.base + "/code-scanning/analyses",
+                "Security analyses",
+                (("sarif_id", self.target.security_sarif_id),
+                 ("per_page", PER_PAGE)),
+            )
+            if not isinstance(rows, list):
+                raise AuditError("GitHub API returned malformed Security analyses")
+            if len(rows) > len(SECURITY_TOOLS):
+                raise AuditError(self._analyses_shortfall(rows))
+            if len(rows) == len(SECURITY_TOOLS):
+                self._validate_security_rows(rows)
+                return
+            self._require_current_head("main ref during Security analyses wait")
+            shortfall = self._analyses_shortfall(rows, self.poll_attempts)
+            if attempt + 1 < self.poll_attempts:
+                self.sleep(self.poll_delay)
+        raise AuditError(shortfall)
+
+    def _validate_security_rows(self, rows: list[object]) -> None:
         seen: set[str] = set()
         for row in rows:
             if not isinstance(row, dict) or not isinstance(row.get("tool"), dict):

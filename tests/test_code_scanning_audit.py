@@ -313,11 +313,86 @@ def test_duplicate_or_missing_security_tool_fails():
     with pytest.raises(audit.AuditError, match="duplicate tool"):
         instance.run()
 
+    # A short set is the ingestion race, so it is polled (one attempt here)
+    # and then fails closed: waiting never invents the missing tool.
     missing = security_rows()[:-1]
-    instance, _runner, _output, _sleeps = run_with(
-        [head(), status(), missing])
+    instance, _runner, _output, sleeps = run_with(
+        [head(), status(), missing, head()], attempts=1)
     with pytest.raises(audit.AuditError, match="exactly 4"):
         instance.run()
+    assert sleeps == []
+
+
+def test_security_analyses_can_arrive_late_with_a_bounded_injected_clock():
+    # GitHub ingests one upload's four analyses asynchronously, so the first
+    # read of the list can see none of them and the next only some (#2022).
+    responses = [
+        head(), status(),
+        [], head(),
+        security_rows()[:2], head(),
+        security_rows(),
+        [analysis_row("CodeQL")], status(), [], head(),
+    ]
+    instance, runner, output, sleeps = run_with(responses, attempts=3)
+
+    instance.run()
+
+    assert sleeps == [0.25, 0.25]
+    assert output[-1].endswith(": 0")
+    assert runner.responses == []
+
+
+def test_analyses_that_never_complete_fail_saying_what_was_seen_and_expected():
+    # One expected tool plus a row this audit does not expect: the message
+    # names tools from SECURITY_TOOLS only, never a string from the response.
+    rogue = analysis_row("Bandit")
+    rogue["tool"]["name"] = "SECRET-SCANNER"
+    partial = [analysis_row("Bandit"), rogue]
+    instance, _runner, output, sleeps = run_with(
+        [head(), status(), partial, head(), partial, head()], attempts=2)
+
+    with pytest.raises(audit.AuditError) as caught:
+        instance.run()
+
+    message = str(caught.value)
+    assert "must contain exactly 4 analyses" in message
+    assert "after 2 attempts saw 2" in message
+    assert "present: Bandit" in message
+    assert "missing: Gitleaks, Semgrep OSS, Trivy" in message
+    assert "SECRET-SCANNER" not in message
+    assert sleeps == [0.25]
+    assert output == []
+
+
+def test_a_surplus_analysis_row_fails_closed_without_burning_the_poll():
+    # Waiting can only add rows, so a count above the expected four is final.
+    instance, _runner, output, sleeps = run_with(
+        [head(), status(), security_rows() + [analysis_row("Bandit")]])
+
+    with pytest.raises(audit.AuditError, match="exactly 4 analyses; saw 5"):
+        instance.run()
+
+    assert sleeps == []
+    assert output == []
+
+
+def test_main_moving_during_the_analyses_wait_stops_the_poll():
+    instance, _runner, output, sleeps = run_with(
+        [head(), status(), [], head(NEW_SHA)])
+    with pytest.raises(audit.AuditError, match="superseded"):
+        instance.run()
+    assert sleeps == []
+    assert output == []
+
+
+@pytest.mark.parametrize("overrides", [
+    {"poll_attempts": 0}, {"poll_attempts": -1}, {"poll_delay": -0.25},
+])
+def test_an_unusable_poll_bound_is_rejected_before_any_request(overrides):
+    runner = FakeRunner([])
+    with pytest.raises(ValueError, match="invalid polling bound"):
+        audit.MainAudit(target(), runner, **overrides)
+    assert runner.calls == []
 
 
 @pytest.mark.parametrize("field, value", [
