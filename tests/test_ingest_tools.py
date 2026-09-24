@@ -421,6 +421,39 @@ class TestIngest(unittest.TestCase):
 
 
 class TestAdapterRouting(unittest.TestCase):
+    def test_pip_skipped_dependency_retains_finding_but_loses_coverage(self):
+        payload = {"dependencies": [
+            {"name": "unavailable", "version": "1", "skip_reason": "secret=" + "x" * 10000},
+            {"name": "vulnerable", "version": "1", "vulns": [{
+                "id": "CVE-2099-0001", "description": "fixture", "fix_versions": ["2"]}]},
+        ]}
+        manifest = {"selected": ["pip-audit"], "produced": ["pip-audit"], "missing": []}
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "pip-audit.json"), "w") as fh:
+                json.dump(payload, fh)
+            findings, dispositions = it.ingest_dir_detailed(d, "g1")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["tool_evidence"]["rule_id"], "CVE-2099-0001")
+        self.assertEqual(dispositions["pip-audit"], {
+            "status": "failed", "findings": 1,
+            "reason": "1 dependency could not be audited"})
+        self.assertEqual(it.lost_required_coverage(manifest, dispositions), {
+            "pip-audit": {"kind": "unusable", "reason": "1 dependency could not be audited"}})
+        self.assertNotIn("secret=", str(dispositions))
+
+    def test_pip_skipped_only_and_clean_controls(self):
+        cases = [([{"name": "x", "skip_reason": None}], "failed"),
+                 ([], "empty"),
+                 ([{"name": "x", "version": "1", "vulns": [{
+                     "id": "CVE-2099-0002", "fix_versions": []}]}], "ok")]
+        for deps, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, "pip-audit.json"), "w") as fh:
+                    json.dump({"dependencies": deps}, fh)
+                findings, dispositions = it.ingest_dir_detailed(d, "g1")
+            self.assertEqual(dispositions["pip-audit"]["status"], expected)
+            self.assertEqual(len(findings), int(expected == "ok"))
+
     def test_ingest_routes_json_to_adapter(self):
         raw = json.dumps({"dependencies": [{"name": "x", "version": "1.0", "vulns": []}]})
         with tempfile.TemporaryDirectory() as d:

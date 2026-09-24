@@ -7,6 +7,11 @@ import sanitize
 import triage
 
 
+@pytest.fixture(autouse=True)
+def isolated_progress(tmp_path, monkeypatch):
+    monkeypatch.setattr(triage, "PROGRESS", str(tmp_path / "progress.json"))
+
+
 def fix_row(**over):
     row = {"issue": 443, "set": "FIXME", "verdict": "fix",
            "rationale": "queue identity bug", "duplicate_of": None,
@@ -95,14 +100,14 @@ class TestMutations(unittest.TestCase):
         cmds = triage.plan_mutations(row)
         self.assertIn("triage:duplicate", cmds[1])
         self.assertEqual(cmds[-1], ["gh", "issue", "close", "443",
-                                    "--reason", "not planned"])
+                                    "--reason", "not planned", "--repo", triage.REPO_SLUG])
 
     def test_already_fixed_closes_completed(self):
         row = fix_row(verdict="already-fixed", rank=None,
                       fixed_by="PR #447", spot_check="advisor: fixed")
         self.assertEqual(triage.plan_mutations(row)[-1],
                          ["gh", "issue", "close", "443",
-                          "--reason", "completed"])
+                          "--reason", "completed", "--repo", triage.REPO_SLUG])
 
     def test_reject_closes_not_planned_and_defer_stays_open(self):
         rej = fix_row(verdict="reject", rank=None, spot_check="stands")
@@ -157,12 +162,31 @@ class FakeRunner:
     """Records argv; returns canned stdout per command prefix."""
     def __init__(self, view_json='{"state": "OPEN", "updatedAt": "2026-08-04T12:00:00Z"}'):
         self.calls, self.view_json = [], view_json
+        self.comments, self.labels = [], []
 
     def __call__(self, argv, **kw):
         self.calls.append(argv)
         class R:
             returncode, stderr = 0, ""
-        R.stdout = self.view_json if argv[1:3] == ["issue", "view"] else "{}"
+        if argv[1:3] == ["issue", "view"]:
+            try:
+                state = json.loads(self.view_json)
+                state.update(title='title', body='body', labels=self.labels,
+                             milestone={'title': triage.MILESTONE} if self.labels else None, stateReason=None)
+                R.stdout = json.dumps(state)
+            except ValueError:
+                R.stdout = self.view_json
+        elif argv[1:3] == ["api", "repos/" + triage.REPO_SLUG]:
+            R.stdout = json.dumps({'full_name': triage.REPO_SLUG, 'permissions': {'admin': True}})
+        elif argv[1] == 'api' and '/comments' in argv[2]:
+            R.stdout = json.dumps([self.comments])
+        else:
+            if argv[1:3] == ['issue', 'comment']:
+                self.comments.append({'body': argv[argv.index('--body') + 1]})
+            if argv[1:3] == ['issue', 'edit']:
+                self.labels.append({'name': argv[argv.index('--add-label') + 1]})
+            R.stdout = '{}'
+
         return R
 
 
@@ -183,7 +207,7 @@ class TestApply(unittest.TestCase):
         self.assertEqual((done, stale), (0, 1))
         self.assertEqual(rows[0]["status"], "stale")
         # nothing beyond the state fetch was run
-        self.assertEqual([c[1:3] for c in runner.calls], [["issue", "view"]])
+        self.assertEqual([c[1:3] for c in runner.calls if c[1] == "issue"], [["issue", "view"]])
 
     def test_dry_run_touches_nothing(self):
         runner = FakeRunner()
@@ -202,10 +226,9 @@ class TestApply(unittest.TestCase):
     def test_apply_handles_malformed_gh_json(self):
         runner = FakeRunner(view_json="not valid json")
         rows = [fix_row(status="approved")]
-        done, stale = triage.apply(rows, runner=runner, sleep=lambda s: None)
-        # Malformed state json results in empty state -> treated as stale (state != 'OPEN')
-        self.assertEqual((done, stale), (0, 1))
-        self.assertEqual(rows[0]["status"], "stale")
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            triage.apply(rows, runner=runner, sleep=lambda s: None)
+        self.assertEqual(rows[0]["status"], "approved")
 
 
 class SequencingFakeRunner:
@@ -640,3 +663,501 @@ class TestValidateTimestamp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize('config', [[], None, 42, 'token'])
+def test_non_object_config_fails_closed(tmp_path, config):
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps(config))
+    with mock.patch.dict(os.environ, {'GH_TOKEN': 'ambient'}):
+        with pytest.raises(ValueError, match='object'):
+            triage.gh_env(path)
+
+
+class DurableRunner:
+    def __init__(self):
+        self.calls = []
+        self.comments = []
+        self.labels = []
+        self.closed = False
+        self.permission = {'full_name': 'owner/project', 'permissions': {'admin': True}}
+        self.fail = None
+        self.accept = False
+        self.probe = None
+        self.newer = False
+        self.hook = None
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append(list(argv))
+        payload = {}
+        if argv[1:3] == ['api', 'repos/owner/project']:
+            payload = self.permission
+        elif argv[1:3] == ['issue', 'view']:
+            payload = {'state': 'CLOSED' if self.closed else 'OPEN',
+                       'updatedAt': '2026-08-05T00:00:00Z' if self.comments or self.newer
+                       else '2026-08-04T12:00:00Z',
+                       'labels': [{'name': label} for label in self.labels],
+                       'milestone': {'title': triage.MILESTONE},
+                       'stateReason': 'NOT_PLANNED' if self.closed else None,
+                       'title': 'title', 'body': 'body'}
+        elif argv[1] == 'api' and '/comments' in argv[2]:
+            payload = self.probe if self.probe is not None else [self.comments]
+        elif argv[1:3] in (['issue', 'comment'], ['issue', 'edit'], ['issue', 'close']):
+            operation = argv[2]
+            if operation != self.fail or self.accept:
+                if operation == 'comment':
+                    self.comments.append({'body': argv[argv.index('--body') + 1]})
+                elif operation == 'edit':
+                    self.labels.append(argv[argv.index('--add-label') + 1])
+                else:
+                    self.closed = True
+            if self.hook:
+                self.hook()
+            if operation == self.fail:
+                raise triage.subprocess.TimeoutExpired(argv, 120)
+        return mock.Mock(returncode=0, stdout=json.dumps(payload), stderr='')
+
+
+def durable_apply(tmp_path, rows, runner, **kwargs):
+    return triage.apply(rows, runner=runner, sleep=lambda _: None,
+                        repo='owner/project', progress_path=tmp_path / 'progress.json', **kwargs)
+
+
+@pytest.mark.parametrize('permission', [{}, [], {'permissions': {'admin': False}},
+    {'full_name': 'other/project', 'permissions': {'admin': True}},
+    {'full_name': 'owner/project', 'permissions': {'admin': 'true'}}])
+@pytest.mark.parametrize('entry', ['apply', 'setup'])
+def test_preflight_refuses_wrong_or_malformed_permission(tmp_path, permission, entry):
+    runner = DurableRunner()
+    runner.permission = permission
+    with pytest.raises((ValueError, RuntimeError)):
+        if entry == 'apply':
+            durable_apply(tmp_path, [fix_row(status='approved')], runner)
+        else:
+            triage.setup(runner=runner, repo='owner/project')
+    assert len(runner.calls) == 1
+
+
+def test_resume_partial_comment_without_stale_or_duplicate(tmp_path):
+    runner = DurableRunner()
+    runner.fail, runner.accept = 'edit', True
+    row = fix_row(status='approved', verdict='reject', spot_check='confirmed')
+    with pytest.raises(RuntimeError, match='pending|reconcil'):
+        durable_apply(tmp_path, [row], runner)
+    runner.fail = None
+    assert durable_apply(tmp_path, [row], runner) == (1, 0)
+    assert len(runner.comments) == 1
+    assert row['status'] == 'applied'
+
+
+def test_timeout_comment_reconciles_only_positive_complete_marker(tmp_path):
+    runner = DurableRunner()
+    runner.fail, runner.accept = 'comment', True
+    row = fix_row(status='approved')
+    with pytest.raises(RuntimeError, match='pending|reconcil'):
+        durable_apply(tmp_path, [row], runner)
+    runner.fail = None
+    runner.probe = [[{'body': 'unrelated'}]]
+    with pytest.raises(RuntimeError, match='pending|reconcil'):
+        durable_apply(tmp_path, [row], runner)
+    assert len(runner.comments) == 1
+    runner.probe = None
+    assert durable_apply(tmp_path, [row], runner) == (1, 0)
+    assert len(runner.comments) == 1
+
+
+def test_changed_row_cannot_adopt_pending_progress(tmp_path):
+    runner = DurableRunner()
+    runner.fail, runner.accept = 'comment', True
+    row = fix_row(status='approved')
+    with pytest.raises(RuntimeError):
+        durable_apply(tmp_path, [row], runner)
+    row['rationale'] = 'new approval'
+    with pytest.raises(ValueError, match='mismatch|changed'):
+        durable_apply(tmp_path, [row], runner)
+    assert len(runner.comments) == 1
+
+
+@pytest.mark.parametrize('body', ['null', '[]', '{broken', '{"version": 1}'])
+def test_corrupt_progress_preserved(tmp_path, body):
+    path = tmp_path / 'progress.json'
+    path.write_text(body)
+    runner = DurableRunner()
+    with pytest.raises(ValueError):
+        durable_apply(tmp_path, [fix_row(status='approved')], runner)
+    assert path.read_text() == body
+    assert not runner.comments
+
+
+def test_durable_dry_run_writes_nothing(tmp_path):
+    runner = DurableRunner()
+    durable_apply(tmp_path, [fix_row(status='approved')], runner, dry=True)
+    assert not runner.calls
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_save_rows_merges_unrelated_change_and_refuses_same_row(tmp_path):
+    path = tmp_path / 'ledger'
+    original = [fix_row(status='approved'), fix_row(issue=444)]
+    triage.save_rows(original, path)
+    changed = [dict(row) for row in original]
+    changed[1]['rationale'] = 'concurrent approval'
+    path.write_text(''.join(json.dumps(row) + '\n' for row in changed))
+    desired = [dict(original[0], status='applied'), original[1]]
+    triage.save_rows(desired, path, expected=original)
+    assert triage.load_rows(path)[1] == changed[1]
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match='changed|conflict'):
+        triage.save_rows(desired, path, expected=original)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize('body', ['null\n', '[]\n', '{broken\n'])
+def test_corrupt_ledger_never_overwritten(tmp_path, body):
+    path = tmp_path / 'ledger'
+    path.write_text(body)
+    with pytest.raises(ValueError):
+        triage.save_rows([fix_row()], path)
+    assert path.read_text() == body
+
+
+def test_all_commands_bind_explicit_target(tmp_path):
+    runner = DurableRunner()
+    assert durable_apply(tmp_path, [fix_row(status='approved')], runner) == (1, 0)
+    assert runner.calls[0] == ['gh', 'api', 'repos/owner/project']
+    for call in runner.calls:
+        if call[1] in ('issue', 'label'):
+            assert call[call.index('--repo') + 1] == 'owner/project'
+        elif call[1] == 'api':
+            assert call[2].startswith('repos/owner/project')
+    body = runner.comments[0]['body']
+    progress = json.loads((tmp_path / 'progress.json').read_text())
+    identity = progress['rows']['443']['identity']
+    assert body.endswith('<!-- panopticon-triage:' + identity + ' -->')
+
+
+def test_setup_preflight_and_target_binding():
+    calls = []
+    def runner(argv, **kw):
+        calls.append(argv)
+        payload = {'full_name': 'owner/project', 'permissions': {'admin': True}}
+        if 'repos/owner/project/milestones?state=all' in argv:
+            payload = []
+        return mock.Mock(returncode=0, stdout=json.dumps(payload), stderr='')
+    triage.setup(runner=runner, repo='owner/project')
+    assert calls[0] == ['gh', 'api', 'repos/owner/project']
+    for command in calls[1:]:
+        if command[1] == 'label':
+            assert command[-2:] == ['--repo', 'owner/project']
+        else:
+            assert any(arg.startswith('repos/owner/project/milestones') for arg in command)
+            assert not any('{owner}' in arg for arg in command)
+
+
+@pytest.mark.parametrize('repo', ['x', '../repo', 'owner/../repo', 'owner/repo?x', 'owner/repo#x', '-x/repo'])
+def test_invalid_repository_precedes_runner(tmp_path, repo):
+    runner = DurableRunner()
+    with pytest.raises(ValueError):
+        triage.apply([fix_row(status='approved')], runner=runner, repo=repo,
+                     progress_path=tmp_path / 'progress')
+    assert runner.calls == []
+
+
+def test_fresh_unrelated_update_is_stale(tmp_path):
+    runner = DurableRunner()
+    runner.newer = True
+    row = fix_row(status='approved')
+    assert durable_apply(tmp_path, [row], runner) == (0, 1)
+    assert row['status'] == 'stale'
+    assert not runner.comments
+    assert not (tmp_path / 'progress.json').exists()
+
+
+@pytest.mark.parametrize('change', ['comment', 'label', 'title', 'body'])
+def test_resume_refuses_unrelated_remote_changes(tmp_path, change):
+    runner = DurableRunner()
+    runner.fail, runner.accept = 'edit', True
+    row = fix_row(status='approved')
+    with pytest.raises(RuntimeError):
+        durable_apply(tmp_path, [row], runner)
+    runner.fail = None
+    if change == 'comment':
+        runner.comments.append({'body': 'new unreviewed comment'})
+    elif change == 'label':
+        runner.labels.append('unreviewed')
+    def altered(argv, **kwargs):
+        result = runner(argv, **kwargs)
+        if argv[1:3] == ['issue', 'view'] and change in ('title', 'body'):
+            payload = json.loads(result.stdout)
+            payload[change] = 'unreviewed'
+            result.stdout = json.dumps(payload)
+        return result
+    before = len([c for c in runner.calls if c[1:3] == ['issue', 'edit']])
+    with pytest.raises(RuntimeError, match='pending reconciliation'):
+        durable_apply(tmp_path, [row], altered)
+    assert len([c for c in runner.calls if c[1:3] == ['issue', 'edit']]) == before
+    assert row['status'] == 'approved'
+
+
+@pytest.mark.parametrize('probe', [[], {}, [[{'body': None}]], [[{'body': 'x'}], []]])
+def test_incomplete_comment_probe_leaves_pending_bytes(tmp_path, probe):
+    runner = DurableRunner()
+    runner.fail, runner.accept = 'comment', True
+    row = fix_row(status='approved')
+    with pytest.raises(RuntimeError):
+        durable_apply(tmp_path, [row], runner)
+    before = (tmp_path / 'progress.json').read_bytes()
+    runner.probe, runner.fail = probe, None
+    with pytest.raises(RuntimeError, match='incomplete|pending'):
+        durable_apply(tmp_path, [row], runner)
+    assert (tmp_path / 'progress.json').read_bytes() == before
+    assert len(runner.comments) == 1
+
+
+def test_crash_after_acceptance_before_receipt_resumes(tmp_path, monkeypatch):
+    runner = DurableRunner()
+    row = fix_row(status='approved')
+    persist = triage._persist_progress
+    def crash(path, data):
+        if data['rows']['443']['done'] == 1:
+            raise OSError('simulated disk failure after remote acceptance')
+        persist(path, data)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(triage, '_persist_progress', crash)
+        with pytest.raises(OSError):
+            durable_apply(tmp_path, [row], runner)
+    assert json.loads((tmp_path / 'progress.json').read_text())['rows']['443']['pending'] == 0
+    assert durable_apply(tmp_path, [row], runner) == (1, 0)
+    assert len(runner.comments) == 1
+
+
+def test_persist_intent_failure_makes_zero_mutations(tmp_path, monkeypatch):
+    runner = DurableRunner()
+    def fail(*args):
+        raise OSError('disk full')
+    monkeypatch.setattr(triage, '_persist_progress', fail)
+    with pytest.raises(OSError):
+        durable_apply(tmp_path, [fix_row(status='approved')], runner)
+    assert not runner.comments
+
+
+def test_acknowledged_comment_survives_next_step_intent_failure(tmp_path, monkeypatch):
+    runner = DurableRunner()
+    row = fix_row(status='approved')
+    persist = triage._persist_progress
+    def fail(path, data):
+        if data['rows']['443']['pending'] == 1:
+            raise OSError('disk full before label')
+        persist(path, data)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(triage, '_persist_progress', fail)
+        with pytest.raises(OSError):
+            durable_apply(tmp_path, [row], runner)
+    assert durable_apply(tmp_path, [row], runner) == (1, 0)
+    assert len(runner.comments) == 1
+
+
+@pytest.mark.parametrize('same_row', [False, True])
+def test_apply_preserves_concurrent_ledger_edits(tmp_path, same_row):
+    runner = DurableRunner()
+    path = tmp_path / 'ledger'
+    row = fix_row(status='approved')
+    triage.save_rows([row], path)
+    def concurrent_edit():
+        current = triage.load_rows(path)
+        current.append(fix_row(issue=444, rationale='new concurrent row'))
+        if same_row:
+            current[0]['rationale'] = 'newer approval'
+        path.write_text(''.join(json.dumps(r) + '\n' for r in current))
+        runner.hook = None
+    runner.hook = concurrent_edit
+    if same_row:
+        with pytest.raises(ValueError, match='conflict'):
+            durable_apply(tmp_path, [row], runner, ledger_path=path)
+        assert triage.load_rows(path)[0]['rationale'] == 'newer approval'
+        assert not runner.labels
+    else:
+        assert durable_apply(tmp_path, [row], runner, ledger_path=path) == (1, 0)
+        assert triage.load_rows(path)[0]['status'] == 'applied'
+    assert triage.load_rows(path)[1]['rationale'] == 'new concurrent row'
+
+
+def test_pending_target_mismatch_and_plan_tamper_preserve_evidence(tmp_path):
+    runner = DurableRunner()
+    runner.fail, runner.accept = 'comment', True
+    row = fix_row(status='approved')
+    with pytest.raises(RuntimeError):
+        durable_apply(tmp_path, [row], runner)
+    path = tmp_path / 'progress.json'
+    state = json.loads(path.read_text())
+    for mutate in (lambda x: x.update(repo='wrong/repo'),
+                   lambda x: x['rows']['443']['binding']['steps'][0].append('--bad')):
+        changed = json.loads(json.dumps(state))
+        mutate(changed)
+        path.write_text(json.dumps(changed))
+        before = path.read_bytes()
+        with pytest.raises(ValueError, match='mismatch|corrupt'):
+            durable_apply(tmp_path, [row], runner)
+        assert path.read_bytes() == before
+    assert len(runner.comments) == 1
+
+
+def test_nonzero_mutation_is_not_retried(tmp_path):
+    runner = DurableRunner()
+    def failed(argv, **kwargs):
+        if argv[1:3] == ['issue', 'edit']:
+            return mock.Mock(returncode=1, stdout='', stderr='connection reset')
+        return runner(argv, **kwargs)
+    row = fix_row(status='approved')
+    with pytest.raises(RuntimeError, match='pending'):
+        durable_apply(tmp_path, [row], failed)
+    with pytest.raises(RuntimeError, match='pending'):
+        durable_apply(tmp_path, [row], runner)
+    assert len(runner.comments) == 1
+    assert runner.labels == []
+
+
+def test_close_timeout_after_acceptance_is_reconciled(tmp_path):
+    runner = DurableRunner()
+    runner.fail, runner.accept = 'close', True
+    row = fix_row(status='approved', verdict='reject', spot_check='confirmed')
+    with pytest.raises(RuntimeError, match='pending'):
+        durable_apply(tmp_path, [row], runner)
+    runner.fail = None
+    assert durable_apply(tmp_path, [row], runner) == (1, 0)
+    assert len([c for c in runner.calls if c[1:3] == ['issue', 'close']]) == 1
+    assert len(runner.comments) == 1
+
+
+def test_acknowledged_step_does_not_hide_later_timestamp_only_change(tmp_path, monkeypatch):
+    runner = DurableRunner()
+    row = fix_row(status='approved')
+    persist = triage._persist_progress
+    def fail(path, data):
+        if data['rows']['443']['pending'] == 1:
+            raise OSError('simulated crash')
+        persist(path, data)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(triage, '_persist_progress', fail)
+        with pytest.raises(OSError):
+            durable_apply(tmp_path, [row], runner)
+    def unrelated(argv, **kwargs):
+        result = runner(argv, **kwargs)
+        if argv[1:3] == ['issue', 'view']:
+            payload = json.loads(result.stdout)
+            payload['updatedAt'] = '2026-08-06T00:00:00Z'
+            result.stdout = json.dumps(payload)
+        return result
+    with pytest.raises(RuntimeError, match='pending reconciliation'):
+        durable_apply(tmp_path, [row], unrelated)
+    assert runner.labels == []
+
+
+@pytest.mark.parametrize('duplicate', [False, True])
+def test_marker_alone_or_multiple_matches_cannot_be_adopted(tmp_path, duplicate):
+    runner = DurableRunner()
+    runner.fail, runner.accept = 'comment', True
+    row = fix_row(status='approved')
+    with pytest.raises(RuntimeError):
+        durable_apply(tmp_path, [row], runner)
+    if duplicate:
+        runner.comments.append(dict(runner.comments[0]))
+    else:
+        runner.comments[0]['body'] = 'different content\n' + runner.comments[0]['body'].split('\n')[-1]
+    runner.fail = None
+    with pytest.raises(RuntimeError, match='pending'):
+        durable_apply(tmp_path, [row], runner)
+    assert not runner.labels
+
+
+def test_progress_size_limit_preserves_bytes(tmp_path, monkeypatch):
+    path = tmp_path / 'progress.json'
+    path.write_text(' ' * 1025)
+    monkeypatch.setattr(triage, 'MAX_STATE_BYTES', 1024)
+    with pytest.raises(ValueError, match='too large'):
+        durable_apply(tmp_path, [fix_row(status='approved')], DurableRunner())
+    assert path.read_text() == ' ' * 1025
+
+
+def test_unreadable_existing_ledger_is_not_empty(tmp_path, monkeypatch):
+    path = tmp_path / 'ledger'
+    path.write_text(json.dumps(fix_row()) + '\n')
+    real_open = open
+    def unreadable(file, *args, **kwargs):
+        if os.fspath(file) == os.fspath(path):
+            raise PermissionError('denied')
+        return real_open(file, *args, **kwargs)
+    with monkeypatch.context() as scoped:
+        scoped.setattr('builtins.open', unreadable)
+        with pytest.raises(ValueError, match='unreadable'):
+            triage.save_rows([fix_row(status='applied')], path)
+    assert json.loads(path.read_text())['status'] == 'proposed'
+
+
+def test_cli_target_is_forwarded_and_dry_run_preserves_ledger(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / '.panopticon' / 'triage-ledger.jsonl'
+    path.parent.mkdir()
+    path.write_text(json.dumps(fix_row(status='approved')) + '\n')
+    before = path.read_bytes()
+    with mock.patch.object(triage, 'apply', wraps=triage.apply) as apply_call:
+        monkeypatch.setattr(triage.sys, 'argv', ['triage.py', 'apply', '--dry-run', '--repo', 'owner/project'])
+        triage.main()
+    assert apply_call.call_args.kwargs['repo'] == 'owner/project'
+    assert path.read_bytes() == before
+    assert list(path.parent.iterdir()) == [path]
+
+
+@pytest.mark.parametrize('timestamp', ['', '0', '2026-02-30T12:00:00Z',
+    '2026-08-04', '2026-08-04T12:00:00', '2026-08-04T12:00:00+00:00',
+    '2026-08-04 12:00:00Z', '2026-08-04T25:00:00Z'])
+@pytest.mark.parametrize('resume', [False, True])
+def test_invalid_remote_freshness_preserves_approval_and_evidence(tmp_path, timestamp, resume):
+    runner = DurableRunner()
+    row = fix_row(status='approved')
+    ledger = tmp_path / 'ledger'
+    progress = tmp_path / 'progress.json'
+    triage.save_rows([row], ledger)
+    if resume:
+        runner.fail, runner.accept = 'comment', True
+        with pytest.raises(RuntimeError, match='pending'):
+            durable_apply(tmp_path, [row], runner, ledger_path=ledger)
+        runner.fail = None
+    else:
+        progress.write_text(json.dumps({'version': 1, 'repo': 'owner/project', 'rows': {}}))
+    before = {path: path.read_bytes() for path in (ledger, progress)}
+    runner.calls.clear()
+    def malformed(argv, **kwargs):
+        result = runner(argv, **kwargs)
+        if argv[1:3] == ['issue', 'view']:
+            payload = json.loads(result.stdout)
+            payload['updatedAt'] = timestamp
+            result.stdout = json.dumps(payload)
+        return result
+    with pytest.raises(RuntimeError, match='incomplete|reconciliation'):
+        durable_apply(tmp_path, [row], malformed, ledger_path=ledger)
+    assert row['status'] == 'approved'
+    assert {path: path.read_bytes() for path in before} == before
+    assert not any(call[1:3] in (['issue', 'comment'], ['issue', 'edit'], ['issue', 'close'])
+                   for call in runner.calls)
+
+
+@pytest.mark.parametrize(('timestamp', 'expected'), [
+    ('2026-08-04T22:59:59Z', (1, 0)),
+    ('2026-08-04T23:00:00Z', (1, 0)),
+    ('2026-08-04T22:59:59.999999Z', (1, 0)),
+    ('2026-08-04T23:00:00.000001Z', (0, 1)),
+    ('2026-08-04T23:00:01Z', (0, 1)),
+])
+def test_valid_remote_freshness_compares_instants(tmp_path, timestamp, expected):
+    runner = DurableRunner()
+    def timed(argv, **kwargs):
+        result = runner(argv, **kwargs)
+        if argv[1:3] == ['issue', 'view']:
+            payload = json.loads(result.stdout)
+            payload['updatedAt'] = timestamp
+            result.stdout = json.dumps(payload)
+        return result
+    row = fix_row(status='approved')
+    assert durable_apply(tmp_path, [row], timed) == expected
+    assert len(runner.comments) == expected[0]
