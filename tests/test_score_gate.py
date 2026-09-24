@@ -113,11 +113,15 @@ def test_every_confidence_multiplier_and_material_severity_weight():
 def test_primary_and_backup_boundaries_use_scores_even_for_confirmed_statuses():
     # Confirmation is a score factor, not a bypass around either floor.
     below_primary = _f("MEDIUM", "NOTE", "corroborated")  # 2 * .4 * 1.5
+    near_primary = [_f("HIGH", "NOTE", "needs_more_info"),
+                    _f("MEDIUM", "NOTE", "needs_more_info")]
     above_primary = _f("MEDIUM", "POSSIBLE", "tool_reported")
     below_backup = _f("HIGH", "CERTAIN", "backup_scope_limited")
     at_backup = [_f("MEDIUM", "CERTAIN", "unverified")] * 4
     assert sg.finding_score(below_primary) == 1.2
     assert sg.should_engage_primary([below_primary]) is False
+    assert sg.score(near_primary) == 1.4
+    assert sg.should_engage_primary(near_primary) is False, "1.4 is below the 1.5 primary floor"
     assert sg.finding_score(above_primary) == 1.6
     assert sg.should_engage_primary([above_primary]) is True
     assert sg.finding_score(below_backup) == 7.5
