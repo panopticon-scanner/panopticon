@@ -237,11 +237,25 @@ def plan_mutations(row, repo=REPO_SLUG):
     return [cmd + ["--repo", repo] for cmd in cmds]
 
 
+def _remote_timestamp(value):
+    """Require GitHub UTC freshness evidence, including valid calendar/time values."""
+    if not isinstance(value, str) or not re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z", value):
+        raise ValueError("incomplete remote snapshot: invalid updatedAt UTC timestamp")
+    try:
+        return datetime.datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise ValueError("incomplete remote snapshot: invalid updatedAt UTC timestamp") from exc
+
+
 def is_stale(row, issue_state):
-    # Both timestamps are UTC ISO-8601 "Z" strings; lexicographic compare.
+    updated_at = _remote_timestamp(issue_state.get("updatedAt"))
     if issue_state.get("state") != "OPEN":
         return True
-    return str(issue_state.get("updatedAt") or "") > str(row.get("triaged_at") or "")
+    # Compare instants: fractional seconds do not sort correctly against a
+    # seconds-only Z timestamp. validate() has checked the approval timestamp.
+    triaged_at = datetime.datetime.fromisoformat(row["triaged_at"][:-1] + "+00:00")
+    return updated_at > triaged_at
 
 
 RATE_HINTS = ("rate limit", "secondary rate", "abuse detection",
@@ -572,6 +586,7 @@ def _validate_snapshot(snapshot):
             or not all(isinstance(c, dict) and isinstance(c.get("body"), str)
                        for c in snapshot["comments"])):
         raise ValueError("incomplete remote snapshot")
+    _remote_timestamp(state["updatedAt"])
 
 
 def _snapshot(row, repo, runner, sleep):

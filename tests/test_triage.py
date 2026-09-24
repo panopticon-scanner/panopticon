@@ -1106,3 +1106,58 @@ def test_cli_target_is_forwarded_and_dry_run_preserves_ledger(tmp_path, monkeypa
     assert apply_call.call_args.kwargs['repo'] == 'owner/project'
     assert path.read_bytes() == before
     assert list(path.parent.iterdir()) == [path]
+
+
+@pytest.mark.parametrize('timestamp', ['', '0', '2026-02-30T12:00:00Z',
+    '2026-08-04', '2026-08-04T12:00:00', '2026-08-04T12:00:00+00:00',
+    '2026-08-04 12:00:00Z', '2026-08-04T25:00:00Z'])
+@pytest.mark.parametrize('resume', [False, True])
+def test_invalid_remote_freshness_preserves_approval_and_evidence(tmp_path, timestamp, resume):
+    runner = DurableRunner()
+    row = fix_row(status='approved')
+    ledger = tmp_path / 'ledger'
+    progress = tmp_path / 'progress.json'
+    triage.save_rows([row], ledger)
+    if resume:
+        runner.fail, runner.accept = 'comment', True
+        with pytest.raises(RuntimeError, match='pending'):
+            durable_apply(tmp_path, [row], runner, ledger_path=ledger)
+        runner.fail = None
+    else:
+        progress.write_text(json.dumps({'version': 1, 'repo': 'owner/project', 'rows': {}}))
+    before = {path: path.read_bytes() for path in (ledger, progress)}
+    runner.calls.clear()
+    def malformed(argv, **kwargs):
+        result = runner(argv, **kwargs)
+        if argv[1:3] == ['issue', 'view']:
+            payload = json.loads(result.stdout)
+            payload['updatedAt'] = timestamp
+            result.stdout = json.dumps(payload)
+        return result
+    with pytest.raises(RuntimeError, match='incomplete|reconciliation'):
+        durable_apply(tmp_path, [row], malformed, ledger_path=ledger)
+    assert row['status'] == 'approved'
+    assert {path: path.read_bytes() for path in before} == before
+    assert not any(call[1:3] in (['issue', 'comment'], ['issue', 'edit'], ['issue', 'close'])
+                   for call in runner.calls)
+
+
+@pytest.mark.parametrize(('timestamp', 'expected'), [
+    ('2026-08-04T22:59:59Z', (1, 0)),
+    ('2026-08-04T23:00:00Z', (1, 0)),
+    ('2026-08-04T22:59:59.999999Z', (1, 0)),
+    ('2026-08-04T23:00:00.000001Z', (0, 1)),
+    ('2026-08-04T23:00:01Z', (0, 1)),
+])
+def test_valid_remote_freshness_compares_instants(tmp_path, timestamp, expected):
+    runner = DurableRunner()
+    def timed(argv, **kwargs):
+        result = runner(argv, **kwargs)
+        if argv[1:3] == ['issue', 'view']:
+            payload = json.loads(result.stdout)
+            payload['updatedAt'] = timestamp
+            result.stdout = json.dumps(payload)
+        return result
+    row = fix_row(status='approved')
+    assert durable_apply(tmp_path, [row], timed) == expected
+    assert len(runner.comments) == expected[0]
