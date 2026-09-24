@@ -191,6 +191,12 @@ class Reconciled:
     # above and for the same reason: `meta.coverage` is what the report SAYS,
     # and this is a population certification consumes but never publishes.
     gated_suppressed: list = field(default_factory=list)
+    # #2013 fix round 1 (review I1): the suppressed driver keys that scoped a
+    # DELTA run, or None. Carried beside `integrity` (which also publishes it)
+    # the way `tools_manifest_invalid` is: certification takes it as an input to
+    # NAME the caveat, and must not have to read a section. The gate itself
+    # moves through `integrity_ok`, because the same fact is in that dict.
+    delta_scope_suppressed_git_drivers: list | None = None
 
 
 def tools_ran_from_dispositions(dispositions):
@@ -221,10 +227,15 @@ def tools_produced_from_dispositions(dispositions):
             if d.get("status") in ("ok", "empty", "noscan")}
 
 
-def reconcile(plan, tools, resolved):
+def reconcile(plan, tools, resolved, run=None):
     """The plan-reconciliation cluster (WS-0 S2): meta.coverage and
     meta.integrity from the dispatch plan, the tool layer and the resolved
-    findings (verdict stats, tool axis, ocrdb coverage, delta counts)."""
+    findings (verdict stats, tool axis, ocrdb coverage, delta counts).
+
+    `run` is the RunConfig, needed only for the #2013 delta-scope caveat below:
+    whether this run was SCOPED by a diff. Optional so a caller that predates
+    it still reconciles (the caveat then never arms, which is the full-repo
+    answer)."""
     planned = (plan.fan_out or {}).get("planned") or {} if isinstance(plan.fan_out, dict) else {}
     executed = (plan.fan_out or {}).get("executed") or {} if isinstance(plan.fan_out, dict) else {}
     panels_incomplete = {p for p, n in planned.items() if executed.get(p, 0) < n}
@@ -362,6 +373,27 @@ def reconcile(plan, tools, resolved):
     # with no manifest at all), exactly like `invalid_verify_queue`.
     integrity = dict(integrity)
     integrity["tools_manifest_invalid"] = tools.manifest_invalid
+    # #2013 fix round 1 (review I1): suppressing the target's clean filter makes
+    # git compare RAW worktree bytes against a FILTERED index blob, so paths
+    # nobody touched read as modified. On a full-repo scan that costs
+    # `target_dirty` and nothing the findings depend on, and the coverage
+    # disclosure is proportionate. On a DELTA-scoped run the inflated comparison
+    # chose `collect_changed_files`, `diff-hunks.json` and the on-diff gate
+    # scope, so the run cannot claim certified coverage -- recorded here, in the
+    # same dict and therefore in the same `integrity_ok` the other
+    # "this artifact cannot be trusted" reasons move the gate through.
+    #
+    # `gate_scope == "on-diff"` is NOT the discriminator: it is the DEFAULT and
+    # is inert without a delta map (`verdicts.resolve_findings` only scopes when
+    # `delta_mode` is true), so keying on it would sink every ordinary run.
+    delta_scoped = bool(getattr(resolved, "delta_mode", False)
+                        or (run is not None and getattr(run, "review_type", None)
+                            == "changes"))
+    suppressed_drivers = repair_mod.repair_git_drivers_suppressed(
+        plan.git_drivers_suppressed)
+    delta_scope_suppressed = (sorted({row["key"] for row in suppressed_drivers})
+                              if delta_scoped and suppressed_drivers else None)
+    integrity["delta_scope_suppressed_git_drivers"] = delta_scope_suppressed
     scope_ok = not ((plan.out_of_scope or {}).get("count")
                     if isinstance(plan.out_of_scope, dict) else False)
     integrity_ok = scope_ok and not (integrity.get("unexpected_findings_files")
@@ -380,7 +412,11 @@ def reconcile(plan, tools, resolved):
                                      # Exempting it made corrupting one byte of
                                      # a target-writable file the cheapest way
                                      # to turn an INCONCLUSIVE gate into PASS.
-                                     or integrity.get("tools_manifest_invalid"))
+                                     or integrity.get("tools_manifest_invalid")
+                                     # #2013 fix round 1: a delta whose scope was
+                                     # chosen by a suppressed comparison.
+                                     or integrity.get(
+                                         "delta_scope_suppressed_git_drivers"))
     # 5.0 (matrix Sec5.1): certifiable coverage over the review matrix's FLOOR
     # cells, alongside the requested-absent-TOOL check above. `coverages` is
     # the raw list of coverage-<group>.json dicts the caller read (main()
@@ -480,10 +516,21 @@ def reconcile(plan, tools, resolved):
         # no-coverage claim here may be about the MATRIX, not the target.
         # Driver-computed; no agent files a finding for it.
         "test_inventory": dict(plan.test_inventory or {}),
+        # #2013: which of the TARGET's own Git driver commands this scan ran
+        # with emptied -- `[{"repo": ".", "key": "filter.lfs.clean"}, ...]`.
+        # The probe SUPPRESSES these rather than refusing the target (a
+        # git-lfs or git-crypt checkout used to be unreviewable), so the report
+        # has to say that the tree was read with them off: a pointer file was
+        # compared as a pointer file. Always emitted, `[]` included -- the
+        # absence of a suppression must read as "measured and did not happen".
+        # Repaired at the read, like its `tools_*` siblings above: the key
+        # half is repository-authored.
+        "git_drivers_suppressed": suppressed_drivers,
         "resume": plan.resume,
         "delta": resolved.delta_meta,
     }
     return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
+                      delta_scope_suppressed_git_drivers=delta_scope_suppressed,
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
                       tools_sanitized=sanitized, tools_network=network,

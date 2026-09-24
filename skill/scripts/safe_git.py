@@ -10,6 +10,25 @@ silently skipped the filter refusal and the submodule bound. The gate is now a
 capability question ("can this subcommand run a repository-configured
 command?") answered from an explicit allowlist of plumbing that cannot, so an
 unknown or unenumerated spelling fails CLOSED into the preflight.
+
+A repository-configured command is SUPPRESSED, not refused (#2013). #2006
+refused the target, which made every git-lfs (`git lfs install --local`) or
+git-crypt checkout unreviewable on every path that touches git -- discovery's
+dirty check, the manifest's provenance, the delta map, validate's baseline --
+with no override. The preflight now collects each such key and empties it with
+a `-c <key>=` override on every later launch, proves each override took, and
+discloses the pairs it neutralized. The refusal survives exactly where the
+proof fails: a key that still reads non-empty is never run.
+
+WHAT SUPPRESSION COSTS, measured (#2013 fix round 1): a clean filter is what
+makes the index blob equal the worktree, so emptying it leaves git comparing
+RAW worktree bytes against a FILTERED index blob. Paths under a suppressed
+driver therefore compare as MODIFIED: dirtiness for them is unknown and a delta
+may include them. Measured on the canonical git-lfs shape -- index blob
+`ptr payload`, worktree `BIG payload`, plain `git status` clean, this probe's
+`status` reporting ` M big.bin`. That is why the suppression is disclosed
+rather than silent, and why a DELTA-scoped run over a suppressed comparison
+cannot certify its coverage (`synth/tool_axis.reconcile`).
 """
 from typing import TYPE_CHECKING
 import os
@@ -124,16 +143,23 @@ def _no_hooks_path():
     return _HOOKS_PATH
 
 
-def _launch_argv(resolved, directory, command):
-    """The argv for one probe launch: trusted git, cwd, both suppressions.
+def _launch_argv(resolved, directory, command, drivers=()):
+    """The argv for one probe launch: trusted git, cwd, every suppression.
 
     ONE place, so a new launch site cannot forget one of them -- the fsmonitor
     `-c` is what makes several allowlist entries safe (see the allowlist), and
     the hooksPath `-c` is what makes all of them safe.
+
+    `drivers` is the `-c <key>=` run of tokens the preflight composed for the
+    repository-configured commands it found (#2013), empty until it has read a
+    config. They sit in the GLOBAL position, before the subcommand, like the
+    other two -- and because git exports `-c` through `GIT_CONFIG_PARAMETERS`,
+    they reach the `git status --porcelain=2` child that runs inside each
+    submodule as well (measured; nothing else in this module does).
     """
     return [resolved.path, "-C", directory,
             "-c", "core.fsmonitor=false",
-            "-c", "core.hooksPath=" + _no_hooks_path(), *command]
+            "-c", "core.hooksPath=" + _no_hooks_path(), *drivers, *command]
 
 
 def _checkout_boundary(start):
@@ -188,9 +214,18 @@ def _reject_redirection(args):
             raise ValueError(
                 "safe Git: %r would redirect the probe off the root it validated; "
                 "pass a different root instead" % token)
-        if previous == "-c" and token.split("=", 1)[0].lower() in _PROBE_PINNED_CONFIG:
-            raise ValueError(
-                "safe Git: %r would override a setting the probe pins itself" % token)
+        if previous == "-c":
+            key = token.split("=", 1)[0]
+            if key.lower() in _PROBE_PINNED_CONFIG:
+                raise ValueError(
+                    "safe Git: %r would override a setting the probe pins itself" % token)
+            if _is_suppressible(key):
+                # #2013 ruling 5: the probe's own driver overrides are internal
+                # and not subject to this, but a CALLER's come later in argv and
+                # would win -- re-enabling exactly what the preflight emptied.
+                raise ValueError(
+                    "safe Git: %r would re-enable a repository command setting the "
+                    "probe neutralizes" % token)
         if token in _DRIVER_ENABLING_OPTIONS:
             raise ValueError(
                 "safe Git: %r would re-enable a diff driver the probe disables" % token)
@@ -229,23 +264,109 @@ def _is_command_setting(key):
     git's, so obeying one silently emptied the hunk map as well as running
     target code (#2006 fix round 2, C1).
 
-    AVAILABILITY, known and unresolved (#2006 fix round 2, M6): these are
+    `filter.<driver>.smudge` is here (#2013) although the probe never checks
+    out: neutralizing a driver means neutralizing the whole driver, and the
+    caller-refusal below reads the same predicate, where a smudge command a
+    caller re-enabled would be a real hole.
+
+    AVAILABILITY (#2006 fix round 2, M6, resolved by #2013): these are
     REPO-LOCAL keys, so global-config git-lfs is unaffected
     (`GIT_CONFIG_GLOBAL=/dev/null`), but `git-crypt init` and
-    `git lfs install --local` write `filter.*.clean` into `.git/config` -- and
-    such a target is then unreviewable, with no override flag. That is a
-    product decision, not a bug to paper over here.
+    `git lfs install --local` write `filter.*.clean` into `.git/config`. Such a
+    target used to be unreviewable; it is now scanned with these keys emptied
+    and the suppression disclosed in the run manifest and the report -- at the
+    cost the module docstring names: paths under a suppressed driver compare as
+    modified.
 
     `merge.<driver>.driver` is deliberately absent: no subcommand the probe
     runs performs a merge or a checkout, the one exempt path that does
     (`diff_map.acquire_pr`'s `worktree add`) does not go through here, and
-    refusing it would make targets that ship a merge driver unreviewable for a
-    command we never invoke. Revisit if a probe ever merges.
+    overriding it would claim a suppression for a command we never invoke.
+    Revisit if a probe ever merges.
     """
-    if key.startswith("filter.") and key.endswith((".clean", ".process")):
+    if key.startswith("filter.") and key.endswith((".clean", ".process", ".smudge")):
         return True
     return key == "diff.external" or (
         key.startswith("diff.") and key.endswith((".command", ".textconv")))
+
+
+def _filter_driver(key):
+    """The driver name in a `filter.<driver>.<setting>` key, or None.
+
+    Subsection-aware: git's subsection is everything between the first and the
+    last dot, so `filter.a.b.clean` is the driver `a.b`, not `a`.
+    """
+    parts = key.split(".")
+    if len(parts) < 3 or parts[0] != "filter":
+        return None
+    return ".".join(parts[1:-1])
+
+
+def _is_required_flag(key):
+    """Whether `key` is a `filter.<driver>.required` flag.
+
+    Emptying a required driver's command line is not enough: git dies
+    (`fatal: clean filter 'x' failed`, rc 128 -- measured) when a required
+    driver produces no filtered content, so the flag has to come off with the
+    command. `-c filter.<d>.required=` reads as false (git parses the empty
+    string as a false boolean).
+    """
+    return _filter_driver(key) is not None and key.endswith(".required")
+
+
+def _canonical_key(key):
+    """`key` with its section and variable name lowercased, as `config --list`
+    prints them. The SUBSECTION keeps its case, because git compares that half
+    case-sensitively -- so this normalizes exactly what git normalizes."""
+    parts = key.split(".")
+    if len(parts) < 2:
+        return key.lower()
+    return ".".join([parts[0].lower(), *parts[1:-1], parts[-1].lower()])
+
+
+def _is_suppressible(key):
+    """Whether `key` is one the preflight would empty (#2013 ruling 5).
+
+    Read by `_reject_redirection` against a CALLER's `-c`, so it normalizes
+    case first: a caller's `-c FILTER.lfs.CLEAN=...` names the same setting
+    git would, and re-enabling a driver the probe empties is the same hole as
+    undoing `core.hooksPath`.
+    """
+    canonical = _canonical_key(key)
+    return _is_command_setting(canonical) or _is_required_flag(canonical)
+
+
+def _driver_keys(settings):
+    """The keys in `settings` this probe must empty, sorted.
+
+    Every command line the repository authored, plus the `required` flag of
+    each filter driver that carries one -- that flag alone is not a command and
+    is left alone (the probe must not claim a suppression it did not make, and
+    a required driver with no command at all is the target's own breakage, not
+    ours).
+    """
+    keys = sorted(key for key, value in settings.items()
+                  if value and _is_command_setting(key))
+    drivers = {_filter_driver(key) for key in keys}
+    keys += sorted(key for key, value in settings.items()
+                   if value and _is_required_flag(key)
+                   and _filter_driver(key) in drivers)
+    return keys
+
+
+def _settings(stdout):
+    """`config --null --list` output as {key: value}, the LAST value winning.
+
+    Last wins because git enumerates command-line `-c` config AFTER the files
+    (measured), which is what makes an override visible to the confirmation
+    read: the repository's value is listed first and the empty override
+    second.
+    """
+    settings = {}
+    for record in stdout.split("\0"):
+        key, _, value = record.partition("\n")
+        settings[key] = value
+    return settings
 
 
 def _with_options(args, options):
@@ -272,14 +393,25 @@ def _needs_preflight(args):
     return any(token.split("=", 1)[0] in excluded for token in args)
 
 
-def probe(root, args, runner=subprocess.run, timeout=15, text=True):
+def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=None):
     """Run a captured probe with one shared `timeout`-second deadline.
 
     `text` and `timeout` are the CALLER's contract for the command it asked
     for; the preflight always reads text, because it parses config and index
     records. Preflighting reads effective config and tracked submodules rather
-    than disabling content normalization or hiding submodule dirt. Unsupported
-    command filters fail closed; their values are never included in errors.
+    than disabling content normalization or hiding submodule dirt.
+
+    `suppressed` (#2013) is the disclosure channel: an optional list the caller
+    passes, to which the probe appends one `(repository, key)` pair per
+    repository-configured command it emptied -- `"."` for the root, else the
+    submodule's path relative to it. A caller that passes nothing is suppressed
+    SILENTLY, because the run manifest is the disclosure of record and every
+    other caller only needs a working probe. Values are never disclosed and
+    never appear in an error: they are command lines the target authored.
+
+    A caller that CARES what the answer means should pass the list: paths under
+    a suppressed driver compare as modified, so dirtiness for them is unknown
+    and a delta may include them (see the module docstring).
     """
     def preflight_failure(proc):
         """A failed ROOT preflight, as a result for the command the caller asked for.
@@ -294,7 +426,7 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
         returncode and stderr stay the preflight's: that is the real cause.
         """
         return subprocess.CompletedProcess(
-            _launch_argv(resolved, root, prepared), proc.returncode,
+            _launch_argv(resolved, root, prepared, drivers), proc.returncode,
             proc.stdout if text else _encoded(proc.stdout),
             proc.stderr if text else _encoded(proc.stderr))
 
@@ -312,13 +444,34 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
                       capture_output=True, text=text, timeout=timeout, env=env)
 
     deadline = time.monotonic() + timeout
+    # The `-c <key>=` tokens composed so far, and the (repository, key) pairs
+    # behind them. Grown as each repository's config is read, so every launch
+    # AFTER a collection carries every override collected up to that point.
+    drivers: list = []
+    overridden: set = set()
+    neutralized: list = []
+    collected_in: list = []
 
-    def run(directory, command, as_text=True):
+    def run(directory, command, as_text=True, overrides=None):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired("trusted git probe", timeout)
-        return runner(_launch_argv(resolved, directory, command),
+        return runner(_launch_argv(resolved, directory, command,
+                                   drivers if overrides is None else overrides),
                       capture_output=True, text=as_text, timeout=remaining, env=env)
+
+    def read_config(directory, overrides=None):
+        """One `config --null --list --includes` read of `directory`.
+
+        The COLLECTING read passes `overrides=()`: an override already composed
+        would make the same key read empty here, and a second repository
+        setting it would then go uncollected and undisclosed. Reading raw is
+        safe -- `config --list` runs no repository-configured command, which is
+        why the preflight could read it before refusing anything in #2006 --
+        and the confirmation read passes the overrides on purpose.
+        """
+        return run(directory, ["config", "--null", "--list", "--includes"],
+                   overrides=overrides)
 
     root_real = os.path.realpath(root)
     pending = [root_real]
@@ -334,20 +487,20 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
             top = run(directory, ["rev-parse", "--show-toplevel"])
             if top.returncode != 0 or os.path.realpath(top.stdout.strip()) != directory:
                 raise RepositoryRefused("safe Git status: submodule worktree root cannot be verified")
-        config = run(directory, ["config", "--null", "--list", "--includes"])
+        config = read_config(directory, overrides=())
         if config.returncode != 0:
             if directory != root_real:
                 raise RepositoryRefused("safe Git status: submodule config probe failed")
             return preflight_failure(config)
-        settings = {}
-        for record in config.stdout.split("\0"):
-            key, _, value = record.partition("\n")
-            settings[key] = value
-        for key, value in settings.items():
-            if value and _is_command_setting(key):
-                # The key is repository-authored too; repr escapes control bytes.
-                raise RepositoryRefused(
-                    "safe Git probe: unsupported repository command setting %r" % key)
+        found = _driver_keys(_settings(config.stdout))
+        if found:
+            where = os.path.relpath(directory, root_real)
+            for key in found:
+                if key not in overridden:
+                    overridden.add(key)
+                    drivers.extend(("-c", key + "="))
+                neutralized.append((where, key))
+            collected_in.append(directory)
         index = run(directory, ["ls-files", "--stage", "-z"])
         if index.returncode != 0:
             if directory != root_real:
@@ -370,6 +523,38 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True):
                 pending.append(child)
                 if len(seen) + len(pending) > _MAX_REPOSITORIES:
                     raise RepositoryRefused("safe Git status: submodule traversal exceeds 64 repositories")
+    if overridden:
+        # Ruling 3: prove the override took, in every repository that carried
+        # one and at the root the final command runs in, BEFORE running it. A
+        # key that still reads non-empty is the fail-closed case the owner kept
+        # -- the one thing left that refuses a target.
+        for directory in dict.fromkeys([root_real, *collected_in]):
+            confirmed = read_config(directory)
+            if confirmed.returncode != 0:
+                raise RepositoryRefused(
+                    "safe Git probe: the repository command settings this probe "
+                    "overrides could not be re-read to confirm the override")
+            live = _settings(confirmed.stdout)
+            for key in sorted(overridden):
+                # KNOWN CASE (#2013 fix round 1, review M3): a subsection
+                # containing `=` -- `[filter "a=b"] clean = ...`, the key
+                # `filter.a=b.clean` -- cannot be overridden at all, because git
+                # parses the token `-c filter.a=b.clean=` as the key `filter.a`
+                # with the value `b.clean=`. The real key stays set, this read
+                # sees it, and the target is REFUSED (measured). A target can
+                # choose to be unreviewable that way; it can never choose to be
+                # obeyed. Pinned by
+                # test_an_unoverridable_subsection_refuses_rather_than_running.
+                if live.get(key):
+                    # The key is repository-authored; repr escapes control bytes.
+                    # The VALUE is a command line and is never named.
+                    raise RepositoryRefused(
+                        "safe Git probe: the override for repository command setting "
+                        "%r did not take effect" % key)
+        if suppressed is not None:
+            # Sorted, so the manifest can be diffed across runs: submodule
+            # traversal order is an index-order artifact, not a fact.
+            suppressed.extend(sorted(neutralized))
     if name == "status":
         # A status that hides submodule dirt is not an integrity baseline; every
         # OTHER subcommand keeps the argv the caller asked for, because this is

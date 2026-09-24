@@ -612,6 +612,65 @@ class TestTheMidRunFlagParitiesWithSynthesizesParser(unittest.TestCase):
         self.assertIs(parsed.tools_disabled_mid_run, True)
 
 
+class TestTheSuppressedGitDriversReachTheChild(unittest.TestCase):
+    """#2013: the manifest is the disclosure of record, and the REPORT is where
+    an operator meets it.
+
+    `run-manifest.json` is a top-level artifact, outside the `--run-dir` the
+    synthesize child resolves everything against, so the driver threads the
+    fact in on the argv -- the same route `--tools-disabled-mid-run` takes, and
+    for the same reason.
+    """
+
+    def setUp(self):
+        self.root = os.path.realpath(
+            self.enterContext(tempfile.TemporaryDirectory()))
+        os.makedirs(runio._pano(self.root))
+
+    def _cmd(self, manifest):
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured["cmd"] = cmd
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            synthesize.synthesize_execute(self.root, manifest)
+        return captured["cmd"]
+
+    def _manifest(self, suppressed):
+        return {"run_id": "R", "security_mode": "standard", "flags": {},
+                "git_drivers_suppressed": suppressed}
+
+    def test_the_pairs_are_passed_when_the_manifest_records_them(self):
+        cmd = self._cmd(self._manifest(
+            [{"repo": ".", "key": "filter.lfs.clean"},
+             {"repo": "vendor/sub", "key": "diff.external"}]))
+        self.assertIn("--git-drivers-suppressed", cmd)
+        value = cmd[cmd.index("--git-drivers-suppressed") + 1]
+        self.assertEqual(json.loads(value),
+                         [{"repo": ".", "key": "filter.lfs.clean"},
+                          {"repo": "vendor/sub", "key": "diff.external"}])
+
+    def test_a_clean_target_passes_nothing(self):
+        self.assertNotIn("--git-drivers-suppressed", self._cmd(self._manifest([])))
+
+    def test_a_manifest_predating_the_field_passes_nothing(self):
+        self.assertNotIn("--git-drivers-suppressed",
+                         self._cmd({"run_id": "R", "security_mode": "standard",
+                                    "flags": {}}))
+
+    def test_the_driver_argv_token_is_a_flag_synthesize_accepts(self):
+        # The #1602 parity rule: the emitted token, parsed by the CHILD's own
+        # parser, because `_cli_args` sets attributes and argparse never runs.
+        cmd = self._cmd(self._manifest([{"repo": ".", "key": "filter.lfs.clean"}]))
+        index = cmd.index("--git-drivers-suppressed")
+        parsed = syn.build_parser().parse_args(cmd[index:index + 2])
+        self.assertEqual(json.loads(parsed.git_drivers_suppressed),
+                         [{"repo": ".", "key": "filter.lfs.clean"}])
+
+
 class TestSynthesizeDonePredicate(unittest.TestCase):
     """#1643 ruling 3: the last parse-only done predicate in the run loop.
 

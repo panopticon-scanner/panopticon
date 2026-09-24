@@ -120,6 +120,55 @@ class TestCertify(unittest.TestCase):
         self.assertEqual(r["gate"], "FAIL")
         self.assertFalse(r["coverage_certified"])
 
+class TestADeltaScopedRunCannotCertifyOverSuppressedGitDrivers(unittest.TestCase):
+    """#2013 fix round 1 (review I1): suppression is certification-grade on a
+    delta-scoped run and disclosure-only on a full-repo one.
+
+    Emptying the target's clean filter makes git compare raw worktree bytes
+    against a filtered index blob, so paths nobody touched read as modified --
+    measured, on the canonical git-lfs shape. On a full-repo scan that costs
+    provenance (`target_dirty`) and nothing else. On a delta-scoped run the
+    inflated comparison CHOOSES the reviewed file set and the gate's scope, so
+    the run cannot claim certified coverage.
+
+    The caveat rides `meta.integrity` and therefore `integrity_ok`, which is
+    what moves the gate -- the same two-channel shape `tools_manifest_invalid`
+    uses (`integrity_ok` moves the gate, the named reason writes the note).
+    """
+
+    def test_the_named_reason_writes_the_note_and_sinks_certification(self):
+        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=True,
+                                delta_scope_suppressed_git_drivers=["filter.lfs.clean"])
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("delta scope inflated by suppressed git drivers",
+                      r["coverage_note"])
+        self.assertIn("filter.lfs.clean", r["coverage_note"])
+
+    def test_the_same_reason_through_integrity_ok_is_inconclusive(self):
+        # How reconcile actually calls it: the caveat is in the integrity dict,
+        # so integrity_ok is already false by the time certify runs.
+        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=False,
+                                delta_scope_suppressed_git_drivers=["filter.lfs.clean"])
+        self.assertEqual(r["gate"], "INCONCLUSIVE")
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("delta scope inflated by suppressed git drivers",
+                      r["coverage_note"])
+
+    def test_a_full_repo_run_passes_the_reason_as_none_and_certifies(self):
+        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=True,
+                                delta_scope_suppressed_git_drivers=None)
+        self.assertTrue(r["coverage_certified"])
+        self.assertIsNone(r["coverage_note"])
+
+    def test_it_composes_with_another_caveat_rather_than_replacing_it(self):
+        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=False,
+                                tools_manifest_invalid="unreadable: x",
+                                delta_scope_suppressed_git_drivers=["diff.external"])
+        self.assertIn("tools manifest unreadable", r["coverage_note"])
+        self.assertIn("delta scope inflated by suppressed git drivers",
+                      r["coverage_note"])
+
+
 class TestHealthScore(unittest.TestCase):
     """#1146: secondary health index = the share of reviewed LoC NOT under
     severity-weighted defect footprint, on a 0-100 scale, reported ALONGSIDE the
@@ -525,7 +574,7 @@ reconciled = types.SimpleNamespace(
     groups_meta=[{"name": "App", "files": ["app.py"], "parent": "App"}],
     panels_incomplete=[], tools_absent=[], tools_network_excluded=[], integrity_ok=True,
     cell_audit={"missing_floor": []}, tools_manifest_invalid=None,
-    gated_suppressed=[])
+    gated_suppressed=[], delta_scope_suppressed_git_drivers=None)
 run = types.SimpleNamespace(target=sys.argv[1], fail_on=None, gate_unverified=False)
 
 graded = grading_mod.grade_report(run, resolved, reconciled)

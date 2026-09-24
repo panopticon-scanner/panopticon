@@ -72,9 +72,21 @@ def gate_severity_roles(gate_eligible, fail_on):
     return {"fail_on": name, "in_play": in_play,
             "contributing": [sev for sev in in_play if sev in present]}
 
+# #2013 fix round 1 (review I1): the MEASURED effect of emptying a driver, in
+# one place, so the note, the HTML line, the stderr line and the schema cannot
+# drift into describing different costs. Measured on the canonical git-lfs
+# shape: index blob `ptr payload`, worktree `BIG payload`, plain `git status`
+# clean, probe `status` ` M big.bin`, and `collect_changed_files`/`hunk_map`
+# gaining a file nobody edited.
+_SUPPRESSED_DRIVER_EFFECT = ("paths under a suppressed driver compare as "
+                             "modified: dirtiness for them is unknown and a "
+                             "delta may include them")
+
+
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
             integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
-            missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None):
+            missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
+            delta_scope_suppressed_git_drivers=None):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -103,6 +115,18 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     target-writable file the cheapest way to turn an INCONCLUSIVE run into a
     PASS, on identical findings. It stays in `coverage_certified` too, so a
     caller that passes only the reason still cannot certify.
+
+    `delta_scope_suppressed_git_drivers` (#2013 fix round 1) is the same
+    two-channel shape: the keys whose suppression scoped a DELTA run. Emptying
+    the target's clean filter makes git compare raw worktree bytes against a
+    filtered index blob, so paths nobody touched read as modified -- on a
+    delta-scoped run that inflated comparison chose the reviewed file set and
+    the gate's scope, which is certification-grade. `reconcile` records it in
+    `meta.integrity`, so `integrity_ok` is what moves the gate; this argument is
+    what NAMES the caveat in `coverage_note`, and it sinks
+    `coverage_certified` on its own so a caller that passes only the reason
+    cannot certify either. `None` on a full-repo run, where suppression costs
+    provenance and nothing the findings depend on.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     high_value_incomplete = set(panels_incomplete) & findings_mod.HIGH_VALUE_PANELS
@@ -123,7 +147,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         cert_grade, provisional = overall_grade, None
 
     coverage_certified = not (gate_relevant_gap or any_incomplete
-                              or tools_manifest_invalid)
+                              or tools_manifest_invalid
+                              or delta_scope_suppressed_git_drivers)
 
     note = None
     if tools_manifest_invalid:
@@ -140,6 +165,13 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     if tools_network_excluded:
         gap = "safe network unavailable — online scanner coverage missing: %s" % ", ".join(
             sorted(tools_network_excluded))
+        note = "%s; %s" % (note, gap) if note else gap
+    if delta_scope_suppressed_git_drivers:
+        # Composed, never substituted: this run may also have an unreadable
+        # manifest or a missing network, and an operator needs every reason.
+        gap = ("delta scope inflated by suppressed git drivers — %s: %s"
+               % (_SUPPRESSED_DRIVER_EFFECT,
+                  ", ".join(sorted(delta_scope_suppressed_git_drivers))))
         note = "%s; %s" % (note, gap) if note else gap
 
     return {"gate": gate, "overall_grade": cert_grade,
@@ -546,7 +578,9 @@ def grade_report(run, resolved, reconciled):
                    verdicts_unanswered=resolved.unanswered_gate,
                    missing_floor=len(reconciled.cell_audit["missing_floor"]),
                    tools_manifest_invalid=reconciled.tools_manifest_invalid,
-                   tools_network_excluded=reconciled.tools_network_excluded)
+                   tools_network_excluded=reconciled.tools_network_excluded,
+                   delta_scope_suppressed_git_drivers=(
+                       reconciled.delta_scope_suppressed_git_drivers))
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],

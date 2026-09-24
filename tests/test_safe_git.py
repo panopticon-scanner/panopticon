@@ -7,6 +7,16 @@ import pytest
 
 from scripts import executable, safe_git
 
+# The two canned preflight replies every mock-runner sequence below is built
+# from: `config --null --list --includes` output (NUL-terminated records), and
+# "this launch said nothing".
+def _config(*records):
+    return subprocess.CompletedProcess([], 0, "".join(r + "\0" for r in records), "")
+
+
+def _ok(stdout=""):
+    return subprocess.CompletedProcess([], 0, stdout, "")
+
 
 def test_allowlisted_environment_and_injected_runner(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
@@ -49,14 +59,87 @@ def test_expired_preflight_budget_never_runs_status(tmp_path):
     runner.assert_not_called()
 
 
-@pytest.mark.parametrize("setting", ["filter.fixture.clean", "filter.fixture.process"])
-def test_filter_commands_fail_closed_before_status(tmp_path, setting):
-    runner = mock.Mock(return_value=subprocess.CompletedProcess([], 0, setting + "\nfixture-command-value-must-not-appear\0", ""))
-    with pytest.raises(OSError, match="filter") as error:
-        safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner)
-    assert setting in str(error.value)
-    assert "fixture-command-value-must-not-appear" not in str(error.value)
-    assert runner.call_count == 1
+@pytest.mark.parametrize("setting", ["filter.fixture.clean", "filter.fixture.process",
+                                     "filter.fixture.smudge"])
+def test_filter_commands_are_neutralized_before_status(tmp_path, setting):
+    """#2013: overridden with `-c <key>=`, then CONFIRMED empty, then run.
+
+    #2006 refused this target outright, which made a git-lfs or git-crypt
+    checkout unreviewable. The value is still never executed and still never
+    printed -- it is emptied on every launch that follows the collection.
+    """
+    runner = mock.Mock(side_effect=[
+        _config(setting + "\nfixture-command-value-must-not-appear"),  # root config
+        _ok(),                                                         # root index
+        _config(setting + "\n"),                                       # confirmation
+        _ok(),                                                         # the status
+    ])
+    suppressed = []
+    proc = safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
+                          runner=runner, suppressed=suppressed)
+    assert proc.returncode == 0
+    assert suppressed == [(".", setting)]
+    # Every launch AFTER the collecting read carries the override, and it sits
+    # in the global position, before the subcommand.
+    for call in runner.call_args_list[1:]:
+        argv = call.args[0]
+        assert setting + "=" in argv
+        assert argv[argv.index(setting + "=") - 1] == "-c"
+    assert "fixture-command-value-must-not-appear" not in " ".join(
+        str(call.args[0]) for call in runner.call_args_list)
+
+
+def test_a_required_filter_flag_is_neutralized_with_its_command(tmp_path):
+    """An emptied clean command plus `required = true` is `fatal: clean filter
+    'x' failed` (measured), so the whole driver has to come off, not just the
+    command line."""
+    runner = mock.Mock(side_effect=[
+        _config("filter.fixture.clean\ncmd", "filter.fixture.required\ntrue"),
+        _ok(),
+        _config("filter.fixture.clean\n", "filter.fixture.required\n"),
+        _ok(),
+    ])
+    suppressed = []
+    safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner,
+                   suppressed=suppressed)
+    assert suppressed == [(".", "filter.fixture.clean"),
+                          (".", "filter.fixture.required")]
+
+
+def test_a_required_flag_without_a_command_is_left_alone(tmp_path):
+    # Nothing to neutralize: the probe never invented the target's breakage and
+    # must not claim a suppression it did not make.
+    runner = mock.Mock(side_effect=[_config("filter.fixture.required\ntrue"), _ok(), _ok()])
+    suppressed = []
+    safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner,
+                   suppressed=suppressed)
+    assert suppressed == []
+    assert runner.call_count == 3        # no confirmation read: nothing overridden
+
+
+def test_an_override_that_does_not_take_effect_is_refused(tmp_path):
+    """Ruling 3's fail-closed fallback: the probe proves the override, and a
+    key that still reads non-empty is refused by name rather than run."""
+    runner = mock.Mock(side_effect=[
+        _config("filter.fixture.clean\ncmd"),
+        _ok(),
+        _config("filter.fixture.clean\nstill-here"),    # the override did nothing
+    ])
+    suppressed = []
+    with pytest.raises(safe_git.RepositoryRefused, match="filter.fixture.clean"):
+        safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner,
+                       suppressed=suppressed)
+    assert suppressed == []              # nothing is disclosed as suppressed
+    assert runner.call_count == 3        # the status never ran
+
+
+def test_a_caller_that_asks_for_nothing_is_suppressed_silently(tmp_path):
+    # The manifest is the disclosure of record; every other caller just gets a
+    # working probe (`suppressed` defaults to None).
+    runner = mock.Mock(side_effect=[_config("filter.fixture.clean\ncmd"), _ok(),
+                                    _config("filter.fixture.clean\n"), _ok()])
+    assert safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
+                          runner=runner).returncode == 0
 
 
 def test_preflight_failure_is_returned_without_status(tmp_path):
@@ -205,11 +288,13 @@ def test_unreadable_checkout_boundary_does_not_launch_git(tmp_path):
 _PLANTED_FILTER = "filter.fixture.clean\nfixture-command-value-must-not-appear\0"
 
 
-def _preflight_refusing_runner():
-    """A runner whose first (config) reply plants a command filter.
+def _unprovable_override_runner():
+    """A runner that plants a command filter and never honours the override.
 
-    The refusal is raised from the preflight and nowhere else, so
-    "did this argv preflight?" is exactly "did this raise on call 1?".
+    Every reply is the same config listing, so the confirmation read still sees
+    the value and the probe refuses (#2013 ruling 3) -- raised from the
+    preflight and nowhere else, so "did this argv preflight?" is exactly "did
+    this raise?", as it was when the planted filter refused outright.
     """
     return mock.Mock(return_value=subprocess.CompletedProcess([], 0, _PLANTED_FILTER, ""))
 
@@ -221,10 +306,11 @@ def _preflight_refusing_runner():
     ["status"],                                          # the bare subcommand
 ])
 def test_every_spelling_of_status_preflights(tmp_path, args):
-    runner = _preflight_refusing_runner()
+    runner = _unprovable_override_runner()
     with pytest.raises(OSError, match="filter"):
         safe_git.probe(str(tmp_path), args, runner=runner)
-    assert runner.call_count == 1
+    # config, index, confirmation -- and never the command itself.
+    assert runner.call_count == 3
 
 
 @pytest.mark.parametrize("args", [
@@ -236,10 +322,10 @@ def test_every_spelling_of_status_preflights(tmp_path, args):
     ["--no-pager", "rev-parse", "HEAD"],                 # an option we cannot classify
 ])
 def test_unknown_and_content_reading_spellings_preflight(tmp_path, args):
-    runner = _preflight_refusing_runner()
+    runner = _unprovable_override_runner()
     with pytest.raises(OSError, match="filter"):
         safe_git.probe(str(tmp_path), args, runner=runner)
-    assert runner.call_count == 1
+    assert runner.call_count == 3
 
 
 @pytest.mark.parametrize("args", [
@@ -250,11 +336,13 @@ def test_unknown_and_content_reading_spellings_preflight(tmp_path, args):
     ["rev-list", "-1", "HEAD"],
 ])
 def test_allowlisted_plumbing_runs_once_without_a_preflight(tmp_path, args):
-    runner = _preflight_refusing_runner()
+    runner = _unprovable_override_runner()
     result = safe_git.probe(str(tmp_path), args, runner=runner)
     assert result.returncode == 0
     assert runner.call_count == 1
     assert runner.call_args.args[0][-len(args):] == args
+    # No config was read, so nothing was collected and nothing is overridden.
+    assert "filter.fixture.clean=" not in runner.call_args.args[0]
 
 
 def test_only_status_is_pinned_to_report_submodule_dirt(tmp_path):
@@ -286,8 +374,10 @@ def test_caller_timeout_and_bytes_contract_survive_the_preflight(tmp_path):
 
 @pytest.mark.parametrize("args,replies,fragment", [
     (["status", "--porcelain", "-z"],
-     [subprocess.CompletedProcess([], 0, "filter.fixture.clean\ncmd\0", "")],
-     "command setting"),
+     [subprocess.CompletedProcess([], 0, "filter.fixture.clean\ncmd\0", ""),
+      subprocess.CompletedProcess([], 0, "", ""),
+      subprocess.CompletedProcess([], 0, "filter.fixture.clean\ncmd\0", "")],
+     "did not take effect"),
     (["status", "--porcelain", "-z"],
      [subprocess.CompletedProcess([], 0, "", ""),
       subprocess.CompletedProcess([], 0, "160000 " + "a" * 40 + " 0\t../escape\0", "")],
@@ -351,17 +441,23 @@ def test_the_hooks_directory_is_ours_and_stays_empty(tmp_path):
 
 @pytest.mark.parametrize("setting", ["diff.external", "diff.hostile.command",
                                      "diff.hostile.textconv"])
-def test_diff_command_drivers_fail_closed_like_filters(tmp_path, setting):
-    # #2006 fix round 2, C1: this PR brought `git diff` under the probe, and
-    # the preflight only ever looked at `filter.*`. Every one of these is a
-    # repository-authored command line that `diff` will execute.
-    runner = mock.Mock(return_value=subprocess.CompletedProcess(
-        [], 0, setting + "\nfixture-command-value-must-not-appear\0", ""))
-    with pytest.raises(safe_git.RepositoryRefused, match="command") as error:
-        safe_git.probe(str(tmp_path), ["diff", "--name-only", "HEAD"], runner=runner)
-    assert setting in str(error.value)
-    assert "fixture-command-value-must-not-appear" not in str(error.value)
-    assert runner.call_count == 1
+def test_diff_command_drivers_are_neutralized_like_filters(tmp_path, setting):
+    # #2006 fix round 2, C1: every one of these is a repository-authored
+    # command line that `diff` will execute, and an external driver's output
+    # REPLACES git's. #2013 empties it instead of refusing the target; the
+    # `--no-ext-diff --no-textconv` pair stays on beside the override.
+    runner = mock.Mock(side_effect=[
+        _config(setting + "\nfixture-command-value-must-not-appear"),
+        _ok(), _config(setting + "\n"), _ok(),
+    ])
+    suppressed = []
+    safe_git.probe(str(tmp_path), ["diff", "--name-only", "HEAD"], runner=runner,
+                   suppressed=suppressed)
+    assert suppressed == [(".", setting)]
+    argv = runner.call_args.args[0]
+    assert setting + "=" in argv
+    assert "--no-ext-diff" in argv and "--no-textconv" in argv
+    assert "fixture-command-value-must-not-appear" not in " ".join(argv)
 
 
 @pytest.mark.parametrize("args,expected", [
@@ -437,6 +533,13 @@ def test_a_failed_root_preflight_names_the_command_the_caller_asked_for(tmp_path
     ["-c", "CORE.HOOKSPATH=/x", "rev-parse", "HEAD"],
     ["diff", "--ext-diff", "HEAD"],
     ["diff", "--textconv", "HEAD"],
+    # #2013 ruling 5: a caller re-enabling a driver the probe empties is the
+    # same hole as a caller undoing `core.hooksPath`.
+    ["-c", "filter.lfs.clean=git-lfs clean", "status", "--porcelain", "-z"],
+    ["-c", "FILTER.lfs.CLEAN=x", "status", "--porcelain", "-z"],
+    ["-c", "filter.lfs.required=true", "status", "--porcelain", "-z"],
+    ["-c", "diff.external=x", "diff", "--name-only"],
+    ["-c", "diff.d.textconv=x", "diff", "--name-only"],
 ])
 def test_a_caller_cannot_undo_what_the_probe_pins(tmp_path, args):
     """#2006 review N2: a caller's `-c` for a key the probe sets, or a flag

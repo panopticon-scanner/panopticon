@@ -147,13 +147,18 @@ def plant_fsmonitor_command(repo, marker=None):
     return marker
 
 
-def plant_clean_filter(repo, rel="a.py", marker=None):
-    """Commit `rel` under a `filter=fixture` attribute, then configure that
-    filter's clean command. Returns the marker.
+def plant_filter_command(repo, setting="clean", rel="a.py", marker=None):
+    """Commit `rel` under a `filter=fixture` attribute, then configure
+    `filter.fixture.<setting>` to the marker command. Returns the marker.
 
     The rewrite at the end is the same SIZE as the committed content: a
     size-only stat difference would let Git call the file modified without ever
     running the filter, and the fixture would prove nothing.
+
+    `setting="process"` (#2013) plants the long-running filter protocol
+    instead. Git STARTS the command and then fails its pkt-line handshake
+    (`error: initialization for subprocess ... failed`, rc 0 -- measured), and
+    the start is what writes the marker, which is all the fixture needs.
     """
     marker = marker or hostile_marker(repo)
     with open(os.path.join(repo, rel), "w", encoding="utf-8") as fh:
@@ -162,10 +167,15 @@ def plant_clean_filter(repo, rel="a.py", marker=None):
         fh.write("%s filter=fixture\n" % rel)
     _git(repo, "add", rel, ".gitattributes")
     _git(repo, "commit", "-qm", "filter fixture")
-    _git(repo, "config", "filter.fixture.clean", _marker_command(marker))
+    _git(repo, "config", "filter.fixture." + setting, _marker_command(marker))
     with open(os.path.join(repo, rel), "w", encoding="utf-8") as fh:
         fh.write("after!\n")
     return marker
+
+
+def plant_clean_filter(repo, rel="a.py", marker=None):
+    """`filter.fixture.clean`, the #1985/#2006 fixture. Returns the marker."""
+    return plant_filter_command(repo, "clean", rel, marker)
 
 
 def path_shim_git(directory, marker, stdout=""):

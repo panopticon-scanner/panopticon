@@ -58,26 +58,38 @@ class TestValidatePhase(unittest.TestCase):
             fh.write("after!\n")
         return marker
 
-    def test_clean_filter_baseline_never_executes_and_fails_closed(self):
+    def test_clean_filter_baseline_never_executes_and_is_still_captured(self):
+        # #2013 inverts #2006 here: the filter is EMPTIED rather than the tree
+        # refused, so the integrity baseline is real instead of the
+        # probe-failed sentinel. The marker assertion is unchanged -- that is
+        # the invariant; only who pays for it moved.
         d = self._git_repo()
         marker = self._install_clean_filter(d)
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             baseline = validate_phase.capture_tree_baseline(d)
         self.assertFalse(os.path.exists(marker))
+        # Review M2: assert on the BASELINE FILE. The sentinel is a file-content
+        # constant, so comparing it against a stderr buffer was a dead assertion
+        # that read like a check.
         with open(baseline) as fh:
-            self.assertEqual(fh.read(), validate_phase._TREE_BASELINE_PROBE_FAILED)
-        self.assertIn("filter", err.getvalue())
-        self.assertTrue(validate_phase._tree_delta(d, subprocess.run))
+            content = fh.read()
+        self.assertIn("a.py", content)
+        self.assertNotEqual(content, validate_phase._TREE_BASELINE_PROBE_FAILED)
+        # The tree did not move between the baseline and the delta.
+        self.assertEqual(validate_phase._tree_delta(d, subprocess.run), [])
 
-    def test_clean_filter_delta_never_executes_and_fails_closed(self):
+    def test_clean_filter_delta_never_executes_and_is_still_measured(self):
+        # The filter fixture COMMITS a.py and .gitattributes and rewrites a.py,
+        # so the tree really did move after the baseline: the delta names the
+        # file, where #2006 could only name the refusal.
         d = self._git_repo()
         validate_phase.capture_tree_baseline(d)
         marker = self._install_clean_filter(d)
         delta = validate_phase._tree_delta(d, subprocess.run)
         self.assertFalse(os.path.exists(marker))
         self.assertTrue(delta)
-        self.assertIn("filter", " ".join(delta))
+        self.assertIn("a.py", " ".join(delta))
 
     def _submodule_repo(self):
         d, child = self._git_repo(), self._git_repo()
@@ -105,7 +117,9 @@ class TestValidatePhase(unittest.TestCase):
         marker = self._install_clean_filter(sub)
         delta = validate_phase._tree_delta(d, subprocess.run)
         self.assertFalse(os.path.exists(marker))
-        self.assertIn("filter", " ".join(delta))
+        # #2013: the submodule's dirt is REPORTED with its filter emptied --
+        # the `-c` override reaches the child git that runs inside `sub`.
+        self.assertIn("sub", " ".join(delta))
 
     def test_missing_trusted_git_fails_closed(self):
         d = self._git_repo()
