@@ -225,6 +225,29 @@ class TestDownloadPolicy(unittest.TestCase):
                 transport=transport)
         self.assertEqual([first], [request.full_url for request in transport.requests])
 
+    def test_trivy_release_asset_redirect_is_allowed_only_without_credentials(self):
+        first = "https://github.com/aquasecurity/trivy/releases/download/v0.75.0/archive"
+        target = "https://release-assets.githubusercontent.com/fixture/archive"
+        responses = {first: (302, target, b""), target: (200, None, b"archive")}
+        body, requests = self._get_through_canned_redirects(first, responses)
+        self.assertEqual(body, b"archive")
+        self.assertEqual([first, target], [request.full_url for request in requests])
+        transport = _CannedTransport(responses)
+        with self.assertRaisesRegex(RuntimeError, "authenticated redirect"):
+            self._get_through_canned_redirects(
+                first, responses, {"Authorization": "Bearer fixture"},
+                transport=transport)
+        self.assertEqual([first], [request.full_url for request in transport.requests])
+
+    def test_trivy_asset_redirect_to_unapproved_host_is_rejected(self):
+        first = "https://github.com/aquasecurity/trivy/releases/download/v0.75.0/archive"
+        target = "https://example.com/archive"
+        transport = _CannedTransport({first: (302, target, b"")})
+        with self.assertRaisesRegex(RuntimeError, "not approved"):
+            self._get_through_canned_redirects(first, transport.responses,
+                                               transport=transport)
+        self.assertEqual([first], [request.full_url for request in transport.requests])
+
 DOCKERFILE = """\
 ENV PATH="/usr/local/cargo/bin:${PATH}"
 ARG RUSTUP_VERSION=1.29.1
@@ -471,6 +494,203 @@ class TestMain(unittest.TestCase):
         v, shas = bp.current_rustup_pin(text)
         self.assertEqual(v, "1.30.0")
         self.assertEqual(shas, RUSTUP_SHAS)
+
+
+# --- Trivy and compiler freshness: independent publisher fixtures ------------
+
+FRESH_DOCKERFILE = (DOCKERFILE +
+                    "ARG TRIVY_VERSION=0.74.0\n"
+                    "ARG TRIVY_SHA256_AMD64=" + "1" * 64 + "\n"
+                    "ARG TRIVY_SHA256_ARM64=" + "2" * 64 + "\n"
+                    "ARG RUST_TOOLCHAIN_VERSION=1.98.1\n"
+                    "ARG CARGO_AUDIT_VERSION=0.22.2\n")
+TRIVY_NAMES = {
+    "AMD64": "trivy_0.75.0_Linux-64bit.tar.gz",
+    "ARM64": "trivy_0.75.0_Linux-ARM64.tar.gz",
+}
+TRIVY_BYTES = {"AMD64": b"independent amd64 tar fixture",
+               "ARM64": b"independent arm64 tar fixture"}
+TRIVY_DIGESTS = {arch: hashlib.sha256(body).hexdigest()
+                 for arch, body in TRIVY_BYTES.items()}
+TRIVY_BASE = "https://github.com/aquasecurity/trivy/releases/download/v0.75.0/"
+TRIVY_TAG_API = "https://api.github.com/repos/aquasecurity/trivy/releases/tags/v0.75.0"
+TRIVY_CHECKSUMS = "trivy_0.75.0_checksums.txt"
+
+
+def _trivy_fixture(*, checksum_lines=None, swapped=False):
+    names = [*TRIVY_NAMES.values(), TRIVY_CHECKSUMS]
+    metadata = {"tag_name": "v0.75.0", "assets": [
+        {"name": name, "browser_download_url": TRIVY_BASE + name} for name in names]}
+    lines = checksum_lines if checksum_lines is not None else [
+        "%s  %s" % (TRIVY_DIGESTS[arch], name)
+        for arch, name in TRIVY_NAMES.items()]
+    responses = {
+        bp.TRIVY_LATEST: json.dumps(metadata).encode(),
+        TRIVY_TAG_API: json.dumps(metadata).encode(),
+        TRIVY_BASE + TRIVY_CHECKSUMS: ("\n".join(lines) + "\n").encode(),
+    }
+    for arch, name in TRIVY_NAMES.items():
+        source = {"AMD64": "ARM64", "ARM64": "AMD64"}[arch] if swapped else arch
+        responses[TRIVY_BASE + name] = TRIVY_BYTES[source]
+    return responses
+
+
+def _fixture_get(responses, requests):
+    def get(url):
+        requests.append(url)
+        if url not in responses:
+            raise AssertionError("unexpected URL: %s" % url)
+        return responses[url]
+    return get
+
+
+RUST_MANIFEST = (b'[pkg.rust]\nversion = "1.99.0 (abcdef123 2026-09-24)"\n'
+                 b'[pkg.rust.target.x86_64-unknown-linux-gnu]\navailable = true\n'
+                 b'[pkg.rust.target.aarch64-unknown-linux-gnu]\navailable = true\n')
+
+
+class TestTrivyFreshness(unittest.TestCase):
+    def test_literal_architecture_names_and_verified_bytes(self):
+        expected_names = {
+            "amd64": "trivy_0.74.0_Linux-64bit.tar.gz",
+            "arm64": "trivy_0.74.0_Linux-ARM64.tar.gz",
+        }
+        self.assertEqual(expected_names, {
+            arch.lower(): "trivy_0.74.0_%s.tar.gz" % suffix
+            for arch, suffix in bp.TRIVY_ARCHIVES.items()})
+        self.assertEqual(TRIVY_NAMES, {
+            "AMD64": "trivy_0.75.0_Linux-64bit.tar.gz",
+            "ARM64": "trivy_0.75.0_Linux-ARM64.tar.gz"})
+        requests = []
+        with mock.patch.object(bp, "_get", _fixture_get(_trivy_fixture(), requests)):
+            self.assertEqual(bp.latest_trivy_version(), "0.75.0")
+            self.assertEqual(bp.verified_trivy_shas("0.75.0"), TRIVY_DIGESTS)
+        self.assertEqual(requests, [bp.TRIVY_LATEST, TRIVY_TAG_API,
+                                    TRIVY_BASE + TRIVY_CHECKSUMS,
+                                    TRIVY_BASE + TRIVY_NAMES["AMD64"],
+                                    TRIVY_BASE + TRIVY_NAMES["ARM64"]])
+
+    def test_bad_checksums_and_wrong_archives_fail_closed(self):
+        good = ["%s  %s" % (TRIVY_DIGESTS[a], n) for a, n in TRIVY_NAMES.items()]
+        cases = (good + [good[0]], good[:1],
+                 [good[0].replace("  ", " "), good[1]],
+                 [good[0].replace("Linux-64bit", "Linux-64bit.tar.gz.extra"), good[1]],
+                 ["f" * 64 + "  " + TRIVY_NAMES["AMD64"], good[1]])
+        for lines in cases:
+            with self.subTest(lines=lines), mock.patch.object(
+                    bp, "_get", _fixture_get(_trivy_fixture(checksum_lines=lines), [])):
+                with self.assertRaises(RuntimeError):
+                    bp.verified_trivy_shas("0.75.0")
+        with mock.patch.object(bp, "_get", _fixture_get(_trivy_fixture(swapped=True), [])):
+            with self.assertRaisesRegex(RuntimeError, "refusing to pin"):
+                bp.verified_trivy_shas("0.75.0")
+
+    def test_invalid_release_and_asset_metadata_fail_closed(self):
+        for tag in ("v0.75.0/evil", "0.75.0", "v0.75", "v01.75.0"):
+            response = json.dumps({"tag_name": tag, "assets": []}).encode()
+            with self.subTest(tag=tag), mock.patch.object(bp, "_get", return_value=response):
+                with self.assertRaises(RuntimeError):
+                    bp.latest_trivy_version()
+        fixture = _trivy_fixture()
+        metadata = json.loads(fixture[TRIVY_TAG_API])
+        metadata["assets"][0]["browser_download_url"] = "https://example.com/fake"
+        fixture[TRIVY_TAG_API] = json.dumps(metadata).encode()
+        with mock.patch.object(bp, "_get", _fixture_get(fixture, [])):
+            with self.assertRaisesRegex(RuntimeError, "official asset"):
+                bp.verified_trivy_shas("0.75.0")
+
+    def test_rewrite_requires_complete_valid_pin_and_sha_map(self):
+        updated = bp.rewrite_trivy_pin(FRESH_DOCKERFILE, "0.75.0", TRIVY_DIGESTS)
+        self.assertEqual(bp.current_trivy_pin(updated), ("0.75.0", TRIVY_DIGESTS))
+        self.assertIn("ARG RUST_TOOLCHAIN_VERSION=1.98.1", updated)
+        for text, shas in ((FRESH_DOCKERFILE, {"AMD64": TRIVY_DIGESTS["AMD64"]}),
+                           (FRESH_DOCKERFILE.replace("ARG TRIVY_SHA256_ARM64=", "# ARG TRIVY_SHA256_ARM64="), TRIVY_DIGESTS),
+                           (FRESH_DOCKERFILE + "ARG TRIVY_VERSION=0.74.0\n", TRIVY_DIGESTS)):
+            with self.subTest(text=text, shas=shas), self.assertRaises(RuntimeError):
+                bp.rewrite_trivy_pin(text, "0.75.0", shas)
+
+    def test_check_write_and_failed_verification_leave_file_safe(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "Dockerfile")
+            for args, responses, changed in (
+                    ([], _trivy_fixture(), False),
+                    (["--write"], _trivy_fixture(), True),
+                    (["--write"], _trivy_fixture(swapped=True), False)):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(FRESH_DOCKERFILE)
+                with mock.patch.object(bp, "_get", _fixture_get(responses, [])):
+                    if changed or not args:
+                        self.assertEqual(bp.main(["trivy", "--dockerfile", path] + args), 0)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            bp.main(["trivy", "--dockerfile", path] + args)
+                with open(path, encoding="utf-8") as fh:
+                    result = fh.read()
+                self.assertEqual(result != FRESH_DOCKERFILE, changed)
+
+    def test_current_release_is_still_verified_before_no_op(self):
+        import tempfile
+        text = bp.rewrite_trivy_pin(FRESH_DOCKERFILE, "0.75.0", TRIVY_DIGESTS)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "Dockerfile")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            requests = []
+            with mock.patch.object(bp, "_get", _fixture_get(_trivy_fixture(), requests)):
+                self.assertEqual(bp.main(["trivy", "--dockerfile", path, "--write"]), 0)
+            self.assertIn(TRIVY_BASE + TRIVY_NAMES["ARM64"], requests)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), text)
+
+
+class TestRustToolchainFreshness(unittest.TestCase):
+    def _responses(self, manifest=RUST_MANIFEST, sha=None):
+        digest = hashlib.sha256(manifest).hexdigest() if sha is None else sha
+        return {bp.RUST_STABLE: manifest,
+                bp.RUST_STABLE + ".sha256": (digest + "  channel-rust-stable.toml\n").encode()}
+
+    def test_checksum_verified_manifest_and_available_targets(self):
+        requests = []
+        with mock.patch.object(bp, "_get", _fixture_get(self._responses(), requests)):
+            self.assertEqual(bp.latest_rust_toolchain_version(), "1.99.0")
+        self.assertEqual(requests, [bp.RUST_STABLE, bp.RUST_STABLE + ".sha256"])
+
+    def test_bad_checksum_version_or_target_fails_closed(self):
+        cases = (self._responses(sha="f" * 64),
+                 self._responses(RUST_MANIFEST.replace(b"1.99.0", b"1.99.0-rc1")),
+                 self._responses(RUST_MANIFEST.replace(b"available = true", b"available = false", 1)),
+                 self._responses(RUST_MANIFEST.replace(b"aarch64-unknown-linux-gnu", b"aarch64-unknown-linux-musl")))
+        for responses in cases:
+            with self.subTest(responses=responses), mock.patch.object(
+                    bp, "_get", _fixture_get(responses, [])):
+                with self.assertRaises(RuntimeError):
+                    bp.latest_rust_toolchain_version()
+
+    def test_rewrite_only_compiler_and_check_write_behavior(self):
+        import tempfile
+        rewritten = bp.rewrite_rust_toolchain_pin(FRESH_DOCKERFILE, "1.99.0")
+        self.assertEqual(rewritten.replace("ARG RUST_TOOLCHAIN_VERSION=1.99.0",
+                                           "ARG RUST_TOOLCHAIN_VERSION=1.98.1"), FRESH_DOCKERFILE)
+        with self.assertRaises(RuntimeError):
+            bp.rewrite_rust_toolchain_pin(FRESH_DOCKERFILE, "1.99.0-rc1")
+        with self.assertRaises(RuntimeError):
+            bp.rewrite_rust_toolchain_pin(FRESH_DOCKERFILE.replace("ARG RUST_TOOLCHAIN_VERSION=", "# ARG RUST_TOOLCHAIN_VERSION="), "1.99.0")
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "Dockerfile")
+            for write in (False, True):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(FRESH_DOCKERFILE)
+                with mock.patch.object(bp, "_get", _fixture_get(self._responses(), [])):
+                    self.assertEqual(bp.main(["rust-toolchain", "--dockerfile", path] +
+                                             (["--write"] if write else [])), 0)
+                with open(path, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read(), rewritten if write else FRESH_DOCKERFILE)
+            with mock.patch.object(bp, "_get", _fixture_get(self._responses(sha="f" * 64), [])):
+                with self.assertRaisesRegex(RuntimeError, "verification failed"):
+                    bp.main(["rust-toolchain", "--dockerfile", path, "--write"])
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), rewritten)
 
 
 # --- family: requirements (#1641) --------------------------------------------

@@ -22,6 +22,9 @@ different upstreams and different verification steps:
 
   rustup        the Dockerfile's `ARG RUSTUP_VERSION` + its two init checksums,
                 read from rust-lang's own manifest.
+  trivy         the scanner version + both archive checksums, checked against
+                the publisher's release checksum file and archive bytes.
+  rust-toolchain  the compiler version from a checksum-verified stable manifest.
   requirements  the `--hash=sha256:` lines in the requirements files the
                 privileged builds install from (#1641), read from PyPI's JSON
                 API. Versions are NOT chosen here -- the `name==version` pins in
@@ -53,6 +56,7 @@ import hashlib
 import json
 import re
 import sys
+import tomllib
 import urllib.parse
 import urllib.request
 
@@ -60,6 +64,11 @@ RUSTUP_STABLE = "https://static.rust-lang.org/rustup/release-stable.toml"
 RUSTUP_ARCHIVE = "https://static.rust-lang.org/rustup/archive/{v}/{triple}/rustup-init"
 RUSTUP_TRIPLES = {"AMD64": "x86_64-unknown-linux-gnu",
                   "ARM64": "aarch64-unknown-linux-gnu"}
+RUST_STABLE = "https://static.rust-lang.org/dist/channel-rust-stable.toml"
+TRIVY_LATEST = "https://api.github.com/repos/aquasecurity/trivy/releases/latest"
+TRIVY_TAG = "https://api.github.com/repos/aquasecurity/trivy/releases/tags/v{v}"
+TRIVY_RELEASE = "https://github.com/aquasecurity/trivy/releases/download/v{v}/{name}"
+TRIVY_ARCHIVES = {"AMD64": "Linux-64bit", "ARM64": "Linux-ARM64"}
 PYPI_RELEASE = "https://pypi.org/pypi/{name}/{version}/json"
 RUBYGEMS_LATEST = "https://rubygems.org/api/v1/versions/{name}/latest.json"
 RUBYGEMS_RELEASE = "https://rubygems.org/api/v2/rubygems/{name}/versions/{version}.json"
@@ -69,10 +78,13 @@ REQUIREMENTS_FILES = (".github/requirements-gate.txt", "requirements-fixtures.tx
                       "requirements-tools.txt")
 TIMEOUT = 120
 DOWNLOAD_HOSTS = frozenset({
+    "api.github.com",
     "auth.docker.io",
     "files.pythonhosted.org",
+    "github.com",
     "pypi.org",
     "registry-1.docker.io",
+    "release-assets.githubusercontent.com",
     "rubygems.org",
     "static.rust-lang.org",
 })
@@ -234,6 +246,191 @@ def run_rustup(args) -> int:
     print("bump-pins: wrote rustup %s" % want)
     for arch, sha in sorted(shas.items()):
         print("  %s %s" % (arch, sha))
+    return 0
+
+
+# --- families: Trivy and Rust compiler ---------------------------------------
+
+def _numeric_version(version: str, family: str) -> str:
+    if not isinstance(version, str) or not re.fullmatch(
+            r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version):
+        raise RuntimeError("invalid %s version: %r" % (family, version))
+    return version
+
+
+def _single_arg(text: str, name: str, value_pattern: str) -> str:
+    values = re.findall(r"^ARG " + re.escape(name) + r"=(.*)$", text, re.M)
+    if len(values) != 1 or not re.fullmatch(value_pattern + r"[ \t]*", values[0]):
+        raise RuntimeError("expected exactly one valid ARG %s line" % name)
+    return values[0].rstrip(" \t")
+
+
+def _replace_arg(text: str, name: str, value: str) -> str:
+    old = _single_arg(text, name, r"\S+")
+    return re.sub(r"^ARG " + re.escape(name) + r"=" + re.escape(old) + r"[ \t]*$",
+                  "ARG %s=%s" % (name, value), text, count=1, flags=re.M)
+
+
+def current_trivy_pin(text: str) -> tuple[str, dict[str, str]]:
+    version = _numeric_version(_single_arg(text, "TRIVY_VERSION", r"\S+"), "Trivy")
+    shas = {arch: _single_arg(text, "TRIVY_SHA256_%s" % arch, r"[0-9a-f]{64}")
+            for arch in TRIVY_ARCHIVES}
+    return version, shas
+
+
+def _trivy_release(url: str, version: str | None = None) -> tuple[str, dict[str, str]]:
+    try:
+        release = json.loads(_get(url))
+        tag = release["tag_name"]
+        if not isinstance(tag, str) or not tag.startswith("v"):
+            raise ValueError("invalid tag")
+        found = _numeric_version(tag[1:], "Trivy")
+        if version is not None and found != version:
+            raise ValueError("release tag does not match requested version")
+        assets = release["assets"]
+        if not isinstance(assets, list):
+            raise ValueError("invalid assets")
+        urls: dict[str, str] = {}
+        for asset in assets:
+            name, asset_url = asset["name"], asset["browser_download_url"]
+            if not isinstance(name, str) or not isinstance(asset_url, str):
+                raise ValueError("invalid asset")
+            if name in urls:
+                raise ValueError("duplicate asset")
+            urls[name] = asset_url
+        return found, urls
+    except (KeyError, TypeError, ValueError, UnicodeError) as exc:
+        raise RuntimeError("invalid Trivy release metadata") from exc
+
+
+def latest_trivy_version() -> str:
+    version, _assets = _trivy_release(TRIVY_LATEST)
+    return version
+
+
+def verified_trivy_shas(version: str) -> dict[str, str]:
+    version = _numeric_version(version, "Trivy")
+    _found, assets = _trivy_release(TRIVY_TAG.format(v=version), version)
+    names = {arch: "trivy_%s_%s.tar.gz" % (version, suffix)
+             for arch, suffix in TRIVY_ARCHIVES.items()}
+    checksum_name = "trivy_%s_checksums.txt" % version
+    for name in (*names.values(), checksum_name):
+        expected_url = TRIVY_RELEASE.format(v=version, name=name)
+        if assets.get(name) != expected_url:
+            raise RuntimeError("Trivy release lacks exact official asset %s" % name)
+    try:
+        checksum_text = _get(assets[checksum_name]).decode("ascii")
+    except UnicodeError as exc:
+        raise RuntimeError("Trivy checksums are not ASCII") from exc
+    published: dict[str, str] = {}
+    for line in checksum_text.splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  (\S+)", line)
+        if not match:
+            raise RuntimeError("malformed Trivy checksum line")
+        sha, name = match.groups()
+        if name in published:
+            raise RuntimeError("duplicate Trivy checksum entry: %s" % name)
+        published[name] = sha
+    for name in names.values():
+        if name not in published:
+            raise RuntimeError("missing Trivy checksum entry: %s" % name)
+    shas = {}
+    for arch, name in names.items():
+        actual = hashlib.sha256(_get(assets[name])).hexdigest()
+        if actual != published[name]:
+            raise RuntimeError("Trivy %s %s: published sha256 differs from archive -- refusing to pin"
+                               % (version, arch))
+        shas[arch] = actual
+    return shas
+
+
+def rewrite_trivy_pin(text: str, version: str, shas: dict[str, str]) -> str:
+    version = _numeric_version(version, "Trivy")
+    current_trivy_pin(text)
+    if set(shas) != set(TRIVY_ARCHIVES) or any(
+            not re.fullmatch(r"[0-9a-f]{64}", sha) for sha in shas.values()):
+        raise RuntimeError("Trivy rewrite requires both valid architecture SHA256s")
+    new = _replace_arg(text, "TRIVY_VERSION", version)
+    for arch in TRIVY_ARCHIVES:
+        new = _replace_arg(new, "TRIVY_SHA256_%s" % arch, shas[arch])
+    return new
+
+
+def run_trivy(args) -> int:
+    with open(args.dockerfile, encoding="utf-8") as fh:
+        text = fh.read()
+    have, old_shas = current_trivy_pin(text)
+    want = latest_trivy_version()
+    shas = verified_trivy_shas(want)
+    print("bump-pins: trivy pinned=%s latest=%s" % (have, want))
+    if have == want and old_shas == shas:
+        print("bump-pins: up to date")
+        return 0
+    new = rewrite_trivy_pin(text, want, shas)
+    if not args.write:
+        print("bump-pins: %s -> %s available (re-run with --write)" % (have, want))
+        return 0
+    with open(args.dockerfile, "w", encoding="utf-8") as fh:
+        fh.write(new)
+    print("bump-pins: wrote Trivy %s" % want)
+    return 0
+
+
+def current_rust_toolchain_pin(text: str) -> str:
+    return _numeric_version(_single_arg(text, "RUST_TOOLCHAIN_VERSION", r"\S+"),
+                            "Rust toolchain")
+
+
+def latest_rust_toolchain_version() -> str:
+    manifest = _get(RUST_STABLE)
+    try:
+        companion = _get(RUST_STABLE + ".sha256").decode("ascii").strip()
+    except UnicodeError as exc:
+        raise RuntimeError("Rust stable manifest checksum is not ASCII") from exc
+    match = re.fullmatch(r"([0-9a-f]{64})(?:\s+\*?channel-rust-stable\.toml)?", companion)
+    if not match or hashlib.sha256(manifest).hexdigest() != match.group(1):
+        raise RuntimeError("Rust stable manifest SHA256 verification failed")
+    try:
+        doc = tomllib.loads(manifest.decode("utf-8"))
+        rust = doc["pkg"]["rust"]
+        upstream = rust["version"]
+        if not isinstance(upstream, str):
+            raise ValueError("invalid version")
+        version_match = re.fullmatch(
+            r"((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
+            r" \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\)", upstream)
+        if not version_match:
+            raise ValueError("invalid Rust version")
+        for triple in RUSTUP_TRIPLES.values():
+            if rust["target"][triple]["available"] is not True:
+                raise ValueError("Rust target unavailable: %s" % triple)
+        return _numeric_version(version_match.group(1), "Rust toolchain")
+    except (KeyError, TypeError, ValueError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError("invalid or unavailable Rust stable manifest") from exc
+
+
+def rewrite_rust_toolchain_pin(text: str, version: str) -> str:
+    version = _numeric_version(version, "Rust toolchain")
+    current_rust_toolchain_pin(text)
+    return _replace_arg(text, "RUST_TOOLCHAIN_VERSION", version)
+
+
+def run_rust_toolchain(args) -> int:
+    with open(args.dockerfile, encoding="utf-8") as fh:
+        text = fh.read()
+    have = current_rust_toolchain_pin(text)
+    want = latest_rust_toolchain_version()
+    print("bump-pins: rust-toolchain pinned=%s latest=%s" % (have, want))
+    if have == want:
+        print("bump-pins: up to date")
+        return 0
+    new = rewrite_rust_toolchain_pin(text, want)
+    if not args.write:
+        print("bump-pins: %s -> %s available (re-run with --write)" % (have, want))
+        return 0
+    with open(args.dockerfile, "w", encoding="utf-8") as fh:
+        fh.write(new)
+    print("bump-pins: wrote Rust toolchain %s" % want)
     return 0
 
 
@@ -710,6 +907,14 @@ def main(argv=None):
     rustup.add_argument("--dockerfile", default="Dockerfile")
     rustup.set_defaults(run=run_rustup)
 
+    trivy = families.add_parser("trivy", help="the Dockerfile's verified Trivy archives")
+    trivy.add_argument("--dockerfile", default="Dockerfile")
+    trivy.set_defaults(run=run_trivy)
+
+    toolchain = families.add_parser("rust-toolchain", help="the Dockerfile's Rust compiler")
+    toolchain.add_argument("--dockerfile", default="Dockerfile")
+    toolchain.set_defaults(run=run_rust_toolchain)
+
     reqs = families.add_parser(
         "requirements",
         help="the --hash lines in the privileged builds' requirements files")
@@ -727,7 +932,7 @@ def main(argv=None):
     proxy.add_argument("--source", default=PROXY_SOURCE)
     proxy.set_defaults(run=run_tinyproxy)
 
-    for parser in (rustup, reqs, gems):
+    for parser in (rustup, trivy, toolchain, reqs, gems):
         parser.add_argument("--write", action="store_true",
                             help="apply the bump (default: report only)")
     args = ap.parse_args(argv)

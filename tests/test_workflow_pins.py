@@ -1510,5 +1510,52 @@ class TestTheContainmentLaneIsLeastPrivilege(unittest.TestCase):
                     "not a workflow edit." % workflow)
 
 
+class TestVerifiedPinFreshnessJobs(unittest.TestCase):
+    def _defects(self, job, family):
+        steps = job.get("steps", [])
+        check = next((step for step in steps if step.get("id") == "check"), {})
+        apply = next((step for step in steps if
+                      "python3 scripts/bump_pins.py " + family + " --write" in
+                      step.get("run", "")), {})
+        opening = next((step for step in steps if "gh pr create" in step.get("run", "")), {})
+        defects = []
+        if job.get("permissions") != {"contents": "write", "pull-requests": "write"}:
+            defects.append("job permissions")
+        for stage, step in (("check", check), ("apply", apply), ("PR", opening)):
+            if not step.get("run", "").startswith("set -euo pipefail\n"):
+                defects.append(stage + " shell fail-closed")
+        if "python3 scripts/bump_pins.py " + family + " | tee " not in check.get("run", ""):
+            defects.append("check command")
+        if "python3 scripts/bump_pins.py " + family + " --write" not in apply.get("run", ""):
+            defects.append("write command")
+        if apply.get("if") != "steps.check.outputs.stale == 'true'":
+            defects.append("write condition")
+        if opening.get("if") != "steps.check.outputs.stale == 'true'":
+            defects.append("PR condition")
+        if "chore/bump-" + family + "-${VERSION}" not in opening.get("run", ""):
+            defects.append("unique branch")
+        if not any(re.fullmatch(r"actions/checkout@[0-9a-f]{40}", step.get("uses", ""))
+                   for step in steps):
+            defects.append("pinned checkout")
+        return defects
+
+    def test_verified_pin_jobs_are_scoped_and_fail_closed(self):
+        with open(os.path.join(WORKFLOW_DIR, "pin-freshness.yml"), encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        self.assertEqual(doc["permissions"], {"contents": "read"})
+        for family in ("trivy", "rust-toolchain"):
+            with self.subTest(family=family):
+                self.assertEqual(self._defects(doc["jobs"][family], family), [])
+
+    def test_unsafe_shell_or_permission_changes_are_detected(self):
+        with open(os.path.join(WORKFLOW_DIR, "pin-freshness.yml"), encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        job = doc["jobs"]["trivy"]
+        job["steps"][1]["run"] = job["steps"][1]["run"].replace("set -euo pipefail\n", "")
+        job["permissions"] = {"contents": "read"}
+        self.assertIn("check shell fail-closed", self._defects(job, "trivy"))
+        self.assertIn("job permissions", self._defects(job, "trivy"))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
