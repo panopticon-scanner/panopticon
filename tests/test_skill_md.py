@@ -1257,6 +1257,10 @@ class TestClaudeSessionModeWorkflowTemplate(unittest.TestCase):
         This mirrors `splitMeta` in HARNESS closely enough that `node
         --check` proves the same thing it would prove there: keep the two in
         sync, or note here why they diverge, if HARNESS's splitMeta changes.
+        One deliberate divergence: the wrapper here also names `pipeline`,
+        which the Workflow tool provides and family-pr-review.js uses; the
+        harness has no `pipeline` global (it only runs dispatch.js), and the
+        extra parameter changes nothing `node --check` can see.
         """
         marker = "export const meta = "
         idx = src.index(marker)
@@ -1295,6 +1299,9 @@ class TestClaudeSessionModeWorkflowTemplate(unittest.TestCase):
         node = shutil.which("node")
         if not node:
             skip_or_fail(self, "node is not installed here; CI's runners have it")
+        # The harness this mirrors must still exist, or "the way the harness
+        # evaluates them" is a claim about nothing.
+        self.assertTrue(os.path.isfile(self.HARNESS), self.HARNESS)
         for workflow in (self.WORKFLOW, self.FAMILY_PR_REVIEW_WORKFLOW):
             with self.subTest(workflow=workflow):
                 with open(workflow, encoding="utf-8") as fh:
