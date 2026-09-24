@@ -668,8 +668,10 @@ def test_the_public_hooks_path_is_the_one_every_launch_pins(tmp_path):
 # #2041: the keys a FETCH executes, or can be made to execute, from the
 # checkout's own config -- the one call that keeps the operator's environment.
 # `credential.<url>.helper` carries a URL, whose dots make it a multi-part
-# subsection; `protocol.<scheme>.allow` is what unlocks an `ext::` helper a
-# repo-local `remote.<name>.url` can name.
+# subsection; `protocol.allow`/`protocol.ext.allow` are what unlock an `ext::`
+# helper a repo-local `remote.<name>.url` can name -- and only those two:
+# `protocol.file.allow` is the documented local-submodule setting and runs
+# nothing.
 TRANSPORT_KEYS = ("core.sshcommand", "core.gitproxy", "remote.origin.uploadpack",
                   "remote.origin.vcs", "credential.helper",
                   "credential.https://example.com.helper", "protocol.allow",
@@ -677,7 +679,8 @@ TRANSPORT_KEYS = ("core.sshcommand", "core.gitproxy", "remote.origin.uploadpack"
 # Neighbours in the same sections that run nothing: a URL, a refspec, a key
 # whose variable merely starts the same way, a username, a number.
 NOT_TRANSPORT_KEYS = ("remote.origin.url", "remote.origin.fetch", "core.sshcommandx",
-                      "credential.username", "protocol.version")
+                      "credential.username", "protocol.version",
+                      "protocol.file.allow", "protocol.https.allow")
 
 
 def test_every_transport_command_key_is_refused_and_its_neighbours_are_not():

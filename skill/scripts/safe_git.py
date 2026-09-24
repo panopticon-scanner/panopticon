@@ -349,9 +349,12 @@ def _is_transport_command_setting(key):
     `remote.<name>.vcs` selects the remote-helper program `git-remote-<vcs>`,
     `credential.helper` and `credential.<url>.helper` are command lines (a
     leading `!` makes one an outright shell line) run on an https auth
-    challenge, and `protocol.allow`/`protocol.<scheme>.allow` unlock the
-    `ext::` helper -- git's default for `ext` is `never` -- that a repo-local
-    `remote.<name>.url` is free to name.
+    challenge, and `protocol.allow`/`protocol.ext.allow` unlock the `ext::`
+    helper -- git's default for `ext` is `never` -- that a repo-local
+    `remote.<name>.url` is free to name. Other `protocol.<scheme>.allow` keys
+    are NOT here: `protocol.file.allow=always` is the documented way to keep
+    local-path submodules working since git 2.38.1, and no other scheme hands
+    a command line to git.
 
     Normalizes first, so a hand-written key answers the way git would compare
     it (`_canonical_key`: section and variable lowered, subsection kept). The
@@ -370,7 +373,8 @@ def _is_transport_command_setting(key):
     if section == "credential":
         return variable == "helper"        # bare, or per-URL (dots and all)
     if section == "protocol":
-        return variable == "allow"         # bare, or per-scheme
+        # Bare (`protocol.allow`) or the `ext` scheme only; see the docstring.
+        return variable == "allow" and parts[1:-1] in ([], ["ext"])
     return False
 
 
