@@ -38,6 +38,60 @@ class TestSecurityGate(unittest.TestCase):
             json.dump(manifest, fh)
         return tools, manifest_path
 
+    def _main_result(self, tools, manifest):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            rc = gate.main(["--tools-dir", tools, "--manifest", manifest])
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_main_missing_head_manifest_exits_two_with_diagnostic(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools = os.path.join(root, "tools")
+            os.mkdir(tools)
+            missing = os.path.join(root, "missing-manifest.json")
+            rc, out, err = self._main_result(tools, missing)
+        self.assertEqual(rc, 2)
+        self.assertEqual(out, "")
+        self.assertIn("security-gate: cannot read scanner manifest", err)
+        self.assertIn("missing-manifest.json", err)
+
+    def test_main_malformed_head_manifest_exits_two_with_diagnostic(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(root, {
+                "selected": "semgrep", "produced": [], "missing": []})
+            rc, out, err = self._main_result(tools, manifest)
+        self.assertEqual(rc, 2)
+        self.assertEqual(out, "")
+        self.assertIn("security-gate: scanner manifest lists are malformed", err)
+
+    def test_main_without_baseline_reports_incomplete_selected_tool_coverage(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(root, {
+                "selected": ["semgrep"], "produced": [], "missing": ["semgrep"]})
+            rc, out, err = self._main_result(tools, manifest)
+        self.assertEqual(rc, 2)
+        self.assertIn("0 HIGH/CRITICAL", out)
+        self.assertIn("security-gate: scanner coverage incomplete:", err)
+        self.assertIn("semgrep: no output", err)
+        self.assertNotIn("baseline unusable", err)
+
+    def test_main_clean_and_finding_exit_codes_match_diagnostics(self):
+        for level, expected_rc, expected_count in (
+                (None, 0, "0 HIGH/CRITICAL"),
+                ("error", 1, "1 HIGH/CRITICAL")):
+            with self.subTest(level=level), tempfile.TemporaryDirectory() as root:
+                tools, manifest = self._write(
+                    root, {"selected": ["semgrep"], "produced": ["semgrep"],
+                           "missing": []}, _sarif(level))
+                rc, out, err = self._main_result(tools, manifest)
+            self.assertEqual(rc, expected_rc)
+            self.assertIn(expected_count, out)
+            self.assertEqual(err, "")
+            if level == "error":
+                self.assertIn("app.py:1 - test finding", out)
+            else:
+                self.assertNotIn("app.py:1 - test finding", out)
+
     def test_complete_clean_scan_passes(self):
         with tempfile.TemporaryDirectory() as root:
             tools, manifest = self._write(
