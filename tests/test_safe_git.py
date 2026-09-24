@@ -672,10 +672,15 @@ def test_the_public_hooks_path_is_the_one_every_launch_pins(tmp_path):
 # helper a repo-local `remote.<name>.url` can name -- and only those two:
 # `protocol.file.allow` is the documented local-submodule setting and runs
 # nothing.
-TRANSPORT_KEYS = ("core.sshcommand", "core.gitproxy", "remote.origin.uploadpack",
+TRANSPORT_KEYS = ("core.sshcommand", "core.gitproxy", "core.askpass",
+                  "remote.origin.uploadpack",
                   "remote.origin.vcs", "credential.helper",
                   "credential.https://example.com.helper", "protocol.allow",
                   "protocol.ext.allow")
+# `core.askPass` names a program git EXECUTES for a credential prompt, and it
+# is repo-local settable (measured on a 401 http remote with the fetch's own two
+# pins: the script ran).
+#
 # Neighbours in the same sections that run nothing: a URL, a refspec, a key
 # whose variable merely starts the same way, a username, a number.
 NOT_TRANSPORT_KEYS = ("remote.origin.url", "remote.origin.fetch", "core.sshcommandx",

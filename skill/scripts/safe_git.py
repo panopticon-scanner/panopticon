@@ -341,11 +341,16 @@ def _is_transport_command_setting(key):
     repository the fetch exemption exists for. The remedy is the operator's own
     GLOBAL config, which the fetch still honours.
 
-    MEASURED on git 2.50 (#2012's review, with both of the fetch's pins
-    applied): a repo-local `core.sshCommand` ran on the fetch of an `ssh://`
-    remote, and `remote.<name>.uploadpack` ran on the fetch of a local-path
-    remote. The rest are the same class by git's own documentation rather than
-    by measurement -- `core.gitProxy` is the proxy command for `git://`,
+    MEASURED on git 2.50 (#2012's review and #2041's, with both of the fetch's
+    pins applied): a repo-local `core.sshCommand` ran on the fetch of an
+    `ssh://` remote, `remote.<name>.uploadpack` on the fetch of a local-path
+    remote, and `core.askPass` on the fetch of an http remote that answered 401
+    -- both halves of that trigger are repo-local, since `remote.<name>.url` is
+    too. `GIT_ASKPASS` in the operator's ENVIRONMENT outranks the repo's
+    `core.askPass`, so this entry protects the operator who does not set it,
+    which is the default. The rest are the same class by git's own documentation
+    rather than by measurement -- `core.gitProxy` is the proxy command for
+    `git://`,
     `remote.<name>.vcs` selects the remote-helper program `git-remote-<vcs>`,
     `credential.helper` and `credential.<url>.helper` are command lines (a
     leading `!` makes one an outright shell line) run on an https auth
@@ -365,7 +370,7 @@ def _is_transport_command_setting(key):
         return False
     section, variable = parts[0], parts[-1]
     if section == "core":
-        return len(parts) == 2 and variable in ("sshcommand", "gitproxy")
+        return len(parts) == 2 and variable in ("sshcommand", "gitproxy", "askpass")
     if section == "remote":
         # A subsection is mandatory: `remote.uploadpack` names no remote and
         # git runs nothing for it.
