@@ -1,10 +1,13 @@
 """Scope/delta orchestration tests: base resolution, changed-files parity,
 --scope-changed, and --scope-files behavior."""
 import json
+import shutil
+import tempfile
 import types
 import unittest
 from unittest import mock
 
+from scripts import executable
 from discovery_test_helpers import (
     orchestrator, FakeRun, repo_with_matrix, repo_with_exclude,
     git_cmd, git_output,
@@ -51,6 +54,24 @@ class TestResolveBaseOriginFallback(unittest.TestCase):
     remote) over a possibly-stale local branch; explicit --base never falls
     through."""
 
+    def setUp(self):
+        # A REAL directory, not a synthetic path (#2006): base resolution now
+        # runs through `safe_git.probe`, which resolves a trusted git against
+        # the repo's own checkout boundary, and `executable.resolve` fails
+        # CLOSED on a root it cannot stat -- so a path that does not exist
+        # refuses every ref and these three tests would assert nothing.
+        self.repo = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
+        # #2006 fix round 2, M4: stub the RESOLVER too, or `runner=` no longer
+        # isolates these from the host. Under an empty PATH the real resolver
+        # refused everything: two of the three failed and the third
+        # (explicit-never-falls-through) passed VACUOUSLY, for the wrong reason.
+        resolver = mock.patch.object(
+            executable, "resolve",
+            return_value=executable.ResolvedExecutable("/trusted/git", "/trusted/bin"))
+        resolver.start()
+        self.addCleanup(resolver.stop)
+
     def _runner_resolving(self, *refs):
         def run(argv, *args, **kwargs):
             class R:
@@ -66,17 +87,17 @@ class TestResolveBaseOriginFallback(unittest.TestCase):
         return run
 
     def test_pr_base_prefers_origin_ref(self):
-        base, src = orchestrator.resolve_base("/r", pr_base="main",
+        base, src = orchestrator.resolve_base(self.repo, pr_base="main",
                                       runner=self._runner_resolving("origin/main", "main"))
         self.assertEqual((base, src), ("origin/main", "pr-base"))
 
     def test_pr_base_falls_back_to_local_when_origin_absent(self):
-        base, src = orchestrator.resolve_base("/r", pr_base="main",
+        base, src = orchestrator.resolve_base(self.repo, pr_base="main",
                                       runner=self._runner_resolving("main"))
         self.assertEqual((base, src), ("main", "pr-base"))
 
     def test_explicit_base_never_tries_origin(self):
-        base, src = orchestrator.resolve_base("/r", explicit="release-2",
+        base, src = orchestrator.resolve_base(self.repo, explicit="release-2",
                                       runner=self._runner_resolving("origin/release-2"))
         self.assertEqual((base, src), (None, "unresolved"))
 

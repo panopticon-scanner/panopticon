@@ -31,6 +31,7 @@ from scripts import codex_host  # noqa: E402  (#1344: the suite's launch guard t
 from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live posture)
 import scripts.probes.common as probes_common  # noqa: E402  (#1627: the shared probe helpers)
 from scripts import host_disclosure  # noqa: E402  (#1344 F3b: one voice for the posture)
+from scripts import safe_git  # noqa: E402  (#2006: the target-facing git probe)
 # #1577 (SEC-D1C): the five artifact writes below go through the driver's own
 # confined O_NOFOLLOW writers rather than a plain open(). A target repo can
 # commit any of these paths as a symlink (`.gitignore` needs no `git add -f` at
@@ -115,10 +116,21 @@ def _git_blanket_pattern(repo, runner=subprocess.run):
     pattern -- so the directory query cannot be trusted. The file query is
     stable, and git's answer names the pattern that actually applies, which is
     what decides negatability."""
+    # #2006 fix round 2: `repo` is the reviewed tree, and this ran bare `git` with
+    # NO `env=` at all -- so the target's `core.fsmonitor` executed during setup,
+    # and an inherited `GIT_DIR` answered for a DIFFERENT repository than the one
+    # asked about. `safe_git.probe` closes both; `runner` stays the seam.
     try:
-        r = runner(["git", "-C", repo, "check-ignore", "-v", "--",
-                    _BLANKET_PROBE_PATH],
-                   capture_output=True, text=True, timeout=10)
+        r = safe_git.probe(repo, ["check-ignore", "-v", "--", _BLANKET_PROBE_PATH],
+                           runner=runner, timeout=10)
+    except safe_git.RepositoryRefused as exc:
+        # Same shape validate, discovery and the run manifest print. Returning
+        # None is the documented "git could not answer" path (pattern matching
+        # decides), so setup continues -- but never silently.
+        print("setup: target Git probe REFUSED (%s); the reviewed tree's own Git "
+              "configuration is not trusted to run, so the gitignore pattern is "
+              "inferred instead of asked for" % exc, file=sys.stderr, flush=True)
+        return None
     except Exception:                                     # noqa: BLE001
         return None
     if r.returncode == 1:

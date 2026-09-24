@@ -2,9 +2,15 @@
 
 Replaces the duplicated "init -> config -> touch -> add -> commit" fixtures
 across test_driver.py, test_discovery.py, and test_diff_map.py.
+
+`plant_fsmonitor_command`, `plant_clean_filter` and `path_shim_git` (#2006) are
+the hostile-target fixtures #1985 introduced, written once here so every caller
+that must be proved confined -- validate, discovery, the run manifest -- plants
+the SAME command and asserts on the SAME marker rather than re-deriving one.
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -113,3 +119,105 @@ def make_git_repo(
         _git(repo, "branch", "-M", branch)
 
     return repo
+
+
+def hostile_marker(repo, name="probe-marker"):
+    """The file a planted hostile Git command writes if Git ever runs it.
+
+    Inside `<repo>/.panopticon` (created here): a marker whose parent directory
+    does not exist cannot be written, and a test asserting its ABSENCE would
+    then pass for the wrong reason.
+    """
+    marker = os.path.join(repo, ".panopticon", name)
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    return marker
+
+
+def _marker_command(marker):
+    # `cat` keeps the command well-behaved for the protocols that pipe through
+    # it (the fsmonitor hook, a clean filter), so the only observable is the
+    # marker.
+    return "printf hit > %s; cat" % shlex.quote(marker)
+
+
+def plant_fsmonitor_command(repo, marker=None):
+    """Configure `core.fsmonitor` in `repo` to a command. Returns the marker."""
+    marker = marker or hostile_marker(repo)
+    _git(repo, "config", "core.fsmonitor", _marker_command(marker))
+    return marker
+
+
+def plant_clean_filter(repo, rel="a.py", marker=None):
+    """Commit `rel` under a `filter=fixture` attribute, then configure that
+    filter's clean command. Returns the marker.
+
+    The rewrite at the end is the same SIZE as the committed content: a
+    size-only stat difference would let Git call the file modified without ever
+    running the filter, and the fixture would prove nothing.
+    """
+    marker = marker or hostile_marker(repo)
+    with open(os.path.join(repo, rel), "w", encoding="utf-8") as fh:
+        fh.write("before\n")
+    with open(os.path.join(repo, ".gitattributes"), "w", encoding="utf-8") as fh:
+        fh.write("%s filter=fixture\n" % rel)
+    _git(repo, "add", rel, ".gitattributes")
+    _git(repo, "commit", "-qm", "filter fixture")
+    _git(repo, "config", "filter.fixture.clean", _marker_command(marker))
+    with open(os.path.join(repo, rel), "w", encoding="utf-8") as fh:
+        fh.write("after!\n")
+    return marker
+
+
+def path_shim_git(directory, marker, stdout=""):
+    """An executable `git` in `directory` that records having been run.
+
+    The counterpart to the config fixtures: those prove the target cannot make
+    a TRUSTED git run its commands, this proves the target cannot BE the git
+    that runs. Returns the shim path.
+    """
+    os.makedirs(directory, exist_ok=True)
+    shim = os.path.join(directory, "git")
+    with open(shim, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\nprintf hit > %s\nprintf '%%s' %s\n"
+                 % (shlex.quote(marker), shlex.quote(stdout)))
+    os.chmod(shim, 0o700)
+    return shim
+
+
+def plant_hook(repo, name, marker=None):
+    """An executable `.git/hooks/<name>` that records having been run.
+
+    Needs no configuration at all: git looks in `.git/hooks` by default, so
+    this vector is reachable in any target checkout and no config refusal can
+    ever catch it (#2006 fix round 2, C2). Returns the marker.
+    """
+    marker = marker or hostile_marker(repo, "hook-marker")
+    hooks = os.path.join(repo, ".git", "hooks")
+    os.makedirs(hooks, exist_ok=True)
+    path = os.path.join(hooks, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\nprintf hit >> %s\nexit 0\n" % shlex.quote(marker))
+    os.chmod(path, 0o700)
+    return marker
+
+
+def add_plumbing_submodule(repo, child, name="sub"):
+    """Register `child` as a submodule of `repo` using PLUMBING only.
+
+    `git submodule add` is a shell script that shells out to `sed`, `basename`
+    and friends, so it cannot run in a bare PATH environment (the git-only CI
+    leg) -- the existing #1985 submodule tests fail there for exactly that
+    reason. `update-index --add --cacheinfo 160000` writes the same gitlink,
+    and a hand-written `.gitmodules` registers it, with no helper binaries.
+    Returns the submodule worktree path.
+    """
+    sha = subprocess.run(["git", "-C", child, "rev-parse", "HEAD"], check=True,
+                         capture_output=True, text=True, timeout=GIT_TIMEOUT).stdout.strip()
+    worktree = os.path.join(repo, name)
+    shutil.copytree(child, worktree, symlinks=True)
+    with open(os.path.join(repo, ".gitmodules"), "w", encoding="utf-8") as fh:
+        fh.write('[submodule "%s"]\n\tpath = %s\n\turl = %s\n' % (name, name, child))
+    _git(repo, "update-index", "--add", "--cacheinfo", "160000,%s,%s" % (sha, name))
+    _git(repo, "add", ".gitmodules")
+    _git(repo, "commit", "-qm", "register submodule")
+    return worktree

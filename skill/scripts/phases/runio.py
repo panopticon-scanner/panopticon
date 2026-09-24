@@ -597,12 +597,13 @@ def _manifest_committed(review_root, manifest_file):
     if not manifest_file or not os.path.isfile(manifest_file):
         return False
     try:
-        resolved = executable.resolve("git", review_root, os.environ.get("PATH", ""))
+        # #2006 fix round 2: this resolved a trusted git but launched it without
+        # the `GIT_CONFIG_*` suppression and without `core.fsmonitor=false`, so
+        # the target's own config still applied to the one check that decides
+        # whether its manifest is forged. `safe_git.probe` carries all of it.
         rel = os.path.relpath(manifest_file, review_root)
-        r = subprocess.run(  # nosec B603
-            [resolved.path, "-C", review_root, "ls-files", "--error-unmatch", "--", rel],
-            capture_output=True, text=True, timeout=30,
-            env={"PATH": resolved.path_env, "LC_ALL": "C"})
+        r = safe_git.probe(review_root, ["ls-files", "--error-unmatch", "--", rel],
+                           timeout=30)
     except executable.ExecutableResolutionError as exc:
         raise DriverError("manifest provenance cannot be checked: no trusted git: %s" % exc)
     except (OSError, subprocess.SubprocessError) as exc:

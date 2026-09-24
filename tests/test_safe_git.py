@@ -21,7 +21,9 @@ def test_allowlisted_environment_and_injected_runner(tmp_path, monkeypatch):
     resolve.assert_called_once_with("git", str(tmp_path), os.environ.get("PATH", ""))
     assert result.stdout == "/root\n"
     args, options = runner.call_args
-    assert args[0] == ["/trusted/git", "-C", str(tmp_path), "-c", "core.fsmonitor=false",
+    assert args[0] == ["/trusted/git", "-C", str(tmp_path),
+                       "-c", "core.fsmonitor=false",
+                       "-c", "core.hooksPath=" + safe_git._no_hooks_path(),
                        "rev-parse", "--show-toplevel"]
     assert options == {"capture_output": True, "text": True, "timeout": 15,
                        "env": {"PATH": "/trusted/bin", "LC_ALL": "C",
@@ -34,7 +36,9 @@ def test_status_preflights_share_the_fifteen_second_budget(tmp_path):
     with mock.patch.object(safe_git.time, "monotonic", side_effect=[100, 102, 105, 109]):
         safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner)
     assert [call.kwargs["timeout"] for call in runner.call_args_list] == [13, 10, 6]
-    assert runner.call_args_list[-1].args[0][-4:] == ["status", "--porcelain", "-z", "--ignore-submodules=none"]
+    # The pin sits immediately after the subcommand, never after caller argv (I1).
+    assert runner.call_args_list[-1].args[0][-4:] == ["status", "--ignore-submodules=none",
+                                                     "--porcelain", "-z"]
 
 
 def test_expired_preflight_budget_never_runs_status(tmp_path):
@@ -58,7 +62,13 @@ def test_filter_commands_fail_closed_before_status(tmp_path, setting):
 def test_preflight_failure_is_returned_without_status(tmp_path):
     failure = subprocess.CompletedProcess([], 128, "", "fatal: not a git repository")
     runner = mock.Mock(return_value=failure)
-    assert safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner) is failure
+    proc = safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner)
+    # The preflight's returncode and stderr, verbatim -- that is the real cause.
+    # No longer the same OBJECT: it now carries the argv the caller asked for,
+    # so a `check=True` caller's error names `status` and not the preflight's
+    # own `config --null --list` (#2006 fix round 2, M5).
+    assert (proc.returncode, proc.stdout, proc.stderr) == (128, "", "fatal: not a git repository")
+    assert proc.args[-3:] == ["status", "--porcelain", "-z"]
     assert runner.call_count == 1
 
 
@@ -183,3 +193,256 @@ def test_unreadable_checkout_boundary_does_not_launch_git(tmp_path):
         with pytest.raises(OSError):
             safe_git.probe(str(tmp_path), ["rev-parse", "--show-toplevel"], runner=runner)
     runner.assert_not_called()
+
+
+# --- #2006: the preflight gate is a CAPABILITY check, not argv equality -------
+# #1985 gated the preflight on `args != ["status", "--porcelain", "-z"]`, so
+# every other spelling of the same command -- a reordered flag, a pathspec,
+# `--porcelain=v1` -- took the single unpreflighted call and skipped both the
+# filter refusal and the submodule bound. These pin the direction the gate
+# fails in: a spelling nobody enumerated preflights.
+
+_PLANTED_FILTER = "filter.fixture.clean\nfixture-command-value-must-not-appear\0"
+
+
+def _preflight_refusing_runner():
+    """A runner whose first (config) reply plants a command filter.
+
+    The refusal is raised from the preflight and nowhere else, so
+    "did this argv preflight?" is exactly "did this raise on call 1?".
+    """
+    return mock.Mock(return_value=subprocess.CompletedProcess([], 0, _PLANTED_FILTER, ""))
+
+
+@pytest.mark.parametrize("args", [
+    ["status", "-z", "--porcelain"],                     # flag order reversed
+    ["status", "--porcelain=v1", "-z"],                  # equals-form spelling
+    ["status", "--porcelain", "-z", "--", "src"],        # a pathspec
+    ["status"],                                          # the bare subcommand
+])
+def test_every_spelling_of_status_preflights(tmp_path, args):
+    runner = _preflight_refusing_runner()
+    with pytest.raises(OSError, match="filter"):
+        safe_git.probe(str(tmp_path), args, runner=runner)
+    assert runner.call_count == 1
+
+
+@pytest.mark.parametrize("args", [
+    ["fsck"],                                            # never enumerated
+    ["diff", "--name-only", "-z", "HEAD"],               # runs diff/textconv drivers
+    ["merge-base", "HEAD", "main"],
+    ["ls-files", "--eol"],                               # the one filtered ls-files mode
+    ["-c", "core.quotepath=false", "diff", "--name-only"],   # a global option first
+    ["--no-pager", "rev-parse", "HEAD"],                 # an option we cannot classify
+])
+def test_unknown_and_content_reading_spellings_preflight(tmp_path, args):
+    runner = _preflight_refusing_runner()
+    with pytest.raises(OSError, match="filter"):
+        safe_git.probe(str(tmp_path), args, runner=runner)
+    assert runner.call_count == 1
+
+
+@pytest.mark.parametrize("args", [
+    ["rev-parse", "--show-toplevel"],
+    ["rev-parse", "--verify", "-q", "main^{commit}"],
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    ["symbolic-ref", "--short", "HEAD"],
+    ["rev-list", "-1", "HEAD"],
+])
+def test_allowlisted_plumbing_runs_once_without_a_preflight(tmp_path, args):
+    runner = _preflight_refusing_runner()
+    result = safe_git.probe(str(tmp_path), args, runner=runner)
+    assert result.returncode == 0
+    assert runner.call_count == 1
+    assert runner.call_args.args[0][-len(args):] == args
+
+
+def test_only_status_is_pinned_to_report_submodule_dirt(tmp_path):
+    # `--ignore-submodules=none` is a status flag; appending it to any other
+    # preflighted subcommand would either be rejected by git or change what the
+    # caller asked for.
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
+    safe_git.probe(str(tmp_path), ["diff", "--name-only", "-z", "HEAD"], runner=runner)
+    # The driver flags are ours (C1); `--ignore-submodules=none` is status-only.
+    assert runner.call_args.args[0][-6:] == ["diff", "--no-ext-diff", "--no-textconv",
+                                            "--name-only", "-z", "HEAD"]
+    assert "--ignore-submodules=none" not in runner.call_args.args[0]
+
+
+def test_caller_timeout_and_bytes_contract_survive_the_preflight(tmp_path):
+    # discovery's `_git` asks for 30 s and bytes; the preflight parses text and
+    # must keep doing so, so only the FINAL call carries the caller's contract.
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", ""),
+                                    subprocess.CompletedProcess([], 0, "", ""),
+                                    subprocess.CompletedProcess([], 0, b"", b"")])
+    with mock.patch.object(safe_git.time, "monotonic", side_effect=[100, 101, 102, 103]):
+        safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner,
+                       timeout=30, text=False)
+    assert [call.kwargs["text"] for call in runner.call_args_list] == [True, True, False]
+    assert [call.kwargs["timeout"] for call in runner.call_args_list] == [29, 28, 27]
+
+
+# --- #2006 fix round 1 --------------------------------------------------------
+
+@pytest.mark.parametrize("args,replies,fragment", [
+    (["status", "--porcelain", "-z"],
+     [subprocess.CompletedProcess([], 0, "filter.fixture.clean\ncmd\0", "")],
+     "command setting"),
+    (["status", "--porcelain", "-z"],
+     [subprocess.CompletedProcess([], 0, "", ""),
+      subprocess.CompletedProcess([], 0, "160000 " + "a" * 40 + " 0\t../escape\0", "")],
+     "unsafe submodule path"),
+])
+def test_every_target_refusal_is_one_named_class(tmp_path, args, replies, fragment):
+    # The callers need to tell "this tree is refused" apart from "git failed or
+    # is absent" (also an OSError), because only the first is a hostile-target
+    # finding the operator must SEE. Still an OSError, so every existing
+    # `except OSError` handler keeps catching it.
+    runner = mock.Mock(side_effect=replies)
+    with pytest.raises(safe_git.RepositoryRefused, match=fragment):
+        safe_git.probe(str(tmp_path), args, runner=runner)
+    assert issubclass(safe_git.RepositoryRefused, OSError)
+
+
+def test_a_failed_root_preflight_answers_in_the_callers_type(tmp_path):
+    # The preflight always reads text; a caller that asked for bytes must not
+    # be handed str on the failure path (#2006 concern 3).
+    failure = subprocess.CompletedProcess([], 128, "", "fatal: not a git repository")
+    runner = mock.Mock(return_value=failure)
+    proc = safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
+                          runner=runner, text=False)
+    assert proc.returncode == 128
+    assert proc.stdout == b""
+    assert proc.stderr == b"fatal: not a git repository"
+    # ... and a text caller gets the same values, as str.
+    text_proc = safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
+                               runner=runner)
+    assert (text_proc.stdout, text_proc.stderr) == ("", "fatal: not a git repository")
+
+
+def test_a_failed_root_index_preflight_answers_in_the_callers_type(tmp_path):
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", ""),
+                                    subprocess.CompletedProcess([], 128, "", "bad index")])
+    proc = safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"],
+                          runner=runner, text=False)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (128, b"", b"bad index")
+
+
+def test_every_launch_suppresses_hooks_and_the_fsmonitor(tmp_path):
+    # #2006 fix round 2, C2: `.git/hooks` is git's default, so no config
+    # refusal can reach it -- every launch, preflight included, must point git
+    # at a directory we own. One assertion over EVERY call, because a launch
+    # site that forgets is exactly the regression.
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
+    safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner)
+    assert runner.call_count == 3
+    for call in runner.call_args_list:
+        argv = call.args[0]
+        assert "core.fsmonitor=false" in argv
+        assert "core.hooksPath=" + safe_git._no_hooks_path() in argv
+
+
+def test_the_hooks_directory_is_ours_and_stays_empty(tmp_path):
+    path = safe_git._no_hooks_path()
+    assert os.path.isdir(path)
+    assert os.listdir(path) == []
+    assert safe_git._no_hooks_path() is path      # once per process, not per call
+
+
+@pytest.mark.parametrize("setting", ["diff.external", "diff.hostile.command",
+                                     "diff.hostile.textconv"])
+def test_diff_command_drivers_fail_closed_like_filters(tmp_path, setting):
+    # #2006 fix round 2, C1: this PR brought `git diff` under the probe, and
+    # the preflight only ever looked at `filter.*`. Every one of these is a
+    # repository-authored command line that `diff` will execute.
+    runner = mock.Mock(return_value=subprocess.CompletedProcess(
+        [], 0, setting + "\nfixture-command-value-must-not-appear\0", ""))
+    with pytest.raises(safe_git.RepositoryRefused, match="command") as error:
+        safe_git.probe(str(tmp_path), ["diff", "--name-only", "HEAD"], runner=runner)
+    assert setting in str(error.value)
+    assert "fixture-command-value-must-not-appear" not in str(error.value)
+    assert runner.call_count == 1
+
+
+@pytest.mark.parametrize("args,expected", [
+    (["diff", "--unified=0", "main"],
+     ["diff", "--no-ext-diff", "--no-textconv", "--unified=0", "main"]),
+    (["log", "-p", "-1"], ["log", "--no-ext-diff", "--no-textconv", "-p", "-1"]),
+    (["show", "--oneline"], ["show", "--no-ext-diff", "--no-textconv", "--oneline"]),
+    (["-c", "core.quotepath=false", "diff", "-z", "--", "a.py"],
+     ["-c", "core.quotepath=false", "diff", "--no-ext-diff", "--no-textconv",
+      "-z", "--", "a.py"]),
+])
+def test_every_diff_producing_launch_disables_the_drivers(tmp_path, args, expected):
+    # Belt and braces beside the refusal: inserted after the SUBCOMMAND, so a
+    # `--` pathspec cannot turn them into filenames, and `git status` -- which
+    # rejects both flags -- never sees them.
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
+    safe_git.probe(str(tmp_path), args, runner=runner)
+    assert runner.call_args.args[0][-len(expected):] == expected
+
+
+def test_status_never_receives_the_diff_flags(tmp_path):
+    # `git status --no-ext-diff` is rc=129, unknown option.
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
+    safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z"], runner=runner)
+    assert "--no-ext-diff" not in runner.call_args.args[0]
+
+
+@pytest.mark.parametrize("args", [
+    ["-C", "/etc", "rev-parse", "HEAD"],
+    ["--git-dir=/tmp/elsewhere", "status", "--porcelain", "-z"],
+    ["--git-dir", "/tmp/elsewhere", "status"],
+    ["--work-tree=/tmp/elsewhere", "status"],
+    ["--exec-path=/tmp", "status"],
+    ["--namespace=x", "rev-parse", "HEAD"],
+    ["--config-env=core.fsmonitor=EVIL", "status"],
+])
+def test_a_repo_redirecting_global_option_is_rejected_not_parsed_past(tmp_path, args):
+    # #2006 fix round 2, M3: the preflight validates `root`, so an argv that
+    # sends the FINAL call somewhere else would be preflighted against one
+    # repository and run against another. No caller does this; a probe whose
+    # whole point is failing closed should refuse rather than parse past it.
+    runner = mock.Mock()
+    with pytest.raises(ValueError, match="redirect"):
+        safe_git.probe(str(tmp_path), args, runner=runner)
+    runner.assert_not_called()
+
+
+def test_our_own_dash_c_settings_are_still_allowed(tmp_path):
+    runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
+    safe_git.probe(str(tmp_path), ["-c", "core.quotepath=false", "diff", "--name-only"],
+                   runner=runner)
+    assert runner.call_count == 3
+
+
+def test_a_failed_root_preflight_names_the_command_the_caller_asked_for(tmp_path):
+    # #2006 fix round 2, M5: the failure was returned as the caller's own
+    # result, so `discovery._git` raised CalledProcessError naming
+    # `config --null --list --includes` and the operator read
+    # "git diff failed: ... config ...".
+    failure = subprocess.CompletedProcess(
+        ["/trusted/git", "-C", str(tmp_path), "config", "--null", "--list", "--includes"],
+        128, "", "fatal: not a git repository")
+    runner = mock.Mock(return_value=failure)
+    proc = safe_git.probe(str(tmp_path), ["diff", "--name-only", "HEAD"], runner=runner)
+    assert proc.returncode == 128
+    assert proc.stderr == "fatal: not a git repository"
+    assert "diff" in proc.args and "config" not in proc.args
+
+
+@pytest.mark.parametrize("args", [
+    ["-c", "core.hooksPath=/somewhere/else", "status", "--porcelain", "-z"],
+    ["-c", "core.fsmonitor=printf hit", "status", "--porcelain", "-z"],
+    ["-c", "CORE.HOOKSPATH=/x", "rev-parse", "HEAD"],
+    ["diff", "--ext-diff", "HEAD"],
+    ["diff", "--textconv", "HEAD"],
+])
+def test_a_caller_cannot_undo_what_the_probe_pins(tmp_path, args):
+    """#2006 review N2: a caller's `-c` for a key the probe sets, or a flag
+    re-enabling a diff driver, comes later in argv and would win. Refused."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
+    with pytest.raises(ValueError, match="override|re-enable"):
+        safe_git.probe(str(repo), args)

@@ -56,6 +56,15 @@ else:
         from scripts import safe_write     # noqa: E402
     except ModuleNotFoundError:
         import safe_write                  # noqa: E402
+# #2006: every git call in this module runs against the TARGET, so all of them
+# go through the trusted, bounded, preflighted probe. Same fallback arm.
+if TYPE_CHECKING:
+    from scripts import safe_git
+else:
+    try:
+        from scripts import safe_git       # noqa: E402
+    except ModuleNotFoundError:
+        import safe_git                    # noqa: E402
 
 # Files per review group before it splits into `<name>_<i>` chunks.
 #
@@ -224,11 +233,41 @@ def compute_group_panels(files, security_mode="standard"):
     return panels_in_priority_order(panels)
 
 def _git(repo, args, timeout=30, text=True):
-    """Run git -C repo with check=True — the shared invocation for this
-    module's six git call sites; each caller's try/except owns failures."""
-    return subprocess.run(["git", "-C", repo, *args],  # nosec
-                          capture_output=True, text=text, check=True,
-                          timeout=timeout, env={"PATH": os.environ.get("PATH", "")})
+    """Run a trusted, bounded git probe in repo with check=True -- the shared
+    invocation for this module's six git call sites; each caller's try/except
+    owns failures.
+
+    #2006: `repo` is the TARGET. This used to launch bare `git` off the
+    inherited PATH with the target's own config live, so a target that set
+    `core.fsmonitor` (or a `filter.*.clean` on a file `status` must compare)
+    got its command RUN during discovery -- reproduced through
+    `_worktree_dirty`, which runs before dispatch. `safe_git.probe` resolves
+    git outside the target's outermost checkout, launches it with a fresh
+    allowlisted environment and `core.fsmonitor=false`, and preflights the
+    target's effective config so a command filter is refused rather than
+    executed. That refusal arrives as OSError, which every caller's
+    `except Exception` already treats as "git failed" -- loud, never an
+    empty answer that reads as clean.
+    """
+    proc = safe_git.probe(repo, list(args), timeout=timeout, text=text)
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, proc.args,
+                                            proc.stdout, proc.stderr)
+    return proc
+
+def _refused(exc):
+    """The operator-facing line for a REFUSED target-git probe (#2006).
+
+    Deliberately the same shape `validate.capture_tree_baseline` prints for the
+    same refusal -- prefix, what was refused, the cause in parentheses (which
+    names the setting), the consequence -- because an operator who meets this
+    at two phases should not have to learn two messages. The cause is the only
+    place the refused key appears, so it is never trimmed away.
+    """
+    return ("discovery: target Git probe REFUSED (%s); the reviewed tree's own "
+            "Git configuration is not trusted to run, so discovery fails closed"
+            % exc)
+
 
 def _nul_separated_paths(raw):
     """The non-empty paths in `git ... -z` output, decoded like os.fsdecode.
@@ -321,6 +360,8 @@ def collect_changed_files(repo, base=None, exclude=()):
     if base is not None:
         try:
             mb = _git(repo, ["merge-base", "HEAD", base]).stdout.strip()
+        except safe_git.RepositoryRefused:
+            raise            # a refused tree is not "no history" (#2006)
         except Exception:
             return None
         if not mb:
@@ -332,11 +373,15 @@ def collect_changed_files(repo, base=None, exclude=()):
                 mb = _git(repo, ["merge-base", "HEAD", branch]).stdout.strip()
                 if mb:
                     break
+            except safe_git.RepositoryRefused:
+                raise        # (#2006) never "try the next branch" on a refusal
             except Exception:
                 continue
         if not mb:
             try:
                 mb = _git(repo, ["rev-parse", "HEAD~1"]).stdout.strip()
+            except safe_git.RepositoryRefused:
+                raise
             except Exception:
                 return None
     changed = set()
@@ -358,6 +403,8 @@ def collect_changed_files(repo, base=None, exclude=()):
                           "--diff-filter=d", "--find-renames", "-z", mb],
                    text=False)
         changed.update(_nul_separated_paths(out.stdout))
+    except safe_git.RepositoryRefused:
+        raise
     except Exception as e:
         print(f"Warning: git diff failed: {e}", file=sys.stderr)
         return None
@@ -367,6 +414,8 @@ def collect_changed_files(repo, base=None, exclude=()):
                           "--exclude-standard", "-z"], text=False)
         untracked.update(_nul_separated_paths(out.stdout))
         changed.update(untracked)
+    except safe_git.RepositoryRefused:
+        raise
     except Exception:
         pass
     for name in exclude:
@@ -741,9 +790,12 @@ def resolve_base(repo, explicit=None, pr_base=None, runner=subprocess.run):
     that does NOT resolve returns (None,'unresolved') without falling through -
     a bad --base is a loud failure, not a silent downgrade to a branch tip."""
     def _resolves(ref):
+        # #2006: the target's git, on the target's config, choosing this run's
+        # delta base -- through the same probe as every other call here.
+        # `runner` stays the injection seam the tests use; the probe takes it.
         try:
-            r = runner(["git", "-C", repo, "rev-parse", "--verify", "-q", ref + "^{commit}"],
-                       capture_output=True, text=True, timeout=15)
+            r = safe_git.probe(repo, ["rev-parse", "--verify", "-q", ref + "^{commit}"],
+                               runner=runner)
             return r.returncode == 0
         except (subprocess.SubprocessError, OSError):
             return False
@@ -914,6 +966,11 @@ def _git_listed_files(repo):
         out = _git(repo, ["ls-files", "--cached", "--others",
                           "--exclude-standard", "-z"], timeout=60, text=False)
     except Exception:
+        # No `RepositoryRefused` arm: `ls-files` is on the probe's allowlist, so
+        # this call never preflights and never refuses (#2006 fix round 2, M7 --
+        # the arm that used to be here was dead code). If `ls-files` ever leaves
+        # that allowlist, add one: falling back to a raw walk on a tree we just
+        # refused would be a silent downgrade.
         return None
     return [os.fsdecode(path) for path in out.stdout.split(b"\0") if path]
 
@@ -1518,6 +1575,23 @@ def _norm_scope_path(repo, p):
 
 
 def main(argv=None):
+    """The CLI entry point, and the ONE place a refused target tree becomes an
+    operator-readable exit rather than a traceback (#2006 fix round 1).
+
+    Discovery touches the target's git from several depths -- the changed-file
+    diff, the repo listing, the uncommitted-work probe -- and a `RepositoryRefused`
+    from any of them means the same thing and deserves the same sentence. An
+    unhandled OSError out of here is a stack trace the operator has to decode,
+    and it never says which setting was refused.
+    """
+    try:
+        return _repo_scan(argv)
+    except safe_git.RepositoryRefused as exc:
+        print(_refused(exc), file=sys.stderr)
+        return 2
+
+
+def _repo_scan(argv=None):
     """Resolve --repo-scan discovery/matrix targets to grouped file lists and
     emit as JSON. The sole mode the 5.0 driver invokes."""
     ap = argparse.ArgumentParser(description="panopticon repo-scan discovery/matrix resolver",

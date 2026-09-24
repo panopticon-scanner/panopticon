@@ -240,6 +240,7 @@ groups:
       - tests/runners/**
       - tests/test_executable_provenance.py
       - tests/test_safe_git.py
+      - tests/test_target_git_confinement.py
       - tests/test_temp_root_guard.py
       panels:
       - ARC
