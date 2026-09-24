@@ -41,7 +41,7 @@ Every report carries its own ledger under `meta.cost` (launches, tokens, dollars
 
 ## How to run it
 
-Prerequisites: Python 3.11+, `pyyaml` and `jsonschema`, an agent host on `PATH`, and optionally Docker with the `panopticon-tools` image (`docker pull ghcr.io/panopticon-scanner/panopticon-tools:latest`, a public package, then tag it `panopticon-tools`; or `docker build -t panopticon-tools .` from the checkout, which takes over an hour).
+Prerequisites: Python 3.11+ with `pyyaml`, `defusedxml` and `jsonschema`, an agent host on `PATH`, and optionally Docker with the `panopticon-tools` image (`docker pull ghcr.io/panopticon-scanner/panopticon-tools:latest`, a public package, then tag it `panopticon-tools`; or `docker build -t panopticon-tools .` from the checkout, which takes over an hour).
 
 Install once (Claude Code shown; Kimi and Codex are in the README):
 
