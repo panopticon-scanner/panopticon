@@ -76,6 +76,13 @@ evidence exposed.
   same file now also points `HOME` at one throwaway directory for the whole
   process, before the registry expands `~`, so no probe or test reads the
   operator's real `~/.claude`.
+- **The guide is an index plus one chapter per section.**
+  `skill/docs/PANOPTICON.md` keeps Overview, Required sub-skills, Modes and
+  Global flags plus a Contents list; each H2 lives in `skill/docs/guide/`
+  (`docs/guide` is symlinked onto it), wrapped at 100 columns with no prose
+  changed. `driver readiness`'s `guide` row is true only when every chapter
+  file is present (`hosts.guide_documents()`), and its remedy names the
+  missing ones.
 
 ## Unreleased — 5.2 grouping engine, plan 1
 

@@ -118,6 +118,8 @@ The host contract (5.2, plan 6):
   section respectively cover them. A row with nothing to remedy carries `null` there and renders
   blank; only the three rows nothing is checked against render `--`. Exit 0 when nothing gating
   fails, 1 otherwise — `driver readiness && driver loop`.
+  Since the guide became an index plus chapters (2026-09-24), that `guide` row's `exists` is true
+  only when every chapter file is present too, and its remedy names the ones that are not.
 - **The loop's first step is the readiness checkpoint.** Before any paid dispatch — before the loop
   arms a guard or runs an entry — the engine runs `readiness` (below). (It is not the very first
   thing the process does: `driver run` establishes the host capability posture first, which on a
