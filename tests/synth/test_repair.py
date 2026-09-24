@@ -254,10 +254,6 @@ class TestRepairToolsNetwork(unittest.TestCase):
         self.assertEqual(validate_schema_mod.schema_errors(report), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestWarningStreamIsBounded(unittest.TestCase):
     """#1645 fix round 3, N-1. The CONTENT is bounded; the stream of
     announcements about it was not.
@@ -493,3 +489,6 @@ class TestRepairToolsExcluded(unittest.TestCase):
                                   "count": 1})
         self.assertEqual(len(got["globs"]), repair_mod.ROWS_MAX)
 
+
+if __name__ == "__main__":
+    unittest.main()

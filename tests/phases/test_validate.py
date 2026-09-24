@@ -38,7 +38,7 @@ class TestValidatePhase(unittest.TestCase):
     def test_local_fsmonitor_never_executes_in_baseline_or_delta(self):
         d = self._git_repo()
         marker, command = self._marker_command(d)
-        subprocess.run(["git", "-C", d, "config", "core.fsmonitor", command], check=True)
+        subprocess.run(["git", "-C", d, "config", "core.fsmonitor", command], check=True, timeout=30)
         validate_phase.capture_tree_baseline(d)
         self.assertFalse(os.path.exists(marker))
         self.assertEqual(validate_phase._tree_delta(d, subprocess.run), [])
@@ -50,9 +50,9 @@ class TestValidatePhase(unittest.TestCase):
             fh.write("before\n")
         with open(os.path.join(d, ".gitattributes"), "w") as fh:
             fh.write("a.py filter=fixture\n")
-        subprocess.run(["git", "-C", d, "add", "a.py", ".gitattributes"], check=True)
-        subprocess.run(["git", "-C", d, "commit", "-qm", "filter fixture"], check=True)
-        subprocess.run(["git", "-C", d, "config", "filter.fixture.clean", command], check=True)
+        subprocess.run(["git", "-C", d, "add", "a.py", ".gitattributes"], check=True, timeout=30)
+        subprocess.run(["git", "-C", d, "commit", "-qm", "filter fixture"], check=True, timeout=30)
+        subprocess.run(["git", "-C", d, "config", "filter.fixture.clean", command], check=True, timeout=30)
         # Same-size content defeats the size-only fast path and requests cleaning.
         with open(os.path.join(d, "a.py"), "w") as fh:
             fh.write("after!\n")
@@ -82,14 +82,14 @@ class TestValidatePhase(unittest.TestCase):
     def _submodule_repo(self):
         d, child = self._git_repo(), self._git_repo()
         subprocess.run(["git", "-C", d, "-c", "protocol.file.allow=always", "submodule",
-                        "add", child, "sub"], check=True, capture_output=True)
-        subprocess.run(["git", "-C", d, "commit", "-qam", "add submodule"], check=True)
+                        "add", child, "sub"], check=True, capture_output=True, timeout=60)
+        subprocess.run(["git", "-C", d, "commit", "-qam", "add submodule"], check=True, timeout=30)
         return d, os.path.join(d, "sub")
 
     def test_normal_submodule_dirt_remains_visible(self):
         d, sub = self._submodule_repo()
         # Repository preferences must not silently remove this integrity surface.
-        subprocess.run(["git", "-C", d, "config", "submodule.sub.ignore", "all"], check=True)
+        subprocess.run(["git", "-C", d, "config", "submodule.sub.ignore", "all"], check=True, timeout=30)
         validate_phase.capture_tree_baseline(d)
         with open(os.path.join(sub, "a.py"), "w") as fh:
             fh.write("dirty submodule\n")
@@ -100,8 +100,8 @@ class TestValidatePhase(unittest.TestCase):
         d, sub = self._submodule_repo()
         validate_phase.capture_tree_baseline(d)
         os.makedirs(os.path.join(sub, ".panopticon"), exist_ok=True)
-        subprocess.run(["git", "-C", sub, "config", "user.name", "T"], check=True)
-        subprocess.run(["git", "-C", sub, "config", "user.email", "t@t"], check=True)
+        subprocess.run(["git", "-C", sub, "config", "user.name", "T"], check=True, timeout=30)
+        subprocess.run(["git", "-C", sub, "config", "user.email", "t@t"], check=True, timeout=30)
         marker = self._install_clean_filter(sub)
         delta = validate_phase._tree_delta(d, subprocess.run)
         self.assertFalse(os.path.exists(marker))
@@ -198,10 +198,10 @@ class TestValidatePhase(unittest.TestCase):
         os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
         inside = os.path.join(d, ".panopticon", "x.py")
         open(inside, "w").close()
-        subprocess.run(["git", "-C", d, "add", "-A"], check=True)
-        subprocess.run(["git", "-C", d, "commit", "-qm", "add pano file"], check=True)
+        subprocess.run(["git", "-C", d, "add", "-A"], check=True, timeout=30)
+        subprocess.run(["git", "-C", d, "commit", "-qm", "add pano file"], check=True, timeout=30)
         validate_phase.capture_tree_baseline(d)
-        subprocess.run(["git", "-C", d, "mv", ".panopticon/x.py", "leaked.py"], check=True)
+        subprocess.run(["git", "-C", d, "mv", ".panopticon/x.py", "leaked.py"], check=True, timeout=30)
         with self.assertRaises(runio.DriverError):
             validate_phase.validate_execute(d, {"run_id": "R", "worktree": None})
 
@@ -211,11 +211,11 @@ class TestValidatePhase(unittest.TestCase):
         # endpoint. The old destination-only check silently missed this.
         d = self._git_repo()
         open(os.path.join(d, "real_src.py"), "w").close()
-        subprocess.run(["git", "-C", d, "add", "-A"], check=True)
-        subprocess.run(["git", "-C", d, "commit", "-qm", "add real_src"], check=True)
+        subprocess.run(["git", "-C", d, "add", "-A"], check=True, timeout=30)
+        subprocess.run(["git", "-C", d, "commit", "-qm", "add real_src"], check=True, timeout=30)
         validate_phase.capture_tree_baseline(d)
         subprocess.run(["git", "-C", d, "mv", "real_src.py", ".panopticon/hidden.py"],
-                       check=True)
+                       check=True, timeout=30)
         with self.assertRaises(runio.DriverError):
             validate_phase.validate_execute(d, {"run_id": "R", "worktree": None})
 
@@ -228,8 +228,8 @@ class TestValidatePhase(unittest.TestCase):
         # untracked dir to '.panopticon/' and the individual (quotable) path never
         # appears — which wouldn't exercise the quoting fix at all.
         open(os.path.join(d, ".panopticon", "keep.txt"), "w").close()
-        subprocess.run(["git", "-C", d, "add", ".panopticon/keep.txt"], check=True)
-        subprocess.run(["git", "-C", d, "commit", "-qm", "track pano"], check=True)
+        subprocess.run(["git", "-C", d, "add", ".panopticon/keep.txt"], check=True, timeout=30)
+        subprocess.run(["git", "-C", d, "commit", "-qm", "track pano"], check=True, timeout=30)
         validate_phase.capture_tree_baseline(d)
         open(os.path.join(d, ".panopticon", "é.py"), "w").close()   # é.py
         result = validate_phase.validate_execute(d, {"run_id": "R", "worktree": None})

@@ -543,9 +543,13 @@ print(json.dumps({"keys": list(graded.groups[0]["panel_grades"]),
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "app.py"), "w", encoding="utf-8") as fh:
                 fh.write("x = 1\n")
-            proc = subprocess.run(  # nosec B603
-                [sys.executable, "-c", self._PROBE, d],
-                capture_output=True, text=True, env=env, cwd=REPO_ROOT)
+            command = [sys.executable, "-c", self._PROBE, d]
+            try:
+                proc = subprocess.run(  # nosec B603
+                    command, capture_output=True, text=True, timeout=30,
+                    env=env, cwd=REPO_ROOT)
+            except subprocess.TimeoutExpired as exc:
+                self.fail("seed=%s command=%r timed out: %s" % (seed, command, exc))
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return __import__("json").loads(proc.stdout)
 

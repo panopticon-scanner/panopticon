@@ -282,10 +282,6 @@ class TestEveryActionReferenceIsPinned(unittest.TestCase):
                 % os.path.basename(path))
 
 
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()
-
-
 # --- #1641 (SEC-E2A): what a privileged build INSTALLS ------------------------
 # The two rules above govern what a workflow RUNS (`uses:`) and what it FETCHES
 # (curl-and-exec). The third door into the same supply chain is what it
@@ -1510,3 +1506,7 @@ class TestTheContainmentLaneIsLeastPrivilege(unittest.TestCase):
                     "logic; its trigger surface is scheduled and manual only "
                     "(#1655). Adding one is a decision about whose code runs, "
                     "not a workflow edit." % workflow)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()
