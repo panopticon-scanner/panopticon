@@ -4,6 +4,7 @@ import contextlib
 import dataclasses
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -1167,6 +1168,121 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             ok, detail = claude_probes._round_trip_confines_reads()
         self.assertFalse(ok)
         self.assertIn("env", detail)
+
+    def test_subprocess_ignores_hostile_path_and_pythonpath(self):
+        # The driver's installed command must work with no Python on PATH;
+        # isolation must keep sitecustomize out of the guard interpreter.
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "sitecustomize-ran")
+            with open(os.path.join(d, "sitecustomize.py"), "w", encoding="utf-8") as fh:
+                fh.write("from pathlib import Path\nPath(%r).touch()\n" % marker)
+            fake = os.path.join(d, "python3")
+            with open(fake, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 17\n")
+            os.chmod(fake, 0o755)
+            with mock.patch.dict(os.environ, {"PATH": d, "PYTHONPATH": d}):
+                ok, detail = claude_probes._round_trip_confines_reads()
+            self.assertTrue(ok, detail)
+            self.assertIn("subprocess", detail)
+            self.assertFalse(os.path.exists(marker))
+
+    def test_emitted_command_must_match_isolated_trusted_tuple(self):
+        from scripts import read_guard_hook
+        trusted = read_guard_hook._trusted_hook_argv()
+        candidates = (trusted[:1] + trusted[2:],
+                      ("/bin/echo", *trusted[1:]),
+                      (*trusted[:2], trusted[2] + ".other"))
+        for candidate in candidates:
+            with self.subTest(candidate=candidate), \
+                 mock.patch.object(read_guard_hook, "_trusted_hook_argv", return_value=candidate):
+                ok, detail = claude_probes._round_trip_confines_reads()
+            self.assertFalse(ok, detail)
+            self.assertTrue("trusted" in detail or "did not register" in detail, detail)
+        original = read_guard_hook._hook_entry
+        def wrong_scope(scope):
+            return original(scope + ".wrong")
+        with mock.patch.object(read_guard_hook, "_hook_entry", side_effect=wrong_scope):
+            ok, detail = claude_probes._round_trip_confines_reads()
+        self.assertFalse(ok, detail)
+        self.assertIn("trusted", detail)
+
+    def test_private_launch_boundary_rejects_untrusted_operands_before_launch(self):
+        from scripts.probes import claude_read_guard
+        with tempfile.TemporaryDirectory() as d:
+            scope = os.path.join(d, "scope.json")
+            process = claude_read_guard._ReadHookProcess(scope, d)
+            expected = process.expected
+            candidates = (expected[:1] + expected[2:],
+                          ("/bin/echo", *expected[1:]),
+                          (*expected[:2], os.path.join(d, "other.py"), scope),
+                          (*expected[:3], scope + ".other"))
+            with mock.patch.object(claude_read_guard.children.ChildProcesses, "launch") as launch:
+                for candidate in candidates:
+                    with self.subTest(candidate=candidate), self.assertRaisesRegex(
+                            ValueError, "trusted isolated tuple"):
+                        process.launch(candidate, env={})
+                launch.assert_not_called()
+
+    def test_resolution_must_preserve_emitted_interpreter(self):
+        from scripts import executable
+        with mock.patch.object(executable, "resolve", return_value=
+                               executable.ResolvedExecutable("/bin/echo", "/bin")):
+            ok, detail = claude_probes._round_trip_confines_reads()
+        self.assertFalse(ok, detail)
+        self.assertIn("identity", detail)
+
+    def test_subprocess_with_absent_path(self):
+        with mock.patch.dict(os.environ, clear=False):
+            os.environ.pop("PATH", None)
+            ok, detail = claude_probes._round_trip_confines_reads()
+        self.assertTrue(ok, detail)
+
+    def test_broken_interpreter_refutes_the_probe(self):
+        from scripts import read_guard_hook
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            with mock.patch.object(read_guard_hook.sys, "executable", "/missing/panopticon-python"):
+                state, by, detail = claude_probes.probe_read_guard_armed(
+                    "claude", session_root=session_root)
+        self.assertEqual((hosts.REFUTED, "read-guard-armed"), (state, by))
+        self.assertIn("interpreter", detail)
+
+    def test_tampered_settings_command_is_never_executed(self):
+        from scripts.probes import claude_read_guard
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.json")
+            with open(settings, "w", encoding="utf-8") as fh:
+                json.dump({"hooks": {"PreToolUse": [{"matcher": "Read|Grep|Glob",
+                    "hooks": [{"type": "command", "command": "touch planted-marker"}]}]}}, fh)
+            with mock.patch.object(claude_read_guard.children.ChildProcesses, "launch") as run:
+                ok, detail = claude_read_guard._measure_installed_hook(
+                    settings, os.path.join(d, "scope.json"), os.path.join(d, "s.jsonl"),
+                    os.path.join(d, "a.py"), os.path.join(d, "b.py"), d)
+            run.assert_not_called()
+        self.assertFalse(ok)
+        self.assertIn("differs", detail)
+
+    def test_subprocess_failures_cannot_prove_read_confinement(self):
+        from scripts.probes import claude_read_guard
+        def result(output, rc=0):
+            return subprocess.CompletedProcess([], rc, output, "")
+        cases = {
+            "timeout": subprocess.TimeoutExpired(["trusted"], 5),
+            "exit failure": result("", 7),
+            "unexpected allow output": result("garbage"),
+            "malformed denial": [result(""), result("garbage")],
+            "wrong denial": [result(""), result(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "allow",
+                "permissionDecisionReason": "wrong"}}))],
+        }
+        for label, outcomes in cases.items():
+            if not isinstance(outcomes, list):
+                outcomes = [outcomes]
+            with self.subTest(label=label), \
+                 mock.patch.object(claude_read_guard.children.ChildProcesses, "launch", side_effect=outcomes):
+                ok, detail = claude_probes._round_trip_confines_reads()
+            self.assertFalse(ok, detail)
+            self.assertIn("subprocess", detail)
 
     def test_the_round_trip_proves_the_workflow_transcript_layout(self):
         # Claude family PR: the shipped session-mode dispatch workflow

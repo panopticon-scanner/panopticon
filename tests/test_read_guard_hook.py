@@ -876,7 +876,7 @@ class TestInstallUninstall(unittest.TestCase):
         self.assertTrue(cmd.startswith(rg._HOOK_CMD))
         # #1633: the command is a shell string, so what it must carry is an
         # ARGUMENT naming the scope file -- whatever quoting that takes.
-        self.assertEqual(["python3", os.path.abspath(rg.__file__),
+        self.assertEqual([os.path.realpath(os.sys.executable), "-I", os.path.abspath(rg.__file__),
                           os.path.abspath(self.scope_path)], shlex.split(cmd))
         self.assertEqual((True, 1), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
 
@@ -1039,10 +1039,18 @@ class TestInstallUninstall(unittest.TestCase):
     def test_hook_cmd_is_absolute_and_shell_quoted(self):
         # #495: absolute, so the hook resolves under both layouts. #1633: the
         # command is SHELL SOURCE, so the pin is what a shell makes of it --
-        # `startswith('python3 "/')` passed for a command that would have run
-        # anything a `$(...)` in the checkout path asked for.
-        self.assertEqual(["python3", os.path.abspath(rg.__file__)],
+        # A substring check could pass a command that runs anything a
+        # `$(...)` in the checkout path asks for.
+        self.assertEqual([os.path.realpath(os.sys.executable), "-I",
+                          os.path.abspath(rg.__file__)],
                          shlex.split(rg._HOOK_CMD))
+
+    def test_interpreter_must_be_absolute_and_usable_when_emitting(self):
+        for executable in ("python3", "/missing/panopticon-python"):
+            with self.subTest(executable=executable), \
+                 mock.patch.object(rg.sys, "executable", executable), \
+                 self.assertRaisesRegex(RuntimeError, "interpreter"):
+                rg._hook_entry(self.scope_path)
 
 
 class TestEntryIdsMatchTheSpecIdGrammar(unittest.TestCase):

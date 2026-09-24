@@ -1,38 +1,18 @@
-"""PreToolUse read-guard hook: a dispatched subagent may Read/Grep/Glob only
-inside the scope its dispatch entry declares (#1070, first-class-hosts spec 7.2;
-design spec 2026-09-12-panopticon-5.2-claude-read-confinement-design.md).
+"""Standalone Claude PreToolUse guard for a dispatched entry's Read/Grep/Glob.
 
-THE CRUX (design 1): a hook registered in `.claude/settings.local.json` is
-session-wide, so the payload identifies the AGENT (`agent_id`), never the
-dispatch ENTRY. The write guard sidesteps this with one union allowlist; a
-union of read scopes would approximate the whole repository. So this hook
-BINDS `agent_id` to an entry through the subagent's own transcript, which
-Claude Code writes beside the parent transcript the payload names
-(`<stem>/subagents/agent-<id>.jsonl`, or `<stem>/subagents/workflows/<wf>/`
-for a Workflow-dispatched agent) and whose FIRST user record is the dispatch
-prompt verbatim -- measured in the spike, both layouts, present at the first
-tool call. Every entry prompt therefore begins with ``panopticon-entry: <entry
-id>``, rendered by the driver (phases/requests.py) and never by a template.
-Only the orchestrator writes that first record, so hostile target content --
-which reaches an agent only through tool results -- cannot re-bind it.
+The hook is session-wide and receives an agent id, not an entry id. It binds
+the agent through its transcript's first user record, whose driver-rendered
+prompt begins ``panopticon-entry: <entry id>``. Claude writes the transcript
+under `<stem>/subagents/agent-<id>.jsonl` or, for Workflow dispatch, under
+`<stem>/subagents/workflows/<wf>/`. Tool results cannot rewrite that record.
 
-SCOPE, STATED PLAINLY: this covers `_READ_TOOLS` only. No fan-out shell grants
-Bash (`registered-shell-tools` proves that), so Bash needs no adjudication here
-and gets none. The orchestrator -- no `agent_id` and no `agent_type` -- is
-never confined, exactly as the write guard trusts it: it runs the driver. Plan
-6 adds a second identity, `agent_type` with no `agent_id`: the headless
-runner's `claude -p` process IS the reviewer, so that payload shape is a
-session nothing bound, and ENV_ENTRY_ID binds it (spec 5.3).
+Only read tools are confined. The orchestrator (no agent id or type) remains
+unconfined; the headless `claude -p` reviewer binds through ENV_ENTRY_ID.
+An unbound subagent, unknown entry, unresolvable path, or bad scope file denies.
 
-FAIL-CLOSED WHILE ARMED: a subagent that cannot be bound, an entry id the armed
-scope does not name, an unresolvable path, or a missing/malformed scope file all
-DENY, with a reason the agent can read. Never a crash, never a silent allow.
-
-CLAUDE-ONLY BY CONSTRUCTION, like the write guard; other families confine
-reads their own way (spec 7.2). Stdlib-only and self-locating: Claude Code
-runs this as ``python3 <abs path> <abs scope path>``, one SHELL STRING with
-every element shell-quoted (#1633), and with no package on sys.path -- which
-is why the settings plumbing below copies write_guard_hook's (plan 5, R-P5-5).
+Claude runs a shell command with quoted arguments (#1633): the trusted absolute
+interpreter, -I, this standalone script, and the absolute scope path.
+No package import is available, so settings plumbing stays local.
 """
 import glob
 import json
@@ -431,8 +411,19 @@ def hook_command(*argv):
 
 
 # #495: self-locate, shell-quoted -- the install path may contain spaces, or
-# worse (#1633).
-_HOOK_ARGV = ("python3", os.path.abspath(__file__))
+# worse (#1633). The interpreter is the trusted process already running the
+# driver; PATH and PYTHONPATH must not choose code for a dispatched read.
+def _trusted_hook_argv():
+    executable = sys.executable
+    if not executable or not os.path.isabs(executable):
+        raise RuntimeError("read guard interpreter is unavailable or not absolute: %r" % executable)
+    executable = os.path.realpath(executable)
+    if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+        raise RuntimeError("read guard interpreter is unavailable: %s" % executable)
+    return executable, "-I", os.path.abspath(__file__)
+
+
+_HOOK_ARGV = _trusted_hook_argv()
 _HOOK_CMD = hook_command(*_HOOK_ARGV)
 _HOOK_ENTRY = {"matcher": _MATCHER,
                "hooks": [{"type": "command", "command": _HOOK_CMD}]}
@@ -444,9 +435,10 @@ DEFAULT_SCOPE_PATH = ".panopticon/read-scope.json"
 def _hook_entry(scope_path=None):
     """The PreToolUse entry to register; `scope_path` bakes the absolute scope
     file into the command, so the hook never infers it from CWD."""
-    if not scope_path:
-        return _HOOK_ENTRY
-    cmd = hook_command(*_HOOK_ARGV, os.path.abspath(scope_path))
+    argv = list(_trusted_hook_argv())
+    if scope_path:
+        argv.append(os.path.abspath(scope_path))
+    cmd = hook_command(*argv)
     return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": cmd}]}
 
 
@@ -600,6 +592,7 @@ def install(plan, settings_path=None, scope_path=None, *, session_root=None):
         raise ValueError(
             "refusing to install a read-guard that confines nothing: no entry "
             "carried a `scope` dict. Use uninstall() to tear the guard down.")
+    _trusted_hook_argv()  # refuse before writing either private artifact
     merged = dict(_read_scope_file(scope_path))
     merged.update(added)
     _atomic_write_json(scope_path, merged)
