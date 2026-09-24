@@ -1,6 +1,7 @@
 """Tests for scripts.phases.synthesize: the synthesize child and host-usage collection.
 """
 import contextlib
+import html
 import io
 import json
 import os
@@ -230,6 +231,54 @@ class TestSynthesizePhase(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--out") + 1],
                          runio._pano(self.root, "report.json"))
         self.assertEqual(cmd[cmd.index("--run-id") + 1], "R")   # §5.1: X0X provenance
+
+    def test_target_name_crosses_the_child_argv_parser_boundary(self):
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        cases = (
+            ("original target, distinct PR worktree",
+             {"target": os.path.join(self.root, "original-project"),
+              "review_root": os.path.join(self.root, "pr-worktree")},
+             "original-project"),
+            ("legacy manifest fallback", {}, os.path.basename(self.root)),
+            ("trailing separators and dot", {"target": self.root + "/project/./"},
+             "project"),
+            ("leading hyphen and HTML characters",
+             {"target": os.path.join(self.root, "-<unsafe>&")}, "-<unsafe>&"),
+            ("filesystem root", {"target": os.path.sep}, os.path.sep),
+        )
+        for label, fields, expected in cases:
+            with self.subTest(label=label):
+                manifest = dict(self.manifest, **fields)
+                with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
+                    synthesize.synthesize_execute(self.root, manifest)
+                argv = run.call_args.args[0][2:]
+                parsed = syn.build_parser().parse_args(argv)
+                self.assertEqual(parsed.target, expected)
+                self.assertEqual(argv.count("--target") +
+                                 sum(a.startswith("--target=") for a in argv), 1)
+
+    def test_real_child_reports_the_original_target_in_json_and_html(self):
+        name = "-<original&target>"
+        manifest = dict(self.manifest,
+                        target=os.path.join(self.root, name),
+                        review_root=os.path.join(self.root, "pr-worktree"))
+        runio._write_json(runio._pano(self.root, "groups.json"), {"groups": []})
+
+        synthesize.synthesize_execute(self.root, manifest)
+
+        report_path = runio._pano(self.root, "report.json")
+        report = runio._load_json(report_path)
+        self.assertEqual(report["meta"]["target"], name)
+        with open(report_path + ".html", encoding="utf-8") as fh:
+            page = fh.read()
+        escaped = html.escape(name)
+        self.assertIn(f"<title>Panopticon — {escaped}</title>", page)
+        self.assertIn(f"<h1>{escaped}</h1>", page)
+        self.assertNotIn(f"<h1>{name}</h1>", page)
 
     def test_forwards_the_manifest_verify_cap_including_zero(self):
         def fake_run(cmd, **kw):
