@@ -175,8 +175,12 @@ def synthesize_execute(review_root, manifest):
     # #2013: which of the TARGET's own Git driver commands the probe emptied for
     # this scan, threaded rather than re-read for the reason above --
     # run-manifest.json is a _TOP_LEVEL artifact, outside the `--run-dir` the
-    # child resolves against. Omitted when there is nothing to disclose, so a
-    # manifest predating the field and a clean target read alike (both `[]`).
+    # child resolves against. Omitted when there is nothing to disclose. A
+    # manifest predating the field and a clean target are therefore
+    # INDISTINGUISHABLE downstream (both `[]`, review M4) -- the collapse is
+    # reachable only on a run resumed across this upgrade, and the published
+    # field's description says what it does and does not claim rather than
+    # pretending the two are told apart.
     drivers = manifest.get("git_drivers_suppressed")
     if drivers:
         cmd += ["--git-drivers-suppressed", json.dumps(drivers)]

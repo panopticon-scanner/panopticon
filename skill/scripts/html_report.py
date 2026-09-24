@@ -744,30 +744,46 @@ def _render_suppressed_git_drivers(meta):
     #2006 refused such a target outright; #2013 scans it with each
     `filter.*.clean/.process/.smudge`, `diff.external` and
     `diff.*.command/.textconv` overridden to nothing, which is the only reason
-    a git-lfs or git-crypt checkout produces a report at all. That changes what
-    the reviewers were shown -- a git-lfs pointer file was read as a pointer
-    file, not as the content its clean filter would have produced -- so the
-    operator has to meet the fact here, beside the other "what this run did
-    not see" lines.
+    a git-lfs or git-crypt checkout produces a report at all.
+
+    What that COSTS is the point of the line, and it is a measured fact about
+    the COMPARISON, not about what any reviewer read (agents `Read` the
+    worktree; the probe never checks anything out). A clean filter is what makes
+    the index blob equal the worktree, so with it emptied git compares raw
+    worktree bytes against a filtered index blob: paths under a suppressed
+    driver compare as modified, dirtiness for them is unknown, and a delta may
+    include them. On a delta-scoped run that also sinks certification -- the
+    caveat is in `meta.integrity` and the note says so.
 
     KEYS only, never values: a driver's value is a command line the target
     authored. The key carries a target-authored subsection, so it is escaped.
+    Each row is labelled with its repository when that is not the review root
+    (review M1): the count was rows and the names were deduped keys, so one key
+    in the root and in a submodule rendered as a 2 a reader could not reconcile
+    with the one name shown.
 
-    Silent when nothing was suppressed, and on a report that never measured it
-    (pre-#2013, or a foreign report on the --compare path): "nobody looked"
-    must not render as "the target configured none".
+    Silent when nothing was suppressed. A report that never measured it
+    (pre-#2013, or a foreign report on the --compare path) renders nothing for
+    the same reason -- but note that `[]` and "not measured" both arrive here as
+    `[]` (review M4), so this line says "no driver was emptied under this run's
+    probe" and cannot distinguish a manifest that predates the field.
     """
     rows = (meta.get("coverage") or {}).get("git_drivers_suppressed")
     if not isinstance(rows, list) or not rows:
         return ""
-    keys = sorted({str(row.get("key")) for row in rows if isinstance(row, dict)
-                   and isinstance(row.get("key"), str)})
-    if not keys:
+    labels = sorted({
+        "%s: %s" % (row["repo"], row["key"]) if row.get("repo") not in (".", None)
+        else str(row["key"])
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("key"), str) and row.get("key")})
+    if not labels:
         return ""
     return ("<div class='coverage'>Target git drivers suppressed: %d (%s) "
             "&mdash; the reviewed tree configured these commands and this scan "
-            "ran with them emptied</div>"
-            % (len(rows), ", ".join(_escape(k) for k in keys)))
+            "ran with them emptied: paths under a suppressed driver compare as "
+            "modified, so dirtiness for them is unknown and a delta may "
+            "include them</div>"
+            % (len(labels), ", ".join(_escape(label) for label in labels)))
 
 
 def _render_suppressed_tools(meta):

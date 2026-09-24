@@ -1178,6 +1178,49 @@ class TestSuppressedGitDriversReachTheCoverageBlock(unittest.TestCase):
     def test_a_clean_target_publishes_an_empty_list(self):
         self.assertEqual(self._coverage(None)["git_drivers_suppressed"], [])
 
+    def _integrity(self, rows, **run_kw):
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp="2026-01-01T00:00:00Z", **run_kw),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(git_drivers_suppressed=rows)))
+        return report["meta"]["integrity"]
+
+    def test_a_changes_review_arms_the_delta_scope_caveat(self):
+        # #2013 fix round 1 (review I1): the suppressed comparison chose this
+        # run's reviewed file set, so the caveat is named in meta.integrity.
+        self.assertEqual(
+            self._integrity([{"repo": ".", "key": "filter.lfs.clean"}],
+                            review_type="changes")
+            ["delta_scope_suppressed_git_drivers"], ["filter.lfs.clean"])
+
+    def test_a_hunk_scoped_review_arms_it_too(self):
+        # The other limb: a diff-hunks map with a base (--pr / --scope-changed)
+        # is delta-scoped whatever the review_type label says.
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on="high",
+                                     timestamp="2026-01-01T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            delta=delta_mod.DeltaContext(diff_hunks={"base": "main", "hunks": {}}),
+            plan=plan_mod.PlanInputs(
+                git_drivers_suppressed=[{"repo": ".", "key": "diff.external"}])))
+        self.assertEqual(report["meta"]["integrity"]
+                         ["delta_scope_suppressed_git_drivers"], ["diff.external"])
+        self.assertIs(report["summary"]["coverage_certified"], False)
+        # The caveat rides `integrity_ok`, which is what moves the gate.
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+
+    def test_a_full_repo_review_leaves_it_unarmed(self):
+        self.assertIsNone(
+            self._integrity([{"repo": ".", "key": "filter.lfs.clean"}])
+            ["delta_scope_suppressed_git_drivers"])
+
+    def test_a_clean_delta_review_leaves_it_unarmed(self):
+        # Always present, never fabricated: a delta run with nothing suppressed
+        # reads the same as one that could not look.
+        self.assertIsNone(self._integrity([], review_type="changes")
+                          ["delta_scope_suppressed_git_drivers"])
+
     def test_a_malformed_row_is_dropped_at_the_boundary(self):
         rows = self._coverage([{"repo": ".", "key": "filter.lfs.clean"},
                                {"repo": ".", "key": ["not", "a", "key"]},

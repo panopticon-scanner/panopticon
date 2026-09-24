@@ -69,9 +69,13 @@ class TestValidatePhase(unittest.TestCase):
         with contextlib.redirect_stderr(err):
             baseline = validate_phase.capture_tree_baseline(d)
         self.assertFalse(os.path.exists(marker))
+        # Review M2: assert on the BASELINE FILE. The sentinel is a file-content
+        # constant, so comparing it against a stderr buffer was a dead assertion
+        # that read like a check.
         with open(baseline) as fh:
-            self.assertIn("a.py", fh.read())
-        self.assertNotEqual(err.getvalue(), validate_phase._TREE_BASELINE_PROBE_FAILED)
+            content = fh.read()
+        self.assertIn("a.py", content)
+        self.assertNotEqual(content, validate_phase._TREE_BASELINE_PROBE_FAILED)
         # The tree did not move between the baseline and the delta.
         self.assertEqual(validate_phase._tree_delta(d, subprocess.run), [])
 

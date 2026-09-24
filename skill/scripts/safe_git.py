@@ -19,6 +19,16 @@ with no override. The preflight now collects each such key and empties it with
 a `-c <key>=` override on every later launch, proves each override took, and
 discloses the pairs it neutralized. The refusal survives exactly where the
 proof fails: a key that still reads non-empty is never run.
+
+WHAT SUPPRESSION COSTS, measured (#2013 fix round 1): a clean filter is what
+makes the index blob equal the worktree, so emptying it leaves git comparing
+RAW worktree bytes against a FILTERED index blob. Paths under a suppressed
+driver therefore compare as MODIFIED: dirtiness for them is unknown and a delta
+may include them. Measured on the canonical git-lfs shape -- index blob
+`ptr payload`, worktree `BIG payload`, plain `git status` clean, this probe's
+`status` reporting ` M big.bin`. That is why the suppression is disclosed
+rather than silent, and why a DELTA-scoped run over a suppressed comparison
+cannot certify its coverage (`synth/tool_axis.reconcile`).
 """
 from typing import TYPE_CHECKING
 import os
@@ -264,7 +274,9 @@ def _is_command_setting(key):
     (`GIT_CONFIG_GLOBAL=/dev/null`), but `git-crypt init` and
     `git lfs install --local` write `filter.*.clean` into `.git/config`. Such a
     target used to be unreviewable; it is now scanned with these keys emptied
-    and the suppression disclosed in the run manifest and the report.
+    and the suppression disclosed in the run manifest and the report -- at the
+    cost the module docstring names: paths under a suppressed driver compare as
+    modified.
 
     `merge.<driver>.driver` is deliberately absent: no subcommand the probe
     runs performs a merge or a checkout, the one exempt path that does
@@ -396,6 +408,10 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=N
     SILENTLY, because the run manifest is the disclosure of record and every
     other caller only needs a working probe. Values are never disclosed and
     never appear in an error: they are command lines the target authored.
+
+    A caller that CARES what the answer means should pass the list: paths under
+    a suppressed driver compare as modified, so dirtiness for them is unknown
+    and a delta may include them (see the module docstring).
     """
     def preflight_failure(proc):
         """A failed ROOT preflight, as a result for the command the caller asked for.
@@ -520,6 +536,15 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=N
                     "overrides could not be re-read to confirm the override")
             live = _settings(confirmed.stdout)
             for key in sorted(overridden):
+                # KNOWN CASE (#2013 fix round 1, review M3): a subsection
+                # containing `=` -- `[filter "a=b"] clean = ...`, the key
+                # `filter.a=b.clean` -- cannot be overridden at all, because git
+                # parses the token `-c filter.a=b.clean=` as the key `filter.a`
+                # with the value `b.clean=`. The real key stays set, this read
+                # sees it, and the target is REFUSED (measured). A target can
+                # choose to be unreviewable that way; it can never choose to be
+                # obeyed. Pinned by
+                # test_an_unoverridable_subsection_refuses_rather_than_running.
                 if live.get(key):
                     # The key is repository-authored; repr escapes control bytes.
                     # The VALUE is a command line and is never named.

@@ -3097,7 +3097,8 @@ class TestIntegrity(unittest.TestCase):
         # section it was handed, so the published section is the caller's plus
         # that one key.
         self.assertEqual(r["meta"]["integrity"],
-                         dict(integ, tools_manifest_invalid=None))
+                         dict(integ, tools_manifest_invalid=None,
+                              delta_scope_suppressed_git_drivers=None))
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
 
     def test_a_missing_owed_snapshot_cannot_certify(self):
@@ -3133,6 +3134,9 @@ class TestIntegrity(unittest.TestCase):
         "content_snapshot_missing", "empty_dispatch_plans",
         "invalid_dispatch_plans", "invalid_verify_queue", "plans_seen",
         "tools_manifest_invalid",
+        # #2013 fix round 1: appended by reconcile beside the key above, and
+        # stated on every report for the same reason.
+        "delta_scope_suppressed_git_drivers",
     ]
 
     def test_the_published_integrity_key_order_is_the_contract(self):
@@ -3167,6 +3171,9 @@ class TestIntegrity(unittest.TestCase):
                 # #1644: stated on every report -- None means the manifest read
                 # was clean (or there was none), never "not measured".
                 "tools_manifest_invalid": None,
+                # #2013 fix round 1: None means this run was not delta-scoped,
+                # or nothing was suppressed -- never "not measured".
+                "delta_scope_suppressed_git_drivers": None,
             },
         )
         self.assertEqual(r["summary"]["gate"], "PASS")
@@ -3195,6 +3202,9 @@ class TestIntegrity(unittest.TestCase):
                 # #1644: stated on every report -- None means the manifest read
                 # was clean (or there was none), never "not measured".
                 "tools_manifest_invalid": None,
+                # #2013 fix round 1: None means this run was not delta-scoped,
+                # or nothing was suppressed -- never "not measured".
+                "delta_scope_suppressed_git_drivers": None,
             },
         )
         self.assertEqual(r["summary"]["gate"], "PASS")
@@ -3986,7 +3996,8 @@ class ReportInputsTest(unittest.TestCase):
             plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]))
         resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run,
                                                  gated_suppressed=inp.tools.gated_suppressed)
-        reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved)
+        reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved,
+                                             run=inp.run)
         graded = grading_mod.grade_report(inp.run, resolved, reconciled)
         cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
         by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)
@@ -4016,7 +4027,8 @@ class ReportInputsTest(unittest.TestCase):
         inp = inputs()
         resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run,
                                                  gated_suppressed=inp.tools.gated_suppressed)
-        reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved)
+        reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved,
+                                             run=inp.run)
         graded = grading_mod.grade_report(inp.run, resolved, reconciled)
         cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
         by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)

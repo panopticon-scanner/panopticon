@@ -127,8 +127,10 @@ def _target_provenance(target, runner=subprocess.run, suppressed=None):
     one `(repository, key)` pair per repository-configured Git driver the probe
     emptied for this scan. This is the DISCLOSURE OF RECORD -- the manifest
     carries it, and one stderr line names the keys (never their values, which
-    are command lines the target authored) so an operator watching the run sees
-    that the tree was scanned with its own drivers off.
+    are command lines the target authored) and what emptying them COSTS: paths
+    under a suppressed driver compare as modified, so dirtiness for them is
+    unknown and a delta may include them. `target_dirty` on such a target is
+    therefore an upper bound, not a fact about what anybody edited.
 
     #1492: nothing in the run record established WHICH code a run saw. `base`
     and `pr_base` are the delta-review base REF, not the scanned HEAD, and both
@@ -148,7 +150,9 @@ def _target_provenance(target, runner=subprocess.run, suppressed=None):
         # Keys only, and `%r` per key for the same reason the refusal used it:
         # a config subsection is repository-authored and may carry control
         # bytes. One line, printed whatever the probes concluded.
-        print("run manifest: target Git drivers SUPPRESSED for this scan: %s"
+        print("run manifest: target Git drivers SUPPRESSED for this scan: %s "
+              "-- paths under a suppressed driver compare as modified: "
+              "dirtiness for them is unknown and a delta may include them"
               % ", ".join(sorted({repr(key) for _repo, key in drivers})),
               file=sys.stderr, flush=True)
     return commit, dirty
@@ -249,8 +253,14 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
         # with emptied -- `[{"repo": ".", "key": "filter.lfs.clean"}, ...]`,
         # `[]` when there were none. Always present, because the absence of a
         # suppression has to mean "measured and did not happen", not "this run
-        # had no opinion". Recorded, never enforced, like the two above; the
-        # values are not here, and never leave the target's own config.
+        # had no opinion". The values are not here, and never leave the
+        # target's own config.
+        #
+        # Recorded, never enforced HERE -- but not inert: paths under a
+        # suppressed driver compare as modified, so `target_dirty` above is an
+        # upper bound on such a target, and a DELTA-scoped run over that
+        # comparison cannot certify its coverage (the caveat is raised at
+        # synthesis, in `synth/tool_axis.reconcile`).
         "git_drivers_suppressed": [{"repo": repo, "key": key}
                                    for repo, key in _suppressed],
     }

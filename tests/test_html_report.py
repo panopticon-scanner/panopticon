@@ -1456,6 +1456,18 @@ class TestSuppressedGitDriversLine(unittest.TestCase):
         self.assertIn("Target git drivers suppressed: 2", out)
         self.assertIn("filter.lfs.clean", out)
         self.assertIn("diff.external", out)
+        # The line states the measured EFFECT, not only the fact (review I1).
+        self.assertIn("compare as modified", out)
+
+    def test_the_count_and_the_names_agree_when_one_key_is_in_two_repos(self):
+        # Review M1: the count was rows and the names were deduped KEYS, so the
+        # same key in root and submodule rendered as "2 (filter.lfs.clean)" --
+        # a count a reader cannot reconcile with what they are shown, and no way
+        # to tell which repository configured it.
+        out = hr.render(self._report([{"repo": ".", "key": "filter.lfs.clean"},
+                                      {"repo": "sub", "key": "filter.lfs.clean"}]))
+        self.assertIn("Target git drivers suppressed: 2", out)
+        self.assertIn("sub: filter.lfs.clean", out)
 
     def test_a_clean_target_renders_no_line(self):
         self.assertNotIn("git drivers suppressed",

@@ -22,7 +22,9 @@ import ast
 import contextlib
 import io
 import os
+import shlex
 import subprocess
+import time
 import unittest
 from unittest import mock
 
@@ -34,6 +36,9 @@ import scripts.phases.validate as validate_phase
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
 import scripts.setup_flow as setup_flow
+import scripts.synth.findings as findings_mod
+import scripts.synth.plan as plan_mod
+import scripts.synth.report as report_mod
 
 from tools.git_repo import (add_plumbing_submodule, hostile_marker,
                             make_git_repo, path_shim_git, plant_clean_filter,
@@ -386,6 +391,8 @@ class ASuppressionIsDisclosedNotARefusal(unittest.TestCase):
         line = err.getvalue()
         self.assertIn("SUPPRESSED", line)
         self.assertIn("filter.fixture.clean", line)
+        # The line states the measured EFFECT, not just the fact (review I1).
+        self.assertIn("compare as modified", line)
         self.assertNotIn("printf hit", line)             # never the value
         self.assertFalse(os.path.exists(marker))
 
@@ -717,6 +724,174 @@ class TargetGitDriversAreSuppressed(unittest.TestCase):
                           (".", "filter.fixture.process")])
         for marker in (process, external, command, textconv):
             self.assertFalse(os.path.exists(marker), marker)
+
+    # Two distinct mtimes, both far enough in the past to be outside any
+    # racily-clean window. See `_lfsish_repo` for why each one is needed.
+    OLDER = time.time() - 240
+    OLD = time.time() - 120
+
+    def _lfsish_repo(self):
+        """A git-lfs/git-crypt-SHAPED target: worktree content whose clean
+        filter maps it to a different, smaller blob, committed THROUGH that
+        filter. Index and worktree differ by design, and the filter is the only
+        reason the tree reads clean. Returns (repo, marker).
+
+        This is the shape the suppression exists to serve, and the one where
+        emptying the filter changes a measured fact: git then compares raw
+        worktree bytes against a filtered index blob.
+        """
+        repo = make_git_repo(test_case=self, panopticon=True,
+                             files={"code.py": "value = 1\n"})
+        marker = hostile_marker(repo, "lfsish-marker")
+        with open(os.path.join(repo, ".gitattributes"), "w", encoding="utf-8") as fh:
+            fh.write("big.bin filter=lfsish\n")
+        subprocess.run(
+            ["git", "-C", repo, "config", "filter.lfsish.clean",
+             "sh -c 'cat > /dev/null; printf hit > %s; printf \"ptr payload\\n\"'"
+             % shlex.quote(marker)],
+            check=True, capture_output=True, timeout=30)
+        big = os.path.join(repo, "big.bin")
+        with open(big, "w", encoding="utf-8") as fh:
+            fh.write("BIG payload, far longer than the pointer it cleans to\n")
+        subprocess.run(["git", "-C", repo, "add", "-A"], check=True,
+                       capture_output=True, timeout=30)
+        subprocess.run(["git", "-C", repo, "commit", "-qm", "commit through the filter"],
+                       check=True, capture_output=True, timeout=30)
+        self.assertTrue(os.path.exists(marker),
+                        "fixture is inert: git never ran filter.lfsish.clean")
+        os.remove(marker)
+        blob = subprocess.run(["git", "-C", repo, "cat-file", "-p", "HEAD:big.bin"],
+                              capture_output=True, text=True, timeout=30).stdout
+        self.assertEqual(blob, "ptr payload\n",
+                         "fixture did not commit the FILTERED blob")
+        # Load-bearing, and the reason an earlier draft of this test was
+        # timing-dependent: git trusts the index's cached stat and will NOT
+        # re-hash a file whose size and mtime still match, so the filter would
+        # never be consulted at all and neither status would say anything. A
+        # distinct mtime (same bytes, same size) forces the re-hash. A DIFFERENT
+        # distinct mtime before each command, because a `status` that re-hashes
+        # and finds the content equal WRITES the refreshed stat back.
+        os.utime(big, (self.OLDER, self.OLDER))
+        # Vacuity guard: the re-hash really happened (the marker proves the
+        # filter ran) and the tree still reads CLEAN under its own filter.
+        self.assertNotIn("big.bin", _plain_status(repo).stdout)
+        self.assertTrue(os.path.exists(marker),
+                        "fixture is inert: git never re-hashed big.bin")
+        os.remove(marker)
+        os.utime(big, (self.OLD, self.OLD))
+        return repo, marker
+
+    def _report(self, rows, delta):
+        """A report built over `rows`, as a delta-scoped or full-repo run."""
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target="src", fail_on="high", timestamp="2026-01-01T00:00:00Z",
+                review_type="changes" if delta else "repo"),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(git_drivers_suppressed=rows)))
+
+    def test_a_filtered_path_reads_as_modified_and_a_delta_run_is_not_certified(self):
+        """The measured cost of suppression, and what it costs certification.
+
+        With the clean filter emptied git compares the RAW worktree against the
+        FILTERED index, so a path nobody touched reads as modified: dirtiness
+        for it is unknown and a delta may include it. That is disclosure-grade
+        on a full-repo scan (the findings are unaffected) and
+        certification-grade on a delta-scoped one, where the inflated
+        comparison chooses the reviewed file set and the gate's scope.
+        """
+        repo, marker = self._lfsish_repo()
+        suppressed = []
+        proc = safe_git.probe(repo, ["status", "--porcelain", "-z"],
+                              suppressed=suppressed)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("big.bin", proc.stdout)          # THE EFFECT, measured
+        self.assertEqual(suppressed, [(".", "filter.lfsish.clean")])
+        self.assertFalse(os.path.exists(marker))
+
+        rows = [{"repo": r, "key": k} for r, k in suppressed]
+        delta = self._report(rows, delta=True)
+        self.assertIs(delta["summary"]["coverage_certified"], False)
+        self.assertIn("delta scope inflated by suppressed git drivers",
+                      delta["summary"]["coverage_note"])
+        self.assertEqual(
+            delta["meta"]["integrity"]["delta_scope_suppressed_git_drivers"],
+            ["filter.lfsish.clean"])
+        # Through the mechanism, not beside it: the caveat is in the integrity
+        # dict, so `integrity_ok` is false and the gate moves like every other
+        # integrity failure. Without this the `integrity_ok` limb could be
+        # deleted with a green board (`coverage_certified` alone would still
+        # sink) -- the shape review I2 flagged.
+        self.assertEqual(delta["summary"]["gate"], "INCONCLUSIVE")
+
+        full = self._report(rows, delta=False)
+        self.assertIs(full["summary"]["coverage_certified"], True)
+        self.assertEqual(full["summary"]["gate"], "PASS")
+        self.assertIsNone(
+            full["meta"]["integrity"]["delta_scope_suppressed_git_drivers"])
+        self.assertEqual(full["meta"]["coverage"]["git_drivers_suppressed"], rows)
+
+    def test_the_same_key_in_two_repositories_is_disclosed_twice(self):
+        """Pins the deliberate deviation from ruling 2 (review I2).
+
+        The COLLECTING config read runs without the overrides on purpose. With
+        the literal ruling -- the collecting read carrying them -- the
+        submodule's row reads empty and vanishes from the disclosure, and
+        nothing else in the suite notices. This is the pin.
+        """
+        child = make_git_repo(test_case=self, files={"a.py": "value = 1\n"},
+                              branch=None)
+        parent = make_git_repo(test_case=self, panopticon=True,
+                               files={"a.py": "value = 1\n"})
+        worktree = add_plumbing_submodule(parent, child)
+        root_marker = plant_clean_filter(
+            parent, marker=hostile_marker(parent, "root-marker"))
+        sub_marker = plant_clean_filter(
+            worktree, marker=hostile_marker(worktree, "sub-marker"))
+        # Vacuity guard: plain git runs BOTH planted filters.
+        subprocess.run(["git", "-C", parent, "status", "--porcelain", "-z",
+                        "--ignore-submodules=none"], capture_output=True, timeout=30)
+        self.assertTrue(os.path.exists(root_marker), "root fixture is inert")
+        self.assertTrue(os.path.exists(sub_marker), "submodule fixture is inert")
+        os.remove(root_marker)
+        os.remove(sub_marker)
+        suppressed = []
+        proc = safe_git.probe(parent, ["status", "--porcelain", "-z"],
+                              suppressed=suppressed)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # ONE override token, TWO disclosed rows: the key is emptied once and
+        # both repositories that configured it are named.
+        self.assertEqual(suppressed, [(".", "filter.fixture.clean"),
+                                      ("sub", "filter.fixture.clean")])
+        self.assertFalse(os.path.exists(root_marker))
+        self.assertFalse(os.path.exists(sub_marker))
+
+    def test_an_unoverridable_subsection_refuses_rather_than_running(self):
+        """Review M3, recorded as a test rather than only as prose.
+
+        A subsection containing `=` -- `[filter "a=b"] clean = ...` -- yields
+        the key `filter.a=b.clean`, and git parses the override token
+        `-c filter.a=b.clean=` as the key `filter.a` with the value
+        `b.clean=`. The real key is therefore never emptied, the confirmation
+        read sees it still set, and the probe REFUSES by name. Such a target
+        can choose to be unreviewable; it can never choose to be obeyed.
+        """
+        repo = make_git_repo(test_case=self, panopticon=True,
+                             files={"a.py": "value = 1\n"})
+        marker = hostile_marker(repo, "equals-marker")
+        with open(os.path.join(repo, ".gitattributes"), "w", encoding="utf-8") as fh:
+            fh.write("a.py filter=a=b\n")
+        with open(os.path.join(repo, ".git", "config"), "a", encoding="utf-8") as fh:
+            fh.write('[filter "a=b"]\n\tclean = %s\n'
+                     % ("printf hit > %s; cat" % shlex.quote(marker)))
+        suppressed = []
+        with self.assertRaises(safe_git.RepositoryRefused) as caught:
+            safe_git.probe(repo, ["status", "--porcelain", "-z"],
+                           suppressed=suppressed)
+        self.assertIn("filter.a=b.clean", str(caught.exception))
+        self.assertIn("did not take effect", str(caught.exception))
+        self.assertEqual(suppressed, [])      # nothing is claimed as suppressed
+        self.assertFalse(os.path.exists(marker))
 
     def test_a_filter_inside_a_submodule_is_reached_by_the_override(self):
         """The `-c` propagation proof, measured rather than assumed.

@@ -190,7 +190,7 @@ def build_report(inp):
     resolved = verdicts_mod.resolve_findings(
         inp.findings, inp.delta, inp.run,
         gated_suppressed=inp.tools.gated_suppressed)
-    reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved)
+    reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved, run=inp.run)
     graded = grading_mod.grade_report(inp.run, resolved, reconciled)
     cost = cost_mod.cost_section(inp.cost, inp.plan.scout_profiles_seen,
                                  resolved.verdict_stats["queued"])

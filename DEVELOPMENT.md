@@ -252,11 +252,22 @@ summary + JSON artifact) with standards citations and CI gating.
   lines the target wrote. `git lfs install --local` and `git-crypt init` are the
   concrete cases — both write `filter.*.clean` into `.git/config`, and #2006
   refused such a target outright, which made those projects unreviewable on
-  every path that touches git. They are now scanned with those drivers off,
-  which does change what the reviewers saw (a pointer file is read as a pointer
-  file), and that is exactly what the disclosure says. Refusal survives only
-  where an override cannot be SHOWN effective, and for repository shapes the
-  probe cannot bound.
+  every path that touches git. Refusal survives only where an override cannot be
+  SHOWN effective (a subsection containing `=` is one such shape, because git
+  cannot express the override token), and for repository shapes the probe cannot
+  bound.
+  **What suppression costs, measured:** a clean filter is what makes the index
+  blob equal the worktree, so emptying it leaves git comparing raw worktree
+  bytes against a filtered blob — *paths under a suppressed driver compare as
+  modified: dirtiness for them is unknown and a delta may include them.* It does
+  NOT change what any reviewer read (agents read the worktree; the probe never
+  checks anything out). On a full-repo scan that costs `target_dirty` and
+  nothing the findings depend on, so the disclosure is the whole answer. On a
+  **delta-scoped** run (`--changes`, or any diff-hunks map with a base —
+  `--scope-changed` / `--pr`) the inflated comparison chose the reviewed file
+  set and the on-diff gate's scope, so `meta.integrity` carries a named caveat
+  (`delta_scope_suppressed_git_drivers`), the gate goes INCONCLUSIVE through
+  `integrity_ok` and the run is NOT certified.
 - **Tolerant by design**: `load_findings` and `enrich_citations` skip/log malformed input,
   never abort the run (a bad finding must not lose a real CRITICAL or skip the CI gate).
 - **Fan-out resumes from artifacts, not an orchestrator's memory (P2 SP-A, #435,
