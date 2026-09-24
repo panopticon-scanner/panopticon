@@ -1,3 +1,4 @@
+import glob
 import os
 import re
 import unittest
@@ -29,12 +30,56 @@ _GUIDE_DOCUMENTS = (_DOC_PATH,) + tuple(
     os.path.join(_CHAPTER_DIR, name) for name in _GUIDE_CHAPTERS)
 
 
+_FENCE = re.compile(r"^\s*(```|~~~)")
+_HEADING = re.compile(r"^#{1,6}\s")
+_LIST_ITEM = re.compile(r"^([-*+]|\d+[.)])\s+")
+
+
+def _unwrap(text):
+    """One line per block: soft-wrapped prose folded back together, with fenced
+    code, blank lines and headings left exactly as written.
+
+    The chapters are wrapped at 100 columns, and a wrap is not a content
+    change -- but almost every pin in this file is a substring of the guide's
+    PROSE, and 30 of them broke the moment a pinned phrase spanned a line
+    break. Folding per BLOCK, rather than collapsing all whitespace to single
+    spaces, is deliberate: `_section` slices on markers that contain newlines
+    (`"\\n## "`, and the `"\\n\\n"` that ends the gemini paragraph), three
+    guards below pull the ONE `splitlines()` line a sentence lives on and
+    assert against it, and two more count offending LINES -- a blanket
+    `re.sub(r"\\s+", " ")` would break the first pair outright and quietly
+    make the rest vacuous. This fold keeps every one of them meaning what it
+    meant, because its output is the guide as it was written before the wrap.
+    """
+    out, in_fence, open_block = [], False, False
+    for line in text.split("\n"):
+        if _FENCE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            open_block = False
+        elif in_fence:
+            out.append(line)
+            open_block = False
+        elif not line.strip():
+            out.append("")
+            open_block = False
+        elif _HEADING.match(line):
+            out.append(line.rstrip())
+            open_block = False
+        elif open_block and not _LIST_ITEM.match(line):
+            out[-1] = out[-1].rstrip() + " " + line.strip()
+        else:
+            out.append(line.rstrip())
+            open_block = True
+    return "\n".join(out)
+
+
 def _read_doc():
     parts = []
     for path in _GUIDE_DOCUMENTS:
         with open(path, encoding="utf-8") as fh:
             parts.append(fh.read())
-    return "\n".join(parts)
+    return _unwrap("\n".join(parts))
 
 
 def _read_skill_md():
@@ -1433,11 +1478,24 @@ class TestTheGuideIsAnIndexPlusChapters(unittest.TestCase):
         with open(_DOC_PATH, encoding="utf-8") as fh:
             return fh.read()
 
-    def _contents(self):
-        """[(chapter file name, entry label)] from the index's Contents list."""
-        block = self._index().split("\n## Contents\n", 1)
+    def _contents_entries(self):
+        """The Contents list, one folded line per entry (the entries are
+        wrapped on disk like every other list item)."""
+        block = _unwrap(self._index()).split("\n## Contents\n", 1)
         self.assertEqual(2, len(block), "the index lost its `## Contents` list")
-        return re.findall(r"(?m)^- \[([^\]]+)\]\(guide/([a-z0-9-]+\.md)\)", block[1])
+        entries = [line for line in block[1].split("\n") if line.strip()]
+        self.assertTrue(entries, "the `## Contents` list has no entries")
+        return entries
+
+    def _contents(self):
+        """[(entry label, chapter file name)] from the index's Contents list."""
+        pairs = []
+        for entry in self._contents_entries():
+            m = re.match(r"- \[([^\]]+)\]\(guide/([a-z0-9-]+\.md)\)", entry)
+            self.assertIsNotNone(
+                m, "a Contents entry that does not link a chapter: %r" % entry)
+            pairs.append(m.groups())
+        return pairs
 
     def test_the_contents_list_names_every_chapter_in_document_order(self):
         self.assertEqual(list(_GUIDE_CHAPTERS),
@@ -1455,10 +1513,9 @@ class TestTheGuideIsAnIndexPlusChapters(unittest.TestCase):
                                  [ln for ln in lines if ln.startswith("## ")])
 
     def test_every_contents_entry_says_what_the_chapter_covers(self):
-        for line in self._index().split("\n## Contents\n", 1)[1].splitlines():
-            if line.strip():
-                with self.subTest(entry=line):
-                    self.assertRegex(line, r"\) — \S")
+        for entry in self._contents_entries():
+            with self.subTest(entry=entry[:60]):
+                self.assertRegex(entry, r"\) — \S")
 
     def test_the_index_keeps_the_front_matter_and_nothing_a_chapter_owns(self):
         index = self._index()
@@ -1466,6 +1523,58 @@ class TestTheGuideIsAnIndexPlusChapters(unittest.TestCase):
         self.assertEqual(["## Overview", "## Required sub-skills", "## Modes",
                           "## Global flags", "## Contents"],
                          [ln for ln in index.split("\n") if ln.startswith("## ")])
+
+    MAX_COLUMNS = 120
+
+    @staticmethod
+    def _is_one_token(line):
+        """True when the line cannot be wrapped any narrower: one word, or one
+        inline code span (which may hold spaces and must never be broken)."""
+        bare = line.strip()
+        return (" " not in bare
+                or re.fullmatch(r"[^`\s]*`[^`]*`[^`\s]*", bare) is not None)
+
+    def test_no_line_in_the_guide_exceeds_120_columns(self):
+        """The guard that keeps the 2026-09-24 reflow from regressing. Wrapped
+        at 100; 120 is the slack an edit may take before it has to re-wrap.
+        Three kinds of line are exempt because wrapping them would change what
+        they mean: a fenced code line, a table row, and a line holding a single
+        unbreakable token."""
+        paths = sorted(glob.glob(os.path.join(ROOT, "docs", "**", "*.md"),
+                                 recursive=True))
+        self.assertTrue(paths, "no markdown under %s/docs" % ROOT)
+        offenders = []
+        for path in paths:
+            with open(path, encoding="utf-8") as fh:
+                body = fh.read()
+            in_fence = False
+            for number, line in enumerate(body.split("\n"), 1):
+                if _FENCE.match(line):
+                    in_fence = not in_fence
+                    continue
+                if (in_fence or line.lstrip().startswith("|")
+                        or len(line) <= self.MAX_COLUMNS
+                        or self._is_one_token(line)):
+                    continue
+                offenders.append("%s:%d is %d columns"
+                                 % (os.path.relpath(path, ROOT), number, len(line)))
+        self.assertEqual([], offenders, "\n".join(offenders))
+
+    def test_the_column_guards_exemption_is_only_for_unbreakable_lines(self):
+        """A guard whose exemption is wide is not a guard. Prose is never
+        exempt, however long; a lone code span always is, because the wrap
+        would land inside it."""
+        self.assertFalse(self._is_one_token("  a long sentence a wrap could fix"))
+        self.assertFalse(self._is_one_token("  `--flag` and some more prose"))
+        self.assertTrue(self._is_one_token("  `docker pull x && docker tag x y`"))
+        self.assertTrue(self._is_one_token("  https://example.invalid/" + "x" * 200))
+
+    def test_the_fold_the_content_guards_read_through_is_a_fixed_point(self):
+        """`_read_doc()` already folds, so folding again must change nothing --
+        the property that makes every phrase pinned in this file a phrase of
+        the guide's prose rather than of one particular wrapping of it."""
+        doc = _read_doc()
+        self.assertEqual(doc, _unwrap(doc))
 
     def test_the_concatenation_reads_as_one_document(self):
         """What every content test in this file depends on: `_read_doc()` is

@@ -1,5 +1,6 @@
 ## Testing scanner fixtures (optional)
-Panopticon includes a local Docker-based fixture suite for validating scanner adapters against intentionally vulnerable applications.
+Panopticon includes a local Docker-based fixture suite for validating scanner adapters against
+intentionally vulnerable applications.
 
 ```bash
 # Use existing fixtures image
