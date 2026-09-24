@@ -136,6 +136,78 @@ def test_applicable_floor_keeps_tst_on_all_test_file_hints():
         if "TST" not in got:   # #run7 TST-B2A: was a vacuous truthy-tuple assert
             raise AssertionError(f"Hint {hint} on {fname} failed to trigger TST")
 
+
+def test_directory_hints_match_root_and_nested_database_paths():
+    # These paths are independent of the production hint table. Each directory
+    # signal must work at the repository root and under another directory.
+    for directory in ("models", "model"):
+        for prefix in ("", "src/"):
+            path = f"{prefix}{directory}/record.txt"
+            assert "DAT" in cov.applicable_global_floor([path], {})
+            assert cov.applicable_sec_floor([path]) == frozenset({"SEC"})
+    for path in ("db.query.py", "src/db.query.py"):
+        assert "DAT" in cov.applicable_global_floor([path], {})
+        assert cov.applicable_sec_floor([path]) == frozenset({"SEC"})
+
+
+def test_directory_hints_match_root_and_nested_test_paths():
+    for directory in ("tests", "test", "__tests__"):
+        for prefix in ("", "src/"):
+            path = f"{prefix}{directory}/check.py"
+            assert "TST" in cov.applicable_global_floor([path], {})
+
+
+def test_directory_hints_match_root_and_nested_deployment_paths():
+    for directory in ("helm", "k8s"):
+        for prefix in ("", "src/"):
+            path = f"{prefix}{directory}/deploy.yaml"
+            assert cov.applicable_sec_floor([path]) == frozenset({"SEC"})
+
+
+def test_directory_hints_remain_case_insensitive():
+    assert "DAT" in cov.applicable_global_floor(["MODELS/record.txt"], {})
+    assert "TST" in cov.applicable_global_floor(["src/TESTS/check.py"], {})
+    assert cov.applicable_sec_floor(["K8S/deploy.yaml"]) == frozenset({"SEC"})
+
+
+def test_directory_hints_do_not_match_near_names():
+    for path in ("mymodels/record.txt", "models_extra/record.txt",
+                 "mymodel/record.txt", "modeling/record.txt",
+                 "mydb.query.py", "dbase/record.txt"):
+        assert "DAT" not in cov.applicable_global_floor([path], {})
+        assert cov.applicable_sec_floor([path]) == frozenset()
+    for path in ("mytests/check.py", "tests_extra/check.py",
+                 "mytest/check.py", "testing/check.py",
+                 "my__tests__/check.py", "__tests___extra/check.py"):
+        assert "TST" not in cov.applicable_global_floor([path], {})
+    for path in ("myhelm/deploy.yaml", "helm_extra/deploy.yaml",
+                 "myk8s/deploy.yaml", "k8s_extra/deploy.yaml"):
+        assert cov.applicable_sec_floor([path]) == frozenset()
+
+
+def test_root_hint_change_preserves_other_floor_gates():
+    # Existing literal signals still work, and claims alone cannot create a
+    # deterministic DAT/TST floor. An all-asset group still has no COD floor.
+    assert cov.applicable_sec_floor([".github/workflows/ci.yml"]) == frozenset({"SEC"})
+    assert cov.applicable_sec_floor([".env.production"]) == frozenset({"SEC"})
+    claimed = cov.applicable_global_floor(
+        ["README.md"], {"surfaces": ["db_sql"], "has_tests": True})
+    assert claimed == frozenset({"COD"})
+    assert "COD" not in cov.applicable_global_floor(["img/logo.png"], {})
+
+
+def test_root_directory_sec_floor_survives_exclude():
+    files = ["k8s/deploy.yaml"]
+    eff, disc = cov.effective_panels(
+        set(), {"OPS"}, {"SEC", "OPS"},
+        global_floor=cov.applicable_global_floor(files, {}),
+        signal_floor=cov.applicable_sec_floor(files))
+    assert eff == {"COD", "SEC"}
+    assert "SEC" in disc["floor"]
+    assert disc["exclude_rejected"] == ["SEC"]
+    assert disc["excluded"] == ["OPS"]
+
+
 def test_applicable_floor_keeps_dat_on_db_file():
     got = cov.applicable_global_floor(["prisma/schema.prisma", "src/lib/db.ts"],
                                       {"surfaces": []})
