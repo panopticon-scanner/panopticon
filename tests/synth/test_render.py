@@ -36,6 +36,16 @@ class TestUncertifiedCoverageLine(unittest.TestCase):
         self.assertIn("tools manifest unreadable", text)
         self.assertNotIn("NOT CERTIFIED — incomplete", text)
 
+    def test_a_note_and_a_divergence_are_both_printed(self):
+        """#2013 review M5: the note is a peer of the divergence parts, not a
+        fallback -- a delta-scope caveat must not vanish behind a panel gap."""
+        rep = self._summary(coverage_note="delta scope inflated by suppressed git drivers")
+        rep["meta"]["coverage"]["divergence"] = {
+            "panels": {"security": {"executed": 1, "planned": 2}}}
+        text = render_mod.render_summary(rep)
+        self.assertIn("panels security 1/2", text)
+        self.assertIn("delta scope inflated by suppressed git drivers", text)
+
     def test_with_no_note_and_no_divergence_it_still_says_something(self):
         text = render_mod.render_summary(self._summary(coverage_note=None))
         self.assertIn("NOT CERTIFIED — incomplete", text)

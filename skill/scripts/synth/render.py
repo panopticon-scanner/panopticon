@@ -263,9 +263,14 @@ def render_summary(report):
         # measurement itself could not be made -- an unreadable tools manifest
         # leaves both maps empty -- the reason lives in `coverage_note`, and
         # without it this line printed the bare word "incomplete" for the one
-        # state an operator most needs named.
+        # state an operator most needs named. The note is a PEER of the
+        # divergence parts, not their fallback (#2013 review M5): a run can
+        # carry both a measured divergence and a named caveat, and the
+        # caveat is the one the operator cannot see anywhere else on the line.
+        if s.get("coverage_note"):
+            parts.append(s["coverage_note"])
         lines.insert(3, "**Coverage:** NOT CERTIFIED — %s"
-                     % ("; ".join(parts) or s.get("coverage_note") or "incomplete"))
+                     % ("; ".join(parts) or "incomplete"))
     _cov = report["meta"].get("coverage") or {}
     excluded = _excluded_tools_line(_cov.get("tools_excluded"))
     if excluded:
