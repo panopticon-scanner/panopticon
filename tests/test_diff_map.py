@@ -1319,6 +1319,13 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         self.assertIn(key, message)
         self.assertIn("git config --global", message)
         self.assertIn("git config --unset", message)
+        # #2041 I3: `--unset` exits 5 and changes nothing for a key that arrived
+        # through `include.path`, and `--global` is wrong for the operator whose
+        # reason for the setting is that it is per-repository (a deploy key), so
+        # the message also names the shape that keeps it per-repository from the
+        # global file, and the command that finds which file carries the key.
+        self.assertIn('includeIf "gitdir:%s/"' % os.path.abspath(clone), message)
+        self.assertIn("git config --show-origin --get", message)
         # The KEY, never the VALUE: these are command lines (#2013's rule).
         self.assertNotIn("transport.sh", message)
 
@@ -1346,11 +1353,18 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
     def test_the_remedy_the_refusal_names_actually_works(self):
         """(c) The SAME key in the operator's GLOBAL config is honoured.
 
-        Not a cosmetic difference: the refusal tells the operator to move the
-        line to `--global`, so acquisition has to succeed there -- and on this
-        local-path origin the moved `uploadpack` really does run (it execs the
-        real `git upload-pack`), which is the proof that the refusal is scoped
-        to the checkout's own file and the fetch is otherwise unchanged.
+        What this proves is that the REMEDY is reachable: the refusal tells the
+        operator to keep the setting from their own global config, so
+        acquisition has to succeed with it there -- and on this local-path origin
+        the moved `uploadpack` really does run (it execs the real
+        `git upload-pack`), so the fetch is otherwise unchanged and the operator
+        has not simply been disarmed.
+
+        It does NOT prove the read's scope, and cannot (#2041 M1): every
+        `safe_git` launch pins `GIT_CONFIG_GLOBAL=/dev/null`, so a global value
+        is invisible to the read under any scope flag.
+        `test_the_config_read_covers_every_scope_the_fetch_reads` is the guard
+        on the spelling.
         """
         base, clone, pr_sha = self._fixture()
         marker = self._marker(base, self.TRANSPORT_MARKER)
@@ -1442,6 +1456,36 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         for name in (*self.MARKERS, self.TRANSPORT_MARKER):
             self.assertFalse(os.path.exists(self._marker(base, name)),
                              "%s: the target ran code during acquisition" % name)
+
+    def test_the_config_read_covers_every_scope_the_fetch_reads(self):
+        """The read's spelling, from the argv (#2041 M1).
+
+        The behaviour tests cannot see a flag, and both obvious spellings are
+        wrong: `--local` cannot see `$GIT_DIR/config.worktree` (C1) and
+        `--worktree` hides `.git/config` when the extension is on and DIES in a
+        checkout that has a second worktree (both measured). So the read is
+        pinned here: one scope-labelled listing, includes followed, no scope
+        flag at all.
+        """
+        base, clone, _pr_sha = self._fixture()
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        seen = []
+        real = self._runner()
+
+        def recording(argv, **kwargs):
+            seen.append(list(argv))
+            return real(argv, **kwargs)
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            diff_map.acquire_pr(7, repo=clone, runner=recording)
+        scoped = [argv for argv in seen if "--show-scope" in argv]
+        self.assertEqual(len(scoped), 1, seen)
+        self.assertEqual(scoped[0][-5:], ["config", "--null", "--list",
+                                         "--show-scope", "--includes"])
+        self.assertEqual(scoped[0][1:3], ["-C", clone])
+        for flag in ("--local", "--worktree", "--global", "--system"):
+            self.assertNotIn(flag, scoped[0])
 
     def test_a_transport_setting_that_was_emptied_is_not_refused(self):
         """(d) The classifier tests VALUES: an emptied key executes nothing.

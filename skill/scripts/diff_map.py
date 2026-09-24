@@ -893,15 +893,27 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     transport = safe_git.transport_command_keys(safe_git.repository_settings(
         _safe(repo, ["config", "--null", "--list", "--show-scope", "--includes"])))
     if transport:
-        _disclose()
-        # The KEYS only: the values are command lines (#2013).
+        _disclose()      # already disclosed by _safe; kept so a reordering cannot
+                         # drop the disclosure
+        # The KEYS only: the values are command lines (#2013). The file class is
+        # named rather than one filename, and the remedy leads with `includeIf`
+        # (#2041 I3): the operator's reason for a repo-local `core.sshCommand` is
+        # usually that it is PER-REPOSITORY (a deploy key), which `--global`
+        # would spread over every repository and `--unset` would simply break --
+        # and for a key that arrived through `include.path`, `--unset` exits 5
+        # and changes nothing, which is why `--show-origin` is there to find the
+        # file this message cannot name.
         raise RuntimeError(
-            "panopticon --pr: refusing to fetch: this checkout's own .git/config "
-            "sets %s, which a fetch would execute. The fetch runs with your "
+            "panopticon --pr: refusing to fetch: this checkout's own git config "
+            "(its .git/config, a file it includes, or its worktree config) sets "
+            "%s, which a fetch would execute. The fetch runs with your "
             "environment but never with a repository-configured command (#2041). "
-            "Move each setting to your global config (`git config --global <key> "
-            "<value>`, which the fetch still honours) and remove it here "
-            "(`git config --unset <key>`), then re-run." % ", ".join(transport))
+            "Remedy: keep the setting per-repository from your GLOBAL config with "
+            "an [includeIf \"gitdir:%s/\"] section (which the fetch honours), or "
+            "move it there outright with `git config --global <key> <value>`; "
+            "then remove it here (`git config --unset <key>`; "
+            "`git config --show-origin --get <key>` shows which file carries it) "
+            "and re-run." % (", ".join(transport), os.path.abspath(repo)))
 
     fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
     # THE ONE CALL WITH THE OPERATOR'S ENVIRONMENT (#2012), because a private
