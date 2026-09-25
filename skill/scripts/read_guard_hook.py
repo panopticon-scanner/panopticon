@@ -182,6 +182,13 @@ DIRECTORY_GRANT_CLOSED = (
     "%s of directory %s is denied: the whole directory grant is closed (too "
     "many hard-linked files beneath it, or a subtree nothing could read -- see "
     "the setup-scan stderr line). Read files by name.")
+# #1917: Glob's SECOND argument. `path` says where the expansion starts and is
+# adjudicated above; the pattern says what it expands to, and it is a PATH
+# pattern, so `../Src/*` under a clean granted directory names entries the
+# grant never covered. One wording, both hooks, pinned in
+# tests/test_codex_read_tools.py beside the other two.
+GLOB_PATTERN_DENIAL = ("Glob pattern %r is denied: patterns are relative to `path` and may "
+                       "not climb out of it")
 
 
 def _hard_link_reason(tool_name, raw, target, scope):
@@ -227,6 +234,32 @@ def _hard_link_reason(tool_name, raw, target, scope):
     return "%s of %s is denied: %s" % (tool_name, raw, HARD_LINK_DENIAL % info.st_nlink)
 
 
+def _glob_pattern_climbs(pattern):
+    """True when a `Glob` pattern could name entries outside the `path` it is
+    relative to (#1917).
+
+    Glob is the one read primitive with TWO path-shaped arguments, and only the
+    first was ever adjudicated: a pattern is expanded against `path`, so
+    `../Src/*` under a granted directory names entries the `dirs` grant does not
+    cover. Names, not content -- a following `Read` still meets the per-file
+    rule -- but a confined cell should not be able to enumerate the tree.
+
+    Absent, empty or non-string DENIES: there is no pattern to reason about,
+    and fail-closed is this file's rule everywhere else. Absolute and
+    `~`-rooted patterns ignore `path` outright. A `..` SEGMENT climbs; a name
+    that merely begins with two dots (`..hidden`) does not, which is why this
+    splits on separators instead of searching for the substring. Both
+    separators, because a Windows-style pattern is still a pattern here.
+
+    Grep's `pattern` is a REGEX over content, not a path, and is not this
+    rule's subject."""
+    if not isinstance(pattern, str) or not pattern:
+        return True
+    if pattern.startswith("~") or pattern.startswith("/") or os.path.isabs(pattern):
+        return True
+    return any(part == ".." for part in pattern.replace("\\", "/").split("/"))
+
+
 def decide(tool_name, tool_input, scope):
     """(allow, reason) for a subagent's call. `scope` is the bound entry's
     scope dict, or None for an unbound subagent (deny). Design spec 4.3."""
@@ -267,6 +300,10 @@ def decide(tool_name, tool_input, scope):
                     return False, DIRECTORY_GRANT_CLOSED % (tool_name, raw)
                 if _under(p, target) or _under(_fold(p), ft):
                     return False, DIRECTORY_LINK_DENIAL % (tool_name, raw, p)
+            # #1917: and for Glob, the second argument -- the only one of these
+            # tools whose pattern is a PATH pattern, expanded against `path`.
+            if tool_name == "Glob" and _glob_pattern_climbs(tool_input.get("pattern")):
+                return False, GLOB_PATTERN_DENIAL % (tool_input.get("pattern"),)
             return True, ""
         if tool_name == "Grep":
             return False, ("Grep over a directory is denied in a confined cell: grep a "

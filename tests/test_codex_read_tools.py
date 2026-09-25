@@ -313,6 +313,15 @@ def test_the_directory_link_denial_is_one_wording(tree):
         "Glob of directory /repo is denied: the whole directory grant is closed "
         "(too many hard-linked files beneath it, or a subtree nothing could read "
         "-- see the setup-scan stderr line). Read files by name.")
+    # ...and #1917's, the third sentence that exists only in the two hooks:
+    # `Glob`'s pattern is adjudicated where the tool TRAVERSES, and the Codex
+    # broker's `list_files` takes no pattern at all.
+    assert (read_guard_hook.GLOB_PATTERN_DENIAL
+            == kimi_guard_hook.GLOB_PATTERN_DENIAL)
+    assert read_guard_hook.GLOB_PATTERN_DENIAL % ("../Src/*",) == (
+        "Glob pattern '../Src/*' is denied: patterns are relative to `path` and "
+        "may not climb out of it")
+    assert not hasattr(read_tools, "GLOB_PATTERN_DENIAL")
     assert not hasattr(read_tools, "DIRECTORY_LINK_DENIAL")
     assert not hasattr(read_tools, "DIRECTORY_GRANT_CLOSED")
     assert read_guard_hook.DIRECTORY_LINK_DENIAL % ("Grep", "/repo", "/repo/a/b.txt") == (

@@ -166,6 +166,54 @@ class TestDecide(unittest.TestCase):
         self.assertTrue(rg.decide("Glob", {"pattern": "*.py", "path": self.root}, self.scan)[0])
         self.assertTrue(rg.decide("Read", {"file_path": self.root_file}, self.scan)[0])
 
+    def test_a_glob_pattern_that_climbs_out_of_the_granted_path_is_denied(self):
+        # #1917: `path` was the only argument adjudicated here, and Glob's
+        # second one is a PATH pattern -- relative to `path`, so `../Src/*`
+        # names entries the `dirs` grant never covered. It leaks names, not
+        # content (a following Read still meets the per-file rule), but it is
+        # the one read primitive whose second argument nothing looked at.
+        for pattern in ("../Src/*", "..", "pkg/../../out/*", "a/..", r"..\Src\*"):
+            with self.subTest(pattern=pattern):
+                ok, reason = rg.decide("Glob", {"pattern": pattern, "path": self.root}, self.scan)
+                self.assertFalse(ok, reason)
+                self.assertIn("may not climb out of it", reason)
+                self.assertIn(repr(pattern), reason)
+
+    def test_an_absolute_or_home_relative_glob_pattern_is_denied(self):
+        for pattern in ("/etc/*", "~/.ssh/*", "~"):
+            with self.subTest(pattern=pattern):
+                ok, reason = rg.decide("Glob", {"pattern": pattern, "path": self.root}, self.scan)
+                self.assertFalse(ok, reason)
+                self.assertIn("relative to", reason)
+
+    def test_a_missing_or_unusable_glob_pattern_is_denied(self):
+        # Fail closed on the argument the rule is about: nothing here can say
+        # what an absent or non-string pattern would expand to.
+        for pattern in (None, "", 7, ["*.py"]):
+            with self.subTest(pattern=pattern):
+                arguments = {"path": self.root}
+                if pattern is not None:
+                    arguments["pattern"] = pattern
+                ok, reason = rg.decide("Glob", arguments, self.scan)
+                self.assertFalse(ok, reason)
+                self.assertIn("Glob pattern", reason)
+
+    def test_an_ordinary_glob_pattern_is_still_allowed(self):
+        # ...and the rule is about climbing, not about dots or stars: a name
+        # that merely BEGINS with two dots is a name.
+        for pattern in ("**/*.py", "*.py", "src/**/test_*.py", "..hidden", "a..b/*"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual((True, ""), rg.decide(
+                    "Glob", {"pattern": pattern, "path": self.root}, self.scan))
+
+    def test_a_greps_pattern_is_a_regex_and_stays_unadjudicated(self):
+        # Grep's second argument searches CONTENT; `../` in it is a regex, not
+        # a path, and denying it would deny a legitimate search.
+        self.assertEqual((True, ""), rg.decide(
+            "Grep", {"pattern": "../Src/*", "path": self.root}, self.scan))
+        self.assertEqual((True, ""), rg.decide(
+            "Grep", {"pattern": "x", "path": self.root_file}, self.scan))
+
     def test_directory_scope_is_separator_bounded(self):
         # /root must not admit /root-other.
         self.assertFalse(rg.decide("Read", {"file_path": self.root_other}, self.scan)[0])

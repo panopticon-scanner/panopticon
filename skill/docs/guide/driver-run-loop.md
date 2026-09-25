@@ -212,7 +212,12 @@ files beneath it in the entry's scope, and the hook denies a directory `Grep`/`G
 recorded path lies at, above or below the argument. A link BELOW the argument is named in the
 denial, which says to grep a narrower directory or a file by its path; a recorded path AT or ABOVE
 it means the grant is closed whole and the denial says to Read files by name instead, because
-narrowing is refused at every depth there. Those comparisons are case- and normalization-folded as
+narrowing is refused at every depth there. `Glob`'s second argument is adjudicated too (#1917), since
+a pattern is a PATH pattern expanded against `path`: over a granted directory, a pattern that is
+absent, absolute, `~`-rooted or holds a `..` segment is denied, so `Glob(path=<granted dir>,
+pattern="../Src/*")` can no longer name entries outside the grant — names, not content, but a
+confined cell does not get to enumerate the tree. `Grep`'s pattern is a regex over content and stays
+unadjudicated. Those comparisons are case- and normalization-folded as
 well as byte-exact, so `Grep <root>/src` cannot walk past a recorded `<root>/Src/x.txt` on a
 case-insensitive volume (APFS, HFS+, NTFS) — folding a DENIAL can only over-deny, and the grant
 itself is never folded, since that would admit `/REPO/x` under a `/repo` grant. A clean tree is

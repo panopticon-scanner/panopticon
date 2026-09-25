@@ -76,6 +76,14 @@ evidence exposed.
   same file now also points `HOME` at one throwaway directory for the whole
   process, before the registry expands `~`, so no probe or test reads the
   operator's real `~/.claude`.
+- **`Glob`'s pattern is adjudicated (#1917).** Both read guards decided a
+  `Glob` on its `path` alone, and the pattern is a PATH pattern expanded
+  against it, so `Glob(path=<granted dir>, pattern="../Src/*")` could name
+  entries outside the `dirs` grant — names, not content, since a following
+  `Read` still meets the per-file rule, but it was the one read primitive whose
+  second argument nothing looked at. Over a granted directory a pattern that is
+  absent, non-string, absolute, `~`-rooted or holds a `..` segment is now
+  denied. `Grep`'s pattern is a regex over content and stays unadjudicated.
 - **In-tree hard links keep their directory `Grep` (#1917).** The walk behind a
   directory read grant recorded every regular file with `st_nlink > 1`, so a
   `cp -al` fixture or a pnpm store — whose links all sit inside the review
