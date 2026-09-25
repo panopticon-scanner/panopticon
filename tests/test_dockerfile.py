@@ -6,6 +6,10 @@ import unittest
 
 import yaml
 
+import shell_reader
+import workflow_guard
+from workflow_forms import names_file, regions
+
 from _test_helpers import fake_aws_key
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
@@ -73,6 +77,81 @@ def fetch_piped_into_a_shell(text):
     return hits
 
 
+def _download_checksum_defects(text):
+    """Require checks for every explicit RUN download, even unused files.
+
+    Reuse the workflow guard's bounded shell reader, transfer discovery,
+    checksum binding and use ordering. Docker ARG digest pins stay covered
+    independently below; no shell expansion or execution happens here.
+    Checks must occur in the same RUN as the download.
+    """
+    defects = []
+    for lineno, line in _logical_lines(shell_reader.without_comments(text)):
+        if not line.upper().startswith("RUN "):
+            continue
+        statements = workflow_guard.read(line[4:])
+        checks = workflow_guard._checks(statements)
+        conditions = {i: (None, branch) for i, branch in regions(statements).items()}
+        for index, fetch in workflow_guard._fetch_records(statements):
+            if fetch.dest is None:
+                continue  # streamed execution has its own guard below
+            _names, uses = workflow_guard._uses(statements, fetch.dest, after=index)
+            deadline = uses[0][0] if uses else len(statements)
+            if not any(index < check < deadline and why is None
+                       and names_file(checked, fetch.dest)
+                       and workflow_guard._binds(conditions, check, deadline)
+                       for check, checked, why in checks):
+                defects.append((lineno, str(fetch.dest)))
+    return defects
+
+
+class TestDownloadChecksumGuard(unittest.TestCase):
+    def test_discovers_new_downloads_including_unused_files(self):
+        for fetch in ("curl -fL https://example.invalid/new -o /tmp/new",
+                      "curl --output=/tmp/new https://example.invalid/new",
+                      "curl https://example.invalid/new > /tmp/new",
+                      "wget -O /tmp/new https://example.invalid/new",
+                      "wget --output-document=/tmp/new https://example.invalid/new"):
+            with self.subTest(fetch=fetch):
+                self.assertEqual(_download_checksum_defects("RUN " + fetch),
+                                 [(1, "/tmp/new")])
+                verified = ("RUN " + fetch
+                            + ' && echo "${NEW_SHA256}  /tmp/new" | sha256sum -c -')
+                self.assertEqual(_download_checksum_defects(verified), [])
+                self.assertEqual(_download_checksum_defects(verified + " && /tmp/new"), [])
+
+    def test_wrong_missing_late_and_decoy_checks_fail(self):
+        fetch = "RUN curl https://example.invalid/new -o /tmp/new"
+        check = 'echo "${NEW_SHA256}  /tmp/new" | sha256sum -c -'
+        for tail in ("", " && " + check.replace("/tmp/new", "/tmp/other"),
+                     " && " + check.replace("/tmp/new", "/tmp/new-old"),
+                     " && /tmp/new && " + check,
+                     " && tar -xf /tmp/new && " + check,
+                     " # " + check,
+                     " && echo '" + check + "'",
+                     " && " + check + " || true",
+                     ' && echo "/tmp/new" | sha256sum -c -'):
+            with self.subTest(tail=tail):
+                self.assertEqual(_download_checksum_defects(fetch + tail), [(1, "/tmp/new")])
+        self.assertEqual(_download_checksum_defects("RUN " + check + " && " + fetch[4:]),
+                         [(1, "/tmp/new")])
+
+    def test_continuations_arch_selected_sha_and_prose(self):
+        text = ('ARG NEW_SHA256_AMD64=' + 'a' * 64 + '\n'
+                'ARG NEW_SHA256_ARM64=' + 'b' * 64 + '\n'
+                'RUN case "$arch" in amd64) sha256="${NEW_SHA256_AMD64}" ;; '
+                'arm64) sha256="${NEW_SHA256_ARM64}" ;; esac \\\n'
+                ' && curl https://example.invalid/new \\\n'
+                ' -o /tmp/new \\\n'
+                ' && echo "${sha256}  /tmp/new" | sha256sum -c - \\\n'
+                ' && chmod +x /tmp/new && /tmp/new\n')
+        self.assertEqual(_download_checksum_defects(text), [])
+        self.assertTrue(_download_checksum_defects(text.replace("| sha256sum -c -", "")))
+        self.assertEqual(_download_checksum_defects(
+            '# RUN curl https://example.invalid/decoy -o /tmp/decoy\n'
+            'RUN echo "curl https://example.invalid/decoy -o /tmp/decoy"\n'), [])
+
+
 class TestDockerfile(unittest.TestCase):
     def test_bundles_core_tools(self):
         text = _read_dockerfile().lower()
@@ -138,12 +217,9 @@ class TestFindSecBugsIntegrity(unittest.TestCase):
         self.assertNotIn("remotecontent?filepath=", self.text)
 
     def test_all_fetched_binaries_are_checksum_verified(self):
-        # #run7 TST-A2A: the checksum regression previously covered only
-        # FindSecBugs; osv-scanner/gitleaks/gosec/dependency-check verify their
-        # downloads too but had ZERO test, so dropping any `sha256sum -c` or SHA
-        # pin passed the suite untouched. Lock all of them in (arch-split and
-        # single-SHA shapes both), plus the rustup/dotnet installers and the
-        # SpotBugs tarball added in Task 5.
+        self.assertEqual(_download_checksum_defects(self.text), [],
+                         "every explicit download needs a checksum before use")
+        # Retain the existing digest-pin checks independently of discovery.
         for artifact, sha_re in (
                 ("/tmp/osv-scanner", r"OSV_SCANNER_SHA256_(AMD64|ARM64)=[0-9a-f]{64}"),
                 ("/tmp/gitleaks.tar.gz", r"GITLEAKS_SHA256_(X64|ARM64)=[0-9a-f]{64}"),
@@ -153,9 +229,6 @@ class TestFindSecBugsIntegrity(unittest.TestCase):
                 ("/tmp/rustup-init", r"RUSTUP_INIT_SHA256_(AMD64|ARM64)=[0-9a-f]{64}"),
                 ("/tmp/dotnet-install.sh", r"DOTNET_INSTALL_SHA256=[0-9a-f]{64}")):
             self.assertRegex(self.text, sha_re, "no pinned SHA256 for %s" % artifact)
-            self.assertRegex(
-                self.text, artifact.replace(".", r"\.") + r'"\s*\|\s*sha256sum -c',
-                "%s is not sha256sum-verified" % artifact)
 
     def test_dotnet_network_steps_are_timeout_bounded(self):
         # run-8 OPS-A1A: every network step in this file is `timeout`-wrapped so a
