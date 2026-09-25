@@ -10,6 +10,7 @@ drifts: nothing failed when the thirtieth reference was added without a pin.
 This module writes the convention down as a test, so the control's scope is the
 whole directory rather than whichever lines someone remembered.
 """
+import copy
 import os
 import re
 import shlex
@@ -1517,23 +1518,29 @@ class TestVerifiedPinFreshnessJobs(unittest.TestCase):
         apply = next((step for step in steps if
                       "python3 scripts/bump_pins.py " + family + " --write" in
                       step.get("run", "")), {})
-        opening = next((step for step in steps if "gh pr create" in step.get("run", "")), {})
+        opening = next((step for step in steps if
+                        "scripts/open_pin_pr.py" in step.get("run", "")), {})
         defects = []
         if job.get("permissions") != {"contents": "write", "pull-requests": "write"}:
             defects.append("job permissions")
-        for stage, step in (("check", check), ("apply", apply), ("PR", opening)):
-            if not step.get("run", "").startswith("set -euo pipefail\n"):
-                defects.append(stage + " shell fail-closed")
+        if not check.get("run", "").startswith("set -euo pipefail\n"):
+            defects.append("check shell fail-closed")
         if "python3 scripts/bump_pins.py " + family + " | tee " not in check.get("run", ""):
             defects.append("check command")
-        if "python3 scripts/bump_pins.py " + family + " --write" not in apply.get("run", ""):
-            defects.append("write command")
+        write = "python3 scripts/bump_pins.py " + family + " --write"
+        if apply.get("run", "").strip() not in (write, "set -euo pipefail\n" + write):
+            defects.append("write command/failure propagation")
         if apply.get("if") != "steps.check.outputs.stale == 'true'":
             defects.append("write condition")
         if opening.get("if") != "steps.check.outputs.stale == 'true'":
             defects.append("PR condition")
-        if "chore/bump-" + family + "-${VERSION}" not in opening.get("run", ""):
-            defects.append("unique branch")
+        # This is a single command: Actions propagates its exit code. Exact
+        # family binding guards against another pin family opening this PR;
+        # the helper tests cover branch naming and explicit PR metadata.
+        if opening.get("run") != "python3 scripts/open_pin_pr.py " + family:
+            defects.append("PR helper/failure propagation")
+        if opening.get("env") != {"GH_TOKEN": "${{ github.token }}"}:
+            defects.append("PR authentication")
         if not any(re.fullmatch(r"actions/checkout@[0-9a-f]{40}", step.get("uses", ""))
                    for step in steps):
             defects.append("pinned checkout")
@@ -1543,7 +1550,7 @@ class TestVerifiedPinFreshnessJobs(unittest.TestCase):
         with open(os.path.join(WORKFLOW_DIR, "pin-freshness.yml"), encoding="utf-8") as fh:
             doc = yaml.safe_load(fh)
         self.assertEqual(doc["permissions"], {"contents": "read"})
-        for family in ("trivy", "rust-toolchain"):
+        for family in ("rustup", "trivy", "rust-toolchain"):
             with self.subTest(family=family):
                 self.assertEqual(self._defects(doc["jobs"][family], family), [])
 
@@ -1555,6 +1562,27 @@ class TestVerifiedPinFreshnessJobs(unittest.TestCase):
         job["permissions"] = {"contents": "read"}
         self.assertIn("check shell fail-closed", self._defects(job, "trivy"))
         self.assertIn("job permissions", self._defects(job, "trivy"))
+
+    def test_helper_boundary_negative_controls(self):
+        with open(os.path.join(WORKFLOW_DIR, "pin-freshness.yml"), encoding="utf-8") as fh:
+            original = yaml.safe_load(fh)["jobs"]["rustup"]
+        cases = (
+            (lambda job: job["steps"][3].update(run="python3 scripts/open_pin_pr.py trivy"),
+             "PR helper/failure propagation"),
+            (lambda job: job["steps"][3].update(run="python3 scripts/open_pin_pr.py rustup || true"),
+             "PR helper/failure propagation"),
+            (lambda job: job["steps"][3].pop("if"), "PR condition"),
+            (lambda job: job["steps"][3].pop("env"), "PR authentication"),
+            (lambda job: job["steps"][0].update(uses="actions/checkout@v7"),
+             "pinned checkout"),
+            (lambda job: job["steps"][2].update(run="python3 scripts/bump_pins.py rustup --write || true"),
+             "write command/failure propagation"),
+        )
+        for mutate, expected in cases:
+            with self.subTest(expected=expected):
+                job = copy.deepcopy(original)
+                mutate(job)
+                self.assertIn(expected, self._defects(job, "rustup"))
 
 
 if __name__ == "__main__":  # pragma: no cover
