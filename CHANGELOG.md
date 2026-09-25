@@ -16,7 +16,7 @@ evidence exposed.
   hostile content. That argv now carries
   `runners/claude.UNENFORCED_DENIED_TOOLS` — 24 names, grouped by what each
   would hand a reviewer: code execution, delegation, egress and off-machine
-  publication, the write tools this run's guard does not mediate, and the two
+  publication, the write tools no reviewer role is granted, and the two
   read tools its `Read|Grep|Glob` matcher never sees — and deny rules beat
   allow rules, which is the point. **Measured on 2.1.276, and the reason for
   the `=` form:** `--disallowedTools` is VARIADIC, so the space form eats every

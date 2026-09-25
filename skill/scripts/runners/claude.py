@@ -24,9 +24,10 @@ import scripts.runners.schema as schema_argv_rules
 # tests/test_host_launch_guard.py walks the AST for; only its VALUE changed.
 DEFAULT_RUNNER = None
 
-# #1753 (AGT-4053314873). The tool surface of an UNENFORCED launch -- the
-# `--model` argv, which binds no registered shell and therefore has no
-# host-enforced `tools:` grant behind it. `claude -p` denies a tool that needs
+# #1753 (AGT-4053314873). The tool surface of an UNENFORCED launch -- every
+# argv that binds no `--agent` shell, the `--model` launch and the model-less
+# fall-through alike, and therefore has no host-enforced `tools:` grant behind
+# it. `claude -p` denies a tool that needs
 # permission when no allow rule matches (that is what feeds
 # `permission_denials`), but `--setting-sources user` deliberately KEEPS the
 # OPERATOR's user-scope `permissions.allow`, where a `Bash(*)` convenience rule
@@ -50,9 +51,10 @@ DEFAULT_RUNNER = None
 #     TaskStop, Monitor, SendMessage
 #   * egress and off-machine publication: WebFetch, WebSearch, Artifact,
 #     ArtifactComments, ArtifactData, ArtifactCheck
-#   * writes this run's write guard does not mediate: MultiEdit, NotebookEdit,
-#     TodoWrite (the guard's matcher is `Write|Edit|NotebookEdit`; naming the
-#     near-misses here means no reliance on how the host folds a matcher)
+#   * write tools no reviewer role is granted: MultiEdit and TodoWrite sit
+#     outside the write guard's `Write|Edit|NotebookEdit` matcher; NotebookEdit
+#     sits inside it and is denied anyway, since no role needs it and this list
+#     must not rely on how the host folds a matcher
 #   * READS the read guard never sees: LS, NotebookRead. The sharp ones. The
 #     guard's matcher is `Read|Grep|Glob`, and a read-only builtin needs no
 #     permission, so an allow rule is not even required to reach one -- this is
@@ -91,7 +93,10 @@ UNENFORCED_DENIED_TOOLS = (
 # is also what keeps a later argv reordering from silently re-opening the
 # surface. Same class of shape bug as `--json-schema` taking the schema TEXT
 # and not a file (#1731, which cost run 14 a checkpoint): the `--help` probe
-# reads a flag's NAME and cannot see its arity.
+# reads a flag's NAME and cannot see its arity. The CLI's own option table
+# spells it `--disallowedTools, --disallowed-tools <tools...>` with no
+# argParser and no choices: variadic by declaration, not only by measurement,
+# and no parse-time tool vocabulary for a name in the tuple to fail against.
 DENY_FLAG = "--disallowedTools=%s"
 
 

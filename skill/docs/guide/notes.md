@@ -10,14 +10,15 @@ materializing discovered secrets (redact discovered passwords, API keys, PII, an
 `[REDACTED]` in descriptions, exploit scenarios, and evidence citations).
 
 Hostile-content review (redteam mode, deliberately vulnerable corpora, repos that may contain
-planted injection payloads) runs with enforcement registered via `--emit-host-agents`, and that is
-a mechanism rather than advice: `driver run` refuses to dispatch the write-capable reviewers, and
-`driver setup` refuses a shell-less `setup-scan` (#1737), unless the operator passes
-`--allow-unenforced`. The acceptance is recorded — `unenforced-ack.json` in the run folder,
-`setup-unenforced-ack.json` for setup — bound to that dispatch plan's hash so a later, different
-fan-out cannot reuse it, and the report says so in `meta.integrity.unenforced_acknowledged`, beside
-the `meta.coverage.tool_policy_mode` that reads `enforced` only when the shells really are
-registered and proven.
+planted injection payloads) should run with enforcement registered via `--emit-host-agents`. Two
+refusals make part of that mechanical rather than advisory, and each keys on a different capability:
+`driver run` refuses to dispatch the write-capable reviewers unless `artifact_write_guard` is proven
+on this machine, and `driver setup` refuses a shell-less `setup-scan` unless `tool_policy_enforced`
+is (#1737). `--allow-unenforced` accepts either explicitly and is recorded. Registration itself is
+**disclosed, not refused**, on the review path — a machine with a proven write guard and no emitted
+shells runs, with `meta.coverage.tool_policy_mode` reading `advisory` rather than `enforced` — which
+is exactly why the unenforced claude launch now carries its own tool deny-list (#1753, see Host
+capabilities).
 
 That write-guard is a Claude Code `PreToolUse` hook, so it **structurally cannot run on another
 host**; Kimi ships its own equivalent (`kimi_guard_hook.py`, registered through the generated
