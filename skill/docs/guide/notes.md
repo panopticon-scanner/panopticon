@@ -10,8 +10,14 @@ materializing discovered secrets (redact discovered passwords, API keys, PII, an
 `[REDACTED]` in descriptions, exploit scenarios, and evidence citations).
 
 Hostile-content review (redteam mode, deliberately vulnerable corpora, repos that may contain
-planted injection payloads) should run with enforcement registered via `--emit-host-agents` so
-`meta.coverage.tool_policy_mode` reads `enforced`.
+planted injection payloads) runs with enforcement registered via `--emit-host-agents`, and that is
+a mechanism rather than advice: `driver run` refuses to dispatch the write-capable reviewers, and
+`driver setup` refuses a shell-less `setup-scan` (#1737), unless the operator passes
+`--allow-unenforced`. The acceptance is recorded — `unenforced-ack.json` in the run folder,
+`setup-unenforced-ack.json` for setup — bound to that dispatch plan's hash so a later, different
+fan-out cannot reuse it, and the report says so in `meta.integrity.unenforced_acknowledged`, beside
+the `meta.coverage.tool_policy_mode` that reads `enforced` only when the shells really are
+registered and proven.
 
 That write-guard is a Claude Code `PreToolUse` hook, so it **structurally cannot run on another
 host**; Kimi ships its own equivalent (`kimi_guard_hook.py`, registered through the generated
@@ -28,6 +34,11 @@ machine* (no `.claude/settings.local.json` at the path the host would arm, say),
 host-name test could not express. `--allow-unenforced` accepts the risk explicitly; the acceptance
 is recorded in the run's `unenforced-ack.json`, bound to the dispatch plan's hash so it cannot be
 reused by a later, different fan-out, and surfaces as `meta.integrity.unenforced_acknowledged`.
+What that hook mediates is `Write`, `Edit` and `NotebookEdit` and nothing else: `Bash` and `Agent`
+are kept out of a reviewer's hands by the enforced shell's `tools:` grant, or — on an unenforced
+claude dispatch — by the tool deny-list on its argv (#1753, see Host capabilities), never by the
+write guard, which is registered session-wide and so cannot tell the orchestrator's own legitimate
+shell from a reviewer's.
 
 A **second, separate refusal** covers the reviewed tree shadowing the enforcement shells (spec
 §7.3). A target that ships `panopticon-*` agent files in a project-scoped agent directory — or any
