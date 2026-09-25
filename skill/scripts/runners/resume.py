@@ -38,6 +38,7 @@ _RESUME_FLAGS = (
     ("diff_context", "--diff-context", "value"),
     ("tools", "--tools", "flag"),
     ("no_tools", "--no-tools", "flag"),
+    ("online", "--online", "flag"),
     ("include_fixtures", "--include-fixtures", "flag"),
     ("allow_unenforced", "--allow-unenforced", "flag"),
     ("session_dir", "--session-dir", "value"),
@@ -94,7 +95,8 @@ def command(host, args):
             "--mode", str(getattr(args, "mode", None) or "headless")]
     for attr, flag, kind in _RESUME_FLAGS:
         value = getattr(args, attr, None)
-        if not value:
+        if (value is None or (kind in ("flag", "list") and not value)
+                or (kind == "value" and value == "")):
             continue
         if kind == "flag":
             cmd.append(flag)
