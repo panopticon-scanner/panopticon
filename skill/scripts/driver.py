@@ -32,6 +32,7 @@ from scripts import hosts  # noqa: E402
 import scripts.host_disclosure as host_disclosure  # noqa: E402
 import scripts.host_probes as host_probes  # noqa: E402
 import scripts.money as money  # noqa: E402
+import scripts.model_resolver as model_resolver  # noqa: E402
 import scripts.probes.common as probes_common  # noqa: E402
 import scripts.setup_flow as setup_flow  # noqa: E402
 import scripts.phases.engine as engine
@@ -280,9 +281,14 @@ def build_parser():
         p.add_argument("--base", default=None)
         p.add_argument("--pr", type=int, default=None)
         p.add_argument("--reset", action="store_true")
-        p.add_argument("--fail-on", default=None)
-        p.add_argument("--severity", default=None)
-        p.add_argument("--gate-scope", default=None)
+        # Match synthesize's accepted values and case handling at the entry
+        # point, before a review can spend work on an invalid child argument.
+        # None means the CLI supplied no opinion; committed settings still win.
+        p.add_argument("--fail-on", type=str.lower,
+                       choices=["critical", "high", "medium", "low"], default=None)
+        p.add_argument("--severity", type=str.lower,
+                       choices=["all", "medium", "high", "critical"], default=None)
+        p.add_argument("--gate-scope", choices=["on-diff", "all"], default=None)
         p.add_argument("--diff-context", type=int, default=None)
         tools_group = p.add_mutually_exclusive_group()
         tools_group.add_argument("--tools", action="store_true")
@@ -889,6 +895,10 @@ def _surface_refusal(results, manifest):
 
 
 def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
+    try:
+        model_resolver.validate_env_overrides()
+    except ValueError as exc:
+        return runio._error_status(str(exc))
     # `resolved` is `runio.resolve_review_root`'s own (review_root, worktree,
     # pr_base), already computed by a caller that holds it (#1616 item 6, fix
     # round 1): `orchestrate.loop` calls this once per ITERATION, and on a
@@ -1166,6 +1176,11 @@ def main(argv=None):
         print(message)
         return 0
     if args.verb in ("loop", "persist"):
+        if args.verb == "loop":
+            try:
+                model_resolver.validate_env_overrides()
+            except ValueError as exc:
+                return engine.emit_status(runio._error_status(str(exc)))
         import scripts.orchestrate as orchestrate   # R-P6-2: lazy, no cycle
         return orchestrate.main_verb(args)
     return engine.emit_status(run(args))

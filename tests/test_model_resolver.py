@@ -148,6 +148,26 @@ class TestModelResolver(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "env-advisor"}):
             self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "env-advisor")
 
+    def test_malformed_object_intent_names_key_without_exposing_value(self):
+        key = "PANOPTICON_MODEL_ADVISOR"
+        for value in (' {"model": ', '{"model": "secret-sentinel",}',
+                      '{"model": "secret-sentinel"} trailing'):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {key: value}):
+                with self.assertRaises(ValueError) as caught:
+                    mr.resolve_model("claude", "advisor")
+                self.assertIn(key, str(caught.exception))
+                self.assertNotIn(value, str(caught.exception))
+                self.assertNotIn("secret-sentinel", str(caught.exception))
+
+    def test_plain_ids_and_valid_objects_allow_surrounding_whitespace(self):
+        key = "PANOPTICON_MODEL_ADVISOR"
+        with mock.patch.dict(os.environ, {key: "  custom-model  "}):
+            self.assertEqual(mr.resolve_model("claude", "advisor"),
+                             {"model": "custom-model"})
+        with mock.patch.dict(os.environ, {key: '  {"model":"custom-model","max_context_size":42}  '}):
+            self.assertEqual(mr.resolve_model("claude", "advisor"),
+                             {"model": "custom-model", "max_context_size": 42})
+
     def test_cli_beats_env(self):
         with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "env-advisor"}):
             self.assertEqual(
