@@ -71,7 +71,6 @@ class TestTheMachineId(unittest.TestCase):
         # fallback and `machine_id()` is None for it (pinned two tests up).
         for node, expected in ((0x1, "000000000001"),
                                (0xaccdef012345, "accdef012345"),
-                               (0xACCDEF012345, "accdef012345"),
                                (0xfeffffffffff, "feffffffffff")):
             with self.subTest(node=node):
                 with mock.patch.object(uuid, "getnode", return_value=node):
@@ -234,7 +233,8 @@ class TestTheDiscardAcceptanceFile(unittest.TestCase):
         os.symlink(planted, self.path)
         batch_mod.record_discard(self.root, 3, self.OWNER)
         self.assertEqual([3], [row["batch"] for row in self._read()])
-        self.assertEqual([{"batch": 99}], json.load(open(planted, encoding="utf-8")))
+        with open(planted, encoding="utf-8") as fh:
+            self.assertEqual([{"batch": 99}], json.load(fh))
 
     def test_a_file_that_is_not_a_json_list_is_started_over(self):
         for planted in ('{"batch": 1}', "not json at all", "", "17", '"text"'):
