@@ -34,6 +34,30 @@ evidence exposed.
   recorded in `discarded-batches.json` in the run folder (with the owner stamp as
   found) and counted on the run manifest, and `--discard-batch` with `--reset` is
   refused as contradictory.
+- **An unenforced claude launch now denies the tools a reviewer must not hold
+  (#1753, AGT-4053314873).** An `--agent` launch lands in a registered shell
+  whose `tools:` frontmatter the host enforces; the `--model` fall-through
+  binds no shell, and `--setting-sources user` deliberately keeps the
+  OPERATOR's user-scope `permissions.allow` — so a `Bash(*)` convenience rule
+  in the operator's own settings reached a reviewer whose job is reading
+  hostile content. That argv now carries
+  `runners/claude.UNENFORCED_DENIED_TOOLS` — 24 names, grouped by what each
+  would hand a reviewer: code execution, delegation, egress and off-machine
+  publication, the write tools no reviewer role is granted, and the two
+  read tools its `Read|Grep|Glob` matcher never sees — and deny rules beat
+  allow rules, which is the point. **Measured on 2.1.276, and the reason for
+  the `=` form:** `--disallowedTools` is VARIADIC, so the space form eats every
+  following non-flag token including the prompt — `claude -p --output-format
+  json --max-turns 2 --disallowedTools Bash "<prompt>"` exits 1 with no
+  envelope and "Input must be provided either through stdin or as a prompt
+  argument" — while `--disallowedTools=Bash,Glob "<prompt>"` runs and the
+  reviewer reports "I have Read available; Bash and Glob are not in my current
+  tool set". One token cannot swallow a neighbour, wherever it is placed. The
+  ENFORCED argv is byte-identical to before: it is measured behaviour and its
+  shell is already the control. **Residual:** a tool name this list has not
+  heard of that the operator has allowed at user scope — a CLI upgrade is how
+  one arrives. MCP tools are not part of it, since the same argv passes
+  `--strict-mcp-config` with no `--mcp-config`.
 - **`driver setup` refuses an unenforceable setup-scan (#1737, AGT-B1D).** The
   one dispatch that reads the whole untrusted tree was the only role with no
   registered shell: its tool grant was whatever the host hands a
@@ -103,6 +127,33 @@ evidence exposed.
   same file now also points `HOME` at one throwaway directory for the whole
   process, before the registry expands `~`, so no probe or test reads the
   operator's real `~/.claude`.
+- **`Glob`'s pattern is adjudicated (#1917).** Both read guards decided a
+  `Glob` on its `path` alone, and the pattern is a PATH pattern expanded
+  against it, so `Glob(path=<granted dir>, pattern="../Src/*")` could name
+  entries outside the `dirs` grant — names, not content, since a following
+  `Read` still meets the per-file rule, but it was the one read primitive whose
+  second argument nothing looked at. Over a granted directory a pattern that is
+  absent, empty, non-string, absolute, `~`-rooted or holds a `..` segment is now
+  denied. `Grep`'s pattern is a regex over content and stays unadjudicated.
+- **In-tree hard links keep their directory `Grep` (#1917).** The walk behind a
+  directory read grant recorded every regular file with `st_nlink > 1`, so a
+  `cp -al` fixture or a pnpm store — whose links all sit inside the review
+  root, naming content the grant already covers — denied every directory
+  `Grep`/`Glob` above it for nothing. It now counts the in-tree names of each
+  inode and records a file only when its link count EXCEEDS them. A `git clone
+  --local` target is deliberately NOT cleared: its links name the source
+  repository's objects, it still overflows the cap and still loses its
+  directory `Grep`, with `--no-hardlinks` named on stderr as the remedy.
+  **Operator-visible:** the walk is now always complete (the count is only
+  known at the end), so `CAP` bounds the findings rather than the files walked.
+- **`read-guard-armed` measures the planted hard link (#1917).** The Claude
+  readiness probe now does what the Codex one has done since #1642: it plants a
+  hard link inside a directory grant naming a file outside it, records it with
+  the driver's own walker, and requires the directory `Grep` to be refused **by
+  the hard-link rule** rather than merely denied. A volume that cannot plant a
+  link — or that plants one and then reports `st_nlink=1`, as some FUSE and
+  network mounts do — makes that sub-check `unknown` instead of refuting a
+  healthy host.
 - **The guide is an index plus one chapter per section.**
   `skill/docs/PANOPTICON.md` keeps Overview, Required sub-skills, Modes and
   Global flags plus a Contents list; each H2 lives in `skill/docs/guide/`

@@ -212,12 +212,24 @@ files beneath it in the entry's scope, and the hook denies a directory `Grep`/`G
 recorded path lies at, above or below the argument. A link BELOW the argument is named in the
 denial, which says to grep a narrower directory or a file by its path; a recorded path AT or ABOVE
 it means the grant is closed whole and the denial says to Read files by name instead, because
-narrowing is refused at every depth there. Those comparisons are case- and normalization-folded as
+narrowing is refused at every depth there. `Glob`'s second argument is adjudicated too (#1917),
+since a pattern is a PATH pattern expanded against `path`: over a granted directory, a pattern that
+is absent, empty, absolute, `~`-rooted or holds a `..` segment is denied, so `Glob(path=<granted
+dir>, pattern="../Src/*")` can no longer name entries outside the grant — names, not content, but a
+confined cell does not get to enumerate the tree. `Grep`'s pattern is a regex over content and stays
+unadjudicated. Those comparisons are case- and normalization-folded as
 well as byte-exact, so `Grep <root>/src` cannot walk past a recorded `<root>/Src/x.txt` on a
 case-insensitive volume (APFS, HFS+, NTFS) — folding a DENIAL can only over-deny, and the grant
 itself is never folded, since that would admit `/REPO/x` under a `/repo` grant. A clean tree is
-unaffected: nothing recorded, nothing denied. Two limits, stated: past 256 recorded files the walk
-stops and the grant records the granted DIRECTORY itself, which denies every directory `Grep`/`Glob`
+unaffected: nothing recorded, nothing denied. So is a tree whose links all sit INSIDE the review
+root (#1917) — the walk counts the in-tree names of each inode and records a file only when its link
+count EXCEEDS them, so a `cp -al` fixture or a pnpm store keeps its directory `Grep`, every name for
+that content being in the tree the driver measured, while a `git clone --local` store does not,
+its partner inodes living in the source repository, which is the class this fence exists for. A
+multiply-linked FIFO or socket is skipped for the same reason a directory is: no out-of-tree content
+rides on one. Two limits, stated: past 256 recorded files (the cap bounds findings, not files walked
+— a clean million-file target pays the whole walk on every `driver setup`) the grant records the
+granted DIRECTORY itself, which denies every directory `Grep`/`Glob`
 beneath it until the tree is fixed; and a link planted AFTER the grant is issued is not in the list
 — the tree is static for the length of a run, and a hook may not walk the target on every call.
 `driver setup` discloses either case on stderr with the count and the first offending path, and
@@ -271,7 +283,9 @@ and local settings, and any hooks they declare, are not read), `--strict-mcp-con
 ("Disable all skills" per `claude --help`, so it is what closes a planted
 `.claude/skills/<x>/SKILL.md` as well as `.claude/commands`), on top of the
 `--settings <run>/host-settings.json` that arms the two guards — `--settings` is a separate channel
-that still applies under `--setting-sources user`, which is what keeps the guards armed. `--bare`
+that still applies under `--setting-sources user`, which is what keeps the guards armed. An
+unenforced launch also carries `--disallowedTools=<UNENFORCED_DENIED_TOOLS>`, which closes the
+operator's own user-scope allow rules (#1753). `--bare`
 and `--safe-mode` are never passed: both disable hooks, and either would silently un-arm the read
 and write guards. **Codex:** the child's process cwd is the same empty, run-owned scratch directory
 `--cd` names, outside the review root — not the review root itself — so whichever root the CLI keys
@@ -349,8 +363,9 @@ on Claude hooks, and always uses the return-persist path.
   allowing it.
 - **The loop dispatches one agent per entry** through the runner: `enforced` →
   `--agent entry["agent"]` (a registered `panopticon-*` shell, tools+model host-enforced); else
-  `--model entry["model"]` and no agent. Prompts go inline (there is no controller context to
-  protect across a process boundary); `prompt_file` remains on every entry for session mode, and
+  `--model entry["model"]` and no agent, plus the `--disallowedTools=` deny-list that closes the
+  operator's own user-scope allow rules (#1753). Prompts go inline (there is no controller context
+  to protect across a process boundary); `prompt_file` remains on every entry for session mode, and
   `files` (present on scout, review-cell, and verify-cell entries) is the entry's absolute file list
   — the read scope the read guard confines it to. `output_schema` is on a return-persist entry when
   its role publishes a JSON Schema for the reply AND this machine's CLI advertises the flag that

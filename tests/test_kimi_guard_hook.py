@@ -108,6 +108,22 @@ class TestHardLinksInDirectoryGrants(GuardCase):
             "read", self.scope_path, env={guard.ENV_ENTRY_ID: "entry-dir"})
         self.assertFalse(allow, reason)
 
+    def test_a_glob_pattern_that_climbs_out_of_the_granted_path_is_denied(self):
+        # #1917, the Kimi copy: `path` was the only argument adjudicated, and
+        # Glob's second one is a PATH pattern, so `../Src/*` over a clean
+        # granted directory named entries the `dirs` grant never covered.
+        for pattern in ("../Src/*", "..", "pkg/../../out/*", "/etc/*", "~/.ssh/*", None, ""):
+            with self.subTest(pattern=pattern):
+                arguments = {} if pattern is None else {"pattern": pattern}
+                allow, reason = self.scan("Glob", path=self.cell, **arguments)
+                self.assertFalse(allow, reason)
+                self.assertIn("Glob pattern", reason)
+        for pattern in ("**/*.py", "*.py", "..hidden"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual((True, ""), self.scan("Glob", pattern=pattern, path=self.cell))
+        # Grep's pattern is a regex over CONTENT and stays unadjudicated.
+        self.assertEqual((True, ""), self.scan("Grep", pattern="../Src/*", path=self.cell))
+
     def test_a_clean_subdirectory_of_that_grant_is_still_greppable(self):
         clean = os.path.join(self.cell, "clean")
         os.makedirs(clean, exist_ok=True)
