@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The guide now says where the second witness is spent (#1759, AGT-1456823651 /
+  AGT-381210818).** A REJECTED advisor verdict was always settled by one advisor — the
+  adversarial backup round is summoned only for primary-CONFIRMED findings in categories at or
+  above `score_gate.BACKUP_FLOOR`, and the tool axis has no backup round at all — but the
+  evidence chapter never stated the asymmetry or why it is deliberate. It does now, beside the
+  sentence that says rejected claims keep their full advisor prose in `discarded_claims`.
 - **A batch record names its MACHINE, and one record can be discarded without
   the run (#1912).** The owner stamp that `driver loop` recovers a crashed batch
   from carried the pid and `socket.gethostname()`, and a hostname is not a machine
