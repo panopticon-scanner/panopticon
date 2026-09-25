@@ -396,7 +396,7 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
         if not ok:
             return (hosts.REFUTED, READ_GUARD_ARMED, detail)
         verdict, detail = _read_round_trip()
-        if verdict:
+        if verdict is not None:
             return (verdict, READ_GUARD_ARMED, detail)
         return (hosts.PROVEN, READ_GUARD_ARMED,
                 "%s; the runner will arm at %s" % (detail, os.path.abspath(settings_path)))
@@ -411,7 +411,7 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
         return (hosts.REFUTED, READ_GUARD_ARMED,
                 "the host cannot arm its read guard: %s is not writable" % settings_dir)
     verdict, detail = _read_round_trip()
-    if verdict:
+    if verdict is not None:
         return (verdict, READ_GUARD_ARMED, detail)
     return (hosts.PROVEN, READ_GUARD_ARMED,
             "%s; the host will arm at %s" % (detail, settings_path))

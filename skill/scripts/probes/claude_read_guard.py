@@ -32,15 +32,16 @@ def _fake_subagent(parent_transcript, agent_id, entry_id, layout="direct"):
 
 
 def _round_trip_confines_reads():
-    """Arm the read guard in a throwaway sandbox, bind two fake subagents
-    through fake transcripts, and drive the ten payloads of design spec 5,
-    plus four env-binding payloads of spec 5.3 (plan 6), through
-    adjudicate(), then launch the installed hook for allow and deny payloads.
-    Never touches the session's real settings, scope file or transcripts.
+    """Arm the read guard in a throwaway sandbox, bind four fake subagents
+    through fake transcripts, and drive the thirteen payloads of design spec 5,
+    plus four env-binding payloads of spec 5.3 (plan 6) and the planted-hard-link
+    check of #1917, through adjudicate(), then launch the installed hook for
+    allow and deny payloads. Never touches the session's real settings, scope
+    file or transcripts.
 
     Returns (ok, detail), where `ok` is True, False -- or None for the one
     outcome that is neither (#1917): the planted-hard-link fixture could not be
-    created, so that sub-check went unmeasured. The caller reports None as
+    established, so that sub-check went unmeasured. The caller reports None as
     UNKNOWN, never as a refutation."""
     try:
         with tempfile.TemporaryDirectory(prefix="panopticon-read ' ; $() ") as sandbox:
@@ -83,14 +84,31 @@ def _round_trip_confines_reads():
                 # pass for one that was measured.
                 return None, ("the hard-link refutation fixture could not be "
                               "planted at %s: %s" % (planted, exc))
+            # ...and the same tolerance one volume class narrower (fix round 1,
+            # finding 2): `os.link` can SUCCEED where `lstat` does not report the
+            # link count (some FUSE and network mounts), and the walker then
+            # legitimately records nothing. Measuring the plant is the only way
+            # to tell that unestablished fixture from a walker gone blind, so
+            # the count is taken here and the refutation below is narrowed to
+            # "the volume DID report a link and the walk still missed it".
+            try:
+                planted_links = os.lstat(planted).st_nlink
+            except OSError as exc:
+                return None, ("the hard-link refutation fixture planted at %s could not be "
+                              "measured: %s" % (planted, exc))
+            if planted_links <= 1:
+                return None, ("the hard-link refutation fixture was planted at %s, but the "
+                              "volume reports st_nlink=%d: it does not count links, so there "
+                              "is nothing here to record" % (planted, planted_links))
             recorded = hard_links.hard_links_under(links_root)[0]
             if not recorded:
-                # The plant SUCCEEDED and the walk still found nothing: half the
-                # rule is missing, which is a refutation and not a fixture
-                # problem (and the rows below would otherwise have no path to
-                # name).
+                # The plant SUCCEEDED, the volume counts links, and the walk
+                # still found nothing: half the rule is missing, which is a
+                # refutation and not a fixture problem (and the rows below would
+                # otherwise have no path to name).
                 return False, ("the guard's own walker recorded no hard link beneath %s "
-                               "after one was planted at %s" % (links_root, planted))
+                               "after one was planted at %s (st_nlink=%d)"
+                               % (links_root, planted, planted_links))
             read_guard_hook.install(
                 [{"id": "probe-cell", "scope": {"files": [inside], "dirs": [], "reads": []}},
                  {"id": "probe-scan", "scope": {"files": [], "dirs": [root], "reads": []}},

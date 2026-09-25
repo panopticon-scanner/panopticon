@@ -1184,6 +1184,34 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         self.assertEqual((hosts.UNKNOWN, "read-guard-armed"), (state, by))
         self.assertIn("could not be planted", detail)
 
+    def test_a_volume_that_does_not_report_the_link_count_is_unknown(self):
+        # Review finding 2: `os.link` can SUCCEED on a volume whose `lstat` does
+        # not reflect the link count (some FUSE and network mounts). The walker
+        # then legitimately records nothing -- and refuting there is exactly the
+        # "somebody's tmp mount refutes a healthy host" the tolerance above
+        # exists to prevent, one volume class narrower. The FIXTURE is what went
+        # unestablished, so the probe must say so and go UNKNOWN; only a
+        # reported count > 1 with nothing recorded is a blind walker.
+        from scripts.probes import claude_read_guard
+        real_lstat = os.lstat
+
+        def reports_one_link(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if isinstance(path, str) and path.endswith("planted.py"):
+                fields = list(info)
+                fields[3] = 1          # st_nlink, with st_mode left alone
+                return os.stat_result(tuple(fields))
+            return info
+
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            with mock.patch.object(claude_read_guard.os, "lstat", reports_one_link):
+                state, by, detail = claude_probes.probe_read_guard_armed(
+                    "claude", session_root=session_root)
+        self.assertEqual((hosts.UNKNOWN, "read-guard-armed"), (state, by))
+        self.assertIn("planted.py", detail)
+        self.assertIn("st_nlink=1", detail)
+
     def test_the_probe_leaves_the_sessions_settings_untouched(self):
         with tempfile.TemporaryDirectory() as session_root:
             self._session_root(session_root)
