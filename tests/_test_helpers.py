@@ -1,4 +1,5 @@
 """Shared test helpers used across multiple test modules."""
+import errno
 import json
 import os
 import shlex
@@ -306,13 +307,24 @@ def argv_through_shell(command, cwd, interpreter="python3"):
 # directory, which is the mount CI actually runs on.
 
 def hard_link_or_skip(target, link):
-    """Hard-link `target` at `link` and return `link`, or skip with the reason."""
+    """Hard-link `target` at `link`; skip only if links are unsupported."""
     try:
         os.link(str(target), str(link))
-    except (OSError, NotImplementedError, AttributeError) as exc:
-        raise unittest.SkipTest("this filesystem refuses hard links: %s: %s"
-                                % (type(exc).__name__, exc))
+    except OSError as exc:
+        if exc.errno not in (errno.ENOSYS, errno.EOPNOTSUPP, errno.ENOTSUP):
+            raise
+        _unsupported_hard_link(exc)
+    except (NotImplementedError, AttributeError) as exc:
+        _unsupported_hard_link(exc)
     return str(link)
+
+
+def _unsupported_hard_link(exc):
+    reason = "this filesystem refuses hard links: %s: %s" % (
+        type(exc).__name__, exc)
+    if require_integration():
+        raise AssertionError("%s=1 but %s" % (REQUIRE_INTEGRATION_ENV, reason)) from exc
+    raise unittest.SkipTest(reason) from exc
 
 
 # --- #1578 fix round 2: composed secret literals -----------------------------
