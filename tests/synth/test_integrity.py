@@ -2,6 +2,7 @@
 unenforced ack and meta.integrity.
 """
 import contextlib
+import glob
 import io
 import os
 import json
@@ -189,19 +190,71 @@ class TestFindingsFileIntegrity(unittest.TestCase):
                 " ".join(report["meta"]["integrity"]["mislabeled_findings_files"]),
             )
 
-    def test_real_tapestry_corpus_is_consistent_when_present(self):
-        # If PANOPTICON_TAPESTRY_CORPUS_PATH is set, its reviewer findings files
-        # must not trip the mislabel check (they were authored by the real
-        # reviewers) — a regression canary against false positives.
-        import glob
+    def test_tapestry_corpus_mislabel_canary(self):
+        # A two-group matrix covers every real domain, empty and populated cells,
+        # and a hyphenated group name on every ordinary test run.
+        domains = ("SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG")
+        with tempfile.TemporaryDirectory() as base:
+            files = []
+            for group in ("Client-Devices", "ServiceAPI"):
+                for index, domain in enumerate(domains):
+                    path = os.path.join(base, f"findings-{group}-{domain}.json")
+                    payload = {
+                        "findings": [] if index % 3 == 0 else [{
+                            "domain": domain,
+                            "code": f"{domain}-X0X",
+                            "title": f"{group} {domain} review",
+                            "description": "A bounded review finding in the seeded corpus.",
+                            "severity": "LOW",
+                            "source_role": "domain_panel",
+                            "location": {"file": "src/service.py", "line_start": index + 1},
+                        }],
+                        "_panopticon": {
+                            "group": group, "domain": domain,
+                            "role": "domain_panel", "run_id": "seeded-canary",
+                        },
+                        "schema_version": 1,
+                    }
+                    if group == "Client-Devices" and domain == "ARC":
+                        payload["findings"].append({
+                            "domain": "TST", "code": "TST-X0X",
+                            "title": "Cross-domain testing gap",
+                            "description": "The ARC reviewer found a testing gap.",
+                            "severity": "LOW", "source_role": "domain_panel",
+                            "location": {"file": "tests/test_service.py", "line_start": 8},
+                        })
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump(payload, fh)
+                    files.append(path)
 
-        base = os.environ.get("PANOPTICON_TAPESTRY_CORPUS_PATH", "")
-        if not base:
-            self.skipTest("PANOPTICON_TAPESTRY_CORPUS_PATH not set")
-        files = glob.glob(os.path.join(base, "findings-*.json"))
-        if not files:
-            self.skipTest("No findings files found in PANOPTICON_TAPESTRY_CORPUS_PATH")
-        self.assertEqual(integrity_mod.mislabeled_findings_files(files), [])
+            self.assertEqual(len(files), 20)
+            self.assertEqual(integrity_mod.mislabeled_findings_files(files), [])
+            self.assertEqual(
+                [(row["cell_domain"], row["finding_domain"], row["code"])
+                 for row in integrity_mod.cross_domain_findings(files)],
+                [("ARC", "TST", "TST-X0X")],
+            )
+
+            # One reviewer writes a COD-stamped cell under a SEC filename.
+            planted = os.path.join(base, "findings-Planted-SEC.json")
+            with open(planted, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [], "_panopticon": {
+                    "group": "Planted", "domain": "COD", "role": "domain_panel",
+                    "run_id": "seeded-canary",
+                }, "schema_version": 1}, fh)
+            self.assertEqual(integrity_mod.mislabeled_findings_files(files + [planted]),
+                             [planted])
+
+        # An operator-supplied corpus is an additional read-only check. A typo
+        # or an empty directory is a failed precondition, never a silent skip.
+        if "PANOPTICON_TAPESTRY_CORPUS_PATH" in os.environ:
+            external = os.environ["PANOPTICON_TAPESTRY_CORPUS_PATH"]
+            self.assertTrue(os.path.isdir(external),
+                            f"Invalid PANOPTICON_TAPESTRY_CORPUS_PATH: {external!r}")
+            external_files = sorted(glob.glob(os.path.join(external, "findings-*.json")))
+            self.assertTrue(external_files,
+                            f"No findings-*.json in PANOPTICON_TAPESTRY_CORPUS_PATH: {external!r}")
+            self.assertEqual(integrity_mod.mislabeled_findings_files(external_files), [])
 
 class TestReadUnenforcedAck(unittest.TestCase):
     """M8: read_unenforced_ack had zero direct test coverage -- exactly where
