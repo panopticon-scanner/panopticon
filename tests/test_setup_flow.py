@@ -394,9 +394,8 @@ class TestSetupFlow(unittest.TestCase):
         self.assertTrue(res["ok"], res)
         self.assertEqual(res["diff"]["dropped_redundant"], ["Checkout"])   # claims nothing new
         self.assertEqual([g["name"] for g in res["diff"]["new_groups"]], ["Search"])
-        import yaml as _yaml
         with open(res["draft"], encoding="utf-8") as fh:
-            drafted = _yaml.safe_load(fh)["groups"]
+            drafted = yaml.safe_load(fh)["groups"]
         self.assertEqual(list(drafted["Checkout"]), ["API", "Core"])     # parent intact
         self.assertEqual(drafted["Search"]["match"], ["src/search/**"])
 
@@ -1159,9 +1158,8 @@ class TestSetupFlow(unittest.TestCase):
         res = setup_flow.ingest_proposal(d, pp, max_per_group=8)
         self.assertTrue(res["ok"], res)
         self.assertEqual(res["diff"]["new_groups"][0]["subgroups"], ["API", "Core"])
-        import yaml as _yaml
         with open(res["draft"], encoding="utf-8") as fh:
-            drafted = _yaml.safe_load(fh)["groups"]
+            drafted = yaml.safe_load(fh)["groups"]
         self.assertEqual(list(drafted["Checkout"]), ["API", "Core"])
         self.assertEqual(drafted["Checkout"]["API"]["match"], ["src/checkout/api/**"])
         self.assertEqual(drafted["Checkout"]["Core"]["match"],
@@ -1187,7 +1185,6 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
     serializes with yaml.safe_dump instead of hand-formatting untrusted text."""
 
     def test_injection_dir_names_are_dropped_and_file_parses(self):
-        import yaml as _yaml
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         # a benign dir plus two hostile top-level names: a YAML metacharacter
@@ -1200,7 +1197,7 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
         path, created, names = setup_flow._seed_groups_manifest(d)
         self.assertTrue(created)
         with open(path, encoding="utf-8") as fh:
-            doc = _yaml.safe_load(fh.read())          # parses cleanly -> no injection
+            doc = yaml.safe_load(fh.read())          # parses cleanly -> no injection
         self.assertEqual(set(doc["groups"]), {"app"})  # hostile names dropped
         self.assertEqual(doc["groups"]["app"]["match"], ["app/**"])
         self.assertEqual(names, ["app"])
@@ -1234,7 +1231,6 @@ if __name__ == "__main__":
 
 def _git_repo(test_case, gitignore):
     """A real git checkout whose .gitignore is exactly `gitignore`."""
-    import subprocess
     d = _repo(test_case)
     for argv in (["init", "-q"], ["config", "user.name", "T"],
                  ["config", "user.email", "t@example.com"]):
@@ -1249,7 +1245,6 @@ def _git_repo(test_case, gitignore):
 
 
 def _status(repo):
-    import subprocess
     return subprocess.run(["git", "-C", repo, "status", "--porcelain"],
                           capture_output=True, text=True).stdout
 
@@ -1337,7 +1332,6 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
     def test_dump_emits_a_committed_exclude_paths_list(self):
         import scripts.setup_proposal as sp
         import scripts.groups_schema as groups_schema
-        import yaml
         text = sp.dump_config_yaml(
             {"Checkout": {"match": ["src/checkout/**"], "panels": ["SEC"]}},
             exclude_paths=["tests/fixtures/**", "vendor/**"])
@@ -1348,14 +1342,12 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
 
     def test_dump_omits_the_key_when_there_is_nothing_to_carry(self):
         import scripts.setup_proposal as sp
-        import yaml
         text = sp.dump_config_yaml({"G": {"match": ["a/**"], "panels": ["SEC"]}})
         self.assertNotIn("exclude_paths", yaml.safe_load(text))
 
     def test_the_groups_mapping_still_round_trips(self):
         import scripts.setup_proposal as sp
         import scripts.groups_schema as groups_schema
-        import yaml
         text = sp.dump_config_yaml(
             {"Checkout": {"match": ["src/checkout/**"], "panels": ["SEC"]}},
             exclude_paths=["tests/fixtures/**"])
@@ -1365,7 +1357,6 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
 
     def test_dump_config_yaml_puts_version_first_and_settings_last(self):
         import setup_proposal as sp
-        import yaml
         text = sp.dump_config_yaml({"App": {"match": ["src/**"]}},
                                    exclude_paths=["vendor/**"],
                                    settings={"max_per_group": 48, "max_groups": None})
@@ -1388,7 +1379,6 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
 
     def test_ingest_carries_the_committed_exclusions_into_the_draft(self):
         import scripts.groups_schema as groups_schema
-        import yaml
         d = _repo(self)
         with open(os.path.join(d, "panopticon.yml"), "w") as fh:
             fh.write("version: 1\n"

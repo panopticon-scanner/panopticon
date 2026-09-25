@@ -7,8 +7,80 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from conftest import FIXTURE_ROOT, REPO_ROOT  # noqa: E402
+from scripts import hosts
+
+
+def kimi_entry(enforced=True, model="secondary"):
+    return {"id": "review-app-SEC", "agent": "panopticon-domain-panel" if enforced else None,
+            "enforced": enforced, "model": model,
+            "prompt": "panopticon-entry: review-app-SEC\nReview.",
+            "out_file": "/r/.panopticon/runs/t/findings-app-SEC.json"}
+
+
+def kimi_fixture_home(directory, *, include_coding_alias=True):
+    """Create a disposable Kimi home, never using the operator's home."""
+    home = os.path.join(directory, "real-home")
+    os.makedirs(home)
+    config = ('default_model = "kimi-code/k3"\n\n'
+              '[models."kimi-code/k3"]\nmodel = "k3"\n')
+    if include_coding_alias:
+        config += ('\n[models."kimi-code/kimi-for-coding"]\n'
+                   'model = "kimi-for-coding"\n')
+    with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
+        fh.write(config)
+    with open(os.path.join(home, "credentials"), "w", encoding="utf-8") as fh:
+        fh.write("fixture")
+    return home
+
+
+def prepared_kimi(directory, runner=None, *, include_coding_alias=True):
+    """Prepare a Kimi runner while preserving its guarded default launcher."""
+    from scripts.runners import kimi as kimi_runner
+
+    home = kimi_fixture_home(directory, include_coding_alias=include_coding_alias)
+    with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": home}):
+        prepared = kimi_runner.Runner("kimi", runner=runner)
+        prepared.prepare(os.path.join(directory, "run"), review_root=directory)
+    return prepared
+
+
+def all_proven_artifact(host="claude"):
+    """A fresh host-capabilities.json body with every capability proven."""
+    return {"schema_version": 1, "host": host,
+            "probed_at": "2026-09-10T00:00:00Z",
+            "capabilities": {cap: {"state": hosts.PROVEN, "by": "fixture",
+                                   "detail": "fixture"}
+                             for cap in hosts.CAPABILITIES}}
+
+
+def refuted_tool_policy_artifact(host="claude"):
+    """A proven artifact with only tool policy explicitly refuted."""
+    body = all_proven_artifact(host)
+    body["capabilities"][hosts.TOOL_POLICY_ENFORCED] = {
+        "state": hosts.REFUTED, "by": "fixture",
+        "detail": "fixture: tool policy deliberately refuted"}
+    return body
+
+
+def write_guard_not_proven(host, target, **kw):
+    """Probe stand-in with the write guard left unknown."""
+    body = all_proven_artifact(host)
+    body["capabilities"][hosts.ARTIFACT_WRITE_GUARD] = {
+        "state": hosts.UNKNOWN, "by": None,
+        "detail": "fixture: write guard deliberately not proven"}
+    return body
+
+
+def assert_fixture_root(root):
+    """Accept the in-repo corpus path or the fixtures image's baked path."""
+    stripped = root.rstrip(os.sep)
+    assert stripped.endswith(os.path.join("tests", "fixtures")) or \
+        stripped == "/opt/panopticon-fixtures", (
+            "unexpected FIXTURE_ROOT %r -- expected the in-repo tests/fixtures or the "
+            "fixtures image's /opt/panopticon-fixtures" % root)
 
 
 # --- #1422: strict mode for the live-tool tests -----------------------------

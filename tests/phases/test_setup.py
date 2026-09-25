@@ -14,7 +14,6 @@ from unittest import mock
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.setup as setup
-import scripts.phases.setup as setup_phase
 import scripts.phases.setup_readiness as setup_readiness
 import scripts.phases.requests as requests
 
@@ -31,9 +30,10 @@ import scripts.repo_config as repo_config
 import scripts.runners.base as runners_base
 import scripts.runners.batch as batch_mod
 
-from _test_helpers import hard_link_or_skip
+from _test_helpers import (all_proven_artifact as _all_proven_artifact,
+                           hard_link_or_skip,
+                           refuted_tool_policy_artifact as _refuted_artifact)
 from conftest import REPO_ROOT, SKILL_ROOT, write_host_evidence
-from test_orchestrate import _all_proven_artifact, _refuted_artifact
 from tools.git_repo import make_git_repo
 
 
@@ -515,7 +515,6 @@ class TestDriverSetup(unittest.TestCase):
         # #run7 AGT-C1A: a target-committed setup-manifest stamped with a foreign
         # review_root (presetting a hostile vocabulary_path) must be discarded and
         # rebuilt from args, mirroring the run-manifest #1093 guard.
-        import io, contextlib
         d = self._repo()
         os.makedirs(runio._pano(d), exist_ok=True)
         runio._write_json(runio._pano(d, "setup-manifest.json"),
@@ -1236,7 +1235,7 @@ class TestSetupScanExecuteUsesTheNamespace(unittest.TestCase):
         write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
         _vocabulary, present = setup_flow.load_bundled_vocabulary()
         self.assertTrue(present, "the bundled vocabulary is required for this checkpoint")
-        result = setup_phase.scan_execute(d, {"run_id": "RID", "host": "claude"})
+        result = setup.scan_execute(d, {"run_id": "RID", "host": "claude"})
         self.assertEqual("checkpoint", result.kind)
         self.assertEqual("scan", result.checkpoint)
         self.assertEqual(requests.request_path(d, namespace="setup"),
@@ -1882,7 +1881,7 @@ class TestSetupConvertsAStalledEngine(unittest.TestCase):
                 execute=lambda r, m: engine.PhaseResult(kind="advanced"))
             args = mock.Mock(target=root, host="claude", reset=False,
                              max_per_group=None, max_groups=None)
-            status = setup_phase.run_setup_flow(args, phases=(stuck,))
+            status = setup.run_setup_flow(args, phases=(stuck,))
         self.assertEqual(status["status"], "error", status)
         self.assertIn("without satisfying its done() predicate",
                       status["message"])
@@ -1921,7 +1920,7 @@ class TestSetupConvertsAConfinementRefusal(unittest.TestCase):
                   encoding="utf-8") as fh:
             fh.write("groups:\n  Checkout:\n    match: ['src/checkout/**']\n")
         args = driver.build_parser().parse_args(["setup", d])
-        status = setup_phase.run_setup_flow(args)
+        status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "error", status)
         self.assertIn("version: 1", status["message"])
         self.assertFalse(os.path.isfile(repo_config.draft_path(d)))
@@ -1933,7 +1932,7 @@ class TestSetupConvertsAConfinementRefusal(unittest.TestCase):
         with tempfile.TemporaryDirectory() as out:
             victim = self._planted(d, os.path.realpath(out))
             args = driver.build_parser().parse_args(["setup", d])
-            status = setup_phase.run_setup_flow(args)
+            status = setup.run_setup_flow(args)
             self.assertEqual(status["status"], "error", status)
             self.assertIn("setup-spine.json", status["message"])
             with open(victim, encoding="utf-8") as fh:

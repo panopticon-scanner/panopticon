@@ -406,8 +406,6 @@ class TestTheRefusalNamesTheGap(unittest.TestCase):
     capability."""
 
     def test_it_names_the_capability_its_probe_and_the_remedy(self):
-        from scripts.phases import requests, runio
-        from scripts import hosts
         with tempfile.TemporaryDirectory() as review_root:
             path = runio._pano(review_root, runio.HOST_CAPABILITIES)
             runio._write_json(path, {
@@ -433,8 +431,6 @@ class TestTheRefusalNamesTheGap(unittest.TestCase):
         # The spec's original example said tool_policy_enforced. This gate
         # reads artifact_write_guard, a distinction F2 spent a docstring
         # making; docs PR #45 corrected the spec.
-        from scripts.phases import requests, runio
-        from scripts import hosts
         with tempfile.TemporaryDirectory() as review_root:
             manifest = {"host": "generic", "flags": {}}
             with self.assertRaises(runio.DriverError) as caught:

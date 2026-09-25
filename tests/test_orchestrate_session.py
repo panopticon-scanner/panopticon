@@ -37,8 +37,9 @@ import scripts.runners.base as base
 from conftest import docker_probe_runner
 from scripts import hosts
 import scripts.write_guard_hook as write_guard_hook
-from test_orchestrate import (FakeRunner, LoopCase, _all_proven_artifact,
-                              _write_guard_not_proven)
+from _test_helpers import (all_proven_artifact as _all_proven_artifact,
+                           write_guard_not_proven as _write_guard_not_proven)
+from test_orchestrate import FakeRunner, LoopCase
 
 
 def setUpModule():

@@ -31,33 +31,14 @@ import scripts.runners.kimi as kimi_runner
 import scripts.runners.outage as outage
 import scripts.probes.shape as shape_probe
 import scripts.write_guard_hook as write_guard_hook
-from _test_helpers import dead_pid
+from _test_helpers import (all_proven_artifact as _all_proven_artifact, dead_pid,
+                           refuted_tool_policy_artifact as _refuted_artifact,
+                           write_guard_not_proven as _write_guard_not_proven)
 from conftest import docker_probe_runner, write_host_evidence
 from scripts import hosts
 
 _ALL_PROVEN = {c: hosts.PROVEN for c in hosts.CAPABILITIES}
 RUN_ID = None   # the manifest mints one; the fake reads it off the entry
-
-
-def _all_proven_artifact(host="claude"):
-    return {"schema_version": 1, "host": host, "probed_at": "2026-09-10T00:00:00Z",
-            "capabilities": {c: {"state": hosts.PROVEN, "by": "fixture", "detail": "fixture"}
-                             for c in hosts.CAPABILITIES}}
-
-
-def _write_guard_not_proven(host, target, **kw):
-    """host_probes.run_probes stand-in: every capability PROVEN except
-    artifact_write_guard, left UNKNOWN -- drives the not-proven write-guard
-    posture through the probe (Task 5 ruling 2), never through
-    write_host_evidence: driver.run re-probes on every invocation via this
-    same patched function and overwrites the evidence artifact, so a
-    write_host_evidence call would be silently undone the moment the first
-    driver.run() executes."""
-    body = _all_proven_artifact(host)
-    body["capabilities"][hosts.ARTIFACT_WRITE_GUARD] = {
-        "state": hosts.UNKNOWN, "by": None,
-        "detail": "fixture: write guard deliberately not proven"}
-    return body
 
 
 def setUpModule():
@@ -3003,17 +2984,6 @@ class TestATimedOutEntryKeepsItsEvidence(LoopCase):
         self.assertFalse(os.path.exists(os.path.join(runner.run_dir, "rejected")))
         row = next(r for r in ledger_mod.Ledger(runner.run_dir).lines() if not r["ok"])
         self.assertIsNone(row["rejected_file"])
-
-
-def _refuted_artifact(host="claude"):
-    """host_probes.run_probes stand-in whose tool policy is REFUTED -- the
-    `--allow-unenforced` posture, where the phases legitimately emit
-    `enforced: False` and the loop must let the run through unchanged."""
-    body = _all_proven_artifact(host)
-    body["capabilities"][hosts.TOOL_POLICY_ENFORCED] = {
-        "state": hosts.REFUTED, "by": "fixture",
-        "detail": "fixture: tool policy deliberately refuted"}
-    return body
 
 
 class TestTheRequestsEnforcedFlagIsDerived(LoopCase):

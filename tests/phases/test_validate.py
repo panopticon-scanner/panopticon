@@ -290,7 +290,6 @@ class TestFinalizeWorktree(unittest.TestCase):
         # #run7 OPS-E1A: if the report can't be copied to the caller's tree, the
         # worktree (the only other copy) must NOT be released -- that would be
         # silent, unrecoverable data loss while run() still returns complete.
-        import io, contextlib
         worktree, target = self._dir(), self._dir()
         manifest = {"run_id": "R", "worktree": worktree, "target": target}
         tag = run_manifest.run_tag(manifest)

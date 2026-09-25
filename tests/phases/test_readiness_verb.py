@@ -39,12 +39,10 @@ import unittest
 from unittest import mock
 
 from conftest import REPO_ROOT
-import scripts.phases.readiness as readiness_mod
 import scripts.phases.runio as runio
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
 import scripts.phases.readiness_checks as readiness_checks
-import scripts.phases.runio as _runio
 from scripts import hosts
 
 from tools.git_repo import make_git_repo
@@ -161,7 +159,7 @@ class _VerbCase(unittest.TestCase):
 #: the registry rather than spelled as a literal: a changed default would
 #: otherwise leave every "ready machine" fixture below quietly declaring the
 #: wrong binary present and passing for the wrong reason.
-DEFAULT_HOST = _runio._DEFAULTS["host"]
+DEFAULT_HOST = runio._DEFAULTS["host"]
 READY_CLI = {DEFAULT_HOST: "/opt/bin/" + DEFAULT_HOST}
 
 
@@ -861,7 +859,7 @@ class TestCapabilitiesRowHostShape(unittest.TestCase):
                        "capabilities": {c: {"state": hosts.PROVEN, "by": "p",
                                             "detail": "d"}
                                         for c in hosts.CAPABILITIES}}, fh)
-        return readiness_mod._capabilities_row(d, "t1")
+        return readiness._capabilities_row(d, "t1")
 
     def test_a_non_string_host_reads_as_not_measured(self):
         for host in (["claude"], {"name": "claude"}, 1, True):
