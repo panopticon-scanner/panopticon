@@ -100,6 +100,33 @@ evidence exposed.
   same file now also points `HOME` at one throwaway directory for the whole
   process, before the registry expands `~`, so no probe or test reads the
   operator's real `~/.claude`.
+- **`Glob`'s pattern is adjudicated (#1917).** Both read guards decided a
+  `Glob` on its `path` alone, and the pattern is a PATH pattern expanded
+  against it, so `Glob(path=<granted dir>, pattern="../Src/*")` could name
+  entries outside the `dirs` grant — names, not content, since a following
+  `Read` still meets the per-file rule, but it was the one read primitive whose
+  second argument nothing looked at. Over a granted directory a pattern that is
+  absent, empty, non-string, absolute, `~`-rooted or holds a `..` segment is now
+  denied. `Grep`'s pattern is a regex over content and stays unadjudicated.
+- **In-tree hard links keep their directory `Grep` (#1917).** The walk behind a
+  directory read grant recorded every regular file with `st_nlink > 1`, so a
+  `cp -al` fixture or a pnpm store — whose links all sit inside the review
+  root, naming content the grant already covers — denied every directory
+  `Grep`/`Glob` above it for nothing. It now counts the in-tree names of each
+  inode and records a file only when its link count EXCEEDS them. A `git clone
+  --local` target is deliberately NOT cleared: its links name the source
+  repository's objects, it still overflows the cap and still loses its
+  directory `Grep`, with `--no-hardlinks` named on stderr as the remedy.
+  **Operator-visible:** the walk is now always complete (the count is only
+  known at the end), so `CAP` bounds the findings rather than the files walked.
+- **`read-guard-armed` measures the planted hard link (#1917).** The Claude
+  readiness probe now does what the Codex one has done since #1642: it plants a
+  hard link inside a directory grant naming a file outside it, records it with
+  the driver's own walker, and requires the directory `Grep` to be refused **by
+  the hard-link rule** rather than merely denied. A volume that cannot plant a
+  link — or that plants one and then reports `st_nlink=1`, as some FUSE and
+  network mounts do — makes that sub-check `unknown` instead of refuting a
+  healthy host.
 - **The guide is an index plus one chapter per section.**
   `skill/docs/PANOPTICON.md` keeps Overview, Required sub-skills, Modes and
   Global flags plus a Contents list; each H2 lives in `skill/docs/guide/`

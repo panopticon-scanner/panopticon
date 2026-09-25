@@ -37,7 +37,12 @@ reads/writes DENY.
 KIMI PAYLOAD. Kimi's PreToolUse payload names the tool in ``tool_name`` and
 carries ``tool_input`` whose path field is ``path`` for Read, Write, Edit,
 Grep and Glob alike (measured on kimi-code 0.42.0 -- NOT Claude's
-``file_path``). The deny protocol is the shared JSON one: print
+``file_path``). Glob's SECOND argument is ASSUMED to arrive as ``pattern``
+(#1917, adjudicated by ``_glob_pattern_climbs``): UNMEASURED on kimi-code, so
+the next real launch should check it -- under another name every Glob over a
+directory grant is denied as ``pattern None``, fail-closed but a functional
+break of the setup scan, and puzzling from the denial alone. The deny protocol
+is the shared JSON one: print
 ``hookSpecificOutput.permissionDecision = "deny"`` on stdout and exit 0.
 
 FAIL-CLOSED, AND THE PLATFORM CAVEAT. Kimi hooks fail OPEN on script error or
@@ -342,6 +347,38 @@ DIRECTORY_GRANT_CLOSED = (
     "%s of directory %s is denied: the whole directory grant is closed (too "
     "many hard-linked files beneath it, or a subtree nothing could read -- see "
     "the setup-scan stderr line). Read files by name.")
+# #1917: Glob's SECOND argument. `path` says where the expansion starts and is
+# adjudicated above; the pattern says what it expands to, and it is a PATH
+# pattern, so `../Src/*` under a clean granted directory names entries the grant
+# never covered. One wording, both hooks, pinned in
+# tests/test_codex_read_tools.py beside the other two.
+GLOB_PATTERN_DENIAL = ("Glob pattern %r is denied: patterns are relative to `path` and may "
+                       "not climb out of it")
+
+
+def _glob_pattern_climbs(pattern):
+    """True when a `Glob` pattern could name entries outside the `path` it is
+    relative to (#1917). `read_guard_hook._glob_pattern_climbs`'s twin.
+
+    Glob is the one read primitive with TWO path-shaped arguments, and only the
+    first was ever adjudicated: a pattern is expanded against `path`, so
+    `../Src/*` under a granted directory names entries the `dirs` grant does not
+    cover. Names, not content -- a following read still meets the per-file
+    rule -- but a confined entry should not be able to enumerate the tree.
+
+    Absent, empty or non-string DENIES: there is no pattern to reason about,
+    and fail-closed is this file's rule everywhere else. Absolute and
+    `~`-rooted patterns ignore `path` outright. A `..` SEGMENT climbs; a name
+    that merely begins with two dots (`..hidden`) does not, which is why this
+    splits on separators instead of searching for the substring.
+
+    Grep's `pattern` is a REGEX over content, not a path, and is not this
+    rule's subject."""
+    if not isinstance(pattern, str) or not pattern:
+        return True
+    if pattern.startswith("~") or pattern.startswith("/") or os.path.isabs(pattern):
+        return True
+    return any(part == ".." for part in pattern.replace("\\", "/").split("/"))
 
 
 def _hard_link_reason(tool_name, raw, target, scope):
@@ -428,6 +465,11 @@ def _decide_read(tool_name, tool_input, scope, cwd):
                         return False, DIRECTORY_GRANT_CLOSED % (tool_name, raw)
                     if _under(p, target) or _under(_fold(p), ft):
                         return False, DIRECTORY_LINK_DENIAL % (tool_name, raw, p)
+                # #1917: and for Glob, the second argument -- the only one of
+                # these tools whose pattern is a PATH pattern, expanded
+                # against `path`.
+                if tool_name == "Glob" and _glob_pattern_climbs(tool_input.get("pattern")):
+                    return False, GLOB_PATTERN_DENIAL % (tool_input.get("pattern"),)
             return True, ""
         if tool_name in ("Read", "ReadMediaFile"):
             return False, ("%s of directory %s is outside your cell's scope; the "
