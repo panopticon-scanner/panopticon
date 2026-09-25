@@ -595,6 +595,11 @@ def _worktree_dir(repo, pr_number):
     return os.path.join(root, "panopticon-pr-%d-%s" % (pr_number, key))
 
 
+# The ONE remote acquisition fetches from. Named here rather than twice, because
+# the refusal below has to ask about exactly the remote the fetch names (#2041
+# M3): a `remote.<other>.uploadpack` is a key this fetch never reads.
+_PR_REMOTE = "origin"
+
 # Hard bound on the --pr worktree git/gh calls so a hung fetch/API/teardown
 # (network partition, stalled TLS, a held git lock) cannot block the run
 # indefinitely (#1081, #1082). Generous -- a shallow PR fetch is the slowest.
@@ -741,6 +746,22 @@ def _sync_config(repo, wt_path):
     return list(res.disclosures) + notes
 
 
+def _main_worktree(listing_out, repo):
+    """The path an `[includeIf "gitdir:..."]` pattern has to name for `repo`.
+
+    git matches `gitdir:` against `$GIT_DIR`, which for a LINKED worktree is
+    `<main>/.git/worktrees/<name>` -- not under the linked checkout's own path
+    -- so a pattern built from `repo` matches nothing there (measured, #2041
+    review 2). The main worktree is the first line of `git worktree list`,
+    which acquisition already holds; only an empty listing falls back to
+    `repo` itself.
+    """
+    for line in listing_out.splitlines():
+        if line.strip():
+            return line.split()[0]
+    return os.path.abspath(repo)
+
+
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     """Fetch a PR head into a DETERMINISTIC throwaway worktree and return its
     base branch. Idempotent: if the deterministic worktree already exists and
@@ -764,6 +785,25 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     `core.hooksPath` by hand, because a fetch is a ref transaction and
     `reference-transaction` fires from the target's hooks directory on it (all
     three measured; see `tests/test_diff_map.py::TestPrAcquisitionIsConfined`).
+    It also carries `--no-recurse-submodules`, because git's default
+    `fetch.recurseSubmodules = on-demand` would fetch inside a submodule and
+    obey `.git/modules/<name>/config`, which no read of the superproject's
+    config can see (measured).
+
+    What the pins do NOT close is the checkout's own transport configuration: a
+    repo-local `core.sshCommand` runs on that fetch for an `ssh://` remote,
+    `remote.origin.uploadpack` for a local one, and `core.askPass` for an http
+    remote that answers 401 (all measured). So acquisition reads this checkout's
+    own config immediately before the fetch -- every scope the fetch reads, which
+    is `.git/config`, the files it includes and `$GIT_DIR/config.worktree`, not
+    just `--local` (`safe_git.repository_settings` carries the measurements) --
+    and REFUSES when it sets a key a fetch of `_PR_REMOTE` would execute. The
+    refusal names the keys and a remedy that keeps the setting per-repository
+    from the operator's OWN global config, which the fetch still honours
+    (#2041). A config listing that lacks git's scope-labelled shape refuses the
+    same way rather than passing as "nothing set". Emptying the keys instead,
+    the way the probe empties `filter.*`, would break the private repository
+    this exemption exists for.
     """
     # Every repository-configured command `safe_git` emptied on the way, and the
     # pairs already printed. One list across every call, because each call
@@ -855,6 +895,65 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
             print("panopticon --pr: %s" % line, file=sys.stderr)
         return {"worktree": wt, "base": base, "head_sha": head_sha}   # reuse (resume)
 
+    # #2041: the fetch below keeps the operator's environment, so the checkout's
+    # own config can still make it run a command (measured, all under the pins
+    # the fetch carries: a repo-local `core.sshCommand` on an `ssh://` remote,
+    # `remote.origin.uploadpack` on a local one, `core.askPass` on an http remote
+    # that answers 401). The owner's ruling
+    # is REFUSE WITH REMEDY, not empty: `core.sshCommand` is how a private
+    # repository is legitimately reached, which is the case this exemption
+    # exists for, and the operator's GLOBAL config -- which the fetch still
+    # honours -- is somewhere to put it that the target cannot write.
+    #
+    # Scope is the REPOSITORY's own config and nothing else: `.git/config`, the
+    # files it includes (`--includes`; as repository-authored as the file
+    # itself), and `$GIT_DIR/config.worktree` -- which the fetch reads too once
+    # `extensions.worktreeConfig` is set, and which a `--local` read cannot see
+    # at all (#2041 fix round 1, C1: measured, the command ran). The read is
+    # `--show-scope` + a filter rather than a scope flag because `--worktree`
+    # both HIDES `.git/config` when the extension is on and DIES in a checkout
+    # that has a second worktree; `safe_git.repository_settings` carries both
+    # measurements. A GLOBAL or system value is the operator's own and never
+    # reaches the filter -- moving the setting there is the remedy this refusal
+    # names, so refusing on it would refuse the fix. The reuse path above
+    # performs no fetch and therefore has nothing to refuse.
+    listing = _safe(repo, ["config", "--null", "--list", "--show-scope", "--includes"])
+    try:
+        repository = safe_git.repository_settings(listing)
+    except ValueError as exc:
+        # Fail CLOSED on a listing that is not the shape the parser reads (a
+        # git whose `--show-scope` output changed): an empty parse would
+        # otherwise pass the refusal silently. The shape is what is checked, not
+        # any one key -- a repository with no `[core]` section fetches fine.
+        _disclose()
+        raise RuntimeError(
+            "panopticon --pr: refusing to fetch: the config listing of %s is not the "
+            "scope-labelled shape the transport-command check reads (%s), so the "
+            "check could not run (#2041)" % (repo, exc)) from exc
+    transport = safe_git.transport_command_keys(repository, _PR_REMOTE)
+    if transport:
+        _disclose()      # already disclosed by _safe; kept so a reordering cannot
+                         # drop the disclosure
+        # The KEYS only: the values are command lines (#2013). The file class is
+        # named rather than one filename, and the remedy leads with `includeIf`
+        # (#2041 I3): the operator's reason for a repo-local `core.sshCommand` is
+        # usually that it is PER-REPOSITORY (a deploy key), which `--global`
+        # would spread over every repository and `--unset` would simply break --
+        # and for a key that arrived through `include.path`, `--unset` exits 5
+        # and changes nothing, which is why `--show-origin` is there to find the
+        # file this message cannot name.
+        raise RuntimeError(
+            "panopticon --pr: refusing to fetch: this checkout's own git config "
+            "(its .git/config, a file it includes, or its worktree config) sets "
+            "%s, which a fetch would execute. The fetch runs with your "
+            "environment but never with a repository-configured command (#2041). "
+            "Remedy: keep the setting per-repository from your GLOBAL config with "
+            "an [includeIf \"gitdir:%s/\"] section (which the fetch honours), or "
+            "move it there outright with `git config --global <key> <value>`; "
+            "then remove it here (`git config --unset <key>`; "
+            "`git config --show-origin --get <key>` shows which file carries it) "
+            "and re-run." % (", ".join(transport), _main_worktree(listing_out, repo)))
+
     fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
     # THE ONE CALL WITH THE OPERATOR'S ENVIRONMENT (#2012), because a private
     # repository's PR head is only fetchable through their credential helper,
@@ -863,10 +962,18 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # and the same empty hooks directory every `safe_git` launch pins -- a fetch
     # writes a ref, and `reference-transaction` fires from the target's
     # `core.hooksPath` on it (measured). Nothing else here is exempt.
+    # `--no-recurse-submodules` because `fetch.recurseSubmodules` DEFAULTS to
+    # on-demand: when the fetched commits move a populated submodule's gitlink,
+    # git fetches inside the submodule and reads `.git/modules/<name>/config` --
+    # a file under the same `.git` this refusal treats as attacker-written, and
+    # one no read of the SUPERPROJECT's config can see (measured on this
+    # refspec: the submodule's own transport command ran). Acquisition needs one
+    # commit object, and `worktree add --detach` initialises no submodule, so
+    # nothing legitimate is lost (#2041 I2).
     _run(["git", "-C", repo,
           "-c", "core.fsmonitor=false",
           "-c", "core.hooksPath=" + safe_git.no_hooks_path(),
-          "fetch", "--no-write-fetch-head", "origin",
+          "fetch", "--no-recurse-submodules", "--no-write-fetch-head", _PR_REMOTE,
           "refs/pull/%d/head:%s" % (pr_number, fetch_ref)])
     head_sha = _safe(repo, ["rev-parse", fetch_ref]).strip()
     try:

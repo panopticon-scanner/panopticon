@@ -773,6 +773,13 @@ class TestDiffAnchors(unittest.TestCase):
         self.assertIsNotNone(anchors["delta_end"])
 
 
+# What a real `config --null --list --show-scope --includes` always carries: the
+# one `local`-scoped record every repository has. The stand-in runners below
+# answer the acquisition's config read with it so the #2041 fail-closed check
+# (an empty listing refuses) does not fire on a fixture that runs no git.
+_REPO_SCOPE_LISTING = "local\0core.repositoryformatversion\n0\0"
+
+
 class TestPrWorktree(unittest.TestCase):
     def test_acquire_reads_base_and_adds_worktree(self):
         # `acquire_pr` calls `_sync_config` on BOTH paths (#1681), and that
@@ -790,6 +797,8 @@ class TestPrWorktree(unittest.TestCase):
             out = ""
             if argv[:3] == ["gh", "pr", "view"]:
                 out = '{"baseRefName": "main"}'
+            elif "--show-scope" in argv:
+                out = _REPO_SCOPE_LISTING
             elif "fetch" in argv:
                 fetched_ref.append(argv[-1].split(":", 1)[1])
             elif "rev-parse" in argv:
@@ -823,6 +832,8 @@ class TestPrWorktree(unittest.TestCase):
             out = ""
             if argv[:3] == ["gh", "pr", "view"]:
                 out = '{"baseRefName": "main"}'
+            elif "--show-scope" in argv:
+                out = _REPO_SCOPE_LISTING
             elif "worktree" in argv and "list" in argv:
                 # Real `git worktree list` (no --porcelain) format:
                 # "<path>  <sha> [<branch>]" / "(detached HEAD)". Only
@@ -944,6 +955,8 @@ class TestPrWorktree(unittest.TestCase):
             out = ""
             if argv[:3] == ["gh", "pr", "view"]:
                 out = '{"baseRefName": "main"}'
+            elif "--show-scope" in argv:
+                out = _REPO_SCOPE_LISTING
             elif "rev-parse" in argv:
                 out = "deadbeef\n"
             class R: returncode = 0; stdout = out; stderr = ""
@@ -1038,6 +1051,8 @@ class TestPrWorktree(unittest.TestCase):
                 out = ""
                 if argv[:3] == ["gh", "pr", "view"]:
                     out = '{"baseRefName": "main"}'
+                elif "--show-scope" in argv:
+                    out = _REPO_SCOPE_LISTING
                 elif "rev-parse" in argv:
                     out = "deadbeef\n"
                 class R: returncode = 0; stdout = out; stderr = ""
@@ -1075,6 +1090,14 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         committed bytes, so `payload.txt` reads `SMUDGED` rather than what the
         PR actually committed. A review of the replaced bytes reviews the
         filter's output, not the PR.
+
+    A fourth vector is the fetch's own, and it is REFUSED rather than confined
+    (#2041, owner ruling "refuse with remedy"): the fetch keeps the operator's
+    environment, so a repo-local `core.sshCommand` or `remote.<name>.uploadpack`
+    still runs on it under both of the pins it carries (measured in #2012's
+    review). Acquisition reads the checkout's LOCAL config immediately before
+    the fetch and refuses, naming the key and the remedy -- move the setting to
+    the global config, which the fetch still honours.
     """
 
     MARKERS = ("hook-ran", "ref-hook-ran", "smudge-ran")
@@ -1171,11 +1194,21 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         for name in self.MARKERS:            # after the cleanup, which re-fires
             os.remove(self._marker(base, name))
 
-    def _runner(self):
-        """`gh pr view` answered here; every git call is the real thing."""
+    def _runner(self, global_config=None):
+        """`gh pr view` answered here; every git call is the real thing.
+
+        `global_config` (#2041) points the calls that keep the OPERATOR's
+        environment at a throwaway `GIT_CONFIG_GLOBAL`, so the refusal's remedy
+        can be proved without writing a `remote.origin.uploadpack` into the
+        test HOME every other test in this process shares. It reaches the fetch
+        and nothing else: every confined call passes its own `env=`, which this
+        never overrides.
+        """
         def runner(argv, **kwargs):
             if list(argv[:3]) == ["gh", "pr", "view"]:
                 return subprocess.CompletedProcess(argv, 0, '{"baseRefName": "main"}', "")
+            if global_config is not None and "env" not in kwargs:
+                kwargs["env"] = dict(os.environ, GIT_CONFIG_GLOBAL=global_config)
             return subprocess.run(argv, **kwargs)
         return runner
 
@@ -1239,6 +1272,331 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         self.assertEqual(len(listing), 2, listing)
         self.assertTrue(any(line.split()[:1] == [wt] for line in listing), listing)
         for name in self.MARKERS:
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code on the resume path" % name)
+        with contextlib.redirect_stderr(io.StringIO()):
+            diff_map.release_worktree(wt, repo=clone, runner=self._runner())
+        self.assertFalse(os.path.exists(wt))
+
+
+    # --- #2041: the fetch refuses a transport command setting ----------------
+    TRANSPORT_MARKER = "transport-ran"
+
+    def _refusing_command(self, base):
+        """A transport command that records that it ran, and then FAILS.
+
+        Failing is the point: a command that succeeded would let the fetch
+        continue, and the test could not tell "never ran" from "ran and did no
+        harm". The marker is the evidence in both directions.
+        """
+        path = os.path.join(base, "transport.sh")
+        self._write(path, "#!/bin/sh\nprintf hit > %s\nexit 1\n"
+                    % shlex.quote(self._marker(base, self.TRANSPORT_MARKER)), 0o755)
+        return path
+
+    def _prove_the_transport_command_runs(self, base, clone):
+        """Vacuity guard: plain git, carrying the fetch's OWN pins, runs it.
+
+        Both pins applied, because those are exactly what the shipped fetch
+        carries -- the marker appearing under them is why #2041 is a residual of
+        #2012 rather than something its pins already closed.
+        """
+        marker = self._marker(base, self.TRANSPORT_MARKER)
+        proc = subprocess.run(
+            ["git", "-C", clone, "-c", "core.fsmonitor=false",
+             "-c", "core.hooksPath=" + diff_map.safe_git.no_hooks_path(),
+             "fetch", "--no-write-fetch-head", "origin",
+             "refs/pull/7/head:refs/panopticon/live"],
+            capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(proc.returncode, 0, proc.stderr)
+        self.assertTrue(os.path.exists(marker),
+                        "fixture is inert: the fetch never ran the transport command")
+        os.remove(marker)
+        self.assertEqual(self._read(clone, "for-each-ref", "--format=%(refname)",
+                                    "refs/panopticon/"), "",
+                         "the proof fetch left a ref behind")
+
+    def _assert_refused_naming(self, key, base, clone, wt):
+        """`acquire_pr` refuses, names `key` and the remedy, and ran nothing."""
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(RuntimeError) as caught:
+                diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        # What it DID first: a refusal that still fetched would also raise.
+        for name in (*self.MARKERS, self.TRANSPORT_MARKER):
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the refused acquisition ran code" % name)
+        self.assertFalse(os.path.exists(wt), "a refused acquisition built a worktree")
+        self.assertEqual(self._read(clone, "for-each-ref", "--format=%(refname)",
+                                    "refs/panopticon/"), "",
+                         "a refused acquisition fetched a ref")
+        message = str(caught.exception)
+        self.assertIn("refusing to fetch", message)
+        self.assertIn(key, message)
+        self.assertIn("git config --global", message)
+        self.assertIn("git config --unset", message)
+        # #2041 I3: `--unset` exits 5 and changes nothing for a key that arrived
+        # through `include.path`, and `--global` is wrong for the operator whose
+        # reason for the setting is that it is per-repository (a deploy key), so
+        # the message also names the shape that keeps it per-repository from the
+        # global file, and the command that finds which file carries the key.
+        # The path as `git worktree list` prints the MAIN worktree (review 2):
+        # git matches `gitdir:` against `$GIT_DIR`, which a linked worktree's
+        # own path never is, and the listing resolves symlinks (`/private/var`
+        # here) where `abspath` would not.
+        main_path = self._read(clone, "worktree", "list").splitlines()[0].split()[0]
+        self.assertIn('includeIf "gitdir:%s/"' % main_path, message)
+        self.assertIn("git config --show-origin --get", message)
+        # The KEY, never the VALUE: these are command lines (#2013's rule).
+        self.assertNotIn("transport.sh", message)
+
+    def test_a_repo_local_ssh_command_refuses_the_fetch_with_a_remedy(self):
+        """(a) The measured shape: `core.sshCommand` on an `ssh://` remote."""
+        base, clone, _pr_sha = self._fixture()
+        _git(clone, "remote", "set-url", "origin", "ssh://git@example.invalid/x.git")
+        _git(clone, "config", "core.sshCommand", self._refusing_command(base))
+        self._prove_the_transport_command_runs(base, clone)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        # Lowercased section and variable: the case `config --list` prints.
+        self._assert_refused_naming("core.sshcommand", base, clone, wt)
+
+    def test_the_remedy_names_the_main_worktree_when_pr_runs_in_a_linked_one(self):
+        """#2041 review 2: git matches `includeIf "gitdir:"` against `$GIT_DIR`,
+        which for a linked worktree is `<main>/.git/worktrees/<name>`, so a
+        pattern built from the linked checkout's own path matches nothing and
+        an operator who followed it would lose the setting on the fetch. The
+        message names the MAIN worktree, from either side."""
+        base, clone, _pr_sha = self._fixture()
+        _git(clone, "config", "remote.origin.uploadpack", self._refusing_command(base))
+        linked = os.path.join(os.path.dirname(clone), "linked")
+        _git(clone, "worktree", "add", "--detach", linked, "HEAD")
+        main_path = self._read(linked, "worktree", "list").splitlines()[0].split()[0]
+        self.assertNotEqual(os.path.realpath(main_path), os.path.realpath(linked))
+        for repo in (clone, linked):
+            wt = diff_map._worktree_dir(repo, 7)
+            self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(RuntimeError) as caught:
+                    diff_map.acquire_pr(7, repo=repo, runner=self._runner())
+            self.assertIn('[includeIf "gitdir:%s/"]' % main_path, str(caught.exception))
+
+    def test_a_repo_local_uploadpack_refuses_the_fetch_with_a_remedy(self):
+        """(b) The other measured shape: `remote.<name>.uploadpack`, which the
+        local-path origin this fixture already clones from runs LOCALLY."""
+        base, clone, _pr_sha = self._fixture()
+        _git(clone, "config", "remote.origin.uploadpack", self._refusing_command(base))
+        self._prove_the_transport_command_runs(base, clone)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        self._assert_refused_naming("remote.origin.uploadpack", base, clone, wt)
+
+    def test_the_remedy_the_refusal_names_actually_works(self):
+        """(c) The SAME key in the operator's GLOBAL config is honoured.
+
+        What this proves is that the REMEDY is reachable: the refusal tells the
+        operator to keep the setting from their own global config, so
+        acquisition has to succeed with it there -- and on this local-path origin
+        the moved `uploadpack` really does run (it execs the real
+        `git upload-pack`), so the fetch is otherwise unchanged and the operator
+        has not simply been disarmed.
+
+        It does NOT prove the read's scope, and cannot (#2041 M1): every
+        `safe_git` launch pins `GIT_CONFIG_GLOBAL=/dev/null`, so a global value
+        is invisible to the read under any scope flag.
+        `test_the_config_read_covers_every_scope_the_fetch_reads` is the guard
+        on the spelling.
+        """
+        base, clone, pr_sha = self._fixture()
+        marker = self._marker(base, self.TRANSPORT_MARKER)
+        script = os.path.join(base, "global-uploadpack.sh")
+        self._write(script, '#!/bin/sh\nprintf hit > %s\nexec git upload-pack "$@"\n'
+                    % shlex.quote(marker), 0o755)
+        operator_config = os.path.join(base, "operator-gitconfig")
+        self._write(operator_config,
+                    '[remote "origin"]\n\tuploadpack = "%s"\n' % script)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            info = diff_map.acquire_pr(7, repo=clone,
+                                       runner=self._runner(global_config=operator_config))
+        self.assertEqual(info["head_sha"], pr_sha)
+        self.assertTrue(os.path.isdir(wt))
+        self.assertTrue(os.path.exists(marker),
+                        "the operator's own global config was not honoured by the fetch")
+        for name in self.MARKERS:
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code during acquisition" % name)
+
+    def _write_worktree_config(self, clone, text):
+        """`$GIT_DIR/config.worktree` for the main worktree of `clone`."""
+        with open(os.path.join(clone, ".git", "config.worktree"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_a_worktree_scoped_transport_setting_refuses_the_fetch(self):
+        """C1: the same key, moved into `$GIT_DIR/config.worktree`.
+
+        `extensions.worktreeConfig = true` in `.git/config` makes git read that
+        second file, and the fetch obeys it -- both files are written with the
+        one capability the threat model already grants (a `.git/config` written
+        by something hostile), so a read that cannot see it is bypassable by the
+        attacker it exists for.
+        """
+        base, clone, _pr_sha = self._fixture()
+        _git(clone, "config", "extensions.worktreeConfig", "true")
+        self._write_worktree_config(
+            clone, '[remote "origin"]\n\tuploadpack = "%s"\n'
+            % self._refusing_command(base))
+        self._prove_the_transport_command_runs(base, clone)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        self._assert_refused_naming("remote.origin.uploadpack", base, clone, wt)
+
+    def test_a_local_transport_setting_still_refuses_with_worktree_config_on(self):
+        """The mirror of C1, and why the read is scope-FILTERED, not `--worktree`.
+
+        Measured on git 2.50.1: with `extensions.worktreeConfig` ON,
+        `git config --list --worktree --includes` lists the worktree file ALONE
+        -- the `.git/config` keys are not in it. A read scoped that way would
+        stop seeing the ordinary repo-local key, so the attacker would only have
+        to enable the extension, leave `config.worktree` empty, and keep the
+        payload exactly where it already was.
+        """
+        base, clone, _pr_sha = self._fixture()
+        _git(clone, "config", "extensions.worktreeConfig", "true")
+        self._write_worktree_config(clone, "")
+        _git(clone, "config", "remote.origin.uploadpack", self._refusing_command(base))
+        self._prove_the_transport_command_runs(base, clone)
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        self._assert_refused_naming("remote.origin.uploadpack", base, clone, wt)
+
+    def test_acquisition_still_works_in_a_checkout_that_has_another_worktree(self):
+        """No transport key, a second worktree, no `worktreeConfig`: acquire.
+
+        Measured on git 2.50.1: `git config --list --worktree --includes` DIES
+        there (`rc=128`, "cannot be used with multiple working trees unless the
+        config extension worktreeConfig is enabled"). That is an ordinary
+        operator setup -- this project's own -- so a read spelled with that flag
+        would turn every `--pr` run in such a checkout into a refusal to
+        resolve the review root.
+        """
+        base, clone, pr_sha = self._fixture()
+        _git(clone, "worktree", "add", "-q", "--detach",
+             os.path.join(base, "operator-wt"), "HEAD")
+        for name in self.MARKERS:      # the operator's own add fires their hook
+            if os.path.exists(self._marker(base, name)):
+                os.remove(self._marker(base, name))
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            info = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        self.assertEqual(info["head_sha"], pr_sha)
+        self.assertTrue(os.path.isdir(wt))
+        for name in (*self.MARKERS, self.TRANSPORT_MARKER):
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code during acquisition" % name)
+
+    def test_the_config_read_covers_every_scope_the_fetch_reads(self):
+        """The read's spelling, from the argv (#2041 M1).
+
+        The behaviour tests cannot see a flag, and both obvious spellings are
+        wrong: `--local` cannot see `$GIT_DIR/config.worktree` (C1) and
+        `--worktree` hides `.git/config` when the extension is on and DIES in a
+        checkout that has a second worktree (both measured). So the read is
+        pinned here: one scope-labelled listing, includes followed, no scope
+        flag at all.
+        """
+        base, clone, _pr_sha = self._fixture()
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        seen = []
+        real = self._runner()
+
+        def recording(argv, **kwargs):
+            seen.append(list(argv))
+            return real(argv, **kwargs)
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            diff_map.acquire_pr(7, repo=clone, runner=recording)
+        scoped = [argv for argv in seen if "--show-scope" in argv]
+        self.assertEqual(len(scoped), 1, seen)
+        self.assertEqual(scoped[0][-5:], ["config", "--null", "--list",
+                                         "--show-scope", "--includes"])
+        self.assertEqual(scoped[0][1:3], ["-C", clone])
+        for flag in ("--local", "--worktree", "--global", "--system"):
+            self.assertNotIn(flag, scoped[0])
+
+    def test_a_config_listing_without_repository_scope_refuses_before_the_fetch(self):
+        """Fail closed when the scope-labelled listing parses to nothing (#2041).
+
+        `repository_settings` keeps only `local`/`worktree` records; a git
+        whose `--show-scope` output changed shape would parse to `{}` and the
+        refusal would pass silently. The SHAPE is the tell -- an empty listing,
+        or a scope label git never prints -- not any one key: a repository with
+        no `[core]` section fetches fine (review 2). The stand-in
+        runner answers the listing with an empty, successful result and every
+        other call for real; the fetch must never be reached.
+        """
+        base, clone, _pr_sha = self._fixture()
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        seen = []
+        real = self._runner()
+
+        def blanked(argv, **kwargs):
+            seen.append(list(argv))
+            if "--show-scope" in argv:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return real(argv, **kwargs)
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(RuntimeError) as caught:
+                diff_map.acquire_pr(7, repo=clone, runner=blanked)
+        self.assertIn("refusing to fetch", str(caught.exception))
+        self.assertIn("scope-labelled", str(caught.exception))
+        self.assertFalse([argv for argv in seen if "fetch" in argv], seen)
+        self.assertFalse(os.path.exists(wt))
+
+    def test_a_transport_setting_that_was_emptied_is_not_refused(self):
+        """(d) The classifier tests VALUES: an emptied key executes nothing.
+
+        Non-vacuous by construction -- the same key, set, refuses first.
+        """
+        base, clone, pr_sha = self._fixture()
+        _git(clone, "config", "core.sshCommand", self._refusing_command(base))
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(RuntimeError):
+                diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        _git(clone, "config", "core.sshCommand", "")
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            info = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        self.assertEqual(info["head_sha"], pr_sha)
+        self.assertTrue(os.path.isdir(wt))
+        for name in (*self.MARKERS, self.TRANSPORT_MARKER):
+            self.assertFalse(os.path.exists(self._marker(base, name)),
+                             "%s: the target ran code during acquisition" % name)
+
+    def test_the_reuse_path_does_not_refuse_because_it_does_not_fetch(self):
+        """(e) A resume performs no fetch, so there is nothing to refuse.
+
+        Refusing here would strand a resumable run over a setting that cannot
+        be reached on this path: the worktree is already built and pinned, and
+        the two calls the reuse path makes are confined probes.
+        """
+        base, clone, pr_sha = self._fixture()
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            first = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        _git(clone, "config", "core.sshCommand", self._refusing_command(base))
+        with contextlib.redirect_stderr(io.StringIO()):
+            second = diff_map.acquire_pr(7, repo=clone, runner=self._runner())
+        self.assertEqual(first, second)
+        self.assertEqual(second["head_sha"], pr_sha)
+        for name in (*self.MARKERS, self.TRANSPORT_MARKER):
             self.assertFalse(os.path.exists(self._marker(base, name)),
                              "%s: the target ran code on the resume path" % name)
         with contextlib.redirect_stderr(io.StringIO()):

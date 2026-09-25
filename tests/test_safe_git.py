@@ -663,3 +663,153 @@ def test_the_public_hooks_path_is_the_one_every_launch_pins(tmp_path):
     # thing to keep empty.
     assert safe_git.no_hooks_path() == safe_git._no_hooks_path()
     assert os.listdir(safe_git.no_hooks_path()) == []
+
+
+# #2041: the keys a FETCH executes, or can be made to execute, from the
+# checkout's own config -- the one call that keeps the operator's environment.
+# `credential.<url>.helper` carries a URL, whose dots make it a multi-part
+# subsection; `protocol.allow`/`protocol.ext.allow` are what unlock an `ext::`
+# helper a repo-local `remote.<name>.url` can name -- and only those two:
+# `protocol.file.allow` is the documented local-submodule setting and runs
+# nothing.
+TRANSPORT_KEYS = ("core.sshcommand", "core.gitproxy", "core.askpass",
+                  "remote.origin.uploadpack",
+                  "remote.origin.vcs", "credential.helper",
+                  "credential.https://example.com.helper", "protocol.allow",
+                  "protocol.ext.allow")
+# `core.askPass` names a program git EXECUTES for a credential prompt, and it
+# is repo-local settable (measured on a 401 http remote with the fetch's own two
+# pins: the script ran).
+#
+# Neighbours in the same sections that run nothing: a URL, a refspec, a key
+# whose variable merely starts the same way, a username, a number -- and a key
+# for a remote THIS fetch never names (#2041 M3: the fetch argv names `origin`
+# and nothing else, so `remote.upstream.*` is the operator's business).
+NOT_TRANSPORT_KEYS = ("remote.origin.url", "remote.origin.fetch", "core.sshcommandx",
+                      "credential.username", "protocol.version",
+                      "protocol.file.allow", "protocol.https.allow",
+                      "remote.upstream.uploadpack", "remote.upstream.vcs")
+REMOTE = "origin"                      # the remote `diff_map`'s fetch names
+
+
+def test_every_transport_command_key_is_refused_and_its_neighbours_are_not():
+    for key in TRANSPORT_KEYS:
+        assert safe_git._is_transport_command_setting(key, REMOTE), key
+        assert safe_git.transport_command_keys({key: "cmd"}, REMOTE) == [key], key
+    for key in NOT_TRANSPORT_KEYS:
+        assert not safe_git._is_transport_command_setting(key, REMOTE), key
+        assert safe_git.transport_command_keys({key: "value"}, REMOTE) == [], key
+
+
+def test_transport_command_keys_are_sorted_and_only_the_set_values_count():
+    """Sorted, like every other list this module hands out, so the refusal
+    message is stable; a key set and then EMPTIED (`git config core.sshCommand
+    ""`) executes nothing and is not refused (#2041)."""
+    settings = {"remote.origin.uploadpack": "up.sh", "core.sshcommand": "ssh.sh",
+                "core.gitproxy": "", "remote.origin.url": "git@example.invalid:x"}
+    assert safe_git.transport_command_keys(settings, REMOTE) == [
+        "core.sshcommand", "remote.origin.uploadpack"]
+    assert safe_git.transport_command_keys({"core.sshcommand": ""}, REMOTE) == []
+
+
+def test_a_protocol_allow_of_never_is_hardening_and_does_not_refuse():
+    """#2041 M3: `protocol.*` is a PERMISSION, not a command line, and `never`
+    is the value that LOCKS `ext::` down -- refusing on it would refuse the
+    operator who closed the hole. `always` and `user` both let git proceed, and
+    a value git will die on (its parse is case-sensitive) is a configuration
+    error rather than a lock, so it stays refused."""
+    for key in ("protocol.allow", "protocol.ext.allow"):
+        assert safe_git.transport_command_keys({key: "never"}, REMOTE) == [], key
+        for value in ("always", "user", "Never"):
+            assert safe_git.transport_command_keys({key: value}, REMOTE) == [key], (
+                key, value)
+    # Not a protocol key: `never` is just a command line git would run.
+    assert safe_git.transport_command_keys({"core.sshcommand": "never"}, REMOTE) == [
+        "core.sshcommand"]
+
+
+def test_a_transport_key_normalizes_the_way_git_compares_it():
+    """Section and variable case-insensitively, the SUBSECTION case-sensitively
+    -- `_canonical_key`'s semantics, because that is what git does. The key is
+    reported exactly as the config read printed it."""
+    assert safe_git._is_transport_command_setting("Core.sshCommand", REMOTE)
+    assert safe_git._is_transport_command_setting("REMOTE.origin.UPLOADPACK", REMOTE)
+    # `[remote "Origin"]` is a DIFFERENT remote to git, and the fetch names
+    # `origin`, so it is not a key this fetch would execute.
+    assert not safe_git._is_transport_command_setting("remote.Origin.uploadpack", REMOTE)
+    assert safe_git._is_transport_command_setting("remote.Origin.uploadpack", "Origin")
+    assert safe_git.transport_command_keys({"remote.origin.uploadpack": "up.sh"},
+                                          REMOTE) == ["remote.origin.uploadpack"]
+
+
+def test_a_transport_key_is_refused_never_emptied():
+    """These are NOT suppressible (#2041 owner ruling: refuse with a remedy).
+
+    The probe empties `filter.*`/`diff.*` commands on every launch, but the
+    fetch runs with the operator's environment and `core.sshCommand` is
+    legitimately how a private repository is reached -- emptying it would break
+    the case the fetch exemption exists for, so the refusal is the answer and
+    the remedy is the operator's own global config.
+    """
+    for key in TRANSPORT_KEYS:
+        assert not safe_git._is_command_setting(key), key
+        assert not safe_git._is_suppressible(key), key
+    assert safe_git._driver_keys({key: "cmd" for key in TRANSPORT_KEYS}) == []
+
+
+def _scoped(*records):
+    """`config --null --list --show-scope` output: (scope, key, value) triples."""
+    return "".join("%s\0%s\n%s\0" % triple for triple in records)
+
+
+def test_repository_settings_keeps_only_the_repositorys_own_scopes():
+    """#2041 C1: `local` (its `.git/config` and every file that includes into
+    it) and `worktree` (`$GIT_DIR/config.worktree`) are the repository's; the
+    operator's `global`/`system` -- the remedy the refusal points at -- and this
+    probe's own `command` pins are not."""
+    stdout = _scoped(
+        ("local", "core.sshcommand", "/repo/ssh.sh"),
+        ("worktree", "remote.origin.uploadpack", "/repo/up.sh"),
+        ("global", "core.sshcommand", "/home/me/ssh.sh"),
+        ("system", "credential.helper", "osxkeychain"),
+        ("command", "core.hookspath", "/tmp/none"),
+        ("unknown", "credential.helper", "osxkeychain"))
+    assert safe_git.repository_settings(stdout) == {
+        "core.sshcommand": "/repo/ssh.sh",
+        "remote.origin.uploadpack": "/repo/up.sh"}
+
+
+def test_repository_settings_survives_newline_values_and_a_ragged_tail():
+    """The pairing is positional over NUL-terminated records, so a value
+    containing a NEWLINE cannot shift it (that is why `--null` is passed), and
+    a later scope wins for the same key, as git's own precedence does."""
+    stdout = _scoped(("local", "core.sshcommand", "ssh\nsecond line"),
+                     ("worktree", "core.sshcommand", "wins"))
+    assert safe_git.repository_settings(stdout) == {"core.sshcommand": "wins"}
+    # A valueless key (`[extensions]\n\tworktreeConfig`) prints with no value and
+    # reads as empty, which `transport_command_keys` treats as "runs nothing".
+    assert safe_git.repository_settings("local\0core.sshcommand\0") == {
+        "core.sshcommand": ""}
+    # A record with no partner is dropped rather than guessed at. A scope whose
+    # key arrived but whose trailing NUL did not is indistinguishable from a
+    # valueless key, and reads as one -- empty, so it refuses nothing, and a
+    # read truncated that way failed its rc in `_safe` first.
+    assert safe_git.repository_settings(
+        _scoped(("local", "core.gitproxy", "proxy.sh")) + "local") == {
+            "core.gitproxy": "proxy.sh"}
+
+
+def test_repository_settings_fails_closed_on_a_listing_that_is_not_scope_labelled():
+    """#2041 review 2: the caller's refusal keys off this parse, so a listing
+    that is empty or carries a label git never prints must RAISE, not read as
+    "nothing set" -- that is the one fail-open a changed `--show-scope` output
+    shape could introduce. Every label git does print is accepted."""
+    with pytest.raises(ValueError, match="empty"):
+        safe_git.repository_settings("")
+    with pytest.raises(ValueError, match="not scope-labelled"):
+        safe_git.repository_settings("core.sshcommand\n/x\0local\0")
+    with pytest.raises(ValueError, match="not scope-labelled"):
+        safe_git.repository_settings(_scoped(("local", "a.b", "1"), ("garbage", "c.d", "2")))
+    every_label = _scoped(*[(label, "x.%s" % label, "v") for label in
+                            ("system", "global", "local", "worktree", "command", "unknown")])
+    assert safe_git.repository_settings(every_label) == {"x.local": "v", "x.worktree": "v"}

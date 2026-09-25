@@ -243,9 +243,17 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
             "`worktree list` and `rev-parse` to `safe_git.probe`, "
             "`worktree add --detach` and `update-ref -d` to `safe_git.mutate`. "
             "`test_the_only_bare_git_argv_left_in_acquire_pr_is_the_fetch` "
-            "holds this exemption to its own words. Residual #2041: the fetch still "
-            "honours the checkout's own `core.sshCommand` and "
-            "`remote.<name>.uploadpack`, operator config never PR content",
+            "holds this exemption to its own words, and "
+            "`test_the_fetch_does_not_recurse_into_submodules` holds the flag "
+            "that keeps a SUBMODULE's own config out of it. #2041: the fetch "
+            "REFUSES, with a remedy, when this checkout's own config -- its "
+            "`.git/config`, a file it includes, or its worktree config -- sets a "
+            "transport command key (`core.sshCommand`, `core.askPass`, "
+            "`remote.origin.uploadpack` and their class) that a fetch of the one "
+            "remote it names would execute -- and refuses outright on a config "
+            "listing that lacks git's scope-labelled shape -- so what this "
+            "exemption keeps is the operator's ENVIRONMENT and not a command the "
+            "repository configured",
     }
 
     def _bare_git_argv(self, name):
@@ -305,6 +313,20 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
         # And the two pins that survive the operator's environment are on it.
         self.assertIn("core.fsmonitor=false", found[0][1])
         self.assertIn("core.hooksPath", found[0][1])
+
+    def test_the_fetch_does_not_recurse_into_submodules(self):
+        # #2041 I2: `fetch.recurseSubmodules` DEFAULTS to on-demand, so a fetch
+        # that moves a populated submodule's gitlink fetches inside the
+        # submodule -- reading `.git/modules/<name>/config`, a file under the
+        # same `.git` the threat model treats as attacker-written and one that
+        # NO read of the superproject's config can see. Measured on git 2.50.1
+        # with this function's own refspec shape: the submodule's
+        # `core.sshCommand` ran; with the flag below it did not. Read from the
+        # AST, like its neighbour, so the flag cannot be dropped silently.
+        found = [(lineno, source) for function, lineno, source
+                 in self._bare_git_argv("diff_map.py") if function == "acquire_pr"]
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("--no-recurse-submodules", found[0][1])
 
 
 
