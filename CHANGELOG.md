@@ -2,6 +2,12 @@
 
 ## Unreleased — 5.2 Claude first-class host (#1344, family PR)
 
+- **The guide now says where the second witness is spent (#1759, AGT-1456823651 /
+  AGT-381210818).** A REJECTED advisor verdict was always settled by one advisor — the
+  adversarial backup round is summoned only for primary-CONFIRMED findings in categories at or
+  above `score_gate.BACKUP_FLOOR`, and the tool axis has no backup round at all — but the
+  evidence chapter never stated the asymmetry or why it is deliberate. It does now, beside the
+  sentence that says rejected claims keep their full advisor prose in `discarded_claims`.
 The Claude family's first-class-host PR under `docs/FAMILY-PR-GUARDRAILS.md`:
 Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
