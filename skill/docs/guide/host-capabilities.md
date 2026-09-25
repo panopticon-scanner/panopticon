@@ -40,7 +40,17 @@ that binds a different model, or none, is `refuted` — *registration silently w
 deliberately does not. One claude behaviour change follows from this (R-F4-1): an **unenforced**
 claude dispatch used to inherit the calling session's model and now names the role's profile model
 instead; an **enforced** dispatch is unchanged, since the shell it dispatches into already binds
-that model. `read_scope_confined` is probed by `read-guard-armed` (#1344 plan 5): the host arms the
+that model. An unenforced claude dispatch also carries an explicit tool deny-list on its argv now
+(#1753, `runners/claude.UNENFORCED_DENIED_TOOLS` as one `--disallowedTools=` token, since the flag
+is variadic and would otherwise eat the prompt): with no registered shell there is no host-enforced
+`tools:` grant, and `--setting-sources user` deliberately keeps the operator's own user-scope
+`permissions.allow` rules, so a `Bash(*)` convenience rule would otherwise reach a reviewer that
+reads hostile content — deny beats allow, which is the point. The residual is a tool name the list
+has not heard of that the operator has allowed at user scope; MCP tools are not part of it, since
+the same argv passes `--strict-mcp-config` with no `--mcp-config`. An **enforced** dispatch needs
+none of it: its shell's `tools:` frontmatter is an allow-list, and an allow-list also closes the
+names nobody has thought of yet. `read_scope_confined` is probed by `read-guard-armed` (#1344 plan
+5): the host arms the
 read guard in a sandbox, binds three fake subagents through fake transcripts — two in the Agent-tool
 layout, one in the Workflow-tool layout the shipped dispatch workflow relies on — and drives sixteen
 payloads through it — an in-scope Read allowed, an outside Read denied, Grep of an in-scope file

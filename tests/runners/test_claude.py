@@ -112,6 +112,78 @@ class TestCommand(unittest.TestCase):
         self.assertNotIn("--max-budget-usd", cmd)
         self.assertFalse(hasattr(self.r, "per_entry_budget_usd"))
 
+    def test_an_unenforced_launch_carries_the_tool_deny_list(self):
+        # #1753 (AGT-4053314873): the `--model` launch binds no shell, so
+        # nothing but the CLI's own permission model stands between the
+        # reviewer and a tool -- and `--setting-sources user` KEEPS the
+        # operator's user-scope `permissions.allow`, where a `Bash(*)`
+        # convenience rule is common. Deny rules beat allow rules, so the
+        # deny-list on the argv is what closes it.
+        cmd = self.r.command(_entry(False), "/run/host-settings.json", max_turns=40)
+        flags = [a for a in cmd if a.startswith("--disallowedTools")]
+        self.assertEqual(flags, [claude_runner.DENY_FLAG % ",".join(
+            claude_runner.UNENFORCED_DENIED_TOOLS)])
+        self.assertTrue(claude_runner.UNENFORCED_DENIED_TOOLS)
+        self.assertLess(cmd.index(flags[0]), len(cmd) - 1)   # before the prompt, never after it
+        self.assertEqual(cmd[-1], _entry(False)["prompt"])
+
+    def test_the_deny_list_is_one_argv_token_because_the_flag_is_variadic(self):
+        # MEASURED on claude 2.1.276, and the whole reason for the `=` form:
+        # `--disallowedTools` is VARIADIC, so the space form eats every
+        # following non-flag token -- including the prompt, which is the last
+        # argv here. `claude -p --output-format json --max-turns 2
+        # --disallowedTools Bash "<prompt>"` exits 1 with no envelope and
+        # "Error: Input must be provided either through stdin or as a prompt
+        # argument when using --print"; so does the comma form as a SECOND
+        # token. `--disallowedTools=Bash,Glob "<prompt>"` runs, and the
+        # reviewer answers "I have Read available; Bash and Glob are not in my
+        # current tool set." One token cannot swallow anything, wherever it
+        # sits. This is the `--json-schema` shape lesson (#1731) again: the
+        # `--help` probe reads a flag's NAME and cannot see its arity.
+        cmd = self.r.command(_entry(False), "/s.json", max_turns=40)
+        self.assertNotIn("--disallowedTools", cmd)          # never the bare, variadic form
+        self.assertEqual(claude_runner.DENY_FLAG, "--disallowedTools=%s")
+        for name in claude_runner.UNENFORCED_DENIED_TOOLS:
+            with self.subTest(tool=name):
+                self.assertNotIn(name, cmd)                 # not a token of its own, either
+
+    def test_a_launch_that_binds_neither_agent_nor_model_still_carries_it(self):
+        # The model-less fall-through is an unenforced launch too: no `--agent`
+        # means no host-enforced `tools:` grant, whether or not a model was
+        # bound. The deny-list covers every argv without `--agent`.
+        cmd = self.r.command(_entry(False, model=None), "/s.json", max_turns=40)
+        self.assertNotIn("--agent", cmd)
+        self.assertTrue([a for a in cmd if a.startswith("--disallowedTools")])
+
+    def test_an_enforced_launch_argv_is_unchanged_and_carries_no_deny_list(self):
+        # The enforced argv is MEASURED behaviour (the 2026-09-18 note in
+        # `command`'s docstring) and its shell's `tools:` frontmatter is the
+        # control: adding flags here would move an argv that is already proven,
+        # for no gain. Pinned whole, not just by absence.
+        cmd = self.r.command(_entry(True), "/run/host-settings.json", max_turns=40)
+        self.assertEqual([a for a in cmd if a.startswith("--disallowedTools")], [])
+        self.assertEqual(cmd, ["claude", "-p", "--settings", "/run/host-settings.json",
+                               "--setting-sources", "user", "--strict-mcp-config",
+                               "--disable-slash-commands", "--output-format", "json",
+                               "--no-session-persistence", "--max-turns", "40",
+                               "--agent", "panopticon-domain-panel",
+                               _entry(True)["prompt"]])
+
+    def test_the_deny_list_never_takes_the_reviewers_own_tools(self):
+        # A guard against a well-meant edit: `Read`/`Grep`/`Glob` ARE the
+        # review, and the write-capable roles self-write their `out_file` with
+        # `Write` under the write-guard hook. Denying any of those four here
+        # would make every unenforced entry fail while reading like hardening.
+        denied = claude_runner.UNENFORCED_DENIED_TOOLS
+        self.assertIsInstance(denied, tuple)
+        for needed in ("Read", "Grep", "Glob", "Write"):
+            with self.subTest(tool=needed):
+                self.assertNotIn(needed, denied)
+        for closed in ("Bash", "Agent"):
+            with self.subTest(tool=closed):
+                self.assertIn(closed, denied)
+        self.assertEqual(len(denied), len(set(denied)))
+
 
 class TestEnvelope(unittest.TestCase):
     def test_a_success_envelope_becomes_an_ok_result(self):

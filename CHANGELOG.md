@@ -7,6 +7,30 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **An unenforced claude launch now denies the tools a reviewer must not hold
+  (#1753, AGT-4053314873).** An `--agent` launch lands in a registered shell
+  whose `tools:` frontmatter the host enforces; the `--model` fall-through
+  binds no shell, and `--setting-sources user` deliberately keeps the
+  OPERATOR's user-scope `permissions.allow` — so a `Bash(*)` convenience rule
+  in the operator's own settings reached a reviewer whose job is reading
+  hostile content. That argv now carries
+  `runners/claude.UNENFORCED_DENIED_TOOLS` — 24 names, grouped by what each
+  would hand a reviewer: code execution, delegation, egress and off-machine
+  publication, the write tools no reviewer role is granted, and the two
+  read tools its `Read|Grep|Glob` matcher never sees — and deny rules beat
+  allow rules, which is the point. **Measured on 2.1.276, and the reason for
+  the `=` form:** `--disallowedTools` is VARIADIC, so the space form eats every
+  following non-flag token including the prompt — `claude -p --output-format
+  json --max-turns 2 --disallowedTools Bash "<prompt>"` exits 1 with no
+  envelope and "Input must be provided either through stdin or as a prompt
+  argument" — while `--disallowedTools=Bash,Glob "<prompt>"` runs and the
+  reviewer reports "I have Read available; Bash and Glob are not in my current
+  tool set". One token cannot swallow a neighbour, wherever it is placed. The
+  ENFORCED argv is byte-identical to before: it is measured behaviour and its
+  shell is already the control. **Residual:** a tool name this list has not
+  heard of that the operator has allowed at user scope — a CLI upgrade is how
+  one arrives. MCP tools are not part of it, since the same argv passes
+  `--strict-mcp-config` with no `--mcp-config`.
 - **`driver setup` refuses an unenforceable setup-scan (#1737, AGT-B1D).** The
   one dispatch that reads the whole untrusted tree was the only role with no
   registered shell: its tool grant was whatever the host hands a
