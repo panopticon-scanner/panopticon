@@ -8,8 +8,8 @@ guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
 - **A batch record names its MACHINE, and one record can be discarded without
-  the run (#1912).** The owner stamp `driver loop` recovers a crashed batch from
-  carried the pid and `socket.gethostname()`, and a hostname is not a machine
+  the run (#1912).** The owner stamp that `driver loop` recovers a crashed batch
+  from carried the pid and `socket.gethostname()`, and a hostname is not a machine
   identity: on macOS the same laptop answers `mac.local`, `mac.lan` or a
   DHCP-assigned name depending on the network it woke up on, so a crash and the
   resume after it saw two different names — the resume read its own record as

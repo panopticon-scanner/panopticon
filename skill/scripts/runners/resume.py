@@ -27,9 +27,12 @@ import sys
 # `--max-turns`) because a copy-pasted resume that silently dropped them would
 # run unbounded, which is the opposite of what an operator watching a quota
 # outage wants. `--reset` is the one flag never carried: it would discard the
-# very run this line exists to resume. `--host`, `--mode` and the review root
-# are emitted ahead of the table, from the values the LOOP resolved rather
-# than from whatever the operator did or did not type.
+# very run this line exists to resume. `--discard-batch` (#1912) is absent for
+# the neighbouring reason -- it is an acceptance of ONE record's loss, and that
+# record is unlinked by the time this line is printed, so carrying it would end
+# the next invocation on a record that is not there. `--host`, `--mode` and the
+# review root are emitted ahead of the table, from the values the LOOP resolved
+# rather than from whatever the operator did or did not type.
 _RESUME_FLAGS = (
     ("security", "--security", "value"),
     ("fail_on", "--fail-on", "value"),
