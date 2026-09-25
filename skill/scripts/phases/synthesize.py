@@ -143,9 +143,15 @@ def synthesize_execute(review_root, manifest):
     os.makedirs(verdicts_dir, exist_ok=True)   # empty in P3 (verify is a no-op)
     report = runio._report_out(review_root)   # §5.1: durable, top-level, tag-named
     flags = manifest.get("flags") or {}
+    # Keep the operator's original target for PR scans: review_root can be a
+    # temporary worktree with a different name. abspath normalizes trailing
+    # separators and dot paths without probing the target or exposing its path.
+    target_path = manifest.get("target") or review_root
+    target_name = os.path.basename(os.path.abspath(target_path)) or os.path.sep
     cmd = [sys.executable, runio._script("synthesize.py"),
            "--out", report,
            "--groups", runio._pano(review_root, "groups.json"),
+           "--target=" + target_name,  # = keeps leading '-' in the value
            "--security", manifest.get("security_mode", "standard"),
            "--run-id", manifest.get("run_id") or "",   # §5.1: X0X report provenance
            "--verdicts-dir", verdicts_dir]
