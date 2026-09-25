@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import glob
 import json
 import os
+import sys
 
 from . import plan as plan_mod
 
@@ -120,6 +121,15 @@ def driver_cost_counts(pano_dir, verdicts_dir, tools_produced):
         with open(plan_path, encoding="utf-8") as fh:
             entries = json.load(fh)
     except (OSError, ValueError):   # tolerant: a corrupt plan counts 0 cells
+        entries = []
+    # DAT-3713947858: the plan is target-writable (the agentic path globs the
+    # run folder out of the SCANNED repository), and "tolerant" above covered
+    # only the PARSE -- every scalar document then raised TypeError on the
+    # iteration below. Pin the type at the read, announced, the way
+    # plan_contract.driver_plan_issues and plan.load_dispatch_plans already do.
+    if not isinstance(entries, list):
+        print("synthesize: %s is not a JSON array; counting 0 review cells"
+              % os.path.basename(plan_path), file=sys.stderr)
         entries = []
     review_cells = sum(1 for e in entries
                        if isinstance(e, dict) and e.get("domain"))

@@ -164,10 +164,22 @@ def out_of_scope_findings(findings_paths, plan):
                 data = json.load(fh)
         except (OSError, ValueError):
             continue
-        for f in (data.get("findings") or [] if isinstance(data, dict) else []):
-            if isinstance(f, dict):
-                f = findings_mod.agent_finding(f, path)
-            loc = (f.get("location") or {}) if isinstance(f, dict) else {}
+        # DAT-1553408299: this is the SECOND read of files the canonical loader
+        # (findings.load_findings_detailed) has already read -- and it used to
+        # skip that loader's shape repair, so a string/list `location` raised
+        # AttributeError and a non-list `findings` raised TypeError out of
+        # PlanInputs.load, losing a whole report over one mistyped row. Reuse
+        # the one repair (`normalize_finding`, which pins `location` to a dict
+        # and drops it when it names no file) so the two readers of the same
+        # files cannot drift apart again.
+        raws = data.get("findings") if isinstance(data, dict) else None
+        if not isinstance(raws, list):
+            continue
+        for raw in raws:
+            if not isinstance(raw, dict):
+                continue
+            f = findings_mod.normalize_finding(findings_mod.agent_finding(raw, path))
+            loc = f.get("location") or {}
             fpath = evidence_mod.norm_path(loc.get("file"))
             if not fpath:
                 continue

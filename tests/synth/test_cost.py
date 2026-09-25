@@ -243,6 +243,45 @@ class TestCostLedgerDriver(unittest.TestCase):
         phases = {row["phase"] for row in r["meta"]["cost"]["dispatches"]}
         self.assertTrue({"review", "tools"} <= phases)
 
+class TestDriverPlanShapeTolerance(unittest.TestCase):
+    """DAT-3713947858 (#1812): `dispatch-plan-driver.json` is a run artifact,
+    and on the agentic path the run folder is globbed out of the SCANNED
+    repository -- a hostile target can pre-commit one. The reader states its own
+    contract in a comment ("tolerant: a corrupt plan counts 0 cells") and then
+    iterated the parsed document unchecked, so every scalar JSON value raised an
+    uncaught TypeError out of CostInputs.load and ended a paid-for run."""
+
+    NON_ARRAYS = ("5", "true", "null", "1.5", '"text"', '{"a": 1}')
+
+    def _counts(self, raw):
+        with tempfile.TemporaryDirectory() as d:
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            with open(os.path.join(pano, plan_mod.DRIVER_DISPATCH_PLAN),
+                      "w", encoding="utf-8") as fh:
+                fh.write(raw)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                counts = cost_mod.driver_cost_counts(
+                    pano, os.path.join(pano, "verdicts"), None)
+            return counts, err.getvalue()
+
+    def test_a_non_array_plan_counts_no_cells_and_says_so(self):
+        for raw in self.NON_ARRAYS:
+            with self.subTest(plan=raw):
+                counts, err = self._counts(raw)
+                self.assertEqual(counts["review_cells"], 0)
+                # announced, not swallowed: a plan that did not say what it
+                # meant is a fact about the run (one line, naming the file).
+                self.assertEqual(err.count("\n"), 1, err)
+                self.assertIn(plan_mod.DRIVER_DISPATCH_PLAN, err)
+                self.assertIn("not a JSON array", err)
+
+    def test_an_array_plan_still_counts_its_cells(self):
+        counts, err = self._counts('[{"domain": "SEC"}]')
+        self.assertEqual(counts["review_cells"], 1)
+        self.assertEqual(err, "")
+
 class CostLoaderTest(unittest.TestCase):
     def test_cost_inputs_load_resolves_under_run_dir(self):
         with tempfile.TemporaryDirectory() as d:

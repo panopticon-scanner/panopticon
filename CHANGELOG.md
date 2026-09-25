@@ -7,6 +7,21 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Synthesis no longer aborts when a run artifact is malformed in a way three of its readers did not
+  cover (#1811, #1812 — DAT-2808086775, DAT-3713947858, DAT-1553408299).** `coverage-*.json`,
+  `dispatch-plan-driver.json` and the agent findings files are all read back out of the run folder,
+  which on the agentic path is globbed out of the SCANNED repository — and each of the three readers
+  stated a "tolerant: never abort a run" contract its guards were narrower than. A deeply nested
+  coverage file raised `RecursionError` (a `RuntimeError`, so outside `except (OSError, ValueError)`)
+  and nothing bounded the read at all; a scalar dispatch plan (`5`, `true`, `null`, `1.5`) raised
+  `TypeError` on the iteration that counts review cells; and the out-of-scope counter re-read the
+  findings files WITHOUT the shape repair the canonical loader applies, so one mistyped `location` (a
+  string, a list, a number) or a non-list `findings` raised out of `PlanInputs.load`. That second read
+  now goes through `normalize_finding`, the same repair, so the two readers of the same files cannot
+  drift apart again. **Operator-visible:** a report that used to be lost after every dispatch had
+  already been paid for is produced instead — with the coverage file skipped and NAMED on stderr
+  (bounded to 1 MiB, and over that skipped without being parsed at all), the plan counted as 0 review
+  cells and said so, and an unusable finding row costing nothing but itself.
 - **`--max-budget-usd` is re-read after every entry, not once per checkpoint (#1760,
   AGT-4265600920).** The cap was compared with the ledger exactly once per loop iteration, at the
   top and ahead of arming — and a checkpoint is ONE batch, so a whole review round (every pending

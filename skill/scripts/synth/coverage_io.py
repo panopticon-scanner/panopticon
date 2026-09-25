@@ -25,6 +25,12 @@ import sys
 
 import scripts.groups_schema as groups_schema
 
+# DAT-2808086775: a target-writable artifact gets a bounded read, the shape
+# `tools/pip_audit.py` already uses for pyproject.toml. A coverage record is a
+# handful of group names and domain codes; 1 MiB is orders of magnitude more
+# than the phase ever writes, and past it the file is not a coverage record.
+_MAX_COVERAGE_BYTES = 1 << 20
+
 
 def _strings(value):
     """The strings in `value`, accepting a lone string as the one-element list
@@ -75,16 +81,33 @@ def load_coverage_files(panopticon_dir=".panopticon"):
     (phases.coverage.coverage_execute's output) for audit_floor_cells. Tolerant:
     unreadable/malformed/non-dict files are skipped, never raise -- these are
     the same run artifacts groups.json/scout-*.json are read as elsewhere, and
-    each record is normalized by `normalized_cell` at the read."""
+    each record is normalized by `normalized_cell` at the read.
+
+    DAT-2808086775: "never raise" was narrower than the catch. `json.load`
+    raises RecursionError (a RuntimeError, not a ValueError) on a deeply nested
+    document and MemoryError on a huge one, and both escaped this loop into
+    PlanInputs.load -- ending the run after every dispatch had been paid for.
+    The read is bounded BEFORE the parser sees the file, the catch covers both
+    escapes, and each skip is announced, because `normalized_cell` announces
+    every repair and a file dropped whole is the louder fact."""
     out = []
     for path in sorted(glob.glob(os.path.join(panopticon_dir, "coverage-*.json"))):
+        name = os.path.basename(path)
         try:
+            size = os.stat(path).st_size
+            if size > _MAX_COVERAGE_BYTES:
+                print("synthesize: coverage: %s: %d bytes is over the %d-byte read "
+                      "limit; skipping it unparsed"
+                      % (name, size, _MAX_COVERAGE_BYTES), file=sys.stderr)
+                continue
             with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError, MemoryError) as exc:
+            print("synthesize: coverage: %s: could not be read (%s: %s); "
+                  "skipping it" % (name, type(exc).__name__, exc), file=sys.stderr)
             continue
         if isinstance(data, dict):
-            out.append(normalized_cell(data, path=os.path.basename(path)))
+            out.append(normalized_cell(data, path=name))
     return out
 
 

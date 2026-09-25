@@ -7,6 +7,7 @@ import os
 import json
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.synthesize as syn
 import scripts.ingest_tools as ingest_tools
@@ -51,6 +52,52 @@ class TestFloorCellAudit(unittest.TestCase):
             present={"Auth": {"SEC"}},
         )  # only SEC ran; DAT excluded
         self.assertEqual(cells["missing_floor"], [])
+
+class TestCoverageReadIsBounded(unittest.TestCase):
+    """DAT-2808086775 (#1811): `.panopticon/coverage-*.json` is globbed out of
+    the run folder, which on the agentic path is the SCANNED repository -- a
+    hostile target can pre-commit one, and `load_coverage_files` promises
+    "unreadable/malformed/non-dict files are skipped, never raise".
+    `except (OSError, ValueError)` does not cover RecursionError (a
+    RuntimeError) from a deeply nested document, nor MemoryError from a huge
+    one, so both escaped PlanInputs.load and ended a paid-for run; nothing
+    bounded the read at all."""
+
+    def test_a_deeply_nested_file_is_skipped_and_announced(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "coverage-Core.json"), "w", encoding="utf-8") as fh:
+                json.dump({"group": "Core", "floor": ["SEC"]}, fh)
+            # NOT json.dumps: this is the shape a target writes, not one the
+            # encoder would survive building.
+            with open(os.path.join(d, "coverage-Deep.json"), "w", encoding="utf-8") as fh:
+                fh.write("[" * 200000 + "]" * 200000)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                cells = coverage_io.load_coverage_files(d)
+        self.assertEqual([c.get("group") for c in cells], ["Core"])
+        # announced, like every other repair this module makes: one line, the
+        # bad file named, the good one not mentioned.
+        self.assertEqual(err.getvalue().count("\n"), 1, err.getvalue())
+        self.assertIn("coverage-Deep.json", err.getvalue())
+        self.assertNotIn("coverage-Core.json", err.getvalue())
+
+    def test_an_oversize_file_is_skipped_without_being_parsed(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "coverage-Huge.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                # valid JSON, and over the read limit: the point is that the
+                # bound is checked BEFORE the parser ever sees it.
+                fh.write('{"group": "Huge", "pad": "%s"}'
+                         % ("x" * (coverage_io._MAX_COVERAGE_BYTES + 1)))
+            self.assertGreater(os.stat(path).st_size, coverage_io._MAX_COVERAGE_BYTES)
+            err = io.StringIO()
+            with mock.patch.object(coverage_io.json, "load") as load:
+                with contextlib.redirect_stderr(err):
+                    cells = coverage_io.load_coverage_files(d)
+            load.assert_not_called()
+        self.assertEqual(cells, [])
+        self.assertEqual(err.getvalue().count("\n"), 1, err.getvalue())
+        self.assertIn("coverage-Huge.json", err.getvalue())
 
 class TestPresentCells(unittest.TestCase):
     """present_cells: derives {group: set(domains)} from findings-<group>-
@@ -314,6 +361,63 @@ class TestOutOfScope(unittest.TestCase):
             res = plan_mod.out_of_scope_findings([fp], plan)
         self.assertEqual(res["checked"], 0)
         self.assertEqual(res["count"], 0)
+
+class TestOutOfScopeShapeTolerance(unittest.TestCase):
+    """DAT-1553408299 (#1812): this counter RE-READS the agent findings files
+    the canonical loader has already read, without the shape repair that loader
+    applies (`load_findings_detailed` -> `normalize_finding`), so a string or
+    list `location` raised AttributeError and a numeric `findings` raised
+    TypeError out of PlanInputs.load -- losing the whole report over one row a
+    reviewer (or the scanned repository) mistyped. The fix is to reuse the one
+    repair, so the two readers of the same files cannot drift again."""
+
+    PLAN = [{"group": "g1", "files": ["a.py"], "out_file": "x"}]
+
+    def _res(self, payload):
+        with tempfile.TemporaryDirectory() as d:
+            fp = os.path.join(d, "findings-g1-code-panel_review.json")
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                return plan_mod.out_of_scope_findings([fp], self.PLAN)
+
+    def test_a_mistyped_location_counts_nothing_and_does_not_raise(self):
+        # a location that is not an object identifies no file, so it is not a
+        # finding this check can place in or out of a lane -- it must not be
+        # counted, and it must not raise.
+        for loc in ("a.py", ["a.py"], 7, 1.5, True, None):
+            with self.subTest(location=loc):
+                res = self._res({"findings": [{"id": "A-1", "location": loc}]})
+                self.assertEqual((res["checked"], res["count"]), (0, 0))
+                self.assertEqual(res["examples"], [])
+
+    def test_a_mistyped_findings_value_is_never_iterated(self):
+        for value in (7, 1.5, True, "oops", {"a": 1}):
+            with self.subTest(findings=value):
+                res = self._res({"findings": value})
+                self.assertEqual((res["checked"], res["count"]), (0, 0))
+
+    def test_every_other_field_mistyped_still_places_the_file(self):
+        # the shared repair runs on this path now, so the REST of the row's
+        # types are this reader's problem too: an unhashable `id`/`domain` must
+        # not become a raise where the old code simply never looked at them.
+        res = self._res({"findings": [{"id": {"a": 1}, "domain": {"x": 1},
+                                       "code": ["a"], "severity": [1],
+                                       "confidence": {}, "title": None,
+                                       "location": {"file": "z.py"}}]})
+        self.assertEqual((res["checked"], res["count"]), (1, 1))
+
+    def test_a_good_row_beside_a_malformed_one_is_still_counted(self):
+        # a bad row must not cost the good rows in the same file.
+        res = self._res({"findings": [
+            {"id": "A-1", "location": "z.py"},             # mistyped: uncountable
+            "not a finding at all",                        # not an object at all
+            {"id": "A-2", "location": {"file": "z.py"}},   # outside g1's lane
+            {"id": "A-3", "location": {"file": "a.py"}},   # inside it
+        ]})
+        self.assertEqual(res["checked"], 2)
+        self.assertEqual(res["count"], 1)
+        self.assertEqual(res["examples"], [{"group": "g1", "file": "z.py"}])
 
 class PlanLoadersTest(unittest.TestCase):
     """WS-0 S3: the plan.py readers main() used to inline."""
