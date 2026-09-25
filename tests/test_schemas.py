@@ -1,21 +1,22 @@
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 
 try:
-    from jsonschema import validate, ValidationError
+    from jsonschema import ValidationError, validate
 except ImportError:
     validate = None
-    ValidationError = Exception
+    ValidationError = None
+
+from _test_helpers import skip_or_fail
 
 import scripts.tools.pip_audit as pa
 import scripts.tools.npm_audit as na
 import scripts.tools.osv_scanner as osv
 import scripts.tools.eslint_security as es
-
-if validate is None:
-    raise unittest.SkipTest("jsonschema not installed")
 
 REF = os.path.join(os.path.dirname(__file__), os.pardir, "skill", "reference")
 
@@ -23,6 +24,11 @@ REF = os.path.join(os.path.dirname(__file__), os.pardir, "skill", "reference")
 def _load(name):
     with open(os.path.join(REF, name), encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def _require_jsonschema(test_case):
+    if validate is None:
+        skip_or_fail(test_case, "jsonschema not installed")
 
 
 class TestSchemas(unittest.TestCase):
@@ -88,6 +94,7 @@ class TestSchemas(unittest.TestCase):
         self.assertLessEqual({"domain_panel", "domain_advisor"}, set(src["enum"]))
 
     def test_findings_envelope_accepts_legacy_panel_review(self):
+        _require_jsonschema(self)
         # Legacy panel_review / lens_sweep envelope still validates.
         schema = _load("findings-envelope-schema.json")
         finding = {
@@ -104,6 +111,7 @@ class TestSchemas(unittest.TestCase):
         validate(instance=envelope, schema=schema)  # must not raise
 
     def test_findings_envelope_accepts_domain_panel(self):
+        _require_jsonschema(self)
         # #5.0-05 / #1099: a conformant matrix cell (domain_panel source_role +
         # the REQUIRED _panopticon block) must validate against the shipped envelope.
         schema = _load("findings-envelope-schema.json")
@@ -124,6 +132,7 @@ class TestSchemas(unittest.TestCase):
         validate(instance=envelope, schema=schema)  # must not raise
 
     def test_findings_envelope_rejects_domain_panel_without_required(self):
+        _require_jsonschema(self)
         # #1099: domain_panel findings must carry domain/code/source_role.
         schema = _load("findings-envelope-schema.json")
         bad = {
@@ -138,6 +147,7 @@ class TestSchemas(unittest.TestCase):
             validate(instance=bad, schema=schema)
 
     def test_findings_envelope_rejects_missing_panopticon_block(self):
+        _require_jsonschema(self)
         # #1099: the _panopticon block is REQUIRED by the envelope schema.
         schema = _load("findings-envelope-schema.json")
         bad = {
@@ -150,6 +160,7 @@ class TestSchemas(unittest.TestCase):
             validate(instance=bad, schema=schema)
 
     def test_findings_envelope_accepts_domain_advisor(self):
+        _require_jsonschema(self)
         schema = _load("findings-envelope-schema.json")
         finding = {
             "domain": "SEC", "code": "SEC-ADV-001", "severity": "MEDIUM",
@@ -166,6 +177,7 @@ class TestSchemas(unittest.TestCase):
         validate(instance=envelope, schema=schema)  # must not raise
 
     def test_advisor_verdict_schema_accepts_schema_version(self):
+        _require_jsonschema(self)
         schema = _load("advisor-verdict-schema.json")
         verdict = {
             "finding_id": "SEC-001",
@@ -225,6 +237,7 @@ class TestAdapterFindingsValidateAgainstSchema(unittest.TestCase):
         return finding
 
     def _validate(self, finding):
+        _require_jsonschema(self)
         finding = self._add_evidence_if_missing(finding)
         validate(instance=finding, schema=self._finding_schema())
 
@@ -405,6 +418,22 @@ class TestMultiModelFields(unittest.TestCase):
 
 
 class TestEslintSecurityAdapter(unittest.TestCase):
+    def test_parse_security_diagnostic_without_schema_validation(self):
+        sample = json.dumps([{
+            "filePath": "/src/app.js",
+            "messages": [{
+                "ruleId": "security/detect-eval-with-expression",
+                "severity": 2, "line": 10, "message": "eval with expression",
+            }],
+        }]).encode()
+        parsed = es.EslintSecurityAdapter().parse(sample, "g1")
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["title"], "eval with expression")
+        self.assertEqual(parsed[0]["location"],
+                         {"file": "app.js", "line_start": 10})
+        self.assertEqual(parsed[0]["tool_evidence"]["rule_id"],
+                         "security/detect-eval-with-expression")
+
     def test_is_applicable_walks_tree_exactly_once_without_package_json(self):
         # QAL-D1A: applicable_files() and is_applicable() used to duplicate the
         # JS/TS tree walk. When no package.json fast-path applies, is_applicable()
@@ -421,6 +450,76 @@ class TestEslintSecurityAdapter(unittest.TestCase):
             with mock.patch("os.walk", fake_walk):
                 self.assertFalse(adapter.is_applicable(d))
         self.assertEqual(len(walk_calls), 1)
+
+
+class TestMissingJsonschemaContract(unittest.TestCase):
+    def test_blocked_import_keeps_independent_tests_and_gates_validation(self):
+        # A fresh process blocks the import without touching installed packages
+        # or changing the operator's environment. Run the same three cases in
+        # ordinary and strict integration modes.
+        probe = """
+import builtins
+import json
+import sys
+import unittest
+
+real_import = builtins.__import__
+def block_jsonschema(name, *args, **kwargs):
+    if name == "jsonschema" or name.startswith("jsonschema."):
+        raise ImportError("isolated jsonschema absence probe")
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = block_jsonschema
+sys.path.insert(0, sys.argv[1])
+import test_schemas
+
+names = (
+    "TestSchemas.test_report_schema_shape",
+    "TestEslintSecurityAdapter.test_parse_security_diagnostic_without_schema_validation",
+    "TestSchemas.test_findings_envelope_rejects_domain_panel_without_required",
+)
+suite = unittest.TestSuite(
+    unittest.defaultTestLoader.loadTestsFromName("test_schemas." + name)
+    for name in names
+)
+result = unittest.TestResult()
+suite.run(result)
+print(json.dumps({
+    "run": result.testsRun,
+    "failures": [(case.id(), trace) for case, trace in result.failures],
+    "errors": [(case.id(), trace) for case, trace in result.errors],
+    "skipped": [(case.id(), reason) for case, reason in result.skipped],
+}))
+"""
+        for strict in (False, True):
+            with self.subTest(strict=strict):
+                env = dict(os.environ)
+                if strict:
+                    env["PANOPTICON_REQUIRE_INTEGRATION"] = "1"
+                else:
+                    env.pop("PANOPTICON_REQUIRE_INTEGRATION", None)
+                proc = subprocess.run(
+                    [sys.executable, "-c", probe, os.path.dirname(__file__)],
+                    env=env, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                outcome = json.loads(proc.stdout)
+                self.assertEqual(outcome["run"], 3)
+                self.assertEqual(outcome["errors"], [])
+                validation_id = (
+                    "test_schemas.TestSchemas."
+                    "test_findings_envelope_rejects_domain_panel_without_required"
+                )
+                if strict:
+                    self.assertEqual(outcome["skipped"], [])
+                    self.assertEqual(len(outcome["failures"]), 1)
+                    self.assertEqual(outcome["failures"][0][0], validation_id)
+                    self.assertIn("PANOPTICON_REQUIRE_INTEGRATION=1",
+                                  outcome["failures"][0][1])
+                    self.assertIn("jsonschema not installed", outcome["failures"][0][1])
+                else:
+                    self.assertEqual(outcome["failures"], [])
+                    self.assertEqual(outcome["skipped"],
+                                     [[validation_id, "jsonschema not installed"]])
 
 
 if __name__ == "__main__":

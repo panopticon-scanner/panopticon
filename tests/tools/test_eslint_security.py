@@ -374,11 +374,10 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         # copy in the scanned target's node_modules. Importing by ABSOLUTE path
         # in the flat config makes plugin resolution independent of cwd/NODE_PATH,
         # so nothing the target ships can shadow it.
-        with mock.patch("os.path.isfile",
-                        side_effect=lambda p: p.startswith("/usr/local/lib/node_modules")):
+        global_entry = "/usr/local/lib/node_modules/eslint-plugin-security/index.js"
+        with mock.patch("os.path.isfile", side_effect=lambda p: p == global_entry):
             entry = es._plugin_entry()
-        self.assertEqual(
-            entry, "/usr/local/lib/node_modules/eslint-plugin-security/index.js")
+        self.assertEqual(entry, global_entry)
         self.assertTrue(os.path.isabs(entry))
 
     def test_the_image_local_node_tree_wins_over_the_global_dirs(self):
@@ -388,14 +387,23 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         # against a committed lockfile, in its own prefix. The adapter has to
         # look THERE first. The two global dirs stay after it so an older
         # published image, which a pinned digest can still pull, keeps working.
-        present = ("/opt/panopticon-node/node_modules",
-                   "/usr/local/lib/node_modules")
+        present = {"/opt/panopticon-node/node_modules/eslint-plugin-security/index.js",
+                   "/usr/local/lib/node_modules/eslint-plugin-security/index.js"}
         with mock.patch("os.path.isfile",
-                        side_effect=lambda p: p.startswith(present)):
+                        side_effect=lambda p: p in present):
             entry = es._plugin_entry()
         self.assertEqual(
             "/opt/panopticon-node/node_modules/eslint-plugin-security/index.js",
             entry)
+
+    def test_the_second_global_dir_is_used_when_earlier_entries_are_absent(self):
+        last = "/usr/lib/node_modules/eslint-plugin-security/index.js"
+        with mock.patch("os.path.isfile", side_effect=lambda path: path == last):
+            self.assertEqual(es._plugin_entry(), last)
+
+    def test_no_installed_plugin_returns_the_bare_entry(self):
+        with mock.patch("os.path.isfile", return_value=False):
+            self.assertEqual(es._plugin_entry(), "eslint-plugin-security/index.js")
 
     def test_the_adapter_and_the_dockerfile_name_the_same_prefix(self):
         # Two files have to agree on one path and neither imports the other, so

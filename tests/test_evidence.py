@@ -159,7 +159,7 @@ class TestToolReported(unittest.TestCase):
             ev.derive_evidence(f, {"verdict": "CONFIRMED"})["status"],
             "advisor_confirmed")
 
-    def test_status_is_in_schema_enum(self):
+    def test_status_schema_enum_matches_code(self):
         # Anchor on __file__, not the cwd: a bare relative path assumes the
         # suite runs from the repo root and breaks from anywhere else.
         schema_path = os.path.join(os.path.dirname(__file__), os.pardir,
@@ -170,7 +170,8 @@ class TestToolReported(unittest.TestCase):
             schema["properties"]["findings"]["items"]["properties"]["evidence"]
             ["properties"]["status"]["enum"]
         )
-        self.assertIn("tool_reported", status_enum)
+        self.assertEqual(set(status_enum), set(ev.EVIDENCE_STATUSES))
+        self.assertEqual(len(status_enum), len(ev.EVIDENCE_STATUSES))
 
 
 class TestFingerprintMoved(unittest.TestCase):

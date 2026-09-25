@@ -26,6 +26,7 @@ import hashlib
 import functools
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -34,6 +35,13 @@ import tempfile
 import time
 
 from sanitize import defang, scrub
+
+# Match the standalone CLI bootstrap in open_pin_pr.py; anchor on this
+# checkout so invoking triage from an unrelated cwd still finds the owner.
+_SKILL_SCRIPTS = Path(__file__).resolve().parents[1] / "skill" / "scripts"
+if str(_SKILL_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SKILL_SCRIPTS))
+from repo_config import LEGACY_CONFIG_JSON  # noqa: E402
 
 LEDGER = ".panopticon/triage-ledger.jsonl"
 MILESTONE = "Remediation 1"
@@ -262,7 +270,7 @@ RATE_HINTS = ("rate limit", "secondary rate", "abuse detection",
               "was submitted too quickly")
 
 
-CONFIG_PATH = os.path.join(".panopticon", "config.json")
+CONFIG_PATH = LEGACY_CONFIG_JSON
 
 
 # #1650 / SEC-D1B (CWE-427). The `gh` invoked from this module performs
@@ -317,7 +325,7 @@ def gh_bin(home=None):
 
 
 def declared_gh_config_dir(config_path=None):
-    """.panopticon/config.json's `gh_config_dir`, or None when it declares none.
+    """Legacy configuration's `gh_config_dir`, or None when it declares none.
 
     #486: the DECLARED account, so every gh subprocess the tools spawn uses it
     instead of whatever ambient credential the shell happens to carry (the

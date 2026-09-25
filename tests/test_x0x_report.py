@@ -1,4 +1,6 @@
 import json
+import contextlib
+import io
 import os
 import unittest
 
@@ -78,6 +80,22 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual(
             only(x0x.build_candidates([f]), "candidate")["domain"], "ZZZ")
 
+    def test_off_roster_code_prefix_is_clamped_and_reported(self):
+        f = _f("BOG-X0X", None, "LOW", "missing rule", "a.py", fid="gap-1")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            candidate = only(x0x.build_candidates([f]), "candidate")
+        self.assertEqual(candidate["domain"], "ZZZ")
+        self.assertEqual(err.getvalue(),
+                         "x0x: gap-1: domain 'BOG' is not an OCRDb domain; "
+                         "filing the candidate under ZZZ\n")
+
+    def test_valid_roster_domain_is_retained_without_diagnostic(self):
+        f = _f("SEC-X0X", "sec", "LOW", "missing rule", "a.py", fid="gap-2")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            candidate = only(x0x.build_candidates([f]), "candidate")
+        self.assertEqual(candidate["domain"], "SEC")
+        self.assertEqual(err.getvalue(), "")
+
     def test_build_report_shape_and_required_fields(self):
         meta = {"version": "5.0.1", "ocrdb_version": "0.3.1",
                 "target": "/repo", "timestamp": "2026-08-18T00:00:00Z"}
@@ -134,5 +152,3 @@ class TestTheDomainRosterMatchesTheSchema(unittest.TestCase):
             schema = json.load(fh)
         enum = schema["properties"]["candidates"]["items"]["properties"]["domain"]["enum"]
         self.assertEqual(sorted(enum), sorted(ocrdb.DOMAIN_TO_PANEL))
-
-

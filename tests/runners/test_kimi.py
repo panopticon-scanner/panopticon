@@ -569,6 +569,36 @@ class TestHomeLocation(unittest.TestCase):
             self.assertTrue(os.path.basename(r.kimi_home).startswith("panopticon-kimi-"))
             self.assertTrue(os.path.isfile(os.path.join(r.kimi_home, "config.toml")))
 
+    def test_xdg_runtime_home_is_admitted_and_cleanup_spares_outside_sibling(self):
+        with _narrowed_temp_root() as (root, outside):
+            xdg = os.path.join(root, "xdg-runtime")
+            reviewed = os.path.join(root, "reviewed")
+            os.mkdir(xdg)
+            os.mkdir(reviewed)
+            sibling = os.path.join(outside, "panopticon-kimi-PLANTED")
+            os.mkdir(sibling)
+            marker = os.path.join(sibling, "keep-me")
+            with open(marker, "w", encoding="utf-8") as fh:
+                fh.write("outside")
+            fixture = _fixture_home(reviewed)
+            # _narrowed_temp_root clears XDG on entry; install it inside the
+            # context so both allocation and the teardown bound see it.
+            with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": xdg,
+                                               "KIMI_CODE_HOME": fixture}):
+                r = kimi_runner.Runner("kimi", runner=lambda *args, **kwargs: None)
+                try:
+                    r.prepare(os.path.join(reviewed, "run"), review_root=reviewed)
+                    home = r.kimi_home
+                    self.assertEqual(os.path.dirname(home), xdg)
+                    self.assertIn(os.path.realpath(xdg), kimi_home._temp_roots())
+                    self.assertTrue(kimi_home.is_temp_home(home))
+                    self.assertFalse(kimi_home.is_temp_home(sibling))
+                    r.teardown("complete")
+                    self.assertFalse(os.path.exists(home))
+                    self.assertTrue(os.path.isfile(marker))
+                finally:
+                    r.teardown("complete")
+
     def test_the_run_dir_keeps_only_a_pointer_file(self):
         with tempfile.TemporaryDirectory() as d:
             r = self._prepare(d)
