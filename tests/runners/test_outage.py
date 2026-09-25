@@ -1,12 +1,14 @@
 """`runners/outage.py`: whose failure was that, and what the loop does about a
 batch of them (#1623)."""
 import time
+import shlex
 import unittest
 from unittest import mock
 
 import scripts.runners.base as base
 import scripts.runners.outage as outage
 import scripts.runners.resume as resume
+import scripts.driver as driver
 
 
 class TestTheHostOutageClassifier(unittest.TestCase):
@@ -702,6 +704,88 @@ class TestTheFailureTally(unittest.TestCase):
         args = self._args()
         args.reset = True
         self.assertNotIn("--reset", outage.FailureTally("claude", args).resume_command())
+
+    def test_zero_budget_survives_resume(self):
+        args = self._args(max_budget_usd=0)
+        with mock.patch.object(resume.sys, "argv", ["/opt/panopticon/driver.py"]):
+            argv = shlex.split(outage.FailureTally("claude", args).resume_command())
+        self.assertEqual(argv[-2:], ["--max-budget-usd", "0"])
+        self.assertEqual(driver.build_parser().parse_args(argv[2:]).max_budget_usd, 0)
+
+    def test_resume_argv_preserves_every_set_contract_flag_and_parser_accepts_it(self):
+        args = self._args(target="/tmp/repo with space", pr=17, base="ignored base",
+                          setup=True, mode="headless", security="redteam",
+                          fail_on="high", severity="all", gate_scope="on-diff",
+                          diff_context=0, tools=True, no_tools=False, online=True,
+                          include_fixtures=True, allow_unenforced=True,
+                          session_dir="/tmp/session 'quoted'; $(echo nope)",
+                          max_per_group=8, max_verify=3,
+                          scope_group="Team 'Q'; $(echo nope)",
+                          concurrency=2, max_iterations=4, max_budget_usd=0,
+                          max_turns=5, entry_timeout=90, max_groups=6,
+                          reset=True)
+        installed = "/opt/Panopticon Skill/driver.py"
+        with mock.patch.object(resume.sys, "argv", [installed, "loop"]):
+            command = outage.FailureTally("codex", args).resume_command()
+        expected = ["python3", installed, "loop", "/tmp/repo with space",
+                    "--pr", "17", "--setup", "--host", "codex", "--mode", "headless",
+                    "--security", "redteam", "--fail-on", "high", "--severity", "all",
+                    "--gate-scope", "on-diff", "--diff-context", "0", "--tools",
+                    "--online",
+                    "--include-fixtures", "--allow-unenforced", "--session-dir",
+                    "/tmp/session 'quoted'; $(echo nope)", "--max-per-group", "8",
+                    "--max-verify", "3", "-g", "Team 'Q'; $(echo nope)",
+                    "--concurrency", "2", "--max-iterations", "4",
+                    "--max-budget-usd", "0", "--max-turns", "5",
+                    "--entry-timeout", "90", "--max-groups", "6"]
+        argv = shlex.split(command)
+        self.assertEqual(argv, expected)
+        parsed = driver.build_parser().parse_args(argv[2:])
+        self.assertEqual(parsed.target, "/tmp/repo with space")
+        self.assertEqual(parsed.pr, 17)
+        self.assertEqual(parsed.scope_group, "Team 'Q'; $(echo nope)")
+        self.assertEqual(parsed.max_budget_usd, 0)
+        self.assertTrue(parsed.setup)
+        self.assertTrue(parsed.tools)
+        self.assertTrue(parsed.online)
+        self.assertTrue(driver._cli_flags(
+            parsed, resolution=mock.Mock(effective={"online": False}))["online"])
+        self.assertFalse(parsed.reset)
+
+    def test_resume_scope_forms_base_and_omissions(self):
+        scopes = (("scope_file", "-f", "a file.py"),
+                  ("scope_dir", "-d", "src/odd; dir"),
+                  ("scope_group", "-g", "review group"),
+                  ("scope_changed", "-c", True),
+                  ("scope_files", "--files", ["a b.py", "x' y.py"]))
+        for attr, flag, value in scopes:
+            with self.subTest(attr=attr):
+                args = self._args(target=None, base="main 'release'; $(echo nope)",
+                                  no_tools=True, **{attr: value})
+                with mock.patch.object(resume.sys, "argv", ["pytest"]):
+                    argv = shlex.split(outage.FailureTally("claude", args).resume_command())
+                expected = ["driver", "loop", ".", "--base",
+                            "main 'release'; $(echo nope)", "--host", "claude",
+                            "--mode", "headless", "--no-tools", flag]
+                if isinstance(value, list):
+                    expected.extend(value)
+                elif value is not True:
+                    expected.append(value)
+                self.assertEqual(argv, expected)
+                parsed = driver.build_parser().parse_args(argv[1:])
+                self.assertEqual(getattr(parsed, attr), value)
+        for online in (False, None):
+            with self.subTest(online=online):
+                args = self._args(mode=None, security="", tools=False, no_tools=False,
+                                  online=online, scope_files=[], max_budget_usd=None,
+                                  reset=True)
+                with mock.patch.object(resume.sys, "argv", ["pytest"]):
+                    argv = shlex.split(outage.FailureTally("claude", args).resume_command())
+                self.assertEqual(argv, ["driver", "loop", "/tmp/repo", "--host",
+                                        "claude", "--mode", "headless"])
+                parsed = driver.build_parser().parse_args(argv[1:])
+                self.assertIsNone(driver._cli_flags(
+                    parsed, resolution=mock.Mock(effective={"online": True}))["online"])
 
     def test_the_resume_command_carries_the_flags_that_resolve_the_same_run(self):
         tally = outage.FailureTally("codex", self._args(target="/tmp/repo", pr=7, mode="headless"))
