@@ -156,17 +156,22 @@ clamped to `MAX_CONCURRENCY`, 8, the one ceiling the runner seam applies to the 
 alike, with a single `concurrency N clamped to the ceiling 8` line on stderr when it bites (#1576)),
 `--max-iterations N` (default 50 — after that the loop exits `error` naming the entries that never
 became done), `--max-budget-usd X` (headless; stops launching once the ledger's cumulative reported
-cost crosses it and exits `error` naming the ledger. The ledgered costs are summed as **exact
-decimal** money, never as floats, so the boundary is the amount you typed — three $0.15 entries
-reach a $0.45 budget, where a float sum of them is 0.44999999999999996 and buys one more entry. A
-**non-finite** cost — `NaN`, `±Infinity` — never enters the ledger: it is stored as `null`, noted in
-that row's `error`, and reported on stderr. A ledger line whose cost cannot be read back as money
-stops the run instead (`error`, naming the line), because a gate that cannot see what it has spent
-must not go on spending — it used to sum such a line as `NaN`, and `NaN >= budget` is false, so the
-gate simply went quiet. It cannot bound spend when the host reports no cost), `--max-turns N` and
-`--entry-timeout SECONDS` (per entry, headless; Codex uses the timeout, not a native turn limit),
-`--setup` (run `driver setup`'s flow on rails). None of them is an anti-drift key — they say how
-this invocation runs entries, not what the run is.
+cost crosses it and exits `error` naming the ledger. The cap is re-read after every entry
+**completes**, not once per checkpoint, so what it can overshoot is the pool rather than the round:
+up to `--concurrency` launches were already in flight when the ledger reached it, plus the one
+worker that can turn over while the loop is still ledgering the result that reached it — the same
+bound an outage has (#1760, #1721). That batch's stderr line names the cap as the rule that stopped
+it, and the `error` above is the next iteration's, once the batch has drained. The ledgered costs
+are summed as **exact decimal** money, never as floats, so the boundary is the amount you typed —
+three $0.15 entries reach a $0.45 budget, where a float sum of them is 0.44999999999999996 and buys
+one more entry. A **non-finite** cost — `NaN`, `±Infinity` — never enters the ledger: it is stored
+as `null`, noted in that row's `error`, and reported on stderr. A ledger line whose cost cannot be
+read back as money stops the run instead (`error`, naming the line), because a gate that cannot see
+what it has spent must not go on spending — it used to sum such a line as `NaN`, and `NaN >= budget`
+is false, so the gate simply went quiet. It cannot bound spend when the host reports no cost),
+`--max-turns N` and `--entry-timeout SECONDS` (per entry, headless; Codex uses the timeout, not a
+native turn limit), `--setup` (run `driver setup`'s flow on rails). None of them is an anti-drift
+key — they say how this invocation runs entries, not what the run is.
 
 **Codex headless host.** Register its five role shells with
 `python3 skill/scripts/dispatch.py --emit-host-agents codex`, then use
@@ -312,8 +317,7 @@ on Claude hooks, and always uses the return-persist path.
 - **The loop re-checks the pending set on disk** before every batch and after it — a runner that
   lost entries to a concurrency cap, a crash or a budget stop simply gets them re-emitted next
   iteration. Nothing advances on a runner's claim; the engine's done predicates are the only way
-  forward.
-- **The loop arms both guards** for exactly the pending entries, and only the loop does:
+  forward. - **The loop arms both guards** for exactly the pending entries, and only the loop does:
   `write_guard_hook.install` confines each agent's Write to its declared `out_file`;
   `read_guard_hook.install` confines its Read/Grep/Glob to its entry's `scope`. Write confinement is
   **per entry, not per batch** (#1571): the allowlist is a version-2 document keyed by entry id —
@@ -360,8 +364,7 @@ on Claude hooks, and always uses the return-persist path.
   prints `dispatch`, drops the finished entries' grants on the next re-entry, and disarms everything
   on `complete`. Both guards are **fail-closed while registered**: an absent, unreadable, or
   malformed allowlist/scope file denies guarded access with a loud reason instead of silently
-  allowing it.
-- **The loop dispatches one agent per entry** through the runner: `enforced` →
+  allowing it. - **The loop dispatches one agent per entry** through the runner: `enforced` →
   `--agent entry["agent"]` (a registered `panopticon-*` shell, tools+model host-enforced); else
   `--model entry["model"]` and no agent, plus the `--disallowedTools=` deny-list that closes the
   operator's own user-scope allow rules (#1753). Prompts go inline (there is no controller context
@@ -375,177 +378,175 @@ on Claude hooks, and always uses the return-persist path.
   posture drift; absent or unknown means no schema is passed, which is the fail-safe — a CLI that
   does not know the option exits non-zero on it). The same block is carried into
   `meta.host_capabilities` and said on all four disclosure surfaces by `host_disclosure.notes`,
-  which is separate from the capability lines because the fact gates nothing.
-  `entry["delivery"] == "return_json"` marks a **return-persist** entry — set on any entry whose
-  role's template grants no `Write`, or whose host has not proven `artifact_write_guard`; absent
-  means the agent self-writes under the write guard. A self-writing entry **self-writes** its own
-  `entry["out_file"]` (a findings file for review, a verdict bundle for verify) and returns a
-  one-line confirmation — findings/verdicts never transit the loop.
-- **The loop persists** every `delivery: "return_json"` reply through `phases.persist` — the same
-  tolerant parse and the same shape check the phase's done predicate applies (scout shape, findings
-  contract + `_panopticon` stamp, verdict list + stamp, a valid tool verdict) — and writes
-  `out_file` atomically. For a **review-cell or verify-cell** reply the `_panopticon` stamp is the
-  DRIVER's to fill: it wrote those keys onto the entry, it is holding the entry, and it is choosing
-  the path, so a returned reply that omits `run_id`/`group`/`domain`/`stage` is stamped from the
-  entry and marked `stamped_by: "controller"`. A key the reply DOES carry and that contradicts the
-  entry is never overwritten — that reply is still refused. The stamp remains **mandatory** for a
-  **self-written** file (a reviewer or advisor writing its own `out_file` under the write guard):
-  nobody checked that file's identity on the way in, so its own stamp is the only thing that says
-  which cell it belongs to, and `_cell_done`/`_verify_cell_done` still require it. A reply that
-  fails is refused and written nowhere; the entry stays pending, and the loop's per-entry failure
-  cap (Errors, below) bounds the retries — the phase's own attempt budget cannot, because it only
-  counts an out_file that actually reached disk. The refused reply itself is kept, redacted, at
+  which is separate from the capability lines because the fact gates nothing. `entry["delivery"] ==
+  "return_json"` marks a **return-persist** entry — set on any entry whose role's template grants no
+  `Write`, or whose host has not proven `artifact_write_guard`; absent means the agent self-writes
+  under the write guard. A self-writing entry **self-writes** its own `entry["out_file"]` (a
+  findings file for review, a verdict bundle for verify) and returns a one-line confirmation —
+  findings/verdicts never transit the loop. - **The loop persists** every `delivery: "return_json"`
+  reply through `phases.persist` — the same tolerant parse and the same shape check the phase's done
+  predicate applies (scout shape, findings contract + `_panopticon` stamp, verdict list + stamp, a
+  valid tool verdict) — and writes `out_file` atomically. For a **review-cell or verify-cell** reply
+  the `_panopticon` stamp is the DRIVER's to fill: it wrote those keys onto the entry, it is holding
+  the entry, and it is choosing the path, so a returned reply that omits
+  `run_id`/`group`/`domain`/`stage` is stamped from the entry and marked `stamped_by: "controller"`.
+  A key the reply DOES carry and that contradicts the entry is never overwritten — that reply is
+  still refused. The stamp remains **mandatory** for a **self-written** file (a reviewer or advisor
+  writing its own `out_file` under the write guard): nobody checked that file's identity on the way
+  in, so its own stamp is the only thing that says which cell it belongs to, and
+  `_cell_done`/`_verify_cell_done` still require it. A reply that fails is refused and written
+  nowhere; the entry stays pending, and the loop's per-entry failure cap (Errors, below) bounds the
+  retries — the phase's own attempt budget cannot, because it only counts an out_file that actually
+  reached disk. The refused reply itself is kept, redacted, at
   `runs/<tag>/rejected/<entry-id>-<attempt>.json`, the launch's ledger row names it as
   `rejected_file`, and the entry's NEXT prompt carries the reason and a `prior_rejection` stamp so
-  the retry is told what to fix.
-- **The loop ledgers** every launch in `runs/<tag>/dispatch-ledger.jsonl` (entry id, checkpoint,
-  mode, model, usage, cost, `denials` — the host envelope's `permission_denials`, verbatim — error,
-  and on a FAILED row `stderr`: the first 200 characters of what the CLI printed on stderr, redacted
-  before they are cut and redacted again at the ledger, which is the one thing that appends to this
-  file. A successful row carries no `stderr` key at all, so its shape is unchanged. Run 14 is why:
-  309 launches were ledgered as `claude -p printed no JSON envelope (exit 1)` — the symptom — while
-  the diagnosis (`--json-schema is not valid JSON: JSON Parse error: Unrecognized token '/'`) went
-  to a stream nothing kept) and rewrites `runs/<tag>/usage.json`
-  (`{"total", "by_phase", "corrupt_rows"}` — `corrupt_rows` counts the ledger lines whose cost could
-  not be read as money, whose tokens are still counted because they were still spent) from it after
-  every batch, so `meta.cost.tokens` is exact and host-supplied on the headless path. In session
-  mode `collect_usage.py` still runs from synthesize as before. Usage is never estimated from
-  counts.
-- **The loop tears the guards down** scoped after each batch and unconditionally on `complete` — the
-  `teardown` field on the terminal status is now executed, not printed for a person to remember.
-- **The loop rolls a crashed batch back before it resumes** — a `batch-<n>.json` still on disk means
-  a run that reached no teardown at all (`SIGKILL`, an OOM kill, a power loss), and the next
-  `driver loop` takes that batch back BEFORE the engine can read a half-written artifact as a
-  finished cell (#1698). It is a rollback and not a cleanup: the artifacts the record lists are
-  deleted, every entry of the batch gets the same `cancelled`/`rolled_back` row a Ctrl-C would have
-  written (with `previous process stopped` as the reason rather than `Ctrl-C`), and the interrupted
-  checkpoint's per-cell attempt marker is given back. The leftover used to be simply OVERWRITTEN by
-  the next batch that happened to carry the same iteration number, so a reply the killed run had
-  half-written stayed on disk and the phase read it as done. Nothing is deleted on the record's own
-  say-so — it lives inside the reviewed tree — so every entry id, `out_file` and checkpoint in it
-  must match the dispatch request this run is hash-bound to, and a record naming anything else is
-  refused with nothing deleted. Under `--reset` no recovery is attempted at all: that flag discards
-  the whole run instead.
-- **The record names its owning process**, and only a dead owner is recovered — a manifest on
-  disk is a CRASHED batch only when the process that opened it is gone, and a loop that is still
-  running has one for as long as its batch is in flight (#1698). It carries the pid, the hostname
-  and — where the machine has one — a hardware machine id (`uuid.getnode()`, #1912) of whichever
-  process last wrote it, and a record is this machine's when EITHER id matches. That second id is
-  there because a hostname is not a machine identity: on macOS the same laptop answers `mac.local`,
-  `mac.lan` or a DHCP-assigned name depending on the network it woke up on, so a crash and the
-  resume after it saw two different names, and the resume read its own record as another machine's.
-  Comparing only the first label of the name is deliberately NOT done — this repo lives on a
-  mounted volume, so `mac.office` and `mac.home` can really be two machines sharing one run folder.
-  A record from before the field existed, or one whose id is unusable (`getnode()`'s random
-  multicast fallback among them), is judged by its hostname exactly as it was. The resume then asks
-  the operating system. Three refusals come out of that answer, each printed and exiting non-zero
-  before a single grant is installed or a single entry is launched. **The owner is still running
-  here** — another `driver loop` holds this run folder; wait for it to finish, or stop it and
-  re-run. `--reset` is deliberately not offered there, because resetting a run folder another loop
-  is working in is the accident being prevented: a second loop used to delete the first's in-flight
-  artifacts, cancel its entries, refund their attempts and unlink its record, after which the
-  first's own Ctrl-C found nothing to take back. **The owner is a pid on another machine** — the
-  record names a host that is not this machine, and a machine id that is not this machine's either,
-  so this one cannot ask that one whether the process is still running; a pid number from over
-  there names some unrelated local process here, so the loop refuses to decide either way. **The
-  record carries no owner stamp** — an absent or malformed owner is either a record from before the
-  field existed or one the target wrote, and neither is evidence that a crash happened. A fourth
-  refusal guards the other end: **a record this batch would overwrite**, a leftover carrying the
-  iteration number this batch is about to open, refused before the guards are armed rather than
-  silently replaced (that `O_EXCL` used to escape as a `FileExistsError` traceback with the write
-  guard still armed). Under `--setup` these records live in the flat `.panopticon/` beside setup's
-  other artifacts rather than in a run folder, and `--setup --reset` sweeps them — all but one
-  whose owner is still running, which it leaves alone and says so on stderr.
-- **`--discard-batch N` throws away one record instead of the run** (#1912) — the remedy the
-  `another machine` and `no owner stamp` refusals name FIRST, with `--reset` second. Both of those
-  verdicts mean the loop could not answer the liveness question, not that anything is running: once
-  you have confirmed no other `driver loop` is working on this folder, `driver loop --discard-batch
-  N` gives record `batch-N.json` exactly the rollback a dead owner's gets — its artifacts deleted,
-  its entries ledgered as cancelled/rolled back, their attempts refunded, the record unlinked — and
-  the invocation then carries on with the rest of the run instead of discarding every paid cell in
-  it. It applies to that one number and nothing else: a second unreadable record still refuses, a
-  live owner still refuses (no flag can help, and the live refusal names none), a dead owner needs
-  no acceptance because it already recovers, and a number with no record on disk is an error naming
-  the folder it looked in. What the flag accepts is the liveness question ALONE — the artifacts are
-  still re-derived from the bound dispatch request before a single file is deleted, so a record
-  that disagrees with the request is refused as before. The acceptance is written down:
-  `discarded-batches.json` in the run folder carries the batch number, the owner stamp as it was
-  found and when you accepted it, and the run manifest carries the count. `--discard-batch`
-  together with `--reset` is refused as contradictory, and the flag is `driver loop`'s alone —
-  `driver run` writes no batch records. It is also SINGLE-USE: the record it named is gone
-  afterwards, so drop it from the next command line or that invocation ends as an error naming a
-  record that is not there. It is never carried into the resume line the loop prints, for the same
-  reason `--reset` is not.
-- **Errors:** a launch failure, non-zero exit, `is_error` or non-JSON envelope is a failed entry
-  (ledgered, re-emitted next iteration). So is a reply persist refuses — the runner reported success
-  but the entry did not advance, so the ledger row is written `ok: false` with the refusal as its
-  `error` (the usage and cost stay the real launch's: those tokens were spent either way). Either
-  kind counts toward a **per-entry cap of 3 consecutive failed launches**, after which the loop
-  exits `error` naming the entry, the count and its last error; a clean, accepted launch clears that
-  entry's streak, so the cap bounds an entry that is stuck rather than one that is merely flaky. It
-  is not a flag — re-run to resume from disk, which starts every streak at zero. In session mode the
-  streak is per-invocation, since nothing there advances except a human persisting a reply that
-  passes the phase's done predicate. A failure the **host** caused — an auth refusal, a quota, a
-  plan or session limit, a rate limit, or the provider itself being down — is not that entry's
-  failure and is never counted toward that cap (#1623). It is recognised from the **host's own error
-  surface** — the CLI's error line or the provider error object it printed, never the agent's reply,
-  which on two of the three families is quoted into the failure message and routinely mentions
-  quotas, 403s and authentication because that is what the reviewed code is about — and only from a
-  structured shape in it: an error kind the provider names (`authentication_error`,
-  `insufficient_quota`) or a status touching its reason (`403 Forbidden`, `auth_error: 403`), never
-  a bare word or a bare number. The loop stops **launching** as soon as the batch's most recent
-  launches are host-class — two of them, or one full `--concurrency` round, whichever is larger —
-  cancelling whatever is still queued and draining what is already in flight, so an outage that
-  begins at entry 12 of 78 costs the pool's width in further launches rather than 66 (#1721). It
-  then ends with the terminal status `paused` whenever the batch **ends** in host-class failures,
-  even when an earlier launch in it failed for its own reasons — that one keeps its charge, and a
-  success from a launch made *after* the first host-class failure is what says the host is back and
-  cancels the pause. The status names the host, the failure class, how many launches it took down,
-  how many of the batch's entries were never launched at all, and the exact command that resumes the
-  run — with every flag the run was invoked with, because the engine refuses a resume that changed
-  one and a resume that dropped `--max-budget-usd` would run unbounded. Nothing is lost by stopping:
-  no entry's attempt budget was charged and the failed launches left nothing behind, so every reply
-  that did land is kept and re-running the loop resumes this run where it stopped; the interrupted
-  checkpoint's per-cell attempt marker is given back exactly as a Ctrl-C gives it back, for the
-  cells the host failed and the cells the stop never launched (neither was ever given a turn) — and
-  that give-back happens whenever the stop cancelled anything, not only when the batch ends
-  `paused`, since a later launch answering cleanly can close the run after the stop has already
-  fired, so three paused runs during one outage do not drop the cells the way three automatic
-  iterations of it used to. `paused` exits **non-zero**, so a CI job cannot read an outage as a
-  clean review. A batch that mixes the two classes charges only the entry-class failures, and the
-  cap above is unchanged for them. A **second stop rule** sits beside the host-class one and ends
-  the run the same way (#1732): when the first `max(2, --concurrency)` results of a batch, by
-  arrival, are all entry-class launch failures, each in under 2000 ms, carrying byte-identical
-  redacted messages, that is the **launch** being refused before any entry did any work — the argv
-  or the configuration, not N different entries and not the host. Run 14 is the case: 103
-  tool-verify entries each exited in ~120 ms with the same message over one wrong argv token, and
-  the per-entry cap needed three whole rounds (309 launches, ~35 minutes) to notice. A success, a
-  persist refusal (the launch came back), a host-class failure (the rule above owns that one), an
-  unmeasured duration or two different messages each break it, so the two rules can never describe
-  the same results. A uniform batch pauses with a message of its own, composed once rather than per
-  entry, naming the count, the window, the message and the same resume command — and it charges
-  **nobody**: every failed id gets its attempt marker back, exactly as the host-class rule gives
-  them back, and no entry's streak is incremented. The loop's own "stopped launching after N" line
-  says which rule fired, so an argv defect does not read as a host outage. A **review cell** is
-  bounded separately, by its own three-dispatch retry budget: once a cell has spent it the phase
-  advances rather than wedging on a cell that cannot be recovered, so the run reaches `complete`
-  having lost it. That is not a clean run and the terminal status says so — `cells_exhausted: <n>`,
-  with the same count and each cell's `group/domain` in the message. The key is ABSENT, not zero,
-  when nothing was lost, so a clean run's status is unchanged for everything that already parses it.
-  **A dispatch entry does not get to describe itself** (#1720): the request travels through
-  `.panopticon/dispatch-request.json`, a file inside the reviewed tree, so an entry's `agent` must
-  be one of the registered panopticon shell names (`panopticon-scout`, `panopticon-domain-panel`,
-  `panopticon-domain-advisor`, `panopticon-advisor`, `panopticon-setup-scan` — and on kimi, where
-  the name becomes a `--agent-file=` path, that path must still resolve inside the registration
-  directory), and an entry's `enforced` flag must agree with the posture this run's own capability
-  evidence proves. A foreign, traversing or absent `agent` refuses the ENTRY — never a quiet
-  fall-back to a bare, unenforced launch; a disagreeing `enforced` flag refuses the whole RUN before
-  the batch opens, so nothing is launched and nothing is charged, and the remedy is `--reset` or a
-  fresh readiness run rather than a retry. The engine's own refusals (flag drift, posture drift,
-  shadow shells, unmediated Write) surface unchanged; Ctrl-C in headless mode cancels the queue,
-  terminates any child its runner registered a handle for (the terminal's own process-group SIGINT
-  reaches the rest), ledgers what it cut, disarms both guards, rolls the interrupted phase back to
-  its checkpoint, and exits `error` with a message beginning "interrupted:" — the next `driver loop`
+  the retry is told what to fix. - **The loop ledgers** every launch in
+  `runs/<tag>/dispatch-ledger.jsonl` (entry id, checkpoint, mode, model, usage, cost, `denials` —
+  the host envelope's `permission_denials`, verbatim — error, and on a FAILED row `stderr`: the
+  first 200 characters of what the CLI printed on stderr, redacted before they are cut and redacted
+  again at the ledger, which is the one thing that appends to this file. A successful row carries no
+  `stderr` key at all, so its shape is unchanged. Run 14 is why: 309 launches were ledgered as
+  `claude -p printed no JSON envelope (exit 1)` — the symptom — while the diagnosis (`--json-schema
+  is not valid JSON: JSON Parse error: Unrecognized token '/'`) went to a stream nothing kept) and
+  rewrites `runs/<tag>/usage.json` (`{"total", "by_phase", "corrupt_rows"}` — `corrupt_rows` counts
+  the ledger lines whose cost could not be read as money, whose tokens are still counted because
+  they were still spent) from it after every batch, so `meta.cost.tokens` is exact and host-supplied
+  on the headless path. In session mode `collect_usage.py` still runs from synthesize as before.
+  Usage is never estimated from counts. - **The loop tears the guards down** scoped after each batch
+  and unconditionally on `complete` — the `teardown` field on the terminal status is now executed,
+  not printed for a person to remember. - **The loop rolls a crashed batch back before it resumes**
+  — a `batch-<n>.json` still on disk means a run that reached no teardown at all (`SIGKILL`, an OOM
+  kill, a power loss), and the next `driver loop` takes that batch back BEFORE the engine can read a
+  half-written artifact as a finished cell (#1698). It is a rollback and not a cleanup: the
+  artifacts the record lists are deleted, every entry of the batch gets the same
+  `cancelled`/`rolled_back` row a Ctrl-C would have written (with `previous process stopped` as the
+  reason rather than `Ctrl-C`), and the interrupted checkpoint's per-cell attempt marker is given
+  back. The leftover used to be simply OVERWRITTEN by the next batch that happened to carry the same
+  iteration number, so a reply the killed run had half-written stayed on disk and the phase read it
+  as done. Nothing is deleted on the record's own say-so — it lives inside the reviewed tree — so
+  every entry id, `out_file` and checkpoint in it must match the dispatch request this run is
+  hash-bound to, and a record naming anything else is refused with nothing deleted. Under `--reset`
+  no recovery is attempted at all: that flag discards the whole run instead. - **The record names
+  its owning process**, and only a dead owner is recovered — a manifest on disk is a CRASHED batch
+  only when the process that opened it is gone, and a loop that is still running has one for as long
+  as its batch is in flight (#1698). It carries the pid, the hostname and — where the machine has
+  one — a hardware machine id (`uuid.getnode()`, #1912) of whichever process last wrote it, and a
+  record is this machine's when EITHER id matches. That second id is there because a hostname is not
+  a machine identity: on macOS the same laptop answers `mac.local`, `mac.lan` or a DHCP-assigned
+  name depending on the network it woke up on, so a crash and the resume after it saw two different
+  names, and the resume read its own record as another machine's. Comparing only the first label of
+  the name is deliberately NOT done — this repo lives on a mounted volume, so `mac.office` and
+  `mac.home` can really be two machines sharing one run folder. A record from before the field
+  existed, or one whose id is unusable (`getnode()`'s random multicast fallback among them), is
+  judged by its hostname exactly as it was. The resume then asks the operating system. Three
+  refusals come out of that answer, each printed and exiting non-zero before a single grant is
+  installed or a single entry is launched. **The owner is still running here** — another `driver
+  loop` holds this run folder; wait for it to finish, or stop it and re-run. `--reset` is
+  deliberately not offered there, because resetting a run folder another loop is working in is the
+  accident being prevented: a second loop used to delete the first's in-flight artifacts, cancel its
+  entries, refund their attempts and unlink its record, after which the first's own Ctrl-C found
+  nothing to take back. **The owner is a pid on another machine** — the record names a host that is
+  not this machine, and a machine id that is not this machine's either, so this one cannot ask that
+  one whether the process is still running; a pid number from over there names some unrelated local
+  process here, so the loop refuses to decide either way. **The record carries no owner stamp** — an
+  absent or malformed owner is either a record from before the field existed or one the target
+  wrote, and neither is evidence that a crash happened. A fourth refusal guards the other end: **a
+  record this batch would overwrite**, a leftover carrying the iteration number this batch is about
+  to open, refused before the guards are armed rather than silently replaced (that `O_EXCL` used to
+  escape as a `FileExistsError` traceback with the write guard still armed). Under `--setup` these
+  records live in the flat `.panopticon/` beside setup's other artifacts rather than in a run
+  folder, and `--setup --reset` sweeps them — all but one whose owner is still running, which it
+  leaves alone and says so on stderr. - **`--discard-batch N` throws away one record instead of the
+  run** (#1912) — the remedy the `another machine` and `no owner stamp` refusals name FIRST, with
+  `--reset` second. Both of those verdicts mean the loop could not answer the liveness question, not
+  that anything is running: once you have confirmed no other `driver loop` is working on this
+  folder, `driver loop --discard-batch N` gives record `batch-N.json` exactly the rollback a dead
+  owner's gets — its artifacts deleted, its entries ledgered as cancelled/rolled back, their
+  attempts refunded, the record unlinked — and the invocation then carries on with the rest of the
+  run instead of discarding every paid cell in it. It applies to that one number and nothing else: a
+  second unreadable record still refuses, a live owner still refuses (no flag can help, and the live
+  refusal names none), a dead owner needs no acceptance because it already recovers, and a number
+  with no record on disk is an error naming the folder it looked in. What the flag accepts is the
+  liveness question ALONE — the artifacts are still re-derived from the bound dispatch request
+  before a single file is deleted, so a record that disagrees with the request is refused as before.
+  The acceptance is written down: `discarded-batches.json` in the run folder carries the batch
+  number, the owner stamp as it was found and when you accepted it, and the run manifest carries the
+  count. `--discard-batch` together with `--reset` is refused as contradictory, and the flag is
+  `driver loop`'s alone — `driver run` writes no batch records. It is also SINGLE-USE: the record it
+  named is gone afterwards, so drop it from the next command line or that invocation ends as an
+  error naming a record that is not there. It is never carried into the resume line the loop prints,
+  for the same reason `--reset` is not. - **Errors:** a launch failure, non-zero exit, `is_error` or
+  non-JSON envelope is a failed entry (ledgered, re-emitted next iteration). So is a reply persist
+  refuses — the runner reported success but the entry did not advance, so the ledger row is written
+  `ok: false` with the refusal as its `error` (the usage and cost stay the real launch's: those
+  tokens were spent either way). Either kind counts toward a **per-entry cap of 3 consecutive failed
+  launches**, after which the loop exits `error` naming the entry, the count and its last error; a
+  clean, accepted launch clears that entry's streak, so the cap bounds an entry that is stuck rather
+  than one that is merely flaky. It is not a flag — re-run to resume from disk, which starts every
+  streak at zero. In session mode the streak is per-invocation, since nothing there advances except
+  a human persisting a reply that passes the phase's done predicate. A failure the **host** caused —
+  an auth refusal, a quota, a plan or session limit, a rate limit, or the provider itself being down
+  — is not that entry's failure and is never counted toward that cap (#1623). It is recognised from
+  the **host's own error surface** — the CLI's error line or the provider error object it printed,
+  never the agent's reply, which on two of the three families is quoted into the failure message and
+  routinely mentions quotas, 403s and authentication because that is what the reviewed code is about
+  — and only from a structured shape in it: an error kind the provider names
+  (`authentication_error`, `insufficient_quota`) or a status touching its reason (`403 Forbidden`,
+  `auth_error: 403`), never a bare word or a bare number. The loop stops **launching** as soon as
+  the batch's most recent launches are host-class — two of them, or one full `--concurrency` round,
+  whichever is larger — cancelling whatever is still queued and draining what is already in flight,
+  so an outage that begins at entry 12 of 78 costs the pool's width in further launches rather than
+  66 (#1721). It then ends with the terminal status `paused` whenever the batch **ends** in
+  host-class failures, even when an earlier launch in it failed for its own reasons — that one keeps
+  its charge, and a success from a launch made *after* the first host-class failure is what says the
+  host is back and cancels the pause. The status names the host, the failure class, how many
+  launches it took down, how many of the batch's entries were never launched at all, and the exact
+  command that resumes the run — with every flag the run was invoked with, because the engine
+  refuses a resume that changed one and a resume that dropped `--max-budget-usd` would run
+  unbounded. Nothing is lost by stopping: no entry's attempt budget was charged and the failed
+  launches left nothing behind, so every reply that did land is kept and re-running the loop resumes
+  this run where it stopped; the interrupted checkpoint's per-cell attempt marker is given back
+  exactly as a Ctrl-C gives it back, for the cells the host failed and the cells the stop never
+  launched (neither was ever given a turn) — and that give-back happens whenever the stop cancelled
+  anything, not only when the batch ends `paused`, since a later launch answering cleanly can close
+  the run after the stop has already fired, so three paused runs during one outage do not drop the
+  cells the way three automatic iterations of it used to. `paused` exits **non-zero**, so a CI job
+  cannot read an outage as a clean review. A batch that mixes the two classes charges only the
+  entry-class failures, and the cap above is unchanged for them. A **second stop rule** sits beside
+  the host-class one and ends the run the same way (#1732), and a **third** — the `--max-budget-usd`
+  cap described with the flags above — stops launching the same way without charging anyone: when
+  the first `max(2, --concurrency)` results of a batch, by arrival, are all entry-class launch
+  failures, each in under 2000 ms, carrying byte-identical redacted messages, that is the **launch**
+  being refused before any entry did any work — the argv or the configuration, not N different
+  entries and not the host. Run 14 is the case: 103 tool-verify entries each exited in ~120 ms with
+  the same message over one wrong argv token, and the per-entry cap needed three whole rounds (309
+  launches, ~35 minutes) to notice. A success, a persist refusal (the launch came back), a
+  host-class failure (the rule above owns that one), an unmeasured duration or two different
+  messages each break it, so the two rules can never describe the same results. A uniform batch
+  pauses with a message of its own, composed once rather than per entry, naming the count, the
+  window, the message and the same resume command — and it charges **nobody**: every failed id gets
+  its attempt marker back, exactly as the host-class rule gives them back, and no entry's streak is
+  incremented. The loop's own "stopped launching after …" line names which of the three rules fired,
+  so an argv defect does not read as a host outage. A **review cell** is bounded separately, by its
+  own three-dispatch retry budget: once a cell has spent it the phase advances rather than wedging
+  on a cell that cannot be recovered, so the run reaches `complete` having lost it. That is not a
+  clean run and the terminal status says so — `cells_exhausted: <n>`, with the same count and each
+  cell's `group/domain` in the message. The key is ABSENT, not zero, when nothing was lost, so a
+  clean run's status is unchanged for everything that already parses it. **A dispatch entry does not
+  get to describe itself** (#1720): the request travels through `.panopticon/dispatch-request.json`,
+  a file inside the reviewed tree, so an entry's `agent` must be one of the registered panopticon
+  shell names (`panopticon-scout`, `panopticon-domain-panel`, `panopticon-domain-advisor`,
+  `panopticon-advisor`, `panopticon-setup-scan` — and on kimi, where the name becomes a
+  `--agent-file=` path, that path must still resolve inside the registration directory), and an
+  entry's `enforced` flag must agree with the posture this run's own capability evidence proves. A
+  foreign, traversing or absent `agent` refuses the ENTRY — never a quiet fall-back to a bare,
+  unenforced launch; a disagreeing `enforced` flag refuses the whole RUN before the batch opens, so
+  nothing is launched and nothing is charged, and the remedy is `--reset` or a fresh readiness run
+  rather than a retry. The engine's own refusals (flag drift, posture drift, shadow shells,
+  unmediated Write) surface unchanged; Ctrl-C in headless mode cancels the queue, terminates any
+  child its runner registered a handle for (the terminal's own process-group SIGINT reaches the
+  rest), ledgers what it cut, disarms both guards, rolls the interrupted phase back to its
+  checkpoint, and exits `error` with a message beginning "interrupted:" — the next `driver loop`
   re-runs that phase from scratch, and `--reset` discards the whole run instead. A `SIGKILL` or a
   power loss reaches none of that teardown, so it leaves the batch's own record behind instead, and
   the next `driver loop` rolls that batch back before it resumes (#1698, above).

@@ -7,6 +7,22 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`--max-budget-usd` is re-read after every entry, not once per checkpoint (#1760,
+  AGT-4265600920).** The cap was compared with the ledger exactly once per loop iteration, at the
+  top and ahead of arming — and a checkpoint is ONE batch, so a whole review round (every pending
+  cell, each charged at dispatch) launched before the cap was looked at a second time, where the
+  guide promises launching stops once the ledger's cumulative reported cost crosses it. It is now
+  the batch's THIRD stop rule, beside the host-outage and identical-launch-failure ones (#1721,
+  #1732): the queue is cancelled the moment the ledger reaches the cap, whatever is already in
+  flight drains, persists and is charged as usual, and the run still ends on the same terminal
+  `--max-budget-usd X reached` error one iteration later, off the same gate and the same ledger. So
+  the overshoot falls from the whole checkpoint to the pool — up to `--concurrency` launches
+  already in flight, plus the one worker that can turn over while the loop is still ledgering the
+  result that reached the cap, which is the bound an outage has. The predicate fails CLOSED on a
+  ledger line whose cost cannot be read as money, because `iter_batch` reads a `stop` that raises
+  as "carry on" — #1648's fail-open one level down. **Operator-visible:** the batch's stderr line
+  names the rule that stopped it as `the --max-budget-usd cap`, where a cap used to be rendered as
+  "0 host-class failure(s)" — a host to go and wait out.
 - **Two prompt boundaries now bound the untrusted text they quote (#1752,
   AGT-1863884584 and AGT-2822331063).** A retry prompt quotes the rejected
   record's `attempt`, and the tool-aware review map quotes each tool hit's path,
