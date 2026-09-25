@@ -1339,7 +1339,12 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         # reason for the setting is that it is per-repository (a deploy key), so
         # the message also names the shape that keeps it per-repository from the
         # global file, and the command that finds which file carries the key.
-        self.assertIn('includeIf "gitdir:%s/"' % os.path.abspath(clone), message)
+        # The path as `git worktree list` prints the MAIN worktree (review 2):
+        # git matches `gitdir:` against `$GIT_DIR`, which a linked worktree's
+        # own path never is, and the listing resolves symlinks (`/private/var`
+        # here) where `abspath` would not.
+        main_path = self._read(clone, "worktree", "list").splitlines()[0].split()[0]
+        self.assertIn('includeIf "gitdir:%s/"' % main_path, message)
         self.assertIn("git config --show-origin --get", message)
         # The KEY, never the VALUE: these are command lines (#2013's rule).
         self.assertNotIn("transport.sh", message)
@@ -1354,6 +1359,26 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
         # Lowercased section and variable: the case `config --list` prints.
         self._assert_refused_naming("core.sshcommand", base, clone, wt)
+
+    def test_the_remedy_names_the_main_worktree_when_pr_runs_in_a_linked_one(self):
+        """#2041 review 2: git matches `includeIf "gitdir:"` against `$GIT_DIR`,
+        which for a linked worktree is `<main>/.git/worktrees/<name>`, so a
+        pattern built from the linked checkout's own path matches nothing and
+        an operator who followed it would lose the setting on the fetch. The
+        message names the MAIN worktree, from either side."""
+        base, clone, _pr_sha = self._fixture()
+        _git(clone, "config", "remote.origin.uploadpack", self._refusing_command(base))
+        linked = os.path.join(os.path.dirname(clone), "linked")
+        _git(clone, "worktree", "add", "--detach", linked, "HEAD")
+        main_path = self._read(linked, "worktree", "list").splitlines()[0].split()[0]
+        self.assertNotEqual(os.path.realpath(main_path), os.path.realpath(linked))
+        for repo in (clone, linked):
+            wt = diff_map._worktree_dir(repo, 7)
+            self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(RuntimeError) as caught:
+                    diff_map.acquire_pr(7, repo=repo, runner=self._runner())
+            self.assertIn('[includeIf "gitdir:%s/"]' % main_path, str(caught.exception))
 
     def test_a_repo_local_uploadpack_refuses_the_fetch_with_a_remedy(self):
         """(b) The other measured shape: `remote.<name>.uploadpack`, which the
@@ -1507,8 +1532,9 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
 
         `repository_settings` keeps only `local`/`worktree` records; a git
         whose `--show-scope` output changed shape would parse to `{}` and the
-        refusal would pass silently. `core.repositoryformatversion` is in every
-        repository's `.git/config`, so its absence is the tell. The stand-in
+        refusal would pass silently. The SHAPE is the tell -- an empty listing,
+        or a scope label git never prints -- not any one key: a repository with
+        no `[core]` section fetches fine (review 2). The stand-in
         runner answers the listing with an empty, successful result and every
         other call for real; the fetch must never be reached.
         """
@@ -1528,7 +1554,7 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 diff_map.acquire_pr(7, repo=clone, runner=blanked)
         self.assertIn("refusing to fetch", str(caught.exception))
-        self.assertIn("core.repositoryformatversion", str(caught.exception))
+        self.assertIn("scope-labelled", str(caught.exception))
         self.assertFalse([argv for argv in seen if "fetch" in argv], seen)
         self.assertFalse(os.path.exists(wt))
 

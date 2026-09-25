@@ -250,8 +250,10 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
             "`.git/config`, a file it includes, or its worktree config -- sets a "
             "transport command key (`core.sshCommand`, `core.askPass`, "
             "`remote.origin.uploadpack` and their class) that a fetch of the one "
-            "remote it names would execute, so what this exemption keeps is the "
-            "operator's ENVIRONMENT and not a command the repository configured",
+            "remote it names would execute -- and refuses outright on a config "
+            "listing that lacks git's scope-labelled shape -- so what this "
+            "exemption keeps is the operator's ENVIRONMENT and not a command the "
+            "repository configured",
     }
 
     def _bare_git_argv(self, name):

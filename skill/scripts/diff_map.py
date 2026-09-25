@@ -746,6 +746,22 @@ def _sync_config(repo, wt_path):
     return list(res.disclosures) + notes
 
 
+def _main_worktree(listing_out, repo):
+    """The path an `[includeIf "gitdir:..."]` pattern has to name for `repo`.
+
+    git matches `gitdir:` against `$GIT_DIR`, which for a LINKED worktree is
+    `<main>/.git/worktrees/<name>` -- not under the linked checkout's own path
+    -- so a pattern built from `repo` matches nothing there (measured, #2041
+    review 2). The main worktree is the first line of `git worktree list`,
+    which acquisition already holds; only an empty listing falls back to
+    `repo` itself.
+    """
+    for line in listing_out.splitlines():
+        if line.strip():
+            return line.split()[0]
+    return os.path.abspath(repo)
+
+
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     """Fetch a PR head into a DETERMINISTIC throwaway worktree and return its
     base branch. Idempotent: if the deterministic worktree already exists and
@@ -784,8 +800,10 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     and REFUSES when it sets a key a fetch of `_PR_REMOTE` would execute. The
     refusal names the keys and a remedy that keeps the setting per-repository
     from the operator's OWN global config, which the fetch still honours
-    (#2041). Emptying them instead, the way the probe empties `filter.*`, would
-    break the private repository this exemption exists for.
+    (#2041). A config listing that lacks git's scope-labelled shape refuses the
+    same way rather than passing as "nothing set". Emptying the keys instead,
+    the way the probe empties `filter.*`, would break the private repository
+    this exemption exists for.
     """
     # Every repository-configured command `safe_git` emptied on the way, and the
     # pairs already printed. One list across every call, because each call
@@ -899,19 +917,19 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # reaches the filter -- moving the setting there is the remedy this refusal
     # names, so refusing on it would refuse the fix. The reuse path above
     # performs no fetch and therefore has nothing to refuse.
-    repository = safe_git.repository_settings(
-        _safe(repo, ["config", "--null", "--list", "--show-scope", "--includes"]))
-    if "core.repositoryformatversion" not in repository:
-        # Fail CLOSED on an unreadable listing. Every repository's `.git/config`
-        # carries `core.repositoryformatversion` at the `local` scope, so its
-        # absence means the parse saw no repository-scoped record at all -- a
-        # changed `--show-scope` output shape, not a clean checkout -- and an
-        # empty parse would otherwise pass the refusal silently.
+    listing = _safe(repo, ["config", "--null", "--list", "--show-scope", "--includes"])
+    try:
+        repository = safe_git.repository_settings(listing)
+    except ValueError as exc:
+        # Fail CLOSED on a listing that is not the shape the parser reads (a
+        # git whose `--show-scope` output changed): an empty parse would
+        # otherwise pass the refusal silently. The shape is what is checked, not
+        # any one key -- a repository with no `[core]` section fetches fine.
         _disclose()
         raise RuntimeError(
-            "panopticon --pr: refusing to fetch: the config listing of %s carried no "
-            "repository-scoped setting (core.repositoryformatversion is always one), "
-            "so the transport-command check could not run (#2041)" % repo)
+            "panopticon --pr: refusing to fetch: the config listing of %s is not the "
+            "scope-labelled shape the transport-command check reads (%s), so the "
+            "check could not run (#2041)" % (repo, exc)) from exc
     transport = safe_git.transport_command_keys(repository, _PR_REMOTE)
     if transport:
         _disclose()      # already disclosed by _safe; kept so a reordering cannot
@@ -934,7 +952,7 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
             "move it there outright with `git config --global <key> <value>`; "
             "then remove it here (`git config --unset <key>`; "
             "`git config --show-origin --get <key>` shows which file carries it) "
-            "and re-run." % (", ".join(transport), os.path.abspath(repo)))
+            "and re-run." % (", ".join(transport), _main_worktree(listing_out, repo)))
 
     fetch_ref = "refs/panopticon/pr-%d-%s" % (pr_number, uuid.uuid4().hex)
     # THE ONE CALL WITH THE OPERATOR'S ENVIRONMENT (#2012), because a private

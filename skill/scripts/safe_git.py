@@ -513,6 +513,9 @@ def _settings(stdout):
 # (`worktree`). `global`/`system` are the OPERATOR's, which is the remedy the
 # `--pr` refusal points at, and `command` is the probe's own `-c` pins.
 _REPOSITORY_SCOPES = ("local", "worktree")
+# Every label git prints; anything else means the listing is not the shape
+# this parser reads, and the caller must not treat it as "nothing set".
+_SCOPE_LABELS = ("system", "global", "local", "worktree", "command", "unknown")
 
 
 def repository_settings(stdout):
@@ -545,10 +548,21 @@ def repository_settings(stdout):
     so a value containing a newline cannot shift the pairing; an unpaired
     trailing record -- git's output ends with a NUL, and a truncated read could
     leave one -- is ignored rather than guessed at.
+
+    FAIL CLOSED on shape: a listing that is empty (under the probe's own
+    environment the `command` pins always print, so a real listing never is)
+    or that carries a label git does not print raises `ValueError`, because
+    `{}` would read as "nothing set" and the caller's refusal would pass
+    silently on a git whose `--show-scope` output changed (#2041 review 2).
     """
     settings = {}
     records = stdout.split("\0")
+    if len(records) < 2:
+        raise ValueError("safe Git: the config listing is empty, not scope-labelled")
     for index in range(0, len(records) - 1, 2):
+        if records[index] not in _SCOPE_LABELS:
+            raise ValueError("safe Git: the config listing is not scope-labelled (%r)"
+                             % records[index][:40])
         if records[index] not in _REPOSITORY_SCOPES:
             continue
         key, _, value = records[index + 1].partition("\n")

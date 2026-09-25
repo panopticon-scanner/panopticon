@@ -786,7 +786,6 @@ def test_repository_settings_survives_newline_values_and_a_ragged_tail():
     stdout = _scoped(("local", "core.sshcommand", "ssh\nsecond line"),
                      ("worktree", "core.sshcommand", "wins"))
     assert safe_git.repository_settings(stdout) == {"core.sshcommand": "wins"}
-    assert safe_git.repository_settings("") == {}
     # A valueless key (`[extensions]\n\tworktreeConfig`) prints with no value and
     # reads as empty, which `transport_command_keys` treats as "runs nothing".
     assert safe_git.repository_settings("local\0core.sshcommand\0") == {
@@ -798,3 +797,19 @@ def test_repository_settings_survives_newline_values_and_a_ragged_tail():
     assert safe_git.repository_settings(
         _scoped(("local", "core.gitproxy", "proxy.sh")) + "local") == {
             "core.gitproxy": "proxy.sh"}
+
+
+def test_repository_settings_fails_closed_on_a_listing_that_is_not_scope_labelled():
+    """#2041 review 2: the caller's refusal keys off this parse, so a listing
+    that is empty or carries a label git never prints must RAISE, not read as
+    "nothing set" -- that is the one fail-open a changed `--show-scope` output
+    shape could introduce. Every label git does print is accepted."""
+    with pytest.raises(ValueError, match="empty"):
+        safe_git.repository_settings("")
+    with pytest.raises(ValueError, match="not scope-labelled"):
+        safe_git.repository_settings("core.sshcommand\n/x\0local\0")
+    with pytest.raises(ValueError, match="not scope-labelled"):
+        safe_git.repository_settings(_scoped(("local", "a.b", "1"), ("garbage", "c.d", "2")))
+    every_label = _scoped(*[(label, "x.%s" % label, "v") for label in
+                            ("system", "global", "local", "worktree", "command", "unknown")])
+    assert safe_git.repository_settings(every_label) == {"x.local": "v", "x.worktree": "v"}

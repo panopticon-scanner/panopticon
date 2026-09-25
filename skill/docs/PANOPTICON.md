@@ -35,22 +35,23 @@ every mode below (`driver run [target]` is the single-step primitive it calls) �
   on-diff gate never attributes it to the PR. **Acquisition runs no command the target authored**
   (#2012), and the fetch — the exempt call — is refused, with the remedy, when this checkout's own
   config (its `.git/config`, a file it includes, or its worktree config) sets a transport command
-  key such as `core.sshCommand` or `remote.origin.uploadpack` (#2041): of the five calls that build
+  key such as `core.sshCommand` or `remote.origin.uploadpack` (#2041): of the six calls that build
   the worktree, only `git fetch` keeps your environment, because a private repository's PR head is
   fetchable only through your credential helper, which lives in the `HOME` and gitconfig
   `safe_git`'s fresh allowlisted environment strips — and even that one carries
   `core.fsmonitor=false`, the same pinned empty `core.hooksPath` every confined launch uses, and
   `--no-recurse-submodules`, because a fetch writes a ref, `reference-transaction` fires from the
   target's hooks directory on it, and git's default `fetch.recurseSubmodules = on-demand` would obey
-  a SUBMODULE's own config, which no read of this one can see. `worktree list` and `rev-parse` go
-  through `safe_git.probe`; `worktree add --detach`, `update-ref -d` and the teardown's `worktree
-  remove --force` through `safe_git.mutate`, the one entry point allowed to write, which pins the
-  same hooks directory and empties every repository-configured `filter.*`/`diff.*` command (each
-  disclosed as `panopticon --pr: suppressed <key> in <repo>`, by key, never by value). That matters
-  because `worktree add` is a **checkout**: on the old path the target's `filter.*.smudge` ran on
-  the PR's content and its output, not the committed bytes, was what got reviewed, and a
-  `post-checkout` hook ran from whatever `core.hooksPath` the repository asked for. **Pass
-  `--fail-on` or the gate stays OFF** — a delta run is gate-first by intent.
+  a SUBMODULE's own config, which no read of this one can see. A config listing that lacks git's
+  scope-labelled shape refuses the same way, rather than passing as "nothing set". `worktree list`
+  and `rev-parse` go through `safe_git.probe`; `worktree add --detach`, `update-ref -d` and the
+  teardown's `worktree remove --force` through `safe_git.mutate`, the one entry point allowed to
+  write, which pins the same hooks directory and empties every repository-configured
+  `filter.*`/`diff.*` command (each disclosed as `panopticon --pr: suppressed <key> in <repo>`, by
+  key, never by value). That matters because `worktree add` is a **checkout**: on the old path the
+  target's `filter.*.smudge` ran on the PR's content and its output, not the committed bytes, was
+  what got reviewed, and a `post-checkout` hook ran from whatever `core.hooksPath` the repository
+  asked for. **Pass `--fail-on` or the gate stays OFF** — a delta run is gate-first by intent.
 - `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap: proposes
   `panopticon.yml.draft` at the repo root and writes `.panopticon/setup-report.md`. See Driver setup
   (5.2) below.
