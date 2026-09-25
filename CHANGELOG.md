@@ -27,9 +27,10 @@ evidence exposed.
   file or to a character device is bounded too, not just one whose declared size is honest), the
   plan counted as 0 review cells and said so, the fence-wrapped file's out-of-lane findings
   actually counted, and one unusable finding row costing nothing but itself. Scope: these three
-  readers. Sibling readers in `synth/plan.py` and `synth/integrity.py` still catch only
-  `(OSError, ValueError)`, and a skipped coverage record still fails OPEN on the floor audit rather
-  than recording itself in `meta.integrity` (#2080) — both are follow-ups, not fixed here.
+  readers. Sibling readers in `synth/plan.py`, `synth/cost.py` (`usage.json`) and
+  `synth/integrity.py` still catch only `(OSError, ValueError)` (#2081), a skipped coverage record
+  still fails OPEN on the floor audit rather than recording itself in `meta.integrity` (#2080), and
+  a FIFO named like an artifact still blocks at `open()` (#2082) — follow-ups, not fixed here.
 - **`--max-budget-usd` is re-read after every entry, not once per checkpoint (#1760,
   AGT-4265600920).** The cap was compared with the ledger exactly once per loop iteration, at the
   top and ahead of arming — and a checkpoint is ONE batch, so a whole review round (every pending

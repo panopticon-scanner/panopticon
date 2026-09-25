@@ -172,8 +172,8 @@ def out_of_scope_findings(findings_paths, plan):
         # `location` to a dict and drops it when it names no file) to repair --
         # so these two readers of the same files cannot disagree about what the
         # file IS or about what a row means. Sibling readers in this module
-        # still catch only (OSError, ValueError); that pattern is filed
-        # separately and is not touched here.
+        # still catch only (OSError, ValueError); that pattern is #2081 and is
+        # not touched here.
         try:
             with open(path, encoding="utf-8") as fh:
                 data = evidence_mod.load_json_tolerant(fh.read())

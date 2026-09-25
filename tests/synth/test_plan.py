@@ -134,10 +134,12 @@ class TestCoverageReadIsBounded(unittest.TestCase):
         # UNDER-reports it. The bound is on the READ, so the size the
         # filesystem declares is not consulted at all.
         real_stat = os.stat
+        consulted = []
 
         def lying_stat(target, *args, **kwargs):
             st = real_stat(target, *args, **kwargs)
             if str(target).endswith("coverage-Sparse.json"):
+                consulted.append(str(target))
                 return os.stat_result(tuple(st)[:6] + (0,) + tuple(st)[7:10])
             return st
 
@@ -149,6 +151,7 @@ class TestCoverageReadIsBounded(unittest.TestCase):
                     contextlib.redirect_stderr(err):
                 cells = coverage_io.load_coverage_files(d)
             loads.assert_not_called()
+        self.assertEqual(consulted, [])   # the declared size is never even asked for
         self.assertEqual(cells, [])
         self.assertIn("coverage-Sparse.json", err.getvalue())
 

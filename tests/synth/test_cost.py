@@ -299,7 +299,7 @@ class TestDriverPlanShapeTolerance(unittest.TestCase):
         # str(MemoryError()) is "", and an exception instance is always TRUTHY,
         # so `exc or type(exc).__name__` renders "could not be read ()" -- a
         # line an operator cannot act on. It has to be `str(exc) or ...`.
-        with mock.patch.object(cost_mod.json, "load", side_effect=MemoryError()):
+        with mock.patch("scripts.synth.cost.json.load", side_effect=MemoryError()):
             counts, err = self._counts("[]")
         self.assertEqual(counts["review_cells"], 0)
         self.assertIn("MemoryError", err)
