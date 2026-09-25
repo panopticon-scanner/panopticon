@@ -2475,8 +2475,8 @@ class TestAMidBatchHostOutage(LoopCase):
             path = os.path.join(self.run_dir, base.LEDGER_FILE)
             for _ in range(2000):
                 try:
-                    with open(path) as fh:
-                        if sum(1 for line in fh if line.strip()) >= lines:
+                    with open(path, "rb") as fh:   # bytes: a poisoned line must not
+                        if sum(1 for line in fh if line.strip()) >= lines:  # raise here
                             return
                 except OSError:
                     pass
@@ -3719,8 +3719,8 @@ class TestAUniformInstantFailure(LoopCase):
             path = os.path.join(self.run_dir, base.LEDGER_FILE)
             for _ in range(2000):
                 try:
-                    with open(path) as fh:
-                        if sum(1 for line in fh if line.strip()) >= lines:
+                    with open(path, "rb") as fh:   # bytes: a poisoned line must not
+                        if sum(1 for line in fh if line.strip()) >= lines:  # raise here
                             return
                 except OSError:
                     pass
