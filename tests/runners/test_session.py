@@ -40,3 +40,41 @@ class TestSessionRunner(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             r.run_batch([{"id": "e", "out_file": "/r/x.json"}], 1, env_for=lambda e: {})
         self.assertIsNone(json.loads(out.getvalue())["request_sha256"])
+
+    def test_setup_dispatch_prints_request_prompts_and_namespaced_commands(self):
+        r = session_runner.SessionRunner("claude")
+        r.namespace = "setup"
+        r.dispatch_request = "/r/setup-dispatch-request.json"
+        entries = [
+            {"id": "setup-scout", "delivery": "return_json", "prompt_file": "/r/scout.txt"},
+            {"id": "setup-check", "delivery": "file", "prompt_file": "/r/check.txt"},
+        ]
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertIsNone(r.run_batch(entries, 1, env_for=lambda e: {}))
+        printed = json.loads(out.getvalue())
+        self.assertEqual(printed["status"], "dispatch")
+        self.assertEqual(printed["pending"], ["setup-scout", "setup-check"])
+        self.assertEqual(printed["return_persist"], ["setup-scout"])
+        self.assertEqual(printed["dispatch_request"], "/r/setup-dispatch-request.json")
+        self.assertEqual(printed["prompt_files"],
+                         {"setup-scout": "/r/scout.txt", "setup-check": "/r/check.txt"})
+        self.assertEqual(printed["persist"],
+                         "driver persist <id> --setup --file <reply.txt>   "
+                         "# once per return-persist id, e.g. `driver persist setup-scout --setup`")
+        self.assertEqual(printed["then"],
+                         "driver loop --setup --mode session <target> [same flags]")
+
+    def test_setup_dispatch_with_no_return_persist_uses_placeholder(self):
+        r = session_runner.SessionRunner("claude")
+        r.namespace = "setup"
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            r.run_batch([{"id": "setup-check", "prompt_file": "/r/check.txt"}],
+                        1, env_for=lambda e: {})
+        printed = json.loads(out.getvalue())
+        self.assertEqual(printed["return_persist"], [])
+        self.assertEqual(printed["prompt_files"], {"setup-check": "/r/check.txt"})
+        self.assertEqual(printed["persist"],
+                         "driver persist <id> --setup --file <reply.txt>   "
+                         "# once per return-persist id, e.g. `driver persist <id> --setup`")
+        self.assertEqual(printed["then"],
+                         "driver loop --setup --mode session <target> [same flags]")
