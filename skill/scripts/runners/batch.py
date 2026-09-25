@@ -49,6 +49,7 @@ import re
 import socket
 import stat
 import time
+import uuid
 from typing import TypedDict
 
 import scripts.write_guard_hook as write_guard_hook
@@ -84,6 +85,59 @@ def host_id():
     return socket.gethostname()
 
 
+# #1912: `uuid.getnode()`'s documented fallback when it can find no hardware
+# address is a RANDOM 48-bit number with the multicast bit (bit 40) set,
+# freshly chosen per process. It is an id in form only.
+_MULTICAST_BIT = 0x010000000000
+
+
+def machine_id():
+    """This machine's stdlib hardware identity as 12 hex digits, or None (#1912).
+
+    A SECOND name for the same machine, beside the hostname, because the
+    hostname is not one: see `owner_state`. `uuid.getnode()` is the only
+    machine id the standard library offers -- a MAC address, stable across
+    reboots and renames -- and the whole of what it is used for here is
+    comparing this run's value with the one a record on disk carries.
+
+    None is returned rather than a number whenever the value cannot serve as
+    an identity, and the multicast bit is the case that matters: that is
+    `getnode()`'s documented random fallback, re-rolled every process, so
+    stamping it would write a value that never matches again and make every
+    resume on such a machine read its own record as a foreign one. None means
+    "this machine has no id to compare", which leaves the hostname as the
+    whole answer -- exactly the behaviour #1698 shipped.
+
+    `%012x` and never `hex()`: the stamp is compared as a STRING, so one
+    number must have exactly one spelling. `isinstance(node, bool)` is
+    excluded with the rest -- `True` is an `int` and would render as an id.
+    """
+    node = uuid.getnode()
+    if (isinstance(node, bool) or not isinstance(node, int) or node <= 0
+            or node & _MULTICAST_BIT):
+        return None
+    return "%012x" % node
+
+
+def _same_machine(doc):
+    """Whether `doc`'s owner stamp names THIS machine (#1912).
+
+    Either id is enough. A hostname that still matches is the #1698 answer and
+    stays sufficient on its own; a `machine` that matches covers the case the
+    hostname cannot -- the SAME machine answering to a different name.
+
+    Equality against `machine_id()` is the whole test, and that is why no
+    separate "is this a valid stamp?" check is needed: `machine_id()` never
+    returns a multicast value and never returns a non-string, so a record
+    carrying the random fallback, a malformed field or no field at all can
+    never match, and each of those falls back to the hostname.
+    """
+    if doc.get("host") == host_id():
+        return True
+    mine = machine_id()
+    return mine is not None and doc.get("machine") == mine
+
+
 def owner_state(doc):
     """Whether the process that wrote `doc` is still running (#1698).
 
@@ -102,7 +156,7 @@ def owner_state(doc):
     * `live` -- stamped by this host and still running. `PermissionError`
       counts as live: the signal was refused BECAUSE something is there to
       refuse it.
-    * `foreign` -- stamped by another host. A pid number from over there
+    * `foreign` -- stamped by another MACHINE. A pid number from over there
       names some unrelated local process here, so nothing may be concluded
       from it in either direction.
     * `unstamped` -- no usable stamp. The record lives inside the REVIEWED
@@ -112,6 +166,21 @@ def owner_state(doc):
 
     `isinstance(pid, bool)` is excluded on purpose -- `True` is an `int` and
     `os.kill(True, 0)` asks about pid 1, which is always alive.
+
+    #1912: "this machine" is TWO ids, and either one matching is enough,
+    because the hostname alone is not an identity. On macOS the same laptop
+    answers `mac.local`, `mac.lan` or a DHCP-assigned name depending on the
+    network it woke up on, so a crash and the resume that follows it saw two
+    different hostnames, the resume read its own record as another machine's,
+    and the only remedy the refusal could name was `--reset` -- the whole run
+    of paid cells -- for a record it had written itself minutes earlier.
+    Comparing the first DNS label is NOT a fix and is not done here: this repo
+    lives on a mounted volume, so `mac.office` and `mac.home` really can be
+    two machines sharing one run folder, and folding them together would put
+    back the very accident #1698 exists to prevent. The second id is a
+    hardware one (`machine_id`, `uuid.getnode()`), which does not move when
+    the name does; a record from before that field existed, or one whose
+    field is unusable, is judged by its hostname exactly as it was.
     """
     if not isinstance(doc, dict):
         return OWNER_UNSTAMPED
@@ -119,7 +188,7 @@ def owner_state(doc):
     if (not isinstance(host, str) or not host or isinstance(pid, bool)
             or not isinstance(pid, int) or pid <= 0):
         return OWNER_UNSTAMPED
-    if host != host_id():
+    if not _same_machine(doc):
         return OWNER_FOREIGN
     try:
         os.kill(pid, 0)
@@ -232,10 +301,18 @@ class Batch:
         crashed batch's manifest to flag it takes the record over, so a
         second loop arriving mid-recovery asks about the RECOVERING process
         rather than the long-dead one it is finishing for.
+
+        #1912: the machine is stamped twice -- its name and its hardware id --
+        and the id is OMITTED rather than written as null when this machine has
+        none (`machine_id` explains when that happens). An absent field says
+        "compare the hostname", which is what a reader does with it; a null one
+        would only invite a reader to compare nothing to nothing.
         """
+        machine = machine_id()
         return {"schema_version": 1, "batch": self.number,
                 "checkpoint": self.checkpoint, "opened_at": self.opened_at,
                 "pid": os.getpid(), "host": host_id(),
+                **({"machine": machine} if machine else {}),
                 "entries": self.entries,
                 **({"recovering": True} if self.recovering else {})}
 

@@ -923,10 +923,13 @@ class TestHeadlessLoop(LoopCase):
 
     def test_a_record_from_another_machine_refuses_rather_than_guesses(self):
         # A pid number from over there names some unrelated local process
-        # here, so nothing may be concluded from it either way.
+        # here, so nothing may be concluded from it either way. #1912: BOTH
+        # ids have to be somebody else's -- a record carrying this machine's
+        # hardware id under another hostname is this machine's own.
         d, floor = self._repo(floor=("SEC", "ACC"))
         crashed = self._leave_crashed_batch(d, floor)
-        self._stamp_crash_owner(crashed.run_dir, host="some-other-box")
+        self._stamp_crash_owner(crashed.run_dir, host="some-other-box",
+                                machine="00deadbeef00")
         before = self._untouched(d, crashed.run_dir)
         resumed = FakeRunner()
         status = self._return_persist(d, floor, resumed)
@@ -936,6 +939,27 @@ class TestHeadlessLoop(LoopCase):
         self.assertIn("--reset", status["message"])
         self.assertEqual(resumed.launched, [])
         self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
+    def test_the_same_machine_under_a_new_hostname_is_recovered_not_refused(self):
+        # #1912 hazard 1, end to end: macOS renames the laptop between the
+        # crash and the resume (`mac.office` -> `mac.local`), and the run used
+        # to be unresumable -- `--reset`, the whole run of paid cells, was the
+        # only remedy the refusal could name for a record this machine had
+        # written itself. The hardware id did not move, so the resume still
+        # recognises its own record and the dead pid decides as it always did.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        self._stamp_crash_owner(crashed.run_dir, host="mac.office.example")
+        self.assertEqual(batch_mod.machine_id(),
+                         self._crash_record(crashed.run_dir).get("machine"),
+                         "the record must carry this machine's hardware id")
+        resumed = FakeRunner()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("recovered stale batch", err.getvalue())
+        self.assertEqual(self._manifests(crashed.run_dir), [])
 
     def test_a_record_with_no_owner_stamp_fails_closed(self):
         # The record lives INSIDE the reviewed tree. An absent owner is either
