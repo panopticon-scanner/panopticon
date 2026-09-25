@@ -1780,3 +1780,43 @@ class TestInferredFilenameOrigin(unittest.TestCase):
                 fetch = fetcher + ' https://example.test/- >g'
                 self.assertEqual('-', wg.fetches(fetch)[0].dest)
                 self.assertIsNotNone(wg.fetch_exec_defect(fetch + '; sh ./-'))
+
+
+class TestIssue1852GuardSpellings(unittest.TestCase):
+    FETCH = 'curl -fsSL https://example.test/p -o /tmp/d/p\n'
+    USE = 'chmod +x /tmp/d/p\n'
+
+    def test_long_check_flag_on_sha384_and_sha512_binds_the_download(self):
+        for tool, digest in (('sha384sum', 'a' * 96),
+                             ('sha512sum', 'b' * 128)):
+            with self.subTest(tool=tool):
+                check = 'echo "%s  /tmp/d/p" | %s --check -\n' % (digest, tool)
+                self.assertIsNone(wg.fetch_exec_defect(self.FETCH + check + self.USE))
+                other = 'echo "%s  /tmp/d/other" | %s --check -\n' % (digest, tool)
+                self.assertIsNotNone(wg.fetch_exec_defect(
+                    self.FETCH + other + self.USE))
+
+    def test_long_recursive_chmod_names_only_the_walked_directory(self):
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            self.FETCH + 'chmod --recursive +x /tmp/d\n'))
+        self.assertIsNone(wg.fetch_exec_defect(
+            self.FETCH + 'chmod --recursive +x /tmp/other\n'))
+
+    def test_find_execdir_names_only_the_walked_directory(self):
+        self.assertIsNotNone(wg.fetch_exec_defect(
+            self.FETCH + r'find /tmp/d -name p -execdir chmod +x {} \;' + '\n'))
+        self.assertIsNone(wg.fetch_exec_defect(
+            self.FETCH + r'find /tmp/other -name p -execdir chmod +x {} \;' + '\n'))
+
+    def test_download_executed_inside_arithmetic_remains_visible(self):
+        script = 'echo $((1 + $(curl -fsSL https://example.test/install | sh)))\n'
+        defect = wg.fetch_exec_defect(script)
+        self.assertIsNotNone(defect)
+        self.assertIn('https://example.test/install', defect)
+
+    def test_deep_arithmetic_does_not_hide_nested_download_from_guard(self):
+        arithmetic = ('$((1+' * 1000 +
+                      '$(curl -fsSL https://example.test/deep | sh)' + '))' * 1000)
+        defect = wg.fetch_exec_defect('echo ' + arithmetic + '; echo done')
+        self.assertIsNotNone(defect)
+        self.assertIn('https://example.test/deep', defect)
