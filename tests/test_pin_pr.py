@@ -212,6 +212,91 @@ def test_orphan_refuses_after_dockerfile_drift_on_main(repo):
                         gh_runner=FakeGh())
 
 
+def test_depth_one_checkout_recovers_after_unrelated_main_advance(repo, tmp_path):
+    _make_orphan_then_advance_main(repo, "rust-toolchain")
+    remote = git(repo, "remote", "get-url", "origin").strip()
+    shallow = tmp_path / "shallow"
+    git(tmp_path, "clone", "--depth", "1", "--branch", "main",
+        Path(remote).as_uri(), str(shallow))
+    assert git(shallow, "rev-parse", "--is-shallow-repository").strip() == "true"
+    (shallow / "Dockerfile").write_text(generated("rust-toolchain"))
+    gh = FakeGh()
+    assert pin.open_pin_pr("rust-toolchain", "owner/repo", cwd=shallow,
+                           gh_runner=gh) == "created PR"
+    assert len(gh.prs) == 1
+
+
+@pytest.mark.parametrize("unsafe", ["dockerfile-drift", "unrelated-branch-file"])
+def test_depth_one_checkout_refuses_unsafe_orphan(repo, tmp_path, unsafe):
+    if unsafe == "dockerfile-drift":
+        _make_orphan_then_advance_main(repo, "rust-toolchain", dockerfile_drift=True)
+    else:
+        (repo / "Dockerfile").write_text(generated("rust-toolchain"))
+        (repo / "unexpected.txt").write_text("unrelated branch edit\n")
+        git(repo, "checkout", "-b", "chore/bump-rust-toolchain-2.0.0")
+        git(repo, "add", "Dockerfile", "unexpected.txt")
+        git(repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+            "commit", "-m", "bad pin branch")
+        git(repo, "push", "origin", "HEAD")
+        git(repo, "checkout", "main")
+        (repo / "notes.txt").write_text("later main edit\n")
+        git(repo, "add", "notes.txt")
+        git(repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+            "commit", "-m", "advance main")
+        git(repo, "push", "origin", "main")
+    remote = git(repo, "remote", "get-url", "origin").strip()
+    shallow = tmp_path / "shallow"
+    git(tmp_path, "clone", "--depth", "1", "--branch", "main",
+        Path(remote).as_uri(), str(shallow))
+    (shallow / "Dockerfile").write_text(generated("rust-toolchain")
+                                     + ("# later Dockerfile change\n"
+                                        if unsafe == "dockerfile-drift" else ""))
+    gh = FakeGh()
+    before = git(shallow, "ls-remote", "--heads", "origin",
+                 "refs/heads/chore/bump-rust-toolchain-2.0.0")
+    with pytest.raises(RuntimeError, match="orphan branch differs"):
+        pin.open_pin_pr("rust-toolchain", "owner/repo", cwd=shallow, gh_runner=gh)
+    assert git(shallow, "ls-remote", "--heads", "origin",
+               "refs/heads/chore/bump-rust-toolchain-2.0.0") == before
+    assert not gh.prs
+
+
+def test_feature_checkout_cannot_publish_unrelated_commit(repo):
+    git(repo, "checkout", "-b", "feature")
+    (repo / "unrelated.txt").write_text("feature change\n")
+    git(repo, "add", "unrelated.txt")
+    git(repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "unrelated change")
+    (repo / "Dockerfile").write_text(generated("trivy"))
+    gh = FakeGh()
+    with pytest.raises(RuntimeError, match="current main"):
+        pin.open_pin_pr("trivy", "owner/repo", cwd=repo, gh_runner=gh)
+    assert not git(repo, "ls-remote", "--heads", "origin", "refs/heads/chore/bump-trivy-2.0.0")
+    assert not gh.prs
+
+
+def test_feature_based_orphan_is_neither_adopted_nor_rewritten(repo):
+    git(repo, "checkout", "-b", "feature")
+    (repo / "unrelated.txt").write_text("feature change\n")
+    git(repo, "add", "unrelated.txt")
+    git(repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "unrelated change")
+    (repo / "Dockerfile").write_text(generated("trivy"))
+    git(repo, "checkout", "-b", "chore/bump-trivy-2.0.0")
+    git(repo, "add", "Dockerfile")
+    git(repo, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com",
+        "commit", "-m", "feature based pin")
+    git(repo, "push", "origin", "HEAD")
+    before = git(repo, "ls-remote", "--heads", "origin", "refs/heads/chore/bump-trivy-2.0.0")
+    git(repo, "checkout", "main")
+    (repo / "Dockerfile").write_text(generated("trivy"))
+    gh = FakeGh()
+    with pytest.raises(RuntimeError, match="ancestor of current main"):
+        pin.open_pin_pr("trivy", "owner/repo", cwd=repo, gh_runner=gh)
+    assert git(repo, "ls-remote", "--heads", "origin", "refs/heads/chore/bump-trivy-2.0.0") == before
+    assert not gh.prs
+
+
 def test_closed_pr_requires_manual_recovery(repo):
     gh = FakeGh()
     (repo / "Dockerfile").write_text(generated("rust-toolchain"))

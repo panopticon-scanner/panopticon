@@ -106,6 +106,23 @@ def _remote_branch(branch: str, cwd: Path, git_runner) -> str | None:
     return lines[0][:40]
 
 
+def _main_baseline(cwd: Path, git_runner) -> str:
+    """Bind this run to the remote main commit and make its ancestry available."""
+    shallow = _checked(["git", "rev-parse", "--is-shallow-repository"],
+                       cwd, git_runner).strip()
+    if shallow not in {"true", "false"}:
+        raise RuntimeError("invalid shallow-repository response")
+    fetch = ["git", "fetch", "--no-tags"]
+    if shallow == "true":
+        fetch.append("--unshallow")
+    _checked(fetch + ["origin", "refs/heads/main"], cwd, git_runner)
+    baseline = _checked(["git", "rev-parse", "FETCH_HEAD"], cwd, git_runner).strip()
+    head = _checked(["git", "rev-parse", "HEAD"], cwd, git_runner).strip()
+    if head != baseline:
+        raise RuntimeError("checkout is not current main; refusing pin PR")
+    return baseline
+
+
 def open_pin_pr(family: str, repo: str, *, cwd: Path = Path("."),
                 gh_runner=_run, git_runner=_run) -> str:
     if family not in FAMILIES:
@@ -115,7 +132,8 @@ def open_pin_pr(family: str, repo: str, *, cwd: Path = Path("."),
     cwd = Path(cwd)
     base = "main"
     version_arg, _digest_args, title_template, body = FAMILIES[family]
-    base_dockerfile = _checked(["git", "show", "HEAD:Dockerfile"], cwd, git_runner)
+    baseline = _main_baseline(cwd, git_runner)
+    base_dockerfile = _checked(["git", "show", baseline + ":Dockerfile"], cwd, git_runner)
     generated = (cwd / "Dockerfile").read_text(encoding="utf-8")
     version = _expected(base_dockerfile, generated, family)
     branch = "chore/bump-%s-%s" % (family, version)
@@ -152,16 +170,19 @@ def open_pin_pr(family: str, repo: str, *, cwd: Path = Path("."),
     if fetched != remote:
         raise RuntimeError("remote pin branch changed during verification")
     parent = _checked(["git", "rev-parse", "FETCH_HEAD^"], cwd, git_runner).strip()
-    head = _checked(["git", "rev-parse", "HEAD"], cwd, git_runner).strip()
     parents = _checked(["git", "rev-list", "--parents", "-n", "1", fetched],
                        cwd, git_runner).split()
     if parents != [fetched, parent]:
         raise RuntimeError("orphan branch is not a single pin commit; recover manually")
-    ancestor = git_runner(["git", "merge-base", "--is-ancestor", parent, head], cwd)
+    ancestor = git_runner(["git", "merge-base", "--is-ancestor", parent, baseline], cwd)
     if ancestor.returncode == 1:
         raise RuntimeError("orphan branch is not based on an ancestor of current main; recover manually")
     if ancestor.returncode:
         raise RuntimeError("git ancestry lookup failed: %s" % ancestor.stderr.strip())
+    branch_commits = _checked(["git", "rev-list", baseline + ".." + fetched],
+                              cwd, git_runner).splitlines()
+    if branch_commits != [fetched]:
+        raise RuntimeError("orphan branch has unrelated committed changes; recover manually")
     changed = _checked(["git", "diff", "--name-only", parent, fetched], cwd, git_runner)
     remote_file = _checked(["git", "show", "FETCH_HEAD:Dockerfile"], cwd, git_runner)
     if changed != "Dockerfile\n" or remote_file != generated:
