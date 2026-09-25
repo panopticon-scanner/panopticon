@@ -94,6 +94,104 @@ class TestRunManifest(unittest.TestCase):
                                  flags={"fail_on": "high"}),
             [])
 
+    def test_tools_downgrade_is_one_way_and_only_for_an_explicit_false(self):
+        for original in (True, None):
+            with self.subTest(original=original):
+                m = rm.build_manifest(**self._params(flags={"tools": original,
+                                                          "fail_on": "high"}))
+                self.assertTrue(rm.is_tools_downgrade(m, {"tools": False}))
+                self.assertEqual(rm.conflicting_flags(m, flags={"tools": False}), [])
+                self.assertFalse(rm.is_tools_downgrade(m, None))
+                self.assertFalse(rm.is_tools_downgrade(m, {}))
+                self.assertFalse(rm.is_tools_downgrade(m, {"tools": None}))
+                self.assertEqual(rm.conflicting_flags(m, flags={"tools": original}), [])
+                self.assertEqual(rm.conflicting_flags(m, flags={}), [])
+                self.assertEqual(rm.conflicting_flags(m, flags={"tools": None}), [])
+                conflicts = rm.conflicting_flags(m, flags={"tools": False,
+                                                           "fail_on": "critical"})
+                self.assertEqual(len(conflicts), 1)
+                self.assertIn("flags.fail_on", conflicts[0])
+        m = rm.build_manifest(**self._params(flags={"tools": False}))
+        self.assertFalse(rm.is_tools_downgrade(m, {"tools": False}))
+        self.assertEqual(rm.conflicting_flags(m, flags={"tools": False}), [])
+        self.assertFalse(rm.is_tools_downgrade(m, {"tools": True}))
+        self.assertEqual(len(rm.conflicting_flags(m, flags={"tools": True})), 1)
+        self.assertIn("flags.tools", rm.conflicting_flags(m, flags={"tools": True})[0])
+
+    def test_record_tools_downgrade_persists_change_without_drifting_other_keys(self):
+        manifest = rm.build_manifest(**self._params(flags={"tools": True,
+                                                       "fail_on": "high",
+                                                       "max_verify": 4}))
+        manifest["flag_changes"] = [{"flag": "earlier", "at": "before"}]
+        rm.write_manifest(self.root, manifest)
+        with mock.patch("scripts.run_manifest._now_iso", return_value="2026-09-25T12:00:00Z"):
+            rm.record_tools_downgrade(self.root, manifest)
+        loaded = rm.load_manifest(self.root)
+        self.assertEqual(loaded["flags"]["tools"], False)
+        self.assertEqual(loaded["flags"]["fail_on"], "high")
+        self.assertEqual(loaded["flags"]["max_verify"], 4)
+        self.assertEqual(loaded["run_id"], manifest["run_id"])
+        self.assertEqual(loaded["security_mode"], "standard")
+        self.assertEqual(loaded["flag_changes"], [
+            {"flag": "earlier", "at": "before"},
+            {"flag": "tools", "from": True, "to": False,
+             "at": "2026-09-25T12:00:00Z"}])
+        self.assertTrue(rm.tools_downgraded_mid_run(loaded))
+
+    def test_posture_disclosure_round_trips_and_replaces_old_digest(self):
+        manifest = rm.build_manifest(**self._params())
+        rm.write_manifest(self.root, manifest)
+        rm.record_posture_disclosure(self.root, manifest, "digest-a",
+                                     at="2026-09-25T12:00:00Z")
+        loaded = rm.load_manifest(self.root)
+        self.assertEqual(loaded[rm.POSTURE_DISCLOSED],
+                         {"digest": "digest-a", "at": "2026-09-25T12:00:00Z"})
+        self.assertEqual(rm.posture_disclosed_at(loaded, "digest-a"),
+                         "2026-09-25T12:00:00Z")
+        self.assertIsNone(rm.posture_disclosed_at(loaded, "digest-b"))
+        rm.record_posture_disclosure(self.root, loaded, "digest-b",
+                                     at="2026-09-25T13:00:00Z")
+        updated = rm.load_manifest(self.root)
+        self.assertEqual(rm.posture_disclosed_at(updated, "digest-b"),
+                         "2026-09-25T13:00:00Z")
+        self.assertIsNone(rm.posture_disclosed_at(updated, "digest-a"))
+        self.assertEqual(updated["flags"], manifest["flags"])
+
+    def test_rewrite_strips_ephemeral_keys_and_atomically_replaces_valid_json(self):
+        manifest = rm.build_manifest(**self._params())
+        rm.write_manifest(self.root, manifest)
+        manifest["session_dir"] = "/private/tmp/session"
+        manifest["invocation"] = "one-call"
+        manifest["posture_disclosed"] = {"digest": "valid", "at": "now"}
+        path = rm.manifest_path(self.root)
+        rm._rewrite(self.root, manifest)
+        with open(path, encoding="utf-8") as fh:
+            disk = json.load(fh)
+        self.assertNotIn("session_dir", disk)
+        self.assertNotIn("invocation", disk)
+        self.assertEqual(disk["posture_disclosed"], manifest["posture_disclosed"])
+        self.assertEqual(disk["flags"], manifest["flags"])
+        self.assertEqual(disk["run_id"], manifest["run_id"])
+        self.assertFalse(os.path.exists(path + ".tmp"))
+
+    def test_rewrite_failures_leave_original_manifest_valid_and_unchanged(self):
+        manifest = rm.build_manifest(**self._params())
+        rm.write_manifest(self.root, manifest)
+        path = rm.manifest_path(self.root)
+        with open(path, "rb") as fh:
+            original = fh.read()
+        for target, failure in (("scripts.run_manifest.json.dump", TypeError("bad json")),
+                                ("scripts.run_manifest.os.replace", OSError("rename failed"))):
+            with self.subTest(target=target):
+                with mock.patch(target, side_effect=failure):
+                    with self.assertRaises(type(failure)):
+                        rm.record_posture_disclosure(self.root, manifest,
+                                                     "new-digest", at="now")
+                with open(path, "rb") as fh:
+                    self.assertEqual(fh.read(), original)
+                with open(path, encoding="utf-8") as fh:
+                    self.assertEqual(json.load(fh)["run_id"], manifest["run_id"])
+
     def test_conflict_on_differing_security_mode(self):
         m = rm.build_manifest(**self._params())
         conflicts = rm.conflicting_flags(m, security_mode="redteam")
