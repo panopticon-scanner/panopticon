@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest import mock
 
-from _test_helpers import FakePopen
+from _test_helpers import FakePopen, FakeStream
 import scripts.tools.base as base
 
 
@@ -35,6 +35,75 @@ class _ImmediateTimer:
     @daemon.setter
     def daemon(self, value):
         pass
+
+
+class TestSubprocessFakes(unittest.TestCase):
+    def test_inert_python_process_characterizes_read_and_exit(self):
+        with subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'abcdef')"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ) as proc:
+            self.assertEqual(proc.stdout.read(0), b"")
+            self.assertEqual(proc.stdout.read(2), b"ab")
+            self.assertEqual(proc.stdout.read(2), b"cd")
+            self.assertEqual(proc.stdout.read(2), b"ef")
+            self.assertEqual(proc.stdout.read(2), b"")
+            self.assertEqual(proc.wait(timeout=5), 0)
+            self.assertEqual(proc.poll(), 0)
+            proc.kill()
+            self.assertEqual(proc.returncode, 0)
+
+    def test_stream_reads_obey_bounds_without_losing_unread_bytes(self):
+        stream = FakeStream([b"abc", b"def"])
+        self.assertEqual(stream.read(0), b"")
+        self.assertEqual(stream.read(2), b"ab")
+        self.assertEqual(stream.read(2), b"cd")
+        self.assertEqual(stream.read(2), b"ef")
+        self.assertEqual(stream.read(2), b"")
+        self.assertEqual(stream.read(), b"")
+        stream.close()
+        self.assertTrue(stream.closed)
+        with self.assertRaises(ValueError):
+            stream.read(1)
+
+    def test_normal_exit_is_published_and_late_kill_preserves_it(self):
+        fake = FakePopen(["tool"], returncode=7)
+        self.assertIsNone(fake.returncode)
+        fake.kill()
+        self.assertEqual(fake.wait(), 7)
+        self.assertEqual(fake.returncode, 7)
+        observed = FakePopen(["tool"], returncode=3)
+        self.assertEqual(observed.poll(), 3)
+        observed.kill()
+        self.assertEqual(observed.returncode, 3)
+
+    def test_pending_wait_times_out_then_kill_reaps(self):
+        fake = FakePopen(["tool"], pending=True)
+        self.assertIsNone(fake.poll())
+        with self.assertRaises(subprocess.TimeoutExpired) as raised:
+            fake.wait(timeout=3)
+        self.assertEqual((raised.exception.cmd, raised.exception.timeout),
+                         (["tool"], 3))
+        self.assertIsNone(fake.returncode)
+        fake.kill()
+        self.assertEqual(fake.wait(), -9)
+        self.assertEqual(fake.poll(), -9)
+
+    def test_terminate_publishes_a_stable_exit(self):
+        fake = FakePopen(pending=True)
+        fake.terminate()
+        self.assertEqual(fake.wait(), -15)
+        fake.kill()
+        self.assertEqual(fake.poll(), -15)
+
+    def test_fake_has_no_signalable_real_pid(self):
+        fake = FakePopen(pending=True)
+        with mock.patch.object(base.os, "getpgid") as getpgid, \
+             mock.patch.object(base.os, "killpg") as killpg:
+            base._kill_process_tree(fake)
+        getpgid.assert_not_called()
+        killpg.assert_not_called()
+        self.assertEqual(fake.returncode, -9)
 
 
 class TestBase(unittest.TestCase):
@@ -228,17 +297,20 @@ class TestRunTool(unittest.TestCase):
                                     cwd="/x", env={"A": "1"})
 
     def test_timeout_expired_propagates(self):
-        fake = FakePopen(stdout=b"x", stderr=b"", returncode=0)
+        fake = FakePopen(["t"], stdout=b"x", stderr=b"", pending=True)
         with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake), \
              mock.patch("scripts.tools.base.threading.Timer", _ImmediateTimer):
             with self.assertRaises(base.subprocess.TimeoutExpired):
                 base.run_tool(["t"], timeout=5)
+        self.assertEqual(fake.returncode, -9)
+        self.assertTrue(fake.stdout.closed)
+        self.assertTrue(fake.stderr.closed)
 
     def test_output_exceeds_cap_truncates_with_marker_and_nonzero_rc(self):
         err = io.StringIO()
         with mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024):
             chunks = [b"x" * 512, b"x" * 512, b"x" * 512]
-            fake = FakePopen(stdout=chunks, stderr=b"", returncode=0)
+            fake = FakePopen(stdout=chunks, stderr=b"", pending=True)
             with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake), \
                  contextlib.redirect_stderr(err):
                 out, rc = base.run_tool(["tool"], timeout=5)
@@ -251,6 +323,18 @@ class TestRunTool(unittest.TestCase):
         self.assertEqual(len(out), 1024 + len(marker))
         self.assertNotEqual(rc, 0)
         self.assertIn("exceeded 1024 byte limit", err.getvalue())
+
+    def test_single_large_read_is_capped_and_late_kill_keeps_exit_status(self):
+        fake = FakePopen(stdout=b"z" * 200_000, returncode=4)
+        self.assertEqual(fake.poll(), 4)
+        with mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024), \
+             mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake), \
+             contextlib.redirect_stderr(io.StringIO()):
+            out, rc = base.run_tool(["tool"], timeout=5)
+        self.assertEqual(out[:1024], b"z" * 1024)
+        self.assertIn(b"[TRUNCATED by panopticon", out)
+        self.assertEqual(rc, 4)
+        self.assertEqual(fake.returncode, 4)
 
     def test_concurrent_stdout_stderr_no_deadlock(self):
         # A child that fills the stderr pipe before writing stdout would
