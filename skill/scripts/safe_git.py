@@ -328,6 +328,106 @@ def _is_command_setting(key):
         key.startswith("diff.") and key.endswith((".command", ".textconv")))
 
 
+def _is_transport_command_setting(key, remote):
+    """Whether `key` makes a FETCH of `remote` run a command the CHECKOUT's
+    config named.
+
+    `diff_map.acquire_pr`'s fetch is the one git call that keeps the operator's
+    environment (a private repository's PR head is only fetchable through their
+    credential helper), so it is the one call a repo-local setting can still
+    reach. It is REFUSED there rather than emptied (#2041 owner ruling: "refuse
+    with remedy"), which is why these keys are deliberately absent from
+    `_is_command_setting`/`_driver_keys`: those are the keys the probe EMPTIES
+    on every launch, and emptying `core.sshCommand` would break the private
+    repository the fetch exemption exists for. The remedy is the operator's own
+    GLOBAL config, which the fetch still honours.
+
+    MEASURED on git 2.50 (#2012's review and #2041's, with both of the fetch's
+    pins applied): a repo-local `core.sshCommand` ran on the fetch of an
+    `ssh://` remote, `remote.<name>.uploadpack` on the fetch of a local-path
+    remote, and `core.askPass` on the fetch of an http remote that answered 401
+    -- both halves of that trigger are repo-local, since `remote.<name>.url` is
+    too. `GIT_ASKPASS` in the operator's ENVIRONMENT outranks the repo's
+    `core.askPass`, so this entry protects the operator who does not set it,
+    which is the default. The rest are the same class by git's own documentation
+    rather than by measurement -- `core.gitProxy` is the proxy command for
+    `git://`,
+    `remote.<name>.vcs` selects the remote-helper program `git-remote-<vcs>`,
+    `credential.helper` and `credential.<url>.helper` are command lines (a
+    leading `!` makes one an outright shell line) run on an https auth
+    challenge, and `protocol.allow`/`protocol.ext.allow` unlock the `ext::`
+    helper -- git's default for `ext` is `never` -- that a repo-local
+    `remote.<name>.url` is free to name. Other `protocol.<scheme>.allow` keys
+    are NOT here: `protocol.file.allow=always` is the documented way to keep
+    local-path submodules working since git 2.38.1, and no other scheme hands
+    a command line to git.
+
+    `remote` is the ONE remote name the caller's fetch names (#2041 M3), so a
+    `remote.<other>.*` key is not a key THIS fetch would execute and the
+    operator keeps it. Required rather than defaulted: a call site that does not
+    know which remote it fetches cannot answer this question.
+
+    Normalizes first, so a hand-written key answers the way git would compare
+    it (`_canonical_key`: section and variable lowered, subsection kept). The
+    keys the caller reads out of `config --list` are canonical already.
+    """
+    parts = _canonical_key(key).split(".")
+    if len(parts) < 2:
+        return False
+    section, variable = parts[0], parts[-1]
+    if section == "core":
+        return len(parts) == 2 and variable in ("sshcommand", "gitproxy", "askpass")
+    if section == "remote":
+        # A subsection is mandatory (`remote.uploadpack` names no remote and git
+        # runs nothing for it) and it must be the remote the fetch NAMES, which
+        # git compares case-sensitively -- `[remote "Origin"]` is a different
+        # remote, and `_canonical_key` keeps that half's case for exactly this.
+        return (len(parts) > 2 and variable in ("uploadpack", "vcs")
+                and ".".join(parts[1:-1]) == remote)
+    if section == "credential":
+        return variable == "helper"        # bare, or per-URL (dots and all)
+    if section == "protocol":
+        # Bare (`protocol.allow`) or the `ext` scheme only; see the docstring.
+        return variable == "allow" and parts[1:-1] in ([], ["ext"])
+    return False
+
+
+def _transport_value_arms_the_key(key, value):
+    """Whether `value` actually arms transport `key` (#2041 M3).
+
+    Empty never arms: a key set and then emptied (`git config core.sshCommand
+    ""`) runs nothing. `protocol.*` is a PERMISSION rather than a command line
+    and `never` is its HARDENING value, so refusing on it would refuse the
+    operator who closed the hole. Everything else arms it, including a value git
+    will die on: git parses these case-sensitively (`always`/`never`/`user`), so
+    `Never` is a configuration error rather than a lock.
+    """
+    if not value:
+        return False
+    if _canonical_key(key).split(".", 1)[0] == "protocol":
+        return value != "never"
+    return True
+
+
+def transport_command_keys(settings, remote):
+    """The keys in `settings` a fetch of `remote` would execute, sorted.
+
+    The public face of `_is_transport_command_setting`, for
+    `diff_map.acquire_pr`: it reads the checkout's own config (every scope the
+    fetch reads -- see `repository_settings`) immediately before the one
+    unconfined call and refuses when this is not empty (#2041).
+
+    An emptied value, and a `protocol.*` value of `never`, arm nothing and do
+    not refuse (`_transport_value_arms_the_key`). A GLOBAL or system value never
+    appears here at all, because the caller's read keeps only the repository's
+    own scopes -- moving the setting there is the remedy the refusal names, so
+    refusing on it would refuse the fix.
+    """
+    return sorted(key for key, value in settings.items()
+                  if _transport_value_arms_the_key(key, value)
+                  and _is_transport_command_setting(key, remote))
+
+
 def _filter_driver(key):
     """The driver name in a `filter.<driver>.<setting>` key, or None.
 
@@ -403,6 +503,69 @@ def _settings(stdout):
     settings = {}
     for record in stdout.split("\0"):
         key, _, value = record.partition("\n")
+        settings[key] = value
+    return settings
+
+
+# The `--show-scope` labels for config the REPOSITORY carries: `.git/config`
+# and every file it includes (`local`, measured -- an `include.path` key is
+# labelled with the including file's scope), plus `$GIT_DIR/config.worktree`
+# (`worktree`). `global`/`system` are the OPERATOR's, which is the remedy the
+# `--pr` refusal points at, and `command` is the probe's own `-c` pins.
+_REPOSITORY_SCOPES = ("local", "worktree")
+# Every label git prints; anything else means the listing is not the shape
+# this parser reads, and the caller must not treat it as "nothing set".
+_SCOPE_LABELS = ("system", "global", "local", "worktree", "command", "unknown")
+
+
+def repository_settings(stdout):
+    """`config --null --list --show-scope --includes` as {key: value}, for the
+    settings the REPOSITORY itself carries. Last value wins, like `_settings`.
+
+    For `diff_map.acquire_pr`, which must see every transport command setting
+    its fetch would obey from this checkout -- and only those (#2041). Why
+    `--show-scope` and a filter rather than a scope FLAG, all measured on git
+    2.50.1:
+
+    - `--local` is `.git/config` plus its includes, but NOT
+      `$GIT_DIR/config.worktree`, which the fetch DOES read once
+      `extensions.worktreeConfig` is set. Two more lines in the same hostile
+      `.git/config` and a `--local` read sees nothing (C1: measured through
+      `acquire_pr`, the command ran).
+    - `--worktree` is not the fix. With the extension ON it lists the worktree
+      file ALONE -- the `.git/config` keys drop out of the read, so the payload
+      simply stays where it was. With the extension OFF it DIES (`rc=128`,
+      "--worktree cannot be used with multiple working trees unless the config
+      extension worktreeConfig is enabled") in any checkout that has a second
+      worktree, which is an ordinary operator setup. Both measured through
+      `acquire_pr`: the first as the command running, the second as a refusal
+      to resolve the review root.
+    - `--show-scope` takes no scope flag, so it reads exactly what the fetch
+      reads and labels each entry's file class. Keeping `local` and `worktree`
+      is the repository's own config, whichever of its files carries the key.
+
+    Records alternate `scope` and `key\nvalue`, each NUL-terminated (measured),
+    so a value containing a newline cannot shift the pairing; an unpaired
+    trailing record -- git's output ends with a NUL, and a truncated read could
+    leave one -- is ignored rather than guessed at.
+
+    FAIL CLOSED on shape: a listing that is empty (under the probe's own
+    environment the `command` pins always print, so a real listing never is)
+    or that carries a label git does not print raises `ValueError`, because
+    `{}` would read as "nothing set" and the caller's refusal would pass
+    silently on a git whose `--show-scope` output changed (#2041 review 2).
+    """
+    settings = {}
+    records = stdout.split("\0")
+    if len(records) < 2:
+        raise ValueError("safe Git: the config listing is empty, not scope-labelled")
+    for index in range(0, len(records) - 1, 2):
+        if records[index] not in _SCOPE_LABELS:
+            raise ValueError("safe Git: the config listing is not scope-labelled (%r)"
+                             % records[index][:40])
+        if records[index] not in _REPOSITORY_SCOPES:
+            continue
+        key, _, value = records[index + 1].partition("\n")
         settings[key] = value
     return settings
 
