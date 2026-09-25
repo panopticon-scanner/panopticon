@@ -1,3 +1,4 @@
+import contextvars
 import json
 import os
 import tempfile
@@ -177,15 +178,25 @@ sys.exit(1)
             with mock.patch.dict(os.environ, {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
                                                "TMPDIR": d}), mock.patch.object(tempfile, "tempdir", d):
                 for name, target, _, _, _, citation in cases:
-                    adapter = ADAPTERS[name]
-                    raw, rc = adapter.invoke(str(target))
-                    self.assertEqual(rc, 1, name)
-                    self.assertEqual((root / (name + ".invoked")).read_text(), "called", name)
-                    findings = adapter.parse(raw, "g1")
-                    self.assertEqual(len(findings), 1, name)
-                    cited = findings[0]["citations"]
-                    self.assertIn(citation, cited.get("cve", []) + cited.get("cwe", []))
-                    self.assertEqual(findings[0]["source"], "tool:" + name)
+                    def exercise_adapter():
+                        adapter = ADAPTERS[name]
+                        raw, rc = adapter.invoke(str(target))
+                        self.assertEqual(rc, 1, name)
+                        self.assertEqual((root / (name + ".invoked")).read_text(),
+                                         "called", name)
+                        findings = adapter.parse(raw, "g1")
+                        self.assertEqual(len(findings), 1, name)
+                        cited = findings[0]["citations"]
+                        self.assertIn(citation, cited.get("cve", []) + cited.get("cwe", []))
+                        self.assertEqual(findings[0]["source"], "tool:" + name)
+
+                    # invoke stores the scanned manifest in ContextVars shared
+                    # by the singleton adapters. Keep those writes inside this
+                    # call so later tests see their own caller context.
+                    original_manifest = pip_audit_module._manifest_path_cv.get()
+                    contextvars.copy_context().run(exercise_adapter)
+                    self.assertEqual(pip_audit_module._manifest_path_cv.get(),
+                                     original_manifest)
 
 
 if __name__ == "__main__":
