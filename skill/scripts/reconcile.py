@@ -46,12 +46,53 @@ def _resolve_part_path(base_dir, part):
     return real_ppath
 
 
+# meta.review_type values that are narrower than the whole repository by
+# construction (report-schema.json: repo|file|directory|group|changes|pr). A
+# run scoped to any of them cannot corroborate a repo-wide close, however many
+# files its groups happen to list.
+NARROWER_REVIEW_TYPES = ("file", "directory", "group", "changes", "pr")
+
+
+def _stated_files(doc):
+    """The files ONE report document says it reviewed, or None when it doesn't say.
+
+    `groups[].files` is a report's own statement of coverage; paths go through
+    evidence.norm_path, the same normalization reconcile_key applies, so the set
+    joins with a record's coarse_key[0]. Returns None -- "unknown", which the
+    caller fails CLOSED on -- when the document carries no usable `groups` key,
+    which is NOT the same as an explicit empty list ("reviewed nothing").
+    """
+    groups = doc.get("groups")
+    if not isinstance(groups, list):
+        return None
+    return {evidence.norm_path(f)
+            for group in groups if isinstance(group, dict)
+            for f in (group.get("files") or [])}
+
+
+def _merge_stated(base, more):
+    """Union two coverage statements. A None side ("didn't say") contributes
+    nothing; the result is None only when neither side stated anything."""
+    if more is None:
+        return base
+    return more if base is None else base | more
+
+
 def load_report(path):
-    """Load a report, merging confined part and rejected-claim continuations."""
+    """Load a report, merging confined part and rejected-claim continuations.
+
+    Also carries what the run says it LOOKED AT, which the cross-run diff needs
+    to tell "fixed" from "never reviewed" (#1807): `reviewed_files` (the union of
+    groups[].files across the main document and every merged part, normalized;
+    None when no document states any) and `review_type` (meta.review_type).
+    Both keys are additive -- every other reader indexes `findings` /
+    `discarded_claims` by name and is unaffected.
+    """
     with open(path, encoding="utf-8") as fh:
         report = json.load(fh)
     findings = list(report.get("findings") or [])
     discarded = list(report.get("discarded_claims") or [])
+    reviewed_files = _stated_files(report)
     # Anchor to an absolute path before resolving parts: os.path.dirname on a
     # bare filename (e.g. "run2.json", the common case from the CLI run in
     # its own directory) returns "", and joining/normpath'ing a relative
@@ -66,6 +107,7 @@ def load_report(path):
             pdata = json.load(fh)
         findings.extend(pdata.get("findings") or [])
         discarded.extend(pdata.get("discarded_claims") or [])
+        reviewed_files = _merge_stated(reviewed_files, _stated_files(pdata))
     # #run9 ARC-D1A: a large report ALSO spills discarded_claims to a
     # `<stem>-discarded.json` sibling (write_report #15), leaving an empty inline
     # list + a meta.discarded_claims_file pointer. The meta.parts merge above never
@@ -75,7 +117,9 @@ def load_report(path):
     if disc_file:
         with open(_resolve_part_path(base_dir, disc_file), encoding="utf-8") as fh:
             discarded.extend(json.load(fh).get("discarded_claims") or [])
-    return {"findings": findings, "discarded_claims": discarded}
+    return {"findings": findings, "discarded_claims": discarded,
+            "reviewed_files": reviewed_files,
+            "review_type": (report.get("meta") or {}).get("review_type")}
 
 
 def iter_records(report):
@@ -129,10 +173,15 @@ GUARD_REASONS = {
     "empty_run3": "run3 has zero records -- refusing to corroborate any close",
     "no_file_overlap": ("run2/run3 file sets share zero paths -- path-shape drift "
                         "suspected; refusing to corroborate closes"),
+    "run3_not_repo_wide": ("run3 was a %s-scoped review -- a narrower run cannot "
+                           "corroborate a repo-wide close"),
+    "run3_files_unstated": ("run3's report does not state which files it reviewed "
+                            "(no groups[].files) -- refusing to corroborate closes"),
 }
 
 
-def build_diff(run2_records, run3_records, run2_path, run3_path):
+def build_diff(run2_records, run3_records, run2_path, run3_path,
+               run3_reviewed_files=None, run3_review_type=None):
     """Partition cross-run identities into recurring / closed / ambiguous / new.
 
     A finding RECURS if its exact finding_fingerprint OR its coarse reconcile_key
@@ -144,18 +193,30 @@ def build_diff(run2_records, run3_records, run2_path, run3_path):
     no close_guard is active (see below), its fingerprint-group carries exactly
     one coarse key (a degenerate multi-key group can't be trusted to mean one
     thing), it has a recorded file (an empty file can't be corroborated by any
-    (file, panel) read), and its (file, panel) is entirely clear in run3 (the
-    drift-proof corroboration -- category is free-text and drifts). Failing any
-    of those routes it to AMBIGUOUS instead (kept open, never auto-closed) --
-    when corroboration cannot be performed, refuse to close.
+    (file, panel) read), that file is one run3 REVIEWED (#1807: run3 being
+    silent about a file it never opened is not evidence of a fix), and its
+    (file, panel) is entirely clear in run3 (the drift-proof corroboration --
+    category is free-text and drifts). Failing any of those routes it to
+    AMBIGUOUS instead (kept open, never auto-closed) -- when corroboration
+    cannot be performed, refuse to close.
+
+    `run3_reviewed_files` / `run3_review_type` are run3's own statement of what
+    it looked at (load_report: groups[].files and meta.review_type). A caller
+    that states no reviewed files gets the fail-CLOSED reading -- the whole-run
+    `run3_files_unstated` guard -- never a close on silence.
 
     close_guard fires when corroboration itself can't be trusted for the WHOLE
     run: run3 has zero records ("empty_run3": nothing ran / nothing loaded,
-    which would otherwise read as "area clear" for everything), or run2 and
+    which would otherwise read as "area clear" for everything), run2 and
     run3's non-empty file sets share no path at all ("no_file_overlap": e.g.
-    absolute-vs-relative path drift between the two runs). Either guard routes
-    every non-recurring group to ambiguous regardless of its own (file, panel)
-    read.
+    absolute-vs-relative path drift between the two runs), run3's report does
+    not state which files it reviewed ("run3_files_unstated": no coverage claim
+    to check a close against), or run3 was scoped narrower than the repository
+    by construction ("run3_not_repo_wide": meta.review_type in
+    NARROWER_REVIEW_TYPES). Any guard routes every non-recurring group to
+    ambiguous regardless of its own (file, panel) read. The order is
+    safe-direction-first: a whole-run trust failure is reported before the
+    narrower per-file one.
 
     Same-side fingerprint collisions and finding<->rejected kind flips are
     surfaced, never silently merged. Every cohort and record list is sorted, so
@@ -194,6 +255,15 @@ def build_diff(run2_records, run3_records, run2_path, run3_path):
         files3 = {r["coarse_key"][0] for r in run3_records if r["coarse_key"][0]}
         if not (files2 & files3):
             close_guard = "no_file_overlap"
+        elif run3_reviewed_files is None:
+            # #1807: no groups[].files anywhere in run3's report. Fail CLOSED --
+            # without a coverage claim, "0 findings on that file" is unreadable.
+            close_guard = "run3_files_unstated"
+        elif run3_review_type in NARROWER_REVIEW_TYPES:
+            close_guard = "run3_not_repo_wide"
+    guard_reason = GUARD_REASONS.get(close_guard)
+    if close_guard == "run3_not_repo_wide":
+        guard_reason = guard_reason % run3_review_type
 
     recurring, closed, ambiguous = [], [], []
     for fp in sorted(fps2):
@@ -225,11 +295,11 @@ def build_diff(run2_records, run3_records, run2_path, run3_path):
         fdisp, pdisp = file_ or "(no file)", panel_ or "(no panel)"
         # Decision order (safe direction first, #914 final-review ordering
         # note): (a) close_guard active; (b) degenerate multi-coarse-key
-        # group; (c) no file recorded; (d) (file,panel) still active; only
-        # then (e) closed.
+        # group; (c) no file recorded; (c0) run3 never reviewed that file
+        # (#1807); (d) (file,panel) still active; only then (e) closed.
         if close_guard:
             ambiguous.append({"fingerprint": fp, "coarse_key": list(ck),
-                              "reason": GUARD_REASONS[close_guard],
+                              "reason": guard_reason,
                               "run2": _by_id(recs)})
         elif len({r["coarse_key"] for r in recs}) > 1:
             ambiguous.append({"fingerprint": fp, "coarse_key": list(ck),
@@ -239,6 +309,16 @@ def build_diff(run2_records, run3_records, run2_path, run3_path):
             ambiguous.append({"fingerprint": fp, "coarse_key": list(ck),
                               "reason": ("no file recorded -- (file,panel)-clear "
                                         "cannot corroborate a fix"),
+                              "run2": _by_id(recs)})
+        elif file_ not in (run3_reviewed_files or ()):
+            # #1807: run3 reviewed a NARROWER set of files than run2 and shares at
+            # least one path with it, so no whole-run guard fired -- but silence
+            # about a file run3 never opened is not corroboration. `or ()` keeps
+            # this total: an unstated coverage set would already have guarded the
+            # whole run above, and if it somehow reaches here it fails closed.
+            ambiguous.append({"fingerprint": fp, "coarse_key": list(ck),
+                              "reason": ("%s was not reviewed in run3 -- absence "
+                                         "of findings is not a fix" % fdisp),
                               "run2": _by_id(recs)})
         elif (file_, panel_) in active3:
             counts = active3_counts[(file_, panel_)]
@@ -352,8 +432,11 @@ def main(argv=None):
 
     if a.cmd == "diff":
         r2 = iter_records(load_report(a.run2_report))
-        r3 = iter_records(load_report(a.run3_report))
-        diff = build_diff(r2, r3, a.run2_report, a.run3_report)
+        report3 = load_report(a.run3_report)
+        r3 = iter_records(report3)
+        diff = build_diff(r2, r3, a.run2_report, a.run3_report,
+                          run3_reviewed_files=report3["reviewed_files"],
+                          run3_review_type=report3["review_type"])
         with open(a.out, "w", encoding="utf-8") as fh:
             json.dump(diff, fh, indent=2, sort_keys=True)
         print("wrote %s (recurring=%d closed=%d ambiguous=%d new=%d)"

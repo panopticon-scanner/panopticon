@@ -1,4 +1,12 @@
 {
+  "meta": {"review_type": "repo"},
+  "groups": [
+    {"name": "App", "files": ["app/config.py", "app/registry.py", "app/legacy.py",
+                              "app/query.py", "app/auth.py"],
+     "panel_grades": {"security": "D", "architecture": "C", "test": "B"}},
+    {"name": "Deps", "files": ["requirements.txt"],
+     "panel_grades": {"security": "F"}}
+  ],
   "findings": [
     {"id": "F-TOOL-1-R3", "severity": "MEDIUM", "panel": "security",
      "category": "hardcoded-secret", "source": "tool:semgrep",

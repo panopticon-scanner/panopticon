@@ -7,6 +7,23 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A run3 that never reviewed the file can no longer corroborate a "fixed" close (#1807,
+  DAT-1268532600).** Stage 1 (`skill/scripts/reconcile.py diff`) read "no run3 record on this
+  (file, panel)" as evidence of a fix, and its two whole-run guards only fired when run3 was EMPTY
+  or shared no path at all with run2 -- so a NARROWER re-run (`--scope-file a.py`, one directory,
+  one group, a PR diff) overlaps on a single path, defeats both, and every still-unfixed finding on
+  the files it never opened landed in the `closed` cohort, which `scripts/reconcile_apply.py apply
+  --confirm-close` turns into a real GitHub close commented "**Reconciliation: fixed (area
+  clear).**". The diff now reads run3's own statement of coverage -- `groups[].files`, merged across
+  the report and every part, and `meta.review_type` -- and refuses three ways: a finding on a file
+  run3 did not review goes to `ambiguous` (kept open) reading "<file> was not reviewed in run3 --
+  absence of findings is not a fix"; a run3 whose report does not state which files it reviewed
+  guards the whole run (`run3_files_unstated`); and a run3 declared `file`/`directory`/`group`/
+  `changes`/`pr`-scoped guards it too (`run3_not_repo_wide`), whatever its groups list. Missing
+  information fails CLOSED, with no flag to opt back into the old reading. **Operator-visible:** a
+  close now needs a repo-wide run3 that says what it looked at; reconcile against a scoped re-run
+  and the summary reports `closed: 0` with every unfixed finding under "ambiguous (kept open)",
+  where it used to report them fixed.
 - **`--max-budget-usd` is re-read after every entry, not once per checkpoint (#1760,
   AGT-4265600920).** The cap was compared with the ledger exactly once per loop iteration, at the
   top and ahead of arming — and a checkpoint is ONE batch, so a whole review round (every pending
