@@ -448,5 +448,64 @@ class TestRewriteDoesNotFollowAPlantedTmpSymlink(unittest.TestCase):
             os.unlink(self.tmp)
 
 
+class TestRecordDiscardedBatch(unittest.TestCase):
+    """#1912: the count of batch records an operator accepted the loss of.
+
+    The fourth deliberate `_rewrite` caller. Append-only, and reading a
+    tree-resident key back is reading from the boundary (review round 1,
+    finding 7).
+    """
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.root = self._d.name
+        self.addCleanup(self._d.cleanup)
+        rm.write_manifest(self.root, {"run_id": "r1", "host": "claude"})
+
+    def _batches(self):
+        return rm.load_manifest(self.root)[rm.DISCARDED_BATCHES]
+
+    def test_two_discards_in_one_run_both_survive(self):
+        # Appended, never replaced: a run may have to do this more than once,
+        # and a regression to overwrite-semantics would report one loss for two.
+        rm.record_discarded_batch(self.root, None, 1, at="2026-01-01T00:00:00Z")
+        rm.record_discarded_batch(self.root, None, 4, at="2026-01-01T00:01:00Z")
+        self.assertEqual([{"batch": 1, "at": "2026-01-01T00:00:00Z"},
+                          {"batch": 4, "at": "2026-01-01T00:01:00Z"}],
+                         self._batches())
+
+    def test_a_planted_non_list_is_started_over_not_exploded(self):
+        # `list("batch-1")` is seven entries, `list({"a": 1})` is one per key.
+        # The manifest lives inside the reviewed tree, so this key is a value a
+        # target can choose; fail closed to a fresh list, like the read-back in
+        # `runners/batch.record_discard` does.
+        for planted in ("batch-1", {"batch": 1}, 7, None, [1, 2]):
+            with self.subTest(planted=planted):
+                manifest = rm.load_manifest(self.root)
+                manifest[rm.DISCARDED_BATCHES] = planted
+                rm._rewrite(self.root, manifest)
+                rm.record_discarded_batch(self.root, None, 2,
+                                          at="2026-01-01T00:02:00Z")
+                kept = planted if isinstance(planted, list) else []
+                self.assertEqual(kept + [{"batch": 2, "at": "2026-01-01T00:02:00Z"}],
+                                 self._batches())
+
+    def test_a_tree_with_no_manifest_records_nothing_and_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertIsNone(rm.record_discarded_batch(empty, None, 1))
+        # ...and the setup namespace never falls back to the REVIEW manifest,
+        # which `load_manifest` is the only reader of.
+        self.assertIsNone(rm.record_discarded_batch(self.root, None, 1,
+                                                    namespace="setup"))
+        self.assertNotIn(rm.DISCARDED_BATCHES, rm.load_manifest(self.root))
+
+    def test_it_is_not_an_anti_drift_key(self):
+        # A resume may not un-discard a record, and nothing about the count is
+        # a flag the engine compares across invocations.
+        self.assertNotIn(rm.DISCARDED_BATCHES, rm._FLAG_KEYS)
+        rm.record_discarded_batch(self.root, None, 1)
+        self.assertEqual([], rm.conflicting_flags(rm.load_manifest(self.root)))
+
+
 if __name__ == "__main__":
     unittest.main()

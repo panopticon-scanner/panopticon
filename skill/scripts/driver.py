@@ -352,6 +352,20 @@ def build_parser():
             p.add_argument("--max-groups", type=_positive_int, default=None)
             p.add_argument("--setup", action="store_true",
                            help="run `driver setup`'s flow on rails instead of a review")
+            # #1912: the narrow remedy for a batch record whose owner cannot be
+            # checked for liveness (a hostname that moved, a stamp the target
+            # mangled). `--reset` was the only escape and it throws the whole
+            # run of paid cells away; this throws away ONE record. The loop's
+            # alone: `driver run` writes no batch records, so on that verb the
+            # flag would name a file it never reads. Refused together with
+            # `--reset` in `parse_cli` -- see there for why not a mutually
+            # exclusive group.
+            p.add_argument("--discard-batch", type=_positive_int, default=None,
+                           metavar="N",
+                           help="roll back batch record N and continue the run, "
+                                "accepting that its owner is gone (only for a "
+                                "foreign/unstamped owner; recorded in "
+                                "discarded-batches.json)")
     sp = sub.add_parser("setup")
     sp.add_argument("target", nargs="?", default=".")
     sp.add_argument("--host", default=None, type=_host_choice,
@@ -1132,7 +1146,14 @@ def parse_cli(argv=None):
     -- the documented order -- fails with "unrecognized arguments: TARGET"
     on Python 3.11 while 3.12+ accept it. Folding exactly one leftover word
     into `target` makes both orders parse on every supported interpreter;
-    anything else left over is still the parser's own error."""
+    anything else left over is still the parser's own error.
+
+    ...and one contradiction refused, #1912's `--discard-batch N --reset`. Not
+    an `add_mutually_exclusive_group`: `--reset` is declared for `run` and
+    `loop` together and `--discard-batch` for `loop` alone, and argparse cannot
+    put an action that already belongs to a parser into a group afterwards.
+    Refusing it HERE keeps both declarations where they belong and still exits
+    2 with the parser's own usage line."""
     parser = build_parser()
     args, extra = parser.parse_known_args(argv)
     if (extra and args.verb == "persist" and len(extra) == 1
@@ -1141,6 +1162,14 @@ def parse_cli(argv=None):
         extra = []
     if extra:
         parser.error("unrecognized arguments: %s" % " ".join(extra))
+    if getattr(args, "discard_batch", None) is not None and getattr(args, "reset", False):
+        # One keeps the run and throws a record away; the other throws the run
+        # away and skips batch recovery altogether -- so accepting both would
+        # let `--reset` win in silence, which is the opposite of what the
+        # narrower flag was typed for.
+        parser.error("--discard-batch and --reset are contradictory: "
+                     "--discard-batch keeps the run and rolls back one batch "
+                     "record, --reset discards the whole run folder")
     return args
 
 

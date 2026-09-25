@@ -426,29 +426,56 @@ on Claude hooks, and always uses the return-persist path.
   must match the dispatch request this run is hash-bound to, and a record naming anything else is
   refused with nothing deleted. Under `--reset` no recovery is attempted at all: that flag discards
   the whole run instead.
-- **The record names its owning process**, and only a dead owner is recovered — a manifest on disk
-  is a CRASHED batch only when the process that opened it is gone, and a loop that is still running
-  has one for as long as its batch is in flight (#1698). It carries the pid and the hostname of
-  whichever process last wrote it, and the resume asks the operating system. Three refusals come out
-  of that answer, each printed and exiting non-zero before a single grant is installed or a single
-  entry is launched. **The owner is still running here** — another `driver loop` holds this run
-  folder; wait for it to finish, or stop it and re-run. `--reset` is deliberately not offered there,
-  because resetting a run folder another loop is working in is the accident being prevented: a
-  second loop used to delete the first's in-flight artifacts, cancel its entries, refund their
-  attempts and unlink its record, after which the first's own Ctrl-C found nothing to take back.
-  **The owner is a pid on another machine** — the record names a host that is not this machine, and
-  this one cannot ask that one whether the process is still running; a pid number from over there
-  names some unrelated local process here, so the loop refuses to decide either way. **The record
-  carries no owner stamp** — an absent or malformed owner is either a record from before the field
-  existed or one the target wrote, and neither is evidence that a crash happened. A fourth refusal
-  guards the other end: **a record this batch would overwrite**, a leftover carrying the iteration
-  number this batch is about to open, refused before the guards are armed rather than silently
-  replaced (that `O_EXCL` used to escape as a `FileExistsError` traceback with the write guard still
-  armed). For those last three `--reset` is the only escape and it discards the whole run, so reach
-  for it once you know no other `driver loop` is working there. Under `--setup` these records live
-  in the flat `.panopticon/` beside setup's other artifacts rather than in a run folder, and
-  `--setup --reset` sweeps them — all but one whose owner is still running, which it leaves alone
-  and says so on stderr.
+- **The record names its owning process**, and only a dead owner is recovered — a manifest on
+  disk is a CRASHED batch only when the process that opened it is gone, and a loop that is still
+  running has one for as long as its batch is in flight (#1698). It carries the pid, the hostname
+  and — where the machine has one — a hardware machine id (`uuid.getnode()`, #1912) of whichever
+  process last wrote it, and a record is this machine's when EITHER id matches. That second id is
+  there because a hostname is not a machine identity: on macOS the same laptop answers `mac.local`,
+  `mac.lan` or a DHCP-assigned name depending on the network it woke up on, so a crash and the
+  resume after it saw two different names, and the resume read its own record as another machine's.
+  Comparing only the first label of the name is deliberately NOT done — this repo lives on a
+  mounted volume, so `mac.office` and `mac.home` can really be two machines sharing one run folder.
+  A record from before the field existed, or one whose id is unusable (`getnode()`'s random
+  multicast fallback among them), is judged by its hostname exactly as it was. The resume then asks
+  the operating system. Three refusals come out of that answer, each printed and exiting non-zero
+  before a single grant is installed or a single entry is launched. **The owner is still running
+  here** — another `driver loop` holds this run folder; wait for it to finish, or stop it and
+  re-run. `--reset` is deliberately not offered there, because resetting a run folder another loop
+  is working in is the accident being prevented: a second loop used to delete the first's in-flight
+  artifacts, cancel its entries, refund their attempts and unlink its record, after which the
+  first's own Ctrl-C found nothing to take back. **The owner is a pid on another machine** — the
+  record names a host that is not this machine, and a machine id that is not this machine's either,
+  so this one cannot ask that one whether the process is still running; a pid number from over
+  there names some unrelated local process here, so the loop refuses to decide either way. **The
+  record carries no owner stamp** — an absent or malformed owner is either a record from before the
+  field existed or one the target wrote, and neither is evidence that a crash happened. A fourth
+  refusal guards the other end: **a record this batch would overwrite**, a leftover carrying the
+  iteration number this batch is about to open, refused before the guards are armed rather than
+  silently replaced (that `O_EXCL` used to escape as a `FileExistsError` traceback with the write
+  guard still armed). Under `--setup` these records live in the flat `.panopticon/` beside setup's
+  other artifacts rather than in a run folder, and `--setup --reset` sweeps them — all but one
+  whose owner is still running, which it leaves alone and says so on stderr.
+- **`--discard-batch N` throws away one record instead of the run** (#1912) — the remedy the
+  `another machine` and `no owner stamp` refusals name FIRST, with `--reset` second. Both of those
+  verdicts mean the loop could not answer the liveness question, not that anything is running: once
+  you have confirmed no other `driver loop` is working on this folder, `driver loop --discard-batch
+  N` gives record `batch-N.json` exactly the rollback a dead owner's gets — its artifacts deleted,
+  its entries ledgered as cancelled/rolled back, their attempts refunded, the record unlinked — and
+  the invocation then carries on with the rest of the run instead of discarding every paid cell in
+  it. It applies to that one number and nothing else: a second unreadable record still refuses, a
+  live owner still refuses (no flag can help, and the live refusal names none), a dead owner needs
+  no acceptance because it already recovers, and a number with no record on disk is an error naming
+  the folder it looked in. What the flag accepts is the liveness question ALONE — the artifacts are
+  still re-derived from the bound dispatch request before a single file is deleted, so a record
+  that disagrees with the request is refused as before. The acceptance is written down:
+  `discarded-batches.json` in the run folder carries the batch number, the owner stamp as it was
+  found and when you accepted it, and the run manifest carries the count. `--discard-batch`
+  together with `--reset` is refused as contradictory, and the flag is `driver loop`'s alone —
+  `driver run` writes no batch records. It is also SINGLE-USE: the record it named is gone
+  afterwards, so drop it from the next command line or that invocation ends as an error naming a
+  record that is not there. It is never carried into the resume line the loop prints, for the same
+  reason `--reset` is not.
 - **Errors:** a launch failure, non-zero exit, `is_error` or non-JSON envelope is a failed entry
   (ledgered, re-emitted next iteration). So is a reply persist refuses — the runner reported success
   but the entry did not advance, so the ledger row is written `ok: false` with the refusal as its

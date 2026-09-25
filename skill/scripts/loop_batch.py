@@ -47,9 +47,16 @@ INTERRUPTED_IDLE = ("interrupted: no batch was in flight, so nothing was rolled 
 # another loop is running, and one that resumed past a record it cannot read
 # the owner of would delete files it cannot prove belong to a dead batch.
 #
-# `--reset` is named in two of them and deliberately NOT in the live one:
-# telling an operator to reset a run folder another `driver loop` is working
-# in is the very accident this refusal exists to prevent.
+# Neither remedy is named in the live one, deliberately: telling an operator
+# to reset -- or to discard a record in -- a run folder another `driver loop`
+# is working in is the very accident this refusal exists to prevent.
+#
+# #1912: the other two name `--discard-batch <n>` FIRST and `--reset` second.
+# Both verdicts are reached without evidence that anything crashed, and the
+# hostname half of "this machine" moves on macOS (see `batch.owner_state`), so
+# the operator who knows the owner is gone was being charged the whole run of
+# paid cells for a record the loop could not read. The narrow remedy costs one
+# record; the order they are offered in is the whole point.
 #
 # No "driver loop: " lead: these are RAISED, and the one catch in
 # `orchestrate.loop` prefixes every refusal out of this function.
@@ -59,12 +66,39 @@ BATCH_OWNER_LIVE = (
     "in-flight artifacts. Wait for it to finish, or stop it and re-run.")
 BATCH_OWNER_ELSEWHERE = (
     "batch record %s was written by pid %r on host %r, not this machine, so this loop "
-    "cannot tell whether that process is still running. Re-run with `--reset` ONLY "
-    "once you know that loop is gone.")
+    "cannot tell whether that process is still running. After confirming no other "
+    "loop is running on this folder, re-run with `--discard-batch %s` to throw away "
+    "THAT batch and keep the rest of the run, or with `--reset` to throw the whole "
+    "run away.")
 BATCH_OWNER_UNSTAMPED = (
     "batch record %s carries no owner stamp, so a crashed batch cannot be told from "
-    "one still in flight. Re-run with `--reset` once you know no other `driver loop` "
-    "is working on this run folder.")
+    "one still in flight. After confirming no other `driver loop` is working on this "
+    "run folder, re-run with `--discard-batch %s` to throw away THAT batch and keep "
+    "the rest of the run, or with `--reset` to throw the whole run away.")
+
+# #1912: `--discard-batch <n>` for a record that is not there. Loud, and it
+# names the folder it looked in: the number comes off a file name the operator
+# read somewhere, and the run folder is per-run (`runs/<tag>/`), so the usual
+# mistake is a number from the PREVIOUS run's folder.
+#
+# No "driver loop: " lead on these two either, for the reason given above: they
+# are RAISED out of `recover_stale` and the one catch in `orchestrate.loop`
+# prefixes them. They shipped with one and it rendered twice (review round 1,
+# finding 2), which is what the prefix-count assertion in the tests now pins.
+DISCARD_ABSENT = (
+    "--discard-batch %d names no batch record in this run: %s does not "
+    "exist. The number is the one in the record's own file name, and the folder is "
+    "this run's -- `ls %s` names the records that are actually there.")
+DISCARD_NO_RUN = (
+    "--discard-batch %d has nothing to act on: this tree has no run "
+    "manifest of its own (%s), so there is no run folder holding batch records.")
+# Printed immediately BEFORE the ordinary rollback line, which says what the
+# rollback removed and what is being retried -- so this one says only what is
+# not already there: whose loss was accepted, and where that is written down.
+DISCARD_ACCEPTED = (
+    "driver loop: discarded batch %d on --discard-batch: its owner (pid %r on host %r, "
+    "verdict %s) could not be checked for liveness and you accepted the loss. "
+    "Recorded in %s.")
 
 
 # #1698: the record this batch may not overwrite. `Batch.open` reserves the
@@ -90,7 +124,7 @@ def batch_in_use(run_dir, number):
     return BATCH_IN_USE % path if os.path.lexists(path) else None
 
 
-def refuse_foreign_owner(name, doc):
+def refuse_foreign_owner(name, doc, number):
     """The refusal for a record this process may not recover, or None (#1698).
 
     Asked before every other check on the document, because a record whose
@@ -100,18 +134,38 @@ def refuse_foreign_owner(name, doc):
     come off a file in the reviewed tree and reach the operator's stderr, so
     repr renders a control character or an embedded newline as its escape
     sequence (the reason `misroute_refusal` does the same).
+
+    `number` is the iteration number the `--discard-batch` remedy tells the
+    operator to type, and it is the CALLER's -- read out of the record's file
+    name, which is the only spelling recovery acts on. It is a parameter rather
+    than something derived here (review round 1, finding 11) so that no reader
+    is tempted to fall back to the document's own `batch` field: that value is
+    the target's to choose, and a remedy built out of it would print either a
+    target-authored string or, when the key is absent, `--discard-batch None`.
     """
     state = batch_mod.owner_state(doc)
     if state == batch_mod.OWNER_LIVE:
         return BATCH_OWNER_LIVE % (name, doc.get("pid"))
     if state == batch_mod.OWNER_FOREIGN:
-        return BATCH_OWNER_ELSEWHERE % (name, doc.get("pid"), doc.get("host"))
+        return BATCH_OWNER_ELSEWHERE % (name, doc.get("pid"), doc.get("host"),
+                                        int(number))
     if state != batch_mod.OWNER_DEAD:
-        return BATCH_OWNER_UNSTAMPED % name
+        return BATCH_OWNER_UNSTAMPED % (name, int(number))
     return None
 
 
-def recover_stale(review_root, request, host, mode, namespace=None):
+def _owner_stamp(doc):
+    """The owner fields as FOUND, plus what this loop made of them (#1912).
+
+    Written into the acceptance record so the discarded batch can still be
+    accounted for: every field is a value read off the record, and `state` is
+    this loop's own verdict on it.
+    """
+    return {"pid": doc.get("pid"), "host": doc.get("host"),
+            "machine": doc.get("machine"), "state": batch_mod.owner_state(doc)}
+
+
+def recover_stale(review_root, request, host, mode, namespace=None, discard=None):
     """Validate every crash record before deleting anything, then retry the phase.
 
     The manifest lists artifacts, but the bound outgoing request supplies the
@@ -127,6 +181,18 @@ def recover_stale(review_root, request, host, mode, namespace=None):
     it is finishing the file removals. Ledgering it again is a second
     ROLLED_BACK row per entry and a second decrement of one attempt counter,
     which is exactly what the flag is for.
+
+    `discard` is the `--discard-batch <n>` acceptance (#1912): the operator has
+    confirmed that record `n`'s owner is gone, so a `foreign` or `unstamped`
+    verdict on THAT record alone stops being a refusal and becomes the ordinary
+    dead-owner rollback. Only those two verdicts -- a `live` owner is
+    demonstrably a loop running here and still refuses, and a `dead` one needs
+    no acceptance because it already recovers. Every other check stands
+    untouched: what is accepted is the LIVENESS question, never the record's
+    own account of what it wrote, so the artifacts are still re-derived from
+    the bound request before a single file is deleted. Nothing is written or
+    deleted for it in this validation pass; the acceptance is recorded in the
+    act loop below, next to the rollback it authorises.
     """
     plan_contract.artifact_root(review_root)
     manifest = (setup.load_setup_manifest(review_root) if namespace == "setup"
@@ -134,10 +200,17 @@ def recover_stale(review_root, request, host, mode, namespace=None):
     mpath = (setup._setup_manifest_path(review_root) if namespace == "setup"
              else run_manifest.manifest_path(review_root))
     if manifest is None or runio._foreign_manifest(manifest, review_root, mpath):
+        # No run of this tree's own to discard from: the flag would otherwise
+        # pass silently through the one branch that reads no records at all.
+        if discard is not None:
+            raise ValueError(DISCARD_NO_RUN % (discard, mpath))
         return
     folder = persist.run_dir(review_root, namespace)
     runio._confine_artifact_path(folder)
     root = os.path.realpath(folder)
+    if discard is not None and not os.path.lexists(batch_mod.manifest_path(root, discard)):
+        raise ValueError(DISCARD_ABSENT % (discard,
+                                           batch_mod.manifest_path(root, discard), root))
     if not os.path.isdir(root):
         return
     batches, claimed = [], set()
@@ -153,8 +226,13 @@ def recover_stale(review_root, request, host, mode, namespace=None):
         if not isinstance(doc, dict) or doc.get("schema_version") != 1:
             raise ValueError(refusal + "invalid manifest or unbound checkpoint")
         # #1698: is this a crash AT ALL? First, and on its own wording.
-        owned = refuse_foreign_owner(name, doc)
-        if owned:
+        owned = refuse_foreign_owner(name, doc, int(match[1]))
+        # #1912: ...unless this is the one record the operator accepted the
+        # loss of, and the verdict is one an operator is entitled to overrule.
+        accepted = (owned and discard == int(match[1])
+                    and batch_mod.owner_state(doc) in (batch_mod.OWNER_FOREIGN,
+                                                       batch_mod.OWNER_UNSTAMPED))
+        if owned and not accepted:
             raise ValueError(owned)
         if (doc.get("batch") != int(match[1])
                 or doc.get("checkpoint") != request.get("checkpoint")
@@ -195,9 +273,18 @@ def recover_stale(review_root, request, host, mode, namespace=None):
         batch.entries = doc["entries"]
         # #1698: a record that is ALREADY flagged was ledgered by whoever
         # flagged it. All this recovery owes it is the file removals.
-        batches.append((batch, pending, bool(doc.get("recovering"))))
+        batches.append((batch, pending, bool(doc.get("recovering")),
+                        _owner_stamp(doc) if accepted else None))
     ledger = ledger_mod.Ledger(root)
-    for batch, pending, ledgered in batches:
+    for batch, pending, ledgered, stamp in batches:
+        # #1912: the operator's acceptance goes down FIRST, and only in this
+        # loop -- the validation pass above may still refuse on a LATER record,
+        # and an acceptance written for a rollback that then never happened
+        # would be a record of a loss the run did not take.
+        if stamp is not None:
+            batch_mod.record_discard(root, batch.number, stamp)
+            run_manifest.record_discarded_batch(review_root, manifest, batch.number,
+                                                namespace=namespace)
         # Unconditional, flagged or not: the write re-stamps the record with
         # THIS pid, so a loop arriving mid-recovery asks about the process
         # that is doing the work rather than the one it is finishing for.
@@ -216,6 +303,14 @@ def recover_stale(review_root, request, host, mode, namespace=None):
         problems = batch.close()
         if problems:
             raise OSError("stale batch rollback incomplete: " + "; ".join(problems))
+        if stamp is not None:
+            # Its own sentence, not "recovered stale batch": what happened here
+            # is that an operator RULED, and the run's stderr is where that is
+            # said out loud (#1912).
+            print(DISCARD_ACCEPTED % (batch.number, stamp["pid"], stamp["host"],
+                                      stamp["state"],
+                                      batch_mod.discarded_path(root)),
+                  file=sys.stderr, flush=True)
         print("driver loop: %s; removed %d artifact(s); retrying %s"
               % (("finished the interrupted recovery of stale batch %s" % batch.number)
                  if ledgered else "recovered stale batch %s" % batch.number,

@@ -369,3 +369,19 @@ def fake_uuid():
     """A fixed, fake UUID, split so gitleaks' `generic-api-key` rule cannot
     reach the ten-character run it needs after a `SECRET =` keyword."""
     return "3f2504e0" + "-4f89-11d3-9a0c-0305e82c3301"
+
+
+# --- #1698 / #1912: a pid the operating system will say is gone --------------
+# The batch owner stamp (`runners/batch.owner_state`) is a LIVENESS check, so a
+# test about a CRASHED loop has to name a process that really is not running --
+# a hard-coded number may belong to something, and `os.kill` is the thing under
+# test rather than something to patch. A child spawned and reaped is the honest
+# way to say it. Shared because the owner cases live in two modules (the unit
+# ones beside `runners/batch.py`, the loop ones in `test_orchestrate.py`) and
+# the helper was copied verbatim into both.
+
+def dead_pid():
+    """A pid that is certainly not running: a child spawned and reaped."""
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait()
+    return proc.pid

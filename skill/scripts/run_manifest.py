@@ -383,6 +383,13 @@ POSTURE_DISCLOSED = "posture_disclosed"
 # spellings of one key is how a reader silently stops finding it.
 DISPATCH_REQUEST = "dispatch_request"
 
+# #1912: [{"batch": <n>, "at": <iso>}, ...] -- the batch records this run's
+# operator accepted the loss of with `--discard-batch`. The count is the fact
+# worth surfacing (a run that threw one record away is not the run its report
+# describes, the way an `--allow-unenforced` one is not), and the list carries
+# it without flattening two acceptances into one.
+DISCARDED_BATCHES = "discarded_batches"
+
 
 def _rewrite(review_root, manifest, *, namespace=None):
     """Write the manifest back through a temp file + `os.replace`.
@@ -475,6 +482,43 @@ def record_dispatch_request(review_root, manifest, checkpoint, sha256, at=None):
     manifest[DISPATCH_REQUEST] = {"checkpoint": checkpoint, "sha256": sha256,
                                   "at": at or _now_iso()}
     return _rewrite(review_root, manifest)
+
+
+def record_discarded_batch(review_root, manifest, number, at=None, *, namespace=None):
+    """Record that this run discarded batch `number` on the operator's word (#1912).
+
+    The FOURTH deliberate rewrite, and not an anti-drift key either: a resume
+    may not un-discard a record, and the value is read by nobody -- it is the
+    run's own account of a batch of paid cells that was thrown away because the
+    loop could not tell whether its owner was alive. Appended, never replaced:
+    a long run may have to do this more than once.
+
+    `manifest` may be None (the on-disk one is loaded) and a tree with no
+    manifest records nothing rather than raising, exactly as
+    `record_dispatch_request` does -- the acceptance is also written in the run
+    folder beside the record it applied to (`runners/batch.record_discard`),
+    which is where the detail lives; this is the count, where a reader of the
+    run's parameters will look for it.
+
+    The read-back is TYPE-CHECKED before it is appended to (review round 1,
+    finding 7). This manifest lives inside the reviewed tree, so the key is a
+    value a target can choose: `list(...)` over a planted string yields one
+    entry per character, over a dict one per key, and over an int raises
+    TypeError out of a recorder that must not be able to fail the run. A value
+    that is not a list is treated as absent -- it was never this driver's, so
+    it was never the count of anything.
+    """
+    # `load_manifest` reads the REVIEW manifest and has no namespace of its
+    # own, so only the review namespace may fall back to it: loading it for
+    # `--setup` would rewrite setup's manifest out of the wrong document.
+    if manifest is None and namespace is None:
+        manifest = load_manifest(review_root)
+    if manifest is None:
+        return None
+    existing = manifest.get(DISCARDED_BATCHES)
+    manifest[DISCARDED_BATCHES] = (existing if isinstance(existing, list) else []) + [
+        {"batch": int(number), "at": at or _now_iso()}]
+    return _rewrite(review_root, manifest, namespace=namespace)
 
 
 def posture_disclosed_at(manifest, digest):

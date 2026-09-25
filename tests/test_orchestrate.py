@@ -9,7 +9,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -32,6 +31,7 @@ import scripts.runners.kimi as kimi_runner
 import scripts.runners.outage as outage
 import scripts.probes.shape as shape_probe
 import scripts.write_guard_hook as write_guard_hook
+from _test_helpers import dead_pid
 from conftest import docker_probe_runner, write_host_evidence
 from scripts import hosts
 
@@ -252,6 +252,14 @@ class LoopCase(unittest.TestCase):
 
 
 class TestHeadlessLoop(LoopCase):
+    # #1912 (review round 1, finding 1): the two hardware ids the owner-stamp
+    # cases STATE rather than read off whatever machine the suite is running on.
+    # `uuid.getnode()` answers differently per host and falls back to a random
+    # multicast value where it finds no hardware address -- and every owner
+    # verdict asserted below has to be the same verdict on every machine.
+    MACHINE = "acde48001122"            # "this machine", because the test says so
+    OTHER_MACHINE = "00deadbeef00"      # ...and somebody else's
+
     def _run(self, d, floor, runner, *extra):
         args = self._args(d, *extra)
         # first driver.run mints the manifest; seed coverage right after (the
@@ -714,7 +722,7 @@ class TestHeadlessLoop(LoopCase):
         with open(outside, encoding="utf-8") as fh:
             self.assertEqual("keep", fh.read())
 
-        self._stamp_crash_owner(runner.run_dir, pid=self._dead_pid())
+        self._stamp_crash_owner(runner.run_dir, pid=dead_pid())
         stale_doc = runio._load_json(manifest)
         refused_doc = copy.deepcopy(stale_doc)
         refused_doc["entries"][0]["artifacts"].append(outside)
@@ -754,11 +762,8 @@ class TestHeadlessLoop(LoopCase):
         with open(outside, encoding="utf-8") as fh:
             self.assertEqual("keep", fh.read())
 
-    def _dead_pid(self):
-        """A pid that is certainly not running: a child spawned and reaped."""
-        proc = subprocess.Popen([sys.executable, "-c", ""])
-        proc.wait()
-        return proc.pid
+    # `_dead_pid` was copied verbatim into tests/runners/test_batch.py; it is
+    # `_test_helpers.dead_pid` now, imported by both (review round 1, finding 12).
 
     def _stamp_crash_owner(self, run_dir, **fields):
         """Rewrite every leftover crash record's owner stamp (#1698).
@@ -793,7 +798,7 @@ class TestHeadlessLoop(LoopCase):
                                return_value="simulated process loss"):
             self._interrupt_mid_batch(d, floor, runner)
         # ...and that process is GONE: the record it left names a dead pid.
-        self._stamp_crash_owner(runner.run_dir, pid=self._dead_pid())
+        self._stamp_crash_owner(runner.run_dir, pid=dead_pid())
         return runner
 
     def test_resume_rolls_back_a_crashed_batch_before_reading_done_artifacts(self):
@@ -923,10 +928,13 @@ class TestHeadlessLoop(LoopCase):
 
     def test_a_record_from_another_machine_refuses_rather_than_guesses(self):
         # A pid number from over there names some unrelated local process
-        # here, so nothing may be concluded from it either way.
+        # here, so nothing may be concluded from it either way. #1912: BOTH
+        # ids have to be somebody else's -- a record carrying this machine's
+        # hardware id under another hostname is this machine's own.
         d, floor = self._repo(floor=("SEC", "ACC"))
         crashed = self._leave_crashed_batch(d, floor)
-        self._stamp_crash_owner(crashed.run_dir, host="some-other-box")
+        self._stamp_crash_owner(crashed.run_dir, host="some-other-box",
+                                machine=self.OTHER_MACHINE)
         before = self._untouched(d, crashed.run_dir)
         resumed = FakeRunner()
         status = self._return_persist(d, floor, resumed)
@@ -936,6 +944,36 @@ class TestHeadlessLoop(LoopCase):
         self.assertIn("--reset", status["message"])
         self.assertEqual(resumed.launched, [])
         self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
+    def test_the_same_machine_under_a_new_hostname_is_recovered_not_refused(self):
+        # #1912 hazard 1, end to end: macOS renames the laptop between the
+        # crash and the resume (`mac.office` -> `mac.local`), and the run used
+        # to be unresumable -- `--reset`, the whole run of paid cells, was the
+        # only remedy the refusal could name for a record this machine had
+        # written itself. The hardware id did not move, so the resume still
+        # recognises its own record and the dead pid decides as it always did.
+        #
+        # BOTH ids are stated, never read off the machine running the suite
+        # (review round 1, finding 1): where `uuid.getnode()` falls back to its
+        # random multicast value `machine_id()` is None and `document()` omits
+        # the field, so a test that leaned on the real one asserted None ==
+        # None and then failed three lines later as an opaque status mismatch.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        self._stamp_crash_owner(crashed.run_dir, host="mac.office.example",
+                                machine=self.MACHINE)
+        self.assertEqual(self.MACHINE,
+                         self._crash_record(crashed.run_dir).get("machine"),
+                         "the record must carry the hardware id this test states")
+        resumed = FakeRunner()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), \
+                mock.patch.object(batch_mod, "machine_id",
+                                  return_value=self.MACHINE):
+            status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("recovered stale batch", err.getvalue())
+        self.assertEqual(self._manifests(crashed.run_dir), [])
 
     def test_a_record_with_no_owner_stamp_fails_closed(self):
         # The record lives INSIDE the reviewed tree. An absent owner is either
@@ -954,6 +992,225 @@ class TestHeadlessLoop(LoopCase):
         self.assertIn("no owner stamp", status["message"])
         self.assertEqual(resumed.launched, [])
         self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
+    # ---- #1912 hazard 2: discard ONE record, not the run ----
+    #
+    # A `foreign`/`unstamped` verdict used to cost the whole run: `--reset` was
+    # the only escape from it, and `--reset` throws away every paid cell.
+    # `--discard-batch <N>` is the narrow remedy -- the operator states that
+    # THAT record's owner is gone, the loop rolls exactly that batch back the
+    # way it rolls back a dead owner's, and the run continues. It also bounds
+    # hazard 1's residual: a mis-classification now costs one record.
+
+    def _foreign(self, run_dir):
+        """Make every leftover record read as another machine's: both ids."""
+        self._stamp_crash_owner(run_dir, host="some-other-box",
+                                machine=self.OTHER_MACHINE)
+
+    def _accepted(self, run_dir):
+        return runio._load_json(os.path.join(run_dir, batch_mod.DISCARDED_BATCHES))
+
+    def _second_record(self, run_dir):
+        """Split the crash record in two, one entry each.
+
+        Two records may not claim the same entry (recovery refuses that), so a
+        second record has to be carved out of the first. Both then validate
+        against the same bound request, which is what makes this a test about
+        the FLAG's scope rather than about validation.
+        """
+        first = os.path.join(run_dir, self._manifests(run_dir)[0])
+        doc = runio._load_json(first)
+        self.assertEqual(2, len(doc["entries"]), "the fixture lost an entry")
+        second = dict(doc, batch=2, entries=[doc["entries"][1]])
+        runio._write_json(batch_mod.manifest_path(run_dir, 2), second)
+        runio._write_json(first, dict(doc, entries=[doc["entries"][0]]))
+        return sorted(self._manifests(run_dir))
+
+    def test_discard_batch_rolls_back_that_record_and_keeps_the_run(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        run_dir = crashed.run_dir
+        self._foreign(run_dir)
+        owner = self._crash_record(run_dir)
+        artifacts = [p for row in owner["entries"] for p in row["artifacts"]]
+        self.assertTrue([p for p in artifacts if os.path.exists(p)],
+                        "the crashed batch left no artifact to roll back")
+        before = ledger_mod.Ledger(run_dir).lines()
+        attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
+        resumed = FakeRunner()
+        err = io.StringIO()
+        # the RESUME shape (as the dead-owner case above): coverage is already
+        # on disk, so no second driver.run re-charges the review checkpoint's
+        # per-cell attempt marker and the refund below is the only movement
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven), \
+                mock.patch("scripts.runners.base.runner_for", return_value=resumed):
+            status = orchestrate.loop(self._args(d, "--allow-unenforced",
+                                                 "--discard-batch", "1"))
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("discarded batch 1", err.getvalue())
+        # the record and its artifacts are gone, the entries were ledgered as
+        # rolled back, and their attempts were given back -- the same rollback
+        # a dead owner gets, no more and no less
+        self.assertEqual([], self._manifests(run_dir))
+        after = ledger_mod.Ledger(run_dir).lines()
+        self.assertEqual(after[:len(before)], before)
+        self.assertTrue(any(r.get("status") == ledger_mod.ROLLED_BACK for r in after))
+        self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)),
+                         attempts)
+        # ...and the run went on to finish, which is the whole point
+        self.assertIn("review-app-SEC", resumed.launched)
+        self.assertIn("review-app-ACC", resumed.launched)
+
+    def test_the_discarded_records_artifacts_are_deleted(self):
+        # At the RECOVERY itself rather than after the resume: the whole point
+        # of the flag is that the run goes on, and going on re-dispatches those
+        # entries and writes the same out_files again.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        self._foreign(crashed.run_dir)
+        doc = self._crash_record(crashed.run_dir)
+        landed = [p for row in doc["entries"] for p in row["artifacts"]
+                  if os.path.exists(p)]
+        self.assertTrue(landed, "the crashed batch left no artifact to delete")
+        req = orchestrate.requests.previous_request(d)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            loop_batch.recover_stale(d, req, "claude", "headless", discard=1)
+        self.assertEqual([], [p for p in landed if os.path.exists(p)])
+        self.assertEqual([], self._manifests(crashed.run_dir))
+        self.assertIn("discarded batch 1", err.getvalue())
+        self.assertEqual([1], [row["batch"]
+                               for row in self._accepted(crashed.run_dir)])
+
+    def test_the_operators_acceptance_is_written_down(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        run_dir = crashed.run_dir
+        self._foreign(run_dir)
+        stamp = self._crash_record(run_dir)
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = self._return_persist(d, floor, FakeRunner(),
+                                          "--discard-batch", "1")
+        self.assertEqual(status["status"], "complete", status)
+        accepted = self._accepted(run_dir)
+        self.assertEqual(1, len(accepted), accepted)
+        self.assertEqual(1, accepted[0]["batch"])
+        # the stamp AS FOUND, so the record that was thrown away can still be
+        # read back: whose pid, on whose machine, and what the loop made of it
+        self.assertEqual({"pid": stamp["pid"], "host": "some-other-box",
+                          "machine": self.OTHER_MACHINE,
+                          "state": batch_mod.OWNER_FOREIGN},
+                         accepted[0]["owner"])
+        self.assertRegex(accepted[0]["accepted_at"],
+                         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        # ...and the run manifest carries the count, beside the run's other
+        # recorded acceptances
+        manifest = driver.run_manifest.load_manifest(d)
+        self.assertEqual([1], [row["batch"] for row in manifest["discarded_batches"]])
+
+    def test_discard_batch_refuses_a_live_owner_and_touches_nothing(self):
+        # A live verdict is demonstrably a loop running HERE: no flag may help,
+        # and the refusal keeps naming only the pid.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        self._stamp_crash_owner(crashed.run_dir, pid=os.getpid())
+        before = self._untouched(d, crashed.run_dir)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed, "--discard-batch", "1")
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("still running here", status["message"])
+        self.assertNotIn("--discard-batch", status["message"])
+        self.assertEqual([], resumed.launched)
+        self.assertEqual(self._untouched(d, crashed.run_dir), before)
+        self.assertFalse(os.path.exists(
+            os.path.join(crashed.run_dir, batch_mod.DISCARDED_BATCHES)))
+
+    def test_discard_batch_on_a_record_that_is_not_there_errors_loudly(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        self._foreign(crashed.run_dir)
+        before = self._untouched(d, crashed.run_dir)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed, "--discard-batch", "7")
+        self.assertEqual(status["status"], "error", status)
+        # named, so the operator can see WHICH folder was looked in
+        self.assertIn(batch_mod.manifest_path(crashed.run_dir, 7),
+                      status["message"])
+        # ...and prefixed ONCE: every refusal out of `recover_stale` is raised,
+        # and `orchestrate.loop`'s one catch adds the lead (review round 1,
+        # finding 2 -- both discard constants carried a second one).
+        self.assertEqual(1, status["message"].count("driver loop: "),
+                         status["message"])
+        self.assertEqual([], resumed.launched)
+        self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
+    def test_discard_batch_before_this_tree_has_a_run_of_its_own_errors(self):
+        # The reachable first-invocation mistake: `--discard-batch` typed on a
+        # tree with no run manifest yet. Recovery runs BEFORE the first
+        # `driver.run` mints one, so the flag would otherwise pass straight
+        # through the one branch that reads no records at all.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        self.assertIsNone(driver.run_manifest.load_manifest(d))
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed, "--discard-batch", "1")
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("no run manifest of its own", status["message"])
+        self.assertIn(driver.run_manifest.manifest_path(d), status["message"])
+        self.assertEqual(1, status["message"].count("driver loop: "),
+                         status["message"])
+        self.assertEqual([], resumed.launched)
+
+    def test_discard_batch_names_one_record_and_not_the_others(self):
+        # The flag is one record's acceptance, never a blanket one: a SECOND
+        # foreign record still refuses, and nothing is rolled back or written
+        # down on the way to that refusal.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        run_dir = crashed.run_dir
+        records = self._second_record(run_dir)
+        self.assertEqual(["batch-1.json", "batch-2.json"], records)
+        self._foreign(run_dir)
+        before = self._untouched(d, run_dir)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed, "--discard-batch", "1")
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("batch-2.json", status["message"])
+        self.assertIn("not this machine", status["message"])
+        self.assertEqual([], resumed.launched)
+        self.assertEqual(self._untouched(d, run_dir), before)
+        self.assertFalse(os.path.exists(
+            os.path.join(run_dir, batch_mod.DISCARDED_BATCHES)))
+
+    def test_a_dead_owner_needs_no_acceptance_and_records_none(self):
+        # `--discard-batch` on a record that recovers on its own is not an
+        # error, but nothing was accepted: the flag records an operator's
+        # RULING, and there was none to record.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status = self._return_persist(d, floor, FakeRunner(),
+                                          "--discard-batch", "1")
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("recovered stale batch", err.getvalue())
+        self.assertNotIn("discarded batch", err.getvalue())
+        self.assertFalse(os.path.exists(
+            os.path.join(crashed.run_dir, batch_mod.DISCARDED_BATCHES)))
+        self.assertIsNone(
+            driver.run_manifest.load_manifest(d).get("discarded_batches"))
+
+    def test_the_two_recoverable_refusals_name_the_narrow_remedy_first(self):
+        # Read off the constants: an operator meeting either refusal is offered
+        # the one-record remedy BEFORE the one that throws the run away.
+        for refusal in (loop_batch.BATCH_OWNER_ELSEWHERE,
+                        loop_batch.BATCH_OWNER_UNSTAMPED):
+            with self.subTest(refusal=refusal[:40]):
+                self.assertLess(refusal.index("--discard-batch"),
+                                refusal.index("--reset"), refusal)
+                self.assertIn("no other", refusal)
+        self.assertNotIn("--discard-batch", loop_batch.BATCH_OWNER_LIVE)
+        self.assertNotIn("--reset", loop_batch.BATCH_OWNER_LIVE)
 
     def _obstruct(self, d, entry_id):
         """Make `entry_id`'s artifact un-removable: a non-empty directory
@@ -998,7 +1255,7 @@ class TestHeadlessLoop(LoopCase):
         attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
         # the operator clears the obstruction; a LATER loop finishes the job
         shutil.rmtree(obstructed[0])
-        self._stamp_crash_owner(run_dir, pid=self._dead_pid())
+        self._stamp_crash_owner(run_dir, pid=dead_pid())
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             orchestrate.loop_batch.recover_stale(
@@ -1079,7 +1336,7 @@ class TestHeadlessLoop(LoopCase):
         rows = ledger_mod.Ledger(crashed.run_dir).lines()
         # #1698: flagging the record took it over, so it now names THIS
         # process. The next loop is a later one, and that one died too.
-        self._stamp_crash_owner(crashed.run_dir, pid=self._dead_pid())
+        self._stamp_crash_owner(crashed.run_dir, pid=dead_pid())
         with contextlib.redirect_stderr(io.StringIO()):
             orchestrate.loop_batch.recover_stale(d, req, "claude", "headless")
         # it FINISHED the file removals and nothing else: the rows and the
@@ -1753,6 +2010,37 @@ class TestLoopParser(unittest.TestCase):
             ["loop", ".", "--max-per-group", "10", "--max-groups", "5"])
         self.assertEqual(args.max_per_group, 10)
         self.assertEqual(args.max_groups, 5)
+
+    # #1912: `--discard-batch <N>` -- one record's acceptance.
+
+    def test_discard_batch_takes_a_positive_batch_number(self):
+        args = driver.parse_cli(["loop", ".", "--discard-batch", "3"])
+        self.assertEqual(3, args.discard_batch)
+        self.assertIsNone(driver.parse_cli(["loop", "."]).discard_batch)
+
+    def test_discard_batch_refuses_a_number_that_is_not_a_batch(self):
+        for value in ("0", "-1", "two", "1.5", ""):
+            with self.subTest(value=value):
+                with self.assertRaises(SystemExit), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    driver.parse_cli(["loop", ".", "--discard-batch", value])
+
+    def test_discard_batch_and_reset_together_are_refused(self):
+        # Contradictory: one keeps the run and throws away a record, the other
+        # throws the run away. Accepting both would make `--reset` win silently
+        # (it skips recovery entirely), which is the opposite of what the
+        # operator asked for with the narrower flag.
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+            driver.parse_cli(["loop", ".", "--discard-batch", "1", "--reset"])
+        self.assertIn("--discard-batch", err.getvalue())
+        self.assertIn("--reset", err.getvalue())
+
+    def test_the_flag_is_the_loops_alone(self):
+        # `driver run` keeps no batch record -- the loop writes them -- so the
+        # flag would name a file that verb never reads.
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            driver.parse_cli(["run", ".", "--discard-batch", "1"])
 
 
 class TestScoutRoundTrip(LoopCase):

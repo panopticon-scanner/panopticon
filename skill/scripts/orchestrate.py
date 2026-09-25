@@ -224,7 +224,12 @@ def loop(args):
     prev_req = requests.previous_request(review_root, namespace)
     if not getattr(args, "reset", False):
         try:
-            loop_batch.recover_stale(review_root, prev_req, host, mode, namespace)
+            # #1912: `--discard-batch <n>` is the operator's acceptance for ONE
+            # record whose owner cannot be checked for liveness -- read here,
+            # where recovery is, and refused alongside `--reset` at the parser
+            # (the two are contradictory, and `--reset` skips this call).
+            loop_batch.recover_stale(review_root, prev_req, host, mode, namespace,
+                                     discard=getattr(args, "discard_batch", None))
         except (ValueError, OSError) as exc:
             return _status("error", "driver loop: %s" % exc)
     if mode == "session":
