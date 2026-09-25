@@ -44,6 +44,7 @@ forbids `runners/* -> phases` imports and the loop is what calls both halves
 of the rollback: the artifact half here, and the interrupted phase's
 per-dispatch marker in `phases.persist.rollback_markers`.
 """
+import json
 import os
 import re
 import socket
@@ -71,8 +72,52 @@ OWNER_FOREIGN = "foreign"
 OWNER_UNSTAMPED = "unstamped"
 
 
+# #1912: where an operator's `--discard-batch <N>` acceptance is written down.
+# A LIST, appended to, because a long run may have to do this more than once
+# and each acceptance is a separate ruling with its own timestamp.
+DISCARDED_BATCHES = "discarded-batches.json"
+
+
 def manifest_path(run_dir, number):
     return os.path.join(run_dir, "%s%s.json" % (MANIFEST_PREFIX, int(number)))
+
+
+def discarded_path(run_dir):
+    return os.path.join(os.path.abspath(run_dir), DISCARDED_BATCHES)
+
+
+def record_discard(run_dir, number, owner, at=None):
+    """Append one `--discard-batch` acceptance to the run folder's list (#1912).
+
+    What the operator RULED, kept beside the record it applied to: the batch
+    number, the owner stamp as it was found (so a record that no longer exists
+    can still be read back -- whose pid, on whose machine, and what this loop
+    made of it), and when the ruling was accepted. It is evidence, never a
+    gate: nothing reads this file back to decide anything, which is why a
+    damaged one is started over rather than refused.
+
+    Through the write guard's own atomic writer, like the record itself: this
+    path is inside the scanned tree, so `<name>.tmp` is a name a redteam
+    target can commit as a symlink, and `os.replace` onto the destination
+    replaces a link planted THERE rather than writing through it. The read is
+    guarded the same way -- a link is not followed, and a file that is not a
+    JSON list is treated as absent (it is target-writable, so it was never
+    evidence of anything).
+    """
+    path = discarded_path(run_dir)
+    existing: list = []
+    if not os.path.islink(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, list):
+                existing = loaded
+        except (OSError, ValueError):
+            existing = []
+    entry = {"batch": int(number), "owner": owner,
+             "accepted_at": at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    write_guard_hook._atomic_write_json(path, existing + [entry], indent=2)
+    return entry
 
 
 class BatchEntry(TypedDict):
