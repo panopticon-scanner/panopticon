@@ -11,6 +11,17 @@ pipeline that installs it. The real control against a shell-capable reviewer is
 an ENFORCED shell (a registered ``panopticon-*`` agent whose tool policy omits
 Bash).
 
+THE CONTRACT, then, and where the rest of the tool surface is closed
+(#1753, AGT-1426146063): this hook adjudicates the write tools it names and
+allows every other tool name outright, BY DESIGN — a reviewer's ``Bash`` and
+``Agent`` are kept away from it one layer earlier, on the launch, not here. An
+enforced entry is launched into a registered shell whose ``tools:`` frontmatter
+never grants either; an unenforced entry (claude's ``--model`` argv, which binds
+no shell) carries ``runners/claude.UNENFORCED_DENIED_TOOLS`` as an explicit
+``--disallowedTools=`` token, and deny beats the operator's own user-scope allow
+rules. So "the write guard does not mediate Bash" is a statement about this
+hook's job, not a hole: the hole would be a launch that grants Bash at all.
+
 THIS HOOK IS CLAUDE-ONLY BY CONSTRUCTION, not by omission: it is registered in
 ``.claude/settings.local.json`` as a Claude Code PreToolUse hook, so it cannot
 run for any other host. ``driver run`` therefore REFUSES to dispatch the
