@@ -252,6 +252,14 @@ class LoopCase(unittest.TestCase):
 
 
 class TestHeadlessLoop(LoopCase):
+    # #1912 (review round 1, finding 1): the two hardware ids the owner-stamp
+    # cases STATE rather than read off whatever machine the suite is running on.
+    # `uuid.getnode()` answers differently per host and falls back to a random
+    # multicast value where it finds no hardware address -- and every owner
+    # verdict asserted below has to be the same verdict on every machine.
+    MACHINE = "acde48001122"            # "this machine", because the test says so
+    OTHER_MACHINE = "00deadbeef00"      # ...and somebody else's
+
     def _run(self, d, floor, runner, *extra):
         args = self._args(d, *extra)
         # first driver.run mints the manifest; seed coverage right after (the
@@ -929,7 +937,7 @@ class TestHeadlessLoop(LoopCase):
         d, floor = self._repo(floor=("SEC", "ACC"))
         crashed = self._leave_crashed_batch(d, floor)
         self._stamp_crash_owner(crashed.run_dir, host="some-other-box",
-                                machine="00deadbeef00")
+                                machine=self.OTHER_MACHINE)
         before = self._untouched(d, crashed.run_dir)
         resumed = FakeRunner()
         status = self._return_persist(d, floor, resumed)
@@ -947,15 +955,24 @@ class TestHeadlessLoop(LoopCase):
         # only remedy the refusal could name for a record this machine had
         # written itself. The hardware id did not move, so the resume still
         # recognises its own record and the dead pid decides as it always did.
+        #
+        # BOTH ids are stated, never read off the machine running the suite
+        # (review round 1, finding 1): where `uuid.getnode()` falls back to its
+        # random multicast value `machine_id()` is None and `document()` omits
+        # the field, so a test that leaned on the real one asserted None ==
+        # None and then failed three lines later as an opaque status mismatch.
         d, floor = self._repo(floor=("SEC", "ACC"))
         crashed = self._leave_crashed_batch(d, floor)
-        self._stamp_crash_owner(crashed.run_dir, host="mac.office.example")
-        self.assertEqual(batch_mod.machine_id(),
+        self._stamp_crash_owner(crashed.run_dir, host="mac.office.example",
+                                machine=self.MACHINE)
+        self.assertEqual(self.MACHINE,
                          self._crash_record(crashed.run_dir).get("machine"),
-                         "the record must carry this machine's hardware id")
+                         "the record must carry the hardware id this test states")
         resumed = FakeRunner()
         err = io.StringIO()
-        with contextlib.redirect_stderr(err):
+        with contextlib.redirect_stderr(err), \
+                mock.patch.object(batch_mod, "machine_id",
+                                  return_value=self.MACHINE):
             status = self._return_persist(d, floor, resumed)
         self.assertEqual(status["status"], "complete", status)
         self.assertIn("recovered stale batch", err.getvalue())
@@ -991,7 +1008,7 @@ class TestHeadlessLoop(LoopCase):
     def _foreign(self, run_dir):
         """Make every leftover record read as another machine's: both ids."""
         self._stamp_crash_owner(run_dir, host="some-other-box",
-                                machine="00deadbeef00")
+                                machine=self.OTHER_MACHINE)
 
     def _accepted(self, run_dir):
         return runio._load_json(os.path.join(run_dir, batch_mod.DISCARDED_BATCHES))
@@ -1085,7 +1102,7 @@ class TestHeadlessLoop(LoopCase):
         # the stamp AS FOUND, so the record that was thrown away can still be
         # read back: whose pid, on whose machine, and what the loop made of it
         self.assertEqual({"pid": stamp["pid"], "host": "some-other-box",
-                          "machine": "00deadbeef00",
+                          "machine": self.OTHER_MACHINE,
                           "state": batch_mod.OWNER_FOREIGN},
                          accepted[0]["owner"])
         self.assertRegex(accepted[0]["accepted_at"],
