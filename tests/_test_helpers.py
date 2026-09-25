@@ -73,7 +73,7 @@ def last(seq, what="finding"):
 
 
 class FakeStream:
-    """Iterable-chunk fake stdout/stderr for FakePopen."""
+    """Finite binary stream for FakePopen, with pipe-like bounded reads."""
 
     def __init__(self, chunks):
         if chunks is None:
@@ -82,29 +82,47 @@ class FakeStream:
             chunks = [chunks]
         self._chunks = list(chunks)
         self._idx = 0
+        self._offset = 0
+        self.closed = False
 
     def read(self, size=-1):
-        if self._idx >= len(self._chunks):
+        if self.closed:
+            raise ValueError("read of closed file")
+        if size == 0:
             return b""
-        chunk = self._chunks[self._idx]
-        self._idx += 1
-        return chunk
+        pieces = []
+        remaining = size
+        while self._idx < len(self._chunks) and remaining != 0:
+            chunk = self._chunks[self._idx]
+            piece = chunk[self._offset:] if remaining < 0 else chunk[
+                self._offset:self._offset + remaining]
+            pieces.append(piece)
+            self._offset += len(piece)
+            if self._offset == len(chunk):
+                self._idx += 1
+                self._offset = 0
+            if remaining > 0:
+                remaining -= len(piece)
+        return b"".join(pieces)
 
     def close(self):
-        pass
+        self.closed = True
 
 
 class FakePopen:
-    """A Popen-like stand-in for tests that exercise run_tool's bounded
-    capture path. Supports both pre-built ``return_value=FakePopen(...)``
-    patching and ``side_effect=FakePopen`` construction from run_tool's call
-    arguments."""
+    """Deterministic run_tool double for finite streams and process exit.
+
+    ``pending=True`` stays running until kill/terminate; a timed wait raises
+    TimeoutExpired. No OS PID exists, so process-group signalling cannot target
+    an unrelated real process. ``communicate`` is deliberately unsupported.
+    """
 
     def __init__(self, cmd=None, stdout=None, stderr=None, returncode=0,
-                 **kwargs):
+                 pending=False, **kwargs):
         self.cmd = list(cmd) if cmd else []
-        self._returncode = returncode
-        self._killed = False
+        self._exit_code = returncode
+        self._pending = pending
+        self.returncode = None
         # run_tool passes subprocess.PIPE for stdout/stderr; ignore those and
         # let the test provide the byte payload explicitly.
         self.stdout = FakeStream(stdout if stdout not in (None, -1) else None)
@@ -112,21 +130,39 @@ class FakePopen:
         self.kwargs = kwargs
 
     def wait(self, timeout=None):
-        if self._killed and self._returncode == 0:
-            self._returncode = -9
-        return self._returncode
+        if self.returncode is None and self._pending:
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(self.cmd, timeout)
+            raise RuntimeError("pending FakePopen needs kill() or terminate()")
+        return self.poll()
 
     def kill(self):
-        self._killed = True
+        if self.poll() is None:
+            self.returncode = -9
+
+    def terminate(self):
+        if self.poll() is None:
+            self.returncode = -15
 
     def poll(self):
-        return self._returncode if self._killed else None
+        if self.returncode is None and not self._pending:
+            self.returncode = self._exit_code
+        return self.returncode
+
+    @property
+    def pid(self):
+        raise AttributeError("FakePopen has no OS PID")
+
+    def communicate(self, *args, **kwargs):
+        raise NotImplementedError("FakePopen only models run_tool's read/wait path")
 
     def __enter__(self):
         return self
 
     def __exit__(self, *args):
-        pass
+        self.stdout.close()
+        self.stderr.close()
+        self.wait()
 
 
 def touch(root, rel, content=""):
