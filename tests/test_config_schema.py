@@ -76,6 +76,19 @@ class TestParseSettings(unittest.TestCase):
         self.assertTrue(all("operator-only" in r["reason"] for r in p.refused))
         self.assertIn("target config asked for `allow_unenforced: true`", p.disclosures[0])
 
+    def test_the_reviewed_tree_may_not_discard_a_batch_record_of_its_own_review(self):
+        # #1912: `--discard-batch N` is an operator's acceptance that a batch of
+        # paid cells is lost. It is classed with `reset` -- the other one-shot
+        # destructive choice -- so a target that asks for it under `settings:` is
+        # refused, disclosed and counted, exactly like a target asking to reset.
+        self.assertEqual("operator", cs.CLASS_OF["discard_batch"])
+        self.assertEqual(cs.CLASS_OF["reset"], cs.CLASS_OF["discard_batch"])
+        p = cs.parse_settings({"settings": {"discard_batch": 1}})
+        self.assertEqual(p.typed, {})
+        self.assertEqual(["discard_batch"], [r["key"] for r in p.refused])
+        self.assertIn("operator-only", p.refused[0]["reason"])
+        self.assertIn("target config asked for `discard_batch: 1`", p.disclosures[0])
+
     def test_an_unknown_key_is_refused_and_exclude_paths_gets_a_hint(self):
         p = cs.parse_settings({"settings": {"nonsense": 1, "exclude_paths": ["a/**"]}})
         self.assertEqual(p.typed, {})

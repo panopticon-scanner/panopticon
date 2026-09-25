@@ -39,11 +39,19 @@ GATE_KEYS = ("fail_on", "gate_scope", "max_verify", "security", "severity", "too
 # tests/test_config_schema.py walks the real parser and fails on a dest that
 # is in neither this tuple nor the two above, so a new flag cannot land
 # unclassified (spec §4).
+# `discard_batch` (#1912) sits here with `reset` for the same reason, and the
+# reason is sharper for it: both are one-shot destructive choices the person at
+# the terminal makes about a run folder -- never carried into a resume
+# (`runners/resume.py`) -- and this table is what stops the REVIEWED TREE from
+# making one of them. A target that could set `discard_batch: 1` under
+# `settings:` would be asking the driver to throw away a batch record of its
+# own review, which is precisely the acceptance only an operator may give.
 OPERATOR_ONLY_KEYS = (
-    "allow_unenforced", "base", "concurrency", "diff_context", "egress",
-    "entry_timeout", "host", "max_budget_usd", "max_iterations", "max_turns",
-    "mode", "no_tools", "online", "pr", "reset", "scope_changed", "scope_dir",
-    "scope_file", "scope_files", "scope_group", "session_dir", "setup", "target",
+    "allow_unenforced", "base", "concurrency", "diff_context", "discard_batch",
+    "egress", "entry_timeout", "host", "max_budget_usd", "max_iterations",
+    "max_turns", "mode", "no_tools", "online", "pr", "reset", "scope_changed",
+    "scope_dir", "scope_file", "scope_files", "scope_group", "session_dir",
+    "setup", "target",
 )
 CLASS_OF = dict([(k, "grain") for k in GRAIN_KEYS]
                 + [(k, "gate") for k in GATE_KEYS]
