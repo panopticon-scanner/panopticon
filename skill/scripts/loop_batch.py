@@ -80,12 +80,17 @@ BATCH_OWNER_UNSTAMPED = (
 # names the folder it looked in: the number comes off a file name the operator
 # read somewhere, and the run folder is per-run (`runs/<tag>/`), so the usual
 # mistake is a number from the PREVIOUS run's folder.
+#
+# No "driver loop: " lead on these two either, for the reason given above: they
+# are RAISED out of `recover_stale` and the one catch in `orchestrate.loop`
+# prefixes them. They shipped with one and it rendered twice (review round 1,
+# finding 2), which is what the prefix-count assertion in the tests now pins.
 DISCARD_ABSENT = (
-    "driver loop: --discard-batch %d names no batch record in this run: %s does not "
+    "--discard-batch %d names no batch record in this run: %s does not "
     "exist. The number is the one in the record's own file name, and the folder is "
     "this run's -- `ls %s` names the records that are actually there.")
 DISCARD_NO_RUN = (
-    "driver loop: --discard-batch %d has nothing to act on: this tree has no run "
+    "--discard-batch %d has nothing to act on: this tree has no run "
     "manifest of its own (%s), so there is no run folder holding batch records.")
 # Printed immediately BEFORE the ordinary rollback line, which says what the
 # rollback removed and what is being retried -- so this one says only what is

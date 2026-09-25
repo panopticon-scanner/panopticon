@@ -1123,8 +1123,29 @@ class TestHeadlessLoop(LoopCase):
         # named, so the operator can see WHICH folder was looked in
         self.assertIn(batch_mod.manifest_path(crashed.run_dir, 7),
                       status["message"])
+        # ...and prefixed ONCE: every refusal out of `recover_stale` is raised,
+        # and `orchestrate.loop`'s one catch adds the lead (review round 1,
+        # finding 2 -- both discard constants carried a second one).
+        self.assertEqual(1, status["message"].count("driver loop: "),
+                         status["message"])
         self.assertEqual([], resumed.launched)
         self.assertEqual(self._untouched(d, crashed.run_dir), before)
+
+    def test_discard_batch_before_this_tree_has_a_run_of_its_own_errors(self):
+        # The reachable first-invocation mistake: `--discard-batch` typed on a
+        # tree with no run manifest yet. Recovery runs BEFORE the first
+        # `driver.run` mints one, so the flag would otherwise pass straight
+        # through the one branch that reads no records at all.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        self.assertIsNone(driver.run_manifest.load_manifest(d))
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed, "--discard-batch", "1")
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("no run manifest of its own", status["message"])
+        self.assertIn(driver.run_manifest.manifest_path(d), status["message"])
+        self.assertEqual(1, status["message"].count("driver loop: "),
+                         status["message"])
+        self.assertEqual([], resumed.launched)
 
     def test_discard_batch_names_one_record_and_not_the_others(self):
         # The flag is one record's acceptance, never a blanket one: a SECOND
