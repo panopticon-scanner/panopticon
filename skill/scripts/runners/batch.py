@@ -156,6 +156,16 @@ def machine_id():
     `%012x` and never `hex()`: the stamp is compared as a STRING, so one
     number must have exactly one spelling. `isinstance(node, bool)` is
     excluded with the rest -- `True` is an `int` and would render as an id.
+
+    What this id is NOT is a pid-namespace identity (review round 1, finding
+    4): it names the interface, so two containers sharing the host's network
+    (`--network host`, hence the same MAC) under different hostnames, with
+    separate pid namespaces and the same reviewed tree bind-mounted, now read
+    each other's records as same-machine and ask `os.kill` about a pid from the
+    other namespace -- where the hostname rule alone had failed closed as
+    `foreign`. It needs all three of shared MAC, separate pid namespaces and a
+    shared run folder; a boot-id or namespace discriminator would close it, and
+    the #1727 hash-binding TODO above owns the authenticity half regardless.
     """
     node = uuid.getnode()
     if (isinstance(node, bool) or not isinstance(node, int) or node <= 0

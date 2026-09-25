@@ -96,8 +96,9 @@ DISCARD_NO_RUN = (
 # rollback removed and what is being retried -- so this one says only what is
 # not already there: whose loss was accepted, and where that is written down.
 DISCARD_ACCEPTED = (
-    "driver loop: discarded batch %d on --discard-batch: its owner stamp (%s) could "
-    "not be checked for liveness and you accepted the loss. Recorded in %s.")
+    "driver loop: discarded batch %d on --discard-batch: its owner (pid %r on host %r, "
+    "verdict %s) could not be checked for liveness and you accepted the loss. "
+    "Recorded in %s.")
 
 
 # #1698: the record this batch may not overwrite. `Batch.open` reserves the
@@ -123,18 +124,7 @@ def batch_in_use(run_dir, number):
     return BATCH_IN_USE % path if os.path.lexists(path) else None
 
 
-def _batch_number(name, doc):
-    """The iteration number to name in a refusal's `--discard-batch` remedy.
-
-    Off the FILE NAME, which is what the operator types back and the only
-    spelling `recover_stale` acts on; `batch` inside the document is a value
-    the target can choose and is validated against the name further down.
-    """
-    match = batch_mod.MANIFEST_RE.fullmatch(name)
-    return int(match[1]) if match else (doc or {}).get("batch")
-
-
-def refuse_foreign_owner(name, doc):
+def refuse_foreign_owner(name, doc, number):
     """The refusal for a record this process may not recover, or None (#1698).
 
     Asked before every other check on the document, because a record whose
@@ -144,15 +134,23 @@ def refuse_foreign_owner(name, doc):
     come off a file in the reviewed tree and reach the operator's stderr, so
     repr renders a control character or an embedded newline as its escape
     sequence (the reason `misroute_refusal` does the same).
+
+    `number` is the iteration number the `--discard-batch` remedy tells the
+    operator to type, and it is the CALLER's -- read out of the record's file
+    name, which is the only spelling recovery acts on. It is a parameter rather
+    than something derived here (review round 1, finding 11) so that no reader
+    is tempted to fall back to the document's own `batch` field: that value is
+    the target's to choose, and a remedy built out of it would print either a
+    target-authored string or, when the key is absent, `--discard-batch None`.
     """
     state = batch_mod.owner_state(doc)
     if state == batch_mod.OWNER_LIVE:
         return BATCH_OWNER_LIVE % (name, doc.get("pid"))
     if state == batch_mod.OWNER_FOREIGN:
         return BATCH_OWNER_ELSEWHERE % (name, doc.get("pid"), doc.get("host"),
-                                        _batch_number(name, doc))
+                                        int(number))
     if state != batch_mod.OWNER_DEAD:
-        return BATCH_OWNER_UNSTAMPED % (name, _batch_number(name, doc))
+        return BATCH_OWNER_UNSTAMPED % (name, int(number))
     return None
 
 
@@ -228,7 +226,7 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
         if not isinstance(doc, dict) or doc.get("schema_version") != 1:
             raise ValueError(refusal + "invalid manifest or unbound checkpoint")
         # #1698: is this a crash AT ALL? First, and on its own wording.
-        owned = refuse_foreign_owner(name, doc)
+        owned = refuse_foreign_owner(name, doc, int(match[1]))
         # #1912: ...unless this is the one record the operator accepted the
         # loss of, and the verdict is one an operator is entitled to overrule.
         accepted = (owned and discard == int(match[1])
@@ -309,7 +307,8 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
             # Its own sentence, not "recovered stale batch": what happened here
             # is that an operator RULED, and the run's stderr is where that is
             # said out loud (#1912).
-            print(DISCARD_ACCEPTED % (batch.number, stamp["state"],
+            print(DISCARD_ACCEPTED % (batch.number, stamp["pid"], stamp["host"],
+                                      stamp["state"],
                                       batch_mod.discarded_path(root)),
                   file=sys.stderr, flush=True)
         print("driver loop: %s; removed %d artifact(s); retrying %s"
