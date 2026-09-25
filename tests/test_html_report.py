@@ -363,6 +363,53 @@ class TestHtmlReport(unittest.TestCase):
         self.assertEqual(app["cells"]["security"]["count"], 1)
         self.assertEqual(app["cells"]["security"]["worst"], "HIGH")
 
+    def test_archived_generic_group_uses_common_directory_as_display_label(self):
+        report = _minimal_report(findings=[
+            {"id": "A", "severity": "LOW", "panel": "code",
+             "location": {"file": "./src/api/handler.py"}},
+        ])
+        report["groups"] = [
+            {"name": "._1", "files": ["src/api/handler.py", "src/api/routes.py"]},
+            {"name": "123", "files": []},
+            {"name": "Billing", "files": ["billing/main.py"]},
+        ]
+        self.assertEqual(hr._group_display_labels(report), {"._1": "src/api", "123": "123"})
+        root = _parse(hr._render_heatmap(report))
+        rows = _nodes(_nodes(root, "tbody")[0], "tr")
+        self.assertEqual([[_text(cell).strip() for cell in row["children"]] for row in rows],
+                         [["src/api", "1", "1"], ["123", "—", "0"],
+                          ["Billing", "—", "0"]])
+
+    def test_partial_group_inventory_leaves_unmapped_files_ungrouped(self):
+        report = _minimal_report(findings=[
+            {"id": "A", "panel": "code", "location": {"file": "./src/api/a.py"}},
+            {"id": "B", "panel": "code", "location": {"file": "src/other/b.py"}},
+        ])
+        report["groups"] = [{"name": "API", "files": ["src/api/a.py"]}]
+        panels, rows = hr._heatmap_grid(report)
+        self.assertEqual(panels, ["code"])
+        self.assertEqual([(name, row["total"]) for name, row in rows],
+                         [("API", 1), ("Ungrouped", 1)])
+        root = _parse(hr._render_heatmap(report))
+        self.assertEqual([_text(n).strip() for n in _nodes(root, "th")
+                          if n["attrs"].get("scope") == "row"], ["API", "Ungrouped"])
+
+    def test_missing_group_inventory_uses_path_module_fallbacks(self):
+        report = _minimal_report(findings=[
+            {"id": "A", "panel": "code", "location": {"file": "./src/api/a.py"}},
+            {"id": "B", "panel": "code", "location": {"file": "docs/readme.md"}},
+            {"id": "C", "panel": "code", "location": {"file": "root.py"}},
+        ])
+        report.pop("groups")
+        panels, rows = hr._heatmap_grid(report)
+        self.assertEqual(panels, ["code"])
+        self.assertEqual([(name, row["total"]) for name, row in rows],
+                         [("(root)", 1), ("docs", 1), ("src/api", 1)])
+        root = _parse(hr._render_heatmap(report))
+        self.assertEqual([_text(n).strip() for n in _nodes(root, "th")
+                          if n["attrs"].get("scope") == "row"],
+                         ["(root)", "docs", "src/api"])
+
     def test_heatmap_ordered_by_count_and_severity(self):
         findings = [
             {"id": "A", "title": "a", "severity": "LOW", "location": {"file": "z.py"}},
