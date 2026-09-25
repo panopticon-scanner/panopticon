@@ -401,8 +401,13 @@ class TestSourcesIsASummary(unittest.TestCase):
     def test_sources_does_not_grow_with_transcript_count(self):
         small = self._usage(3)
         large = self._usage(300)
-        if small is None or large is None:
-            self.skipTest("collect() found no usage records in the fixture")
+        self.assertIsNotNone(small, "the fixture wrote a controller usage record")
+        self.assertIsNotNone(large, "the fixture wrote 300 subagent usage records")
+        for usage, count in ((small, 3), (large, 300)):
+            self.assertEqual(1, usage["sources"]["controller_usage_records"])
+            self.assertEqual(count, usage["sources"]["subagent_usage_records"])
+            self.assertEqual(count, usage["subagent_transcripts"])
+            self.assertEqual(2 * (count + 1), usage["total"])
         s_bytes = len(json.dumps(small["sources"]))
         l_bytes = len(json.dumps(large["sources"]))
         self.assertLess(
@@ -413,10 +418,21 @@ class TestSourcesIsASummary(unittest.TestCase):
 
     def test_sources_still_reports_the_counts(self):
         u = self._usage(5)
-        if u is None:
-            self.skipTest("collect() found no usage records in the fixture")
-        self.assertEqual(u["sources"]["subagent_transcripts"], 5)
-        self.assertEqual(u["subagent_transcripts"], 5)
+        self.assertIsNotNone(u, "the fixture wrote six usage records")
+        self.assertEqual({
+            "controller_transcripts": 1,
+            "controller_usage_records": 1,
+            "subagent_transcripts": 5,
+            "subagent_usage_records": 5,
+            "subagent_transcripts_by_phase": {"unattributed": 5},
+            "subagent_transcripts_truncated": 0,
+        }, u["sources"])
+        self.assertEqual(5, u["subagent_transcripts"])
+        self.assertEqual({"input_tokens": 6, "output_tokens": 6,
+                          "cache_creation_input_tokens": 0,
+                          "cache_read_input_tokens": 0}, u["by_field"])
+        self.assertEqual({"m": 6}, u["by_model"])
+        self.assertEqual(12, u["total"])
 
 
 class TestTranscriptEnumerationIsBounded(unittest.TestCase):

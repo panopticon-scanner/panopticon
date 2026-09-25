@@ -14,6 +14,20 @@ import reconcile_apply
 import triage
 
 
+@contextlib.contextmanager
+def native_temp_alias_directory(test_case):
+    """Allocate a managed directory through macOS's /var system alias."""
+    if sys.platform == "darwin":
+        with tempfile.TemporaryDirectory(dir="/var/tmp") as directory:
+            test_case.assertTrue(directory.startswith("/var/tmp/"), directory)
+            test_case.assertTrue(os.path.realpath(directory).startswith("/private/var/"),
+                                 directory)
+            yield directory
+    else:
+        with tempfile.TemporaryDirectory() as directory:
+            yield directory
+
+
 class TestLedger(unittest.TestCase):
     def test_load_missing_ledger_returns_empty_dict(self):
         self.assertEqual(reconcile_apply.load_ledger(path="/nonexistent/x.json"), {})
@@ -103,9 +117,7 @@ class TestSaveRecoveredLedger(unittest.TestCase):
             self.assertIn("\n ", text)                       # indent=1
 
     def test_native_temp_alias_saves_and_replaces_with_exact_backup(self):
-        with tempfile.TemporaryDirectory() as d:
-            if sys.platform == "darwin":
-                self.assertTrue(d.startswith("/var/"), d)
+        with native_temp_alias_directory(self) as d:
             output = Path(d) / "nested" / "ledger.json"
             first = {"fp|F-1|a.py|finding": "https://github.com/o/r/issues/1"}
             second = {"fp|F-2|b.py|finding": "https://github.com/o/r/issues/2"}
@@ -542,9 +554,7 @@ class TestApply(unittest.TestCase):
         return runner
 
     def test_native_temp_alias_live_apply_and_leaf_lock_refusal(self):
-        with tempfile.TemporaryDirectory() as d:
-            if sys.platform == "darwin":
-                self.assertTrue(d.startswith("/var/"), d)
+        with native_temp_alias_directory(self) as d:
             action = self._actions()[:1]
             calls = []
             receipt = Path(d) / "progress.json"
@@ -1081,9 +1091,7 @@ class TestApply(unittest.TestCase):
                 self.assertEqual(list(target.iterdir()), [])
 
     def test_user_symlink_below_native_alias_is_rejected_before_mutation(self):
-        with tempfile.TemporaryDirectory() as d:
-            if sys.platform == "darwin":
-                self.assertTrue(d.startswith("/var/"), d)
+        with native_temp_alias_directory(self) as d:
             target = Path(d) / "target"
             target.mkdir()
             alias = Path(d) / "alias"

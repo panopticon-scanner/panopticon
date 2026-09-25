@@ -218,6 +218,32 @@ def _render_criteria(bundle, domain):
 _TOOL_HIT_DOMAINS = frozenset({"SEC"})
 
 _TOOL_HITS_CAP = 40
+# Per-COLUMN bounds for the map's untrusted text (#1752 AGT-2822331063).
+# _TOOL_HITS_CAP bounds the number of lines; these bound a line.
+_TOOL_HIT_TITLE_CAP = 200
+_TOOL_HIT_RULE_CAP = 120
+_TOOL_HIT_WHERE_CAP = 200
+
+def _hit_text(value, cap):
+    """One prompt column of untrusted tool text: inert, single-line, bounded.
+
+    The value is sliced to `8 * cap` BEFORE escaping: `_prompt_safe` rebuilds the
+    whole string (measured ~57x transient memory on a 2 MB title, and a SARIF
+    `message.text` is unbounded inside the 50 MiB ingest cap), and the worst
+    per-character expansion is 6, so an 8x window renders identically.
+
+    A tool hit's path, rule id and title are foreign text -- written by a
+    scanner about code the target owns, and `.panopticon/tools/*.sarif` is a
+    path a target repo can commit -- and they land in the reviewer's prompt
+    under "verified independently ... do not re-file". Unbounded, one hit put
+    20 kB in a review prompt and forty put ~760 kB. `_prompt_safe` first (the
+    generic SARIF path collapses whitespace in `title` only, so C0 bytes still
+    arrive in `rule_id` and `category`), then collapse, then cut with the cut
+    MARKED, so a truncated line cannot read as a complete one. Empty is `?`,
+    the same unknown the columns already used.
+    """
+    text = " ".join(runio._prompt_safe(str(value or "")[:8 * cap]).split())
+    return (text[:cap] + "…") if len(text) > cap else (text or "?")
 
 @functools.lru_cache(maxsize=None)
 def _ingested_tool_findings(review_root, include_fixtures):
@@ -248,9 +274,10 @@ def _format_tool_hits(hits):
         loc = h.get("location") or {}
         f = loc.get("file") or "?"
         ln = loc.get("line_start")
-        where = "%s:%s" % (f, ln) if ln else f
-        rule = (h.get("tool_evidence") or {}).get("rule_id") or h.get("category") or "?"
-        title = " ".join(str(h.get("title") or "").split())
+        where = _hit_text("%s:%s" % (f, ln) if ln else f, _TOOL_HIT_WHERE_CAP)
+        rule = _hit_text((h.get("tool_evidence") or {}).get("rule_id")
+                         or h.get("category"), _TOOL_HIT_RULE_CAP)
+        title = _hit_text(h.get("title"), _TOOL_HIT_TITLE_CAP)
         lines.append("- %s · %s · %s · %s"
                      % (where, rule, h.get("severity") or "?", title))
     extra = len(hits) - _TOOL_HITS_CAP

@@ -1234,11 +1234,19 @@ class TestSetupScanExecuteUsesTheNamespace(unittest.TestCase):
         # #1737: a registered machine, so the scan dispatches enforced rather
         # than being refused for want of the operator's acknowledgement.
         write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        _vocabulary, present = setup_flow.load_bundled_vocabulary()
+        self.assertTrue(present, "the bundled vocabulary is required for this checkpoint")
         result = setup_phase.scan_execute(d, {"run_id": "RID", "host": "claude"})
-        if result.kind != "checkpoint":
-            self.skipTest("vocab-absent fallback path")
-        self.assertTrue(result.dispatch_request.endswith(
-            ".panopticon/setup-dispatch-request.json"), result.dispatch_request)
+        self.assertEqual("checkpoint", result.kind)
+        self.assertEqual("scan", result.checkpoint)
+        self.assertEqual(requests.request_path(d, namespace="setup"),
+                         result.dispatch_request)
+        self.assertFalse(os.path.exists(requests.request_path(d)))
+        request = requests.load_dispatch_request(d, namespace="setup")
+        self.assertEqual("RID", request["run_id"])
+        self.assertEqual("scan", request["checkpoint"])
+        self.assertIsNone(request["group"])
+        self.assertEqual(["setup-scan"], [e["id"] for e in request["entries"]])
 
 
 class TestReadinessLimitationsAreLoud(unittest.TestCase):
