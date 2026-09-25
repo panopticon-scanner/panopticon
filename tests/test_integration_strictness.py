@@ -12,9 +12,11 @@ its unmet preconditions into failures) and left the pattern local to that file.
 This module makes it the rule rather than the exception, and pins it so the next
 integration test cannot quietly reintroduce a silent skip.
 """
+import ast
+import io
 import os
-import re
 import tempfile
+import tokenize
 import unittest
 from unittest import mock
 
@@ -29,10 +31,91 @@ TOOLS_TESTS = os.path.join(REPO_ROOT, "tests", "tools")
 # so the exemption travels with the code instead of living in a list here that
 # drifts from it.
 _EXEMPT = "strict-skip-exempt:"
-# Both spellings. `raise unittest.SkipTest(...)` is exactly as invisible as
-# `self.skipTest(...)`, and matching only the latter let two live sites through
-# (found by the #1528 in-image run, not by this guard).
-_SKIP_CALL = re.compile(r"\.skipTest\(|\bSkipTest\(")
+_SKIP_NAMES = {
+    "unittest.SkipTest", "unittest.skip", "unittest.skipIf",
+    "unittest.skipUnless", "pytest.skip", "pytest.mark.skip",
+    "pytest.mark.skipif",
+}
+
+
+def _skip_sites_in_source(source, name):
+    """Find executable skip sites; syntax errors are guard failures too."""
+    lines = source.splitlines()
+    try:
+        tree = ast.parse(source, filename=name)
+    except SyntaxError as exc:
+        return ["%s:%d malformed Python: %s" %
+                (name, exc.lineno or 1, exc.msg)]
+
+    aliases = {"unittest": "unittest", "pytest": "pytest"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for item in node.names:
+                if item.name in ("unittest", "pytest"):
+                    aliases[item.asname or item.name] = item.name
+        elif isinstance(node, ast.ImportFrom) and node.module in ("unittest", "pytest"):
+            for item in node.names:
+                aliases[item.asname or item.name] = node.module + "." + item.name
+
+    def resolved(node):
+        if isinstance(node, ast.Name):
+            return aliases.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            return resolved(node.value) + "." + node.attr
+        return ""
+
+    comments = {}
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            comments[token.start[0]] = token.string
+
+    def exempt(line):
+        for candidate in (line, line - 1):
+            if candidate < 1:
+                continue
+            comment = comments.get(candidate, "")
+            if candidate != line and not lines[candidate - 1].lstrip().startswith("#"):
+                continue
+            if _EXEMPT in comment and comment.split(_EXEMPT, 1)[1].strip():
+                return True
+        return False
+
+    sites = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            target = node.func
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call) and resolved(decorator) in _SKIP_NAMES:
+                    if not exempt(decorator.lineno):
+                        sites.append("%s:%d %s" %
+                                     (name, decorator.lineno, lines[decorator.lineno - 1].strip()))
+            continue
+        else:
+            continue
+        spelling = resolved(target)
+        if spelling not in _SKIP_NAMES and not spelling.endswith(".skipTest"):
+            continue
+        if not exempt(node.lineno):
+            sites.append("%s:%d %s" %
+                         (name, node.lineno, lines[node.lineno - 1].strip()))
+    return sorted(sites)
+
+
+def _skip_sites(root):
+    sites = []
+    for name in sorted(os.listdir(root)):
+        if not name.endswith(".py"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                source = fh.read()
+        except (OSError, UnicodeError) as exc:
+            sites.append("%s unreadable Python: %s" % (name, exc))
+            continue
+        sites.extend(_skip_sites_in_source(source, name))
+    return sites
 
 
 class TestRequireIntegrationFlag(unittest.TestCase):
@@ -143,21 +226,7 @@ class TestNoSilentSkipsRemain(unittest.TestCase):
     bare `self.skipTest(...)` away from being invisible again."""
 
     def _skip_sites(self):
-        sites = []
-        for name in sorted(os.listdir(TOOLS_TESTS)):
-            if not name.endswith(".py"):
-                continue
-            path = os.path.join(TOOLS_TESTS, name)
-            with open(path, encoding="utf-8") as fh:
-                lines = fh.read().splitlines()
-            for n, line in enumerate(lines, 1):
-                if not _SKIP_CALL.search(line):
-                    continue
-                context = line + (lines[n - 2] if n >= 2 else "")
-                if _EXEMPT in context:
-                    continue
-                sites.append("%s:%d %s" % (name, n, line.strip()))
-        return sites
+        return _skip_sites(TOOLS_TESTS)
 
     def test_every_precondition_skip_goes_through_skip_or_fail(self):
         self.assertEqual(
@@ -173,6 +242,86 @@ class TestNoSilentSkipsRemain(unittest.TestCase):
         names = [n for n in os.listdir(TOOLS_TESTS) if n.endswith(".py")]
         self.assertGreater(len(names), 15, "tools test scan found almost "
                                            "nothing; the scanner is broken")
+
+    def test_planted_files_detect_calls_decorators_multiline_and_aliases(self):
+        planted = {
+            "test_calls.py": """import unittest as unit
+import pytest as pt
+from unittest import SkipTest as Halt
+from pytest import skip as stop
+self.skipTest(
+    'missing tool'
+)
+raise Halt('missing tool')
+pt.skip('missing tool')
+stop('missing tool')
+""",
+            "test_decorators.py": """import unittest as unit
+import pytest as pt
+from unittest import skipUnless as only_when
+from pytest import mark as marks
+@unit.skipIf(
+    True,
+    'missing tool',
+)
+class First: pass
+@only_when(False, 'missing tool')
+class Second: pass
+@pt.mark.skip(reason='missing tool')
+def third(): pass
+@marks.skipif(True, reason='missing tool')
+def fourth(): pass
+@unit.skip('missing tool')
+def fifth(): pass
+@pt.mark.skip
+def sixth(): pass
+""",
+        }
+        with tempfile.TemporaryDirectory() as root:
+            for name, source in planted.items():
+                with open(os.path.join(root, name), "w", encoding="utf-8") as fh:
+                    fh.write(source)
+            sites = _skip_sites(root)
+        self.assertEqual(10, len(sites), sites)
+        self.assertTrue(any("test_calls.py" in site for site in sites))
+        self.assertTrue(any("test_decorators.py" in site for site in sites))
+
+    def test_comments_strings_and_justified_exemption_are_ignored(self):
+        source = """import unittest
+# self.skipTest('comment decoy')
+text = "strict-skip-exempt: string decoy; unittest.skip('decoy')"
+value = object()
+value.skip('ordinary method')
+# strict-skip-exempt: genuine opt-in probe
+@unittest.skip('opt-in')
+def optional(): pass
+"""
+        self.assertEqual([], _skip_sites_in_source(source, "test_decoys.py"))
+        misleading = """import unittest
+text = 'strict-skip-exempt: not a comment'
+unittest.skip('real')
+"""
+        self.assertEqual(1, len(_skip_sites_in_source(misleading, "test_real.py")))
+
+    def test_exemption_requires_a_reason_at_the_skip(self):
+        source = """import unittest
+# strict-skip-exempt:
+@unittest.skip('missing tool')
+def test_one(): pass
+# strict-skip-exempt: distant reason
+value = 1
+@unittest.skip('missing tool')
+def test_two(): pass
+"""
+        self.assertEqual(2, len(_skip_sites_in_source(source, "test_unjustified.py")))
+
+    def test_malformed_planted_source_fails_the_guard(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "test_broken.py"), "w", encoding="utf-8") as fh:
+                fh.write("def broken(:\n")
+            sites = _skip_sites(root)
+        self.assertEqual(1, len(sites), sites)
+        self.assertIn("test_broken.py", sites[0])
 
 
 class TestThereIsSomewhereTheyAreRequiredToRun(unittest.TestCase):

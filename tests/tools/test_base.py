@@ -463,7 +463,7 @@ class TestBothCapsBinding(unittest.TestCase):
         self.assertIn(b"[TRUNCATED by panopticon", stdout)
 
 
-@unittest.skipIf(os.name != "posix", "process groups are POSIX-only")
+@unittest.skipIf(os.name != "posix", "process groups are POSIX-only")  # strict-skip-exempt: process-group signals exist only on POSIX
 class TestTimeoutKillReachesTheWholeGroup(unittest.TestCase):
     """#1576 fix round 1: the timeout watchdog killed only the direct child.
 
