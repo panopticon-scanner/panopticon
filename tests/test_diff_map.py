@@ -1487,6 +1487,36 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         for flag in ("--local", "--worktree", "--global", "--system"):
             self.assertNotIn(flag, scoped[0])
 
+    def test_a_config_listing_without_repository_scope_refuses_before_the_fetch(self):
+        """Fail closed when the scope-labelled listing parses to nothing (#2041).
+
+        `repository_settings` keeps only `local`/`worktree` records; a git
+        whose `--show-scope` output changed shape would parse to `{}` and the
+        refusal would pass silently. `core.repositoryformatversion` is in every
+        repository's `.git/config`, so its absence is the tell. The stand-in
+        runner answers the listing with an empty, successful result and every
+        other call for real; the fetch must never be reached.
+        """
+        base, clone, _pr_sha = self._fixture()
+        wt = diff_map._worktree_dir(clone, 7)
+        self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
+        seen = []
+        real = self._runner()
+
+        def blanked(argv, **kwargs):
+            seen.append(list(argv))
+            if "--show-scope" in argv:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return real(argv, **kwargs)
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(RuntimeError) as caught:
+                diff_map.acquire_pr(7, repo=clone, runner=blanked)
+        self.assertIn("refusing to fetch", str(caught.exception))
+        self.assertIn("core.repositoryformatversion", str(caught.exception))
+        self.assertFalse([argv for argv in seen if "fetch" in argv], seen)
+        self.assertFalse(os.path.exists(wt))
+
     def test_a_transport_setting_that_was_emptied_is_not_refused(self):
         """(d) The classifier tests VALUES: an emptied key executes nothing.
 

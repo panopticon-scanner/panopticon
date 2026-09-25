@@ -899,10 +899,20 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     # reaches the filter -- moving the setting there is the remedy this refusal
     # names, so refusing on it would refuse the fix. The reuse path above
     # performs no fetch and therefore has nothing to refuse.
-    transport = safe_git.transport_command_keys(
-        safe_git.repository_settings(
-            _safe(repo, ["config", "--null", "--list", "--show-scope", "--includes"])),
-        _PR_REMOTE)
+    repository = safe_git.repository_settings(
+        _safe(repo, ["config", "--null", "--list", "--show-scope", "--includes"]))
+    if "core.repositoryformatversion" not in repository:
+        # Fail CLOSED on an unreadable listing. Every repository's `.git/config`
+        # carries `core.repositoryformatversion` at the `local` scope, so its
+        # absence means the parse saw no repository-scoped record at all -- a
+        # changed `--show-scope` output shape, not a clean checkout -- and an
+        # empty parse would otherwise pass the refusal silently.
+        _disclose()
+        raise RuntimeError(
+            "panopticon --pr: refusing to fetch: the config listing of %s carried no "
+            "repository-scoped setting (core.repositoryformatversion is always one), "
+            "so the transport-command check could not run (#2041)" % repo)
+    transport = safe_git.transport_command_keys(repository, _PR_REMOTE)
     if transport:
         _disclose()      # already disclosed by _safe; kept so a reordering cannot
                          # drop the disclosure
