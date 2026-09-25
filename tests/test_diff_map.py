@@ -1,5 +1,5 @@
 # tests/test_diff_map.py
-import contextlib, io, json, os, shlex, unittest, subprocess, tempfile, shutil
+import contextlib, io, json, os, re, shlex, unittest, subprocess, tempfile, shutil
 from unittest import mock
 
 import scripts.diff_map as diff_map
@@ -780,6 +780,109 @@ class TestDiffAnchors(unittest.TestCase):
 _REPO_SCOPE_LISTING = "local\0core.repositoryformatversion\n0\0"
 
 
+class _PrRunner:
+    """Only the commands acquire_pr/release_worktree issue, with visible state."""
+
+    def __init__(self, repo, wt, *, pr=7, gh_stdout='{"baseRefName": "main"}',
+                 gh_returncode=0, gh_stderr="", timeout_on=None, fail_on=None):
+        self.repo = repo
+        self.wt = wt
+        self.pr = pr
+        self.gh_stdout = gh_stdout
+        self.gh_returncode = gh_returncode
+        self.gh_stderr = gh_stderr
+        self.timeout_on = timeout_on
+        self.fail_on = fail_on
+        self.calls = []
+        self.fetches = 0
+        self.adds = 0
+        self.removes = 0
+        self.registered = False
+        self.temp_ref = None
+
+    def __call__(self, argv, **kwargs):
+        argv = list(argv)
+        self.calls.append((argv, dict(kwargs)))
+        assert kwargs.get("capture_output") is True, argv
+        assert kwargs.get("text") is True, argv
+        assert 0 < kwargs["timeout"] <= diff_map._PR_TIMEOUT, argv
+        if argv == ["gh", "pr", "view", str(self.pr), "--json", "baseRefName"]:
+            assert "env" not in kwargs, argv
+            phase = "gh"
+            result = (self.gh_returncode, self.gh_stdout, self.gh_stderr)
+        else:
+            assert os.path.basename(argv[0]) == "git", argv
+            assert len(argv) >= 8 and argv[1] == "-C", argv
+            assert argv[3:5] == ["-c", "core.fsmonitor=false"], argv
+            assert argv[5] == "-c" and argv[6].startswith("core.hooksPath="), argv
+            root, command = argv[2], argv[7:]
+            if command[:1] == ["fetch"]:
+                assert "env" not in kwargs, argv
+                assert root == self.repo, argv
+                assert command[:4] == ["fetch", "--no-recurse-submodules",
+                                       "--no-write-fetch-head", diff_map._PR_REMOTE], argv
+                assert len(command) == 5, argv
+                source, separator, ref = command[4].partition(":")
+                assert separator and source == f"refs/pull/{self.pr}/head", argv
+                assert re.fullmatch(rf"refs/panopticon/pr-{self.pr}-[0-9a-f]+", ref), argv
+                phase = "fetch"
+            else:
+                assert "env" in kwargs, argv  # confined safe_git launch
+                assert root in (self.repo, os.path.realpath(self.repo), self.wt), argv
+                if command == ["worktree", "list"]:
+                    assert root == self.repo, argv
+                    phase = "worktree_list"
+                elif command == ["config", "--null", "--list", "--includes"]:
+                    phase = "config_preflight"
+                elif command == ["ls-files", "--stage", "-z"]:
+                    phase = "index_preflight"
+                elif command == ["config", "--null", "--list", "--show-scope", "--includes"]:
+                    assert root == self.repo, argv
+                    phase = "scope_listing"
+                elif command == ["rev-parse", "HEAD"]:
+                    assert root == self.wt and self.registered, argv
+                    phase = "reuse_head"
+                elif command == ["rev-parse", self.temp_ref] and self.temp_ref:
+                    assert root == self.repo, argv
+                    phase = "fetched_head"
+                elif command == ["worktree", "add", "--detach", self.wt, "deadbeef"]:
+                    assert root == self.repo and self.temp_ref and not self.registered, argv
+                    phase = "worktree_add"
+                elif command == ["update-ref", "-d", self.temp_ref] and self.temp_ref:
+                    assert root == self.repo, argv
+                    phase = "delete_ref"
+                elif command == ["worktree", "remove", "--force", self.wt]:
+                    assert root == self.repo, argv
+                    phase = "worktree_remove"
+                else:
+                    raise AssertionError(f"unexpected PR command: {argv!r}")
+            result = (0, "", "")
+
+        if phase == self.timeout_on:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        if phase == self.fail_on:
+            return subprocess.CompletedProcess(argv, 1, "", f"injected {phase} failure")
+        if phase == "worktree_list":
+            result = (0, f"{self.wt}  deadbeef [detached HEAD]\n" if self.registered else "", "")
+        elif phase == "scope_listing":
+            result = (0, _REPO_SCOPE_LISTING, "")
+        elif phase in ("reuse_head", "fetched_head"):
+            result = (0, "deadbeef\n", "")
+        elif phase == "fetch":
+            self.fetches += 1
+            self.temp_ref = ref
+        elif phase == "worktree_add":
+            self.adds += 1
+            os.makedirs(self.wt, exist_ok=True)
+            self.registered = True
+        elif phase == "delete_ref":
+            self.temp_ref = None
+        elif phase == "worktree_remove":
+            self.removes += 1
+            self.registered = False
+        return subprocess.CompletedProcess(argv, *result)
+
+
 class TestPrWorktree(unittest.TestCase):
     def test_acquire_reads_base_and_adds_worktree(self):
         # `acquire_pr` calls `_sync_config` on BOTH paths (#1681), and that
@@ -790,30 +893,20 @@ class TestPrWorktree(unittest.TestCase):
         # earlier run happened to still exist, and failed on a clean machine.
         wt = tempfile.mkdtemp(prefix="panopticon-test-wt-")
         self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
-        calls = []
-        fetched_ref = []
-        def runner(argv, **kw):
-            calls.append(argv)
-            out = ""
-            if argv[:3] == ["gh", "pr", "view"]:
-                out = '{"baseRefName": "main"}'
-            elif "--show-scope" in argv:
-                out = _REPO_SCOPE_LISTING
-            elif "fetch" in argv:
-                fetched_ref.append(argv[-1].split(":", 1)[1])
-            elif "rev-parse" in argv:
-                out = "deadbeef\n"
-            class R: returncode = 0; stdout = out; stderr = ""
-            return R()
+        runner = _PrRunner(".", wt)
         with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
             info = diff_map.acquire_pr(7, repo=".", runner=runner)
         self.assertEqual(info["base"], "main")
         self.assertEqual(info["worktree"], wt)
+        calls = [argv for argv, _ in runner.calls]
         worktree = next(a for a in calls if "worktree" in a and "add" in a)
         self.assertEqual(worktree[-1], "deadbeef")
         self.assertNotIn("FETCH_HEAD", " ".join(" ".join(a) for a in calls))
         self.assertTrue(any("--no-write-fetch-head" in a for a in calls))
-        self.assertTrue(any("update-ref" in a and fetched_ref[0] in a for a in calls))
+        fetch = next(a for a in calls if "fetch" in a)
+        cleanup = next(a for a in calls if "update-ref" in a)
+        self.assertEqual(cleanup[-1], fetch[-1].split(":", 1)[1])
+        self.assertIsNone(runner.temp_ref)
         self.assertTrue(any("refs/pull/7/head" in " ".join(a) for a in calls))
 
     def test_acquire_is_idempotent_deterministic_path(self):
@@ -827,27 +920,7 @@ class TestPrWorktree(unittest.TestCase):
         # tempdir; what THIS test is about is create-once/reuse-after.
         wt = tempfile.mkdtemp(prefix="panopticon-test-wt-")
         self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
-        calls = {"fetch": 0, "wtadd": 0}
-        def runner(argv, **kw):
-            out = ""
-            if argv[:3] == ["gh", "pr", "view"]:
-                out = '{"baseRefName": "main"}'
-            elif "--show-scope" in argv:
-                out = _REPO_SCOPE_LISTING
-            elif "worktree" in argv and "list" in argv:
-                # Real `git worktree list` (no --porcelain) format:
-                # "<path>  <sha> [<branch>]" / "(detached HEAD)". Only
-                # registered (i.e. after the worktree add) on later calls.
-                out = "%s  deadbeef [detached HEAD]\n" % wt if calls["wtadd"] > 0 else ""
-            elif "worktree" in argv and "add" in argv:
-                calls["wtadd"] += 1
-                os.makedirs(wt, exist_ok=True)
-            elif "fetch" in argv:
-                calls["fetch"] += 1
-            elif "rev-parse" in argv:
-                out = "deadbeef\n"
-            class R: returncode = 0; stdout = out; stderr = ""
-            return R()
+        runner = _PrRunner(repo, wt)
         with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
             a = diff_map.acquire_pr(7, repo=repo, runner=runner)
             b = diff_map.acquire_pr(7, repo=repo, runner=runner)
@@ -856,44 +929,41 @@ class TestPrWorktree(unittest.TestCase):
         self.assertEqual(a["base"], "main")
         self.assertEqual(a["head_sha"], "deadbeef")
         self.assertEqual(b["head_sha"], "deadbeef")
-        self.assertEqual(calls["wtadd"], 1)   # created once, reused second time
-        self.assertEqual(calls["fetch"], 1)   # no re-fetch on reuse
+        self.assertEqual(runner.adds, 1)   # created once, reused second time
+        self.assertEqual(runner.fetches, 1)   # no re-fetch on reuse
+        self.assertTrue(runner.registered)
+        self.assertIsNone(runner.temp_ref)
 
     def test_acquire_raises_loudly_on_gh_failure(self):
-        def runner(argv, **kw):
-            class R: returncode = 1; stdout = ""; stderr = "gh: no PR 999"
-            return R()
-        with self.assertRaises(RuntimeError):
+        runner = _PrRunner(".", None, pr=999, gh_returncode=1,
+                           gh_stderr="gh: no PR 999")
+        with self.assertRaisesRegex(RuntimeError, "gh: no PR 999"):
             diff_map.acquire_pr(999, repo=".", runner=runner)
+        self.assertEqual(len(runner.calls), 1)
 
     def test_acquire_raises_loudly_on_invalid_gh_json(self):
-        def runner(argv, **kw):
-            class R: returncode = 0; stdout = "not json"; stderr = ""
-            return R()
+        runner = _PrRunner(".", None, gh_stdout="not json")
         with self.assertRaisesRegex(RuntimeError, "invalid JSON"):
             diff_map.acquire_pr(7, repo=".", runner=runner)
+        self.assertEqual(len(runner.calls), 1)
 
     def test_acquire_raises_loudly_on_missing_baseRefName(self):
-        def runner(argv, **kw):
-            class R: returncode = 0; stdout = '{"number": 7}'; stderr = ""
-            return R()
+        runner = _PrRunner(".", None, gh_stdout='{"number": 7}')
         with self.assertRaisesRegex(RuntimeError, "missing baseRefName"):
             diff_map.acquire_pr(7, repo=".", runner=runner)
+        self.assertEqual(len(runner.calls), 1)
 
     def test_acquire_rejects_symlink_worktree(self):
-        def runner(argv, **kw):
-            if argv[:3] == ["gh", "pr", "view"]:
-                return mock.Mock(returncode=0, stdout='{"baseRefName": "main"}', stderr="")
-            return mock.Mock(returncode=0, stdout="", stderr="")
-
         with tempfile.TemporaryDirectory() as d:
             target_dir = os.path.join(d, "target")
             os.makedirs(target_dir)
             symlink_path = os.path.join(d, "symlink_wt")
             os.symlink(target_dir, symlink_path)
+            runner = _PrRunner(".", symlink_path)
             with mock.patch.object(diff_map, "_worktree_dir", return_value=symlink_path):
                 with self.assertRaisesRegex(RuntimeError, "insecure symlink detected"):
                     diff_map.acquire_pr(7, repo=".", runner=runner)
+            self.assertEqual(len(runner.calls), 1)
 
     def test_worktree_dir_does_not_resolve_leaf_symlink(self):
         # #run8 COD-X0X: _worktree_dir must NOT realpath its deterministic leaf.
@@ -917,24 +987,25 @@ class TestPrWorktree(unittest.TestCase):
         # #run8 COD-X0X: exercise the REAL _worktree_dir (not a monkeypatched
         # stub) with an attacker-planted symlink at the deterministic leaf, to
         # prove acquire_pr's islink guard actually fires on the true code path.
-        def runner(argv, **kw):
-            if argv[:3] == ["gh", "pr", "view"]:
-                return mock.Mock(returncode=0, stdout='{"baseRefName": "main"}', stderr="")
-            return mock.Mock(returncode=0, stdout="", stderr="")
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.object(diff_map.tempfile, "gettempdir", return_value=d):
                 wt = diff_map._worktree_dir(".", 7)
                 target = os.path.join(d, "attacker")
                 os.makedirs(target)
                 os.symlink(target, wt)             # pre-plant the hostile leaf
+                runner = _PrRunner(".", wt)
                 with self.assertRaisesRegex(RuntimeError, "insecure symlink detected"):
                     diff_map.acquire_pr(7, repo=".", runner=runner)
+                self.assertEqual(len(runner.calls), 1)
 
     def test_release_is_tolerant(self):
-        def runner(argv, **kw):
-            class R: returncode = 1; stdout = ""; stderr = "not a worktree"
-            return R()
-        diff_map.release_worktree("/tmp/gone", runner=runner)  # must not raise
+        with tempfile.TemporaryDirectory() as d:
+            gone = os.path.join(d, "gone")
+            runner = _PrRunner(".", gone, fail_on="worktree_remove")
+            diff_map.release_worktree(gone, runner=runner)  # must not raise
+            self.assertEqual(runner.removes, 0)
+            self.assertTrue(any(argv[-4:] == ["worktree", "remove", "--force", gone]
+                                for argv, _ in runner.calls))
 
     def test_acquire_pr_calls_carry_timeout(self):
         # #1081: every git/gh call in acquire_pr is time-bounded.
@@ -949,20 +1020,10 @@ class TestPrWorktree(unittest.TestCase):
         # dropped the bound (None, or a larger number) fails either branch.
         wt = tempfile.mkdtemp(prefix="panopticon-test-wt-")
         self.addCleanup(shutil.rmtree, wt, ignore_errors=True)
-        seen = []
-        def runner(argv, **kw):
-            seen.append((list(argv), kw.get("timeout")))
-            out = ""
-            if argv[:3] == ["gh", "pr", "view"]:
-                out = '{"baseRefName": "main"}'
-            elif "--show-scope" in argv:
-                out = _REPO_SCOPE_LISTING
-            elif "rev-parse" in argv:
-                out = "deadbeef\n"
-            class R: returncode = 0; stdout = out; stderr = ""
-            return R()
+        runner = _PrRunner(".", wt)
         with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
             diff_map.acquire_pr(7, repo=".", runner=runner)
+        seen = [(argv, kw["timeout"]) for argv, kw in runner.calls]
         self.assertTrue(seen)
         for argv, timeout in seen:
             self.assertIsNotNone(timeout, argv)
@@ -976,24 +1037,49 @@ class TestPrWorktree(unittest.TestCase):
         self.assertTrue(all(t == diff_map._PR_TIMEOUT for t in operator), operator)
 
     def test_acquire_pr_timeout_raises_runtimeerror(self):
-        def runner(argv, **kw):
-            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
-        with self.assertRaises(RuntimeError):
+        runner = _PrRunner(".", None, timeout_on="gh")
+        with self.assertRaisesRegex(RuntimeError, "gh pr view.*timed out"):
             diff_map.acquire_pr(7, repo=".", runner=runner)   # bounded, loud
+        self.assertEqual(len(runner.calls), 1)
 
     def test_worktree_list_timeout_raises_runtimeerror(self):
         # #run7 QAL-C2D: a stalled `git worktree list` must raise RuntimeError
         # (which driver.run's #5.0-14 handler catches), not leak a raw
         # TimeoutExpired as an uncaught traceback.
-        def runner(argv, **kw):
-            if argv[:2] == ["gh", "pr"]:
-                return mock.Mock(returncode=0, stdout='{"baseRefName": "main"}',
-                                 stderr="")
-            if "worktree" in argv and "list" in argv:
-                raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
-            return mock.Mock(returncode=0, stdout="", stderr="")
-        with self.assertRaises(RuntimeError):
-            diff_map.acquire_pr(7, repo=".", runner=runner)
+        with tempfile.TemporaryDirectory() as d:
+            runner = _PrRunner(".", os.path.join(d, "wt"), timeout_on="worktree_list")
+            with mock.patch.object(diff_map, "_worktree_dir", return_value=runner.wt):
+                with self.assertRaisesRegex(RuntimeError, "worktree list.*timed out"):
+                    diff_map.acquire_pr(7, repo=".", runner=runner)
+            self.assertEqual(runner.fetches, 0)
+            self.assertEqual(runner.adds, 0)
+            self.assertTrue(any(argv[-2:] == ["worktree", "list"]
+                                for argv, _ in runner.calls))
+
+    def test_worktree_add_failure_deletes_temporary_ref(self):
+        with tempfile.TemporaryDirectory() as d:
+            wt = os.path.join(d, "wt")
+            runner = _PrRunner(".", wt, fail_on="worktree_add")
+            with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
+                with self.assertRaisesRegex(RuntimeError, "injected worktree_add failure"):
+                    diff_map.acquire_pr(7, repo=".", runner=runner)
+            self.assertEqual(runner.fetches, 1)
+            self.assertEqual(runner.adds, 0)
+            self.assertIsNone(runner.temp_ref)
+            self.assertFalse(os.path.exists(wt))
+            self.assertTrue(any(argv[-3:-1] == ["update-ref", "-d"]
+                                for argv, _ in runner.calls))
+
+    def test_pr_runner_rejects_unexpected_command_shape(self):
+        with tempfile.TemporaryDirectory() as d:
+            runner = _PrRunner(".", os.path.join(d, "wt"))
+            argv = ["git", "-C", ".", "-c", "core.fsmonitor=false",
+                    "-c", "core.hooksPath=/private/tmp/empty", "worktree", "prune"]
+            with self.assertRaisesRegex(AssertionError, "unexpected PR command"):
+                runner(argv, capture_output=True, text=True, timeout=diff_map._PR_TIMEOUT,
+                       env={})
+            self.assertEqual(runner.fetches, 0)
+            self.assertEqual(runner.adds, 0)
 
     def test_release_passes_timeout_and_tolerates_hang(self):
         # #1082: release_worktree bounds the git call and a hung teardown is
@@ -1001,14 +1087,14 @@ class TestPrWorktree(unittest.TestCase):
         # launch is the preflight's config read and it carries the shared
         # deadline rather than the flat bound -- one launch, one bound, and the
         # hang still swallowed.
-        seen = []
-        def runner(argv, **kw):
-            seen.append(kw.get("timeout"))
-            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
-        diff_map.release_worktree("/tmp/x", runner=runner)   # must not raise
-        self.assertEqual(len(seen), 1, seen)
-        self.assertGreater(seen[0], 0)
-        self.assertLessEqual(seen[0], diff_map._PR_TIMEOUT)
+        with tempfile.TemporaryDirectory() as d:
+            runner = _PrRunner(".", os.path.join(d, "wt"), timeout_on="config_preflight")
+            diff_map.release_worktree(runner.wt, runner=runner)   # must not raise
+            self.assertEqual(len(runner.calls), 1, runner.calls)
+            timeout = runner.calls[0][1]["timeout"]
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, diff_map._PR_TIMEOUT)
+            self.assertEqual(runner.removes, 0)
 
     def test_release_is_confined_and_still_tolerates_a_refusal(self):
         # #2012: the teardown was the second written exemption from the
@@ -1019,9 +1105,11 @@ class TestPrWorktree(unittest.TestCase):
         def runner(argv, **kw):
             seen.append(list(argv))
             raise AssertionError("no launch expected after the refusal")
-        with mock.patch.object(diff_map.safe_git, "mutate",
-                               side_effect=diff_map.safe_git.RepositoryRefused("nope")):
-            diff_map.release_worktree("/tmp/x", runner=runner)   # must not raise
+        with tempfile.TemporaryDirectory() as d:
+            refused_path = os.path.join(d, "wt")
+            with mock.patch.object(diff_map.safe_git, "mutate",
+                                   side_effect=diff_map.safe_git.RepositoryRefused("nope")):
+                diff_map.release_worktree(refused_path, runner=runner)   # must not raise
         self.assertEqual(seen, [])
 
     def test_release_goes_through_the_mutating_entry_point(self):
@@ -1031,10 +1119,12 @@ class TestPrWorktree(unittest.TestCase):
         def mutate(root, args, **kw):
             calls.append((root, list(args), kw.get("timeout")))
             return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch.object(diff_map.safe_git, "mutate", mutate):
-            diff_map.release_worktree("/tmp/x", repo="/repo")
-        self.assertEqual(calls, [("/repo", ["worktree", "remove", "--force", "/tmp/x"],
-                                 diff_map._PR_TIMEOUT)])
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "wt")
+            with mock.patch.object(diff_map.safe_git, "mutate", mutate):
+                diff_map.release_worktree(path, repo="/repo")
+            self.assertEqual(calls, [("/repo", ["worktree", "remove", "--force", path],
+                                     diff_map._PR_TIMEOUT)])
 
     def test_acquire_pr_prints_sync_notes_with_the_pr_prefix(self):
         # minor 7: acquire_pr's own print (not _sync_config's return value) must
@@ -1047,17 +1137,7 @@ class TestPrWorktree(unittest.TestCase):
             with open(os.path.join(wt, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
 
-            def runner(argv, **kw):
-                out = ""
-                if argv[:3] == ["gh", "pr", "view"]:
-                    out = '{"baseRefName": "main"}'
-                elif "--show-scope" in argv:
-                    out = _REPO_SCOPE_LISTING
-                elif "rev-parse" in argv:
-                    out = "deadbeef\n"
-                class R: returncode = 0; stdout = out; stderr = ""
-                return R()
-
+            runner = _PrRunner(repo, wt)
             buf = io.StringIO()
             with mock.patch.object(diff_map, "_worktree_dir", return_value=wt):
                 with contextlib.redirect_stderr(buf):
