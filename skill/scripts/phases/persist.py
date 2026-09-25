@@ -143,13 +143,34 @@ ENVELOPE_SHAPES = {
 # itself in a different wrapper, and the one thing that varies is the reason.
 RETRY_PROMPT_BLOCK = (
     "\n\n## Your previous reply was refused -- return the same answer, correctly wrapped\n\n"
-    "Your previous attempt %(attempt)s was refused: %(reason)s\n"
+    "Your previous attempt%(attempt)s was refused: %(reason)s\n"
     "Return the SAME findings/verdicts you returned then; fix only the FORMAT.\n"
     "The required envelope is exactly: %(shape)s\n")
 
 
 # How much of a refusal reason the retry prompt may quote (D10 F3).
 REASON_CAP = 200
+# The highest attempt number the retry prompt will quote (#1752 AGT-1863884584).
+# An entry's attempts are bounded by the run's per-entry cap, an order of
+# magnitude below this; a record claiming more is not a number worth printing.
+ATTEMPT_CAP = 99
+
+
+def _attempt_number(value):
+    """The record's attempt number, or None -- the field is target-writable.
+
+    Same rationale as REASON_CAP, same interpolation: the record is a file, and
+    for `--setup` it is a file at a fixed path in the flat `.panopticon/` that a
+    target repo can commit. `reason` was typed and bounded on the way out and
+    this field was not, so 10 kB of attacker prose -- or a dict -- went straight
+    into the prompt and into `prompt_file`. Anything that is not a plausible
+    attempt number becomes None, and the block then says "your previous attempt"
+    with no number at all: an unusable field must not be paraphrased into a
+    claim about the run. `bool` is excluded explicitly because `True` is an int
+    to isinstance and would print as attempt 1.
+    """
+    return value if (isinstance(value, int) and not isinstance(value, bool)
+                     and 0 < value <= ATTEMPT_CAP) else None
 
 
 def envelope_shape(entry):
@@ -206,9 +227,14 @@ def retry_block(run_folder, entry):
     # and written to `prompt_file`, and a record written by an older build --
     # or by a path that bounds nothing, a runner's own error string -- must not
     # be able to grow the launch argv. Belt and braces, one line.
-    prior = {"attempt": record.get("attempt"),
+    prior = {"attempt": _attempt_number(record.get("attempt")),
              "reason": str(record.get("reason") or "")[:REASON_CAP]}
-    return RETRY_PROMPT_BLOCK % {"attempt": prior["attempt"], "reason": prior["reason"],
+    # The SAME sanitized value both ways: `prior` is stamped onto the entry as
+    # `prior_rejection` (`requests._materialize_prompts`) and hashed into the
+    # dispatch request, so the prompt and the request must not disagree about
+    # what the record said.
+    numbered = "" if prior["attempt"] is None else " %d" % prior["attempt"]
+    return RETRY_PROMPT_BLOCK % {"attempt": numbered, "reason": prior["reason"],
                                  "shape": envelope_shape(entry)}, prior
 
 
