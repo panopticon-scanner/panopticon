@@ -7,6 +7,31 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Two prompt boundaries now bound the untrusted text they quote (#1752,
+  AGT-1863884584 and AGT-2822331063).** A retry prompt quotes the rejected
+  record's `attempt`, and the tool-aware review map quotes each tool hit's path,
+  rule id and title. Both are written by something outside the run — the record
+  is a file, and for `driver setup` it is a file at a FIXED path in the flat
+  `.panopticon/` (`rejected/setup-scan-1.json`) that a target repo can commit;
+  the hits come from scanner output, and `.panopticon/tools/*.sarif` is another
+  path a target can commit — and both were interpolated with no type and no
+  bound, beside neighbours that had one (`reason` at `REASON_CAP`, the 40-line
+  `_TOOL_HITS_CAP`). A planted `attempt` put 10 kB of prose into the prompt, into
+  `prompt_file`, and into the entry's `prior_rejection` stamp, which is hashed
+  into the dispatch request; one hostile hit put 20 kB into a review prompt under
+  "verified independently … do **not** re-file them", and forty put ~760 kB.
+  `attempt` is now an int in `1..ATTEMPT_CAP` (99) or nothing at all — the block
+  then reads "Your previous attempt was refused", with no number, because an
+  unusable field must not be paraphrased into a claim about the run — and
+  `prior_rejection` carries that same sanitized value, so the prompt and the
+  request cannot disagree. The map's three untrusted columns go through one
+  helper at the rendering boundary: `runio._prompt_safe`, whitespace collapse,
+  and a per-column cap (200 / 120 / 200) whose cut is MARKED with `…`, so a
+  truncated line cannot read as a complete one, and an empty column reads `?`.
+  **Residual, filed separately:** the generic SARIF path still leaves control
+  bytes in the ARTIFACT's `title`/`rule_id`/`category` (this fix cleans the
+  prompt, not the normalization contract; #2069), and `.panopticon/tools/*.sarif`
+  is still ingested with no run binding (#2070).
 - **The guide now says where the second witness is spent (#1759, AGT-1456823651 /
   AGT-381210818).** A REJECTED advisor verdict was always settled by one advisor — the
   adversarial backup round is summoned only for primary-CONFIRMED findings in categories at or
