@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import glob
 import json
 import os
+import sys
 
 from . import plan as plan_mod
 
@@ -119,7 +120,26 @@ def driver_cost_counts(pano_dir, verdicts_dir, tools_produced):
     try:
         with open(plan_path, encoding="utf-8") as fh:
             entries = json.load(fh)
-    except (OSError, ValueError):   # tolerant: a corrupt plan counts 0 cells
+    # tolerant: a corrupt plan counts 0 cells. RecursionError (a RuntimeError,
+    # from a deeply nested document) and MemoryError (from a huge one) are part
+    # of "corrupt" -- `except (OSError, ValueError)` left both escaping into
+    # CostInputs.load, the same way DAT-2808086775 escaped coverage_io.
+    except (OSError, ValueError, RecursionError, MemoryError) as exc:
+        # `str(exc) or type(exc).__name__`, not `exc or ...`: str(MemoryError())
+        # is "" while the instance itself is TRUTHY, so the short form renders
+        # "could not be read ()" -- a line an operator cannot act on.
+        print("synthesize: %s could not be read (%s); counting 0 review cells"
+              % (os.path.basename(plan_path), str(exc) or type(exc).__name__),
+              file=sys.stderr)
+        entries = []
+    # DAT-3713947858: the plan is target-writable (the agentic path globs the
+    # run folder out of the SCANNED repository), and "tolerant" above covered
+    # only the PARSE -- every scalar document then raised TypeError on the
+    # iteration below. Pin the type at the read, announced, the way
+    # plan_contract.driver_plan_issues and plan.load_dispatch_plans already do.
+    if not isinstance(entries, list):
+        print("synthesize: %s is not a JSON array; counting 0 review cells"
+              % os.path.basename(plan_path), file=sys.stderr)
         entries = []
     review_cells = sum(1 for e in entries
                        if isinstance(e, dict) and e.get("domain"))
