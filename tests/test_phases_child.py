@@ -7,6 +7,7 @@ at 48/48 -- and a cell's test inventory is built from the claiming group's
 `tests:` axis, so the tests have to sit where that group can claim them (#1638
 P13).
 """
+import errno
 import io
 import os
 import shutil
@@ -212,13 +213,17 @@ class TestATimeoutReachesTheWholeProcessTree(_ChildCase):
     `killpg` reaches everything it spawned.
     """
 
-    def _orphan_maker(self, pidfile):
+    def _orphan_maker(self, pidfile, gatefile):
+        grandchild = (
+            "import os, signal; signal.alarm(10); "
+            "fd = os.open(%r, os.O_RDONLY); signal.alarm(0); "
+            "os.read(fd, 1); os.close(fd)" % gatefile)
         return (
             "import subprocess, sys, time\n"
             "p = subprocess.Popen([sys.executable, '-c',"
-            " 'import time; time.sleep(60)'])\n"
+            " %r])\n"
             "open(%r, 'w').write(str(p.pid))\n"
-            "time.sleep(60)\n" % pidfile)
+            "time.sleep(60)\n" % (grandchild, pidfile))
 
     @staticmethod
     def _alive(pid):
@@ -232,21 +237,95 @@ class TestATimeoutReachesTheWholeProcessTree(_ChildCase):
 
     def test_the_grandchild_does_not_outlive_the_timeout(self):
         pidfile = os.path.join(self.root, "grandchild.pid")
-        with self.assertRaises(runio.DriverError):
-            self._child(self._orphan_maker(pidfile), timeout=2)
-        pid = int(open(pidfile, encoding="utf-8").read())
-        self.addCleanup(self._reap, pid)
+        gatefile = os.path.join(self.root, "grandchild.ready")
+        os.mkfifo(gatefile)
+        state = {"proc": None, "wait": None, "gate": None, "pid": None}
+        self.addCleanup(self._release_fixture, state, gatefile)
+        real_popen = child.subprocess.Popen
+
+        def launch(cmd, **kw):
+            proc = real_popen(cmd, **kw)
+            state["proc"] = proc
+            real_wait = proc.wait
+            state["wait"] = real_wait
+
+            def wait_after_ready(timeout=None):
+                if state["gate"] is None:
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        try:
+                            with open(pidfile, encoding="utf-8") as fh:
+                                pid = int(fh.read())
+                        except (OSError, ValueError):
+                            pid = None
+                        if pid is not None:
+                            try:
+                                gate = os.open(gatefile, os.O_WRONLY | os.O_NONBLOCK)
+                            except OSError as exc:
+                                if exc.errno != errno.ENXIO:
+                                    raise
+                            else:
+                                state["pid"], state["gate"] = pid, gate
+                                break
+                        if proc.poll() is not None:
+                            break
+                        time.sleep(0.01)
+                    self.assertIsNotNone(state["gate"],
+                                         "grandchild did not signal bounded readiness")
+                    self.assertTrue(self._fixture_alive(state),
+                                    "grandchild was gone before the timeout began")
+                return real_wait(timeout=timeout)
+
+            proc.wait = wait_after_ready
+            return proc
+
+        with mock.patch.object(child.subprocess, "Popen", side_effect=launch):
+            with self.assertRaises(runio.DriverError) as ctx:
+                self._child(self._orphan_maker(pidfile, gatefile), timeout=2)
+        self.assertIn("timed out", str(ctx.exception))
         for _ in range(100):                      # bounded poll, never a sleep(n)
-            if not self._alive(pid):
+            if not self._fixture_alive(state):
                 break
             time.sleep(0.05)
-        self.assertFalse(self._alive(pid),
+        self.assertFalse(self._fixture_alive(state),
                          "the timeout killed the child and left its worker running")
 
-    def _reap(self, pid):
+    @classmethod
+    def _fixture_alive(cls, state):
+        pid, proc = state["pid"], state["proc"]
+        if pid is None or proc is None or not cls._alive(pid):
+            return False
         try:
-            os.kill(pid, signal.SIGKILL)
+            return os.getpgid(pid) == proc.pid and os.getsid(pid) == proc.pid
         except OSError:
+            return False
+
+    @staticmethod
+    def _release_fixture(state, gatefile):
+        gate = state["gate"]
+        if gate is None:
+            # If readiness failed while the grandchild was opening the FIFO,
+            # let it pass the open. Its read then sees EOF and exits.
+            try:
+                gate = os.open(gatefile, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError:
+                pass
+        if gate is not None:
+            os.close(gate)
+        proc = state["proc"]
+        if proc is None:
+            return
+        if proc.poll() is None:
+            try:
+                if os.getpgid(proc.pid) == proc.pid and os.getsid(proc.pid) == proc.pid:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                else:
+                    proc.kill()  # the owned Popen handle, never a pidfile value
+            except OSError:
+                pass
+        try:
+            state["wait"](timeout=5)
+        except Exception:  # noqa: BLE001 - cleanup must not mask an assertion
             pass
 
     def test_the_child_leads_its_own_session(self):

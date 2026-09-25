@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -1381,28 +1382,36 @@ class TestHeadlessLoop(LoopCase):
         # test that says so. The assertions beside this one (an int >= 0) hold
         # just as well for a hard-coded zero or for one batch-wide figure
         # copied onto every row, so this one pins the fact the item is about:
-        # each row carries the time THAT entry took. Two cells in one batch,
-        # one of them made slow -- concurrent, so a batch-wide measurement
-        # would give them the same number.
+        # each row carries the time THAT entry took. The clock is scoped to
+        # base.iter_batch's measurement seam; each worker thread owns its own
+        # pair of observations, independent of scheduling order.
         d, floor = self._repo(floor=("SEC", "ACC"))
+        durations = {"review-app-SEC": 375, "review-app-ACC": 125}
+        worker = threading.local()
 
-        class OneSlowCell(FakeRunner):
+        def measured_clock():
+            if not getattr(worker, "measuring", False):
+                worker.measuring = True
+                worker.entry_id = None
+                return 100.0
+            entry_id = worker.entry_id
+            if entry_id not in durations:
+                raise AssertionError("worker clock ended without an entry")
+            worker.measuring = False
+            return 100.0 + durations[entry_id] / 1000
+
+        class MeasuredCell(FakeRunner):
             def run_entry(self, entry, env):
-                if entry["id"] == "review-app-SEC":
-                    time.sleep(0.05)
+                worker.entry_id = entry["id"]
                 return super().run_entry(entry, env)
 
-        runner = OneSlowCell()
-        self._run(d, floor, runner)
+        runner = MeasuredCell()
+        clock = mock.Mock(wraps=time, monotonic=measured_clock)
+        with mock.patch.object(base, "time", clock):
+            self._run(d, floor, runner)
         rows = {r["entry_id"]: r for r in ledger_mod.Ledger(runner.run_dir).lines()}
-        self.assertIn("review-app-ACC", rows)
-        # Fix round 1, N1: both bounds are CONCRETE. Comparing the two rows
-        # instead raced the sleep -- on a contended runner (this suite launches
-        # at the pool's full width) ACC's own work can exceed 50 ms and invert
-        # the pair, while the fact under test is only that each row carries its
-        # own entry's time.
-        self.assertGreaterEqual(rows["review-app-SEC"]["duration_ms"], 40)
-        self.assertLess(rows["review-app-ACC"]["duration_ms"], 40)
+        self.assertEqual(set(durations), rows.keys())
+        self.assertEqual(durations, {eid: row["duration_ms"] for eid, row in rows.items()})
 
     def test_every_completed_entry_prints_one_progress_line(self):
         # The ledger item's "progress visible without inspecting processes":
