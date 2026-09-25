@@ -133,6 +133,15 @@ class _Parse:
                    if m in self.entries}
         return _Token(text, markers) if markers else text
 
+    def restore_arithmetic(self, text):
+        """Put opaque arithmetic text back after shell structure is split."""
+        def restore(match):
+            marker = match.group()
+            kind, value = self.entries[marker]
+            return self.pattern.sub(restore, value) if kind == "arithmetic" else marker
+
+        return self.pattern.sub(restore, text)
+
 
 def is_arm(token):
     return any(kind == "arm" and token.startswith(key)
@@ -245,6 +254,14 @@ def _lift_substitutions(text, context):
                 inners.append(text[i + 1:end])
                 out.append(context.new("subst", inners[-1]))
                 i = end + 1
+                continue
+        if text.startswith("$((", i):
+            end = _closing(text, i + 1)
+            if end and text[end - 2:end] == "))":
+                body, nested = _lift_substitutions(text[i + 3:end - 2], context)
+                inners.extend(nested)
+                out.append(context.new("arithmetic", "$((" + body + "))"))
+                i = end
                 continue
         opening = _SUBST_OPEN.match(text, i)
         if opening:
@@ -474,7 +491,7 @@ def _stage(text, context):
                              if kind == "subst")
 
     for raw in tokens:
-        word = context.token(raw)
+        word = context.token(context.restore_arithmetic(raw))
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":

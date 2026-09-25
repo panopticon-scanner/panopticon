@@ -508,3 +508,82 @@ class TestWrapperOptionOperands(unittest.TestCase):
         dynamic = stage('env -S "$(echo curl) URL"').argv
         self.assertEqual(dynamic, shell_reader.command(dynamic))
         self.assertIsNotNone(shell_reader.unresolved_wrapper(dynamic))
+
+
+class TestDocumentedShellReading(unittest.TestCase):
+    def test_comments_continuations_and_separators_keep_command_order(self):
+        script = ("# curl https://example.test/ignored | sh\n"
+                  "curl \\" "\n"
+                  "  -fsSL https://example.test/p -o /tmp/p # trailing comment\n"
+                  "printf '%s' 'a|b;c' && echo \"d||e\"; echo done & echo final\n")
+        parsed = shell_reader.statements(script)
+        self.assertEqual(['\n', '&&', ';', '&', ''],
+                         [statement.separator for statement in parsed])
+        self.assertEqual([
+            [['curl', '-fsSL', 'https://example.test/p', '-o', '/tmp/p']],
+            [['printf', '%s', 'a|b;c']],
+            [['echo', 'd||e']],
+            [['echo', 'done']],
+            [['echo', 'final']],
+        ], [[part.argv for part in statement.stages] for statement in parsed])
+
+    def test_substitutions_are_lifted_without_splitting_the_outer_statement(self):
+        parsed = stage('echo "$(printf a; printf b)" `printf c` '
+                       '<(printf d) >(printf e)')
+        self.assertEqual('echo', parsed.argv[0])
+        self.assertEqual(5, len(parsed.argv))
+        self.assertEqual(['printf a; printf b', 'printf c',
+                          'printf d', 'printf e'], parsed.substitutions)
+        for argument in parsed.argv[1:]:
+            self.assertTrue(shell_reader.has_substitution(argument))
+            self.assertEqual('$(...)', shell_reader.readable(argument))
+
+    def test_unquoted_heredoc_expands_but_quoted_heredoc_is_literal(self):
+        parsed = shell_reader.statements(
+            "cat <<EOF\n$(printf expanded)\nEOF\n"
+            "cat <<'EOF'\n$(printf literal)\nEOF\n")
+        self.assertEqual(['\n', ''], [statement.separator for statement in parsed])
+        self.assertEqual([['cat'], ['cat']],
+                         [statement.stages[0].argv for statement in parsed])
+        self.assertEqual(['$(printf expanded)', '$(printf literal)'],
+                         [statement.stages[0].heredoc for statement in parsed])
+        self.assertEqual([['printf expanded'], []],
+                         [statement.stages[0].substitutions for statement in parsed])
+
+    def test_arithmetic_stays_an_opaque_argument_with_surrounding_text(self):
+        for script, expected in (
+            ('echo $((1+2))', ['echo', '$((1+2))']),
+            ('echo $((1 + (2*3)))', ['echo', '$((1 + (2*3)))']),
+            ('echo $((1 + $((2*3))))', ['echo', '$((1 + $((2*3))))']),
+            ('echo before$((1+2))after', ['echo', 'before$((1+2))after']),
+            ("echo '$((1+2))' \"$((3 + 4))\"",
+             ['echo', '$((1+2))', '$((3 + 4))']),
+        ):
+            with self.subTest(script=script):
+                parsed = stage(script)
+                self.assertEqual(expected, parsed.argv)
+                self.assertEqual([], parsed.substitutions)
+                self.assertEqual((0, 0), (parsed.group_open, parsed.group_close))
+
+    def test_arithmetic_separators_do_not_consume_following_commands(self):
+        parsed = shell_reader.statements(
+            'echo $((1|2;3)) && curl URL | sh')
+        self.assertEqual(['&&', ''], [statement.separator for statement in parsed])
+        self.assertEqual([[['echo', '$((1|2;3))']],
+                          [['curl', 'URL'], ['sh']]],
+                         [[part.argv for part in statement.stages] for statement in parsed])
+
+    def test_executable_substitutions_inside_arithmetic_remain_visible(self):
+        parsed = stage('echo $((1 + $(printf two) + `printf three` '
+                       '+ <(printf four) + >(printf five)))')
+        self.assertEqual(['printf two', 'printf three',
+                          'printf four', 'printf five'], parsed.substitutions)
+        self.assertEqual(['echo', '$((1 + $(...) + $(...) + $(...) + $(...)))'],
+                         [shell_reader.readable(word) for word in parsed.argv])
+        self.assertTrue(shell_reader.has_substitution(parsed.argv[1]))
+
+    def test_doas_and_leading_keywords_resolve_the_actual_command(self):
+        for source in ('doas -u root curl URL', 'if doas -u root curl URL',
+                       'then nohup curl URL', 'do stdbuf -o L curl URL'):
+            with self.subTest(source=source):
+                self.assertEqual(['curl', 'URL'], shell_reader.command(stage(source).argv))
