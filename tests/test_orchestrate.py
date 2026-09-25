@@ -3829,6 +3829,127 @@ class TestAUniformInstantFailure(LoopCase):
         self.assertIn("host-class failure(s)", err)
 
 
+class TestABudgetCapMidBatch(LoopCase):
+    """#1760 (AGT-4265600920): the cap is re-read after every entry lands, not
+    once per checkpoint.
+
+    `--max-budget-usd` was compared with the ledger exactly once per `while`
+    iteration, at the top and ahead of `guards.arm` -- and a checkpoint is ONE
+    batch, so a whole review round (every pending cell, all of it charged)
+    launched before the cap was looked at a second time. The guide meanwhile
+    promises it "stops launching once the ledger's cumulative reported cost
+    crosses it". Ten cells at `FakeRunner`'s $0.01 apiece against a $0.03 cap
+    is the shape: the third result reaches it, and what launches after that
+    must be the pool, not the checkpoint.
+    """
+
+    FLOOR = ("SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG")
+    WIDTH = 2
+    BUDGET = "0.03"          # three of FakeRunner's $0.01 entries, exactly
+    # Written by hand, exactly as `json.dumps` with its defaults emits it: the
+    # decoder ACCEPTS the bare `NaN` token, which is how an unreadable cost
+    # reaches a budget comparison (#1648). `money.ledger_text` never writes one.
+    POISON = ('{"cost_usd": NaN, "entry_id": "review-app-SEC", "error": null, '
+              '"ok": true, "phase": "review", "usage": {}}')
+
+    class Paid(TestAMidBatchHostOutage.Gated):
+        """Every cell answers and is charged `FakeRunner`'s $0.01.
+
+        Subclassed off `TestAMidBatchHostOutage.Gated` rather than gated a
+        third time by hand: from index two on, a launch does not come back
+        until the LOOP has ledgered every result before it, so "what the
+        short-circuit stopped" is a fact rather than a thread race -- two
+        workers answering instantly outrun a consumer that persists, ledgers
+        and counts each reply. The one worker turnover the loop allows between
+        a result's ledger line and the `stop` question after it is the explicit
+        `+ 1` in the bound below.
+
+        `poison` is an unreadable cost appended from INSIDE the batch, while it
+        is in flight: the pre-loop seam is `SeededLedger`'s, already covered.
+        """
+
+        def __init__(self, floor, poison=None):
+            super().__init__(floor, None)
+            self.poison = poison
+
+        def run_entry(self, entry, env):
+            index = self._index(entry)
+            if index is not None and index >= 2:
+                self._await_ledger(index)
+            result = super().run_entry(entry, env)
+            if self.poison and entry["id"] == self.order[0]:
+                with open(os.path.join(self.run_dir, base.LEDGER_FILE), "a",
+                          encoding="utf-8") as fh:
+                    fh.write(self.poison + "\n")
+            return result
+
+    def _run(self, d, floor, runner, *extra):
+        """`LoopCase._run_loop` with this run's stderr kept and the cap set --
+        the same seam `TestAMidBatchHostOutage._run` uses, because the stop
+        announces itself there and `_run_loop`'s own redirect throws it away."""
+        err = io.StringIO()
+        with contextlib.ExitStack() as es:
+            es.enter_context(mock.patch.object(
+                orchestrate, "_after_first_run",
+                side_effect=lambda rr: self._seed_coverage(rr, floor)))
+            es.enter_context(mock.patch("scripts.runners.base.runner_for", return_value=runner))
+            es.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            es.enter_context(contextlib.redirect_stderr(err))
+            status = orchestrate.loop(self._args(
+                d, "--concurrency", str(self.WIDTH),
+                "--max-budget-usd", self.BUDGET, *extra))
+        return status, err.getvalue()
+
+    def _reviews(self, runner):
+        return [x for x in runner.launched if x.startswith("review-")]
+
+    def test_the_cap_stops_the_batch_instead_of_launching_the_checkpoint(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Paid(self.FLOOR)
+        status, err = self._run(d, floor, runner)
+        reviews = self._reviews(runner)
+        self.assertEqual(sorted(reviews), sorted(set(reviews)), "a cell was launched twice")
+        self.assertLess(len(reviews), len(self.FLOOR), reviews)
+        # the three $0.01 results that reach $0.03 + the pool that was already
+        # running (width) + the one worker that can turn over while the loop is
+        # still persisting, ledgering and counting the result that trips it
+        self.assertLessEqual(len(reviews), 3 + self.WIDTH + 1, reviews)
+        unlaunched = len(self.FLOOR) - len(reviews)
+        self.assertGreaterEqual(unlaunched, 2, reviews)
+        # the stop's own line says which of the three rules fired, and a cap is
+        # not a failure: "0 host-class failure(s)" would send the operator to
+        # wait out a host that is perfectly healthy
+        self.assertIn("driver loop: stopped launching after the --max-budget-usd cap; "
+                      "%d of %d entries not launched" % (unlaunched, len(self.FLOOR)), err)
+        self.assertNotIn("host-class failure(s)", err)
+        self.assertNotIn("identical instant failure", err)
+        # ...and the run still ends on the gate that always ended it, one
+        # iteration later, once the batch has drained
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("--max-budget-usd %s reached" % self.BUDGET, status["message"])
+        self.assertIn("dispatch-ledger.jsonl", status["message"])
+
+    def test_a_cost_it_cannot_read_stops_launching_rather_than_carrying_on(self):
+        # `iter_batch` reads a `stop` that RAISES as "carry on", so the
+        # `LedgerCorrupt` the top-of-iteration gate turns into an `error`
+        # status has to answer True here instead of escaping: a predicate that
+        # raised would be swallowed and the rest of the checkpoint launched and
+        # paid for -- #1648's fail-open again, one level down.
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Paid(self.FLOOR, poison=self.POISON)
+        status, err = self._run(d, floor, runner)
+        reviews = self._reviews(runner)
+        self.assertLess(len(reviews), len(self.FLOOR), reviews)
+        # No tight upper bound here, unlike the case above: the unreadable row
+        # is itself a ledger LINE, and the fixture's gate counts lines, so it
+        # is one looser for as long as that row is on disk.
+        self.assertGreaterEqual(len(self.FLOOR) - len(reviews), 2, reviews)
+        self.assertIn("stopped launching after the --max-budget-usd cap", err)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("ledger corrupt at line", status["message"])
+        self.assertIn("refusing to spend past an unreadable cost", status["message"])
+
+
 class TestTheOutputSchemaShapeProof(LoopCase):
     """#1732 part 1, where it belongs: inside the loop, under the guards.
 

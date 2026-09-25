@@ -156,17 +156,22 @@ clamped to `MAX_CONCURRENCY`, 8, the one ceiling the runner seam applies to the 
 alike, with a single `concurrency N clamped to the ceiling 8` line on stderr when it bites (#1576)),
 `--max-iterations N` (default 50 — after that the loop exits `error` naming the entries that never
 became done), `--max-budget-usd X` (headless; stops launching once the ledger's cumulative reported
-cost crosses it and exits `error` naming the ledger. The ledgered costs are summed as **exact
-decimal** money, never as floats, so the boundary is the amount you typed — three $0.15 entries
-reach a $0.45 budget, where a float sum of them is 0.44999999999999996 and buys one more entry. A
-**non-finite** cost — `NaN`, `±Infinity` — never enters the ledger: it is stored as `null`, noted in
-that row's `error`, and reported on stderr. A ledger line whose cost cannot be read back as money
-stops the run instead (`error`, naming the line), because a gate that cannot see what it has spent
-must not go on spending — it used to sum such a line as `NaN`, and `NaN >= budget` is false, so the
-gate simply went quiet. It cannot bound spend when the host reports no cost), `--max-turns N` and
-`--entry-timeout SECONDS` (per entry, headless; Codex uses the timeout, not a native turn limit),
-`--setup` (run `driver setup`'s flow on rails). None of them is an anti-drift key — they say how
-this invocation runs entries, not what the run is.
+cost crosses it and exits `error` naming the ledger. The cap is re-read after every entry
+**completes**, not once per checkpoint, so what it can overshoot is the pool rather than the round:
+up to `--concurrency` launches were already in flight when the ledger reached it, plus the one
+worker that can turn over while the loop is still ledgering the result that reached it — the same
+bound an outage has (#1760, #1721). That batch's stderr line names the cap as the rule that stopped
+it, and the `error` above is the next iteration's, once the batch has drained. The ledgered costs
+are summed as **exact decimal** money, never as floats, so the boundary is the amount you typed —
+three $0.15 entries reach a $0.45 budget, where a float sum of them is 0.44999999999999996 and buys
+one more entry. A **non-finite** cost — `NaN`, `±Infinity` — never enters the ledger: it is stored
+as `null`, noted in that row's `error`, and reported on stderr. A ledger line whose cost cannot be
+read back as money stops the run instead (`error`, naming the line), because a gate that cannot see
+what it has spent must not go on spending — it used to sum such a line as `NaN`, and `NaN >= budget`
+is false, so the gate simply went quiet. It cannot bound spend when the host reports no cost),
+`--max-turns N` and `--entry-timeout SECONDS` (per entry, headless; Codex uses the timeout, not a
+native turn limit), `--setup` (run `driver setup`'s flow on rails). None of them is an anti-drift
+key — they say how this invocation runs entries, not what the run is.
 
 **Codex headless host.** Register its five role shells with
 `python3 skill/scripts/dispatch.py --emit-host-agents codex`, then use
