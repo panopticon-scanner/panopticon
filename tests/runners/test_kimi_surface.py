@@ -15,41 +15,30 @@ import stat
 import tempfile
 import tomllib
 import unittest
+from functools import partial
 from unittest import mock
 
 import scripts.runners.kimi as kimi_runner
 import scripts.runners.kimi_home as kimi_home
+import scripts.runners.base as base
+from _test_helpers import kimi_entry as _entry, kimi_fixture_home, prepared_kimi
+
+_fixture_home = partial(kimi_fixture_home, include_coding_alias=False)
+_prepared = partial(prepared_kimi, include_coding_alias=False)
 
 
-def _entry(enforced=True, model="secondary"):
-    return {"id": "review-app-SEC", "agent": "panopticon-domain-panel" if enforced else None,
-            "enforced": enforced, "model": model,
-            "prompt": "panopticon-entry: review-app-SEC\nReview.",
-            "out_file": "/r/.panopticon/runs/t/findings-app-SEC.json"}
-
-
-def _fixture_home(d):
-    """A minimal real-home fixture -- never the operator's own."""
-    home = os.path.join(d, "real-home")
-    os.makedirs(home)
-    with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
-        fh.write('default_model = "kimi-code/k3"\n\n'
-                 '[models."kimi-code/k3"]\nmodel = "k3"\n')
-    with open(os.path.join(home, "credentials"), "w", encoding="utf-8") as fh:
-        fh.write("fixture")
-    return home
-
-
-def _prepared(d, runner=None):
-    # `runner=runner`, i.e. None by default -- NOT `subprocess.run`. An
-    # explicitly passed launcher routes around tests/conftest.py's autouse
-    # `_no_live_host_launches`, which swaps the module's DEFAULT_RUNNER for a
-    # refusal; leaving it None means any launch from this module hits that
-    # refusal rather than the real `kimi` binary.
-    with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
-        r = kimi_runner.Runner("kimi", runner=runner)
-        r.prepare(os.path.join(d, "run"), review_root=d)
-    return r
+class TestSharedKimiFixture(unittest.TestCase):
+    def test_surface_home_has_only_k3_and_the_default_launcher_is_guarded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prepared = _prepared(directory)
+            try:
+                self.assertIsNone(prepared.runner)
+                with open(os.path.join(directory, "real-home", "config.toml"), "rb") as fh:
+                    self.assertEqual(set(tomllib.load(fh)["models"]), {"kimi-code/k3"})
+                with self.assertRaises(base.LaunchRefused):
+                    kimi_runner.DEFAULT_RUNNER(["kimi", "--version"])
+            finally:
+                prepared.teardown("complete")
 
 
 class TestSkillsDirectory(unittest.TestCase):

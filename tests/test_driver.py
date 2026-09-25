@@ -29,6 +29,7 @@ import scripts.phases.synthesize as synthesize
 import scripts.phases.tools as tools_phase
 import scripts.phases.validate as validate_phase
 
+from _test_helpers import all_proven_artifact as _all_proven_artifact
 from conftest import docker_probe_runner, write_host_evidence
 import scripts.driver as driver
 import scripts.diff_map as diff_map
@@ -44,13 +45,12 @@ from tools.git_repo import make_git_repo
 _ALL_PROVEN = {c: hosts.PROVEN for c in hosts.CAPABILITIES}
 
 
-def _all_proven_artifact(host="claude"):
-    """A host-capabilities.json body proving every capability `host` claims."""
-    return {"schema_version": 1, "host": host,
-            "probed_at": "2026-09-10T00:00:00Z",
-            "capabilities": {c: {"state": hosts.PROVEN, "by": "fixture",
-                                 "detail": "fixture"}
-                             for c in hosts.CAPABILITIES}}
+def test_all_proven_artifacts_do_not_share_capability_state():
+    first = _all_proven_artifact("claude")
+    second = _all_proven_artifact("kimi")
+    first["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"] = hosts.REFUTED
+    assert second["host"] == "kimi"
+    assert second["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"] == "proven"
 
 
 _run_probes_patch = None

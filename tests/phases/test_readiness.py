@@ -24,11 +24,11 @@ import tempfile
 import unittest
 from unittest import mock
 
+from _test_helpers import all_proven_artifact as _all_proven_artifact
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
 import scripts.phases.runio as runio
 import scripts.run_manifest as run_manifest
-from scripts import hosts
 
 from tools.git_repo import make_git_repo
 
@@ -57,14 +57,6 @@ def _docker_runner(*, daemon=0, image=0):
             return _Probe(image)
         return _Probe(daemon)
     return runner
-
-
-def _all_proven_artifact(host="claude"):
-    return {"schema_version": 1, "host": host,
-            "probed_at": "2026-09-10T00:00:00Z",
-            "capabilities": {c: {"state": hosts.PROVEN, "by": "fixture",
-                                 "detail": "fixture"}
-                             for c in hosts.CAPABILITIES}}
 
 
 _run_probes_patch = None

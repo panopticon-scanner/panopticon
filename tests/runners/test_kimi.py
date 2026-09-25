@@ -22,6 +22,8 @@ import scripts.kimi_toml as kimi_toml
 import scripts.runners.kimi as kimi_runner
 import scripts.runners.kimi_home as kimi_home
 import scripts.runners.outage as outage
+from _test_helpers import (kimi_entry, kimi_fixture_home as _fixture_home,
+                           prepared_kimi as _prepared)
 
 STREAM = "\n".join([
     json.dumps({"role": "meta", "type": "system.version", "version": "0.42.0"}),
@@ -35,23 +37,7 @@ CONFIGURED = frozenset({"kimi-code/k3", "kimi-code/kimi-for-coding"})
 
 
 def _entry(enforced, model="secondary"):
-    return {"id": "review-app-SEC", "agent": "panopticon-domain-panel" if enforced else None,
-            "enforced": enforced, "model": model, "prompt": "panopticon-entry: review-app-SEC\nReview.",
-            "out_file": "/r/.panopticon/runs/t/findings-app-SEC.json"}
-
-
-def _fixture_home(d):
-    """A minimal real-home fixture: a config with two model aliases and a
-    credentials file to symlink. Never the operator's real home."""
-    home = os.path.join(d, "real-home")
-    os.makedirs(home)
-    with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
-        fh.write('default_model = "kimi-code/k3"\n\n'
-                 '[models."kimi-code/k3"]\nmodel = "k3"\n\n'
-                 '[models."kimi-code/kimi-for-coding"]\nmodel = "kimi-for-coding"\n')
-    with open(os.path.join(home, "credentials"), "w", encoding="utf-8") as fh:
-        fh.write("fixture")
-    return home
+    return kimi_entry(enforced, model=model)
 
 
 @contextlib.contextmanager
@@ -70,13 +56,6 @@ def _narrowed_temp_root():
              mock.patch.dict(os.environ):
             os.environ.pop("XDG_RUNTIME_DIR", None)
             yield root, outside
-
-
-def _prepared(d, runner=None):
-    with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
-        r = kimi_runner.Runner("kimi", runner=runner or subprocess.run)
-        r.prepare(os.path.join(d, "run"), review_root=d)
-    return r
 
 
 class TestCommand(unittest.TestCase):
