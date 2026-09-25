@@ -83,7 +83,10 @@ def _download_checksum_defects(text):
     Reuse the workflow guard's bounded shell reader, transfer discovery,
     checksum binding and use ordering. Docker ARG digest pins stay covered
     independently below; no shell expansion or execution happens here.
-    Checks must occur in the same RUN as the download.
+    Checks must occur in the same RUN as the download. For executable uses,
+    support only an uninterrupted && chain from the check to every use: a
+    Docker shell need not enable errexit. Leave other control-flow shapes
+    unproven rather than interpret shell failure/exit behavior here.
     """
     defects = []
     for lineno, line in _logical_lines(shell_reader.without_comments(text)):
@@ -97,12 +100,26 @@ def _download_checksum_defects(text):
                 continue  # streamed execution has its own guard below
             _names, uses = workflow_guard._uses(statements, fetch.dest, after=index)
             deadline = uses[0][0] if uses else len(statements)
+            # Without a use, bind to the real download's branch rather than a
+            # synthetic unconditional endpoint outside any enclosing `if`.
+            binding = uses[0][0] if uses else index
             if not any(index < check < deadline and why is None
                        and names_file(checked, fetch.dest)
-                       and workflow_guard._binds(conditions, check, deadline)
+                       and workflow_guard._binds(conditions, check, binding)
+                       and _checksum_blocks_uses(statements, check, uses)
                        for check, checked, why in checks):
                 defects.append((lineno, str(fetch.dest)))
     return defects
+
+
+def _checksum_blocks_uses(statements, check, uses):
+    # Without pipefail, only the final pipeline command controls &&. Do not
+    # credit a checksum piped into a successful `cat`/`tee`, even if ordered.
+    last = shell_reader.command(statements[check].stages[-1].argv)
+    if not last or os.path.basename(last[0]) not in workflow_guard.CHECKSUM_TOOLS:
+        return False
+    return all(all(statement.separator == "&&" for statement in statements[check:use])
+               for use, _description in uses)
 
 
 class TestDownloadChecksumGuard(unittest.TestCase):
@@ -135,6 +152,28 @@ class TestDownloadChecksumGuard(unittest.TestCase):
                 self.assertEqual(_download_checksum_defects(fetch + tail), [(1, "/tmp/new")])
         self.assertEqual(_download_checksum_defects("RUN " + check + " && " + fetch[4:]),
                          [(1, "/tmp/new")])
+
+    def test_failed_check_cannot_fall_through_to_execution(self):
+        prefix = ('RUN curl https://example.invalid/new -o /tmp/new'
+                  ' && echo "${NEW_SHA256}  /tmp/new" | sha256sum -c -')
+        for tail in (" ; /tmp/new", " && true ; /tmp/new",
+                     " && chmod +x /tmp/new ; /tmp/new",
+                     " | cat && /tmp/new"):
+            with self.subTest(tail=tail):
+                self.assertEqual(_download_checksum_defects(prefix + tail), [(1, "/tmp/new")])
+        for tail in (" && /tmp/new", " && true && /tmp/new",
+                     " && chmod +x /tmp/new && /tmp/new"):
+            with self.subTest(tail=tail):
+                self.assertEqual(_download_checksum_defects(prefix + tail), [])
+
+    def test_unused_conditional_download_binds_to_its_own_branch(self):
+        fetch = 'curl https://example.invalid/new -o /tmp/new'
+        check = 'echo "${NEW_SHA256}  /tmp/new" | sha256sum -c -'
+        self.assertEqual(_download_checksum_defects(
+            'RUN if test -n "$arch"; then ' + fetch + ' && ' + check + '; fi'), [])
+        self.assertEqual(_download_checksum_defects(
+            'RUN ' + fetch + '; if test -n "$arch"; then ' + check + '; fi'),
+            [(1, "/tmp/new")])
 
     def test_continuations_arch_selected_sha_and_prose(self):
         text = ('ARG NEW_SHA256_AMD64=' + 'a' * 64 + '\n'
