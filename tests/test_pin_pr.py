@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -323,3 +324,73 @@ def test_invalid_generated_change_is_rejected(repo, extra):
     (repo / "Dockerfile").write_text(generated("rustup") + extra)
     with pytest.raises(RuntimeError, match="generated Dockerfile|invalid or duplicate"):
         pin.open_pin_pr("rustup", "owner/repo", cwd=repo, gh_runner=FakeGh())
+
+
+def test_default_runner_ignores_repository_path_and_bounds_git(repo, monkeypatch):
+    hostile = repo / "git"
+    hostile.write_text("#!/bin/sh\nexit 99\n")
+    hostile.chmod(0o755)
+    monkeypatch.setenv("PATH", str(repo) + ":/usr/bin:/bin")
+    monkeypatch.setenv("PYTHONPATH", str(repo))
+    monkeypatch.setenv("LD_PRELOAD", str(hostile))
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "safe", "")
+
+    monkeypatch.setattr(pin.subprocess, "run", fake_run)
+    assert pin._run(["git", "status", "--porcelain", "--untracked-files=normal"], repo).stdout == "safe"
+    argv, kwargs = seen[0]
+    assert argv[0] != str(hostile)
+    assert Path(argv[0]).is_absolute()
+    assert str(repo) not in kwargs["env"]["PATH"]
+    assert "PYTHONPATH" not in kwargs["env"]
+    assert "LD_PRELOAD" not in kwargs["env"]
+    assert kwargs["timeout"] == pin.PROCESS_TIMEOUT
+    assert kwargs["cwd"] == repo
+
+
+def test_default_runner_keeps_gh_token_with_trusted_binary(repo, monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "inert-test-token")
+    monkeypatch.setenv("GH_CONFIG_DIR", str(repo / "wrong-account"))
+    monkeypatch.setattr(pin, "resolve", lambda program, cwd, path: SimpleNamespace(
+        path="/usr/bin/gh", path_env="/usr/bin:/bin"))
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "[]", "")
+
+    monkeypatch.setattr(pin.subprocess, "run", fake_run)
+    query = "repos/owner/repo/pulls?state=all&base=main&head=owner%3Achore%2Fbump-trivy-2.0.0&per_page=100"
+    result = pin._run(["gh", "api", query], repo)
+    assert result.stdout == "[]"
+    argv, kwargs = seen[0]
+    assert argv == ["/usr/bin/gh", "api", query]
+    assert kwargs["env"]["GH_TOKEN"] == "inert-test-token"
+    assert "GH_CONFIG_DIR" not in kwargs["env"]
+    assert kwargs["timeout"] == pin.PROCESS_TIMEOUT
+
+
+@pytest.mark.parametrize("command", [
+    ["sh", "-c", "evil"], ["git", "-c", "core.hooksPath=evil", "status"],
+    ["gh", "pr", "merge", "1"], ["gh", "auth", "login"],
+])
+def test_default_runner_rejects_unexpected_executable_or_verb(repo, monkeypatch, command):
+    monkeypatch.setattr(pin, "resolve", lambda *_args, **_kwargs: pytest.fail(
+        "unexpected command reached executable resolution"))
+    with pytest.raises(RuntimeError, match="unexpected"):
+        pin._run(command, repo)
+
+
+def test_default_runner_timeout_is_a_named_failure(repo, monkeypatch):
+    monkeypatch.setattr(pin, "resolve", lambda program, cwd, path: SimpleNamespace(
+        path="/usr/bin/git", path_env="/usr/bin:/bin"))
+
+    def expire(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(pin.subprocess, "run", expire)
+    with pytest.raises(RuntimeError, match="git timed out"):
+        pin._run(["git", "status", "--porcelain", "--untracked-files=normal"], repo)
