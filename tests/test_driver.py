@@ -2119,6 +2119,59 @@ class TestDriverPersistCLI(unittest.TestCase):
 
 
 class TestDriverLoopCLI(unittest.TestCase):
+    def test_policy_options_match_synthesizer_for_run_and_loop(self):
+        accepted = {"--fail-on": ("critical", "high", "medium", "low"),
+                    "--severity": ("all", "medium", "high", "critical"),
+                    "--gate-scope": ("on-diff", "all")}
+        for verb in ("run", "loop"):
+            omitted = driver.build_parser().parse_args([verb, "x"])
+            self.assertEqual((omitted.fail_on, omitted.severity, omitted.gate_scope),
+                             (None, None, None))
+            for flag, values in accepted.items():
+                attr = flag[2:].replace("-", "_")
+                for value in values:
+                    with self.subTest(verb=verb, flag=flag, value=value):
+                        supplied = value if flag == "--gate-scope" else value.upper()
+                        parsed = driver.build_parser().parse_args([verb, "x", flag, supplied])
+                        self.assertEqual(getattr(parsed, attr), value)
+                invalid = "ALL" if flag == "--gate-scope" else "invalid"
+                with self.subTest(verb=verb, flag=flag, value=invalid):
+                    with self.assertRaises(SystemExit) as caught, \
+                         contextlib.redirect_stderr(io.StringIO()):
+                        driver.main([verb, "x", flag, invalid])
+                    self.assertEqual(caught.exception.code, 2)
+
+    def test_invalid_policy_option_stops_before_any_startup_work(self):
+        for verb in ("run", "loop"):
+            with self.subTest(verb=verb), \
+                 mock.patch.object(runio, "resolve_review_root") as resolve, \
+                 mock.patch("scripts.orchestrate.main_verb") as loop, \
+                 mock.patch("scripts.host_probes.run_probes") as probes, \
+                 contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    driver.main([verb, "x", "--severity", "bogus"])
+                resolve.assert_not_called()
+                loop.assert_not_called()
+                probes.assert_not_called()
+
+    def test_malformed_model_env_stops_run_and_loop_before_startup_work(self):
+        key = "PANOPTICON_MODEL_DOMAIN_PANEL"
+        with mock.patch.dict(os.environ, {key: '{"model": "secret-sentinel",}'},
+                             clear=False):
+            for verb in ("run", "loop"):
+                with self.subTest(verb=verb), \
+                     mock.patch.object(runio, "resolve_review_root") as resolve, \
+                     mock.patch("scripts.orchestrate.main_verb") as loop, \
+                     mock.patch("scripts.host_probes.run_probes") as probes, \
+                     contextlib.redirect_stdout(io.StringIO()) as out:
+                    rc = driver.main([verb, "x"])
+                    self.assertEqual(rc, 1)
+                    self.assertIn(key, out.getvalue())
+                    self.assertNotIn("secret-sentinel", out.getvalue())
+                    resolve.assert_not_called()
+                    loop.assert_not_called()
+                    probes.assert_not_called()
+
     def test_loop_accepts_every_run_flag_plus_its_own(self):
         args = driver.build_parser().parse_args(
             ["loop", "x", "--host", "claude", "--security", "redteam", "--no-tools", "-g", "Auth",

@@ -147,8 +147,18 @@ def _env_override(role):
         try:
             return json.loads(env_value)
         except ValueError:
-            pass
+            # Object-shaped input is a configuration attempt, not a model ID.
+            # Do not echo the value: environment overrides may contain secrets.
+            raise ValueError("%s must contain a valid JSON object" % env_key) from None
     return {"model": env_value}
+
+
+def validate_env_overrides():
+    """Check every live role before a driver run can probe or dispatch."""
+    # The fallback table is pinned to dispatch.ROLE_FILES by the resolver tests.
+    # It also includes setup_scan, used by `driver loop --setup`.
+    for role in _CLAUDE_FALLBACK:
+        _env_override(role)
 
 
 _KIMI_TIERS = ("primary", "secondary")
