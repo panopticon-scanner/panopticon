@@ -239,6 +239,10 @@ catalog does not list the `gpt-5.6` alias. An unavailable or ambiguous model fai
 than silently selecting another tier; if your Codex build's catalog (`codex debug models --bundled`)
 spells the tier differently, set `PANOPTICON_MODEL_<ROLE>` — e.g. `PANOPTICON_MODEL_DOMAIN_PANEL` —
 to a slug it lists, which is what the refusal itself names.
+Each override accepts either a plain model ID or a JSON object such as
+`{"model":"gpt-5.6-terra","model_reasoning_effort":"high"}`. Surrounding whitespace is allowed.
+An override beginning with `{` must be valid JSON; a malformed object stops `driver run` or
+`driver loop` before host work and the error names the environment key without printing its value.
 
 Every Codex role uses `delivery: return_json`; the shared loop validates and persists replies,
 records launches and denials, and handles retries. Codex does **not** claim `artifact_write_guard`,
