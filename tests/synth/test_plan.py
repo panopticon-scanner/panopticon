@@ -63,41 +63,123 @@ class TestCoverageReadIsBounded(unittest.TestCase):
     one, so both escaped PlanInputs.load and ended a paid-for run; nothing
     bounded the read at all."""
 
+    @staticmethod
+    def _announced(err):
+        """The lines synthesize announced, so a test can BOUND them without
+        coupling to a CPython exception message that may not be one line."""
+        return [ln for ln in err.splitlines() if ln.startswith("synthesize:")]
+
+    @staticmethod
+    def _write_over_limit(path):
+        """A structurally valid coverage record that is over the read limit."""
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write('{"group": "Over", "pad": "%s"}'
+                     % ("x" * (coverage_io._MAX_COVERAGE_BYTES + 1)))
+        return path
+
     def test_a_deeply_nested_file_is_skipped_and_announced(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "coverage-Core.json"), "w", encoding="utf-8") as fh:
                 json.dump({"group": "Core", "floor": ["SEC"]}, fh)
             # NOT json.dumps: this is the shape a target writes, not one the
-            # encoder would survive building.
+            # encoder would survive building. 400 kB, i.e. UNDER the read
+            # limit, so this exercises the widened catch and not the bound.
             with open(os.path.join(d, "coverage-Deep.json"), "w", encoding="utf-8") as fh:
                 fh.write("[" * 200000 + "]" * 200000)
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 cells = coverage_io.load_coverage_files(d)
         self.assertEqual([c.get("group") for c in cells], ["Core"])
-        # announced, like every other repair this module makes: one line, the
-        # bad file named, the good one not mentioned.
-        self.assertEqual(err.getvalue().count("\n"), 1, err.getvalue())
+        # announced, like every other repair this module makes: the bad file
+        # named, the good one not mentioned, and at most one announcement --
+        # bounded rather than pinned to an exact newline count, because
+        # CPython's RecursionError text is version-dependent.
         self.assertIn("coverage-Deep.json", err.getvalue())
         self.assertNotIn("coverage-Core.json", err.getvalue())
+        self.assertLessEqual(len(self._announced(err.getvalue())), 1, err.getvalue())
 
     def test_an_oversize_file_is_skipped_without_being_parsed(self):
         with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "coverage-Huge.json")
-            with open(path, "w", encoding="utf-8") as fh:
-                # valid JSON, and over the read limit: the point is that the
-                # bound is checked BEFORE the parser ever sees it.
-                fh.write('{"group": "Huge", "pad": "%s"}'
-                         % ("x" * (coverage_io._MAX_COVERAGE_BYTES + 1)))
+            path = self._write_over_limit(os.path.join(d, "coverage-Huge.json"))
             self.assertGreater(os.stat(path).st_size, coverage_io._MAX_COVERAGE_BYTES)
             err = io.StringIO()
-            with mock.patch.object(coverage_io.json, "load") as load:
-                with contextlib.redirect_stderr(err):
-                    cells = coverage_io.load_coverage_files(d)
-            load.assert_not_called()
+            with mock.patch("scripts.synth.coverage_io.json.loads") as loads, \
+                    contextlib.redirect_stderr(err):
+                cells = coverage_io.load_coverage_files(d)
+            loads.assert_not_called()
         self.assertEqual(cells, [])
-        self.assertEqual(err.getvalue().count("\n"), 1, err.getvalue())
         self.assertIn("coverage-Huge.json", err.getvalue())
+        self.assertLessEqual(len(self._announced(err.getvalue())), 1, err.getvalue())
+
+    def test_a_symlink_to_an_oversize_file_is_skipped(self):
+        # git stores symlinks with their target, so the symlink itself is a
+        # shape a target repository can commit.
+        with tempfile.TemporaryDirectory() as d:
+            big = self._write_over_limit(os.path.join(d, "big.txt"))  # not in the glob
+            os.symlink(big, os.path.join(d, "coverage-Link.json"))
+            err = io.StringIO()
+            with mock.patch("scripts.synth.coverage_io.json.loads") as loads, \
+                    contextlib.redirect_stderr(err):
+                cells = coverage_io.load_coverage_files(d)
+            loads.assert_not_called()
+        self.assertEqual(cells, [])
+        self.assertIn("coverage-Link.json", err.getvalue())
+
+    def test_the_bound_does_not_trust_the_size_the_filesystem_declares(self):
+        # The real vector is a symlink to a character device (/dev/zero) or a
+        # FIFO: st_size reads 0 and the read then never ends, so a stat-based
+        # bound walks straight past it into the allocation the bound existed to
+        # prevent -- and neither is a thing a unit test can safely create.
+        # Standing in for both: a genuinely oversize file whose stat
+        # UNDER-reports it. The bound is on the READ, so the size the
+        # filesystem declares is not consulted at all.
+        real_stat = os.stat
+
+        def lying_stat(target, *args, **kwargs):
+            st = real_stat(target, *args, **kwargs)
+            if str(target).endswith("coverage-Sparse.json"):
+                return os.stat_result(tuple(st)[:6] + (0,) + tuple(st)[7:10])
+            return st
+
+        with tempfile.TemporaryDirectory() as d:
+            self._write_over_limit(os.path.join(d, "coverage-Sparse.json"))
+            err = io.StringIO()
+            with mock.patch("scripts.synth.coverage_io.os.stat", lying_stat), \
+                    mock.patch("scripts.synth.coverage_io.json.loads") as loads, \
+                    contextlib.redirect_stderr(err):
+                cells = coverage_io.load_coverage_files(d)
+            loads.assert_not_called()
+        self.assertEqual(cells, [])
+        self.assertIn("coverage-Sparse.json", err.getvalue())
+
+    def test_an_unreadable_file_is_announced_not_silently_skipped(self):
+        # a dangling symlink: the OSError branch, which used to skip in silence
+        # and is the branch most likely to fire on a real run.
+        with tempfile.TemporaryDirectory() as d:
+            os.symlink(os.path.join(d, "nowhere.json"),
+                       os.path.join(d, "coverage-Gone.json"))
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                cells = coverage_io.load_coverage_files(d)
+        self.assertEqual(cells, [])
+        self.assertIn("coverage-Gone.json", err.getvalue())
+        self.assertLessEqual(len(self._announced(err.getvalue())), 1, err.getvalue())
+
+    def test_an_exception_with_no_message_is_still_named(self):
+        # str(MemoryError()) is "", and an exception instance is always TRUTHY,
+        # so `exc or type(exc).__name__` renders "could not be read ()". It has
+        # to be `str(exc) or type(exc).__name__`.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "coverage-Core.json"), "w", encoding="utf-8") as fh:
+                json.dump({"group": "Core"}, fh)
+            err = io.StringIO()
+            with mock.patch("scripts.synth.coverage_io.json.loads",
+                            side_effect=MemoryError()), \
+                    contextlib.redirect_stderr(err):
+                cells = coverage_io.load_coverage_files(d)
+        self.assertEqual(cells, [])
+        self.assertIn("MemoryError", err.getvalue())
+        self.assertNotIn("MemoryError: )", err.getvalue())
 
 class TestPresentCells(unittest.TestCase):
     """present_cells: derives {group: set(domains)} from findings-<group>-
@@ -374,12 +456,42 @@ class TestOutOfScopeShapeTolerance(unittest.TestCase):
     PLAN = [{"group": "g1", "files": ["a.py"], "out_file": "x"}]
 
     def _res(self, payload):
+        return self._res_raw(json.dumps(payload))
+
+    def _res_raw(self, body, also_canonical=False):
+        """`body` written verbatim -- the shape a reviewer's RETURN channel
+        actually produced, not what json.dumps would have produced."""
         with tempfile.TemporaryDirectory() as d:
             fp = os.path.join(d, "findings-g1-code-panel_review.json")
             with open(fp, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
+                fh.write(body)
             with contextlib.redirect_stderr(io.StringIO()):
-                return plan_mod.out_of_scope_findings([fp], self.PLAN)
+                res = plan_mod.out_of_scope_findings([fp], self.PLAN)
+                if also_canonical:
+                    return res, findings_mod.load_findings([fp])
+                return res
+
+    def test_a_fence_wrapped_file_is_read_as_the_canonical_loader_reads_it(self):
+        # phases/runio._load_return_json records fence wrapping as "a property
+        # of the RETURN channel, not prompt wording" (run-9: 94/95 tool
+        # advisors, 25/25 scouts). The canonical loader parses through
+        # evidence.load_json_tolerant and INGESTS these findings; this counter
+        # used strict json.load and reported a clean zero for exactly the files
+        # most likely to hold an out-of-lane finding.
+        res, canonical = self._res_raw(
+            '```json\n{"findings": [{"id": "A-1", "location": {"file": "z.py"}}]}\n```',
+            also_canonical=True)
+        self.assertEqual(len(canonical), 1, "the report itself ingests this file")
+        self.assertEqual((res["checked"], res["count"]), (1, 1))
+        self.assertEqual(res["examples"], [{"group": "g1", "file": "z.py"}])
+
+    def test_a_deeply_nested_file_is_skipped_without_aborting(self):
+        # RecursionError is a RuntimeError, so `except (OSError, ValueError)`
+        # never covered it -- load_findings_detailed survives this file under a
+        # bare `except Exception`, and this reader took the run down 20 lines
+        # later. Written as text, not with json.dumps.
+        res = self._res_raw("[" * 200000 + "]" * 200000)
+        self.assertEqual((res["checked"], res["count"]), (0, 0))
 
     def test_a_mistyped_location_counts_nothing_and_does_not_raise(self):
         # a location that is not an object identifies no file, so it is not a

@@ -26,9 +26,11 @@ import sys
 import scripts.groups_schema as groups_schema
 
 # DAT-2808086775: a target-writable artifact gets a bounded read, the shape
-# `tools/pip_audit.py` already uses for pyproject.toml. A coverage record is a
-# handful of group names and domain codes; 1 MiB is orders of magnitude more
-# than the phase ever writes, and past it the file is not a coverage record.
+# `tools/pip_audit.py` already uses for pyproject.toml. A realistic record
+# measures a few hundred bytes -- but `scout_invalid` copies unbounded agent
+# strings (phases/coverage.py: the scout's rejected `domains` entries, verbatim
+# and uncapped), and a skip fails OPEN on the floor audit, so a dropped record
+# reads as "nothing missing" rather than "unknown" -- see #2080.
 _MAX_COVERAGE_BYTES = 1 << 20
 
 
@@ -87,24 +89,34 @@ def load_coverage_files(panopticon_dir=".panopticon"):
     raises RecursionError (a RuntimeError, not a ValueError) on a deeply nested
     document and MemoryError on a huge one, and both escaped this loop into
     PlanInputs.load -- ending the run after every dispatch had been paid for.
-    The read is bounded BEFORE the parser sees the file, the catch covers both
-    escapes, and each skip is announced, because `normalized_cell` announces
-    every repair and a file dropped whole is the louder fact."""
+    The catch now covers both, and the READ itself is bounded: one
+    `fh.read(_MAX_COVERAGE_BYTES + 1)`, never `os.stat().st_size`. The declared
+    size is not the size of the read -- a character device or a FIFO reports 0
+    and then reads forever, which is a symlink a target repository can commit --
+    and a stat-then-open bound is a TOCTOU besides. (The text read counts
+    CHARACTERS, so a multibyte file can be up to 4x the constant in bytes -- the
+    point is a bounded allocation, not an exact byte count.) Each skip is
+    announced,
+    because `normalized_cell` announces every repair and a file dropped whole is
+    the louder fact."""
     out = []
     for path in sorted(glob.glob(os.path.join(panopticon_dir, "coverage-*.json"))):
         name = os.path.basename(path)
         try:
-            size = os.stat(path).st_size
-            if size > _MAX_COVERAGE_BYTES:
-                print("synthesize: coverage: %s: %d bytes is over the %d-byte read "
-                      "limit; skipping it unparsed"
-                      % (name, size, _MAX_COVERAGE_BYTES), file=sys.stderr)
-                continue
             with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
+                body = fh.read(_MAX_COVERAGE_BYTES + 1)
+            if len(body) > _MAX_COVERAGE_BYTES:
+                print("synthesize: coverage: %s: over the %d-byte read limit; "
+                      "skipping it unparsed" % (name, _MAX_COVERAGE_BYTES),
+                      file=sys.stderr)
+                continue
+            data = json.loads(body)
         except (OSError, ValueError, RecursionError, MemoryError) as exc:
-            print("synthesize: coverage: %s: could not be read (%s: %s); "
-                  "skipping it" % (name, type(exc).__name__, exc), file=sys.stderr)
+            # `str(exc) or type(exc).__name__`, not `exc or ...`: str(MemoryError())
+            # is "" while the instance itself is TRUTHY, so the short form renders
+            # "could not be read ()" -- a line an operator cannot act on.
+            print("synthesize: coverage: %s: could not be read (%s); skipping it"
+                  % (name, str(exc) or type(exc).__name__), file=sys.stderr)
             continue
         if isinstance(data, dict):
             out.append(normalized_cell(data, path=name))

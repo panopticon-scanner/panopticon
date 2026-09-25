@@ -6,6 +6,7 @@ import os
 import json
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
@@ -253,6 +254,12 @@ class TestDriverPlanShapeTolerance(unittest.TestCase):
 
     NON_ARRAYS = ("5", "true", "null", "1.5", '"text"', '{"a": 1}')
 
+    @staticmethod
+    def _announced(err):
+        """The lines synthesize announced, so a test can BOUND them without
+        coupling to a CPython exception message that may not be one line."""
+        return [ln for ln in err.splitlines() if ln.startswith("synthesize:")]
+
     def _counts(self, raw):
         with tempfile.TemporaryDirectory() as d:
             pano = os.path.join(d, ".panopticon")
@@ -273,9 +280,30 @@ class TestDriverPlanShapeTolerance(unittest.TestCase):
                 self.assertEqual(counts["review_cells"], 0)
                 # announced, not swallowed: a plan that did not say what it
                 # meant is a fact about the run (one line, naming the file).
-                self.assertEqual(err.count("\n"), 1, err)
                 self.assertIn(plan_mod.DRIVER_DISPATCH_PLAN, err)
                 self.assertIn("not a JSON array", err)
+                self.assertLessEqual(len(self._announced(err)), 1, err)
+
+    def test_a_deeply_nested_plan_counts_no_cells_and_says_so(self):
+        # RecursionError is a RuntimeError, so `except (OSError, ValueError)`
+        # never covered it -- the identical escape DAT-2808086775 fixed one
+        # module away, on a file from the same target-writable run folder.
+        # Written as text, NOT with json.dumps: this is the shape a target
+        # commits, not one the encoder would survive building.
+        counts, err = self._counts("[" * 200000 + "]" * 200000)
+        self.assertEqual(counts["review_cells"], 0)
+        self.assertIn(plan_mod.DRIVER_DISPATCH_PLAN, err)
+        self.assertLessEqual(len(self._announced(err)), 1, err)
+
+    def test_a_memoryerror_is_named_even_though_its_message_is_empty(self):
+        # str(MemoryError()) is "", and an exception instance is always TRUTHY,
+        # so `exc or type(exc).__name__` renders "could not be read ()" -- a
+        # line an operator cannot act on. It has to be `str(exc) or ...`.
+        with mock.patch.object(cost_mod.json, "load", side_effect=MemoryError()):
+            counts, err = self._counts("[]")
+        self.assertEqual(counts["review_cells"], 0)
+        self.assertIn("MemoryError", err)
+        self.assertLessEqual(len(self._announced(err)), 1, err)
 
     def test_an_array_plan_still_counts_its_cells(self):
         counts, err = self._counts('[{"domain": "SEC"}]')
