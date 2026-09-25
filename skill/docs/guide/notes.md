@@ -10,8 +10,15 @@ materializing discovered secrets (redact discovered passwords, API keys, PII, an
 `[REDACTED]` in descriptions, exploit scenarios, and evidence citations).
 
 Hostile-content review (redteam mode, deliberately vulnerable corpora, repos that may contain
-planted injection payloads) should run with enforcement registered via `--emit-host-agents` so
-`meta.coverage.tool_policy_mode` reads `enforced`.
+planted injection payloads) should run with enforcement registered via `--emit-host-agents`. Two
+refusals make part of that mechanical rather than advisory, and each keys on a different capability:
+`driver run` refuses to dispatch the write-capable reviewers unless `artifact_write_guard` is proven
+on this machine, and `driver setup` refuses a shell-less `setup-scan` unless `tool_policy_enforced`
+is (#1737). `--allow-unenforced` accepts either explicitly and is recorded. Registration itself is
+**disclosed, not refused**, on the review path — a machine with a proven write guard and no emitted
+shells runs, with `meta.coverage.tool_policy_mode` reading `advisory` rather than `enforced` — which
+is exactly why the unenforced claude launch now carries its own tool deny-list (#1753, see Host
+capabilities).
 
 That write-guard is a Claude Code `PreToolUse` hook, so it **structurally cannot run on another
 host**; Kimi ships its own equivalent (`kimi_guard_hook.py`, registered through the generated
@@ -28,6 +35,11 @@ machine* (no `.claude/settings.local.json` at the path the host would arm, say),
 host-name test could not express. `--allow-unenforced` accepts the risk explicitly; the acceptance
 is recorded in the run's `unenforced-ack.json`, bound to the dispatch plan's hash so it cannot be
 reused by a later, different fan-out, and surfaces as `meta.integrity.unenforced_acknowledged`.
+What that hook mediates is `Write`, `Edit` and `NotebookEdit` and nothing else: `Bash` and `Agent`
+are kept out of a reviewer's hands by the enforced shell's `tools:` grant, or — on an unenforced
+claude dispatch — by the tool deny-list on its argv (#1753, see Host capabilities), never by the
+write guard, which is registered session-wide and so cannot tell the orchestrator's own legitimate
+shell from a reviewer's.
 
 A **second, separate refusal** covers the reviewed tree shadowing the enforcement shells (spec
 §7.3). A target that ships `panopticon-*` agent files in a project-scoped agent directory — or any

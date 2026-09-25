@@ -283,7 +283,9 @@ and local settings, and any hooks they declare, are not read), `--strict-mcp-con
 ("Disable all skills" per `claude --help`, so it is what closes a planted
 `.claude/skills/<x>/SKILL.md` as well as `.claude/commands`), on top of the
 `--settings <run>/host-settings.json` that arms the two guards — `--settings` is a separate channel
-that still applies under `--setting-sources user`, which is what keeps the guards armed. `--bare`
+that still applies under `--setting-sources user`, which is what keeps the guards armed. An
+unenforced launch also carries `--disallowedTools=<UNENFORCED_DENIED_TOOLS>`, which closes the
+operator's own user-scope allow rules (#1753). `--bare`
 and `--safe-mode` are never passed: both disable hooks, and either would silently un-arm the read
 and write guards. **Codex:** the child's process cwd is the same empty, run-owned scratch directory
 `--cd` names, outside the review root — not the review root itself — so whichever root the CLI keys
@@ -361,8 +363,9 @@ on Claude hooks, and always uses the return-persist path.
   allowing it.
 - **The loop dispatches one agent per entry** through the runner: `enforced` →
   `--agent entry["agent"]` (a registered `panopticon-*` shell, tools+model host-enforced); else
-  `--model entry["model"]` and no agent. Prompts go inline (there is no controller context to
-  protect across a process boundary); `prompt_file` remains on every entry for session mode, and
+  `--model entry["model"]` and no agent, plus the `--disallowedTools=` deny-list that closes the
+  operator's own user-scope allow rules (#1753). Prompts go inline (there is no controller context
+  to protect across a process boundary); `prompt_file` remains on every entry for session mode, and
   `files` (present on scout, review-cell, and verify-cell entries) is the entry's absolute file list
   — the read scope the read guard confines it to. `output_schema` is on a return-persist entry when
   its role publishes a JSON Schema for the reply AND this machine's CLI advertises the flag that
