@@ -499,6 +499,14 @@ def record_discarded_batch(review_root, manifest, number, at=None, *, namespace=
     folder beside the record it applied to (`runners/batch.record_discard`),
     which is where the detail lives; this is the count, where a reader of the
     run's parameters will look for it.
+
+    The read-back is TYPE-CHECKED before it is appended to (review round 1,
+    finding 7). This manifest lives inside the reviewed tree, so the key is a
+    value a target can choose: `list(...)` over a planted string yields one
+    entry per character, over a dict one per key, and over an int raises
+    TypeError out of a recorder that must not be able to fail the run. A value
+    that is not a list is treated as absent -- it was never this driver's, so
+    it was never the count of anything.
     """
     # `load_manifest` reads the REVIEW manifest and has no namespace of its
     # own, so only the review namespace may fall back to it: loading it for
@@ -507,7 +515,8 @@ def record_discarded_batch(review_root, manifest, number, at=None, *, namespace=
         manifest = load_manifest(review_root)
     if manifest is None:
         return None
-    manifest[DISCARDED_BATCHES] = list(manifest.get(DISCARDED_BATCHES) or []) + [
+    existing = manifest.get(DISCARDED_BATCHES)
+    manifest[DISCARDED_BATCHES] = (existing if isinstance(existing, list) else []) + [
         {"batch": int(number), "at": at or _now_iso()}]
     return _rewrite(review_root, manifest, namespace=namespace)
 
