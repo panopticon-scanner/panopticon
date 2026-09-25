@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import io
 import os
 import subprocess
@@ -7,9 +8,10 @@ import tempfile
 import textwrap
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from _test_helpers import FakePopen, FakeStream
+from _test_helpers import FakePopen, FakeStream, hard_link_or_skip
 import scripts.tools.base as base
 
 
@@ -104,6 +106,73 @@ class TestSubprocessFakes(unittest.TestCase):
         getpgid.assert_not_called()
         killpg.assert_not_called()
         self.assertEqual(fake.returncode, -9)
+
+
+class TestHardLinkFixture(unittest.TestCase):
+    def test_links_a_managed_file_and_returns_the_link_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            target, link = Path(d) / "target.txt", Path(d) / "link.txt"
+            target.write_text("inert fixture", encoding="utf-8")
+            self.assertEqual(str(link), hard_link_or_skip(target, link))
+            self.assertTrue(os.path.samefile(target, link))
+            self.assertEqual(2, target.stat().st_nlink)
+            self.assertEqual("inert fixture", link.read_text(encoding="utf-8"))
+
+    def test_real_missing_target_and_existing_link_are_errors(self):
+        with tempfile.TemporaryDirectory() as d:
+            target, link = Path(d) / "target.txt", Path(d) / "link.txt"
+            with self.assertRaises(OSError) as missing:
+                hard_link_or_skip(target, link)
+            self.assertEqual(errno.ENOENT, missing.exception.errno)
+            target.write_text("source", encoding="utf-8")
+            link.write_text("existing", encoding="utf-8")
+            with self.assertRaises(OSError) as existing:
+                hard_link_or_skip(target, link)
+            self.assertEqual(errno.EEXIST, existing.exception.errno)
+            self.assertEqual("existing", link.read_text(encoding="utf-8"))
+
+    def test_only_unsupported_link_operations_skip_or_fail_by_mode(self):
+        unsupported = (
+            OSError(errno.ENOSYS, "API unavailable"),
+            OSError(errno.EOPNOTSUPP, "filesystem unsupported"),
+            OSError(errno.ENOTSUP, "operation unsupported"),
+            NotImplementedError("API unavailable"),
+            AttributeError("link API missing"),
+        )
+        with tempfile.TemporaryDirectory() as d:
+            target, link = Path(d) / "target.txt", Path(d) / "link.txt"
+            target.write_text("inert fixture", encoding="utf-8")
+            for exc in unsupported:
+                for strict, expected in (("", unittest.SkipTest),
+                                         ("1", AssertionError)):
+                    with self.subTest(error=repr(exc), strict=strict), \
+                         mock.patch.dict(os.environ,
+                                         {"PANOPTICON_REQUIRE_INTEGRATION": strict}), \
+                         mock.patch("os.link", side_effect=exc) as link_api:
+                        with self.assertRaises(expected) as raised:
+                            hard_link_or_skip(target, link)
+                    link_api.assert_called_once_with(str(target), str(link))
+                    self.assertIn(type(exc).__name__, str(raised.exception))
+                    self.assertIs(exc, raised.exception.__cause__)
+                    self.assertFalse(link.exists())
+
+    def test_unexpected_os_errors_propagate_unchanged_in_both_modes(self):
+        with tempfile.TemporaryDirectory() as d:
+            target, link = Path(d) / "target.txt", Path(d) / "link.txt"
+            target.write_text("inert fixture", encoding="utf-8")
+            for err in (errno.ENOENT, errno.EEXIST, errno.EACCES,
+                        errno.EPERM, errno.EXDEV, errno.EIO):
+                for strict in ("", "1"):
+                    exc = OSError(err, "setup failure")
+                    with self.subTest(errno=err, strict=strict), \
+                         mock.patch.dict(os.environ,
+                                         {"PANOPTICON_REQUIRE_INTEGRATION": strict}), \
+                         mock.patch("os.link", side_effect=exc) as link_api:
+                        with self.assertRaises(OSError) as raised:
+                            hard_link_or_skip(target, link)
+                    link_api.assert_called_once_with(str(target), str(link))
+                    self.assertIs(exc, raised.exception)
+                    self.assertFalse(link.exists())
 
 
 class TestBase(unittest.TestCase):
