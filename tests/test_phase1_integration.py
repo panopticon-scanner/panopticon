@@ -2,9 +2,11 @@ import json
 import os
 import tempfile
 import unittest
-from unittest import mock   # #run7 QAL-F1B: plain `import unittest` does NOT bind unittest.mock
+from pathlib import Path
+from unittest import mock
 
 import scripts.ingest_tools as it
+import scripts.tools.pip_audit as pip_audit_module
 from scripts.tools import ADAPTERS
 
 # #run7 QAL-D1B: the raw pip-audit fixture output, previously duplicated verbatim.
@@ -12,17 +14,13 @@ _PIP_AUDIT_OUTPUT = b'{"dependencies": [{"name": "requests", "version": "2.20.0"
 
 
 class TestPhase1Integration(unittest.TestCase):
-    def test_pip_audit_finds_requests_cve(self):
-        target = os.path.join(os.path.dirname(__file__), "fixtures", "vulnerable-python")
+    def test_pip_audit_parses_literal_report(self):
         adapter = ADAPTERS["pip-audit"]
-        # is_applicable is intentionally not exercised here: invoke() is mocked,
-        # so we are testing parse() behavior against deterministic output (#1196).
-
-        mock_output = _PIP_AUDIT_OUTPUT
-        with mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
-            raw, rc = adapter.invoke(target)
-
-        findings = adapter.parse(raw, "g1")
+        token = pip_audit_module._manifest_path_cv.set(None)
+        try:
+            findings = adapter.parse(_PIP_AUDIT_OUTPUT, "g1")
+        finally:
+            pip_audit_module._manifest_path_cv.reset(token)
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["id"], "PA-001")
         self.assertEqual(findings[0]["source"], "tool:pip-audit")
@@ -31,17 +29,10 @@ class TestPhase1Integration(unittest.TestCase):
         self.assertEqual(findings[0]["location"]["file"], "requirements.txt")
         self.assertEqual(findings[0]["tool_evidence"]["package_name"], "requests")
 
-    def test_npm_audit_finds_lodash_vulnerability(self):
-        target = os.path.join(os.path.dirname(__file__), "fixtures", "vulnerable-node")
+    def test_npm_audit_parses_literal_report(self):
         adapter = ADAPTERS["npm-audit"]
-        # is_applicable is intentionally not exercised here: invoke() is mocked,
-        # so we are testing parse() behavior against deterministic output (#1196).
-
         mock_output = json.dumps({"advisories": {"123": {"title": "Command Injection in lodash", "module_name": "lodash", "vulnerable_versions": "<4.17.21", "patched_versions": ">=4.17.21", "severity": "high", "cves": ["CVE-2021-23337"]}}}).encode()
-        with mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
-            raw, rc = adapter.invoke(target)
-
-        findings = adapter.parse(raw, "g1")
+        findings = adapter.parse(mock_output, "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["source"], "tool:npm-audit")
         self.assertEqual(findings[0]["severity"], "HIGH")
@@ -104,17 +95,10 @@ class TestPhase1Integration(unittest.TestCase):
             findings = it.ingest_dir(d, "g1")
             self.assertEqual(findings, [])
 
-    def test_eslint_security_finds_eval(self):
-        target = os.path.join(os.path.dirname(__file__), "fixtures", "insecure-js")
+    def test_eslint_security_parses_literal_report(self):
         adapter = ADAPTERS["eslint-security"]
-        # is_applicable is intentionally not exercised here: invoke() is mocked,
-        # so we are testing parse() behavior against deterministic output (#1196).
-
         mock_output = json.dumps([{"filePath": "app.js", "messages": [{"ruleId": "security/detect-eval-with-expression", "severity": 2, "message": "eval can be harmful", "line": 5, "column": 1}]}]).encode()
-        with mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
-            raw, rc = adapter.invoke(target)
-
-        findings = adapter.parse(raw, "g1")
+        findings = adapter.parse(mock_output, "g1")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["source"], "tool:eslint-security")
         self.assertEqual(findings[0]["severity"], "HIGH")
@@ -124,27 +108,84 @@ class TestPhase1Integration(unittest.TestCase):
         self.assertEqual(findings[0]["citations"]["cwe"], ["CWE-95"])
 
     def test_ingest_dir_routes_adapter_output(self):
-        target = os.path.join(os.path.dirname(__file__), "fixtures", "vulnerable-python")
-        adapter = ADAPTERS["pip-audit"]
-        mock_output = _PIP_AUDIT_OUTPUT
-
-        with mock.patch.object(adapter, 'invoke', return_value=(mock_output, 1)):
-            raw, rc = adapter.invoke(target)
-            if rc != 1:
-                self.skipTest(f"pip-audit failed with {rc}")
-
+        raw = _PIP_AUDIT_OUTPUT
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "pip-audit.json"), "wb") as fh:
                 fh.write(raw)
-            # This exercises adapter routing on REAL tool output sourced from the
-            # vulnerable-python fixture, so its location.file is under
-            # tests/fixtures/ and the default fixture prune would drop it. Pass
-            # include_fixtures to keep it (we are testing routing, not the prune).
+            # Literal report ingestion is separate from the controlled invoke seam.
             findings = it.ingest_dir(d, "g1", include_fixtures=True)
             self.assertEqual(len(findings), 1)
             self.assertEqual(findings[0]["source"], "tool:pip-audit")
             self.assertEqual(findings[0]["citations"]["cve"], ["CVE-2018-18074"])
             self.assertEqual(findings[0]["severity"], "MEDIUM")
+
+    def test_offline_adapters_invoke_controlled_children_and_parse(self):
+        fixtures = Path(__file__).parent / "fixtures"
+        cases = (
+            ("pip-audit", fixtures / "vulnerable-python", "requirements.txt",
+             "requests==2.25.1", _PIP_AUDIT_OUTPUT, "CVE-2018-18074"),
+            ("npm-audit", fixtures / "vulnerable-node", "package.json",
+             '"lodash": "4.17.20"', json.dumps({"advisories": {"123": {
+                 "title": "Command Injection in lodash", "module_name": "lodash",
+                 "vulnerable_versions": "<4.17.21", "patched_versions": ">=4.17.21",
+                 "severity": "high", "cves": ["CVE-2021-23337"]}}}).encode(),
+             "CVE-2021-23337"),
+            ("eslint-security", fixtures / "insecure-js", "app.js", "eval(userInput)",
+             json.dumps([{"filePath": "app.js", "messages": [{
+                 "ruleId": "security/detect-eval-with-expression", "severity": 2,
+                 "message": "eval can be harmful", "line": 2, "column": 1}]}]).encode(),
+             "CWE-95"),
+        )
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            empty_target = root / "empty-target"
+            empty_target.mkdir()
+            for name, target, manifest, needle, report, citation in cases:
+                self.assertTrue(ADAPTERS[name].is_applicable(str(target)))
+                self.assertFalse(ADAPTERS[name].is_applicable(str(empty_target)))
+                self.assertIn(needle, (target / manifest).read_text())
+                marker = root / (name + ".invoked")
+                # A real child process validates the argv and fixture bytes before
+                # returning planted scanner output. No scanner or network starts.
+                script = """#!/usr/bin/env python3
+import pathlib, sys
+args = sys.argv[1:]
+target = pathlib.Path({target!r})
+pathlib.Path({marker!r}).write_text(repr(args))
+if {name!r} == 'pip-audit':
+    assert '--requirement' in args and str(target) not in args
+    assert '--format=json' in args and '--desc=on' in args
+    assert {needle!r} in pathlib.Path(args[args.index('--requirement') + 1]).read_text()
+elif {name!r} == 'npm-audit':
+    assert args == ['audit', '--json', '--prefix', str(target)]
+    assert {needle!r} in (target / {manifest!r}).read_text()
+else:
+    assert '--no-config-lookup' in args and '--format' in args
+    assert args[-1] == str(target.resolve())
+    assert {needle!r} in (target / {manifest!r}).read_text()
+pathlib.Path({marker!r}).write_text('called')
+sys.stdout.buffer.write({report!r})
+sys.exit(1)
+""".format(target=str(target), name=name,
+               needle=needle, manifest=manifest, marker=str(marker), report=report)
+                executable = bin_dir / {"pip-audit": "pip-audit", "npm-audit": "npm",
+                                        "eslint-security": "eslint"}[name]
+                executable.write_text(script)
+                executable.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+                                               "TMPDIR": d}), mock.patch.object(tempfile, "tempdir", d):
+                for name, target, _, _, _, citation in cases:
+                    adapter = ADAPTERS[name]
+                    raw, rc = adapter.invoke(str(target))
+                    self.assertEqual(rc, 1, name)
+                    self.assertEqual((root / (name + ".invoked")).read_text(), "called", name)
+                    findings = adapter.parse(raw, "g1")
+                    self.assertEqual(len(findings), 1, name)
+                    cited = findings[0]["citations"]
+                    self.assertIn(citation, cited.get("cve", []) + cited.get("cwe", []))
+                    self.assertEqual(findings[0]["source"], "tool:" + name)
 
 
 if __name__ == "__main__":
