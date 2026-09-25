@@ -216,8 +216,15 @@ narrowing is refused at every depth there. Those comparisons are case- and norma
 well as byte-exact, so `Grep <root>/src` cannot walk past a recorded `<root>/Src/x.txt` on a
 case-insensitive volume (APFS, HFS+, NTFS) — folding a DENIAL can only over-deny, and the grant
 itself is never folded, since that would admit `/REPO/x` under a `/repo` grant. A clean tree is
-unaffected: nothing recorded, nothing denied. Two limits, stated: past 256 recorded files the walk
-stops and the grant records the granted DIRECTORY itself, which denies every directory `Grep`/`Glob`
+unaffected: nothing recorded, nothing denied. So is a tree whose links all sit INSIDE the review root
+(#1917) — the walk counts the in-tree names of each inode and records a file only when its link
+count EXCEEDS them, so a `cp -al` fixture or a pnpm store keeps its directory `Grep`, every name for
+that content being in the tree the driver measured, while a `git clone --local` store does not,
+its partner inodes living in the source repository, which is the class this fence exists for. A
+multiply-linked FIFO or socket is skipped for the same reason a directory is: no out-of-tree content
+rides on one. Two limits, stated: past 256 recorded files (the cap bounds findings, not files walked
+— a clean million-file target pays the whole walk on every `driver setup`) the grant records the
+granted DIRECTORY itself, which denies every directory `Grep`/`Glob`
 beneath it until the tree is fixed; and a link planted AFTER the grant is issued is not in the list
 — the tree is static for the length of a run, and a hook may not walk the target on every call.
 `driver setup` discloses either case on stderr with the count and the first offending path, and
