@@ -14,6 +14,7 @@ from unittest import mock
 
 import pytest
 
+import _test_helpers as helpers
 from _test_helpers import FakePopen, fake_aws_key, first, only
 import scripts.ingest_tools as ingest_tools
 import scripts.run_tools as run_tools
@@ -1372,9 +1373,13 @@ class TestEverySanitizerCallGoesThroughTheHelper(unittest.TestCase):
                             "<unrelated>"), [])
 
 
-@unittest.skipUnless(Requirement is not None, "packaging is not importable")
 class TestTheParserCrossCheckIsLive(unittest.TestCase):
     """Vacuity guard: the helper's assertion must be able to FAIL."""
+
+    @classmethod
+    def setUpClass(cls):
+        if Requirement is None:
+            helpers.skip_or_fail(unittest.TestCase(), "packaging is not importable")
 
     def test_a_line_packaging_rejects_would_fail_the_helper(self):
         with self.assertRaises(Exception):
@@ -1386,6 +1391,22 @@ class TestTheParserCrossCheckIsLive(unittest.TestCase):
 
     def test_ordinary_kept_lines_pass(self):
         _assert_every_kept_line_parses(['pkg==1.0 ; python_version < "3.12"'])
+
+
+class TestParserCrossCheckPrecondition(unittest.TestCase):
+    def test_missing_packaging_fails_when_integration_is_required(self):
+        with mock.patch.dict(os.environ, {helpers.REQUIRE_INTEGRATION_ENV: "1"}), \
+                mock.patch(__name__ + ".Requirement", None):
+            with self.assertRaises(AssertionError) as caught:
+                TestTheParserCrossCheckIsLive.setUpClass()
+        self.assertIn("packaging is not importable", str(caught.exception))
+        self.assertIn(helpers.REQUIRE_INTEGRATION_ENV, str(caught.exception))
+
+    def test_missing_packaging_skips_outside_strict_mode(self):
+        with mock.patch.dict(os.environ, {helpers.REQUIRE_INTEGRATION_ENV: "0"}), \
+                mock.patch(__name__ + ".Requirement", None):
+            with self.assertRaises(unittest.SkipTest):
+                TestTheParserCrossCheckIsLive.setUpClass()
 
 
 class TestOnlyRealFilesAreCandidates(unittest.TestCase):
