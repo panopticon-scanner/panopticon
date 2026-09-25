@@ -7,6 +7,33 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A batch record names its MACHINE, and one record can be discarded without
+  the run (#1912).** The owner stamp `driver loop` recovers a crashed batch from
+  carried the pid and `socket.gethostname()`, and a hostname is not a machine
+  identity: on macOS the same laptop answers `mac.local`, `mac.lan` or a
+  DHCP-assigned name depending on the network it woke up on, so a crash and the
+  resume after it saw two different names — the resume read its own record as
+  another machine's and offered `--reset`, the whole run of paid cells, as the
+  only way forward. The record now carries a hardware machine id
+  (`uuid.getnode()`, absent when that function falls back to its random
+  multicast value) beside the hostname, and either id matching means this
+  machine; a record from before the field, or one whose field is unusable, is
+  judged by its hostname exactly as before. Comparing the first DNS label is
+  deliberately NOT done — this repo lives on a mounted volume, so `mac.office`
+  and `mac.home` really can be two machines sharing one run folder.
+  **Operator-visible:** `driver loop --discard-batch N` is a new, narrow remedy
+  for the two refusals that mean "the liveness question could not be answered"
+  (another machine / no owner stamp). After confirming no other loop is working
+  on the folder, it gives record `batch-N.json` exactly the rollback a dead
+  owner's gets — artifacts deleted, entries ledgered as cancelled/rolled back,
+  attempts refunded, record unlinked — and the invocation carries on with the
+  rest of the run. It applies to that one number: a live owner still refuses (no
+  flag can help), a dead one needs no acceptance, a second unreadable record
+  still refuses, and an absent one is an error naming the folder. Both refusals
+  now name `--discard-batch N` first and `--reset` second, the acceptance is
+  recorded in `discarded-batches.json` in the run folder (with the owner stamp as
+  found) and counted on the run manifest, and `--discard-batch` with `--reset` is
+  refused as contradictory.
 - **`driver setup` refuses an unenforceable setup-scan (#1737, AGT-B1D).** The
   one dispatch that reads the whole untrusted tree was the only role with no
   registered shell: its tool grant was whatever the host hands a
