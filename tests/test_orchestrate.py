@@ -3944,7 +3944,8 @@ class TestABudgetCapMidBatch(LoopCase):
         # is itself a ledger LINE, and the fixture's gate counts lines, so it
         # is one looser for as long as that row is on disk.
         self.assertGreaterEqual(len(self.FLOOR) - len(reviews), 2, reviews)
-        self.assertIn("stopped launching after the --max-budget-usd cap", err)
+        self.assertIn("stopped launching after an unreadable ledger cost", err)
+        self.assertNotIn("--max-budget-usd cap", err)
         self.assertEqual("error", status["status"], status)
         self.assertIn("ledger corrupt at line", status["message"])
         self.assertIn("refusing to spend past an unreadable cost", status["message"])

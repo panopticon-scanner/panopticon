@@ -169,17 +169,19 @@ class _BudgetStop:
 
     def __init__(self, ledger, budget):
         self.ledger, self.budget = ledger, budget
-        self.stopped = False
+        self.stopped = ""               # which rule fired, in the loop's own words
 
     def __call__(self):
         if self.budget is None:
             return False
         try:
             over = self.ledger.total_cost() >= self.budget
-        except money.LedgerCorrupt:
-            over = True                  # fail CLOSED, never raise -- see above
-        if over:
-            self.stopped = True
+        except Exception:  # noqa: BLE001 -- fail CLOSED on ANY read fault, not only
+            # LedgerCorrupt: a non-UTF-8 byte raises UnicodeDecodeError out of
+            # `total_cost`, and iter_batch reads a raising stop as "carry on".
+            over, self.stopped = True, "an unreadable ledger cost"
+        if over and not self.stopped:
+            self.stopped = "the --max-budget-usd cap"
         return over
 
 
@@ -525,7 +527,7 @@ def loop(args):
                 if tally.stopped_uniform:
                     rule = "%d identical instant failure(s)" % tally.stopped_uniform
                 elif over_budget.stopped:
-                    rule = "the --max-budget-usd cap"
+                    rule = over_budget.stopped
                 else:
                     rule = "%d host-class failure(s)" % (tally.stopped_at or 0)
                 print("driver loop: stopped launching after %s; %d of %d entries "
