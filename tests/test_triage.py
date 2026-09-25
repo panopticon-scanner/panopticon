@@ -1,4 +1,7 @@
 import json, os, shutil, tempfile, unittest
+from pathlib import Path
+import subprocess
+import sys
 from unittest import mock
 
 import pytest
@@ -1161,3 +1164,22 @@ def test_valid_remote_freshness_compares_instants(tmp_path, timestamp, expected)
     row = fix_row(status='approved')
     assert durable_apply(tmp_path, [row], timed) == expected
     assert len(runner.comments) == expected[0]
+
+
+class TestStandaloneImports(unittest.TestCase):
+    def test_help_without_site_packages_from_unrelated_cwd(self):
+        script = Path(triage.__file__).resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(os.environ)
+            env.pop("PYTHONPATH", None)
+            result = subprocess.run(
+                [sys.executable, "-S", str(script), "--help"],
+                cwd=directory, env=env, capture_output=True, text=True, timeout=15,
+                check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("usage:", result.stdout)
+            self.assertIn("apply", result.stdout)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_config_path_preserves_the_legacy_value(self):
+        self.assertEqual(triage.CONFIG_PATH, os.path.join(".panopticon", "config.json"))

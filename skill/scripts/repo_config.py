@@ -13,13 +13,11 @@ unknown top-level keys are disclosed and ignored. `.panopticon/groups.yml`
 is never read here: a tree that still carries one and no root file gets
 `legacy_message`, and `setup_flow.migrate_config` is the only reader of it.
 
-Stdlib + yaml only, so every module in the tree can import it without a cycle.
+Importing names needs only the stdlib; read_document loads yaml when parsing.
 """
 import os
 import stat
 from collections import namedtuple
-
-import yaml
 
 CONFIG_NAMES = ("panopticon.yml", ".panopticon.yml")
 DRAFT_NAME = "panopticon.yml.draft"
@@ -112,6 +110,8 @@ def read_document(review_root):
         return Document(res.path, None,
                         ["%s exceeds %d bytes; refused" % (res.path, MAX_CONFIG_BYTES)],
                         disclosures)
+    import yaml
+
     try:
         doc = yaml.safe_load(data.decode("utf-8"))
     # ValueError as well as YAMLError: PyYAML resolves an int scalar with
