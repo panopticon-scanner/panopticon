@@ -3878,9 +3878,13 @@ class TestABudgetCapMidBatch(LoopCase):
                 self._await_ledger(index)
             result = super().run_entry(entry, env)
             if self.poison and entry["id"] == self.order[0]:
-                with open(os.path.join(self.run_dir, base.LEDGER_FILE), "a",
-                          encoding="utf-8") as fh:
-                    fh.write(self.poison + "\n")
+                path = os.path.join(self.run_dir, base.LEDGER_FILE)
+                if isinstance(self.poison, bytes):      # a byte the decoder refuses
+                    with open(path, "ab") as fh:
+                        fh.write(self.poison + b"\n")
+                else:
+                    with open(path, "a", encoding="utf-8") as fh:
+                        fh.write(self.poison + "\n")
             return result
 
     def _run(self, d, floor, runner, *extra):
@@ -3949,6 +3953,21 @@ class TestABudgetCapMidBatch(LoopCase):
         self.assertEqual("error", status["status"], status)
         self.assertIn("ledger corrupt at line", status["message"])
         self.assertIn("refusing to spend past an unreadable cost", status["message"])
+
+    def test_a_cost_it_cannot_decode_stops_launching_rather_than_carrying_on(self):
+        # The catch has to be as wide as the promise: a non-UTF-8 byte in the
+        # ledger raises UnicodeDecodeError out of `total_cost`, not
+        # LedgerCorrupt, and `iter_batch` would read that raise as "carry on"
+        # -- the gate failing OPEN for exactly the case it exists for.
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Paid(self.FLOOR, poison=b'{"cost_usd": "0.01", "entry_id": "\xff"}')
+        status, err = self._run(d, floor, runner)
+        reviews = self._reviews(runner)
+        self.assertLess(len(reviews), len(self.FLOOR), reviews)
+        self.assertGreaterEqual(len(self.FLOOR) - len(reviews), 2, reviews)
+        self.assertIn("stopped launching after an unreadable ledger cost", err)
+        self.assertNotIn("--max-budget-usd cap", err)
+        self.assertEqual("error", status["status"], status)
 
 
 class TestTheOutputSchemaShapeProof(LoopCase):
