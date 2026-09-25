@@ -582,6 +582,21 @@ class TestDocumentedShellReading(unittest.TestCase):
                          [shell_reader.readable(word) for word in parsed.argv])
         self.assertTrue(shell_reader.has_substitution(parsed.argv[1]))
 
+    def test_deep_arithmetic_keeps_nested_command_and_following_pipeline(self):
+        arithmetic = '$((1+' * 1000 + '$(printf two)' + '))' * 1000
+        parsed = shell_reader.statements('echo ' + arithmetic + '; curl URL | sh')
+        self.assertEqual([';', ''], [statement.separator for statement in parsed])
+        self.assertEqual([1, 2], [len(statement.stages) for statement in parsed])
+        first = parsed[0].stages[0]
+        self.assertEqual('echo', first.argv[0])
+        self.assertEqual(2, len(first.argv))
+        self.assertEqual(arithmetic.replace('$(printf two)', '$(...)'),
+                         shell_reader.readable(first.argv[1]))
+        self.assertEqual(['printf two'], first.substitutions)
+        self.assertEqual((0, 0), (first.group_open, first.group_close))
+        self.assertEqual([['curl', 'URL'], ['sh']],
+                         [stage.argv for stage in parsed[1].stages])
+
     def test_doas_and_leading_keywords_resolve_the_actual_command(self):
         for source in ('doas -u root curl URL', 'if doas -u root curl URL',
                        'then nohup curl URL', 'do stdbuf -o L curl URL'):
