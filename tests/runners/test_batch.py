@@ -18,26 +18,20 @@ and `uuid.getnode`, which belong to the whole interpreter and which pytest
 itself calls. `uuid.getnode` is patched only in the class that is ABOUT
 `machine_id`, where it is the thing under test.
 """
+import json
 import os
 import shutil
-import subprocess
-import sys
 import tempfile
 import unittest
 import uuid
 from unittest import mock
 
 import scripts.runners.batch as batch_mod
+import scripts.write_guard_hook as write_guard_hook
+from _test_helpers import dead_pid
 
 # getnode()'s documented random fallback: the multicast bit, set.
 RANDOM_NODE = 0x010203040506 | 0x010000000000
-
-
-def _dead_pid():
-    """A pid that is certainly not running: a child spawned and reaped."""
-    proc = subprocess.Popen([sys.executable, "-c", ""])
-    proc.wait()
-    return proc.pid
 
 
 class TestTheMachineId(unittest.TestCase):
@@ -67,10 +61,23 @@ class TestTheMachineId(unittest.TestCase):
                 with mock.patch.object(uuid, "getnode", return_value=node):
                     self.assertIsNone(batch_mod.machine_id())
 
-    def test_this_machine_answers_the_same_way_twice(self):
-        # Unpatched, on whatever machine the suite is running on: the point of
-        # the field is that it does NOT move between two calls.
-        self.assertEqual(batch_mod.machine_id(), batch_mod.machine_id())
+    def test_the_stamp_is_twelve_lowercase_hex_digits_whatever_the_node(self):
+        # The FORMAT is the contract, because the stamp is compared as a string:
+        # one spelling per number, lower case, always twelve wide. (Two calls
+        # agreeing is not a contract -- `uuid.getnode` caches in `uuid._node`,
+        # so CPython guarantees that whatever this module does. Review round 1,
+        # finding 13.)
+        # Every node here has bit 40 CLEAR -- `0xab...` would be the multicast
+        # fallback and `machine_id()` is None for it (pinned two tests up).
+        for node, expected in ((0x1, "000000000001"),
+                               (0xaccdef012345, "accdef012345"),
+                               (0xACCDEF012345, "accdef012345"),
+                               (0xfeffffffffff, "feffffffffff")):
+            with self.subTest(node=node):
+                with mock.patch.object(uuid, "getnode", return_value=node):
+                    stamp = batch_mod.machine_id()
+                self.assertEqual(expected, stamp)
+                self.assertRegex(stamp, r"^[0-9a-f]{12}$")
 
 
 class TestTheOwnerStampNamesTheMachineAndNotOnlyTheHostname(unittest.TestCase):
@@ -80,7 +87,7 @@ class TestTheOwnerStampNamesTheMachineAndNotOnlyTheHostname(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.dead = _dead_pid()
+        cls.dead = dead_pid()
 
     def _doc(self, **fields):
         doc = {"pid": os.getpid(), "host": "mac.local", "machine": self.MINE}
@@ -170,6 +177,79 @@ class TestTheRecordCarriesBothIds(unittest.TestCase):
         batch = batch_mod.Batch(self.root, 1, "review", [])
         with mock.patch.object(batch_mod, "machine_id", return_value=None):
             self.assertNotIn("machine", batch.document())
+
+
+class TestTheDiscardAcceptanceFile(unittest.TestCase):
+    """#1912: `record_discard`'s three documented properties (review round 1,
+    finding 6 -- each was deliberate and none was pinned).
+
+    The file sits in the run folder, INSIDE the reviewed tree, so both its read
+    and its write are boundary operations.
+    """
+
+    OWNER = {"pid": 4242, "host": "some-other-box", "machine": "00deadbeef00",
+             "state": batch_mod.OWNER_FOREIGN}
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.path = batch_mod.discarded_path(self.root)
+
+    def _read(self):
+        with open(self.path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def _victim(self):
+        victim = os.path.join(self.root, "victim.txt")
+        with open(victim, "w", encoding="utf-8") as fh:
+            fh.write("PRECIOUS")
+        return victim
+
+    def test_two_acceptances_in_one_run_are_appended_not_replaced(self):
+        first = batch_mod.record_discard(self.root, 1, self.OWNER,
+                                         at="2026-01-01T00:00:00Z")
+        second = batch_mod.record_discard(self.root, 4, dict(self.OWNER, pid=77),
+                                          at="2026-01-01T00:05:00Z")
+        self.assertEqual([first, second], self._read())
+        self.assertEqual([1, 4], [row["batch"] for row in self._read()])
+        self.assertEqual(self.OWNER, self._read()[0]["owner"])
+
+    def test_a_symlink_at_the_path_is_replaced_never_written_through(self):
+        # The name is fixed and the folder is the target's to commit into, so
+        # this link is the target's to plant. `os.replace` renames over the LINK
+        # (rename does not dereference) and the read side does not follow it.
+        victim = self._victim()
+        os.symlink(victim, self.path)
+        batch_mod.record_discard(self.root, 2, self.OWNER)
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual("PRECIOUS", fh.read())
+        self.assertFalse(os.path.islink(self.path))
+        self.assertEqual([2], [row["batch"] for row in self._read()])
+
+    def test_a_link_the_read_would_follow_contributes_nothing(self):
+        # ...and a link to a REAL list is not read back either: whatever it
+        # pointed at is not this run's acceptance history.
+        planted = os.path.join(self.root, "elsewhere.json")
+        write_guard_hook._atomic_write_json(planted, [{"batch": 99}])
+        os.symlink(planted, self.path)
+        batch_mod.record_discard(self.root, 3, self.OWNER)
+        self.assertEqual([3], [row["batch"] for row in self._read()])
+        self.assertEqual([{"batch": 99}], json.load(open(planted, encoding="utf-8")))
+
+    def test_a_file_that_is_not_a_json_list_is_started_over(self):
+        for planted in ('{"batch": 1}', "not json at all", "", "17", '"text"'):
+            with self.subTest(planted=planted):
+                with open(self.path, "w", encoding="utf-8") as fh:
+                    fh.write(planted)
+                batch_mod.record_discard(self.root, 5, self.OWNER)
+                self.assertEqual([5], [row["batch"] for row in self._read()])
+
+    def test_the_acceptance_carries_the_stamp_and_a_utc_timestamp(self):
+        entry = batch_mod.record_discard(self.root, 6, self.OWNER)
+        self.assertEqual({"batch", "owner", "accepted_at"}, set(entry))
+        self.assertEqual(self.OWNER, entry["owner"])
+        self.assertRegex(entry["accepted_at"],
+                         r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
 if __name__ == "__main__":

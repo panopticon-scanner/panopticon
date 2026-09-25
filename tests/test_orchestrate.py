@@ -9,7 +9,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -32,6 +31,7 @@ import scripts.runners.kimi as kimi_runner
 import scripts.runners.outage as outage
 import scripts.probes.shape as shape_probe
 import scripts.write_guard_hook as write_guard_hook
+from _test_helpers import dead_pid
 from conftest import docker_probe_runner, write_host_evidence
 from scripts import hosts
 
@@ -722,7 +722,7 @@ class TestHeadlessLoop(LoopCase):
         with open(outside, encoding="utf-8") as fh:
             self.assertEqual("keep", fh.read())
 
-        self._stamp_crash_owner(runner.run_dir, pid=self._dead_pid())
+        self._stamp_crash_owner(runner.run_dir, pid=dead_pid())
         stale_doc = runio._load_json(manifest)
         refused_doc = copy.deepcopy(stale_doc)
         refused_doc["entries"][0]["artifacts"].append(outside)
@@ -762,11 +762,8 @@ class TestHeadlessLoop(LoopCase):
         with open(outside, encoding="utf-8") as fh:
             self.assertEqual("keep", fh.read())
 
-    def _dead_pid(self):
-        """A pid that is certainly not running: a child spawned and reaped."""
-        proc = subprocess.Popen([sys.executable, "-c", ""])
-        proc.wait()
-        return proc.pid
+    # `_dead_pid` was copied verbatim into tests/runners/test_batch.py; it is
+    # `_test_helpers.dead_pid` now, imported by both (review round 1, finding 12).
 
     def _stamp_crash_owner(self, run_dir, **fields):
         """Rewrite every leftover crash record's owner stamp (#1698).
@@ -801,7 +798,7 @@ class TestHeadlessLoop(LoopCase):
                                return_value="simulated process loss"):
             self._interrupt_mid_batch(d, floor, runner)
         # ...and that process is GONE: the record it left names a dead pid.
-        self._stamp_crash_owner(runner.run_dir, pid=self._dead_pid())
+        self._stamp_crash_owner(runner.run_dir, pid=dead_pid())
         return runner
 
     def test_resume_rolls_back_a_crashed_batch_before_reading_done_artifacts(self):
@@ -1258,7 +1255,7 @@ class TestHeadlessLoop(LoopCase):
         attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
         # the operator clears the obstruction; a LATER loop finishes the job
         shutil.rmtree(obstructed[0])
-        self._stamp_crash_owner(run_dir, pid=self._dead_pid())
+        self._stamp_crash_owner(run_dir, pid=dead_pid())
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             orchestrate.loop_batch.recover_stale(
@@ -1339,7 +1336,7 @@ class TestHeadlessLoop(LoopCase):
         rows = ledger_mod.Ledger(crashed.run_dir).lines()
         # #1698: flagging the record took it over, so it now names THIS
         # process. The next loop is a later one, and that one died too.
-        self._stamp_crash_owner(crashed.run_dir, pid=self._dead_pid())
+        self._stamp_crash_owner(crashed.run_dir, pid=dead_pid())
         with contextlib.redirect_stderr(io.StringIO()):
             orchestrate.loop_batch.recover_stale(d, req, "claude", "headless")
         # it FINISHED the file removals and nothing else: the rows and the
