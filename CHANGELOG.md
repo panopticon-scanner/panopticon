@@ -82,7 +82,7 @@ evidence exposed.
   entries outside the `dirs` grant — names, not content, since a following
   `Read` still meets the per-file rule, but it was the one read primitive whose
   second argument nothing looked at. Over a granted directory a pattern that is
-  absent, non-string, absolute, `~`-rooted or holds a `..` segment is now
+  absent, empty, non-string, absolute, `~`-rooted or holds a `..` segment is now
   denied. `Grep`'s pattern is a regex over content and stays unadjudicated.
 - **In-tree hard links keep their directory `Grep` (#1917).** The walk behind a
   directory read grant recorded every regular file with `st_nlink > 1`, so a
@@ -100,7 +100,9 @@ evidence exposed.
   hard link inside a directory grant naming a file outside it, records it with
   the driver's own walker, and requires the directory `Grep` to be refused **by
   the hard-link rule** rather than merely denied. A volume that cannot plant a
-  link makes that sub-check `unknown` instead of refuting a healthy host.
+  link — or that plants one and then reports `st_nlink=1`, as some FUSE and
+  network mounts do — makes that sub-check `unknown` instead of refuting a
+  healthy host.
 - **The guide is an index plus one chapter per section.**
   `skill/docs/PANOPTICON.md` keeps Overview, Required sub-skills, Modes and
   Global flags plus a Contents list; each H2 lives in `skill/docs/guide/`

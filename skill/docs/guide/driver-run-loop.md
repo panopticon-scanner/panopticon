@@ -212,17 +212,17 @@ files beneath it in the entry's scope, and the hook denies a directory `Grep`/`G
 recorded path lies at, above or below the argument. A link BELOW the argument is named in the
 denial, which says to grep a narrower directory or a file by its path; a recorded path AT or ABOVE
 it means the grant is closed whole and the denial says to Read files by name instead, because
-narrowing is refused at every depth there. `Glob`'s second argument is adjudicated too (#1917), since
-a pattern is a PATH pattern expanded against `path`: over a granted directory, a pattern that is
-absent, absolute, `~`-rooted or holds a `..` segment is denied, so `Glob(path=<granted dir>,
-pattern="../Src/*")` can no longer name entries outside the grant — names, not content, but a
+narrowing is refused at every depth there. `Glob`'s second argument is adjudicated too (#1917),
+since a pattern is a PATH pattern expanded against `path`: over a granted directory, a pattern that
+is absent, empty, absolute, `~`-rooted or holds a `..` segment is denied, so `Glob(path=<granted
+dir>, pattern="../Src/*")` can no longer name entries outside the grant — names, not content, but a
 confined cell does not get to enumerate the tree. `Grep`'s pattern is a regex over content and stays
 unadjudicated. Those comparisons are case- and normalization-folded as
 well as byte-exact, so `Grep <root>/src` cannot walk past a recorded `<root>/Src/x.txt` on a
 case-insensitive volume (APFS, HFS+, NTFS) — folding a DENIAL can only over-deny, and the grant
 itself is never folded, since that would admit `/REPO/x` under a `/repo` grant. A clean tree is
-unaffected: nothing recorded, nothing denied. So is a tree whose links all sit INSIDE the review root
-(#1917) — the walk counts the in-tree names of each inode and records a file only when its link
+unaffected: nothing recorded, nothing denied. So is a tree whose links all sit INSIDE the review
+root (#1917) — the walk counts the in-tree names of each inode and records a file only when its link
 count EXCEEDS them, so a `cp -al` fixture or a pnpm store keeps its directory `Grep`, every name for
 that content being in the tree the driver measured, while a `git clone --local` store does not,
 its partner inodes living in the source repository, which is the class this fence exists for. A

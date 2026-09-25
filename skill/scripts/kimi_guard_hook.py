@@ -37,7 +37,12 @@ reads/writes DENY.
 KIMI PAYLOAD. Kimi's PreToolUse payload names the tool in ``tool_name`` and
 carries ``tool_input`` whose path field is ``path`` for Read, Write, Edit,
 Grep and Glob alike (measured on kimi-code 0.42.0 -- NOT Claude's
-``file_path``). The deny protocol is the shared JSON one: print
+``file_path``). Glob's SECOND argument is ASSUMED to arrive as ``pattern``
+(#1917, adjudicated by ``_glob_pattern_climbs``): UNMEASURED on kimi-code, so
+the next real launch should check it -- under another name every Glob over a
+directory grant is denied as ``pattern None``, fail-closed but a functional
+break of the setup scan, and puzzling from the denial alone. The deny protocol
+is the shared JSON one: print
 ``hookSpecificOutput.permissionDecision = "deny"`` on stdout and exit 0.
 
 FAIL-CLOSED, AND THE PLATFORM CAVEAT. Kimi hooks fail OPEN on script error or

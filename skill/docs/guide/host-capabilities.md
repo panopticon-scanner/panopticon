@@ -41,18 +41,20 @@ deliberately does not. One claude behaviour change follows from this (R-F4-1): a
 claude dispatch used to inherit the calling session's model and now names the role's profile model
 instead; an **enforced** dispatch is unchanged, since the shell it dispatches into already binds
 that model. `read_scope_confined` is probed by `read-guard-armed` (#1344 plan 5): the host arms the
-read guard in a sandbox, binds four fake subagents through fake transcripts — three in the Agent-tool
-layout, one in the Workflow-tool layout the shipped dispatch workflow relies on — and drives
-seventeen payloads through it — an in-scope Read allowed, an outside Read denied, Grep of an in-scope
-file allowed, a directory Grep denied, Glob denied, an unbound subagent denied, the orchestrator
-never confined, a directory-scoped entry allowed to Grep and Glob inside its directory but not to
-Read outside it, the workflow-bound subagent allowed inside its scope and denied outside it, a clean
-subdirectory of a grant that recorded a hard link elsewhere still greppable, and four headless
-env-binding payloads. It then plants a hard link inside a directory grant, naming a file outside it,
+read guard in a sandbox, binds four fake subagents through fake transcripts — three in the
+Agent-tool layout, one in the Workflow-tool layout the shipped dispatch workflow relies on — and
+drives seventeen payloads through it — an in-scope Read allowed, an outside Read denied, Grep of an
+in-scope file allowed, a directory Grep denied, Glob denied, an unbound subagent denied, the
+orchestrator never confined, a directory-scoped entry allowed to Grep and Glob inside its directory
+but not to Read outside it, the workflow-bound subagent allowed inside its scope and denied outside
+it, a clean subdirectory of a grant that recorded a hard link elsewhere still greppable, and four
+headless env-binding payloads. It then plants a hard link inside a directory grant, naming a file
+outside it,
 records it with the driver's own walker and requires the directory `Grep` to be refused **by the
 hard-link rule** — the wording, not just a denial, since every entry there denies that path for some
-other reason too, and a volume that cannot plant a link reads `unknown` rather than refuting a
-healthy host (#1917). Any row that disagrees refutes the capability and names the row. In
+other reason too, and a volume that cannot plant a link — or that plants one and then reports
+`st_nlink=1` — reads `unknown` rather than refuting a healthy host (#1917). Any row that disagrees
+refutes the capability and names the row. In
 headless mode the two guard probes prove the file the runner will arm —
 `runs/<tag>/host-settings.json` — rather than the session root's settings file, so a headless run
 cannot be refuted by a session root it never uses. Each resolves to `proven`, `refuted` or

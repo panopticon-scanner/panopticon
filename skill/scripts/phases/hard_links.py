@@ -50,7 +50,9 @@ def scope(files=(), dirs=(), reads=(), hard_linked=None):
     `hard_linked` belongs to `dirs` (#1683): the files beneath the granted
     directory that carry a link OUTSIDE it, found by `hard_links_under` ONCE
     because a PreToolUse hook may not walk the tree on every Grep. The hooks
-    refuse a directory-argument Grep/Glob that would traverse one.
+    refuse a directory-argument Grep/Glob that would traverse one. Walk the
+    directory this grant NAMES: a walk over a larger tree counts names the grant
+    does not cover as in-tree, and would drop them.
 
     A `dirs` grant must ANSWER for it: omitting the keyword raises, an empty
     list is the answer for a clean tree. That the one builder issuing such a
@@ -79,6 +81,13 @@ def _absent(exc):
 def hard_links_under(root, cap=CAP):
     """(paths, overflowed): beneath `root`, the regular files with a link
     OUTSIDE it.
+
+    `root` must be the directory the grant names: a walk over a LARGER tree
+    counts names the grant does not cover as in-tree, and would drop them. That
+    invariant is new with the in-tree count (#1917) -- the old walk was
+    conservative for any grant contained in the walked tree -- and every caller
+    today satisfies it (`phases/setup.py` walks the review root and grants it;
+    both probes walk the directory they grant).
 
     `paths` is sorted and realpath-normalised. `overflowed` is True when MORE
     than `cap` files were recorded, in which case `paths` holds the first `cap`
