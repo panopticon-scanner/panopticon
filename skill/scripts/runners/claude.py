@@ -24,6 +24,76 @@ import scripts.runners.schema as schema_argv_rules
 # tests/test_host_launch_guard.py walks the AST for; only its VALUE changed.
 DEFAULT_RUNNER = None
 
+# #1753 (AGT-4053314873). The tool surface of an UNENFORCED launch -- the
+# `--model` argv, which binds no registered shell and therefore has no
+# host-enforced `tools:` grant behind it. `claude -p` denies a tool that needs
+# permission when no allow rule matches (that is what feeds
+# `permission_denials`), but `--setting-sources user` deliberately KEEPS the
+# OPERATOR's user-scope `permissions.allow`, where a `Bash(*)` convenience rule
+# is ordinary -- so without this the operator's own shortcuts reach a reviewer
+# whose whole job is reading hostile content. Deny rules beat allow rules, which
+# is the point. Kimi closes the same case from the other side
+# (`runners/kimi_home.disabled_tools`): its config offers a deny-list and no
+# allow-list, so it denies the CLI's whole vocabulary minus the templates'
+# grants.
+#
+# WHY AN EXPLICIT LIST rather than a derived one. Claude's CLI publishes no
+# machine-readable tool vocabulary to subtract the grants FROM -- `--help`
+# documents flags, not tool names -- so a derived list would be a hand-kept
+# vocabulary wearing a computation's clothes. Named here instead, grouped by
+# what each name would hand a reviewer, every one of them present in the 2.1.276
+# bundle:
+#   * code execution: Bash, BashOutput, KillShell, PowerShell, REPL, Workflow
+#     (`--restricted`'s own help names the first and the middle two as the
+#     "code-running tools"; Workflow runs a script)
+#   * delegation, i.e. a second agent under nobody's tool policy: Agent, Task,
+#     TaskStop, Monitor, SendMessage
+#   * egress and off-machine publication: WebFetch, WebSearch, Artifact,
+#     ArtifactComments, ArtifactData, ArtifactCheck
+#   * writes this run's write guard does not mediate: MultiEdit, NotebookEdit,
+#     TodoWrite (the guard's matcher is `Write|Edit|NotebookEdit`; naming the
+#     near-misses here means no reliance on how the host folds a matcher)
+#   * READS the read guard never sees: LS, NotebookRead. The sharp ones. The
+#     guard's matcher is `Read|Grep|Glob`, and a read-only builtin needs no
+#     permission, so an allow rule is not even required to reach one -- this is
+#     the Claude analogue of the ReadMediaFile hole `kimi_home.disabled_tools`
+#     was written to close.
+#   * worktrees: EnterWorktree, ExitWorktree
+#
+# THE RESIDUAL, stated plainly: a tool name that is NOT in this tuple and that
+# the operator has allowed at user scope is still reachable by an unenforced
+# reviewer -- a list cannot deny what it has not heard of, and a CLI upgrade is
+# exactly how a new name arrives. MCP tools are not part of that residual:
+# `command` passes `--strict-mcp-config` with no `--mcp-config`, so an
+# unenforced reviewer has no MCP servers at all. The ENFORCED launch needs none
+# of this: `--agent` resolves a registered `panopticon-*` shell whose `tools:`
+# frontmatter is the host-enforced allow-list, and an allow-list closes the
+# names nobody has thought of yet.
+UNENFORCED_DENIED_TOOLS = (
+    "Bash", "BashOutput", "KillShell", "PowerShell", "REPL", "Workflow",
+    "Agent", "Task", "TaskStop", "Monitor", "SendMessage",
+    "WebFetch", "WebSearch", "Artifact", "ArtifactComments", "ArtifactData",
+    "ArtifactCheck",
+    "MultiEdit", "NotebookEdit", "TodoWrite",
+    "LS", "NotebookRead",
+    "EnterWorktree", "ExitWorktree",
+)
+# ONE argv token, and the `=` is load-bearing. MEASURED on 2.1.276:
+# `--disallowedTools` is VARIADIC ("Comma or space-separated list of tool names
+# to deny"), so the space form eats every following non-flag token -- and the
+# prompt is the last token on this argv. `claude -p --output-format json
+# --max-turns 2 --disallowedTools Bash "<prompt>"` exits 1 with no envelope at
+# all ("Error: Input must be provided either through stdin or as a prompt
+# argument when using --print"), and so does a comma list passed as a second
+# token. `--disallowedTools=Bash,Glob "<prompt>"` runs, and the reviewer
+# reports "I have Read available; Bash and Glob are not in my current tool
+# set." A single token cannot swallow a neighbour wherever it is placed, which
+# is also what keeps a later argv reordering from silently re-opening the
+# surface. Same class of shape bug as `--json-schema` taking the schema TEXT
+# and not a file (#1731, which cost run 14 a checkpoint): the `--help` probe
+# reads a flag's NAME and cannot see its arity.
+DENY_FLAG = "--disallowedTools=%s"
+
 
 def _measured_number(details, field):
     """A usable host measurement, never a malformed value or inferred zero."""
@@ -130,6 +200,15 @@ class Runner(base.HostRunner):
           as `.claude/commands/**`. Reviewers run registered `--agent` shells
           and invoke neither, so it costs nothing.
 
+        THE UNENFORCED BRANCH's tool surface (#1753). An `--agent` launch gets
+        its tool grant from the registered shell's `tools:` frontmatter, which
+        the host enforces; every other argv here gets
+        `UNENFORCED_DENIED_TOOLS` (above) as one `--disallowedTools=` token
+        instead, because `--setting-sources user` keeps the OPERATOR's
+        user-scope allow rules and those must not reach a reviewer that reads
+        hostile content. The enforced argv is left byte-identical: it is
+        measured behaviour and its shell is already the control.
+
         NEVER `--bare` or `--safe-mode`: both disable hooks, so either one
         would silently un-arm both guards while reading like hardening.
         """
@@ -151,8 +230,18 @@ class Runner(base.HostRunner):
         agent = base.registered_agent(entry, roles=self.roles)
         if entry.get("enforced") and agent:
             cmd += ["--agent", agent]
-        elif not entry.get("enforced") and entry.get("model"):
-            cmd += ["--model", entry["model"]]
+        else:
+            # Everything that is NOT an `--agent` launch is unenforced, and the
+            # deny-list covers all of it -- including the fall-through that
+            # binds no model either (an entry with no `model`, or the latent
+            # enforced-without-a-registered-shell case `run_entry` refuses
+            # before it can get here). "No shell" is what makes a launch
+            # unenforced; whether a model was named is a different question,
+            # and the branch that answers it is nested here rather than
+            # deciding the tool surface.
+            if not entry.get("enforced") and entry.get("model"):
+                cmd += ["--model", entry["model"]]
+            cmd.append(DENY_FLAG % ",".join(UNENFORCED_DENIED_TOOLS))
         # `--json-schema <schema>` takes the JSON text, not a file (see
         # `runners/schema.py` for the measurement and the run it cost).
         cmd += schema_argv_rules.schema_argv(self.OUTPUT_SCHEMA_FLAG, entry,
