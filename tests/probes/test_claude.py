@@ -1078,7 +1078,9 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("read-guard-armed", by)
             self.assertIn(session_root, detail)
-            self.assertIn("16 rows", detail)
+            # #1917 added the seventeenth row (a clean subdirectory of a grant
+            # that recorded a link elsewhere) beside the planted-link check.
+            self.assertIn("17 rows", detail)
 
     def test_it_does_not_require_the_guard_to_be_armed_right_now(self):
         from scripts import read_guard_hook
@@ -1135,6 +1137,52 @@ class TestReadGuardArmedProbe(unittest.TestCase):
                     self.assertEqual(hosts.REFUTED, state)
                     self.assertEqual("read-guard-armed", by)
                     self.assertIn("the guard", detail)
+
+    def test_the_round_trip_refuses_a_directory_grep_over_a_planted_link(self):
+        # #1917: the case the Codex probe has had since #1642 and this one had
+        # no room for. A hard link planted INSIDE a directory grant, naming an
+        # inode outside it, is the one place where "this name is under the
+        # grant" and "this content is in scope" come apart -- and the
+        # directory-argument Grep is adjudicated once, by path, then traversed
+        # by the host's own tool. The list is built by the DRIVER's walker, so
+        # a hook blind to `hard_linked` must refute, BY the hard-link rule:
+        # counting denials alone would read as proven on a build where the
+        # whole directory grant had stopped working.
+        from scripts import read_guard_hook
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            state, _by, detail = claude_probes.probe_read_guard_armed(
+                "claude", session_root=session_root)
+            self.assertEqual(hosts.PROVEN, state)
+            self.assertIn("hard link", detail)
+            real = read_guard_hook.decide
+
+            def blind_to_recorded_links(tool_name, tool_input, scope):
+                if isinstance(scope, dict) and scope.get("hard_linked"):
+                    scope = dict(scope, hard_linked=[])
+                return real(tool_name, tool_input, scope)
+
+            with mock.patch.object(read_guard_hook, "decide", blind_to_recorded_links):
+                state, by, detail = claude_probes.probe_read_guard_armed(
+                    "claude", session_root=session_root)
+        self.assertEqual((hosts.REFUTED, "read-guard-armed"), (state, by))
+        self.assertIn("hard-link", detail)
+
+    def test_an_unplantable_hard_link_is_unknown_rather_than_a_refutation(self):
+        # The Codex probe's tolerance (F3), for the same reason: a volume that
+        # refuses os.link has not shown this host's guard to be broken, it has
+        # failed to measure one sub-check. A healthy host must not be REFUTED
+        # by somebody's tmp mount -- and UNKNOWN is not benign either, so the
+        # detail names the fixture rather than the host.
+        from scripts.probes import claude_read_guard
+        with tempfile.TemporaryDirectory() as session_root:
+            self._session_root(session_root)
+            with mock.patch.object(claude_read_guard.os, "link",
+                                   side_effect=OSError("Operation not permitted")):
+                state, by, detail = claude_probes.probe_read_guard_armed(
+                    "claude", session_root=session_root)
+        self.assertEqual((hosts.UNKNOWN, "read-guard-armed"), (state, by))
+        self.assertIn("could not be planted", detail)
 
     def test_the_probe_leaves_the_sessions_settings_untouched(self):
         with tempfile.TemporaryDirectory() as session_root:

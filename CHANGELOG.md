@@ -76,6 +76,12 @@ evidence exposed.
   same file now also points `HOME` at one throwaway directory for the whole
   process, before the registry expands `~`, so no probe or test reads the
   operator's real `~/.claude`.
+- **`read-guard-armed` measures the planted hard link (#1917).** The Claude
+  readiness probe now does what the Codex one has done since #1642: it plants a
+  hard link inside a directory grant naming a file outside it, records it with
+  the driver's own walker, and requires the directory `Grep` to be refused **by
+  the hard-link rule** rather than merely denied. A volume that cannot plant a
+  link makes that sub-check `unknown` instead of refuting a healthy host.
 - **The guide is an index plus one chapter per section.**
   `skill/docs/PANOPTICON.md` keeps Overview, Required sub-skills, Modes and
   Global flags plus a Contents list; each H2 lives in `skill/docs/guide/`

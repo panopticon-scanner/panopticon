@@ -349,6 +349,21 @@ def _round_trip_confines_reads():
     return claude_read_guard._round_trip_confines_reads()
 
 
+def _read_round_trip():
+    """(verdict, detail) for the sandbox round trip -- verdict None when it
+    PROVED and there is nothing to report yet.
+
+    #1917: the round trip has a third answer. `ok is None` means the planted
+    hard-link fixture could not be created, so that sub-check went unmeasured:
+    UNKNOWN (which is never benign here -- it is consumed as refuted -- but
+    keeps "nobody could measure it" apart from "the guard is broken"), never a
+    refutation of a host whose only fault is its tmp volume."""
+    ok, detail = _round_trip_confines_reads()
+    if ok is None:
+        return hosts.UNKNOWN, detail
+    return (None if ok else hosts.REFUTED), detail
+
+
 def probe_read_guard_armed(host, session_root=None, settings_path=None):
     """This host CAN confine a dispatched subagent's reads to its entry.
 
@@ -380,9 +395,9 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
         ok, detail = _headless_subject_ok(settings_path)
         if not ok:
             return (hosts.REFUTED, READ_GUARD_ARMED, detail)
-        ok, detail = _round_trip_confines_reads()
-        if not ok:
-            return (hosts.REFUTED, READ_GUARD_ARMED, detail)
+        verdict, detail = _read_round_trip()
+        if verdict:
+            return (verdict, READ_GUARD_ARMED, detail)
         return (hosts.PROVEN, READ_GUARD_ARMED,
                 "%s; the runner will arm at %s" % (detail, os.path.abspath(settings_path)))
     settings_path, _scope_path, _defaults = read_guard_hook._resolve(None, None, session_root)
@@ -395,9 +410,9 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
     if not os.access(settings_dir, os.W_OK):
         return (hosts.REFUTED, READ_GUARD_ARMED,
                 "the host cannot arm its read guard: %s is not writable" % settings_dir)
-    ok, detail = _round_trip_confines_reads()
-    if not ok:
-        return (hosts.REFUTED, READ_GUARD_ARMED, detail)
+    verdict, detail = _read_round_trip()
+    if verdict:
+        return (verdict, READ_GUARD_ARMED, detail)
     return (hosts.PROVEN, READ_GUARD_ARMED,
             "%s; the host will arm at %s" % (detail, settings_path))
 
