@@ -773,6 +773,13 @@ class TestDiffAnchors(unittest.TestCase):
         self.assertIsNotNone(anchors["delta_end"])
 
 
+# What a real `config --null --list --show-scope --includes` always carries: the
+# one `local`-scoped record every repository has. The stand-in runners below
+# answer the acquisition's config read with it so the #2041 fail-closed check
+# (an empty listing refuses) does not fire on a fixture that runs no git.
+_REPO_SCOPE_LISTING = "local\0core.repositoryformatversion\n0\0"
+
+
 class TestPrWorktree(unittest.TestCase):
     def test_acquire_reads_base_and_adds_worktree(self):
         # `acquire_pr` calls `_sync_config` on BOTH paths (#1681), and that
@@ -790,6 +797,8 @@ class TestPrWorktree(unittest.TestCase):
             out = ""
             if argv[:3] == ["gh", "pr", "view"]:
                 out = '{"baseRefName": "main"}'
+            elif "--show-scope" in argv:
+                out = _REPO_SCOPE_LISTING
             elif "fetch" in argv:
                 fetched_ref.append(argv[-1].split(":", 1)[1])
             elif "rev-parse" in argv:
@@ -823,6 +832,8 @@ class TestPrWorktree(unittest.TestCase):
             out = ""
             if argv[:3] == ["gh", "pr", "view"]:
                 out = '{"baseRefName": "main"}'
+            elif "--show-scope" in argv:
+                out = _REPO_SCOPE_LISTING
             elif "worktree" in argv and "list" in argv:
                 # Real `git worktree list` (no --porcelain) format:
                 # "<path>  <sha> [<branch>]" / "(detached HEAD)". Only
@@ -944,6 +955,8 @@ class TestPrWorktree(unittest.TestCase):
             out = ""
             if argv[:3] == ["gh", "pr", "view"]:
                 out = '{"baseRefName": "main"}'
+            elif "--show-scope" in argv:
+                out = _REPO_SCOPE_LISTING
             elif "rev-parse" in argv:
                 out = "deadbeef\n"
             class R: returncode = 0; stdout = out; stderr = ""
@@ -1038,6 +1051,8 @@ class TestPrWorktree(unittest.TestCase):
                 out = ""
                 if argv[:3] == ["gh", "pr", "view"]:
                     out = '{"baseRefName": "main"}'
+                elif "--show-scope" in argv:
+                    out = _REPO_SCOPE_LISTING
                 elif "rev-parse" in argv:
                     out = "deadbeef\n"
                 class R: returncode = 0; stdout = out; stderr = ""
