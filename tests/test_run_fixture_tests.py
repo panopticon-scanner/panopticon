@@ -350,39 +350,23 @@ class TestFixtureRunnerMatchesScanConditions(unittest.TestCase):
     254 pass and precisely the two genuinely-broken Java scanners fail.
     """
 
-    @staticmethod
-    def _source():
-        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(here, "skill", "scripts",
-                               "run_fixture_tests.py"), encoding="utf-8") as fh:
-            return fh.read()
-
-    def test_the_pytest_run_has_no_network(self):
-        self.assertIn('"--network", "none"', self._source(),
-                      "the dockerized fixture suite must run with no network, "
-                      "as real scans do")
-
-    def test_adapter_code_is_mounted_over_the_baked_copy(self):
-        # The Dockerfile does `COPY skill/scripts /opt/panopticon/scripts`, so
-        # `scripts.tools` resolves to the BAKED adapters unless the checkout is
-        # mounted over that exact path. Without it the suite silently tests
-        # whatever the image was built with -- a verified-working spotbugs fix
-        # still showed red here for that reason. run_tools.py already mounts
-        # this way, for the same reason.
-        self.assertIn("skill/scripts:/opt/panopticon/scripts:ro", self._source(),
-                      "mount the checkout's adapters over the image's baked "
-                      "copy, or the fixture suite tests stale code")
-
-    def test_both_guards_are_on_the_pytest_invocation(self):
-        # They only mean something together: no-network without the mount tests
-        # STALE adapters offline; the mount without no-network tests current
-        # adapters in an environment that does not exist.
-        src = self._source()
-        pytest_call = src.rindex("FIXTURE_ROOT=/opt/panopticon-fixtures")
-        start = src.rindex('_docker_bin(), "run"', 0, pytest_call)
-        block = src[start:src.index("]", pytest_call)]
-        self.assertIn('"--network", "none"', block)
-        self.assertIn("skill/scripts:/opt/panopticon/scripts:ro", block)
+    def test_both_guards_are_on_the_executed_pytest_container(self):
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.object(rft, "REPO_ROOT", Path(root)), \
+                mock.patch.object(rft, "_docker_bin", return_value="docker-unit-test"), \
+                mock.patch.object(rft.subprocess, "run", return_value=_Res(7)) as run:
+            self.assertEqual(rft.run_tests("fixture-image:test"), 7)
+            run.assert_called_once()
+            argv = run.call_args.args[0]
+            self.assertEqual(argv[:2], ["docker-unit-test", "run"])
+            image = argv.index("fixture-image:test")
+            options, command = argv[2:image], argv[image + 1:]
+            self.assertEqual(options[options.index("--network") + 1], "none")
+            mounts = [options[i + 1] for i, arg in enumerate(options) if arg == "-v"]
+            self.assertIn(root + "/skill/scripts:/opt/panopticon/scripts:ro", mounts)
+            self.assertEqual(command, ["python", "-m", "pytest", "-v",
+                                       "/opt/panopticon/tests/tools"])
+            self.assertEqual(run.call_args.kwargs["timeout"], rft.TEST_TIMEOUT)
 
 
 if __name__ == "__main__":
