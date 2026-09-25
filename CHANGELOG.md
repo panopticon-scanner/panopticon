@@ -30,8 +30,8 @@ evidence exposed.
   truncated line cannot read as a complete one, and an empty column reads `?`.
   **Residual, filed separately:** the generic SARIF path still leaves control
   bytes in the ARTIFACT's `title`/`rule_id`/`category` (this fix cleans the
-  prompt, not the normalization contract), and `.panopticon/tools/*.sarif` is
-  still ingested with no run binding.
+  prompt, not the normalization contract; #2069), and `.panopticon/tools/*.sarif`
+  is still ingested with no run binding (#2070).
 - **A batch record names its MACHINE, and one record can be discarded without
   the run (#1912).** The owner stamp that `driver loop` recovers a crashed batch
   from carried the pid and `socket.gethostname()`, and a hostname is not a machine

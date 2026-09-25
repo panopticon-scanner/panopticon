@@ -227,6 +227,11 @@ _TOOL_HIT_WHERE_CAP = 200
 def _hit_text(value, cap):
     """One prompt column of untrusted tool text: inert, single-line, bounded.
 
+    The value is sliced to `8 * cap` BEFORE escaping: `_prompt_safe` rebuilds the
+    whole string (measured ~57x transient memory on a 2 MB title, and a SARIF
+    `message.text` is unbounded inside the 50 MiB ingest cap), and the worst
+    per-character expansion is 6, so an 8x window renders identically.
+
     A tool hit's path, rule id and title are foreign text -- written by a
     scanner about code the target owns, and `.panopticon/tools/*.sarif` is a
     path a target repo can commit -- and they land in the reviewer's prompt
@@ -237,7 +242,7 @@ def _hit_text(value, cap):
     MARKED, so a truncated line cannot read as a complete one. Empty is `?`,
     the same unknown the columns already used.
     """
-    text = " ".join(runio._prompt_safe(str(value or "")).split())
+    text = " ".join(runio._prompt_safe(str(value or "")[:8 * cap]).split())
     return (text[:cap] + "…") if len(text) > cap else (text or "?")
 
 @functools.lru_cache(maxsize=None)

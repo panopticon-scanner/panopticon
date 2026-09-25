@@ -143,7 +143,7 @@ ENVELOPE_SHAPES = {
 # itself in a different wrapper, and the one thing that varies is the reason.
 RETRY_PROMPT_BLOCK = (
     "\n\n## Your previous reply was refused -- return the same answer, correctly wrapped\n\n"
-    "Your previous attempt%(attempt)s was refused: %(reason)s\n"
+    "Your previous attempt%(attempt_phrase)s was refused: %(reason)s\n"
     "Return the SAME findings/verdicts you returned then; fix only the FORMAT.\n"
     "The required envelope is exactly: %(shape)s\n")
 
@@ -151,8 +151,8 @@ RETRY_PROMPT_BLOCK = (
 # How much of a refusal reason the retry prompt may quote (D10 F3).
 REASON_CAP = 200
 # The highest attempt number the retry prompt will quote (#1752 AGT-1863884584).
-# An entry's attempts are bounded by the run's per-entry cap, an order of
-# magnitude below this; a record claiming more is not a number worth printing.
+# Per-invocation failures are capped, but `rejected/` records survive resumes;
+# a run that climbs past this loses only the number, never the reason.
 ATTEMPT_CAP = 99
 
 
@@ -234,7 +234,7 @@ def retry_block(run_folder, entry):
     # dispatch request, so the prompt and the request must not disagree about
     # what the record said.
     numbered = "" if prior["attempt"] is None else " %d" % prior["attempt"]
-    return RETRY_PROMPT_BLOCK % {"attempt": numbered, "reason": prior["reason"],
+    return RETRY_PROMPT_BLOCK % {"attempt_phrase": numbered, "reason": prior["reason"],
                                  "shape": envelope_shape(entry)}, prior
 
 
