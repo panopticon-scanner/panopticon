@@ -6,9 +6,16 @@ Findings carry two independent axes: **severity** (impact if true — never rewr
   advisor has checked it. NOT gate-eligible.
 - `tool_confirmed` — a tool reported it AND an advisor independently confirmed it. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
-  Rejected claims keep their severity and move to `discarded_claims`. A verdict that lands
-  unloadable (a parse/schema failure surfaced at `meta.coverage.verdicts.unloadable`, never silently
-  dropped) and forces `INCONCLUSIVE` — lost verify coverage never certifies a clean gate (#979).
+  Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
+  by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in
+  categories whose score reaches `score_gate.BACKUP_FLOOR`, so scepticism is spent on what would
+  reach the gate, and the asymmetry is deliberate. The rejection is auditable rather than silent —
+  every rejected claim's full advisor prose lands in `discarded_claims`. Tool-sourced findings
+  follow the same rule with no backup round at all: one advisor per finding, the first parseable
+  verdict is terminal, and it lands as a single-verdict file under `verdicts/<queue_id>.json`. A
+  verdict that lands unloadable (a parse/schema failure surfaced at
+  `meta.coverage.verdicts.unloadable`, never silently dropped) and forces `INCONCLUSIVE` — lost
+  verify coverage never certifies a clean gate (#979).
 - `corroborated` — multi-panel agreement (correlated witnesses: prioritized for verification, not
   gate-eligible by default).
 - `unverified` — no verification attempted.
