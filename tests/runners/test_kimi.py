@@ -22,7 +22,7 @@ import scripts.kimi_toml as kimi_toml
 import scripts.runners.kimi as kimi_runner
 import scripts.runners.kimi_home as kimi_home
 import scripts.runners.outage as outage
-from _test_helpers import (kimi_entry as _entry, kimi_fixture_home as _fixture_home,
+from _test_helpers import (kimi_entry, kimi_fixture_home as _fixture_home,
                            prepared_kimi as _prepared)
 
 STREAM = "\n".join([
@@ -34,6 +34,10 @@ STREAM = "\n".join([
                 "session_id": "session_test-1", "command": "kimi -r session_test-1"}),
 ])
 CONFIGURED = frozenset({"kimi-code/k3", "kimi-code/kimi-for-coding"})
+
+
+def _entry(enforced, model="secondary"):
+    return kimi_entry(enforced, model=model)
 
 
 @contextlib.contextmanager
