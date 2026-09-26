@@ -715,10 +715,27 @@ def _read_allowlist(allowlist_path):
 RUNS_DIR = "runs"
 VERDICTS_DIR = "verdicts"
 _REVIEW_PREFIX = "review-"
-# Checked BEFORE `_VERIFY_PREFIX`: a tool-finding advisor's id starts with it too.
 _TOOL_VERIFY_PREFIX = "verify-tool-"
 _VERIFY_PREFIX = "verify-"
 _SCOUT_PREFIX = "scout-"
+# A tool-finding advisor's queue id: `evidence.finding_fingerprint`'s 16-char
+# sha256 prefix, plus `build_verify_queue`'s `-<n>` collision suffix
+# (`evidence.py:243` and `:445`, the only producer of either).
+#
+# This GRAMMAR, not the prefix order, is what separates the two verify families
+# (#1831 fix round 2, NI-1). `verify-tool-<queue id>` and
+# `verify-<group>-<domain>-<stage>` are ambiguous by prefix alone, and
+# `groups_schema._GROUP_NAME_RE` accepts a group literally named `tool` or
+# `tool-adapters` -- this repo has `tools/` and `tools-image/`, so the naming is
+# not exotic. Trying the tool branch first therefore derived
+# `verdicts/adapters-SEC-primary.json` for that group's advisor, which is not the
+# bundle it writes: the next arm dropped its in-flight grant and the advisor was
+# denied its OWN verdict mid-flight, the #11 harm the per-family rule exists to
+# prevent. Gated on the grammar the two families are disjoint rather than ordered:
+# no queue id can spell `<group>-<domain>-<stage>` (a domain is three letters and
+# a stage is `primary`/`backup`, neither of which a 16-hex token can be), and no
+# cell id can spell a queue id.
+_QUEUE_ID_RE = re.compile(r"^[0-9a-f]{16}(-[0-9]+)?$")
 # `verify-<group>-<domain>-<stage>[-part<N>]`. A group name may carry hyphens
 # (`groups_schema._GROUP_NAME_RE`); a domain and a stage may not -- so the stage is
 # the last token once the optional part suffix is off. Stripped in that ORDER, the
@@ -744,10 +761,12 @@ def _claimed_relpath(eid):
 
     `setup-scan` is deliberately absent: it writes `.panopticon/setup-proposal.json`,
     a TOP-LEVEL artifact outside every run folder (`phases/runio.py:_TOP_LEVEL`), so
-    no run folder can own it and its grant is never carried. `UNBOUND_ENTRY` is
-    absent for the same structural reason -- it names no entry, so there is nothing
-    to derive a path from, and `adjudicate` refuses that bucket to every bound
-    agent anyway.
+    no run folder can own it and its grant is never carried -- and because the
+    allowlist file is top-level as well, a setup arm and a review run share one,
+    which is what makes that a revocation rather than a separate namespace (see
+    `_carried_paths_this_run_owns`). `UNBOUND_ENTRY` is absent for the same
+    structural reason -- it names no entry, so there is nothing to derive a path
+    from, and `adjudicate` refuses that bucket to every bound agent anyway.
 
     An id carrying a path separator or a `..` is refused outright. No builder can
     produce one (group names admit neither, domains and stages are alphanumeric,
@@ -763,7 +782,12 @@ def _claimed_relpath(eid):
         return "findings-%s.json" % cell if cell else None
     if eid.startswith(_TOOL_VERIFY_PREFIX):
         queue_id = eid[len(_TOOL_VERIFY_PREFIX):]
-        return os.path.join(VERDICTS_DIR, "%s.json" % queue_id) if queue_id else None
+        if _QUEUE_ID_RE.match(queue_id):
+            return os.path.join(VERDICTS_DIR, "%s.json" % queue_id)
+        # Not a queue id: this is a verify CELL of a group whose name begins
+        # `tool`, so fall through rather than inventing a path under `verdicts/`
+        # for it. It also means a planted `verify-tool-verdicts-Core-SEC` cannot
+        # name a peer's bundle (fix round 2, NN-1).
     if eid.startswith(_VERIFY_PREFIX):
         rest = eid[len(_VERIFY_PREFIX):]
         part = _VERIFY_PART_RE.search(rest)
@@ -883,9 +907,23 @@ def _carried_paths_this_run_owns(existing, added):
     all. A concurrent fan-out's grant IS its own declared artifact in this run's
     folder, whichever family it belongs to, so the #11 property survives.
 
-    With no anchor -- a plan whose out_files establish no run folder, which no
-    `driver run` produces once the manifest exists -- nothing is carried forward:
-    fail closed rather than trust an unanchored file. Every drop is announced."""
+    With no anchor -- a plan whose out_files establish no run folder -- nothing is
+    carried forward: fail closed rather than trust an unanchored file. Every drop
+    is announced, including that one. Two ways to reach it, both narrower than the
+    `.panopticon`-wide anchor this replaced and neither silent:
+
+      * NO USABLE MANIFEST. `runio._pano` falls back to the flat
+        `.panopticon/<name>` whenever `run_manifest.load_manifest` returns nothing
+        -- absent, unparseable, or TORN mid-run -- so a run in that state anchors
+        nothing and every carried grant is dropped. A re-arm re-adds whatever is
+        still pending, and the announcement names the run folder as the thing that
+        was missing.
+      * A `setup-scan` ARM. Setup writes `.panopticon/setup-proposal.json`, a
+        top-level artifact, so it establishes no run folder -- and the allowlist
+        is top-level too (`runio._TOP_LEVEL`), shared with every review run on the
+        tree rather than separated by setup's own namespace. So a setup arm drops
+        a concurrent review fan-out's grants. Same direction as the rule itself,
+        still narrower than carrying everything under `.panopticon`."""
     roots = _run_folders(added)
     if not roots:
         _announce_dropped_grants(_dropped_counts(existing), _DROP_NO_ANCHOR)
