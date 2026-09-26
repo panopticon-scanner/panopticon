@@ -200,24 +200,70 @@ def cve_ids(values: list | None) -> list[str]:
             if isinstance(v, str) and v.upper().startswith("CVE-")]
 
 
-_TOOL_TEXT_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+INERT_TEXT_MAX = 2000        # a label: title, category, a path, a rule id
+INERT_BODY_MAX = 20000       # prose: description, impact, remediation
+INERT_CUT = "…"         # the cut is MARKED, so a cut value cannot read whole
+INERT_KEEP = "\t\n"          # the only control chars that carry a document's
+#                              own structure; a label collapses them to a space
 
 
-def _sanitize_label(value: Any) -> str:
-    """A single-line finding label from UNTRUSTED tool/target text: strip C0/DEL
-    control chars (ANSI escapes / NUL / BEL -> terminal + CWE-117 log injection)
-    and collapse whitespace runs to single spaces -- mirroring sarif_utils' SARIF-
-    title collapse. #run9 SEC-B1C: adapter titles are built straight from
-    scanned-repo strings (package/gem/crate names, dependency filenames, tool
-    messages), so centralizing here makes every make_finding caller safe."""
-    return " ".join(_TOOL_TEXT_CONTROL_RE.sub("", str(value)).split())
+def inert_escape(text: str, keep: str = INERT_KEEP) -> str:
+    r"""Render every character that can steer a terminal, a log line or a
+    markdown document as an inert `\xNN` / `\uNNNN` escape: C0, DEL, C1 and the
+    Unicode line/paragraph separators. Ordinary characters -- non-ASCII
+    included -- pass through untouched, so a legitimate path or package name is
+    unchanged.
+
+    ESCAPED, not stripped, and that is the whole point (#1829): a stripped
+    `\x1b[2J` leaves `[2J` reading as literal text the scanner wrote, while
+    `\x1b[2J` says what actually arrived. This is also the ONE spelling of an
+    inert control byte in the tree -- `phases/runio._prompt_safe` writes the
+    same escapes for the reviewer's prompt (#1190 AGT-A1A), and
+    tests/tools/test_base.py pins the two equal rather than letting a second
+    spelling appear.
+    """
+    out = []
+    for ch in text:
+        o = ord(ch)
+        if (o < 0x20 or o == 0x7f or 0x80 <= o <= 0x9f
+                or o in (0x2028, 0x2029)) and ch not in keep:
+            out.append("\\x%02x" % o if o < 0x100 else "\\u%04x" % o)
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
-def _sanitize_body(value: Any) -> str:
-    """Strip C0/DEL control chars from multi-line finding text (description),
-    preserving line structure -- the injection vectors are the control chars, not
-    the newlines. #run9 SEC-B1C."""
-    return _TOOL_TEXT_CONTROL_RE.sub("", str(value))
+def inert_text(value: Any, *, limit: int = INERT_TEXT_MAX,
+               lines: bool = False) -> str:
+    """UNTRUSTED tool/target text made safe to render, and bounded.
+
+    The ONE neutralizer for every field a target or its scanner authored, at the
+    normalization boundary both finding builders below are (#1829
+    SEC-4277410777 / SEC-798292895 / SEC-2200312865, closing the #1752 residual
+    filed as #2069): titles, categories, paths, rule ids, impact and
+    remediation are built straight from scanned-repo strings (package/gem/crate
+    names, dependency filenames, SARIF messages, a filename a target commits),
+    and `synth/render.render_summary` prints several of them to an operator's
+    terminal. Fixing them HERE is what lets every renderer inherit it instead of
+    each one remembering.
+
+    A label (the default) is single-line: tabs and newlines survive the escape
+    and are then collapsed with the rest of the whitespace, because an ordinary
+    multi-line tool message is not an attack and reads better as one line. A
+    body (`lines=True`) keeps its line structure; only `\\r`, which moves the
+    cursor back over what was already printed, is escaped there too.
+
+    Bounded, with the cut MARKED: a SARIF `message.text` is unbounded inside the
+    50 MiB ingest cap, and a value that was cut must not read as a whole one.
+    The slice before the escape is `8 * limit` because the escape rebuilds the
+    string and expands by at most 6 per character, so a wider window cannot
+    change the answer (`phases/review._hit_text`'s measurement).
+    """
+    cap = max(int(limit), 1)
+    text = inert_escape(str(value)[:8 * cap])
+    if not lines:
+        text = " ".join(text.split())
+    return text[:cap] + INERT_CUT if len(text) > cap else text
 
 
 def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
@@ -242,20 +288,29 @@ def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
     one edit here instead of one per adapter. Adapter-specific content arrives
     via the keyword fields.
     """
+    # #run9 SEC-B1C covered title and description; #1829 SEC-4277410777 / #2069
+    # covers the rest of what a target or its scanner wrote. A COPY of the
+    # location and the tool evidence: the adapter may keep and reuse its own dict
+    # (osv/eslint build one per hit), and neutralizing is not ours to do to it.
+    if isinstance(location, dict) and isinstance(location.get("file"), str):
+        location = dict(location, file=inert_text(location["file"]))
+    tool_evidence = dict(tool_evidence or {})
+    if isinstance(tool_evidence.get("rule_id"), str):
+        tool_evidence["rule_id"] = inert_text(tool_evidence["rule_id"])
     finding: dict[str, Any] = {
         "id": new_finding_id(adapter.prefix, n),
-        "title": _sanitize_label(title),          # #run9 SEC-B1C: untrusted tool/target text
+        "title": inert_text(title),
         "severity": severity,
         "confidence": confidence,
         "panel": "security",
-        "category": category,
+        "category": inert_text(category),
         "source": f"tool:{adapter.name}",
         "location": location,
-        "description": _sanitize_body(description),   # #run9 SEC-B1C
-        "impact": impact,
-        "remediation": remediation,
+        "description": inert_text(description, limit=INERT_BODY_MAX, lines=True),
+        "impact": inert_text(impact, limit=INERT_BODY_MAX, lines=True),
+        "remediation": inert_text(remediation, limit=INERT_BODY_MAX, lines=True),
         "references": references or [],
-        "tool_evidence": tool_evidence or {},
+        "tool_evidence": tool_evidence,
         "_group": group,
     }
     citations = {k: v for k, v in (citations or {}).items() if v}

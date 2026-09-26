@@ -417,10 +417,14 @@ class TestIngest(unittest.TestCase):
             self.assertFalse(f["location"]["file"].startswith("file://"))
 
     def test_sarif_message_with_control_chars_collapsed_in_title(self):
+        # #1829 SEC-4277410777: the tabs and newlines of an ordinary multi-line
+        # tool message still collapse to single spaces. `\r` no longer does: it
+        # moves the cursor back over what was already printed, so it is rendered
+        # as an inert escape instead -- deleting it would hide that it arrived.
         sarif = _sarif_fixture("a.py")
         sarif["runs"][0]["results"][0]["message"]["text"] = "line one\nline\ttwo\r\nline three"
         out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")
-        self.assertEqual(first(out)["title"], "line one line two line three")
+        self.assertEqual(first(out)["title"], r"line one line two\x0d line three")
 
     def test_ingest_tools_and_legacy_adapter_share_sarif_utils(self):
         # The legacy adapter and ingest_tools must both use the shared SARIF

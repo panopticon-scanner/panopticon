@@ -15,6 +15,7 @@ import scripts.synth.findings as findings_mod
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.report as report_mod
 import scripts.evidence as evidence_mod
+import scripts.tools.base as tool_base
 
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _make_finding, _cli_args
 
@@ -83,6 +84,58 @@ class TestNormalize(unittest.TestCase):
     def test_location_coerced(self):
         f = findings_mod.normalize_finding({"location": {"file": "a.py", "line_start": 10}})
         self.assertEqual(f["location"]["line_end"], 10)
+
+class TestNormalizeNeutralizesUntrustedText(unittest.TestCase):
+    r"""#1829 SEC-4277410777 / SEC-798292895: `normalize_finding` is the
+    NORMALIZATION BOUNDARY for everything the report carries -- the two tool
+    builders' output and, more to the point, every agent-authored payload, whose
+    text is written about a target's code and often quotes it.
+
+    Its title collapse was `" ".join(title.split())`, which splits on whitespace
+    only: ESC, NUL and BEL went straight through into the terminal summary. The
+    fields are neutralized HERE so every renderer inherits it (`synth/render`'s
+    Top-findings line, the cross-panel block, the HTML report's source of truth)
+    instead of each one remembering.
+    """
+
+    HOSTILE = "ok\x1b[2J\x1b[H** clean **\x07"
+
+    def test_every_rendered_field_is_inert(self):
+        f = findings_mod.normalize_finding({
+            "title": self.HOSTILE, "severity": "HIGH", "panel": "security",
+            "category": "r\x1b[31m1", "impact": self.HOSTILE,
+            "remediation": self.HOSTILE,
+            "location": {"file": "a\x1b[2Kb.py", "line_start": 3}})
+        self.assertEqual(r"ok\x1b[2J\x1b[H** clean **\x07", f["title"])
+        self.assertEqual(r"r\x1b[31m1", f["category"])
+        self.assertEqual(r"a\x1b[2Kb.py", f["location"]["file"])
+        self.assertEqual(r"ok\x1b[2J\x1b[H** clean **\x07", f["impact"])
+        self.assertEqual(r"ok\x1b[2J\x1b[H** clean **\x07", f["remediation"])
+        for field in ("title", "category", "impact", "remediation"):
+            for ch in ("\x1b", "\x07", "\x00", "\r"):
+                self.assertNotIn(ch, f[field])
+
+    def test_a_title_built_from_a_description_is_neutralized_too(self):
+        # No title: the first line of the description becomes one.
+        f = findings_mod.normalize_finding({"description": self.HOSTILE + "\nmore"})
+        self.assertEqual(r"ok\x1b[2J\x1b[H** clean **\x07", f["title"])
+        self.assertNotIn("\x1b", f["short_title"])
+
+    def test_the_whitespace_collapse_the_escape_replaced_still_happens(self):
+        f = findings_mod.normalize_finding({"title": " a \t b\n\nc  "})
+        self.assertEqual("a b c", f["title"])
+
+    def test_an_empty_location_file_still_drops_the_location(self):
+        # #1522's rule must survive the neutralizer running before it.
+        f = findings_mod.normalize_finding({"title": "x", "location": {"file": ""}})
+        self.assertNotIn("location", f)
+
+    def test_a_long_title_is_bounded_with_the_cut_marked(self):
+        f = findings_mod.normalize_finding({"title": "A" * 9000})
+        self.assertEqual(tool_base.INERT_TEXT_MAX + len(tool_base.INERT_CUT),
+                         len(f["title"]))
+        self.assertTrue(f["title"].endswith(tool_base.INERT_CUT))
+
 
 class TestNormalizeCodeDomain(unittest.TestCase):
     def test_code_and_domain_pass_through(self):

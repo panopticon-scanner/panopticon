@@ -10,7 +10,7 @@ import re
 import sys
 
 from scripts.provenance import tool_provenance
-from .base import cvss_bucket, new_finding_id
+from .base import cvss_bucket, inert_text, new_finding_id
 
 
 LEVEL_TO_SEV = {"error": "HIGH", "warning": "MEDIUM", "note": "LOW", "none": "INFO"}
@@ -105,14 +105,23 @@ def norm_uri(uri):
     Strips the file:// scheme and the container-mount prefix (/src/), so tool
     findings share the same path space as agent findings. A plain relative
     path (even one that starts with 'src/') is returned unchanged.
+
+    The path is TARGET-authored text and lands in `location.file`, which the
+    terminal summary prints, so it comes back INERT (#1829 SEC-4277410777): this
+    is the one expression both finding builders' paths pass through -- the SARIF
+    builder below, and the adapters that resolve their own locations (eslint,
+    osv-scanner) before calling `make_finding`, which neutralizes the field
+    again for the adapters that do not.
     """
     if not isinstance(uri, str):
         return uri
     if uri.startswith("file://"):
         uri = uri[len("file://"):]
     if uri.startswith("/src/"):
-        return uri[len("/src/"):]
-    return uri.lstrip("/")
+        uri = uri[len("/src/"):]
+    else:
+        uri = uri.lstrip("/")
+    return inert_text(uri)
 
 
 _norm_uri = norm_uri
@@ -311,16 +320,28 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
                 if cves:
                     cites["cve"] = cves
                 title_text = (res.get("message", {}) or {}).get("text", res.get("ruleId", "finding"))
+                # The rule id, inert for the ARTIFACT but NOT for the lookups
+                # above: `rules_index` and NOISE_RULES key on what the SARIF
+                # actually said. A null rule id stays null -- `evidence.
+                # tool_rule_id` falls back to provenance.confirmation_reasoning,
+                # so a "None" string here would forge a rule id, and with it the
+                # finding's fingerprint.
+                inert_rule_id = inert_text(rule_id) if isinstance(rule_id, str) else rule_id
                 finding = {
                     "id": new_finding_id(prefix, n),
-                    # collapse newlines/control chars so a crafted SARIF message can't
-                    # inject formatting into the rendered summary (mirrors
-                    # normalize_finding's title collapse; CWE-117 log injection).
-                    "title": " ".join(str(title_text).split()),
+                    # The message is target-derived text on its way to an
+                    # operator's terminal: control chars are neutralized and the
+                    # length is bounded, one neutralizer with make_finding
+                    # (#1829 SEC-4277410777, #2069). The old collapse was
+                    # `" ".join(split())`, which splits on whitespace only --
+                    # ESC, NUL and BEL went straight through (CWE-117).
+                    "title": inert_text(title_text),
                     "severity": sev,
                     "confidence": "CERTAIN",
                     "panel": "security",
-                    "category": res.get("ruleId", "tool"),
+                    # `or "tool"`: a category is what a finding is filed under,
+                    # and a null or empty one names nothing.
+                    "category": inert_text(rule_id or "tool"),
                     "source": "tool:%s" % tool_name,
                     "location": loc,
                     "_group": group,
@@ -328,9 +349,9 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1):
                     # the dependency adapters. provenance.confirmation_reasoning
                     # keeps carrying it too (back-compat: evidence.tool_rule_id
                     # falls back there for pre-#467 artifacts).
-                    "tool_evidence": {"rule_id": res.get("ruleId")},
+                    "tool_evidence": {"rule_id": inert_rule_id},
                 }
-                finding["provenance"] = tool_provenance(tool_name, reasoning=res.get("ruleId"))
+                finding["provenance"] = tool_provenance(tool_name, reasoning=inert_rule_id)
                 if cites:
                     finding["citations"] = cites
             except Exception as exc:  # noqa: BLE001 - tolerant by design: skip only this result

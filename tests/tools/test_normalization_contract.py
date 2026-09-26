@@ -22,12 +22,15 @@ exits 0 still parses perfectly (#1457).
 """
 import json
 import os
+import types
 import unittest
 
-from _test_helpers import skip_or_fail
+from _test_helpers import only, skip_or_fail
 
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
+import scripts.tools.base as base
+import scripts.tools.sarif_utils as sarif_utils
 from scripts.tools import ADAPTERS
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -65,6 +68,36 @@ ENVELOPE_KEYS = ("id", "title", "severity", "confidence", "panel", "category",
 
 # Present only on the make_finding() path; type-checked when they appear.
 OPTIONAL_TEXT = ("description", "impact", "remediation")
+
+# #1829 (SEC-4277410777, SEC-798292895, SEC-2200312865; #2069, the residual of
+# #1752): every string in the envelope is built from text a TARGET or its
+# scanner wrote, and the terminal summary prints several of them, so no field
+# may carry a live control byte and none may be unbounded. Asserted here, over
+# the registry, so one rule holds every present and future adapter.
+#
+# `\n` and `\t` stay legal in the prose fields -- they are the body's own
+# structure, and `render_summary` collapses them where it renders a label.
+HAZARDS = frozenset(chr(o) for o in
+                    list(range(0x00, 0x20)) + [0x7f]
+                    + list(range(0x80, 0xa0)) + [0x2028, 0x2029])
+HOSTILE = "ok\x1b[2J\x1b[H** clean **\x07\x00\x7f\x9b\u2028 "
+
+
+def _live_control_bytes(text, allow=""):
+    return sorted({"0x%02x" % ord(ch) for ch in text
+                   if ch in HAZARDS and ch not in allow})
+
+
+def _strings(where, value):
+    """Every string leaf under `value`, each with the path that reached it."""
+    if isinstance(value, str):
+        yield where, value
+    elif isinstance(value, dict):
+        for key in sorted(value, key=str):
+            yield from _strings("%s.%s" % (where, key), value[key])
+    elif isinstance(value, (list, tuple)):
+        for index, val in enumerate(value):
+            yield from _strings("%s[%d]" % (where, index), val)
 
 
 def golden_path(name):
@@ -167,6 +200,114 @@ class TestNormalizationContract(unittest.TestCase):
         for scheme, vals in (f.get("citations") or {}).items():
             self.assertIsInstance(vals, list,
                                   "%s: citations.%s is not a list" % (name, scheme))
+
+        self._assert_inert(name, f)
+
+    def _assert_inert(self, name, f):
+        """No field of the envelope carries a live control byte, and the
+        neutralized ones are bounded (#1829 / #2069)."""
+        for key, value in sorted(f.items()):
+            allow = "\n\t" if key in OPTIONAL_TEXT else ""
+            bound = (base.INERT_BODY_MAX if key in OPTIONAL_TEXT
+                     else base.INERT_TEXT_MAX) + len(base.INERT_CUT)
+            for where, text in _strings(key, value):
+                self.assertEqual(
+                    [], _live_control_bytes(text, allow),
+                    "%s: %s carries live control bytes %s -- tool and target "
+                    "text must be inert before it reaches the summary or the "
+                    "artifact" % (name, where, _live_control_bytes(text, allow)))
+                if key in ("title", "category") or key in OPTIONAL_TEXT:
+                    self.assertLessEqual(
+                        len(text), bound,
+                        "%s: %s is %d chars -- unbounded target text"
+                        % (name, where, len(text)))
+
+
+class TestHostileToolTextIsInert(unittest.TestCase):
+    """#1829 SEC-4277410777 / #2069: the contract above rides on goldens, which
+    are honest tool output. This is the same contract under a HOSTILE one.
+
+    Driven at the two ENVELOPE BUILDERS rather than per adapter, because every
+    adapter reaches the envelope through one of them -- which the contract above
+    proves for each of them (the id prefix and the provenance block are the
+    builders' own work, so a finding carrying them came through a builder). Pin
+    the builders and every present and future adapter is pinned with them.
+    """
+
+    ADAPTER = types.SimpleNamespace(prefix="XX", name="demo")
+
+    RULE = "r\x1b[31m1"
+
+    def _hostile_sarif(self, rule_id=RULE, message=HOSTILE):
+        """A one-result SARIF whose every target-authored string is hostile.
+        Parameterized rather than reached into, so no test indexes the fixture
+        it just built (TST-B3A's rule)."""
+        result = {"message": {"text": message},
+                  "locations": [{"physicalLocation": {
+                      "artifactLocation": {"uri": "/src/a\x1b[2Kb.py"},
+                      "region": {"startLine": 3}}}]}
+        if rule_id is not None:
+            result["ruleId"] = rule_id
+        return {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": [
+            {"id": self.RULE, "defaultConfiguration": {"level": "error"}}]}},
+            "results": [result]}]}
+
+    def _assert_no_live_bytes(self, finding):
+        for key, value in sorted(finding.items()):
+            allow = "\n\t" if key in OPTIONAL_TEXT else ""
+            for where, text in _strings(key, value):
+                self.assertEqual([], _live_control_bytes(text, allow),
+                                 "%s still carries %s" % (where, repr(text)))
+
+    def test_the_sarif_builder_neutralizes_every_field_it_fills(self):
+        f = only(sarif_utils.sarif_to_findings(
+            self._hostile_sarif(), "semgrep", "G", "SEC"))
+        self._assert_no_live_bytes(f)
+        # Escaped, not deleted: the ESC is the evidence that someone tried.
+        self.assertEqual(r"ok\x1b[2J\x1b[H** clean **\x07\x00\x7f\x9b\u2028",
+                         f["title"])
+        self.assertEqual(r"r\x1b[31m1", f["category"])
+        self.assertEqual(r"a\x1b[2Kb.py", f["location"]["file"])
+        self.assertEqual(r"r\x1b[31m1", f["tool_evidence"]["rule_id"])
+        self.assertEqual(r"r\x1b[31m1", f["provenance"]["confirmation_reasoning"])
+
+    def test_the_make_finding_builder_neutralizes_every_field_it_fills(self):
+        f = base.make_finding(
+            self.ADAPTER, 1, "G", title=HOSTILE, severity="HIGH",
+            category="c\x1b[31m", location={"file": "a\x1b[2Kb.py", "line_start": 1},
+            description=HOSTILE, impact=HOSTILE, remediation=HOSTILE,
+            tool_evidence={"rule_id": "r\x1b[31m1"})
+        self._assert_no_live_bytes(f)
+        self.assertEqual(r"ok\x1b[2J\x1b[H** clean **\x07\x00\x7f\x9b\u2028",
+                         f["title"])
+        self.assertEqual(r"a\x1b[2Kb.py", f["location"]["file"])
+
+    def test_both_builders_bound_an_unbounded_message(self):
+        # A SARIF `message.text` is unbounded inside the 50 MiB ingest cap.
+        huge = "A" * (base.INERT_TEXT_MAX * 3)
+        for what, f in (("sarif", only(sarif_utils.sarif_to_findings(
+                            self._hostile_sarif(message=huge),
+                            "semgrep", "G", "SEC"))),
+                        ("make_finding", base.make_finding(
+                            self.ADAPTER, 1, "G", title=huge, severity="HIGH",
+                            category="c", location={"file": "a", "line_start": 1},
+                            description="d", impact="", remediation=""))):
+            with self.subTest(builder=what):
+                self.assertEqual(base.INERT_TEXT_MAX + len(base.INERT_CUT),
+                                 len(f["title"]))
+                self.assertTrue(f["title"].endswith(base.INERT_CUT),
+                                "a truncated title must say that it was cut")
+
+    def test_a_result_without_a_rule_id_keeps_a_null_rule_id(self):
+        # `evidence.tool_rule_id` falls back to provenance.confirmation_reasoning,
+        # so a neutralizer that turned None into the string "None" would forge a
+        # rule id -- and with it the finding's fingerprint.
+        f = only(sarif_utils.sarif_to_findings(
+            self._hostile_sarif(rule_id=None), "semgrep", "G", "SEC"))
+        self.assertIsNone(f["tool_evidence"]["rule_id"])
+        self.assertEqual("Reported by static-analysis tool semgrep",
+                         f["provenance"]["confirmation_reasoning"])
+        self.assertEqual("tool", f["category"])
 
 
 class TestFindingsSurviveIntoAReport(unittest.TestCase):

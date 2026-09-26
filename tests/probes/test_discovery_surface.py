@@ -213,6 +213,19 @@ class TestTheControlsAreLive(unittest.TestCase):
                 codex_host.cleanup_command(argv)
 
 
+_HAZARDS = frozenset(chr(o) for o in
+                     list(range(0x00, 0x20)) + [0x7f]
+                     + list(range(0x80, 0xa0)) + [0x2028, 0x2029])
+
+
+def _live_control_bytes(text, allow="\n"):
+    """#1829 SEC-2200312865: what a target could still steer on the operator's
+    screen. The disclosure stream's own line breaks are the probe's, not the
+    target's."""
+    return sorted({"0x%02x" % ord(ch) for ch in text
+                   if ch in _HAZARDS and ch not in allow})
+
+
 def _plant(root, relative, body="x"):
     path = os.path.join(root, *relative.split("/"))
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -497,6 +510,55 @@ class TestTheScan(unittest.TestCase):
         stream = io.StringIO()
         probes_common.probe_discovery_surface("claude", self.root, disclose=stream)
         self.assertEqual("", stream.getvalue())
+
+    def test_a_hostile_file_name_is_inert_in_the_detail_and_on_the_stream(self):
+        r"""#1829 SEC-2200312865: this probe is the one disclosure surface that
+        prints target-authored STRINGS rather than counts, and it had no
+        neutralizer at all -- `.claude/agents/*` and `.claude/commands/**` name
+        no fixed file, so the NAME is the target's to choose.
+
+        `\x1b[2J` clears the operator's screen, `\r` then overwrites the line
+        with a forged `driver: all clear`, and `\x07` rings the bell -- from a
+        filename a redteam target commits.
+        """
+        open_name = "a\x1b[2Jb\rdriver: all clear\x07.md"
+        controlled_name = "x\x1b[31mRED\x1b[0m.md"
+        _plant(self.root, ".claude/agents/" + open_name)
+        _plant(self.root, ".claude/commands/" + controlled_name)
+        stream = io.StringIO()
+        state, _by, detail = probes_common.probe_discovery_surface(
+            "claude", self.root, disclose=stream)
+        self.assertEqual(hosts.REFUTED, state)
+        for text in (detail, stream.getvalue()):
+            self.assertEqual([], _live_control_bytes(text),
+                             repr(text))
+        # Escaped, not deleted: the operator still sees which bytes arrived.
+        self.assertIn(r".claude/agents/a\x1b[2Jb\x0ddriver: all clear\x07.md",
+                      detail)
+        self.assertIn("CL-5: no launch control closes it", detail)
+        self.assertIn(r".claude/commands/x\x1b[31mRED\x1b[0m.md", detail)
+        self.assertIn(r".claude/commands/x\x1b[31mRED\x1b[0m.md",
+                      stream.getvalue())
+        self.assertIn("closed by claude:disable-slash-commands (CL-6/CL-7)",
+                      stream.getvalue())
+
+    def test_a_hostile_directory_name_is_inert_in_the_unreadable_sentence(self):
+        # The same sentence carries what the scan could not READ, and a
+        # directory name is as much the target's to choose as a file name.
+        import getpass
+        if getpass.getuser() == "root":
+            self.skipTest("running as root, os.listdir ignores permissions")
+        directory = os.path.join(self.root, ".claude", "skills",
+                                 "s\x1b[2Jhadow\r")
+        os.makedirs(directory)
+        os.chmod(directory, 0o000)
+        self.addCleanup(os.chmod, directory, 0o700)
+        state, _by, detail = probes_common.probe_discovery_surface(
+            "claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("could not read", detail)
+        self.assertEqual([], _live_control_bytes(detail), repr(detail))
+        self.assertIn(r"s\x1b[2Jhadow\x0d", detail)
 
 
 def _register_perfect_shells(directory):

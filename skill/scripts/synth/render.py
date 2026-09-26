@@ -8,6 +8,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.redact as redact
 import scripts.safe_write as safe_write
+import scripts.tools.base as tool_base
 from . import findings as findings_mod
 from . import grading as grading_mod
 
@@ -222,8 +223,9 @@ def _cfg_value(value):
         return "true" if value else "false"
     if value is None:
         return "null"
-    text = str(value)
-    return text if len(text) <= _CFG_VALUE_MAX else text[:_CFG_VALUE_MAX] + "…"
+    # Inert as well as bounded (#1829 SEC-798292895): the key and the value are
+    # the target repository's own text, and this line is read in a terminal.
+    return tool_base.inert_text(value, limit=_CFG_VALUE_MAX)
 
 
 def render_summary(report):
@@ -232,7 +234,11 @@ def render_summary(report):
     gate_mode = report["meta"].get("gate_security_mode")
     health_line = _render_health(s.get("health"))
     lines = [
-        "# panopticon — %s" % report["meta"]["target"],
+        # #1829 SEC-798292895: belt and braces for the two fields the
+        # normalization boundary does not own -- the target path this run was
+        # given, and a group name out of the reviewed repository's own group
+        # table (`repo_config` names that file; this module does not).
+        "# panopticon — %s" % tool_base.inert_text(report["meta"]["target"]),
         "",
         "**Grade:** %s  **Risk:** %s  **Gate:** %s%s%s" % (
             _grade_text(s),
@@ -379,7 +385,7 @@ def render_summary(report):
     for g in report["groups"]:
         pg = g["panel_grades"]
         grades = " / ".join("%s %s" % (p, pg[p]) for p in findings_mod.PANEL_ORDER)
-        lines.append("- **%s** — %s" % (g["name"], grades))
+        lines.append("- **%s** — %s" % (tool_base.inert_text(g["name"]), grades))
     lines.append("")
     lines.append("## Top findings")
     for f in sorted(report["findings"], key=findings_mod._issue_sort)[:10]:

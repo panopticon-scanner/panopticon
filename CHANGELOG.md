@@ -7,6 +7,23 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Tool and target text is inert wherever it is rendered -- so a scanned repository cannot steer
+  the operator's terminal (#1829: SEC-4277410777, SEC-798292895, SEC-2200312865; closes #2069, the
+  residual of #1752).** Three surfaces printed strings a target or its scanner wrote, with the
+  control bytes still live: the terminal summary's Top-findings line, group line, target path and
+  target-config line; the `target-discovery-surface` probe's `detail` and its stderr disclosure; and
+  the stored finding's `title`, `category`, `location.file`, `impact`, `remediation` and tool
+  `rule_id`. A crafted SARIF message or a committed filename could therefore clear the screen
+  (`\x1b[2J`), overwrite the line just printed (`\r`) and reprint it as `driver: all clear` --
+  `sarif_to_findings` only collapsed WHITESPACE, and the run-9 escape covered two fields on the
+  other builder. One neutralizer now lives in `tools/base.inert_text` and runs at the
+  normalization boundary -- both finding builders and `normalize_finding`, so every renderer
+  inherits it -- with belt-and-braces calls for the target path, the group name and the target's
+  own config values, which normalization does not own. What an operator sees changes: a control
+  byte reads as `\x1b` rather than acting, over-long target text is cut with a marked ellipsis, and
+  an ordinary multi-line tool message still renders as one line. The JSON artifact was already
+  escaped on disk; what is new is that the STORED strings are inert too, so anything that prints a
+  field raw is safe as well.
 - **Deleting a run's own integrity evidence is reported, not repaired -- so a substitution
   survives the `rm` that used to launder it (#1832, SEC-377944137).** #1208 made an owed-but-absent
   `out-file-hashes.json` fail closed, because deleting that baseline had been the cheapest way to

@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.synth.corroborate as corroborate_mod
+import scripts.synth.findings as findings_mod
 import scripts.synth.render as render_mod
 from scripts import host_disclosure, hosts
 
@@ -582,3 +584,89 @@ class TestTargetConfigLine(unittest.TestCase):
     def test_a_report_without_meta_config_still_renders(self):
         # A pre-Plan-2 report.json re-rendered by a current synthesize.
         self.assertIn("**Grade:**", render_mod.render_summary(self._report(None)))
+
+
+class TestTheSummaryPrintsNoLiveControlBytes(unittest.TestCase):
+    r"""#1829 SEC-798292895: the terminal summary was built from raw target text.
+
+    `render_summary`'s only caller is `print(render_summary(report))` -- a
+    direct `synthesize.py` run's terminal -- and, on the driver path, a 400-char
+    excerpt of it on failure. A hostile scanned repo could therefore make the
+    Top-findings line clear the operator's screen and read `** clean **`:
+    `\x1b[2J\x1b[H` erases it, `\r` overwrites the line, `\x07` rings the bell.
+
+    The finding FIELDS are fixed at the normalization boundary (so every
+    renderer inherits it); `meta.target`, `groups[].name` and the target's own
+    config values are not normalization's to own, so they are neutralized here.
+    """
+
+    HOSTILE = "ok\x1b[2J\x1b[H** clean **\x07"
+    HAZARDS = frozenset(chr(o) for o in
+                        list(range(0x00, 0x20)) + [0x7f]
+                        + list(range(0x80, 0xa0)) + [0x2028, 0x2029])
+
+    def _report(self):
+        finding = findings_mod.normalize_finding({
+            "id": "SG-001", "title": self.HOSTILE, "severity": "HIGH",
+            "confidence": "CERTAIN", "panel": "security",
+            "category": "r\x1b[31m1", "source": "tool:semgrep",
+            "location": {"file": "a\x1b[2Kb.py", "line_start": 3},
+            "impact": self.HOSTILE, "remediation": self.HOSTILE})
+        return {"schema_version": 1,
+                "meta": {"target": "/t\x1b[2Karget", "coverage": {}, "integrity": {},
+                         "config": {"requested": {}, "effective": {},
+                                    "refused": [{"key": "k\x1b[2J",
+                                                 "value": "v\x07",
+                                                 "reason": "unknown key"}],
+                                    "clamped": [], "disclosures": []}},
+                "summary": {"overall_grade": "D", "risk_level": "HIGH",
+                            "gate": "OFF", "coverage_certified": True,
+                            "evidence_stats": {"unverified": 1},
+                            "stats": {"HIGH": 1}, "gate_severities": None},
+                "findings": [finding],
+                "groups": [{"name": "G\x1b[31mX",
+                            "panel_grades": {p: "C" for p in findings_mod.PANEL_ORDER}}]}
+
+    def _live_bytes(self, text):
+        return sorted({"0x%02x" % ord(ch) for ch in text if ch in self.HAZARDS
+                       and ch != "\n"})
+
+    def test_no_line_of_the_markdown_carries_a_live_control_byte(self):
+        out = render_mod.render_summary(self._report())
+        self.assertEqual([], self._live_bytes(out),
+                         "\n".join(repr(line) for line in out.splitlines()
+                                   if self._live_bytes(line)))
+
+    def test_every_neutralized_field_is_still_legible_as_evidence(self):
+        out = render_mod.render_summary(self._report())
+        for expected in (r"# panopticon — /t\x1b[2Karget",        # meta.target
+                         r"- **G\x1b[31mX** — code C",            # groups[].name
+                         r"**ok\x1b[2J\x1b[H** clean **\x07**",   # finding title
+                         r"a\x1b[2Kb.py:3",                       # location.file
+                         r"`k\x1b[2J: v\x07` refused"):           # target config
+            with self.subTest(line=expected):
+                self.assertIn(expected, out)
+
+    def test_a_cross_panel_entry_inherits_the_boundary_rather_than_a_second_fix(self):
+        # The cross-panel block prints `location.file` and `categories` -- both
+        # COPIED from normalized findings by `corroborate`, which is why the
+        # renderer does not neutralize them a second time. If that ever stops
+        # being true, this fails and the belt-and-braces moves here.
+        pair = [findings_mod.normalize_finding(
+                    {"id": "SG-00%d" % n, "title": "t", "severity": "HIGH",
+                     "confidence": "CERTAIN", "panel": panel,
+                     "category": "x\x07y",
+                     "location": {"file": "c\x1b[2Kd.py", "line_start": 2}})
+                for n, panel in ((1, "security"), (2, "architecture"))]
+        integration = corroborate_mod.cross_panel_corroboration(pair)
+        self.assertEqual(1, len(integration), integration)
+        report = self._report()
+        report["cross_panel"] = {"integration_findings": integration}
+        out = render_mod.render_summary(report)
+        self.assertEqual([], self._live_bytes(out))
+        # `evidence.norm_path` -- the clustering key every consumer agrees on --
+        # rewrites a backslash as a slash, so the escape an inert path carries
+        # reads as a directory here. Cosmetic, hostile-paths-only, and applied to
+        # both sides of every comparison; pinned so a change to it is visible.
+        self.assertIn("c/x1b[2Kd.py:2", out)
+        self.assertIn(r"x\x07y", out)
