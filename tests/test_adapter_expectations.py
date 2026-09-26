@@ -67,6 +67,25 @@ class TestSharedAdapterExpectation(unittest.TestCase):
                     self, "controlled", target, label="planted eval",
                     matches=lambda row: row["tool_evidence"]["rule_id"] == "eval-rule")
 
+    def test_long_scanner_fields_have_bounded_mismatch_preview(self):
+        fake = FakeAdapter([finding("RULE-" + "R" * 10000,
+                                    "path/" + "F" * 10000,
+                                    "PACKAGE-" + "P" * 10000)])
+        with tempfile.TemporaryDirectory() as target, mock.patch.dict(ADAPTERS, {"controlled": fake}):
+            with self.assertRaises(AssertionError) as caught:
+                helpers.assert_adapter_finds_at(
+                    self, "controlled", target, label="long-fields fixture",
+                    matches=lambda row: row["tool_evidence"]["rule_id"] == "eval-rule")
+        message = str(caught.exception)
+        self.assertIn("long-fields fixture", message)
+        self.assertIn("no finding matches expected planted content", message)
+        for prefix in ("RULE-", "path/", "PACKAGE-"):
+            self.assertIn(prefix, message)
+        self.assertLess(len(message), 400)
+        self.assertNotIn("R" * 100, message)
+        self.assertNotIn("F" * 100, message)
+        self.assertNotIn("P" * 100, message)
+
     def test_empty_wrong_exit_and_nonapplicability_fail_separately(self):
         for fake, message in (
             (FakeAdapter([]), "expected controlled findings"),

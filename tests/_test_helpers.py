@@ -323,10 +323,15 @@ def assert_adapter_finds_at(test_case, adapter_name, target, group="g1",
     )
     findings = adapter.parse(raw, group)
     test_case.assertTrue(findings, f"expected {adapter_name} findings against {label}")
+
+    def preview(value):
+        rendered = str(value)
+        return rendered[:72] + ("…" if len(rendered) > 72 else "")
+
     summary = [
-        ((f.get("tool_evidence") or {}).get("rule_id"),
-         (f.get("location") or {}).get("file"),
-         (f.get("tool_evidence") or {}).get("package_name"))
+        (preview((f.get("tool_evidence") or {}).get("rule_id")),
+         preview((f.get("location") or {}).get("file")),
+         preview((f.get("tool_evidence") or {}).get("package_name")))
         for f in findings[:5]
     ]
     test_case.assertTrue(
