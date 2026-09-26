@@ -365,9 +365,11 @@ def test_sec_floor_on_build_and_ci_execution_surfaces():
     ]
     if len(misses) != 50:
         raise AssertionError(len(misses))
-    for f in misses:
-        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
-            raise AssertionError(f"{f} failed to floor SEC")
+    # review NIT 9: accumulate every miss instead of raising on the first, so a
+    # catalog regression that breaks ten entries names all ten, not just one.
+    bad = [f for f in misses if cov.applicable_sec_floor([f]) != frozenset({"SEC"})]
+    if bad:
+        raise AssertionError(bad)
 
 
 def test_sec_floor_on_build_ci_yaml_alternate_spellings():
@@ -429,6 +431,18 @@ def test_sec_floor_existing_supply_chain_entries_unchanged():
     for f in existing:
         if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
             raise AssertionError(f"{f} regressed off the SEC floor")
+    # review NIT 10: the loop above catches DELETING an original hint but not
+    # WIDENING one (e.g. "dockerfile" -> "file" still floors every path above).
+    # This is the one place asserting the table's literal contents is correct:
+    # pin the original 19 entries byte-for-byte, in order.
+    original_19 = (
+        ".github/workflows/", ".gitlab-ci", "jenkinsfile", ".circleci",
+        "dockerfile", "docker-compose", ".dockerignore", "/helm/", "/k8s/",
+        "requirements.txt", "package.json", "package-lock", "gemfile", "go.mod",
+        "cargo.toml", "pom.xml", "build.gradle", "pyproject.toml", "poetry.lock",
+    )
+    if cov._SEC_SUPPLY_CHAIN_HINTS[:19] != original_19:
+        raise AssertionError(cov._SEC_SUPPLY_CHAIN_HINTS[:19])
 
 
 def test_exclude_rejected_wording_does_not_claim_the_domain_ran():
