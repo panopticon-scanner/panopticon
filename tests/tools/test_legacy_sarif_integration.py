@@ -34,13 +34,19 @@ Triage the change; do not loosen the assertion reflexively.
 import hashlib
 import json
 import os
+import re
 import shutil
+import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from _test_helpers import (assert_adapter_finds, assert_adapter_finds_at,
                            skip_or_fail)
+from scripts import run_tools
 from scripts.tools.legacy_sarif import LegacySarifAdapter
 from .conftest import OK_SCAN_EXIT_CODES, in_tools_image
 
@@ -199,6 +205,139 @@ class TestGitleaksIntegration(_LiveTool):
                                 for loc in result.get("locations", [])]
                     self.assertTrue(snippets, case)
                     self.assertTrue(all(s == "REDACTED" for s in snippets), case)
+
+
+@pytest.mark.docker
+class TestGitleaksRunToolsDocker(unittest.TestCase):
+    """Host Docker regression through the production dispatcher and capture path.
+
+    The in-image adapter lane has no Docker daemon. This separate class runs
+    only with an explicit host opt-in; strict mode makes missing prerequisites
+    failures once the lane has opted in.
+    """
+
+    _image_id = None
+
+    def setUp(self):
+        if os.environ.get("PANOPTICON_GITLEAKS_HOST_DOCKER") != "1":
+            # strict-skip-exempt: this class belongs to the separate host Docker lane
+            self.skipTest("host Docker Gitleaks regression requires explicit opt-in")
+        if self.__class__._image_id is None:
+            image = os.environ.get("PANOPTICON_GITLEAKS_TEST_IMAGE", "")
+            if not image:
+                skip_or_fail(self, "PANOPTICON_GITLEAKS_TEST_IMAGE is unset")
+            try:
+                inspected = subprocess.run(
+                    ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+                    capture_output=True, text=True, timeout=30, check=False)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                skip_or_fail(self, "Docker image inspection unavailable: %s" % exc)
+            if inspected.returncode != 0:
+                skip_or_fail(self, "Docker image unavailable: %s: %s" %
+                             (image, inspected.stderr.strip()))
+            image_id = inspected.stdout.strip()
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+                self.fail("Docker did not resolve an immutable image ID: %r" % image_id)
+
+            dockerfile = Path(__file__).resolve().parents[2] / "Dockerfile"
+            match = re.search(r"^ARG GITLEAKS_VERSION=(\S+)$",
+                              dockerfile.read_text(encoding="utf-8"), re.MULTILINE)
+            self.assertIsNotNone(match, "Dockerfile lost its Gitleaks version pin")
+            version = subprocess.run(
+                ["docker", "run", "--rm", image_id, "gitleaks", "version"],
+                capture_output=True, text=True, timeout=30, check=False)
+            self.assertEqual(version.returncode, 0, version.stderr)
+            self.assertRegex(version.stdout.strip(),
+                             r"(?:^|[^0-9A-Za-z])v?%s(?:$|[^0-9A-Za-z])" %
+                             re.escape(match.group(1)))
+            self.__class__._image_id = image_id
+
+    def _scan(self, root, *, mode, credential, ignore):
+        target = root / "target"
+        target.mkdir()
+        config = target / "config.yml"
+        config.write_text(
+            'service:\n  api_key: "%s"\n' % DECOY_DIGEST if credential
+            else 'service:\n  timeout: 20\n', encoding="utf-8")
+        if ignore:
+            (target / ".gitleaksignore").write_text(
+                "/src/config.yml:generic-api-key:2\n", encoding="utf-8")
+        original = {p.name: p.read_bytes() for p in target.iterdir()}
+        captures = root / "captures"
+        written = run_tools.run_tools(
+            str(target), ["gitleaks"], str(captures),
+            image=self.__class__._image_id, security_mode=mode)
+        manifest_path = root / "tools-manifest.json"
+        run_tools.write_manifest(str(manifest_path), ["gitleaks"], written)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(original,
+                         {p.name: p.read_bytes() for p in target.iterdir()},
+                         "the source tree changed during the scan")
+        return written, manifest
+
+    def test_ignore_file_matrix_through_real_run_tools(self):
+        for credential, ignore in ((True, True), (True, False),
+                                   (False, True), (False, False)):
+            for mode in ("standard", "redteam"):
+                with self.subTest(credential=credential, ignore=ignore, mode=mode):
+                    with tempfile.TemporaryDirectory() as scratch:
+                        root = Path(scratch)
+                        written, manifest = self._scan(
+                            root, mode=mode, credential=credential, ignore=ignore)
+                        self.assertEqual(len(written), 1, manifest)
+                        self.assertEqual(Path(written[0]).name, "gitleaks.sarif")
+                        self.assertEqual(manifest["selected"], ["gitleaks"])
+                        self.assertEqual(manifest["produced"], ["gitleaks"])
+                        self.assertEqual(manifest["missing"], [])
+                        self.assertTrue(manifest["redacted"])
+                        posture = ("neutralised" if ignore and mode == "redteam"
+                                   else "honoured" if ignore else "absent")
+                        self.assertEqual(manifest["ignore_files"],
+                                         {"gitleaks": posture})
+                        capture = Path(written[0]).read_bytes()
+                        self.assertNotIn(DECOY_DIGEST.encode(), capture)
+                        results = [result for run in json.loads(capture).get("runs", [])
+                                   for result in run.get("results", [])]
+                        expected = int(credential and (not ignore or mode == "redteam"))
+                        self.assertEqual(len(results), expected, results)
+                        if expected:
+                            result = results[0]
+                            self.assertEqual(result["ruleId"], "generic-api-key")
+                            location = result["locations"][0]["physicalLocation"]
+                            self.assertTrue(location["artifactLocation"]["uri"].endswith(
+                                "/config.yml"), location)
+                            self.assertEqual(location["region"]["startLine"], 2)
+                            self.assertEqual(location["region"]["snippet"]["text"],
+                                             "REDACTED")
+
+    def test_unsafe_redteam_symlink_is_missing_coverage(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            target = root / "target"
+            target.mkdir()
+            config = target / "config.yml"
+            config.write_text('service:\n  api_key: "%s"\n' % DECOY_DIGEST,
+                              encoding="utf-8")
+            ignore = target / ".gitleaksignore"
+            ignore.symlink_to("config.yml")
+            original = config.read_bytes()
+            captures = root / "captures"
+            written = run_tools.run_tools(
+                str(target), ["gitleaks"], str(captures),
+                image=self.__class__._image_id, security_mode="redteam")
+            manifest_path = root / "tools-manifest.json"
+            run_tools.write_manifest(str(manifest_path), ["gitleaks"], written)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(written, [])
+            self.assertEqual(manifest["selected"], ["gitleaks"])
+            self.assertEqual(manifest["produced"], [])
+            self.assertEqual(manifest["missing"], ["gitleaks"])
+            self.assertEqual(manifest["ignore_files"], {})
+            self.assertFalse(manifest["redacted"])
+            self.assertFalse((captures / "gitleaks.sarif").exists())
+            self.assertEqual(config.read_bytes(), original)
+            self.assertTrue(ignore.is_symlink())
+            self.assertEqual(os.readlink(ignore), "config.yml")
 
 
 class TestGosecIntegration(_LiveTool):
