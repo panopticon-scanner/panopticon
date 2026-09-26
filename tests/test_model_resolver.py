@@ -2,6 +2,7 @@ import builtins
 import contextlib
 import io
 import os
+import tempfile
 import unittest
 from unittest import mock
 from unittest.mock import patch
@@ -207,6 +208,22 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(profiles, {})
         self.assertIn("cannot read model profiles", stderr.getvalue())
         self.assertEqual(mr.resolve_model("kimi", "scout")["model"], "primary")
+
+    def test_invalid_yaml_profile_warns_and_resolves_from_fresh_fallback(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "model-profiles.yml")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("hosts: [\n")
+            stderr = io.StringIO()
+            with patch.object(mr._version, "reference_path", return_value=path), \
+                    patch.object(mr, "_PROFILES", None), \
+                    contextlib.redirect_stderr(stderr):
+                self.assertEqual(mr._load_profiles(), {})
+                self.assertEqual(mr.resolve_model("kimi", "domain_advisor")["model"],
+                                 "secondary")
+                self.assertEqual(mr._PROFILES, {})
+            self.assertIn("invalid YAML", stderr.getvalue())
+            self.assertIn(path, stderr.getvalue())
 
     def test_kimi_fallback_still_kimi_flavored(self):
         # With profiles unavailable, kimi host keeps its hardcoded models.
