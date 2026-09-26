@@ -7,6 +7,10 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The SEC floor's catalog now names the build/CI surfaces that execute code
+  (#1838, SEC-71240568).** Makefiles, setup.py, Terraform, second-tier CI
+  systems, MSBuild project files, and lockfiles were live misses -- a target
+  omitting SEC and a scout that never asks for it left those files unreviewed.
 - **A heredoc handed to an interpreter is read as the script it is, or reported as unread (#1839,
   run-14 SEC-3915165799).** `scripts/workflow_guard.py` is CI's only enforcement of the #1529
   fetch-and-exec rule -- `tests/test_workflow_pins.py` runs it over every `run:` step in
