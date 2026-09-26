@@ -5,6 +5,8 @@ only argue the `new_code` disposition. Strain reports DISAGREEMENT — two codes
 in play and a reader had to choose — which is the only evidence that can argue
 `boundary` or `refine_existing`, both already in OCRDb's vocabulary.
 """
+import contextlib
+import io
 import json
 import os
 import unittest
@@ -85,10 +87,41 @@ class TestAdvisorRecodeSignals(unittest.TestCase):
         g = _finding("B", "QAL-G1A", advisor="QAL-G2A")
         self.assertFalse(sr.advisor_recode_signals([g], "run1")[0]["cross_domain"])
 
-    def test_a_finding_with_no_file_is_skipped(self):
-        f = _finding("A", "DAT-C1B", advisor="QAL-G1A")
+    def test_a_finding_with_no_file_is_announced_then_skipped(self):
+        # #1807 DAT-2501524861: the recode itself is real evidence -- only its
+        # occurrence record is impossible, because the schema requires a file and
+        # inventing one would be a lie. Announce the drop rather than swallow it.
+        f = _finding("A", "DAT-C1B", advisor="QAL-G1A", title="pinning\tpolicy")
         f["location"] = {}
-        self.assertEqual(sr.advisor_recode_signals([f], "run1"), [])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(sr.advisor_recode_signals([f], "run1"), [])
+        self.assertEqual(err.getvalue(),
+                         "strain: 'A': dropping an advisor recode with no file "
+                         "location: 'DAT-C1B' -> 'QAL-G1A' 'pinning policy'\n")
+
+    def test_a_hostile_recode_cannot_forge_a_second_diagnostic_line(self):
+        # Review I1: `id`, `code` and `provenance.advisor_code` are all
+        # agent-authored, and this is the module's ONLY terminal output, so it
+        # inherits no posture. One finding must not be able to clear the screen,
+        # ring the bell, or write a line that reads as this tool's own honest
+        # output -- nor fill the terminal with a 200-char code.
+        f = _finding("\x1b[2J\x07ID\nstrain: FAKE: nothing dropped",
+                     "DAT-C1B" + "!" * 200,
+                     advisor="QAL-G1A\nstrain: forged second line",
+                     title="pinning\npolicy" + "x" * 200)
+        f["location"] = {}
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(sr.advisor_recode_signals([f], "run1"), [])
+        out = err.getvalue()
+        self.assertEqual(len(out.splitlines()), 1)        # one physical line
+        self.assertNotIn("\x1b", out)                     # no raw ESC
+        self.assertNotIn("\x07", out)                     # no raw BEL
+        self.assertIn("\\x1b[2J", out)                    # escaped, inert
+        self.assertIn("'DAT-C1B" + "!" * 32 + "\u2026'", out)   # code bound at 40, cut marked
+        self.assertIn("'pinning policyxxx", out)          # title squeezed
+        # %r can expand one escaped character to six, so the real ceiling is
+        # 6 x (title + two codes) + fixed prose -- not the pre-escape caps.
+        self.assertLessEqual(len(out), 6 * (120 + 40 + 40) + 200)
 
 
 class TestCrossRunSignals(unittest.TestCase):

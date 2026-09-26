@@ -2,7 +2,7 @@ import contextlib
 import io
 import os
 import unittest
-from _test_helpers import first, only, skip_or_fail
+from _test_helpers import first, only
 from unittest import mock
 from xml.etree.ElementTree import ParseError
 
@@ -166,30 +166,61 @@ class TestSpotBugsAdapter(unittest.TestCase):
 
 
 class TestHardenedXmlParser(unittest.TestCase):
-    def test_defusedxml_is_preferred_over_stdlib(self):
-        # Regression: adding the offline prefix trim mangled the
-        # try/except import, leaving `import xml.etree.ElementTree as ET`
-        # running UNCONDITIONALLY at module level -- so ET was the
-        # unhardened stdlib parser even though defusedxml is installed in
-        # the image. Tool output is untrusted (target-controlled strings),
-        # and the trim makes MORE of it reach the parser, so the hardened
-        # parser matters more after that change, not less.
-        import importlib.util
-        if importlib.util.find_spec("defusedxml") is None:
-            skip_or_fail(self, "defusedxml not installed on this host")
-        self.assertIn("defusedxml", sb.ET.__name__,
-                      "spotbugs must parse untrusted XML with defusedxml when "
-                      "it is available; the stdlib parser is the fallback only")
+    @staticmethod
+    def _entity_report(declaration):
+        return ('<?xml version="1.0"?>\n<!DOCTYPE BugCollection [' + declaration + ']>'
+                '<BugCollection><BugInstance type="&probe;" priority="1">'
+                '<Class classname="example.Probe"/></BugInstance></BugCollection>').encode()
 
-    def test_the_import_is_a_guarded_fallback_not_an_override(self):
-        # Assert the SHAPE, so a future edit cannot silently re-flatten it:
-        # the stdlib import must live inside the except branch.
-        import inspect
-        src = inspect.getsource(sb)
-        head = src[:src.index("from .base import")]
-        self.assertIn("except ImportError:\n    import xml.etree.ElementTree", head,
-                      "the stdlib XML import must stay INSIDE the ImportError "
-                      "fallback, not run unconditionally")
+    def test_required_hardened_parser_rejects_internal_entities(self):
+        # defusedxml is a declared runtime dependency: its absence is a failure,
+        # not a skipped security assertion. Stdlib expands this tiny inert value.
+        from defusedxml.common import EntitiesForbidden
+        self.assertEqual(len(sb.SpotBugsAdapter().parse(SPOTBUGS_SAMPLE, "g1")), 1)
+        payload = self._entity_report('<!ENTITY probe "INERT_ENTITY_SENTINEL">')
+        with self.assertRaises(EntitiesForbidden):
+            sb.SpotBugsAdapter().parse(payload, "g1")
+
+    def _assert_external_entities_refused_without_io(self, adapter, error):
+        import socket
+        import urllib.request
+        for uri in ("file:///nonexistent-panopticon-entity-probe", "https://example.invalid/entity"):
+            payload = self._entity_report('<!ENTITY probe SYSTEM "' + uri + '">')
+            with self.subTest(uri=uri), \
+                    mock.patch("builtins.open", side_effect=AssertionError("unexpected file read")) as opened, \
+                    mock.patch.object(socket, "socket", side_effect=AssertionError("unexpected network")) as network, \
+                    mock.patch.object(urllib.request, "urlopen", side_effect=AssertionError("unexpected HTTP")) as http:
+                with self.assertRaises(error):
+                    adapter.parse(payload, "g1")
+                opened.assert_not_called()
+                network.assert_not_called()
+                http.assert_not_called()
+
+    def test_hardened_parser_refuses_external_entities_without_io(self):
+        from defusedxml.common import EntitiesForbidden
+        self._assert_external_entities_refused_without_io(sb.SpotBugsAdapter(), EntitiesForbidden)
+
+    def test_missing_dependency_fallback_parses_benign_xml_and_refuses_external_entities(self):
+        # Fresh isolated module namespace; do not rebind the imported adapter
+        # used by other tests. This documents the current fallback, not a claim
+        # that it offers defusedxml's internal-entity protection.
+        import builtins
+        import importlib.util
+        original_import = builtins.__import__
+
+        def without_defusedxml(name, *args, **kwargs):
+            if name.startswith("defusedxml"):
+                raise ImportError("forced missing optional import")
+            return original_import(name, *args, **kwargs)
+
+        spec = importlib.util.spec_from_file_location("scripts.tools._spotbugs_fallback_test", sb.__file__)
+        fallback = importlib.util.module_from_spec(spec)
+        with mock.patch.object(builtins, "__import__", side_effect=without_defusedxml):
+            spec.loader.exec_module(fallback)
+        adapter = fallback.SpotBugsAdapter()
+        finding = only(adapter.parse(SPOTBUGS_SAMPLE, "g1"))
+        self.assertEqual(finding["title"], "SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE")
+        self._assert_external_entities_refused_without_io(adapter, ParseError)
 
 
 class TestOfflineLogPrefix(unittest.TestCase):
@@ -254,4 +285,3 @@ class TestOfflineLogPrefix(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

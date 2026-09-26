@@ -1401,8 +1401,20 @@ class TestThePostureBlockIsSaidInFullOncePerPosture(unittest.TestCase):
         # The resumer is still told what they are resuming under: 2 proven of
         # 5, 3 not. Both halves, so a headline cannot go quiet by counting
         # nothing.
-        self.assertIn("2", out)
-        self.assertIn("3", out)
+        self.assertIn("2 of 5 capabilities proven, 3 not -- unchanged since", out)
+
+    def test_unchanged_headline_counts_change_independently_of_timestamp(self):
+        for state, expected in ((hosts.PROVEN, "3 of 5 capabilities proven, 2 not"),
+                                (hosts.UNKNOWN, "2 of 5 capabilities proven, 3 not")):
+            with self.subTest(state=state):
+                artifact = copy.deepcopy(self.ARTIFACT)
+                artifact["capabilities"][hosts.USAGE_LEDGER]["state"] = state
+                root = self._run_root()
+                self._invoke(root, artifact)
+                error, out = self._invoke(root, artifact)
+                self.assertIsNone(error)
+                self.assertEqual(len(out.splitlines()), 1)
+                self.assertIn(expected + " -- unchanged since", out)
 
     def test_setup_stamps_its_own_manifest_and_collapses_the_repeat(self):
         root = self._run_root()

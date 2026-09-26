@@ -1,4 +1,8 @@
 {
+  "groups": [
+    {"name": "Auth", "files": ["app/auth.py"],
+     "panel_grades": {"security": "D"}}
+  ],
   "findings": [
     {"id": "F-DUP-1", "severity": "INFO", "panel": "", "category": "",
      "location": {"file": ""}, "title": "", "fingerprint": "aaaaaaaaaaaaaaaa"},

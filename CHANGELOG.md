@@ -33,6 +33,57 @@ evidence exposed.
   also sweeps a staging file orphaned by a SIGKILL. Staging opens
   without `O_EXCL` project-wide (#2093) and an `OSError` from this write still reaches the operator
   as a traceback rather than a status (#2094) -- follow-ups, not fixed here.
+- **A catalog gap with no file location is disclosed, not dropped (#1807, DAT-2501524861).** The X0X
+  emitter drops a candidate cluster when no finding in it carries a `location.file`, because the
+  schema requires a `file` on every occurrence — and a locus-free finding is the CANONICAL shape for
+  a repo-wide catalog gap, which `synth/findings.py` produces deliberately (#1522 COD-D1B pops the
+  empty location rather than quarantine the finding). So the emitter whose whole purpose is to carry
+  catalog gaps into OCRDb's adjudication pool was discarding exactly the repo-wide ones, in silence,
+  and `synthesize`'s `X0X artifact: <path> (N candidates)` line printed a count that was quietly
+  short. Nothing is invented — a file cannot be. The count the report had to leave out is now
+  published as `candidates_dropped_locus_free` (omitted when zero), an optional integer DECLARED in
+  `skill/reference/x0x-report-schema.json` so a downstream ingester has a documented field to read;
+  that key is the carrier that survives a `driver run`, because the driver keeps a child's output
+  only on failure. Run `synthesize.py` yourself and each dropped cluster is named on stderr too —
+  the domain, the lead title or, untitled, its finding id, and how many findings the cluster held —
+  with the count appended to the `X0X artifact:` line. Every agent-authored field in either
+  diagnostic is squeezed to one line, bounded with the cut MARKED, and rendered inert with `%r`, so
+  one hostile finding cannot repaint the operator's terminal or forge a line that reads as the
+  tool's own honest output. `strain_report.advisor_recode_signals` — the offline catalog-MIS-FIT
+  companion, which has no pipeline caller — makes the same disclosure at its own locus-free drop;
+  `cross_run_signals`'s line-window join is left alone, being intrinsically file-keyed. Residual,
+  filed as #2090: a MIXED cluster still reaches the pool with its locus-free member absent from
+  `recurrence`, silently.
+- **A run3 that never reviewed the file can no longer corroborate a "fixed" close (#1807,
+  DAT-1268532600).** Stage 1 (`skill/scripts/reconcile.py diff`) read "no run3 record on this (file,
+  panel)" as evidence of a fix, and its two whole-run guards only fired when run3 was EMPTY or
+  shared no path at all with run2 -- so a NARROWER re-run (`--scope-file a.py`, one directory, one
+  group, a PR diff) overlaps on a single path, defeats both, and every still-unfixed finding on the
+  files it never opened landed in the `closed` cohort, which `scripts/reconcile_apply.py apply
+  --confirm-close` turns into a real GitHub close commented "**Reconciliation: fixed (area
+  clear).**". That `(file, panel)`-clear read is now gated on ONE further thing, and only that
+  thing: run3's own claim to have reviewed the file -- `groups[].files`, merged across the report
+  and every part. Nothing stands in for the claim, a record on the file included: a record proves
+  some scanner or cell read the path, not that the (file, panel) whose silence is read as a fix was
+  reviewed. So the diff refuses three ways: a finding on a file run3 does not list goes to
+  `ambiguous` (kept open), reading "<file> was not reviewed in run3 -- absence of findings is not a
+  fix", or, when run3 does carry a record on that path, "run3 produced records on <file> but its
+  report does not list it among the files it reviewed (groups[].files)" -- an under-stated
+  `groups[].files` is a report-side bug, named rather than trusted; a run3 whose report states no
+  files at all guards the whole run (`run3_files_unstated`); and a run3 whose report does not
+  declare `meta.review_type: "repo"` -- a scoped review, an absent, empty or unreadable value, or a
+  part contradicting it -- guards it too (`run3_not_repo_wide`). Missing information fails CLOSED,
+  with no flag to opt back into the old reading. Stage 2 words every one of those refusals as
+  "**Reconciliation: not corroborated.**", where it used to claim the area was still active and the
+  finding probably re-worded -- which for a zero-record or path-drifted run3 was simply false.
+  **Operator-visible:** a close now needs a repo-wide run3 that says what it looked at, and the
+  summary names an active guard once on its own `guard:` line instead of only repeating it per
+  finding; a run3 that is merely NARROWER by file list still closes the findings on the files it
+  does list. Still open as follow-ups: #2084 -- a run3 that declared itself repo-wide but LOST cells
+  (`meta.coverage.cells.missing_floor` non-empty, `summary.coverage_certified` false) still lists
+  every file in `groups`, so it can corroborate closes on files no review cell actually reached; and
+  #2087 -- the claim is per FILE and per RUN while the silence read as a fix is per `(file, panel)`,
+  so a panel or tool axis that never ran on a listed file still reads as clear.
 - **Three run-artifact readers in `synth/` no longer end a run on a file a target can pre-commit
   (#1811, #1812 — DAT-2808086775, DAT-3713947858, DAT-1553408299).** `coverage-*.json`,
   `dispatch-plan-driver.json` and the agent findings files are read back out of the run folder,

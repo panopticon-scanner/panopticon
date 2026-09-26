@@ -3,11 +3,11 @@ tests/synth/test_<module>.py (WS-0 S4).
 """
 import contextlib
 import html
-import inspect
 import io
 import os
 import json
 import tempfile
+from pathlib import Path
 import unittest
 from unittest import mock
 
@@ -1103,6 +1103,25 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertIn("report-x0x.json", stderr)
         self.assertIn("Grade:", stdout)
 
+    def test_a_wrong_typed_drop_tally_cannot_crash_the_artifact_line(self):
+        # Review N5: in production the tally is an int built two lines up, but a
+        # `%d` on a mocked or refactored value raises AFTER `os.replace` has put
+        # the artifact in place -- and the driver discards a successful child's
+        # stderr, so the traceback would vanish and the phase still read as
+        # advanced. The clause renders whatever it was handed instead.
+        import scripts.x0x_report as x0x_report
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(
+                    x0x_report, "build_report",
+                    return_value={"candidates": [],
+                                  "candidates_dropped_locus_free": "2"}):
+                rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+        self.assertIn(", 2 locus-free cluster(s) dropped", stdout)
+        self.assertEqual(rc, 4)                        # the mocked envelope is invalid
+        self.assertIn("artifact invalid:", stderr)
+
     def test_an_unhydratable_part_is_an_invalid_artifact_not_a_silent_pass(self):
         # A `meta.parts` pointer at a file that cannot be read makes the union
         # unknowable. Fail closed: the run cannot claim its artifact is valid.
@@ -1324,22 +1343,34 @@ def test_no_coverage_cell_a_target_can_write_ends_the_run(tmp_path, label, cell)
         assert all(isinstance(x, str) for x in pair), pair
 
 
-def test_the_coverage_reader_reads_the_shape_the_phase_writes():
-    # The sweep row for `coverage-g1.json` used to write `{"cells": [...],
-    # "missing_floor": [...]}` -- keys `audit_floor_cells` never looks at -- so
-    # it was green over zero coverage of the artifact it named. Pin the three
-    # field names against the phase that WRITES the record, so a rename on
-    # either side is caught instead of silently emptying every hostile fixture.
-    writer = inspect.getsource(coverage_phase.coverage_execute)
-    reader = (inspect.getsource(coverage_io.audit_floor_cells)
-              + inspect.getsource(coverage_io.normalized_cell))
-    for key in ("group", "floor", "excluded"):
-        assert '"%s":' % key in writer, "%s is not written by the phase" % key
-        assert '"%s"' % key in reader, "%s is not read by the audit" % key
-    for row in _HOSTILE_RUN_ARTIFACTS:
-        if row[0] == "coverage-g1.json":
-            assert set(row[1]) & {"group", "floor", "excluded"}, \
-                "the sweep's coverage row must use keys the reader reads"
+def test_the_coverage_reader_reads_the_shape_the_phase_writes(tmp_path):
+    from scripts.phases import runio
+    root = str(tmp_path)
+    runio._write_json(runio._pano(root, "groups.json"), {
+        "groups": [{"name": "g1", "files": ["app.py"]}]})
+    runio._write_json(runio._pano(root, "scout-g1.json"), {"domains": ["OPS"]})
+    matrix = {"g1": {"floor": {"COD", "TST"}, "exclude": {"TST"}}}
+    with mock.patch.object(runio, "load_committed_groups", return_value=(matrix, [])):
+        result = coverage_phase.coverage_execute(root, {"run_id": "round-trip"})
+    assert result.kind == "advanced"
+    directory = runio._pano(root)
+    records = coverage_io.load_coverage_files(directory)
+    assert len(records) == 1
+    cell = records[0]
+    assert cell["group"] == "g1"
+    assert cell["floor"] == ["COD", "TST"]
+    assert cell["excluded"] == ["TST"]
+    assert cell["effective"] == ["COD", "OPS"]
+    assert cell["run_id"] == "round-trip"
+    assert coverage_io.audit_floor_cells(records, {}) == {"missing_floor": [["g1", "COD"]]}
+    findings = tmp_path / "findings-g1-COD.json"
+    findings.write_text('{"findings": []}')
+    assert coverage_io.audit_floor_cells(records, coverage_io.present_cells([str(findings)])) == {
+        "missing_floor": []}
+    assert coverage_io.audit_floor_cells(records, {"other": {"COD"}}) == {
+        "missing_floor": [["g1", "COD"]]}
+    (Path(directory) / "coverage-malformed.json").write_text('{broken')
+    assert coverage_io.load_coverage_files(directory) == records
 
 
 def test_a_cross_domain_finding_with_a_mistyped_code_cannot_end_the_run(tmp_path):

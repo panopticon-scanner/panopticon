@@ -36,7 +36,13 @@ class TestEslintSecurityIntegration(unittest.TestCase):
 
     def test_flags_eval_in_the_vendored_js_fixture(self):
         findings = assert_adapter_finds(self, "eslint-security", "insecure-js",
-                                        ok_codes=OK_SCAN_EXIT_CODES)
+                                        ok_codes=OK_SCAN_EXIT_CODES,
+                                        matches=lambda f: (
+                                            f["tool_evidence"]["rule_id"] ==
+                                            "security/detect-eval-with-expression"
+                                            and f["location"]["file"].endswith(
+                                                "/insecure-js/app.js")
+                                            and f["location"]["line_start"] == 2))
         rules = {(f.get("tool_evidence") or {}).get("rule_id") for f in findings}
         self.assertTrue(
             any("security/" in (r or "") for r in rules),

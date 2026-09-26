@@ -326,6 +326,35 @@ class TestPinnedRustAndTrivy(unittest.TestCase):
         self.assertNotIn("apt-get install -y --no-install-recommends trivy", self.text)
 
 
+def _osv_warm_contracts(text):
+    """Read warm invocations, manifest writes and the adjacent ecosystem check.
+    Bounded to the Dockerfile's explicit RUN/for/if shape; never executes shell.
+    """
+    contracts = []
+    for _line, run in _logical_lines(shell_reader.without_comments(text)):
+        if not run.startswith("RUN "):
+            continue
+        stages = [stage for statement in shell_reader.statements(run[4:])
+                  for stage in statement.stages]
+        commands = [shell_reader.command(stage.argv) for stage in stages]
+        scans = [cmd for cmd in commands if cmd and cmd[0] == "osv-scanner"
+                 and "--experimental-download-offline-databases" in cmd
+                 and "--experimental-offline" in cmd
+                 and "--recursive" in cmd
+                 and cmd[cmd.index("--recursive") + 1:] == ["/tmp/osv-warm"]]
+        if not scans:
+            continue
+        writes = {str(path) for stage, cmd in zip(stages, commands)
+                  if cmd and cmd[0] == "printf" for path in stage.writes}
+        for i, stage in enumerate(stages[:-1]):
+            if list(stage.argv[:3]) != ["for", "eco", "in"]:
+                continue
+            if commands[i + 1] != ["[", "!", "-s", "/opt/osv-db/osv-scanner/$eco/all.zip", "]"]:
+                continue
+            contracts.append((set(stage.argv[3:]), writes))
+    return contracts
+
+
 class TestOfflineAssets(unittest.TestCase):
     def setUp(self):
         self.text = _read_dockerfile()
@@ -375,13 +404,11 @@ class TestOfflineAssets(unittest.TestCase):
         # CERTIFICATION on the first real (Go + RubyGems) target. Every
         # ecosystem OsvScannerAdapter.is_applicable accepts must be warmed, and
         # each must be verified, or the gap reappears silently on a new target.
-        for manifest in ("package-lock.json", "requirements.txt", "go.mod",
-                         "Gemfile.lock", "Cargo.lock", "pom.xml"):
-            self.assertIn("/tmp/osv-warm/%s" % manifest, self.text, manifest)
-        # ecosystem directory names are osv-scanner's own spelling, verified
-        # against the pinned release -- not guessed
-        for eco in ("npm", "PyPI", "Go", "RubyGems", "crates.io", "Maven"):
-            self.assertIn(eco, self.text, eco)
+        self.assertEqual(_osv_warm_contracts(self.text), [(
+            {"npm", "PyPI", "Go", "RubyGems", "crates.io", "Maven"},
+            {"/tmp/osv-warm/" + name for name in (
+                "package-lock.json", "requirements.txt", "go.mod",
+                "Gemfile.lock", "Cargo.lock", "pom.xml")})])
         # #run7 review: scope the "no swallowed failures" check to the OSV warm
         # block. The old global assertNotIn(">/dev/null 2>&1") tripped on any
         # unrelated future use of that common idiom anywhere in the Dockerfile.
@@ -395,6 +422,21 @@ class TestOfflineAssets(unittest.TestCase):
                       "OSV-warm block end marker missing from Dockerfile")
         osv_block = self.text.split(start_marker)[1].split(end_marker)[0]
         self.assertNotIn("/dev/null", osv_block)
+
+    def test_osv_guard_ignores_comments_echoes_and_unrelated_commands(self):
+        good = ('RUN timeout 300 osv-scanner --experimental-offline --experimental-download-offline-databases '
+                '--recursive /tmp/osv-warm && for eco in npm PyPI; do '
+                'if [ ! -s "/opt/osv-db/osv-scanner/$eco/all.zip" ]; then exit 1; fi; done')
+        self.assertEqual(_osv_warm_contracts(good), [({"npm", "PyPI"}, set())])
+        for bad in ('# ' + good, 'RUN echo "' + good.replace('"', "'") + '"',
+                    good.replace("osv-scanner", "echo", 1),
+                    good.replace("--recursive /tmp/osv-warm", "--recursive /tmp/other"),
+                    good.replace("if [ ! -s", "if echo [ ! -s"),
+                    good.replace("/opt/osv-db/osv-scanner/$eco/all.zip", "/tmp/unrelated")):
+            with self.subTest(text=bad):
+                self.assertEqual(_osv_warm_contracts(bad), [])
+        wrong = good.replace("npm PyPI", "Go Maven") + "\n# npm PyPI"
+        self.assertEqual(_osv_warm_contracts(wrong), [({"Go", "Maven"}, set())])
 
     def test_fetched_artifacts_use_immutable_urls(self):
         # 2026-09-01: rustup-init was fetched from `rustup/dist/<triple>/`,

@@ -146,14 +146,23 @@ class TestRenderDelta(unittest.TestCase):
     def test_warns_on_pre_existing_high(self):
         out = render_mod.render_summary(self._report({"critical": 0, "high": 2, "medium": 5, "low": 3}))
         self.assertIn("pre-existing", out.lower())
-        self.assertIn("2", out)  # HIGH count
+        self.assertEqual([line for line in out.splitlines() if line.startswith("**Pre-existing")],
+                         ["**Pre-existing (files you touched, not gating):** HIGH 2, MEDIUM 5, LOW 3"])
         self.assertIn("⚠", out)  # loud warning glyph
-        self.assertIn("5", out)  # MEDIUM count still shown
 
     def test_no_warning_without_high(self):
         out = render_mod.render_summary(self._report({"critical": 0, "high": 0, "medium": 4, "low": 1}))
         self.assertNotIn("⚠", out)
-        self.assertIn("4", out)  # MEDIUM count still shown
+        self.assertEqual([line for line in out.splitlines() if line.startswith("**Pre-existing")],
+                         ["**Pre-existing (files you touched, not gating):** MEDIUM 4, LOW 1"])
+
+    def test_counts_are_bound_to_the_pre_existing_severity(self):
+        report = self._report({"high": 5, "medium": 2, "low": 4})
+        report["meta"]["target"] = "unrelated digits 2 5 4"
+        lines = render_mod.render_summary(report).splitlines()
+        self.assertEqual([line for line in lines if line.startswith("**Pre-existing")],
+                         ["**Pre-existing (files you touched, not gating):** HIGH 5, MEDIUM 2, LOW 4"])
+        self.assertNotIn("**Pre-existing (files you touched, not gating):** HIGH 2, MEDIUM 5, LOW 3", lines)
 
     def test_delta_lines_placed_between_evidence_and_groups(self):
         r = self._report({"critical": 1, "high": 0, "medium": 0, "low": 0})

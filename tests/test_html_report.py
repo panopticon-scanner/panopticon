@@ -144,12 +144,30 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("<div class='stat-label'>HIGH</div>", out)
         self.assertIn("<div class='stat-value'>1</div>", out)
 
-    def test_dashboard_renders_group_grades(self):
+    def test_dashboard_renders_group_panel_counts_in_the_heatmap(self):
         report = _minimal_report()
+        report["groups"].append({"name": "Other <group>", "files": ["other.py"]})
+        report["findings"].extend([
+            {"id": "C1", "panel": "code", "severity": "LOW",
+             "location": {"file": "other.py"}},
+            {"id": "C2", "panel": "code", "severity": "LOW",
+             "location": {"file": "other.py"}},
+        ])
         out = hr.render(report)
-        self.assertIn("App", out)
-        self.assertIn("code", out)
-        self.assertIn("security", out)
+        root = _parse(out)
+        dashboards = [node for node in _nodes(root, "section")
+                      if node["attrs"].get("class") == "dashboard"]
+        self.assertEqual(len(dashboards), 1)
+        tables = [node for node in _nodes(dashboards[0], "table")
+                  if node["attrs"].get("class") == "heatmap-table"]
+        self.assertEqual(len(tables), 1)
+        rows = [[_text(cell).strip() for cell in row["children"]]
+                for row in _nodes(tables[0], "tr")]
+        self.assertEqual(rows, [["Group", "code", "security", "Total"],
+                                ["Other <group>", "2", "—", "2"],
+                                ["App", "—", "1", "1"]])
+        self.assertIn("Other &lt;group&gt;", out)
+        self.assertNotIn("<group>", out)
 
     def test_dashboard_renders_top_issues(self):
         report = _minimal_report()
@@ -320,12 +338,13 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("EPSS:0.57", out)
 
     def test_heatmap_renders_group_grid(self):
-        report = _minimal_report()
-        out = hr.render(report)
-        self.assertIn("Group heatmap", out)
-        self.assertIn("App", out)  # the group name is the row label
-        self.assertIn("heat-cell", out)  # a group x panel cell rendered
-        self.assertIn("heat-total", out)
+        root = _parse(hr.render(_minimal_report()))
+        tables = [node for node in _nodes(root, "table")
+                  if node["attrs"].get("class") == "heatmap-table"]
+        self.assertEqual(len(tables), 1)
+        self.assertEqual([[_text(cell).strip() for cell in row["children"]]
+                          for row in _nodes(tables[0], "tr")],
+                         [["Group", "security", "Total"], ["App", "1", "1"]])
 
     def test_heatmap_table_names_rows_columns_and_unknown_cells(self):
         report = _minimal_report()

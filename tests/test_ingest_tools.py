@@ -399,7 +399,19 @@ class TestIngest(unittest.TestCase):
         # survives real tool output shape, not just hand-built test SARIF.
         here = os.path.dirname(__file__)
         out = it.ingest_dir(os.path.join(here, "fixtures"), "g1")
-        self.assertTrue(out)
+        self.assertEqual(len(out), 1)
+        finding = out[0]
+        rule = "python.django.security.django-no-csrf-token.django-no-csrf-token"
+        self.assertEqual(finding["source"], "tool:semgrep")
+        self.assertEqual(finding["category"], rule)
+        self.assertEqual(finding["tool_evidence"]["rule_id"], rule)
+        self.assertEqual(finding["location"], {
+            "file": "templates/example_form.html", "line_start": 63})
+        self.assertEqual(finding["severity"], "MEDIUM")
+        self.assertEqual(finding["_group"], "g1")
+        self.assertIn("csrf_token", finding["title"])
+        self.assertEqual(finding["citations"]["cwe"], ["CWE-352"])
+        self.assertEqual(finding["provenance"]["discovered_by"], "tool:semgrep")
         for f in out:
             self.assertFalse(f["location"]["file"].startswith("/src"))
             self.assertFalse(f["location"]["file"].startswith("file://"))
