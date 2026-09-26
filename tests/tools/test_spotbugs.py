@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import unittest
+from pathlib import Path
 from _test_helpers import first, only
 from unittest import mock
 from xml.etree.ElementTree import ParseError
@@ -20,6 +21,34 @@ SPOTBUGS_SAMPLE = b"""<?xml version="1.0" encoding="UTF-8"?>
 
 
 class TestSpotBugsAdapter(unittest.TestCase):
+    def test_invoke_uses_compiled_classes_plugin_xml_and_isolated_cwd(self):
+        with self.subTest("compiled target"):
+            from tempfile import TemporaryDirectory
+            with TemporaryDirectory() as root:
+                target = Path(root)
+                classes = target / "target" / "classes"
+                classes.mkdir(parents=True)
+                home = target / "installed spotbugs"
+                scratch = target / "isolated cwd"
+                scratch.mkdir()
+                captured = {}
+
+                def fake_run(argv, **kwargs):
+                    captured.update(argv=argv, kwargs=kwargs)
+                    return b"<BugCollection/>", 0
+
+                with mock.patch.dict(os.environ, {"SPOTBUGS_HOME": str(home)}), \
+                     mock.patch.object(sb, "scratch_cwd", return_value=contextlib.nullcontext(str(scratch))) as isolated, \
+                     mock.patch.object(sb, "run_tool", side_effect=fake_run):
+                    result = sb.SpotBugsAdapter().invoke(str(target))
+                isolated.assert_called_once_with("spotbugs-cwd-")
+                self.assertEqual(result, (b"<BugCollection/>", 0))
+                self.assertEqual(captured["argv"], [
+                    str(home / "bin" / "spotbugs"), "-textui", "-xml", "-pluginList",
+                    str(home / "plugin" / "findsecbugs-plugin.jar"), str(classes),
+                ])
+                self.assertEqual(captured["kwargs"], {"timeout": 600, "cwd": str(scratch)})
+
     def test_parse_produces_finding(self):
         findings = sb.SpotBugsAdapter().parse(SPOTBUGS_SAMPLE, "g1")
         self.assertEqual(len(findings), 1)

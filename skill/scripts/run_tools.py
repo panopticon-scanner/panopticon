@@ -566,9 +566,10 @@ def _scanner_owned_bandit_ini(tool, cmd):
     silently blocked coverage certification on a worktree-heavy checkout.
     `--ini` is the escape hatch bandit itself names, but pinning the TARGET's
     copy handed the reviewed repository the scan's scope (#1839). The file is
-    generated here instead, in a scratch directory bind-mounted read-only, and
-    pinned UNCONDITIONALLY -- so the discovery walk never runs whether or not
-    the target ships a `.bandit`, and that file never reaches the argv at all.
+    generated here instead, in a private scratch directory, bind-mounted
+    read-only on its own, and pinned UNCONDITIONALLY -- so the discovery walk
+    never runs whether or not the target ships a `.bandit`, and that file
+    never reaches the argv at all.
     Same shape as `tools/brakeman.py` and `tools/bundler_audit.py`, which
     answer the same problem with a config they generate themselves.
 
@@ -580,9 +581,13 @@ def _scanner_owned_bandit_ini(tool, cmd):
     The contents are `BANDIT_INI_TEXT`, a module constant, so no directory name
     can reach them (review round 1 C1).
 
-    World-readable on purpose: the tools image runs as `USER scanner`, so a 0700
-    scratch would be an `--ini` bandit cannot read. The contents are a generated
-    exclusion list with nothing private in them. An ini that does not arrive is
+    The FILE is mounted, not the directory: the tools image runs as `USER
+    scanner` (uid 1000), so the ini has to be readable across the bind mount,
+    and that is a property of the file (0644 -- a generated exclusion list with
+    nothing private in it). The scratch directory around it keeps `mkdtemp`'s
+    0700 and is never mounted, so nothing else in it can reach the container
+    and no directory is ever opened up with a permissive mask (the pattern
+    bandit B103 and semgrep both flag, and rightly). An ini that does not arrive is
     fail-OPEN, not fail-closed -- bandit 1.9.4's `utils.parse_ini_file` CATCHES a
     parse failure or a missing `[bandit]` section, warns
     ("Unable to parse config file ... or missing [bandit] section") and runs on
@@ -602,7 +607,6 @@ def _scanner_owned_bandit_ini(tool, cmd):
     scratch = staging_error = None
     try:
         scratch = tempfile.mkdtemp(prefix="pano-bandit-ini-")
-        os.chmod(scratch, 0o755)
         ini_path = os.path.join(scratch, BANDIT_INI_NAME)
         with open(ini_path, "w", encoding="utf-8") as fh:
             fh.write(BANDIT_INI_TEXT)
@@ -619,7 +623,8 @@ def _scanner_owned_bandit_ini(tool, cmd):
             yield (cmd[:1]
                    + ["--ini", "%s/%s" % (BANDIT_INI_MOUNT, BANDIT_INI_NAME)]
                    + cmd[1:]),\
-                ["-v", "%s:%s:ro" % (scratch, BANDIT_INI_MOUNT)]
+                ["-v", "%s:%s/%s:ro" % (ini_path, BANDIT_INI_MOUNT,
+                                        BANDIT_INI_NAME)]
     finally:
         if scratch is not None:
             shutil.rmtree(scratch, ignore_errors=True)

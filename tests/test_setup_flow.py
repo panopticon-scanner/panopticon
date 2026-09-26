@@ -916,6 +916,43 @@ class TestSetupFlow(unittest.TestCase):
         self.assertIn("target-root", check_dict)
         self.assertTrue(check_dict["target-root"][0])
 
+    def test_nvd_readiness_uses_target_env_and_ambient_fallback_without_secret(self):
+        d = _repo(self)
+        env_path = os.path.join(d, ".env")
+        # Fixed synthetic value for presence/disclosure checks.
+        fixture_value = "fixture-only-value"
+
+        def row(env):
+            return setup_flow._check_nvd_key(d, env)
+
+        absent = row({})
+        self.assertEqual(absent[0:2], ("nvd-api-key", None))
+        self.assertIn("absent", absent[2])
+        with open(env_path, "w", encoding="utf-8") as fh:
+            fh.write("NVD_API_KEY=   \n")
+        self.assertEqual(row({}), absent)
+        with open(env_path, "w", encoding="utf-8") as fh:
+            fh.write("OTHER=value\nNVD_API_KEY=" + fixture_value + "\n")
+        self.assertEqual(row({}), ("nvd-api-key", None, "present"))
+        os.unlink(env_path)
+        self.assertEqual(row({"NVD_API_KEY": fixture_value}), ("nvd-api-key", None, "present"))
+
+        with open(env_path, "w", encoding="utf-8") as fh:
+            fh.write("NVD_API_KEY=" + fixture_value + "\n")
+        original_open = open
+
+        def unreadable(path, *args, **kwargs):
+            if str(path) == env_path:
+                raise PermissionError(13, "Permission denied", path)
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch("builtins.open", side_effect=unreadable):
+            self.assertEqual(row({}), absent)
+            self.assertEqual(row({"NVD_API_KEY": fixture_value}),
+                             ("nvd-api-key", None, "present"))
+        for value in (absent, row({"NVD_API_KEY": fixture_value})):
+            self.assertNotIn(fixture_value, repr(value))
+
     def test_readiness_checks_driver_roles_not_legacy(self):
         # #5.0-15: enforced-shells must verify the driver's scout/domain_panel/
         # domain_advisor shells, NOT the retired panel_review/lens_sweep.

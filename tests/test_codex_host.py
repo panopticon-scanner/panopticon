@@ -501,6 +501,93 @@ def test_the_unregistered_reviewer_error_names_the_emit_command(tmp_path):
             in str(caught.value))
 
 
+def test_registered_shell_preflight_checks_every_role_and_sorted_missing_names(tmp_path, monkeypatch):
+    from scripts import dispatch
+
+    registered = tmp_path / "registered"
+    dispatch.emit_host_agents("codex", str(registered))
+    assert codex_host.require_registered_shells(str(registered)) is None
+    filenames = sorted(dispatch.registered_agent_filename("codex", role_file)
+                       for role_file in dispatch.ROLE_FILES.values())
+    (registered / filenames[0]).unlink()
+    with pytest.raises(ValueError) as one_missing:
+        codex_host.require_registered_shells(str(registered))
+    assert "1 registered shell(s) missing" in str(one_missing.value)
+    assert filenames[0] in str(one_missing.value)
+    (registered / filenames[1]).unlink()
+    with pytest.raises(ValueError) as caught:
+        codex_host.require_registered_shells(str(registered))
+    message = str(caught.value)
+    assert "2 registered shell(s) missing" in message
+    assert str(registered) in message
+    assert ", ".join(filenames[:2]) in message
+    assert codex_host.REGISTER_REMEDY in message
+
+    spec = SimpleNamespace(registration_dir=str(registered), shell_format="toml")
+    monkeypatch.setattr(codex_host.hosts, "spec", lambda host: spec if host == "codex" else None)
+    with pytest.raises(ValueError, match="2 registered shell"):
+        codex_host.require_registered_shells()
+
+
+@pytest.mark.parametrize("result,diagnostic", [
+    (SimpleNamespace(returncode=3, stdout='{"models": []}'), "bundled catalog unavailable"),
+    (SimpleNamespace(returncode=0, stdout="x" * 33), "bundled catalog unavailable"),
+    (SimpleNamespace(returncode=0, stdout='{"models": "wrong shape"}'),
+     "absent or ambiguous"),
+])
+def test_bad_local_catalog_refuses_without_entry_launch_or_leaked_runtime(
+        tmp_path, monkeypatch, result, diagnostic):
+    root, entry, env = _case(tmp_path)
+    run = root / "run"
+    seen = []
+
+    def local_catalog(argv, **kwargs):
+        assert argv == ["codex", "debug", "models", "--bundled"]
+        assert Path(kwargs["cwd"]).is_dir()
+        seen.append(kwargs["cwd"])
+        return result
+
+    monkeypatch.setattr(codex_host, "MAX_BYTES", 32)
+    with pytest.raises(ValueError, match=diagnostic):
+        codex_host.command(entry, env, root, run, runner=local_catalog)
+    assert len(seen) == 1
+    assert not Path(seen[0]).exists()
+    assert list(run.iterdir()) == []
+    assert not any(str(path).startswith(str(run)) for path in codex_host._COMMAND_DIRS)
+
+
+def test_non_list_catalog_models_fall_back_to_empty_list(tmp_path):
+    seen = []
+
+    def local_catalog(argv, **kwargs):
+        seen.append(kwargs["cwd"])
+        return SimpleNamespace(returncode=0, stdout='{"models": "wrong shape"}')
+
+    assert codex_host._dump_catalog(local_catalog) == []
+    assert len(seen) == 1
+    assert not Path(seen[0]).exists()
+
+
+@pytest.mark.parametrize("contents,diagnostic", [
+    (b"x" * 33, "oversized Codex registered shell"),
+    (b"name = [", "Invalid value"),
+])
+def test_bad_registration_file_refuses_before_catalog_launch(
+        tmp_path, monkeypatch, contents, diagnostic):
+    root, entry, env = _case(tmp_path)
+    entry["agent"] = "panopticon-scout"
+    (root / "panopticon-scout.toml").write_bytes(contents)
+    monkeypatch.setattr(codex_host, "MAX_BYTES", 32)
+
+    def forbidden_launch(*args, **kwargs):
+        pytest.fail("registration refusal must precede host execution")
+
+    with pytest.raises((ValueError, tomllib.TOMLDecodeError), match=diagnostic):
+        codex_host.command(entry, env, root, root / "run", runner=forbidden_launch,
+                           registration_dir=root)
+    assert not (root / "run").exists()
+
+
 # --- I-2: the emitter narrows per role; the validator must accept that -------
 
 
