@@ -36,12 +36,28 @@ class TestOnlineAdapterIntegration(unittest.TestCase):
     def test_pip_audit_finds_advisories(self):
         self._gate("pip-audit")
         assert_adapter_finds(self, "pip-audit", "vulnerable-python",
-                             ok_codes=OK_SCAN_EXIT_CODES)
+                             ok_codes=OK_SCAN_EXIT_CODES,
+                             matches=lambda f: (
+                                 f["location"]["file"] == "requirements.txt"
+                                 and f["tool_evidence"]["package_name"] == "requests"
+                                 and f["tool_evidence"]["vulnerable_versions"] == "2.25.1"
+                                 and (f["tool_evidence"]["rule_id"] in {
+                                     "CVE-2023-32681", "GHSA-j8r2-6x86-q33q",
+                                     "PYSEC-2023-74"}
+                                     or "CVE-2023-32681" in
+                                     (f.get("citations") or {}).get("cve", []))))
 
     def test_npm_audit_finds_advisories(self):
         self._gate("npm")
         assert_adapter_finds(self, "npm-audit", "vulnerable-node",
-                             ok_codes=OK_SCAN_EXIT_CODES)
+                             ok_codes=OK_SCAN_EXIT_CODES,
+                             matches=lambda f: (
+                                 f["location"]["file"] == "package-lock.json"
+                                 and f["tool_evidence"]["package_name"] == "lodash"
+                                 and ("CVE-2020-28500" in
+                                      (f.get("citations") or {}).get("cve", [])
+                                      or any("GHSA-29mw-wpgm-hmr9" in ref for ref in
+                                             (f.get("references") or [])))))
 
 
 if __name__ == "__main__":  # pragma: no cover

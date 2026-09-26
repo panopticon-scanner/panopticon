@@ -71,6 +71,7 @@ groups:
       tests:
       - tests/tools/**
       - tests/test_integration_strictness.py
+      - tests/test_adapter_expectations.py
       - tests/test_no_unguarded_parse_index.py
       panels:
       - ARC

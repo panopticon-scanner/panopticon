@@ -274,7 +274,7 @@ def fixture_path(name):
 
 
 def assert_adapter_finds(test_case, adapter_name, target_name, group="g1",
-                         ok_codes=(0, 1)):
+                         ok_codes=(0, 1), *, matches):
     """Run an adapter against a fixture and assert it produces findings.
 
     Skips the test when the fixture directory is not present (the normal case
@@ -293,11 +293,11 @@ def assert_adapter_finds(test_case, adapter_name, target_name, group="g1",
         )
     return assert_adapter_finds_at(test_case, adapter_name, target,
                                    group=group, ok_codes=ok_codes,
-                                   label=target_name)
+                                   label=target_name, matches=matches)
 
 
 def assert_adapter_finds_at(test_case, adapter_name, target, group="g1",
-                            ok_codes=(0, 1), label=None):
+                            ok_codes=(0, 1), label=None, *, matches):
     """The same assertions against an ARBITRARY directory.
 
     Split out for the adapters whose target is generated rather than vendored
@@ -323,6 +323,17 @@ def assert_adapter_finds_at(test_case, adapter_name, target, group="g1",
     )
     findings = adapter.parse(raw, group)
     test_case.assertTrue(findings, f"expected {adapter_name} findings against {label}")
+    summary = [
+        ((f.get("tool_evidence") or {}).get("rule_id"),
+         (f.get("location") or {}).get("file"),
+         (f.get("tool_evidence") or {}).get("package_name"))
+        for f in findings[:5]
+    ]
+    test_case.assertTrue(
+        any(matches(finding) for finding in findings),
+        f"{adapter_name} on {label}: no finding matches expected planted content; "
+        f"first five (rule, file, package): {summary!r}",
+    )
     return findings
 
 

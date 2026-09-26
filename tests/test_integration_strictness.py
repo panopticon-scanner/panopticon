@@ -165,13 +165,15 @@ class TestAssertAdapterFindsHonoursTheFlag(unittest.TestCase):
     def test_missing_fixture_fails_when_integration_is_required(self):
         with mock.patch.object(helpers, "require_integration", return_value=True):
             with self.assertRaises(AssertionError) as caught:
-                helpers.assert_adapter_finds(self, "brakeman", "no-such-fixture")
+                helpers.assert_adapter_finds(self, "brakeman", "no-such-fixture",
+                                             matches=lambda finding: False)
         self.assertIn("no-such-fixture", str(caught.exception))
 
     def test_missing_fixture_skips_when_it_is_not(self):
         with mock.patch.object(helpers, "require_integration", return_value=False):
             with self.assertRaises(unittest.SkipTest):
-                helpers.assert_adapter_finds(self, "brakeman", "no-such-fixture")
+                helpers.assert_adapter_finds(self, "brakeman", "no-such-fixture",
+                                             matches=lambda finding: False)
 
 
 class TestFixtureResolution(unittest.TestCase):
