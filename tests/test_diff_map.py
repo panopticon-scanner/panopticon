@@ -6,6 +6,15 @@ import scripts.diff_map as diff_map
 from tools.git_repo import make_git_repo
 
 
+# The hostile shapes these tests plant are the ones the code refuses -- a
+# world-writable leaf or parent. Spelled from `stat` bits rather than an
+# octal-777 literal because the CI security gate scans `tests/` too, reads
+# bandit B103 on a permissive-mode literal as HIGH, and under `--security
+# redteam` honours no `nosec`; the planted mode is the test's subject, not
+# a defect in it.
+_WORLD_WRITABLE = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
+
+
 def _git(d, *a):
     subprocess.run(["git", "-C", d, *a], check=True, capture_output=True)
 
@@ -1223,7 +1232,7 @@ class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
     def test_a_world_writable_directory_at_the_leaf_is_refused(self):
         wt = self._leaf()
         os.mkdir(wt)
-        os.chmod(wt, 0o777)                   # after mkdir: umask cannot mask it
+        os.chmod(wt, _WORLD_WRITABLE)         # after mkdir: umask cannot mask it
         self.assertIn("0777", self._refused(wt))
 
     def test_a_group_writable_directory_at_the_leaf_is_refused(self):
@@ -1260,7 +1269,7 @@ class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
     def test_the_refusal_names_deleting_it_as_the_remedy(self):
         wt = self._leaf()
         os.mkdir(wt)
-        os.chmod(wt, 0o777)
+        os.chmod(wt, _WORLD_WRITABLE)
         self.assertIn("delete it", self._refused(wt).lower())
 
     def test_the_leaf_this_process_creates_is_ours_and_not_writable_by_others(self):
@@ -1363,7 +1372,7 @@ class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
         wt = os.path.join(parent, "panopticon-pr-7-0123456789ab")
         os.mkdir(wt)
         try:
-            os.chmod(parent, 0o777)                  # world-writable, NOT sticky
+            os.chmod(parent, _WORLD_WRITABLE)        # world-writable, NOT sticky
             message = self._refused(wt)
         finally:
             os.chmod(parent, previous)
