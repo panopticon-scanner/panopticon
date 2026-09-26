@@ -282,6 +282,34 @@ class TestIngest(unittest.TestCase):
         self.assertIn("oversize", disp["semgrep"]["reason"])
         self.assertIn("exceeds", stderr.getvalue())
 
+    def test_ingest_dir_detailed_reports_unreadable_registered_capture_and_continues(self):
+        with tempfile.TemporaryDirectory() as d:
+            unreadable = os.path.join(d, "trivy.sarif")
+            valid = os.path.join(d, "semgrep.sarif")
+            with open(unreadable, "w", encoding="utf-8") as fh:
+                json.dump(SARIF, fh)
+            with open(valid, "w", encoding="utf-8") as fh:
+                json.dump(SARIF, fh)
+            real_open = open
+
+            def selective_open(path, mode="r", *args, **kwargs):
+                if os.fspath(path) == unreadable and mode == "rb":
+                    raise OSError("capture read failed\nprivate detail")
+                return real_open(path, mode, *args, **kwargs)
+
+            stderr = io.StringIO()
+            with patch("builtins.open", side_effect=selective_open), \
+                    contextlib.redirect_stderr(stderr):
+                findings, dispositions = it.ingest_dir_detailed(d, "g1")
+            self.assertEqual(dispositions["trivy"], {
+                "status": "failed", "findings": 0,
+                "reason": "unparseable: capture read failed"})
+            self.assertIn("trivy.sarif", stderr.getvalue())
+            self.assertIn("capture read failed", stderr.getvalue())
+            self.assertEqual(dispositions["semgrep"]["status"], "ok")
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["source"], "tool:semgrep")
+
     def test_sarif_uri_normalized_to_repo_relative(self):
         sarif = _sarif_fixture("file:///src/db/engine.py")
         out = it.sarif_to_findings(sarif, "semgrep", "g1", "SG")

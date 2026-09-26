@@ -501,6 +501,31 @@ class TestEnrich(unittest.TestCase):
         self.assertNotIn("citations", findings[1])
         self.assertEqual([c["id"] for c in findings[3]["citations"]["cwe"]], ["CWE-89"])
 
+    def test_enrich_helper_error_discards_stale_citations_and_continues(self):
+        findings = [
+            {"id": "SEC-FIRST", "source": "agent:x", "citation_quality": "full",
+             "citations": {"cwe": ["CWE-89"], "stale": ["unverified"]}},
+            {"id": "SEC-SECOND", "source": "agent:x",
+             "citations": {"cwe": ["CWE-79"]}},
+        ]
+        original = cit.validate_cwe
+
+        def fail_first(cwe, *args, **kwargs):
+            if cwe == "CWE-89":
+                raise RuntimeError("targeted validation failure")
+            return original(cwe, *args, **kwargs)
+
+        stderr = io.StringIO()
+        with mock.patch.object(cit, "validate_cwe", side_effect=fail_first), \
+                contextlib.redirect_stderr(stderr):
+            cit.enrich_citations(findings, self.cat)
+        self.assertNotIn("citations", findings[0])
+        self.assertEqual(findings[0]["citation_quality"], "none")
+        self.assertIn("SEC-FIRST", stderr.getvalue())
+        self.assertIn("targeted validation failure", stderr.getvalue())
+        self.assertEqual(findings[1]["citations"]["cwe"][0]["id"], "CWE-79")
+        self.assertTrue(findings[1]["citations"]["cwe"][0]["verified"])
+
     def test_epss_response_size_cap_behavioral(self):
         # Behavioral test for SEC-G3B: return a payload larger than 1MB
 
