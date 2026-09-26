@@ -355,7 +355,6 @@ class TestLaterRunBoundary(unittest.TestCase):
     def test_selects_earliest_later_sibling_and_skips_irrelevant_entries(self):
         with tempfile.TemporaryDirectory() as parent:
             mine = os.path.join(parent, "mine")
-            os.mkdir(mine)
 
             def sibling(name, created):
                 path = os.path.join(parent, name)
@@ -364,11 +363,12 @@ class TestLaterRunBoundary(unittest.TestCase):
                     json.dump({"created": created}, fh)
                 return path
 
+            sibling("mine", "2026-09-01T10:15:00Z")
             sibling("early", "2026-09-01T09:00:00Z")
             sibling("later", "2026-09-01T13:00:00Z")
             sibling("nearest", "2026-09-01T11:00:00Z")
             unreadable = sibling("unreadable", "2026-09-01T10:00:00Z")
-            sibling("latest", "2026-09-01T10:00:00Z")
+            sibling("latest", "2026-09-01T10:30:00Z")
             with open(os.path.join(parent, "plain-file"), "w", encoding="utf-8") as fh:
                 fh.write("not a directory")
             original_open = open
