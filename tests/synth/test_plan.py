@@ -380,6 +380,54 @@ class TestDriverPlanReconcile(unittest.TestCase):
         # than skipping reconcile -- see skill/reference/integrity-retirement-p65.md.
         self.assertEqual(integ["plans_seen"], 1)
 
+    def test_out_of_scope_finding_reaches_integrity_and_gate(self):
+        with tempfile.TemporaryDirectory() as d:
+            files = self._setup(d)
+            pan = os.path.join(d, ".panopticon")
+            plan_path = os.path.join(pan, plan_mod.DRIVER_DISPATCH_PLAN)
+            with open(plan_path, encoding="utf-8") as fh:
+                plan = json.load(fh)
+            for cell in plan:
+                cell["files"] = ["a.py"]
+            with open(plan_path, "w", encoding="utf-8") as fh:
+                json.dump(plan, fh)
+            finding_path = os.path.join(pan, "findings-g1-COD.json")
+            finding = {"id": "COD-001", "title": "fixture finding",
+                       "description": "Controlled fixture", "severity": "LOW",
+                       "confidence": "POSSIBLE", "source_role": "domain_panel",
+                       "domain": "COD", "category": "code_security",
+                       "location": {"file": "a.py", "line_start": 1}}
+            def run_with(findings):
+                with open(finding_path, "w", encoding="utf-8") as fh:
+                    json.dump({"findings": findings,
+                               "_panopticon": {"run_id": "run-1", "role": "domain_panel",
+                                               "group": "g1", "domain": "COD"}}, fh)
+                gr.snapshot_out_files(plan, out_path=os.path.join(pan, "out-file-hashes.json"))
+                return self._run(d, files)
+
+            clean_rc, clean = run_with([finding])
+            dirty_rc, dirty = run_with([
+                finding, {**finding, "id": "COD-002",
+                          "location": {"file": "outside.py", "line_start": 2}}])
+
+        clean_coverage = clean["meta"]["coverage"]
+        dirty_coverage = dirty["meta"]["coverage"]
+        self.assertEqual(clean_rc, 0)
+        self.assertEqual(clean["summary"]["gate"], "PASS")
+        self.assertEqual(clean["meta"]["integrity"]["plans_seen"], 1)
+        for key in ("unexpected_findings_files", "missing_planned_files",
+                    "duplicate_out_files", "mislabeled_findings_files",
+                    "invalid_dispatch_plans"):
+            self.assertEqual(clean["meta"]["integrity"][key], [], key)
+        self.assertEqual(clean_coverage["out_of_scope"],
+                         {"checked": 1, "count": 0, "examples": []})
+        self.assertEqual(dirty_rc, 2)
+        self.assertEqual(dirty_coverage["out_of_scope"],
+                         {"checked": 2, "count": 1,
+                          "examples": [{"group": "g1", "file": "outside.py"}]})
+        self.assertEqual(dirty["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(dirty["summary"]["coverage_certified"])
+
     def test_undeclared_findings_file_is_detected(self):
         with tempfile.TemporaryDirectory() as d:
             rc, report = self._run(d, self._setup(d, decoy=True))
@@ -417,7 +465,7 @@ class TestOutOfScope(unittest.TestCase):
 
     def test_out_of_scope_counted_with_examples(self):
         with tempfile.TemporaryDirectory() as d:
-            fp = os.path.join(d, "findings-g1-code-panel_review.json")
+            fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w") as fh:
                 json.dump(
                     {
@@ -428,21 +476,23 @@ class TestOutOfScope(unittest.TestCase):
                     },
                     fh,
                 )
-            plan = [{"group": "g1", "files": ["a.py"], "out_file": "x"}]
+            plan = [{"group": "g1", "domain": "COD", "files": ["a.py"],
+                     "out_file": fp}]
             res = plan_mod.out_of_scope_findings([fp], plan)
         self.assertEqual(res["checked"], 2)
         self.assertEqual(res["count"], 1)
         self.assertEqual(res["examples"], [{"group": "g1", "file": "z.py"}])
 
     def test_no_plan_returns_none_never_zero_claim(self):
-        self.assertIsNone(plan_mod.out_of_scope_findings(["findings-g1-code.json"], []))
+        self.assertIsNone(plan_mod.out_of_scope_findings(["findings-g1-COD.json"], []))
 
     def test_unplanned_group_and_tool_files_skipped(self):
         with tempfile.TemporaryDirectory() as d:
-            fp = os.path.join(d, "findings-gX-code-panel_review.json")
+            fp = os.path.join(d, "findings-gX-COD.json")
             with open(fp, "w") as fh:
                 json.dump({"findings": [{"id": "A-1", "location": {"file": "z.py"}}]}, fh)
-            plan = [{"group": "g1", "files": ["a.py"], "out_file": "x"}]
+            plan = [{"group": "g1", "domain": "COD", "files": ["a.py"],
+                     "out_file": os.path.join(d, "findings-g1-COD.json")}]
             res = plan_mod.out_of_scope_findings([fp], plan)
         self.assertEqual(res["checked"], 0)
         self.assertEqual(res["count"], 0)
